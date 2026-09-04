@@ -1775,6 +1775,16 @@ pub struct HistoryLines {
     /// rather than on a line, and open the uncapped text when the user asks for it. The spans
     /// tile `entries` exactly - every row belongs to one event and no row to two.
     pub events: Vec<HistoryEvent>,
+    /// The rows a reader pins under its divider, above the scrolling timeline: what stays true
+    /// of the run however far back it is wound - when it began, and which session it is.
+    ///
+    /// Held apart from `entries` rather than pushed onto the front of it so that the promise
+    /// `events` makes above survives: these rows belong to no event, and a cursor can no more
+    /// land on one than it can on the divider.
+    ///
+    /// Empty for everything but a loaded run: a summary drawn for an agent with no run has
+    /// neither of the two facts to state.
+    pub header: Vec<MdLine>,
 }
 
 /// One event of the timeline: which rows of [`HistoryLines::entries`] it took after the cap,
@@ -1806,6 +1816,7 @@ pub static NO_HISTORY: HistoryLines = HistoryLines {
     label: String::new(),
     entries: Vec::new(),
     events: Vec::new(),
+    header: Vec::new(),
 };
 
 impl HistoryLines {
@@ -1856,7 +1867,12 @@ pub fn fit_label(mut label: String, width: usize) -> String {
 /// says the same thing - a summary somebody pressed a key for both stays where it was asked
 /// for and is the current one, and two identical paragraphs one under the other read as a bug
 /// rather than as a history.
-pub fn run_history(run: &AgentRun, width: usize, now_ms: i64) -> HistoryLines {
+pub fn run_history(
+    run: &AgentRun,
+    width: usize,
+    now_ms: i64,
+    utc_offset_secs: i32,
+) -> HistoryLines {
     let Some(inner) = wrap_width(width) else {
         return HistoryLines::default();
     };
@@ -1909,6 +1925,7 @@ pub fn run_history(run: &AgentRun, width: usize, now_ms: i64) -> HistoryLines {
         );
     }
     HistoryLines {
+        header: run_header(run, inner, utc_offset_secs),
         // The run's own id rather than its kind: the id opens with the kind anyway
         // (`run_id`), so this says everything the kind said and names *which* run of that
         // agent the half is drawing - the one thing the pane could not tell you before.
@@ -1919,6 +1936,66 @@ pub fn run_history(run: &AgentRun, width: usize, now_ms: i64) -> HistoryLines {
         events,
     }
 }
+
+/// The two rows [`run_history`] pins above its timeline.
+///
+/// Both answer a question the timeline cannot. `short_run_id` on the divider says *which of
+/// this agent's runs* is being drawn, in the eight characters a rule can spare; this says the
+/// whole id, which is the one you paste into a `--resume`, a log grep or an `agent_run` call.
+/// And every row below is stamped with a relative age, which stops being an answer the moment
+/// the question is "which afternoon was that" - so the run's own start is drawn absolutely.
+///
+/// Wrapped rather than cut. A tail-cut uuid is a uuid nobody can use, and unlike the divider
+/// (`fit_label`) this has as many rows as it needs.
+fn run_header(run: &AgentRun, width: usize, utc_offset_secs: i32) -> Vec<MdLine> {
+    // `run.id` when the agent supplied no session id of its own: `run_id` keys such a run by
+    // pane and start time, and naming that "session" would be a claim the run cannot make.
+    let (label, value) = match run.session_id.trim() {
+        "" => ("run", run.id.as_str()),
+        session_id => ("session", session_id),
+    };
+    let mut rows = wrapped_field(
+        "started",
+        &wall_clock(run.started_at_ms, utc_offset_secs),
+        width,
+    );
+    rows.extend(wrapped_field(label, value, width));
+    rows
+}
+
+/// One `label  value` row, plus a continuation row per further slice the value needs, each
+/// indented under the value column so the field reads as one block.
+///
+/// The label column is [`HEADER_LABEL_WIDTH`] wide for every field, so the values line up
+/// whether the label is `started` or `session`.
+fn wrapped_field(label: &str, value: &str, width: usize) -> Vec<MdLine> {
+    let label = format!("{label:<HEADER_LABEL_WIDTH$}");
+    // At least one column, or a half narrow enough to leave none would loop forever below.
+    let room = width.saturating_sub(HEADER_LABEL_WIDTH).max(1);
+    // By character rather than by byte: a session id is a uuid today, but nothing stops a
+    // hand-rolled `agent-report` from naming a run in any script at all, and a slice through
+    // the middle of a character panics.
+    let mut chars = value.chars().peekable();
+    let mut rows = Vec::new();
+    while chars.peek().is_some() {
+        let slice: String = chars.by_ref().take(room).collect();
+        let gutter = match rows.is_empty() {
+            true => label.clone(),
+            false => " ".repeat(HEADER_LABEL_WIDTH),
+        };
+        rows.push(MdLine::plain(slice).prepend(&gutter, HEADER_LABEL_STYLE));
+    }
+    rows
+}
+
+/// The width of the header's label column - `"session"` and a space, which is the longest of
+/// them. Wider than the timeline's own [`AGE_WIDTH`] gutter on purpose: these rows are not part
+/// of the timeline and lining them up with it would say they were.
+const HEADER_LABEL_WIDTH: usize = 8;
+
+/// How a header label is painted: dim, like every other piece of pane furniture. The values
+/// beside them are not - a timestamp and a session id are what the rows are for.
+const HEADER_LABEL_STYLE: MdStyle = LABEL_STYLE;
 
 /// Whether the newest summary already on the run's timeline says what `summary` says - the
 /// same comparison [`push_summary_entry`] makes, asked of the rolling summary before it is
@@ -1979,6 +2056,9 @@ pub fn summary_history(
         label,
         entries,
         events,
+        // No run, so neither of the two facts a header states is in hand: an idle agent's
+        // summary is about the pane, not about a session with a start and an id.
+        header: Vec::new(),
     }
 }
 
@@ -2149,6 +2229,70 @@ pub fn short_age(now_ms: i64, then_ms: i64) -> String {
 
 /// The oldest age [`short_age`] will name, so its answer fits the gutter. See there.
 const MAX_AGE_DAYS: i64 = 99;
+
+/// An epoch millisecond as the wall clock read where the session runs:
+/// `"2026-09-04 14:32:07 -04:00"`.
+///
+/// `utc_offset_secs` is seconds east of UTC, which a plugin can only get by asking the host
+/// (`zellij_tile::shim::get_local_utc_offset`) - wasm has no timezone, and this is the only
+/// absolute time anything in this crate draws. An offset of `0` renders as `+00:00` and is
+/// honest rather than wrong: it says UTC, which is what a caller that could not ask has.
+///
+/// Everything a relative [`short_age`] cannot answer: which day, and which minute of it. The
+/// two are not alternatives - a run's start is drawn absolutely because it is asked about long
+/// after the fact, and every entry under it is drawn as an age because what is being read there
+/// is the spacing.
+pub fn wall_clock(epoch_ms: i64, utc_offset_secs: i32) -> String {
+    let local_ms = epoch_ms.saturating_add(i64::from(utc_offset_secs).saturating_mul(1000));
+    // Euclidean throughout: a pre-epoch instant, or one an offset pushes before it, has to
+    // floor rather than truncate towards zero, or the day comes out one too late and the
+    // time of day negative.
+    let days = local_ms.div_euclid(86_400_000);
+    let ms_of_day = local_ms.rem_euclid(86_400_000);
+    let (year, month, day) = civil_from_days(days);
+    let (hour, minute, second) = (
+        ms_of_day / 3_600_000,
+        ms_of_day / 60_000 % 60,
+        ms_of_day / 1000 % 60,
+    );
+    let (sign, offset) = match utc_offset_secs < 0 {
+        true => ('-', -i64::from(utc_offset_secs)),
+        false => ('+', i64::from(utc_offset_secs)),
+    };
+    format!(
+        "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} {sign}{:02}:{:02}",
+        offset / 3600,
+        offset / 60 % 60,
+    )
+}
+
+/// Days since 1970-01-01 as a civil `(year, month, day)`.
+///
+/// Howard Hinnant's `civil_from_days` - the shifted-era algorithm the C++ committee adopted -
+/// transcribed rather than invented, because it is exact for every day in the proleptic
+/// Gregorian calendar and needs no table. Nothing in this workspace carries civil-date
+/// arithmetic (`hocus::tools` says so where it refuses to parse a calendar date), and nothing
+/// that does can be linked into a wasm plugin, so here it is.
+///
+/// The era shift moves the epoch to 0000-03-01, which puts February - the month whose length
+/// moves - at the end of a year rather than in the middle of one, and that is the whole trick:
+/// the leap day is then the last day of the last era-year and needs no special case.
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let mp = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * mp + 2) / 5 + 1;
+    let month = match mp < 10 {
+        true => mp + 3,
+        false => mp - 9,
+    };
+    (year + i64::from(month <= 2), month, day)
+}
 
 /// How a `summary: ` label is painted instead: bold and undimmed. The summary used to be told
 /// apart by standing above the timeline; it is a row of the timeline now, so its label is what
@@ -3814,20 +3958,96 @@ mod tests {
                 .collect(),
         };
 
-        let history = run_history(&run, 40, 100);
+        let history = run_history(&run, 40, 100, 0);
         assert_eq!(history.label, "claude:session-1");
         assert_eq!(history.entries.len(), 6);
         assert!(history.entries[0].text.contains("oldest"));
         assert!(history.entries[5].text.contains("newest"));
 
         run.entries.truncate(1);
-        let short = run_history(&run, 40, 100);
+        let short = run_history(&run, 40, 100, 0);
         assert_eq!(short.entries.len(), 1);
         assert!(short.entries[0].text.contains("oldest"));
 
         // Too narrow to wrap into anything but a column of single words: better nothing,
         // and the half says so instead.
-        assert!(run_history(&run, HISTORY_MIN_COLS + 1, 100).is_empty());
+        assert!(run_history(&run, HISTORY_MIN_COLS + 1, 100, 0).is_empty());
+    }
+
+    /// The two rows above the timeline, which are what the divider's eight characters of
+    /// session id cannot be: the whole id, and the day and minute the run began.
+    #[test]
+    fn the_header_states_the_start_and_the_whole_session_id() {
+        let mut run = a_pane_run();
+        run.session_id = "9f3c1a7e-4b21-4d8e-9c02-1a2b3c4d5e6f".to_owned();
+        run.id = format!("claude:{}", run.session_id);
+        // 2026-09-04 18:32:07 UTC, read an hour east of it.
+        run.started_at_ms = 1_788_546_727_000;
+
+        let header = run_history(&run, 60, run.started_at_ms, 3600).header;
+        let rows: Vec<&str> = header.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(
+            rows,
+            vec![
+                "started 2026-09-04 19:32:07 +01:00",
+                "session 9f3c1a7e-4b21-4d8e-9c02-1a2b3c4d5e6f",
+            ]
+        );
+        // The divider still says the short form: the header is what the whole id is for.
+        assert_eq!(run_history(&run, 60, 0, 0).label, "claude:9f3c1a7e");
+    }
+
+    /// A run the agent gave no session id is keyed by pane and start time (`run_id`), and
+    /// calling that a session would be a claim it cannot make.
+    #[test]
+    fn a_run_with_no_session_id_of_its_own_is_headed_by_its_run_id() {
+        let mut run = a_pane_run();
+        run.session_id = String::new();
+        run.id = run_id("claude", 3, "", 10);
+
+        let header = run_history(&run, 60, 100, 0).header;
+        assert_eq!(header[1].text, "run     claude:pane:3:10");
+    }
+
+    /// Cut ids are useless ids, so a half too narrow for one wraps it instead - under the
+    /// value column, so the field still reads as one thing.
+    #[test]
+    fn a_session_id_wider_than_the_half_wraps_rather_than_being_cut() {
+        let mut run = a_pane_run();
+        run.session_id = "9f3c1a7e-4b21-4d8e-9c02-1a2b3c4d5e6f".to_owned();
+
+        // Wide enough for the timestamp on one row (26 columns of value), too narrow for a
+        // 36-character uuid: the two fields are wrapped independently.
+        let header = run_history(&run, 40, 100, 0).header;
+        assert_eq!(header.len(), 3, "{header:?}");
+        let id: String = header[1..]
+            .iter()
+            .map(|line| &line.text[HEADER_LABEL_WIDTH..])
+            .collect();
+        assert_eq!(id, run.session_id);
+        for row in &header[2..] {
+            assert!(
+                row.text.starts_with(&" ".repeat(HEADER_LABEL_WIDTH)),
+                "a continuation row sits under the value column: {:?}",
+                row.text
+            );
+        }
+    }
+
+    /// Nothing pins a header over an idle agent's summary: there is no run, so neither of the
+    /// two facts is in hand.
+    #[test]
+    fn a_summary_with_no_run_behind_it_has_no_header() {
+        let summary = Summary {
+            text: "did a thing".to_owned(),
+            title: String::new(),
+            awaiting: false,
+            hash: 0,
+            created_at_ms: Some(50),
+        };
+        assert!(summary_history(3, "claude", &summary, 40, 100)
+            .header
+            .is_empty());
     }
 
     /// A summary somebody asked for is drawn wherever it was made, on a run that is still
@@ -3865,7 +4085,7 @@ mod tests {
             }],
         };
 
-        let live = run_history(&run, 60, 100);
+        let live = run_history(&run, 60, 100, 0);
         assert!(
             live.entries
                 .iter()
@@ -3883,7 +4103,7 @@ mod tests {
 
         run.outcome = RunOutcome::Completed;
         assert!(
-            run_history(&run, 60, 100)
+            run_history(&run, 60, 100, 0)
                 .entries
                 .iter()
                 .any(|line| line.text.contains("summary:")),
@@ -3994,12 +4214,12 @@ mod tests {
         };
 
         assert!(
-            run_history(&run, 60, 100).entries.is_empty(),
+            run_history(&run, 60, 100, 0).entries.is_empty(),
             "a running agent's result is not final"
         );
 
         run.outcome = RunOutcome::Completed;
-        let archived = run_history(&run, 60, 100);
+        let archived = run_history(&run, 60, 100, 0);
         assert_eq!(archived.label, "claude:session-1");
         assert!(archived
             .entries
@@ -4014,7 +4234,7 @@ mod tests {
             hash: 0,
             created_at_ms: None,
         });
-        let summarized = run_history(&run, 60, 100);
+        let summarized = run_history(&run, 60, 100, 0);
         assert!(!summarized
             .entries
             .iter()
@@ -5787,7 +6007,7 @@ mod tests {
             created_at_ms: None,
         }];
 
-        let history = run_history(&run, 30, 100);
+        let history = run_history(&run, 30, 100, 0);
         assert_eq!(history.entries.len(), MAX_ENTRY_ROWS);
         // Three rows kept, so the marker speaks for everything from the fourth on - the count
         // is the rows the cap dropped rather than a round number.
@@ -5827,7 +6047,7 @@ mod tests {
             text: "- one\n- two\n- three".to_owned(),
             created_at_ms: None,
         }];
-        let history = run_history(&run, 40, 100);
+        let history = run_history(&run, 40, 100, 0);
         assert_eq!(history.entries.len(), MAX_ENTRY_ROWS);
         assert!(
             !history.entries.last().unwrap().text.contains('…'),
@@ -5859,7 +6079,7 @@ mod tests {
             },
         ];
 
-        let history = run_history(&run, 40, 100);
+        let history = run_history(&run, 40, 100, 0);
         assert_eq!(
             history.events.len(),
             3,
@@ -5895,7 +6115,7 @@ mod tests {
             created_at_ms: None,
         }];
 
-        let history = run_history(&run, 40, 100);
+        let history = run_history(&run, 40, 100, 0);
         assert_eq!(
             texts(&history.entries),
             [
@@ -5953,7 +6173,7 @@ mod tests {
         ];
 
         assert_eq!(
-            texts(&run_history(&run, 40, 100).entries),
+            texts(&run_history(&run, 40, 100, 0).entries),
             [
                 "    prompt:",
                 "    1. one", // the numbering kept, and its column with it
@@ -5972,14 +6192,14 @@ mod tests {
     fn a_summary_that_opens_with_a_marker_gives_the_label_a_row() {
         let mut run = a_pane_run();
         run.summary = Some(a_summary("- ran the tests", false));
-        let history = run_history(&run, 40, 100);
+        let history = run_history(&run, 40, 100, 0);
         assert_eq!(
             texts(&history.entries),
             ["    summary:", "    • ran the tests"]
         );
 
         run.summary = Some(a_summary("ran the tests", false));
-        let history = run_history(&run, 40, 100);
+        let history = run_history(&run, 40, 100, 0);
         assert_eq!(texts(&history.entries), ["    summary: ran the tests"]);
     }
 
@@ -6006,7 +6226,7 @@ mod tests {
             },
         ];
         assert_eq!(
-            texts(&run_history(&run, 40, 100).entries),
+            texts(&run_history(&run, 40, 100, 0).entries),
             [
                 "    prompt: run the tests",
                 "    question: which ones?",
@@ -6030,14 +6250,14 @@ mod tests {
             created_at_ms: None,
         }];
         assert_eq!(
-            texts(&run_history(&run, 60, 100).entries),
+            texts(&run_history(&run, 60, 100, 0).entries),
             ["    summary: Ran the tests."],
         );
 
         // A summary that has moved on since is a second row, where it was made.
         run.summary = Some(a_summary("Ran the tests and shipped it.", false));
         assert_eq!(
-            texts(&run_history(&run, 60, 100).entries),
+            texts(&run_history(&run, 60, 100, 0).entries),
             [
                 "    summary: Ran the tests.",
                 "    summary: Ran the tests and shipped it."
@@ -6059,7 +6279,7 @@ mod tests {
             created_at_ms: None,
         }];
         assert_eq!(
-            texts(&run_history(&run, 40, 100).entries),
+            texts(&run_history(&run, 40, 100, 0).entries),
             ["    prompt: first", "    second"]
         );
     }
@@ -6080,7 +6300,7 @@ mod tests {
             created_at_ms: None,
         }];
         assert_eq!(
-            texts(&run_history(&run, 40, 100).entries),
+            texts(&run_history(&run, 40, 100, 0).entries),
             ["    result:", "    • one", "    • two"]
         );
     }
@@ -6107,7 +6327,7 @@ mod tests {
         }];
 
         for width in [HISTORY_MIN_COLS + 2, 30, 46, 80] {
-            let history = run_history(&run, width, 100);
+            let history = run_history(&run, width, 100, 0);
             let inner = width - 2;
             for line in &history.entries {
                 assert!(line.text.width() <= inner, "{width}: {:?}", line.text);
@@ -6149,7 +6369,7 @@ mod tests {
             },
         ];
 
-        let history = run_history(&run, 60, 106 * minute);
+        let history = run_history(&run, 60, 106 * minute, 0);
         assert_eq!(
             texts(&history.entries),
             [
@@ -6182,7 +6402,7 @@ mod tests {
             created_at_ms: Some(0),
         }];
 
-        let history = run_history(&run, 60, 5 * 60_000);
+        let history = run_history(&run, 60, 5 * 60_000, 0);
         let row = &history.entries[0];
         assert!(
             row.styles[..AGE_WIDTH]
@@ -6208,13 +6428,13 @@ mod tests {
             ..a_summary("Ran the tests.", false)
         });
         assert_eq!(
-            texts(&run_history(&run, 60, 3 * 3_600_000).entries),
+            texts(&run_history(&run, 60, 3 * 3_600_000, 0).entries),
             [" 3h summary: Ran the tests."],
         );
 
         run.summary = Some(a_summary("Ran the tests.", false));
         assert_eq!(
-            texts(&run_history(&run, 60, 3 * 3_600_000).entries),
+            texts(&run_history(&run, 60, 3 * 3_600_000, 0).entries),
             ["    summary: Ran the tests."],
         );
     }
@@ -6241,6 +6461,56 @@ mod tests {
             "now",
             "a clock that went backwards is not a negative age"
         );
+    }
+
+    /// The epoch, the two directions an offset can go, and the year boundaries the era shift
+    /// exists to get right.
+    #[test]
+    fn wall_clock_reads_an_epoch_millisecond_as_a_date_and_a_time() {
+        let cases = [
+            // The epoch itself, and the offsets either side of it.
+            (0_i64, 0_i32, "1970-01-01 00:00:00 +00:00"),
+            (0, 3600, "1970-01-01 01:00:00 +01:00"),
+            (0, -18_000, "1969-12-31 19:00:00 -05:00"),
+            // An offset that carries the local time over a day boundary in each direction.
+            (86_399_000, 3600, "1970-01-02 00:59:59 +01:00"),
+            (3_600_000, -18_000, "1969-12-31 20:00:00 -05:00"),
+            // An offset that is not a whole hour, which is what the minutes field is for.
+            (0, 20_700, "1970-01-01 05:45:00 +05:45"),
+            // A leap day, and the day after it.
+            (1_709_208_000_000, 0, "2024-02-29 12:00:00 +00:00"),
+            (1_709_294_400_000, 0, "2024-03-01 12:00:00 +00:00"),
+            // A non-leap century, which the /100 and /400 terms disagree about.
+            (4_107_542_400_000, 0, "2100-03-01 00:00:00 +00:00"),
+            // Well before the epoch, where truncating division would floor the wrong way.
+            (-2_208_988_800_000, 0, "1900-01-01 00:00:00 +00:00"),
+        ];
+        for (epoch_ms, offset, expected) in cases {
+            assert_eq!(
+                wall_clock(epoch_ms, offset),
+                expected,
+                "{epoch_ms}ms at {offset}s"
+            );
+        }
+    }
+
+    /// The seconds of the day, at both ends of it: a rendering that read the hour off a
+    /// truncating division would put midnight and noon in the same place on a pre-epoch date.
+    #[test]
+    fn wall_clock_keeps_the_time_of_day_inside_the_day() {
+        for day in [-800_i64, -1, 0, 1, 20_000] {
+            let midnight = day * 86_400_000;
+            assert!(
+                wall_clock(midnight, 0).ends_with("00:00:00 +00:00"),
+                "day {day} did not start at midnight: {}",
+                wall_clock(midnight, 0)
+            );
+            assert!(
+                wall_clock(midnight + 86_399_000, 0).ends_with("23:59:59 +00:00"),
+                "day {day} did not end a second before midnight: {}",
+                wall_clock(midnight + 86_399_000, 0)
+            );
+        }
     }
 
     fn a_pane_run() -> AgentRun {
@@ -6301,7 +6571,7 @@ mod tests {
 
         let mut run = a_pane_run();
         run.id = "claude:9f3c1a7e-4b21-4d0a-8c55-7e2f6b1d90aa".to_owned();
-        let label = run_history(&run, 40, 100).label;
+        let label = run_history(&run, 40, 100, 0).label;
         assert_eq!(label, "claude:9f3c1a7e");
         assert_eq!(
             fit_label(label.clone(), 40),

@@ -51,11 +51,11 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse,
     ProtobufFocusOrCreateTabResponse, ProtobufFsListResponse, ProtobufFsMetadataResponse,
     ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
-    ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse,
-    ProtobufGetPaneGitProbeResponse, ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
-    ProtobufGetPaneRunningCommandResponse, ProtobufGetPluginAliasConfigurationResponse,
-    ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
-    ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
+    ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse,
+    ProtobufGetLocalUtcOffsetResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
+    ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
+    ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
+    ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
     ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
     ProtobufListNotificationsResponse, ProtobufListOrphanedPanesResponse,
     ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabsResponse,
@@ -91,6 +91,11 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
         },
         CommandType::GetUserPluginDir => decode(bytes)
             .and_then(|r: ProtobufGetUserPluginDirResponse| value(lua, r.user_plugin_dir)),
+        // Seconds, as a number. Lua has `os.date` and does not need this to draw a
+        // calendar - the command is for wasm, which has no timezone at all - but a
+        // reply the shim reads is a reply every runtime should get decoded.
+        CommandType::GetLocalUtcOffset => decode(bytes)
+            .and_then(|r: ProtobufGetLocalUtcOffsetResponse| value(lua, r.offset_seconds)),
         CommandType::GetLayoutDir => {
             decode(bytes).and_then(|r: ProtobufGetLayoutDirResponse| value(lua, r.layout_dir))
         },

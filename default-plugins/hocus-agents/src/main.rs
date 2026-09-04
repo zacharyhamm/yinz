@@ -112,6 +112,15 @@ struct State {
     summaries: Summaries,
     /// Full history for the selected row, fetched on demand by hocus.
     run: Option<agents::AgentRun>,
+    /// Seconds east of UTC where `run` began, for the absolute start time in the history
+    /// header. Asked of the host once per run, when the run arrives, rather than in `render`:
+    /// a host round trip in the draw path would be paid on every keystroke, and `history_lines`
+    /// is what the tests drive directly.
+    ///
+    /// `0` - UTC - where there is no run, or where the host could not say. A wrong-by-hours
+    /// timestamp would be worse than one that admits which zone it is in, which is why
+    /// `wall_clock` always names the offset it used.
+    run_offset_secs: i32,
     /// Lines the history half is wound back from its newest entry.
     history_scroll: usize,
     /// Which event the history half's cursor is on, counted back from the newest - `0` is the
@@ -179,6 +188,11 @@ struct State {
     /// How many rows the last render gave the history half, and `0` on a pane too short to
     /// split. A page key and a focus switch both need to know whether there is a half there.
     last_history_rows: usize,
+    /// How many of those rows the timeline actually scrolls in, which is the rest of them once
+    /// the pinned header has taken its share. What a page turn is worth - `last_history_rows`
+    /// still answers the two questions it always did, whether there is a history half at all
+    /// and where a click lands.
+    last_history_body_rows: usize,
     /// The largest `history_scroll` the last render could actually honour.
     ///
     /// Kept for the same reason `last_window_start` is: how many lines the history has
@@ -327,6 +341,12 @@ impl ZellijPlugin for State {
                 return false;
             };
             let changed = self.run.as_ref() != Some(&run);
+            if changed {
+                // Once per run, here rather than in the draw path. The offset is asked for
+                // the instant the run began, not for now, so a run from before a
+                // daylight-saving change is read back with the offset it started under.
+                self.run_offset_secs = get_local_utc_offset(run.started_at_ms).unwrap_or(0);
+            }
             self.run = Some(run);
             if changed {
                 self.generation += 1;
@@ -372,6 +392,7 @@ impl ZellijPlugin for State {
             // rather than splitting an empty list off an empty history.
             self.last_list_rows = 0;
             self.last_history_rows = 0;
+            self.last_history_body_rows = 0;
             // No history half drawn, so the focus cannot be in one - the same correction the
             // too-short pane makes below, and what the Tab handler's ring relies on.
             self.focus = Focus::List;
@@ -443,6 +464,7 @@ impl ZellijPlugin for State {
             // anywhere else.
             self.focus = Focus::List;
             self.last_history_max_scroll = 0;
+            self.last_history_body_rows = 0;
             return;
         }
         self.render_history(list_rows, history_rows, cols);
@@ -710,7 +732,7 @@ impl State {
     /// One page of the history half: what it can show, less a line of overlap so a page turn
     /// does not lose the sentence that was straddling the seam.
     fn page(&self) -> usize {
-        self.last_history_rows.saturating_sub(1).max(1)
+        self.last_history_body_rows.saturating_sub(1).max(1)
     }
 
     fn on_mouse(&mut self, mouse_event: Mouse) -> bool {
@@ -864,8 +886,27 @@ impl State {
         changed
     }
 
-    /// The history half: a divider naming what is below it, then the timeline of whatever the
-    /// cursor is on - summaries among the events rather than above them.
+    /// How many of the half's `rows` the pinned header takes - its lines plus the rule under
+    /// them - or `0` where it is not drawn.
+    ///
+    /// Dropped whole rather than squeezed on a half with no room for both it and a timeline
+    /// worth the name: the header says two things about the run and the timeline says what the
+    /// run did, and where only one of them fits the second is worth more. What "worth the
+    /// name" means is [`MIN_HISTORY_ROWS`] - the same number `split` uses to decide whether to
+    /// make a history half at all, rather than a second opinion about the same question.
+    fn header_rows(&self, rows: usize) -> usize {
+        let wanted = match self.history().header.len() {
+            0 => return 0,
+            lines => lines + 1,
+        };
+        match rows >= wanted + MIN_HISTORY_ROWS {
+            true => wanted,
+            false => 0,
+        }
+    }
+
+    /// The history half: a divider naming what is below it, the run's header, then the timeline
+    /// of whatever the cursor is on - summaries among the events rather than above them.
     ///
     /// Drawn even when there is nothing to say. The half is permanent so the list's height
     /// never moves under the pointer, and an empty history is a sentence rather than an
@@ -875,16 +916,20 @@ impl State {
         // `rows` is the body alone: `split` takes the divider off the list's share, and it is
         // drawn on the row above the body at `top`.
         //
-        // Nothing is held above the timeline: the summary is one of its rows, so the whole
-        // half is one scrolling window and a talkative model costs the events beside it
-        // nothing they cannot be scrolled back to.
-        let room = rows;
+        // Only two things are held above the timeline, and both are about the run rather than
+        // about anything it said: when it began, and its whole session id. A summary is *not*
+        // one of them - it is a row of the timeline, where in time it was made - so the events
+        // remain one scrolling window and a talkative model costs the events beside it nothing
+        // they cannot be scrolled back to.
+        let header_rows = self.header_rows(rows);
+        let room = rows.saturating_sub(header_rows);
         let entries_len = self.history().entries.len();
         // `history_scroll` counts backward from the newest entry, which is the end the half is
         // anchored to: an entry arriving pushes the window along rather than leaving the user
         // reading a stale top.
         let max_scroll = entries_len.saturating_sub(room);
         self.last_history_max_scroll = max_scroll;
+        self.last_history_body_rows = room;
         self.history_scroll = self.history_scroll.min(max_scroll);
         let focused = self.focus == Focus::History;
         // The cursor is walked by `step_history_cursor`, which knows how many events there are
@@ -916,7 +961,28 @@ impl State {
         let history = self.history();
 
         render_divider(&label, start, entries_len - end, focused, top, cols);
-        let body = top + 1;
+        let mut body = top + 1;
+        if header_rows > 0 {
+            for (index, line) in history.header.iter().enumerate() {
+                // The same margin every row of the timeline takes, and taken the same way -
+                // part of the string, so the styles shift along with it. The column it leaves
+                // is the cursor's, and nothing in the header can hold a cursor.
+                let line = line.clone().indent(1);
+                let text = markdown::style_text(&line.text, &line.styles, false);
+                print_text_with_coordinates(text, 0, body + index, Some(cols), None);
+            }
+            // A plain rule, never coloured: `render_divider`'s colour is what says where the
+            // keyboard is, and there is one focusable rule per half. This one only separates
+            // what is fixed from what scrolls.
+            print_text_with_coordinates(
+                Text::new(divider_line("", 0, 0, cols)).dim_range(..),
+                0,
+                body + history.header.len(),
+                Some(cols),
+                None,
+            );
+            body += header_rows;
+        }
         if history.entries.is_empty() {
             print_text_with_coordinates(
                 Text::new(placeholder).dim_range(..),
@@ -1123,7 +1189,7 @@ impl State {
             .as_ref()
             .filter(|run| self.selected_run_matches(run))
         {
-            return agents::run_history(run, width, now_ms());
+            return agents::run_history(run, width, now_ms(), self.run_offset_secs);
         }
         let Some(pane_id) = self.selection() else {
             return agents::HistoryLines::default();
@@ -1905,13 +1971,15 @@ mod tests {
         assert_eq!(split(20).0, list_rows, "a summary");
     }
 
-    /// The history's share is body and nothing else: `split` has already taken the divider off
-    /// the list's, so taking it off again here is what left the last row of the pane blank.
+    /// The history's share is body and the pinned header, and nothing else: `split` has already
+    /// taken the divider off the list's, so taking it off again here is what left the last row
+    /// of the pane blank.
     ///
     /// Nothing observable is printed by a unit test, so the height is read off the room the
-    /// scroll is clamped against - which is the whole of the body, nothing being held above it.
+    /// scroll is clamped against - which is the share less the header's two rows and the rule
+    /// under them, and nothing else.
     #[test]
-    fn the_history_body_is_the_whole_of_its_share() {
+    fn the_history_body_is_its_share_less_the_pinned_header() {
         let mut state = State::default();
         state.set_rows(unfocused(vec![
             StripRow::Project("archive".to_owned()),
@@ -1938,12 +2006,80 @@ mod tests {
         let (_, history_rows) = split(20);
         state.render(20, 50);
         assert_eq!(state.last_history_rows, history_rows);
+        // Two header rows and the rule under them.
+        let body_rows = history_rows - 3;
         assert_eq!(
             state.last_history_max_scroll,
-            30 - history_rows,
-            "every row of the share holds a line of timeline"
+            30 - body_rows,
+            "every row of the share the header did not take holds a line of timeline"
         );
-        assert_eq!(state.page(), history_rows - 1, "less a line of overlap");
+        assert_eq!(state.page(), body_rows - 1, "less a line of overlap");
+
+        // A half with no room for the header and a line of timeline both drops the header
+        // whole rather than squeezing the timeline: the run's two facts are worth less than
+        // what it did.
+        let mut cramped = State::default();
+        std::mem::swap(&mut cramped, &mut state);
+        cramped.render(9, 50);
+        let (_, cramped_rows) = split(9);
+        assert_eq!(cramped_rows, 4, "three rows of header and one of timeline");
+        assert_eq!(
+            cramped.last_history_max_scroll,
+            30 - cramped_rows,
+            "the header is dropped whole on a half with no room for it and a timeline both"
+        );
+    }
+
+    /// The offset the host gave for the run's start reaches the row that draws it, and the
+    /// header is not part of the timeline: scrolling the half moves the entries under it and
+    /// leaves it where it is.
+    #[test]
+    fn the_pinned_header_carries_the_offset_and_does_not_scroll() {
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        let mut run = a_run();
+        run.summary = None;
+        run.session_id = "9f3c1a7e-4b21-4d8e-9c02-1a2b3c4d5e6f".to_owned();
+        // 2026-09-04 18:32:07 UTC.
+        run.started_at_ms = 1_788_546_727_000;
+        run.entries = (0..30)
+            .map(|index| agents::RunEntry {
+                revision: index + 1,
+                event_id: None,
+                kind: agents::RunEntryKind::Question,
+                text: format!("question {index}"),
+                created_at_ms: None,
+            })
+            .collect();
+        state.run = Some(run);
+        // What the host would have answered for that instant; a native test build gets `Err`
+        // from the shim and falls back to UTC, so it is set here the way `pipe` would.
+        state.run_offset_secs = -4 * 3600;
+
+        state.render(20, 60);
+        let header: Vec<String> = state
+            .history()
+            .header
+            .iter()
+            .map(|line| line.text.clone())
+            .collect();
+        assert_eq!(
+            header,
+            vec![
+                "started 2026-09-04 14:32:07 -04:00".to_owned(),
+                "session 9f3c1a7e-4b21-4d8e-9c02-1a2b3c4d5e6f".to_owned(),
+            ]
+        );
+
+        assert!(state.scroll_history(5));
+        state.render(20, 60);
+        let after: Vec<String> = state
+            .history()
+            .header
+            .iter()
+            .map(|line| line.text.clone())
+            .collect();
+        assert_eq!(header, after, "the header is not part of what scrolls");
     }
 
     /// With no history half there is no history stop: forward from the list steps straight on
@@ -2471,8 +2607,10 @@ mod tests {
         state.run = Some(run);
         state.focus = Focus::History;
         state.render(20, 50);
-        // Thirty one-line events against nine rows: the half is at the newest end.
+        // Thirty one-line events against the seven rows the pinned header leaves of the ten:
+        // the half is at the newest end.
         assert_eq!(state.last_history_rows, 10);
+        assert_eq!(state.last_history_body_rows, 7);
         assert_eq!(state.history_scroll, 0);
 
         // Walk the cursor past the top of the window and the half follows it back.
@@ -2482,7 +2620,7 @@ mod tests {
         state.render(20, 50);
         assert_eq!(state.history_cursor, 12);
         assert_eq!(
-            state.history_scroll, 3,
+            state.history_scroll, 6,
             "wound back just far enough to put the event on the oldest row"
         );
 
@@ -2490,7 +2628,7 @@ mod tests {
         assert!(state.on_key(KeyWithModifier::new(BareKey::Char('j'))));
         state.render(20, 50);
         assert_eq!(state.history_cursor, 11);
-        assert_eq!(state.history_scroll, 3, "still on screen, so nothing moved");
+        assert_eq!(state.history_scroll, 6, "still on screen, so nothing moved");
 
         // The cursor stops at the oldest event rather than running off the end.
         for _ in 0..50 {

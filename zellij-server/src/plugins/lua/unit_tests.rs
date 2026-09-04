@@ -2978,6 +2978,7 @@ const REPLYING_COMMANDS: &[CommandType] = &[
     CommandType::GetZellijVersion,
     CommandType::GenerateRandomName,
     CommandType::GetUserPluginDir,
+    CommandType::GetLocalUtcOffset,
     CommandType::GetLayoutDir,
     CommandType::GetSessionEnvironmentVariables,
     CommandType::GetPluginAliasConfiguration,

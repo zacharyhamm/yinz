@@ -148,8 +148,10 @@ hook change: `cargo x integration-test -- -j 16 -E 'test(a_written_hook)'`.
 
 ## Notes for the next session
 
-**Proto numbers in use** (next free): plugin `CommandName` 277 (`SetPaneAgentRun`) / payload
-field 218 (next 278 / 219); plugin `EventType` 57 (`Hook`), event payload field 51; IPC `Action`
+**Proto numbers in use** (next free): plugin `CommandName` 280 (`GetLocalUtcOffset`) / payload
+field 221 (next 281 / 222) - this note had gone stale once already, having missed
+`DataCatalog` 278 / 219 and `SetQuitNotice` 279 / 220, so read the `.proto` rather than
+trusting it; plugin `EventType` 57 (`Hook`), event payload field 51; IPC `Action`
 oneof 159 (`set_pane_agent`) and 160 (`reconfigure`; `main` holds 155–158; next 161); IPC
 `ClientToServerMsg` 28 (`subscribe_to_events`; `main`'s `host_terminal_focus_changed` is 27),
 `ServerToClientMsg` 20 (`event_update`); `PermissionType` 21 (`AuthorPlugins`); `PaneInfo` field
