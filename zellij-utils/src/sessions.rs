@@ -1,10 +1,12 @@
 #![allow(clippy::needless_return)]
 #![allow(clippy::useless_borrows_in_formatting)]
 #![allow(clippy::explicit_auto_deref)]
+use crate::errors::prelude::{Context, LoggableError};
+use crate::session_checkpoint::SessionCheckpoint;
 use crate::{
     consts::{
-        is_ipc_socket, session_info_folder_for_session, session_layout_cache_file_name,
-        ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR,
+        is_ipc_socket, session_info_folder_for_session, ZELLIJ_SESSION_INFO_CACHE_DIR,
+        ZELLIJ_SOCK_DIR,
     },
     data::SessionInfo,
     envs,
@@ -125,8 +127,8 @@ pub fn get_resurrectable_sessions() -> Vec<(String, Duration)> {
                 .filter(|f| f.is_dir());
             files_that_are_folders
                 .filter_map(|folder_name| {
-                    let layout_file_name =
-                        session_layout_cache_file_name(&folder_name.display().to_string());
+                    let checkpoint = SessionCheckpoint::read(&folder_name).to_log().ok()?;
+                    let layout_file_name = checkpoint.layout_path();
                     // Try to get creation time, fall back to modification time on platforms where it's not supported (e.g., musl)
                     let ctime = std::fs::metadata(&layout_file_name)
                         .ok()
@@ -168,8 +170,8 @@ pub fn get_resurrectable_session_names() -> Vec<String> {
                 .filter(|f| f.is_dir());
             files_that_are_folders
                 .filter_map(|folder_name| {
-                    let folder = folder_name.display().to_string();
-                    let resurrection_layout_file = session_layout_cache_file_name(&folder);
+                    let checkpoint = SessionCheckpoint::read(&folder_name).to_log().ok()?;
+                    let resurrection_layout_file = checkpoint.layout_path();
                     if std::path::Path::new(&resurrection_layout_file).exists() {
                         folder_name
                             .file_name()
@@ -662,11 +664,18 @@ pub fn session_exists(name: &str) -> Result<bool, io::ErrorKind> {
 
 // if the session is resurrecable, the returned layout is the one to be used to resurrect it
 pub fn resurrection_layout(session_name_to_resurrect: &str) -> Result<Option<Layout>, String> {
-    let layout_file_name = session_layout_cache_file_name(session_name_to_resurrect);
+    let checkpoint =
+        SessionCheckpoint::read(&session_info_folder_for_session(session_name_to_resurrect))
+            .map_err(|error| format!("{error:#}"))?;
+    let layout_file_name = checkpoint.layout_path();
     let raw_layout = match std::fs::read_to_string(&layout_file_name) {
         Ok(raw_layout) => raw_layout,
-        Err(_e) => {
-            return Ok(None);
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(format!(
+                "failed to read resurrection layout {}: {e}",
+                layout_file_name.display()
+            ))
         },
     };
     match Layout::from_kdl(
@@ -822,10 +831,12 @@ pub fn read_live_session_states(
     }
 
     for (session_name, creation_time) in other_session_names {
-        let session_cache_file_name = session_info_cache_dir
-            .join(&session_name)
-            .join("session-metadata.kdl");
-        if let Ok(raw_session_info) = fs::read_to_string(&session_cache_file_name) {
+        let raw_session_info = SessionCheckpoint::read(&session_info_cache_dir.join(&session_name))
+            .and_then(|checkpoint| {
+                fs::read_to_string(checkpoint.metadata_path())
+                    .context("failed to read session checkpoint metadata")
+            });
+        if let Ok(raw_session_info) = raw_session_info {
             if let Ok(mut session_info) =
                 SessionInfo::from_string(&raw_session_info, current_session_name)
             {

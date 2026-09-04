@@ -1,6 +1,5 @@
 use zellij_utils::consts::{
-    session_info_cache_file_name, session_info_folder_for_session, session_layout_cache_file_name,
-    ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR,
+    session_info_folder_for_session, ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR,
 };
 
 use std::str::FromStr;
@@ -15,7 +14,6 @@ use isahc::{config::RedirectPolicy, HttpClient, Request};
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -336,7 +334,7 @@ pub(crate) fn background_jobs_main(
                 }
                 let info = current_session_info.lock().unwrap().clone();
                 let layout = current_session_layout.lock().unwrap().clone();
-                write_session_state_to_disk(name, info, layout);
+                write_session_state_to_disk(name, info, layout).non_fatal();
             }
         });
     }
@@ -915,9 +913,6 @@ pub(crate) fn background_jobs_main(
                     nested_guest_ping.store(false, Ordering::SeqCst);
                 }
 
-                let cache_file_name =
-                    session_info_cache_file_name(&current_session_name.lock().unwrap().to_owned());
-                let _ = std::fs::remove_file(cache_file_name);
                 return Ok(());
             },
         }
@@ -1325,50 +1320,16 @@ fn job_already_running(
     }
 }
 
-fn file_content_changed(path: &std::path::Path, new_content: &[u8]) -> bool {
-    match std::fs::read(path) {
-        Ok(existing) => existing != new_content,
-        Err(_) => true,
-    }
-}
-
 pub fn write_session_state_to_disk(
     current_session_name: String,
     current_session_info: SessionInfo,
     current_session_layout: (String, BTreeMap<String, String>),
-) {
-    let metadata_cache_file_name = session_info_cache_file_name(&current_session_name);
-    let (current_session_layout, layout_files_to_write) = current_session_layout;
-    let new_metadata = current_session_info.to_string();
-    if file_content_changed(&metadata_cache_file_name, new_metadata.as_bytes()) {
-        let _wrote_metadata_file = std::fs::create_dir_all(
-            session_info_folder_for_session(&current_session_name).as_path(),
-        )
-        .and_then(|_| std::fs::File::create(&metadata_cache_file_name))
-        .and_then(|mut f| write!(f, "{}", new_metadata));
-    }
-
-    if !current_session_layout.is_empty() {
-        let layout_cache_file_name = session_layout_cache_file_name(&current_session_name);
-        if file_content_changed(&layout_cache_file_name, current_session_layout.as_bytes()) {
-            let _wrote_layout_file = std::fs::create_dir_all(
-                session_info_folder_for_session(&current_session_name).as_path(),
-            )
-            .and_then(|_| std::fs::File::create(&layout_cache_file_name))
-            .and_then(|mut f| write!(f, "{}", current_session_layout));
-        }
-        let session_info_folder = session_info_folder_for_session(&current_session_name);
-        for (external_file_name, external_file_contents) in layout_files_to_write {
-            let external_file_path = session_info_folder.join(&external_file_name);
-            if file_content_changed(&external_file_path, external_file_contents.as_bytes()) {
-                std::fs::File::create(&external_file_path)
-                    .and_then(|mut f| write!(f, "{}", external_file_contents))
-                    .unwrap_or_else(|e| {
-                        log::error!("Failed to write layout metadata file: {:?}", e);
-                    });
-            }
-        }
-    }
+) -> Result<()> {
+    zellij_utils::session_checkpoint::write_checkpoint(
+        &session_info_folder_for_session(&current_session_name),
+        &current_session_info.to_string(),
+        &current_session_layout,
+    )
 }
 
 pub fn scan_session_list(
@@ -1424,7 +1385,11 @@ fn find_resurrectable_sessions(
                         // this is not a dead session...
                         return None;
                     }
-                    let layout_file_name = folder_name.join("session-layout.kdl");
+                    let checkpoint =
+                        zellij_utils::session_checkpoint::SessionCheckpoint::read(&folder_name)
+                            .to_log()
+                            .ok()?;
+                    let layout_file_name = checkpoint.layout_path();
                     let ctime = match std::fs::metadata(&layout_file_name)
                         .and_then(|metadata| metadata.created())
                     {
@@ -1478,6 +1443,30 @@ mod tests {
         let folder = info_dir.join(session);
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join("session-layout.kdl"), "layout { }").unwrap();
+    }
+
+    #[test]
+    fn scan_session_list_reads_published_checkpoints() {
+        let sock_dir = tempdir().unwrap();
+        let info_dir = tempdir().unwrap();
+        let _listener = make_socket(sock_dir.path(), "live");
+        for name in ["live", "dead"] {
+            zellij_utils::session_checkpoint::write_checkpoint(
+                &info_dir.path().join(name),
+                &SessionInfo::new(name.to_owned()).to_string(),
+                &("layout {}".to_owned(), BTreeMap::new()),
+            )
+            .unwrap();
+        }
+        let (live, resurrectable) = scan_session_list(
+            "me",
+            &[],
+            &BTreeMap::new(),
+            sock_dir.path(),
+            info_dir.path(),
+        );
+        assert_eq!(live.keys().collect::<Vec<_>>(), vec!["live"]);
+        assert_eq!(resurrectable.keys().collect::<Vec<_>>(), vec!["dead"]);
     }
 
     #[test]

@@ -620,22 +620,25 @@ impl TestSession {
     }
 
     pub fn wait_for_serialized_session(&self) {
-        let layout_path = zellij_utils::consts::session_layout_cache_file_name(&self.session_name);
-        let session_dir = layout_path.parent().map(|parent| parent.to_path_buf());
+        let session_dir = zellij_utils::consts::session_info_folder_for_session(&self.session_name);
         let deadline = std::time::Instant::now() + crate::default_timeout();
         loop {
-            if let Ok(layout) = std::fs::read_to_string(&layout_path) {
-                let referenced_contents_files_exist = session_dir.as_ref().is_none_or(|dir| {
-                    referenced_contents_files(&layout).all(|name| dir.join(name).exists())
-                });
-                if referenced_contents_files_exist {
-                    return;
+            if let Ok(checkpoint) =
+                zellij_utils::session_checkpoint::SessionCheckpoint::read(&session_dir)
+            {
+                let layout_path = checkpoint.layout_path();
+                if let Ok(layout) = std::fs::read_to_string(&layout_path) {
+                    if referenced_contents_files(&layout)
+                        .all(|name| layout_path.parent().unwrap().join(name).exists())
+                    {
+                        return;
+                    }
                 }
             }
             if std::time::Instant::now() >= deadline {
                 panic!(
-                    "timed out waiting for session serialization at {}",
-                    layout_path.display()
+                    "timed out waiting for session serialization in {}",
+                    session_dir.display()
                 );
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -644,11 +647,17 @@ impl TestSession {
 
     pub fn resurrect(&mut self, size: Size) {
         let layout_path = zellij_utils::consts::session_layout_cache_file_name(&self.session_name);
-        assert!(
-            layout_path.exists(),
-            "no serialized layout to resurrect from at {}",
-            layout_path.display()
-        );
+        {
+            let checkpoint = zellij_utils::session_checkpoint::SessionCheckpoint::read(
+                layout_path.parent().unwrap(),
+            )
+            .unwrap();
+            assert!(
+                checkpoint.layout_path().exists(),
+                "no serialized layout to resurrect from at {}",
+                layout_path.display()
+            );
+        }
         let mut cli_args = self.cli_args.clone();
         if cli_args.config_dir.is_none() {
             cli_args.config_dir = cli_args

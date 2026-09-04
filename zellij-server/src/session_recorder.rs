@@ -5,7 +5,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use zellij_utils::data_access::DataAccess;
+use zellij_utils::data_access::{DataAccess, RecordingSession};
+use zellij_utils::errors::prelude::*;
 use zellij_utils::session_recording::{PaneMetadata, RecordedEvent};
 
 #[derive(Debug)]
@@ -234,6 +235,43 @@ pub fn spawn_session_recorder(
     Some((handle, thread))
 }
 
+fn mark_recording_loss(
+    store: &mut dyn RecordingSession,
+    dropped: &AtomicUsize,
+    enabled: bool,
+) -> Result<()> {
+    let dropped = dropped.load(Ordering::Relaxed);
+    if dropped > 0 {
+        store
+            .mark_incomplete(&format!("dropped {} recording events", dropped))
+            .context("failed to mark recording incomplete")?;
+    } else if !enabled {
+        store
+            .mark_incomplete("recorder channel full or disconnected")
+            .context("failed to mark recording incomplete")?;
+    }
+    Ok(())
+}
+
+fn flush_recording_events(
+    store: &mut dyn RecordingSession,
+    batch: &mut Vec<RecordedEvent>,
+    dropped: &AtomicUsize,
+) {
+    if !batch.is_empty() {
+        if let Err(error) = store.record_events(batch) {
+            dropped.fetch_add(batch.len(), Ordering::Relaxed);
+            Err::<(), _>(error)
+                .context("failed to record events; counting discarded batch")
+                .non_fatal();
+        }
+        batch.clear();
+    }
+    // Retry only the loss marker, never the discarded events. A later healthy
+    // write must not make a recording with missing output look complete.
+    mark_recording_loss(store, dropped, true).non_fatal();
+}
+
 fn recorder_thread(
     data_access: Arc<DataAccess>,
     session_name: String,
@@ -264,10 +302,7 @@ fn recorder_thread(
             if elapsed >= Duration::from_millis(100) {
                 // flush batch
                 if !batch.is_empty() {
-                    if let Err(e) = store.record_events(&batch) {
-                        log::error!("failed to record events: {}", e);
-                    }
-                    batch.clear();
+                    flush_recording_events(store.as_mut(), &mut batch, &dropped);
                     batch_start = None;
                 }
                 Duration::from_millis(100)
@@ -279,10 +314,7 @@ fn recorder_thread(
         };
         // also flush on 256
         if batch.len() >= 256 {
-            if let Err(e) = store.record_events(&batch) {
-                log::error!("failed to record events: {}", e);
-            }
-            batch.clear();
+            flush_recording_events(store.as_mut(), &mut batch, &dropped);
             batch_start = None;
             continue;
         }
@@ -293,20 +325,14 @@ fn recorder_thread(
                 }
                 batch.append(&mut events);
                 if batch.len() >= 256 {
-                    if let Err(e) = store.record_events(&batch) {
-                        log::error!("failed to record events: {}", e);
-                    }
-                    batch.clear();
+                    flush_recording_events(store.as_mut(), &mut batch, &dropped);
                     batch_start = None;
                 }
             },
             Ok(RecorderInstruction::PaneMetadata { elapsed_us, panes }) => {
                 // flush batch before metadata
                 if !batch.is_empty() {
-                    if let Err(e) = store.record_events(&batch) {
-                        log::error!("failed to record events: {}", e);
-                    }
-                    batch.clear();
+                    flush_recording_events(store.as_mut(), &mut batch, &dropped);
                     batch_start = None;
                 }
                 if let Err(e) = store.update_panes(&panes, elapsed_us) {
@@ -318,10 +344,7 @@ fn recorder_thread(
                 elapsed_us,
             }) => {
                 if !batch.is_empty() {
-                    if let Err(e) = store.record_events(&batch) {
-                        log::error!("failed to record events: {}", e);
-                    }
-                    batch.clear();
+                    flush_recording_events(store.as_mut(), &mut batch, &dropped);
                     batch_start = None;
                 }
                 if let Err(e) = store.finish_pane(terminal_id, elapsed_us) {
@@ -333,66 +356,8 @@ fn recorder_thread(
             },
             Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
                 if !batch.is_empty() {
-                    if let Err(e) = store.record_events(&batch) {
-                        log::error!("failed to record events: {}", e);
-                    }
-                    batch.clear();
+                    flush_recording_events(store.as_mut(), &mut batch, &dropped);
                     batch_start = None;
-                }
-                // check enabled flag
-                if !enabled.load(Ordering::Relaxed) {
-                    // mark incomplete but flush already done
-                    if let Err(e) = store.mark_incomplete("recorder channel full or disconnected") {
-                        log::error!("failed to mark incomplete: {}", e);
-                    }
-                    // drain remaining instructions without blocking?
-                    while let Ok(instr) = receiver.try_recv() {
-                        match instr {
-                            RecorderInstruction::Events(mut ev) => {
-                                batch.append(&mut ev);
-                                if batch.len() >= 256 {
-                                    if let Err(e) = store.record_events(&batch) {
-                                        log::error!("failed to record events: {}", e);
-                                    }
-                                    batch.clear();
-                                }
-                            },
-                            RecorderInstruction::PaneMetadata { elapsed_us, panes } => {
-                                if !batch.is_empty() {
-                                    if let Err(e) = store.record_events(&batch) {
-                                        log::error!("failed to record events: {}", e);
-                                    }
-                                    batch.clear();
-                                }
-                                if let Err(e) = store.update_panes(&panes, elapsed_us) {
-                                    log::error!("failed to update panes: {}", e);
-                                }
-                            },
-                            RecorderInstruction::PaneClosed {
-                                terminal_id,
-                                elapsed_us,
-                            } => {
-                                if !batch.is_empty() {
-                                    if let Err(e) = store.record_events(&batch) {
-                                        log::error!("failed to record events: {}", e);
-                                    }
-                                    batch.clear();
-                                }
-                                if let Err(e) = store.finish_pane(terminal_id, elapsed_us) {
-                                    log::error!("failed to finish pane {}: {}", terminal_id, e);
-                                }
-                            },
-                            RecorderInstruction::Stop => {
-                                break;
-                            },
-                        }
-                    }
-                    if !batch.is_empty() {
-                        if let Err(e) = store.record_events(&batch) {
-                            log::error!("failed to record events: {}", e);
-                        }
-                    }
-                    break;
                 }
             },
             Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
@@ -401,26 +366,19 @@ fn recorder_thread(
         }
         if !enabled.load(Ordering::Relaxed) {
             // flush and mark incomplete
-            if !batch.is_empty() {
-                if let Err(e) = store.record_events(&batch) {
-                    log::error!("failed to record events: {}", e);
-                }
-                batch.clear();
-            }
-            if let Err(e) = store.mark_incomplete("recorder channel full or disconnected") {
-                log::error!("failed to mark incomplete: {}", e);
-            }
+            flush_recording_events(store.as_mut(), &mut batch, &dropped);
+            mark_recording_loss(store.as_mut(), &dropped, false).non_fatal();
             // drain
             while let Ok(instr) = receiver.try_recv() {
                 match instr {
-                    RecorderInstruction::Events(mut ev) => batch.append(&mut ev),
-                    RecorderInstruction::PaneMetadata { elapsed_us, panes } => {
-                        if !batch.is_empty() {
-                            if let Err(e) = store.record_events(&batch) {
-                                log::error!("failed to record events: {}", e);
-                            }
-                            batch.clear();
+                    RecorderInstruction::Events(mut ev) => {
+                        batch.append(&mut ev);
+                        if batch.len() >= 256 {
+                            flush_recording_events(store.as_mut(), &mut batch, &dropped);
                         }
+                    },
+                    RecorderInstruction::PaneMetadata { elapsed_us, panes } => {
+                        flush_recording_events(store.as_mut(), &mut batch, &dropped);
                         if let Err(e) = store.update_panes(&panes, elapsed_us) {
                             log::error!("failed to update panes: {}", e);
                         }
@@ -429,12 +387,7 @@ fn recorder_thread(
                         terminal_id,
                         elapsed_us,
                     } => {
-                        if !batch.is_empty() {
-                            if let Err(e) = store.record_events(&batch) {
-                                log::error!("failed to record events: {}", e);
-                            }
-                            batch.clear();
-                        }
+                        flush_recording_events(store.as_mut(), &mut batch, &dropped);
                         if let Err(e) = store.finish_pane(terminal_id, elapsed_us) {
                             log::error!("failed to finish pane {}: {}", terminal_id, e);
                         }
@@ -442,20 +395,11 @@ fn recorder_thread(
                     RecorderInstruction::Stop => break,
                 }
             }
-            if !batch.is_empty() {
-                if let Err(e) = store.record_events(&batch) {
-                    log::error!("failed to record events: {}", e);
-                }
-            }
             break;
         }
     }
     // flush remaining
-    if !batch.is_empty() {
-        if let Err(e) = store.record_events(&batch) {
-            log::error!("failed to record events: {}", e);
-        }
-    }
+    flush_recording_events(store.as_mut(), &mut batch, &dropped);
     let ended_at_us = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
@@ -467,19 +411,18 @@ fn recorder_thread(
             0
         });
     let ended_elapsed_us = started_at.elapsed().as_micros() as i64;
-    if let Err(e) = store.finish_session(ended_at_us, ended_elapsed_us) {
-        log::error!("failed to finish session: {}", e);
+    if let Err(error) =
+        mark_recording_loss(store.as_mut(), &dropped, enabled.load(Ordering::Relaxed))
+    {
+        Err::<(), _>(error)
+            .context("leaving recording unfinalized because its loss marker could not be saved")
+            .non_fatal();
+        return;
     }
-    let dropped = dropped.load(Ordering::Relaxed);
-    if dropped > 0 {
-        if let Err(e) = store.mark_incomplete(&format!("dropped {} recording events", dropped)) {
-            log::error!("failed to mark incomplete: {}", e);
-        }
-    } else if !enabled.load(Ordering::Relaxed) {
-        if let Err(e) = store.mark_incomplete("recorder channel full or disconnected") {
-            log::error!("failed to mark incomplete: {}", e);
-        }
-    }
+    store
+        .finish_session(ended_at_us, ended_elapsed_us)
+        .context("failed to finish session recording")
+        .non_fatal();
 }
 
 #[cfg(test)]
@@ -492,8 +435,17 @@ mod tests {
         Mutation,
     };
 
-    struct MemoryRecordingBackend(Arc<std::sync::Mutex<Vec<&'static str>>>);
-    struct MemoryRecordingSession(Arc<std::sync::Mutex<Vec<&'static str>>>);
+    #[derive(Default)]
+    struct RecordingState {
+        calls: Vec<&'static str>,
+        fail_events: std::collections::VecDeque<bool>,
+        fail_markers: usize,
+        saved: Vec<Vec<u8>>,
+        error: Option<String>,
+        event_attempt: Option<std::sync::mpsc::Sender<()>>,
+    }
+    struct MemoryRecordingBackend(Arc<std::sync::Mutex<RecordingState>>);
+    struct MemoryRecordingSession(Arc<std::sync::Mutex<RecordingState>>);
 
     impl PluginDataBackend for MemoryRecordingBackend {
         fn define_entity(
@@ -530,7 +482,7 @@ mod tests {
             _: bool,
             _: i64,
         ) -> anyhow::Result<Box<dyn RecordingSession>> {
-            self.0.lock().unwrap().push("start");
+            self.0.lock().unwrap().calls.push("start");
             Ok(Box::new(MemoryRecordingSession(self.0.clone())))
         }
 
@@ -548,35 +500,51 @@ mod tests {
     }
 
     impl RecordingSession for MemoryRecordingSession {
-        fn record_events(&mut self, _: &[RecordedEvent]) -> anyhow::Result<()> {
-            self.0.lock().unwrap().push("events");
+        fn record_events(&mut self, events: &[RecordedEvent]) -> anyhow::Result<()> {
+            let mut state = self.0.lock().unwrap();
+            state.calls.push("events");
+            if let Some(sender) = &state.event_attempt {
+                sender.send(()).unwrap();
+            }
+            if state.fail_events.pop_front().unwrap_or(false) {
+                anyhow::bail!("injected event write failure");
+            }
+            state
+                .saved
+                .extend(events.iter().map(|event| event.data.clone()));
             Ok(())
         }
 
         fn update_panes(&mut self, _: &[PaneMetadata], _: i64) -> anyhow::Result<()> {
-            self.0.lock().unwrap().push("panes");
+            self.0.lock().unwrap().calls.push("panes");
             Ok(())
         }
 
         fn finish_pane(&mut self, _: u32, _: i64) -> anyhow::Result<()> {
-            self.0.lock().unwrap().push("pane");
+            self.0.lock().unwrap().calls.push("pane");
             Ok(())
         }
 
         fn finish_session(&mut self, _: i64, _: i64) -> anyhow::Result<()> {
-            self.0.lock().unwrap().push("session");
+            self.0.lock().unwrap().calls.push("session");
             Ok(())
         }
 
-        fn mark_incomplete(&mut self, _: &str) -> anyhow::Result<()> {
-            self.0.lock().unwrap().push("incomplete");
+        fn mark_incomplete(&mut self, message: &str) -> anyhow::Result<()> {
+            let mut state = self.0.lock().unwrap();
+            state.calls.push("incomplete");
+            if state.fail_markers > 0 {
+                state.fail_markers -= 1;
+                anyhow::bail!("injected marker write failure");
+            }
+            state.error = Some(message.to_owned());
             Ok(())
         }
     }
 
     #[test]
     fn recorder_thread_uses_an_injected_backend() -> anyhow::Result<()> {
-        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls = Arc::new(std::sync::Mutex::new(RecordingState::default()));
         let backend = Arc::new(MemoryRecordingBackend(calls.clone()));
         let data_access = Arc::new(DataAccess::from_backends(backend.clone(), backend));
         let (sender, receiver) = crossbeam::channel::unbounded();
@@ -607,10 +575,173 @@ mod tests {
         );
 
         assert_eq!(
-            *calls.lock().unwrap(),
+            calls.lock().unwrap().calls,
             vec!["start", "events", "panes", "pane", "session"]
         );
         Ok(())
+    }
+
+    fn run_with_failures(
+        instructions: Vec<RecorderInstruction>,
+        fail_events: &[bool],
+        fail_markers: usize,
+        enabled: bool,
+    ) -> (RecordingState, usize) {
+        let state = Arc::new(std::sync::Mutex::new(RecordingState {
+            fail_events: fail_events.iter().copied().collect(),
+            fail_markers,
+            ..Default::default()
+        }));
+        let backend = Arc::new(MemoryRecordingBackend(state.clone()));
+        let (sender, receiver) = crossbeam::channel::unbounded();
+        for instruction in instructions {
+            sender.send(instruction).unwrap();
+        }
+        drop(sender);
+        let dropped = Arc::new(AtomicUsize::new(0));
+        recorder_thread(
+            Arc::new(DataAccess::from_backends(backend.clone(), backend)),
+            "test".to_owned(),
+            false,
+            Instant::now(),
+            0,
+            receiver,
+            Arc::new(AtomicBool::new(enabled)),
+            dropped.clone(),
+        );
+        let state = Arc::try_unwrap(state).ok().unwrap().into_inner().unwrap();
+        (state, dropped.load(Ordering::Relaxed))
+    }
+
+    fn events(bytes: &[u8], count: usize) -> RecorderInstruction {
+        RecorderInstruction::Events(
+            (0..count)
+                .map(|i| RecordedEvent::output(1, i as i64, bytes.to_vec()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn failed_batches_are_counted_and_later_writes_keep_the_loss_marker() {
+        let (state, dropped) = run_with_failures(
+            vec![
+                events(b"lost", 256),
+                events(b"saved", 1),
+                RecorderInstruction::Stop,
+            ],
+            &[true, false],
+            1,
+            true,
+        );
+        assert_eq!(dropped, 256);
+        assert_eq!(state.saved, vec![b"saved".to_vec()]);
+        assert_eq!(state.error.as_deref(), Some("dropped 256 recording events"));
+        assert_eq!(
+            state.calls.iter().filter(|call| **call == "events").count(),
+            2
+        );
+        assert_eq!(state.calls.last(), Some(&"session"));
+    }
+
+    #[test]
+    fn metadata_close_stop_and_disconnection_flushes_count_failed_events() {
+        for ending in [
+            vec![
+                RecorderInstruction::PaneMetadata {
+                    elapsed_us: 2,
+                    panes: vec![],
+                },
+                RecorderInstruction::Stop,
+            ],
+            vec![
+                RecorderInstruction::PaneClosed {
+                    terminal_id: 1,
+                    elapsed_us: 2,
+                },
+                RecorderInstruction::Stop,
+            ],
+            vec![RecorderInstruction::Stop],
+            vec![],
+        ] {
+            let mut instructions = vec![events(b"lost", 3)];
+            instructions.extend(ending);
+            let (state, dropped) = run_with_failures(instructions, &[true], 0, true);
+            assert_eq!(dropped, 3);
+            assert!(state.saved.is_empty());
+            assert_eq!(state.error.as_deref(), Some("dropped 3 recording events"));
+            assert_eq!(
+                state.calls.iter().filter(|call| **call == "events").count(),
+                1
+            );
+            assert_eq!(state.calls.last(), Some(&"session"));
+        }
+    }
+
+    #[test]
+    fn failed_final_loss_marker_leaves_the_session_unfinalized() {
+        let (state, dropped) = run_with_failures(
+            vec![events(b"lost", 1), RecorderInstruction::Stop],
+            &[true],
+            usize::MAX,
+            true,
+        );
+        assert_eq!(dropped, 1);
+        assert!(!state.calls.contains(&"session"));
+        assert!(state.error.is_none());
+    }
+
+    #[test]
+    fn fallback_shutdown_flushes_its_tail_exactly_once() {
+        for fail_tail in [false, true] {
+            let (state, dropped) = run_with_failures(
+                vec![events(b"first", 1), events(b"tail", 1)],
+                &[false, fail_tail],
+                0,
+                false,
+            );
+            assert_eq!(
+                state.calls.iter().filter(|call| **call == "events").count(),
+                2
+            );
+            assert_eq!(dropped, usize::from(fail_tail));
+            if fail_tail {
+                assert_eq!(state.saved, vec![b"first".to_vec()]);
+                assert_eq!(state.error.as_deref(), Some("dropped 1 recording events"));
+            } else {
+                assert_eq!(state.saved, vec![b"first".to_vec(), b"tail".to_vec()]);
+            }
+        }
+    }
+
+    #[test]
+    fn timeout_flush_counts_failure_without_waiting_for_another_instruction() {
+        let (attempted, attempt) = std::sync::mpsc::channel();
+        let state = Arc::new(std::sync::Mutex::new(RecordingState {
+            fail_events: [true].into_iter().collect(),
+            event_attempt: Some(attempted),
+            ..Default::default()
+        }));
+        let backend = Arc::new(MemoryRecordingBackend(state.clone()));
+        let (sender, receiver) = crossbeam::channel::unbounded();
+        sender.send(events(b"lost", 1)).unwrap();
+        let thread = std::thread::spawn(move || {
+            recorder_thread(
+                Arc::new(DataAccess::from_backends(backend.clone(), backend)),
+                "test".to_owned(),
+                false,
+                Instant::now(),
+                0,
+                receiver,
+                Arc::new(AtomicBool::new(true)),
+                Arc::new(AtomicUsize::new(0)),
+            )
+        });
+        attempt.recv_timeout(Duration::from_secs(10)).unwrap();
+        sender.send(RecorderInstruction::Stop).unwrap();
+        thread.join().unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.error.as_deref(), Some("dropped 1 recording events"));
+        assert!(state.saved.is_empty());
     }
 
     #[test]

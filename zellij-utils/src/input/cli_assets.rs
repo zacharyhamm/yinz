@@ -54,7 +54,7 @@ pub struct CliAssets {
 }
 
 impl CliAssets {
-    pub fn load_config_and_layout(&self) -> (Config, Layout) {
+    pub fn load_config_and_layout(&self) -> anyhow::Result<(Config, Layout)> {
         let config = {
             if self.should_ignore_config {
                 Config::from_default_assets().unwrap_or_else(|_| Default::default())
@@ -86,6 +86,46 @@ impl CliAssets {
                         .or_else(find_default_config_dir)
                         .map(|dir| dir.join("layouts"))
                 });
+            // Resurrection paths cross IPC before they are opened. Resolve and lock
+            // the checkpoint here, where parsing also opens its pane-content files.
+            #[cfg(not(target_family = "wasm"))]
+            let checkpoint = match self.layout.as_ref() {
+                Some(LayoutInfo::File(path, _))
+                    if std::path::Path::new(path).is_absolute()
+                        && std::path::Path::new(path).file_name()
+                            == Some(std::ffi::OsStr::new(crate::session_checkpoint::LAYOUT)) =>
+                {
+                    Some(crate::session_checkpoint::SessionCheckpoint::read(
+                        std::path::Path::new(path)
+                            .parent()
+                            .unwrap_or_else(|| std::path::Path::new(".")),
+                    )?)
+                },
+                _ => None,
+            };
+            #[cfg(not(target_family = "wasm"))]
+            if let Some(checkpoint) = checkpoint.as_ref() {
+                Some(
+                    Layout::from_path_or_default(
+                        Some(&checkpoint.layout_path()),
+                        None,
+                        config.clone(),
+                    )
+                    .map_err(|error| {
+                        anyhow::anyhow!("failed to parse checkpoint layout: {error}")
+                    })?,
+                )
+            } else {
+                self.layout.as_ref().and_then(|layout_info| {
+                    Layout::from_layout_info_with_config(
+                        &layout_dir,
+                        layout_info,
+                        Some(config.clone()),
+                    )
+                    .ok()
+                })
+            }
+            #[cfg(target_family = "wasm")]
             self.layout.as_ref().and_then(|layout_info| {
                 Layout::from_layout_info_with_config(&layout_dir, layout_info, Some(config.clone()))
                     .ok()
@@ -120,7 +160,7 @@ impl CliAssets {
                 config_with_merged_layout_opts.themes.merge(themes);
         }
 
-        (config_with_merged_layout_opts, layout)
+        Ok((config_with_merged_layout_opts, layout))
     }
 }
 

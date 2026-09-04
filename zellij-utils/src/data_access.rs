@@ -34,6 +34,7 @@ pub trait PluginDataBackend: Send + Sync {
 
 /// One active recording session.
 pub trait RecordingSession: Send {
+    /// Commit the entire batch or return an error without retaining any of its events.
     fn record_events(&mut self, events: &[RecordedEvent]) -> Result<()>;
     fn update_panes(&mut self, panes: &[PaneMetadata], elapsed_us: i64) -> Result<()>;
     fn finish_pane(&mut self, terminal_id: u32, elapsed_us: i64) -> Result<()>;
