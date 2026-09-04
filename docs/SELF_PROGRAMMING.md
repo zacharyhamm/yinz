@@ -126,7 +126,13 @@ variants.
 Jobs, agent latches, summaries and hook-backed run histories live in `shared:hocus`
 (`store::shared_defs()`), written as each change lands and restored once at startup. Run history
 keeps prompts, plans and explicit agent questions under the agent's session id; completed runs
-remain selectable in the agents panel archive. A restored job follows its chat, waiting in
+remain selectable in the agents panel archive, and are legible to the in-session model through
+`agent_runs`, `agent_run` and `agent_history_search` — machine-wide by default, since the store
+is per machine and not per session, so hocus can find what an agent concluded in a session that
+has since been closed rather than commissioning the work again. `agent_run_entry.text` is
+full-text indexed for it (`agent_run` and `agent_run_entry` are both at version 2); the reading
+half is `hocus-proto/src/run_history.rs`, and `docs/AGENT_HOOKS.md` "Reading it back" is the
+write-up. A restored job follows its chat, waiting in
 `State::held_jobs` until `/history` reopens it. Scheduled runs decline confirmation-gated tools
 instead of parking on a y/n. `launch::Spec` gained `env`, `permission_mode`, `resume` and
 `hooks`, with a per-kind argument table (`launch::shape_args`) for claude, codex and cursor.

@@ -24,6 +24,7 @@ pub mod notes;
 pub mod panes;
 pub mod paths;
 pub mod projects;
+pub mod run_history;
 pub mod store;
 pub mod text;
 pub mod todos;

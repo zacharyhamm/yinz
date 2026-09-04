@@ -209,3 +209,95 @@ fn orphans_report_an_age_a_person_reads() {
     assert!(shown.contains("abc"), "{shown}");
     assert!(shown.contains("2h"), "{shown}");
 }
+
+// -- agent run history --------------------------------------------------
+
+#[test]
+fn a_run_listing_leads_with_the_id_the_next_call_needs() {
+    let raw = r#"{"scope":"all sessions","count":2,"offset":0,"more":true,"next_offset":2,
+        "runs":[
+          {"run_id":"claude:one","kind":"claude","title":"fix the parser","project":"hocus",
+           "age":"3h","outcome":"completed","summary":"rewrote the snapshot helper"},
+          {"run_id":"codex:two","kind":"codex","title":"benchmark it","project":null,
+           "age":"1d","outcome":"active","summary":null}]}"#;
+    let shown = present(&call("agent_runs", "{}"), raw).expect("presented");
+    assert!(
+        shown.starts_with("## agent runs — all sessions\n\n"),
+        "{shown}"
+    );
+    assert!(shown.contains("`claude:one` **fix the parser**"), "{shown}");
+    assert!(shown.contains("claude · hocus · 3h · completed"), "{shown}");
+    // A summary earns its own indented line; a run without one takes no space.
+    assert!(shown.contains("  rewrote the snapshot helper"), "{shown}");
+    assert!(shown.contains("codex · 1d · active"), "{shown}");
+    assert!(shown.contains("offset=2"), "{shown}");
+}
+
+#[test]
+fn an_empty_run_listing_says_so_rather_than_showing_a_bare_heading() {
+    let raw = r#"{"scope":"session main","count":0,"offset":0,"more":false,"runs":[]}"#;
+    let shown = present(&call("agent_runs", "{}"), raw).expect("presented");
+    assert!(shown.contains("_no runs_"), "{shown}");
+}
+
+/// An entry is the agent's own words and is already markdown, so it goes through
+/// as markdown — the same choice `note_get` makes about a note's body.
+#[test]
+fn a_run_shows_its_entries_as_markdown_under_their_kind() {
+    let raw = r#"{"run_id":"claude:one","kind":"claude","title":"fix the parser",
+        "project":"hocus","outcome":"active","entry_count":9,"shown":2,"earlier":true,
+        "next_revision":6,"more":"agent_run run_id=claude:one from_revision=6",
+        "entries":[
+          {"revision":4,"kind":"prompt","age":"3h","text":"fix the **flaky** test"},
+          {"revision":5,"kind":"plan","age":"2h","text":"- rewrite it\n- rerun"}]}"#;
+    let shown = present(&call("agent_run", "{}"), raw).expect("presented");
+    assert!(shown.starts_with("## fix the parser\n\n"), "{shown}");
+    assert!(
+        shown.contains("claude:one · claude · hocus · active · 2 of 9 entries"),
+        "{shown}"
+    );
+    assert!(shown.contains("_earlier entries not shown_"), "{shown}");
+    assert!(shown.contains("**prompt · 3h**"), "{shown}");
+    // Passed through, not escaped into `\*\*flaky\*\*`.
+    assert!(shown.contains("fix the **flaky** test"), "{shown}");
+    assert!(shown.contains("- rewrite it\n- rerun"), "{shown}");
+    // The footer names the exact call, so a fragment is never mistaken for the whole.
+    assert!(
+        shown.contains("`agent_run run_id=claude:one from_revision=6`"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn a_run_with_no_entries_says_so() {
+    let raw = r#"{"run_id":"claude:one","kind":"claude","title":"t","outcome":"active",
+        "entry_count":0,"shown":0,"earlier":false,"next_revision":null,"more":null,
+        "entries":[]}"#;
+    let shown = present(&call("agent_run", "{}"), raw).expect("presented");
+    assert!(shown.contains("_no entries_"), "{shown}");
+}
+
+#[test]
+fn a_history_search_shows_a_snippet_under_each_hit() {
+    let raw = r#"{"query":"parser","scope":"all sessions","count":1,"truncated":true,
+        "matches":[{"run_id":"claude:one","revision":3,"kind":"result","agent":"claude",
+                    "age":"3h","snippet":"…the parser now handles tabs…",
+                    "run_title":"fix the parser"}]}"#;
+    let shown = present(&call("agent_history_search", "{}"), raw).expect("presented");
+    assert!(
+        shown.starts_with("## agent history — parser\n\n"),
+        "{shown}"
+    );
+    assert!(shown.contains("**fix the parser**"), "{shown}");
+    assert!(shown.contains("result · claude · 3h"), "{shown}");
+    assert!(shown.contains("  …the parser now handles tabs…"), "{shown}");
+    assert!(shown.contains("narrow the query"), "{shown}");
+}
+
+#[test]
+fn a_history_search_with_no_hits_says_so() {
+    let raw = r#"{"query":"nothing","scope":"all sessions","count":0,"truncated":false,
+        "matches":[]}"#;
+    let shown = present(&call("agent_history_search", "{}"), raw).expect("presented");
+    assert!(shown.contains("_no matches_"), "{shown}");
+}

@@ -1,0 +1,1029 @@
+//! Reading back what agents have done: the `agent_run` and `agent_run_entry` rows, queried.
+//!
+//! The rows themselves, and every write to them, belong to [`crate::agents`] — this module
+//! never writes. It exists because the panel and the model want opposite things from the same
+//! history. The panel has a run in hand and wants its newest entries, which is
+//! `agents::rows::hydrate_newest_entries` and nothing more. The model has a *question* —
+//! "has an agent looked at this before", "what did the one in that pane conclude" — and
+//! answering it means searching a machine's whole history and then reading around a hit.
+//!
+//! Machine-wide is the default rather than a widening, and that is the store's doing: there is
+//! one `plugin-data.db` per machine, not per session, so a run recorded in a session that has
+//! since been closed is as legible as one still going. Narrowing to a session is the option.
+//!
+//! Its own module rather than more of `agents.rs` for the reason [`crate::notes`] is its own:
+//! reading is a different job from recording, and `agents.rs` is already the largest file in
+//! the crate.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::agents::{self, rows, AgentRunHeader, RunEntry, RunEntryKind};
+use crate::store::Backend;
+use zellij_tile::prelude::{FetchRequest, Pred, SortDir};
+
+/// Runs one listing may return. A page the model reads, not a page a UI scrolls.
+pub const MAX_RUNS: usize = 50;
+
+/// Hits one search may return.
+pub const MAX_MATCHES: usize = 50;
+
+/// How much of an entry a search hit shows. `agent_run` is how the whole of one is read.
+pub const SNIPPET_CHARS: usize = 200;
+
+/// How much of one entry a *multi-entry* page carries.
+///
+/// Not a bound on what can be read: a page of one entry spends the whole of
+/// [`PAGE_TEXT_BUDGET`] on it, so a two-thousand-word plan is reachable by asking for exactly
+/// it. This is only what stops one long entry from crowding out the twenty around it.
+pub const ENTRY_TEXT_CHARS: usize = 2_000;
+
+/// How much entry text one page may carry in total.
+///
+/// A local tool result is *not* passed through `MAX_TOOL_OUTPUT` — that cap is on the command,
+/// extension and web paths — so a page that does not budget itself is a page with no bound at
+/// all, and a long run is megabytes. Well under the 40 000 that path allows, leaving room for
+/// the header and the JSON around it.
+pub const PAGE_TEXT_BUDGET: usize = 30_000;
+
+/// Entries one page may carry, whatever they weigh.
+pub const MAX_PAGE_ENTRIES: usize = 100;
+
+/// How many entries before an anchored one are included, so a hit arrives with its lead-in.
+///
+/// Fixed rather than an argument: the model should not have to do arithmetic on revisions to
+/// see what a result was answering.
+pub const ANCHOR_LEAD_IN: u64 = 2;
+
+/// The `IN` chunk that [`crate::notes`] uses, and for the same reason: one `Pred::is_in` of
+/// unbounded width is a query the store will refuse.
+const IN_CHUNK: usize = 500;
+
+/// How many rows a listing will scan to fill a page it has to narrow in the guest.
+///
+/// Bounded because the narrowing throws rows away *after* the store has read them: a project
+/// with one run in an archive of ten thousand would otherwise page the whole archive to find
+/// it. Answering "no runs in this page" with an offset to retry is the honest alternative.
+const MAX_RUN_SCAN: usize = 400;
+
+/// Which runs a caller is asking about. Every field `None` means every run on this machine.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Filter {
+    /// One zellij session's runs, by name.
+    pub zellij_session_name: Option<String>,
+    /// A project root. Matched against a run's `cwd` by prefix, in the guest — see
+    /// [`matches_root`].
+    pub root: Option<String>,
+    /// An agent kind: `claude`, `codex`.
+    pub kind: Option<String>,
+    /// Only runs started at or after this epoch millisecond.
+    pub since_ms: Option<i64>,
+    /// `Some(true)` for runs still going, `Some(false)` for finished ones, `None` for both.
+    pub active: Option<bool>,
+}
+
+impl Filter {
+    /// The predicates the store can answer. `root` is deliberately absent: a run's `cwd` lives
+    /// inside its `header` JSON rather than in a column, so narrowing by project is a pass over
+    /// the fetched page and costs an over-fetch, which [`list_runs`] pays.
+    fn pred(&self) -> Option<Pred> {
+        let mut preds = Vec::new();
+        if let Some(session) = self.session() {
+            preds.push(Pred::eq("zellij_session_name", session));
+        }
+        if let Some(kind) = trimmed(&self.kind) {
+            preds.push(Pred::eq("kind", kind));
+        }
+        if let Some(active) = self.active {
+            preds.push(Pred::eq("active", active));
+        }
+        if let Some(since) = self.since_ms {
+            preds.push(Pred::gte("started_at_ms", since));
+        }
+        (!preds.is_empty()).then(|| Pred::all(preds))
+    }
+
+    fn session(&self) -> Option<&str> {
+        trimmed(&self.zellij_session_name)
+    }
+
+    /// Whether this filter needs a guest-side pass, and so an over-fetch.
+    fn narrows_in_guest(&self) -> bool {
+        trimmed(&self.root).is_some()
+    }
+
+    fn keeps(&self, header: &AgentRunHeader) -> bool {
+        match trimmed(&self.root) {
+            Some(root) => matches_root(header.cwd.as_deref(), root),
+            None => true,
+        }
+    }
+}
+
+fn trimmed(value: &Option<String>) -> Option<&str> {
+    value.as_deref().map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// Whether a run's folder is inside a project's root.
+///
+/// A prefix on path boundaries rather than `starts_with` on the raw string, so `/work/hocus`
+/// does not claim `/work/hocus-fork`. A run with no `cwd` at all — one recorded before the
+/// field existed — belongs to no project rather than to every one.
+pub fn matches_root(cwd: Option<&str>, root: &str) -> bool {
+    let (Some(cwd), root) = (cwd, root.trim_end_matches('/')) else {
+        return false;
+    };
+    let cwd = cwd.trim_end_matches('/');
+    cwd == root
+        || cwd
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+// ---------------------------------------------------------------------------
+// Listing runs
+// ---------------------------------------------------------------------------
+
+/// One page of runs, newest first, active and archived together.
+///
+/// Both, unlike the panel's archive pager, because the model's question is about the work and
+/// not about the pane: "what has been done on this" is answered as badly by hiding the run
+/// still doing it as by hiding the four before it.
+///
+/// Returns the page and whether more follow it.
+pub fn list_runs(
+    backend: &impl Backend,
+    filter: &Filter,
+    limit: usize,
+    offset: usize,
+) -> Result<(Vec<AgentRunHeader>, bool), String> {
+    let limit = limit.clamp(1, MAX_RUNS);
+    // A guest-side narrowing throws rows away after the store has counted them, so ask for
+    // more than the page when one is in play. Bounded: an over-fetch that pages the whole
+    // archive to find nothing is worse than an honest "no runs here" with an offset to retry.
+    let want = match filter.narrows_in_guest() {
+        true => limit.saturating_mul(8).min(MAX_RUN_SCAN),
+        false => limit.saturating_add(1),
+    };
+    let mut request = FetchRequest::entity(rows::RUN_ENTITY)
+        // A run written before `header` existed has none to list, and its payload is the only
+        // other copy — the same filter the panel's archive pager applies.
+        .filter(Pred::not_null("header"))
+        .sort_by("started_at_ms", SortDir::Desc)
+        // A tiebreak, so two runs that began in the same millisecond page deterministically
+        // rather than swapping places between one fetch and the next.
+        .sort_by("uid", SortDir::Asc)
+        .select(["header"])
+        .limit(want as u32)
+        .offset(offset as u32);
+    if let Some(pred) = filter.pred() {
+        request = request.filter(pred);
+    }
+    let fetched = backend.fetch(&request)?;
+    let raw = fetched.len();
+    let mut headers: Vec<AgentRunHeader> = rows::run_headers_from_rows(&fetched)
+        .into_iter()
+        .filter(|header| filter.keeps(header))
+        .collect();
+    let more = headers.len() > limit || (raw >= want && filter.narrows_in_guest());
+    headers.truncate(limit);
+    Ok((headers, more))
+}
+
+/// One run's header, whatever session it belongs to and whether or not it is still open.
+pub fn run_header(backend: &impl Backend, run_id: &str) -> Result<Option<AgentRunHeader>, String> {
+    let rows = backend.fetch(&rows::run_by_id_request(run_id))?;
+    Ok(rows::runs_from_rows(&rows)
+        .into_iter()
+        .next()
+        .map(|run| run.header()))
+}
+
+/// The headers of these runs, for annotating search hits.
+fn headers_by_id(
+    backend: &impl Backend,
+    ids: &BTreeSet<String>,
+) -> Result<BTreeMap<String, AgentRunHeader>, String> {
+    let ids: Vec<String> = ids.iter().cloned().collect();
+    let mut found = BTreeMap::new();
+    for chunk in ids.chunks(IN_CHUNK) {
+        let rows = backend.fetch(
+            &FetchRequest::entity(rows::RUN_ENTITY)
+                .filter(Pred::is_in("uid", chunk.to_vec()))
+                .select(["payload"])
+                .limit(chunk.len() as u32),
+        )?;
+        for run in rows::runs_from_rows(&rows) {
+            found.insert(run.id.clone(), run.header());
+        }
+    }
+    Ok(found)
+}
+
+// ---------------------------------------------------------------------------
+// Reading one run's timeline
+// ---------------------------------------------------------------------------
+
+/// One page of a run's timeline, oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EntryPage {
+    pub entries: Vec<RunEntry>,
+    /// Every entry the run has, not just this page's.
+    pub total: u64,
+    /// The revision to ask for next, or `None` when this page reached the end.
+    pub next_revision: Option<u64>,
+    /// Whether anything before this page's first entry was left unread.
+    pub earlier: bool,
+}
+
+/// A page of `run_id`'s entries.
+///
+/// `from` is where to start. `None` means **the newest page**, which is what a bare read of a
+/// long-lived run should answer: the end is where the work got to, and the panel's own
+/// `hydrate_newest_entries` makes the same choice for the same reason.
+///
+/// `limit` bounds the count; [`PAGE_TEXT_BUDGET`] bounds the weight, and a page stops at
+/// whichever it reaches first. A page of one is the way to read a single enormous entry whole:
+/// [`ENTRY_TEXT_CHARS`] only applies once a page holds more than one.
+pub fn entry_page(
+    backend: &impl Backend,
+    run_id: &str,
+    from: Option<u64>,
+    limit: usize,
+) -> Result<EntryPage, String> {
+    let limit = limit.clamp(1, MAX_PAGE_ENTRIES);
+    let total = backend
+        .count(&FetchRequest::entity(rows::ENTRY_ENTITY).filter(Pred::eq("run_id", run_id)))?;
+    let mut request = FetchRequest::entity(rows::ENTRY_ENTITY)
+        .filter(Pred::eq("run_id", run_id))
+        .limit(limit as u32);
+    // Forward from a revision, or backward from the end when none was named. The second is
+    // fetched newest-first and reversed here, since the store cannot sort ascending from an
+    // unknown offset.
+    request = match from {
+        Some(from) => request
+            .filter(Pred::gte("revision", from as i64))
+            .sort_by("revision", SortDir::Asc),
+        None => request.sort_by("revision", SortDir::Desc),
+    };
+    let fetched = backend.fetch(&request)?;
+    let mut entries = rows::entries_from_rows(&fetched)
+        .remove(run_id)
+        .unwrap_or_default();
+    // `entries_from_rows` sorts by revision whichever way the rows arrived, so the newest-page
+    // fetch needs no reversing — only its own bound re-applying, since it took the *last*
+    // `limit` entries and the budget below cuts from the wrong end for that case.
+    let budgeted = budget(&mut entries, from.is_none());
+    let first = entries.first().map(|entry| entry.revision);
+    let last = entries.last().map(|entry| entry.revision);
+    let read = u64::try_from(entries.len()).unwrap_or(u64::MAX);
+    // What is unread *after* this page, and only ever for a page read forward. A page taken
+    // backward from the end of the run has nothing ahead of it however short the budget cut it:
+    // what it dropped is older than what it kept, which is what `earlier` reports. Saying
+    // `last + 1` there would send a reader to a revision the run does not have.
+    //
+    // Asked of the store rather than inferred from a full page, because "this page was as long
+    // as you allowed" and "there is more" are not the same claim — a run of exactly thirty
+    // entries read thirty at a time would otherwise advertise a thirty-first that is not there,
+    // and the caller renders that as a sentence telling a reader to go and get it.
+    let next_revision = match (last, from) {
+        (Some(last), Some(_)) if budgeted || read >= limit as u64 => {
+            let after = backend.count(
+                &FetchRequest::entity(rows::ENTRY_ENTITY)
+                    .filter(Pred::eq("run_id", run_id))
+                    .filter(Pred::gt("revision", last as i64)),
+            )?;
+            (after > 0).then(|| last.saturating_add(1))
+        },
+        _ => None,
+    };
+    let earlier = match first {
+        Some(first) => {
+            let before = backend.count(
+                &FetchRequest::entity(rows::ENTRY_ENTITY)
+                    .filter(Pred::eq("run_id", run_id))
+                    .filter(Pred::lt("revision", first as i64)),
+            )?;
+            before > 0
+        },
+        None => false,
+    };
+    Ok(EntryPage {
+        entries,
+        total,
+        next_revision,
+        earlier,
+    })
+}
+
+/// Where a page anchored on `revision` starts: far enough back to carry the lead-in.
+pub fn anchored_from(revision: u64) -> u64 {
+    revision.saturating_sub(ANCHOR_LEAD_IN).max(1)
+}
+
+/// Cut a page down to [`PAGE_TEXT_BUDGET`], reporting whether anything was dropped.
+///
+/// `from_end` keeps the *newest* entries, for a page read backward from the end of a run;
+/// otherwise the oldest are kept, since the caller asked to start there and expects to page
+/// forward from what it got.
+///
+/// A page of one is exempt from [`ENTRY_TEXT_CHARS`]: it is the only way to read a long entry.
+fn budget(entries: &mut Vec<RunEntry>, from_end: bool) -> bool {
+    if entries.len() > 1 {
+        for entry in entries.iter_mut() {
+            entry.text = cut(&entry.text, ENTRY_TEXT_CHARS);
+        }
+    }
+    let mut spent = 0usize;
+    let mut kept = 0usize;
+    let ordered: Vec<usize> = match from_end {
+        true => (0..entries.len()).rev().collect(),
+        false => (0..entries.len()).collect(),
+    };
+    for index in ordered {
+        let cost = entries[index].text.len();
+        if kept > 0 && spent.saturating_add(cost) > PAGE_TEXT_BUDGET {
+            break;
+        }
+        spent = spent.saturating_add(cost);
+        kept += 1;
+    }
+    if kept >= entries.len() {
+        return false;
+    }
+    match from_end {
+        true => {
+            entries.drain(..entries.len() - kept);
+        },
+        false => entries.truncate(kept),
+    }
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Searching
+// ---------------------------------------------------------------------------
+
+/// One entry that matched a search, with enough of itself to judge by and enough of its
+/// address to read the rest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hit {
+    pub run_id: String,
+    pub revision: u64,
+    pub kind: RunEntryKind,
+    pub created_at_ms: Option<i64>,
+    pub snippet: String,
+}
+
+/// What a search answers: the hits, and the runs they belong to.
+#[derive(Clone, Debug, Default)]
+pub struct Found {
+    pub hits: Vec<Hit>,
+    pub runs: BTreeMap<String, AgentRunHeader>,
+    /// Whether the limit cut the results short.
+    pub truncated: bool,
+}
+
+/// Search every recorded entry's text.
+///
+/// Two shapes, and which one runs is decided by whether anything narrows the search:
+///
+/// - **Unnarrowed**, which is the common one: search the entries directly and look the hit
+///   runs' headers up afterwards. One FTS query over the whole machine's history.
+/// - **Narrowed**: resolve the candidate runs first and search within them, so a filter that
+///   matches four runs cannot be starved by five hundred hits that all belong to others.
+///
+/// The FTS index is tried first and a substring pass is the fallback, exactly as
+/// `notes::search` does it — a query FTS5 tokenizes into nothing still finds the entries that
+/// literally contain it.
+pub fn search(
+    backend: &impl Backend,
+    filter: &Filter,
+    run_id: Option<&str>,
+    query: &str,
+    limit: usize,
+) -> Result<Found, String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Found::default());
+    }
+    let limit = limit.clamp(1, MAX_MATCHES);
+    let scope: Option<Vec<String>> = match run_id {
+        Some(run_id) => Some(vec![run_id.to_owned()]),
+        None if filter == &Filter::default() => None,
+        None => {
+            let (headers, _) = list_runs(backend, filter, MAX_RUNS, 0)?;
+            if headers.is_empty() {
+                return Ok(Found::default());
+            }
+            Some(headers.into_iter().map(|header| header.id).collect())
+        },
+    };
+    let hits = match scope {
+        Some(ids) => {
+            let mut hits = Vec::new();
+            for chunk in ids.chunks(IN_CHUNK) {
+                hits.extend(hits_for(
+                    backend,
+                    query,
+                    Some(Pred::is_in("run_id", chunk.to_vec())),
+                    limit,
+                )?);
+            }
+            hits
+        },
+        None => hits_for(backend, query, None, limit)?,
+    };
+    let truncated = hits.len() > limit;
+    let hits: Vec<Hit> = hits.into_iter().take(limit).collect();
+    let ids: BTreeSet<String> = hits.iter().map(|hit| hit.run_id.clone()).collect();
+    let runs = headers_by_id(backend, &ids)?;
+    Ok(Found {
+        hits,
+        runs,
+        truncated,
+    })
+}
+
+/// The matching entries, FTS first and a substring pass behind it.
+fn hits_for(
+    backend: &impl Backend,
+    query: &str,
+    scope: Option<Pred>,
+    limit: usize,
+) -> Result<Vec<Hit>, String> {
+    // One more than asked for, so the caller can tell a full page from a cut one.
+    let want = limit.saturating_add(1) as u32;
+    let scoped = |request: FetchRequest| match scope.clone() {
+        Some(pred) => request.filter(pred),
+        None => request,
+    };
+    // No sort on the FTS path: an unsorted search is ordered by relevance, and imposing one
+    // would throw that away.
+    let mut rows = backend.fetch(&scoped(
+        FetchRequest::entity(rows::ENTRY_ENTITY)
+            .search(query)
+            .limit(want),
+    ))?;
+    if rows.is_empty() {
+        rows = backend.fetch(&scoped(
+            FetchRequest::entity(rows::ENTRY_ENTITY)
+                .filter(Pred::contains("text", query))
+                .sort_by("created_at_ms", SortDir::Desc)
+                .limit(want),
+        ))?;
+    }
+    let mut hits = Vec::new();
+    for (run_id, entries) in rows::entries_from_rows(&rows) {
+        for entry in entries {
+            hits.push(Hit {
+                run_id: run_id.clone(),
+                revision: entry.revision,
+                kind: entry.kind,
+                created_at_ms: entry.created_at_ms,
+                snippet: snippet(&entry.text, query),
+            });
+        }
+    }
+    // `entries_from_rows` groups by run, which loses whatever order the rows arrived in.
+    // Newest first is the order to restore: relevance cannot survive the grouping, and of the
+    // orders that can, "most recent" is the one a person asking about past work means.
+    hits.sort_by(|a, b| {
+        b.created_at_ms
+            .cmp(&a.created_at_ms)
+            .then_with(|| b.revision.cmp(&a.revision))
+    });
+    Ok(hits)
+}
+
+/// A window of `text` around the first occurrence of `query`, on one line.
+///
+/// Centred on the hit rather than taken from the head, which is what makes a search result
+/// worth reading: the match in a two-thousand-word plan is rarely in its first sentence. When
+/// the query does not appear literally — FTS5 stems, so it often will not — this falls back to
+/// the head of the text, which is `notes::snippet`'s behaviour.
+pub fn snippet(text: &str, query: &str) -> String {
+    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.chars().count() <= SNIPPET_CHARS {
+        return one_line;
+    }
+    let chars: Vec<char> = one_line.chars().collect();
+    let start = match find_fold(&one_line, query) {
+        // Centre the window on the match, without running off the front.
+        Some(at) => at.saturating_sub(SNIPPET_CHARS / 3),
+        None => 0,
+    }
+    .min(chars.len().saturating_sub(SNIPPET_CHARS));
+    let window: String = chars.iter().skip(start).take(SNIPPET_CHARS).collect();
+    let lead = if start > 0 { "…" } else { "" };
+    format!("{lead}{}…", window.trim())
+}
+
+/// The character index of `needle` in `haystack`, ignoring case. `None` for an empty needle.
+///
+/// Character index and not a byte offset, because the caller slices by characters — a byte
+/// offset from `str::find` would cut a multi-byte character in half.
+fn find_fold(haystack: &str, needle: &str) -> Option<usize> {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return None;
+    }
+    let hay: Vec<char> = haystack.to_lowercase().chars().collect();
+    let needle: Vec<char> = needle.to_lowercase().chars().collect();
+    // Also try the first word alone: a multi-word query rarely appears verbatim, and the
+    // word it starts with usually does.
+    let first: Vec<char> = needle
+        .iter()
+        .copied()
+        .take_while(|c| !c.is_whitespace())
+        .collect();
+    window_at(&hay, &needle).or_else(|| window_at(&hay, &first))
+}
+
+fn window_at(hay: &[char], needle: &[char]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > hay.len() {
+        return None;
+    }
+    (0..=hay.len() - needle.len()).find(|&at| &hay[at..at + needle.len()] == needle)
+}
+
+/// `text` cut to `chars` characters, marked when anything was dropped.
+///
+/// By characters and not bytes, so a cut never lands inside a multi-byte character.
+fn cut(text: &str, chars: usize) -> String {
+    if text.chars().count() <= chars {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(chars).collect();
+    format!("{}…", kept.trim_end())
+}
+
+/// A run's age, for a listing. Re-exported so a caller needs only this module.
+pub use agents::short_age;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents::{AgentRun, RunOutcome};
+    use crate::store::{self, shared_defs};
+    use zellij_tile::prelude::EntityDef;
+
+    fn backend() -> store::Local {
+        let backend = store::Local::shared("hocus");
+        backend
+            .define_all(&shared_defs())
+            .expect("declared the shared entities");
+        backend
+    }
+
+    fn entry(revision: u64, kind: RunEntryKind, text: &str, at: i64) -> RunEntry {
+        RunEntry {
+            revision,
+            event_id: Some(format!("event-{revision}")),
+            kind,
+            text: text.to_owned(),
+            created_at_ms: Some(at),
+        }
+    }
+
+    fn run(id: &str, kind: &str, session: &str, started_at_ms: i64) -> AgentRun {
+        AgentRun {
+            id: id.to_owned(),
+            pane_id: 7,
+            zellij_session_name: session.to_owned(),
+            session_id: id.to_owned(),
+            kind: kind.to_owned(),
+            cwd: Some("/work/hocus".to_owned()),
+            started_at_ms,
+            ended_at_ms: None,
+            outcome: RunOutcome::Active,
+            revision: 0,
+            summarized_revision: 0,
+            summary: None,
+            entries: Vec::new(),
+        }
+    }
+
+    fn write(backend: &impl Backend, run: &AgentRun) {
+        backend
+            .apply(rows::run_mutations(run))
+            .expect("wrote the run");
+    }
+
+    fn seeded() -> store::Local {
+        let backend = backend();
+        let mut first = run("claude:one", "claude", "main", 1_000);
+        first.entries = vec![
+            entry(1, RunEntryKind::Prompt, "fix the flaky render test", 1_000),
+            entry(2, RunEntryKind::Plan, "rewrite the snapshot helper", 1_100),
+            entry(
+                3,
+                RunEntryKind::Result,
+                "the parser now handles tabs",
+                1_200,
+            ),
+        ];
+        let mut second = run("codex:two", "codex", "other", 2_000);
+        second.cwd = Some("/work/other".to_owned());
+        second.entries = vec![entry(
+            1,
+            RunEntryKind::Prompt,
+            "add a parser benchmark",
+            2_000,
+        )];
+        write(&backend, &first);
+        write(&backend, &second);
+        backend
+    }
+
+    // -- searching ------------------------------------------------------
+
+    #[test]
+    fn an_entry_is_found_by_a_word_it_contains() {
+        let backend = seeded();
+        let found = search(&backend, &Filter::default(), None, "flaky", 10).unwrap();
+        assert_eq!(found.hits.len(), 1);
+        assert_eq!(found.hits[0].run_id, "claude:one");
+        assert_eq!(found.hits[0].revision, 1);
+        assert_eq!(found.hits[0].kind, RunEntryKind::Prompt);
+        assert!(found.runs.contains_key("claude:one"), "{:?}", found.runs);
+    }
+
+    /// The whole point of the machine-wide default: two sessions' runs, one search.
+    #[test]
+    fn a_search_reaches_every_session_by_default() {
+        let backend = seeded();
+        let found = search(&backend, &Filter::default(), None, "parser", 10).unwrap();
+        let sessions: BTreeSet<&str> = found.hits.iter().map(|hit| hit.run_id.as_str()).collect();
+        assert_eq!(
+            sessions,
+            BTreeSet::from(["claude:one", "codex:two"]),
+            "{:?}",
+            found.hits
+        );
+    }
+
+    #[test]
+    fn a_search_is_narrowed_to_one_session() {
+        let backend = seeded();
+        let filter = Filter {
+            zellij_session_name: Some("other".to_owned()),
+            ..Filter::default()
+        };
+        let found = search(&backend, &filter, None, "parser", 10).unwrap();
+        assert_eq!(found.hits.len(), 1);
+        assert_eq!(found.hits[0].run_id, "codex:two");
+    }
+
+    #[test]
+    fn a_search_is_narrowed_to_one_run() {
+        let backend = seeded();
+        let found = search(
+            &backend,
+            &Filter::default(),
+            Some("codex:two"),
+            "parser",
+            10,
+        )
+        .unwrap();
+        assert_eq!(found.hits.len(), 1);
+        assert_eq!(found.hits[0].run_id, "codex:two");
+    }
+
+    #[test]
+    fn a_search_is_narrowed_by_project_root() {
+        let backend = seeded();
+        let filter = Filter {
+            root: Some("/work/hocus".to_owned()),
+            ..Filter::default()
+        };
+        let found = search(&backend, &filter, None, "parser", 10).unwrap();
+        assert_eq!(found.hits.len(), 1);
+        assert_eq!(found.hits[0].run_id, "claude:one");
+    }
+
+    /// The `notes::search` fallback, pinned here too: FTS5 tokenizes on word boundaries, so a
+    /// fragment matches nothing in the index and everything in a substring pass.
+    #[test]
+    fn a_fragment_falls_back_to_a_substring_pass() {
+        let backend = seeded();
+        let found = search(&backend, &Filter::default(), None, "snapsh", 10).unwrap();
+        assert_eq!(found.hits.len(), 1, "{:?}", found.hits);
+        assert_eq!(found.hits[0].revision, 2);
+    }
+
+    /// The migration test. Entries written before `text` was `full_text` have to become
+    /// searchable when the index is declared, and they do because `rebuild_full_text` ends by
+    /// rebuilding the index from the content table. Nothing re-writes the rows.
+    #[test]
+    fn entries_written_before_the_index_existed_are_searchable() {
+        let backend = store::Local::shared("hocus");
+        // The v1 definition, exactly: no `full_text` on `text`, no indexes on `kind` or
+        // `created_at_ms`.
+        let before = EntityDef::new("agent_run_entry", 1)
+            .attr(
+                zellij_tile::prelude::AttrDef::text("run_id")
+                    .indexed()
+                    .required(),
+            )
+            .attr(zellij_tile::prelude::AttrDef::int("revision").required())
+            .attr(zellij_tile::prelude::AttrDef::text("event_id"))
+            .attr(zellij_tile::prelude::AttrDef::text("kind").required())
+            .attr(zellij_tile::prelude::AttrDef::text("text").required())
+            .attr(zellij_tile::prelude::AttrDef::int("created_at_ms"));
+        backend.define(&before).expect("the old definition");
+        backend
+            .apply(vec![rows::entry_mutation(
+                "claude:old",
+                &entry(1, RunEntryKind::Prompt, "an archaeological finding", 1),
+            )])
+            .expect("wrote an entry under the old schema");
+
+        // Now the current definitions, which add the index.
+        backend
+            .define_all(&shared_defs())
+            .expect("migrated to the indexed definition");
+
+        let found = search(&backend, &Filter::default(), None, "archaeological", 10).unwrap();
+        assert_eq!(found.hits.len(), 1, "{:?}", found.hits);
+        assert_eq!(found.hits[0].run_id, "claude:old");
+    }
+
+    /// The realistic upgrade: whichever plugin declared the entity first owns it, and the one
+    /// that arrives with the indexed definition is usually a different one. A migration by a
+    /// foreign owner is refused only when it is *destructive*, and this crate never asks for
+    /// that — but the rule is worth a test rather than an argument, since getting it wrong
+    /// means a plugin that fails to load.
+    #[test]
+    fn a_second_plugin_may_add_the_index_to_an_entity_it_does_not_own() {
+        let owner = store::Local::shared("hocus-store");
+        let before = EntityDef::new("agent_run_entry", 1)
+            .attr(
+                zellij_tile::prelude::AttrDef::text("run_id")
+                    .indexed()
+                    .required(),
+            )
+            .attr(zellij_tile::prelude::AttrDef::int("revision").required())
+            .attr(zellij_tile::prelude::AttrDef::text("event_id"))
+            .attr(zellij_tile::prelude::AttrDef::text("kind").required())
+            .attr(zellij_tile::prelude::AttrDef::text("text").required())
+            .attr(zellij_tile::prelude::AttrDef::int("created_at_ms"));
+        owner.define(&before).expect("the old definition");
+        // The run the entry belongs to, so annotating a hit has somewhere to look.
+        owner
+            .define(&crate::store::agent_run_def())
+            .expect("the run entity");
+        owner
+            .apply(vec![rows::entry_mutation(
+                "claude:old",
+                &entry(1, RunEntryKind::Prompt, "a foreign finding", 1),
+            )])
+            .expect("wrote an entry");
+
+        let other = owner.joined(store::SHARED, "hocus");
+        let info = other
+            .define(&crate::store::agent_run_entry_def())
+            .expect("a foreign owner may add an index");
+        assert!(info.full_text_rebuilt, "the index was built");
+
+        let found = search(&other, &Filter::default(), None, "foreign", 10).unwrap();
+        assert_eq!(found.hits.len(), 1, "{:?}", found.hits);
+    }
+
+    #[test]
+    fn an_empty_query_finds_nothing_rather_than_everything() {
+        let backend = seeded();
+        let found = search(&backend, &Filter::default(), None, "   ", 10).unwrap();
+        assert!(found.hits.is_empty());
+    }
+
+    // -- listing --------------------------------------------------------
+
+    #[test]
+    fn runs_are_listed_newest_first_across_sessions() {
+        let backend = seeded();
+        let (headers, more) = list_runs(&backend, &Filter::default(), 10, 0).unwrap();
+        assert_eq!(
+            headers.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),
+            ["codex:two", "claude:one"],
+        );
+        assert!(!more);
+    }
+
+    #[test]
+    fn a_listing_is_narrowed_by_kind_session_and_window() {
+        let backend = seeded();
+        let by_kind = Filter {
+            kind: Some("codex".to_owned()),
+            ..Filter::default()
+        };
+        let (headers, _) = list_runs(&backend, &by_kind, 10, 0).unwrap();
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].kind, "codex");
+
+        let by_session = Filter {
+            zellij_session_name: Some("main".to_owned()),
+            ..Filter::default()
+        };
+        let (headers, _) = list_runs(&backend, &by_session, 10, 0).unwrap();
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].id, "claude:one");
+
+        let recent = Filter {
+            since_ms: Some(1_500),
+            ..Filter::default()
+        };
+        let (headers, _) = list_runs(&backend, &recent, 10, 0).unwrap();
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].id, "codex:two");
+    }
+
+    #[test]
+    fn a_listing_reports_that_more_follow_it() {
+        let backend = seeded();
+        let (headers, more) = list_runs(&backend, &Filter::default(), 1, 0).unwrap();
+        assert_eq!(headers.len(), 1);
+        assert!(more);
+        let (headers, more) = list_runs(&backend, &Filter::default(), 1, 1).unwrap();
+        assert_eq!(headers[0].id, "claude:one");
+        assert!(!more);
+    }
+
+    /// A prefix on path boundaries: a sibling folder whose name starts with the root is not
+    /// inside it.
+    #[test]
+    fn a_project_root_does_not_claim_a_sibling_that_shares_its_name() {
+        assert!(matches_root(Some("/work/hocus"), "/work/hocus"));
+        assert!(matches_root(Some("/work/hocus/src"), "/work/hocus"));
+        assert!(matches_root(Some("/work/hocus/"), "/work/hocus"));
+        assert!(!matches_root(Some("/work/hocus-fork"), "/work/hocus"));
+        assert!(!matches_root(None, "/work/hocus"));
+    }
+
+    // -- paging one run -------------------------------------------------
+
+    #[test]
+    fn an_absent_start_reads_the_newest_page() {
+        let backend = seeded();
+        let page = entry_page(&backend, "claude:one", None, 2).unwrap();
+        assert_eq!(
+            page.entries.iter().map(|e| e.revision).collect::<Vec<_>>(),
+            [2, 3],
+        );
+        assert_eq!(page.total, 3);
+        assert!(page.earlier, "revision 1 was left unread");
+        assert_eq!(page.next_revision, None, "the page reached the end");
+    }
+
+    #[test]
+    fn a_page_walks_forward_and_covers_every_entry_once() {
+        let backend = backend();
+        let mut long = run("claude:long", "claude", "main", 1);
+        long.entries = (1..=10)
+            .map(|n| entry(n, RunEntryKind::Prompt, &format!("entry {n}"), n as i64))
+            .collect();
+        write(&backend, &long);
+
+        let mut seen = Vec::new();
+        let mut from = Some(1);
+        while let Some(start) = from {
+            let page = entry_page(&backend, "claude:long", Some(start), 3).unwrap();
+            assert_eq!(page.total, 10);
+            seen.extend(page.entries.iter().map(|e| e.revision));
+            from = page.next_revision;
+        }
+        assert_eq!(seen, (1..=10).collect::<Vec<_>>());
+    }
+
+    /// "The page was as long as you allowed" is not "there is more". A run read in one exact
+    /// page has nothing after it, and must not advertise a page that is not there.
+    #[test]
+    fn a_page_that_exactly_finishes_a_run_offers_no_next_page() {
+        let backend = seeded();
+        let page = entry_page(&backend, "claude:one", Some(1), 3).unwrap();
+        assert_eq!(page.entries.len(), 3);
+        assert_eq!(page.total, 3);
+        assert_eq!(page.next_revision, None);
+        assert!(!page.earlier);
+    }
+
+    #[test]
+    fn an_anchored_page_starts_before_the_hit_it_is_read_around() {
+        assert_eq!(anchored_from(87), 85);
+        // Never below the first revision, which is 1.
+        assert_eq!(anchored_from(2), 1);
+        assert_eq!(anchored_from(1), 1);
+    }
+
+    #[test]
+    fn a_page_of_many_entries_is_cut_to_the_budget() {
+        let backend = backend();
+        let mut heavy = run("claude:heavy", "claude", "main", 1);
+        let text = "x".repeat(ENTRY_TEXT_CHARS * 2);
+        heavy.entries = (1..=40)
+            .map(|n| entry(n, RunEntryKind::Result, &text, n as i64))
+            .collect();
+        write(&backend, &heavy);
+
+        let page = entry_page(&backend, "claude:heavy", Some(1), 40).unwrap();
+        let spent: usize = page.entries.iter().map(|e| e.text.len()).sum();
+        assert!(spent <= PAGE_TEXT_BUDGET, "{spent} bytes");
+        assert!(page.entries.len() < 40, "the page was cut short");
+        assert!(page.next_revision.is_some(), "and says where to resume");
+        // Each entry was cut to the per-entry cap, since the page holds more than one.
+        assert!(page
+            .entries
+            .iter()
+            .all(|e| e.text.chars().count() <= ENTRY_TEXT_CHARS + 1));
+    }
+
+    /// The escape hatch: a page of one carries that entry whole, so nothing in the history is
+    /// unreachable however long it is.
+    /// A page read backward from the end keeps the *newest* entries, so what the
+    /// budget dropped is behind it, not ahead — `earlier` says so and
+    /// `next_revision` must stay empty. Pointing it past the last revision would
+    /// send a reader to a page that does not exist.
+    #[test]
+    fn a_budgeted_newest_page_points_backward_not_past_the_end() {
+        let backend = backend();
+        let mut heavy = run("claude:tail", "claude", "main", 1);
+        let text = "z".repeat(ENTRY_TEXT_CHARS * 2);
+        heavy.entries = (1..=40)
+            .map(|n| entry(n, RunEntryKind::Result, &text, n as i64))
+            .collect();
+        write(&backend, &heavy);
+
+        let page = entry_page(&backend, "claude:tail", None, 40).unwrap();
+        assert!(page.entries.len() < 40, "the page was budgeted");
+        assert_eq!(
+            page.entries.last().map(|e| e.revision),
+            Some(40),
+            "and kept the newest end"
+        );
+        assert!(page.earlier, "what it dropped is behind it");
+        assert_eq!(page.next_revision, None, "there is nothing ahead of it");
+    }
+
+    #[test]
+    fn a_page_of_one_entry_carries_it_whole() {
+        let backend = backend();
+        let mut heavy = run("claude:one-big", "claude", "main", 1);
+        let text = "y".repeat(ENTRY_TEXT_CHARS * 3);
+        heavy.entries = vec![entry(1, RunEntryKind::Plan, &text, 1)];
+        write(&backend, &heavy);
+
+        let page = entry_page(&backend, "claude:one-big", Some(1), 1).unwrap();
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].text.chars().count(), ENTRY_TEXT_CHARS * 3);
+    }
+
+    #[test]
+    fn an_unknown_run_pages_to_nothing_rather_than_failing() {
+        let backend = seeded();
+        let page = entry_page(&backend, "claude:missing", None, 10).unwrap();
+        assert!(page.entries.is_empty());
+        assert_eq!(page.total, 0);
+        assert_eq!(page.next_revision, None);
+        assert!(run_header(&backend, "claude:missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_header_comes_back_for_a_run_that_exists() {
+        let backend = seeded();
+        let header = run_header(&backend, "claude:one").unwrap().unwrap();
+        assert_eq!(header.kind, "claude");
+        assert_eq!(header.cwd.as_deref(), Some("/work/hocus"));
+    }
+
+    // -- snippets -------------------------------------------------------
+
+    #[test]
+    fn a_snippet_is_centred_on_the_match_rather_than_the_head() {
+        let lead = "a ".repeat(400);
+        let text = format!("{lead}needle {}", "b ".repeat(400));
+        let snippet = snippet(&text, "needle");
+        assert!(snippet.contains("needle"), "{snippet}");
+        assert!(snippet.starts_with('…'), "{snippet}");
+        assert!(snippet.chars().count() <= SNIPPET_CHARS + 2);
+    }
+
+    #[test]
+    fn a_snippet_falls_back_to_the_head_when_the_query_is_not_literal() {
+        let text = "c ".repeat(400);
+        let snippet = snippet(&text, "stemmed");
+        assert!(!snippet.starts_with('…'), "{snippet}");
+        assert!(snippet.starts_with('c'), "{snippet}");
+    }
+
+    #[test]
+    fn a_short_entry_is_its_own_snippet() {
+        assert_eq!(snippet("just  this", "this"), "just this");
+    }
+
+    #[test]
+    fn a_snippet_matches_a_multi_word_query_by_its_first_word() {
+        let lead = "d ".repeat(400);
+        let text = format!("{lead}parser {}", "e ".repeat(400));
+        let snippet = snippet(&text, "parser rewrite");
+        assert!(snippet.contains("parser"), "{snippet}");
+    }
+}

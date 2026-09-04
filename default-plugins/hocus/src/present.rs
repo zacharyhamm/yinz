@@ -91,6 +91,9 @@ pub fn present(call: &ToolCall, result: &str) -> Option<String> {
         "note_list" => note_list(&json),
         "note_get" => note_get(&json),
         "note_search" => note_search(&json),
+        "agent_runs" => agent_runs(&json),
+        "agent_run" => agent_run(&json),
+        "agent_history_search" => agent_history_search(&json),
         "note_add" | "note_edit" | "note_archive" | "note_delete" | "note_link" => {
             note_written(name, &json)
         },
@@ -777,6 +780,112 @@ fn note_search(value: &Value) -> Option<String> {
         if !snippet.is_empty() {
             out.push_str(&format!("  {}\n", inline(&snippet)));
         }
+    }
+    if flag(value, "truncated") {
+        out.push_str("\n_more matches were cut; narrow the query_\n");
+    }
+    Some(out)
+}
+
+/// One run on one line: enough to pick between runs, and nothing that would make
+/// a list of fifty unreadable.
+fn run_line(run: &Value) -> String {
+    let mut line = format!(
+        "- `{}` **{}**",
+        inline(&text(run, "run_id")),
+        inline(&text(run, "title"))
+    );
+    let mut meta = vec![text(run, "kind")];
+    if let Some(project) = run.get("project").and_then(Value::as_str) {
+        meta.push(project.to_owned());
+    }
+    let age = text(run, "age");
+    if !age.is_empty() {
+        meta.push(age);
+    }
+    meta.push(text(run, "outcome"));
+    line.push_str(&format!(" _{}_\n", inline(&meta.join(" · "))));
+    line
+}
+
+fn agent_runs(value: &Value) -> Option<String> {
+    let runs = array(value, "runs");
+    let mut out = heading(&format!("agent runs — {}", text(value, "scope")));
+    if runs.is_empty() {
+        return Some(out + "_no runs_\n");
+    }
+    for run in runs {
+        out.push_str(&run_line(run));
+        let summary = text(run, "summary");
+        if !summary.is_empty() {
+            out.push_str(&format!("  {}\n", inline(&summary)));
+        }
+    }
+    if let Some(more) = value.get("next_offset").and_then(Value::as_u64) {
+        out.push_str(&format!("\n_more runs; call again with offset={more}_\n"));
+    }
+    Some(out)
+}
+
+fn agent_run(value: &Value) -> Option<String> {
+    let mut out = heading(&text(value, "title"));
+    let mut meta = vec![text(value, "run_id"), text(value, "kind")];
+    if let Some(project) = value.get("project").and_then(Value::as_str) {
+        meta.push(project.to_owned());
+    }
+    meta.push(text(value, "outcome"));
+    meta.push(format!(
+        "{} of {} entries",
+        number(value, "shown"),
+        number(value, "entry_count")
+    ));
+    out.push_str(&format!("_{}_\n", inline(&meta.join(" · "))));
+    let entries = array(value, "entries");
+    if entries.is_empty() {
+        return Some(out + "\n_no entries_\n");
+    }
+    if flag(value, "earlier") {
+        out.push_str("\n_earlier entries not shown_\n");
+    }
+    for entry in entries {
+        let age = text(entry, "age");
+        let stamp = match age.is_empty() {
+            true => text(entry, "kind"),
+            false => format!("{} · {age}", text(entry, "kind")),
+        };
+        out.push_str(&format!("\n**{}**\n", inline(&stamp)));
+        // The text is the agent's own — a prompt as it was typed, a plan as it
+        // was written — and is already markdown, so it is passed through rather
+        // than escaped, exactly as `note_get` passes a note's body through.
+        markdown_body(&text(entry, "text"), "", &mut out);
+    }
+    if let Some(more) = value.get("more").and_then(Value::as_str) {
+        out.push_str(&format!("\n_more entries: `{more}`_\n"));
+    }
+    Some(out)
+}
+
+fn agent_history_search(value: &Value) -> Option<String> {
+    let matches = array(value, "matches");
+    let mut out = heading(&format!("agent history — {}", text(value, "query")));
+    if matches.is_empty() {
+        return Some(out + "_no matches_\n");
+    }
+    for found in matches {
+        let mut meta = vec![text(found, "kind")];
+        if let Some(agent) = found.get("agent").and_then(Value::as_str) {
+            meta.push(agent.to_owned());
+        }
+        let age = text(found, "age");
+        if !age.is_empty() {
+            meta.push(age);
+        }
+        out.push_str(&format!(
+            "- **{}** _{}_\n",
+            inline(&text(found, "run_title")),
+            inline(&meta.join(" · "))
+        ));
+        out.push_str(&format!("  {}\n", inline(&text(found, "snippet"))));
     }
     if flag(value, "truncated") {
         out.push_str("\n_more matches were cut; narrow the query_\n");
