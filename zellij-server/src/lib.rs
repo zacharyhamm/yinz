@@ -2919,10 +2919,9 @@ fn update_new_saved_config(
                 }
                 return;
             }
-            match Config::write_config_to_disk(
-                new_config.to_string(clear_defaults),
-                config_file_path,
-            ) {
+            match new_config
+                .write_config_to_disk(new_config.to_string(clear_defaults), config_file_path)
+            {
                 Ok(written_config) => {
                     let changes = session_data
                         .write()

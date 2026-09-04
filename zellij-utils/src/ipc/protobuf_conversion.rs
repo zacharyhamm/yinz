@@ -1644,6 +1644,7 @@ impl TryFrom<crate::input::actions::Action>
                 ActionType::UndoRenamePane(UndoRenamePaneAction {})
             },
             crate::input::actions::Action::NewTab {
+                layout_source,
                 tiled_layout,
                 floating_layouts,
                 swap_tiled_layouts,
@@ -1654,6 +1655,7 @@ impl TryFrom<crate::input::actions::Action>
                 initial_panes,
                 first_pane_unblock_condition,
             } => ActionType::NewTab(NewTabAction {
+                layout_source: layout_source.map(|p| p.to_string_lossy().into_owned()),
                 tiled_layout: tiled_layout.map(|l| l.into()),
                 floating_layouts: floating_layouts.into_iter().map(|l| l.into()).collect(),
                 swap_tiled_layouts: swap_tiled_layouts
@@ -2622,6 +2624,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::UndoRenamePane(_) => Ok(crate::input::actions::Action::UndoRenamePane),
             ActionType::NewTab(new_tab_action) => Ok(crate::input::actions::Action::NewTab {
+                layout_source: new_tab_action.layout_source.map(PathBuf::from),
                 tiled_layout: new_tab_action
                     .tiled_layout
                     .map(|l| l.try_into())

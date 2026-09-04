@@ -845,6 +845,7 @@ pub(crate) fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         ActionKind::PaneNameInput => Action::PaneNameInput { input: bytes(tc) },
         ActionKind::UndoRenamePane => Action::UndoRenamePane,
         ActionKind::NewTab => Action::NewTab {
+            layout_source: optional_paths(tc),
             tiled_layout: booleans(tc).then(|| tiled_pane_layouts(tc)),
             floating_layouts: up_to(tc, 2, floating_pane_layouts),
             swap_tiled_layouts: optional_non_empty(tc, swap_tiled_layouts),

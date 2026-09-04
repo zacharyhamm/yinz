@@ -173,6 +173,7 @@ message NewTabPayload {
   optional string cwd = 7;
   repeated CommandOrPlugin initial_panes = 8;
   optional UnblockCondition first_pane_unblock_condition = 9;
+  optional string layout_source = 10;
 }
 
 message TabLayoutInfo {

@@ -878,7 +878,8 @@ impl Action {
             },
             Action::UndoRenamePane => Some(KdlNode::new("UndoRenamePane")),
             Action::NewTab {
-                tiled_layout: _,
+                layout_source,
+                tiled_layout,
                 floating_layouts: _,
                 swap_tiled_layouts: _,
                 swap_floating_layouts: _,
@@ -890,16 +891,20 @@ impl Action {
             } => {
                 let mut node = KdlNode::new("NewTab");
                 let mut children = KdlDocument::new();
+                if let Some(layout_source) = layout_source {
+                    let mut layout_node = KdlNode::new("layout");
+                    layout_node.push(layout_source.display().to_string());
+                    children.nodes_mut().push(layout_node);
+                }
+                if !should_change_focus_to_new_tab
+                    || tiled_layout.as_ref().and_then(|layout| layout.focus) == Some(false)
+                {
+                    let mut focus_node = KdlNode::new("should_change_focus_to_new_tab");
+                    focus_node.push(KdlValue::Bool(*should_change_focus_to_new_tab));
+                    children.nodes_mut().push(focus_node);
+                }
                 if let Some(name) = name {
                     let mut name_node = KdlNode::new("name");
-                    if !should_change_focus_to_new_tab {
-                        let mut should_change_focus_to_new_tab_node =
-                            KdlNode::new("should_change_focus_to_new_tab");
-                        should_change_focus_to_new_tab_node.push(KdlValue::Bool(false));
-                        children
-                            .nodes_mut()
-                            .push(should_change_focus_to_new_tab_node);
-                    }
                     name_node.push(name.clone());
                     children.nodes_mut().push(name_node);
                 }
@@ -908,7 +913,9 @@ impl Action {
                     cwd_node.push(cwd.display().to_string());
                     children.nodes_mut().push(cwd_node);
                 }
-                if name.is_some() || cwd.is_some() {
+                // An empty metadata block still loads the configured default layout;
+                // a bare NewTab defers layout selection until execution.
+                if !children.nodes().is_empty() || tiled_layout.is_some() {
                     node.set_children(children);
                 }
                 Some(node)
@@ -1820,6 +1827,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 let command_metadata = action_children.first();
                 if command_metadata.is_none() {
                     return Ok(Action::NewTab {
+                        layout_source: None,
                         tiled_layout: None,
                         floating_layouts: vec![],
                         swap_tiled_layouts: None,
@@ -1834,10 +1842,22 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
 
                 let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-                let layout = command_metadata
+                let layout_source = command_metadata
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "layout"))
                     .map(PathBuf::from)
+                    .map(|path| {
+                        if path.extension().is_some() || path.components().count() > 1 {
+                            current_dir.join(path)
+                        } else {
+                            path
+                        }
+                    });
+                let layout = layout_source
+                    .clone()
                     .or_else(|| config_options.default_layout.clone());
+                let focus_override = command_metadata.and_then(|c_m| {
+                    kdl_child_bool_value_for_entry(c_m, "should_change_focus_to_new_tab")
+                });
                 let cwd = command_metadata
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "cwd"))
                     .map(PathBuf::from)
@@ -1889,9 +1909,11 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 } else if !tabs.is_empty() {
                     let (tab_name, layout, floating_panes_layout) = tabs.drain(..).next().unwrap();
                     let name = tab_name.or(name);
-                    let should_change_focus_to_new_tab = layout.focus.unwrap_or(true);
+                    let should_change_focus_to_new_tab =
+                        focus_override.or(layout.focus).unwrap_or(true);
 
                     Ok(Action::NewTab {
+                        layout_source,
                         tiled_layout: Some(layout),
                         floating_layouts: floating_panes_layout,
                         swap_tiled_layouts,
@@ -1904,9 +1926,11 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     })
                 } else {
                     let (layout, floating_panes_layout) = layout.new_tab();
-                    let should_change_focus_to_new_tab = layout.focus.unwrap_or(true);
+                    let should_change_focus_to_new_tab =
+                        focus_override.or(layout.focus).unwrap_or(true);
 
                     Ok(Action::NewTab {
+                        layout_source,
                         tiled_layout: Some(layout),
                         floating_layouts: floating_panes_layout,
                         swap_tiled_layouts,

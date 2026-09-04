@@ -1329,6 +1329,7 @@ fn open_command_pane_in_new_tab(
     let run_command_action = run_command_action(env, command_to_run, true, context);
     let initial_panes = Some(vec![CommandOrPlugin::Command(run_command_action)]);
     let action = Action::NewTab {
+        layout_source: None,
         tiled_layout: None,
         floating_layouts: vec![],
         swap_tiled_layouts: None,
@@ -1383,6 +1384,7 @@ fn open_plugin_pane_in_new_tab(
     let _ = context; // context is not currently used for plugin panes
     let initial_panes = Some(vec![CommandOrPlugin::Plugin(run_plugin_or_alias)]);
     let action = Action::NewTab {
+        layout_source: None,
         tiled_layout: None,
         floating_layouts: vec![],
         swap_tiled_layouts: None,
@@ -1475,6 +1477,7 @@ fn open_editor_pane_in_new_tab(
     };
     let initial_panes = Some(vec![CommandOrPlugin::File(file_to_open)]);
     let action = Action::NewTab {
+        layout_source: None,
         tiled_layout: None,
         floating_layouts: vec![],
         swap_tiled_layouts: None,
@@ -3578,6 +3581,7 @@ fn apply_layout(env: &mut PluginEnv, layout: Layout) {
         let swap_tiled_layouts = Some(layout.swap_tiled_layouts.clone());
         let swap_floating_layouts = Some(layout.swap_floating_layouts.clone());
         let action = Action::NewTab {
+            layout_source: None,
             tiled_layout: layout.template.as_ref().map(|t| t.0.clone()),
             floating_layouts: layout.template.map(|t| t.1).unwrap_or_default(),
             swap_tiled_layouts,
@@ -3598,6 +3602,7 @@ fn apply_layout(env: &mut PluginEnv, layout: Layout) {
             let swap_tiled_layouts = Some(layout.swap_tiled_layouts.clone());
             let swap_floating_layouts = Some(layout.swap_floating_layouts.clone());
             let action = Action::NewTab {
+                layout_source: None,
                 tiled_layout: Some(tiled_pane_layout),
                 floating_layouts: floating_pane_layout,
                 swap_tiled_layouts,
@@ -3633,6 +3638,7 @@ fn apply_layout(env: &mut PluginEnv, layout: Layout) {
 fn new_tab(env: &mut PluginEnv, name: Option<String>, cwd: Option<String>) {
     let cwd = cwd.map(|c| translate_plugin_path(env, PathBuf::from(c)));
     let action = Action::NewTab {
+        layout_source: None,
         tiled_layout: None,
         floating_layouts: vec![],
         swap_tiled_layouts: None,
@@ -3659,6 +3665,7 @@ fn new_tab(env: &mut PluginEnv, name: Option<String>, cwd: Option<String>) {
 fn new_tab_unfocused(env: &mut PluginEnv, name: Option<String>, cwd: Option<String>) {
     let cwd = cwd.map(|c| translate_plugin_path(env, PathBuf::from(c)));
     let action = Action::NewTab {
+        layout_source: None,
         tiled_layout: None,
         floating_layouts: vec![],
         swap_tiled_layouts: None,

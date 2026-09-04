@@ -343,6 +343,9 @@ pub enum Action {
     UndoRenamePane,
     /// Create a new tab, optionally with a specified tab layout.
     NewTab {
+        /// Explicit KDL layout reference, retained when saving keybindings.
+        #[serde(default)]
+        layout_source: Option<PathBuf>,
         tiled_layout: Option<TiledPaneLayout>,
         floating_layouts: Vec<FloatingPaneLayout>,
         swap_tiled_layouts: Option<Vec<SwapTiledLayout>>,
@@ -1855,6 +1858,7 @@ impl Action {
                                     }
                                 });
                             new_tab_actions.push(Action::NewTab {
+                                layout_source: None,
                                 tiled_layout: Some(layout),
                                 floating_layouts: floating_panes_layout,
                                 swap_tiled_layouts: swap_tiled_layouts.clone(),
@@ -1873,6 +1877,7 @@ impl Action {
                         let (layout, floating_panes_layout) = layout.new_tab();
                         let should_change_focus_to_new_tab = !no_focus;
                         Ok(vec![Action::NewTab {
+                            layout_source: None,
                             tiled_layout: Some(layout),
                             floating_layouts: floating_panes_layout,
                             swap_tiled_layouts,
@@ -1968,6 +1973,7 @@ impl Action {
                                     }
                                 });
                             new_tab_actions.push(Action::NewTab {
+                                layout_source: None,
                                 tiled_layout: Some(layout),
                                 floating_layouts: floating_panes_layout,
                                 swap_tiled_layouts: swap_tiled_layouts.clone(),
@@ -1986,6 +1992,7 @@ impl Action {
                         let (layout, floating_panes_layout) = layout.new_tab();
                         let should_change_focus_to_new_tab = !no_focus;
                         Ok(vec![Action::NewTab {
+                            layout_source: None,
                             tiled_layout: Some(layout),
                             floating_layouts: floating_panes_layout,
                             swap_tiled_layouts,
@@ -2000,6 +2007,7 @@ impl Action {
                 } else {
                     let should_change_focus_to_new_tab = !no_focus;
                     Ok(vec![Action::NewTab {
+                        layout_source: None,
                         tiled_layout: None,
                         floating_layouts: vec![],
                         swap_tiled_layouts: None,
@@ -3429,6 +3437,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::NewTab {
+                layout_source: None,
                 tiled_layout,
                 floating_layouts,
                 ..

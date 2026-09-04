@@ -2029,6 +2029,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: Some(PathBuf::from("custom-layout")),
             tiled_layout: None,
             floating_layouts: vec![],
             swap_tiled_layouts: None,
@@ -2045,6 +2046,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout::default()),
             floating_layouts: vec![],
             swap_tiled_layouts: None,
@@ -2061,6 +2063,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 children_split_direction: SplitDirection::Vertical,
                 ..Default::default()
@@ -2080,6 +2083,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 children_split_direction: SplitDirection::Horizontal,
                 ..Default::default()
@@ -2099,6 +2103,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 children_split_direction: SplitDirection::Horizontal,
                 name: Some("tiled_layout_name".to_owned()),
@@ -2119,6 +2124,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 children: vec![
                     TiledPaneLayout {
@@ -2151,6 +2157,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 split_size: Some(SplitSize::Fixed(1)),
                 ..Default::default()
@@ -2170,6 +2177,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 split_size: Some(SplitSize::Percent(50)),
                 ..Default::default()
@@ -2189,6 +2197,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(
                     RunPlugin::default()
@@ -2210,6 +2219,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
                     _allow_exec_host_cmd: true,
@@ -2232,6 +2242,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
                     location: RunPluginLocation::File(PathBuf::from("/my/plugin/location")),
@@ -2254,6 +2265,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
                     location: RunPluginLocation::Zellij(PluginTag::new("my_plugin_tag")),
@@ -2276,6 +2288,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
                     location: RunPluginLocation::Remote("my_remote_url".to_owned()),
@@ -2298,6 +2311,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
                     configuration: PluginUserConfiguration::new(demo_context.clone()),
@@ -2320,6 +2334,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
                     configuration: PluginUserConfiguration::new(demo_context.clone()),
@@ -2342,6 +2357,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
                     configuration: PluginUserConfiguration::new(empty_context.clone()),
@@ -2364,6 +2380,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
                     initial_cwd: Some(PathBuf::from("/initial/cwd")),
@@ -2386,6 +2403,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Plugin(RunPluginOrAlias::Alias(PluginAlias::default()))),
                 ..Default::default()
@@ -2405,6 +2423,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Plugin(RunPluginOrAlias::Alias(PluginAlias {
                     name: "alias name".to_owned(),
@@ -2429,6 +2448,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Command(RunCommand {
                     command: PathBuf::from("/path/to/command"),
@@ -2458,6 +2478,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Command(RunCommand {
                     command: PathBuf::from("/path/to/command"),
@@ -2491,6 +2512,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::EditFile(PathBuf::from("/path/to/file"), None, None)),
                 ..Default::default()
@@ -2510,6 +2532,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::EditFile(
                     PathBuf::from("/path/to/file"),
@@ -2533,6 +2556,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Cwd(PathBuf::from("/path/to/cwd"))),
                 ..Default::default()
@@ -2552,6 +2576,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: None,
             floating_layouts: vec![
                 FloatingPaneLayout {
@@ -2594,6 +2619,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: None,
             floating_layouts: vec![],
             swap_tiled_layouts: Some(vec![
@@ -2618,6 +2644,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: None,
             floating_layouts: vec![],
             swap_tiled_layouts: None,
@@ -2634,6 +2661,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: None,
             floating_layouts: vec![],
             swap_tiled_layouts: None,
@@ -2650,6 +2678,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NewTab {
+            layout_source: None,
             tiled_layout: None,
             floating_layouts: vec![],
             swap_tiled_layouts: None,

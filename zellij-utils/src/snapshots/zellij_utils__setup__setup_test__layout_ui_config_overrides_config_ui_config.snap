@@ -2052,6 +2052,7 @@ Config {
                 key_modifiers: {},
             }: [
                 NewTab {
+                    layout_source: None,
                     tiled_layout: None,
                     floating_layouts: [],
                     swap_tiled_layouts: None,
@@ -6235,6 +6236,7 @@ Config {
                 key_modifiers: {},
             }: [
                 NewTab {
+                    layout_source: None,
                     tiled_layout: None,
                     floating_layouts: [],
                     swap_tiled_layouts: None,
