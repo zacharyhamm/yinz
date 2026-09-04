@@ -322,6 +322,12 @@ struct Reading {
     cursor: usize,
     /// Bumped by every fold and by the raw toggle. Part of `State::reader_cache`'s key.
     fold: u64,
+    /// A key moved the cursor or changed the folds, and the rows it now owns have to be wound
+    /// on screen. Deferred to the next render rather than done where it is asked for, because
+    /// only `render` knows the width and so only `render` knows which row a fold begins on —
+    /// and because a fold that has just opened is measured on rows the cache does not hold
+    /// yet.
+    reveal: bool,
     /// The envelope's own tag, where the event turned out to be one. On the divider beside the
     /// kind, because `prompt` alone does not say which of the shapes a harness writes this is —
     /// and for an envelope nobody registered, the tag is the only name it has.
@@ -1243,13 +1249,22 @@ impl State {
     /// are - and the event's markdown below it. `focused` is unconditionally true: there is
     /// nowhere else for the keys to be while this is up.
     fn render_reader(&mut self, rows: usize, cols: usize) {
+        // A row for the divider, the rest for the event. Settled before the winding below,
+        // which is measured in the rows this frame has to give.
+        let room = rows.saturating_sub(1);
+        self.last_reader_rows = room;
         self.fill_reader_cache(cols);
+        // The winding a fold key asked for, on the rows the cache now holds. See
+        // `Reading::reveal`.
+        if self.reading.as_ref().is_some_and(|reading| reading.reveal) {
+            self.reveal_fold();
+            if let Some(reading) = self.reading.as_mut() {
+                reading.reveal = false;
+            }
+        }
         let Some(reading) = self.reading.as_ref() else {
             return;
         };
-        // A row for the divider, the rest for the event.
-        let room = rows.saturating_sub(1);
-        self.last_reader_rows = room;
         let lines = self.reader_lines();
         let max_scroll = lines.len().saturating_sub(room);
         let scroll = reading.scroll.min(max_scroll);
@@ -1272,7 +1287,14 @@ impl State {
         // The cursor's fold marks its first row, in the margin every other row leaves blank —
         // the same shape the list and the history half both use to say where their cursor is.
         // Absent for a prose event, which has no folds to point at.
-        let cursor = self.reader_starts().get(reading.cursor).copied();
+        //
+        // Or, where the scroll has passed that row, the first of the fold's rows still on
+        // screen: a fold taller than the pane is still the fold the keys act on, and a marker
+        // nobody can see would leave the reader unable to say so.
+        let cursor = self
+            .reader_starts()
+            .get(reading.cursor)
+            .map(|&start| start.max(scroll));
         render_divider(&label, scroll, lines.len() - end, true, 0, cols);
         for (index, line) in lines[scroll..end].iter().enumerate() {
             let line = match cursor == Some(scroll + index) {
@@ -1292,8 +1314,8 @@ impl State {
     }
 
     /// Wind the reader so the cursor's fold is on screen, the way `reveal_cursor` does for the
-    /// history half — and here for the same reason: only `render` knows the width, and so only
-    /// `render` knows which row a fold begins on.
+    /// history half. Asked for by [`Reading::reveal`] and answered from `render_reader`, which
+    /// is the one place that knows the width the folds were wrapped to.
     ///
     /// Head first, then foot: a fold taller than the room shows its beginning, which is the row
     /// carrying its name.
@@ -1585,13 +1607,17 @@ impl State {
         };
         let (kind, created_at_ms, text) =
             (event.kind.clone(), event.created_at_ms, event.text.clone());
-        // Empty for everything that is not an envelope, which is what leaves the reader exactly
-        // as it was for every kind and for every prompt a person typed.
-        let sections = envelope::sections(&text);
-        let tag = envelope::parse(&text)
-            .envelopes
-            .first()
-            .map(|found| found.tag.to_owned());
+        let sections = event_sections(&kind, &text);
+        // An event with no folds has no envelope to name on the divider either, so the parse
+        // is asked for only where the folds were.
+        let tag = (!sections.is_empty())
+            .then(|| {
+                envelope::parse(&text)
+                    .envelopes
+                    .first()
+                    .map(|found| found.tag.to_owned())
+            })
+            .flatten();
         self.reading_id += 1;
         self.reading = Some(Reading {
             kind,
@@ -1603,6 +1629,7 @@ impl State {
             raw: false,
             cursor: 0,
             fold: 0,
+            reveal: false,
             envelope: tag,
         });
         true
@@ -1673,10 +1700,7 @@ impl State {
             return false;
         }
         reading.cursor = target;
-        // The winding needs the width, which only `render` is told; this is the same split
-        // `step_history_cursor` and `reveal_cursor` make, done here because the rows the
-        // cursor just moved to were measured on the last frame.
-        self.reveal_fold();
+        reading.reveal = true;
         true
     }
 
@@ -1695,6 +1719,11 @@ impl State {
         }
         section.open = !section.open;
         reading.fold += 1;
+        // A fold opened at the foot of the pane spends its rows below the last one on screen,
+        // and one shut at the head takes the rows under the cursor away. Either way the fold
+        // the keys are on has moved, and it is asked for here rather than wound now because
+        // the rows it moved to do not exist until the next `fill_reader_cache`.
+        reading.reveal = true;
         true
     }
 
@@ -1709,7 +1738,12 @@ impl State {
         }
         reading.raw = !reading.raw;
         reading.fold += 1;
+        // Both halves of the swap are a different document, so there is no row to hold the
+        // place at and the reader starts at the head of it — which for the folded view means
+        // the first fold, the cursor included. Keeping a cursor from the other view would put
+        // it forty rows below a scroll of zero, where nothing draws it.
         reading.scroll = 0;
+        reading.cursor = 0;
         true
     }
 
@@ -1728,13 +1762,23 @@ impl State {
             return None;
         }
         let path = match self.reading.as_ref() {
+            // With the source up there is no cursor to read — the same reason `copy_target`
+            // falls back to the whole event there — so the offer is the first path the event
+            // names, which is what the history half offers too.
+            Some(reading) if reading.raw => reading
+                .sections
+                .iter()
+                .find_map(|section| section.path.clone())?,
             Some(reading) => reading
                 .sections
                 .get(reading.cursor)
                 .and_then(|section| section.path.clone())?,
-            None => envelope::sections(&self.cursor_event()?.text)
-                .into_iter()
-                .find_map(|section| section.path)?,
+            None => {
+                let event = self.cursor_event()?;
+                event_sections(&event.kind, &event.text)
+                    .into_iter()
+                    .find_map(|section| section.path)?
+            },
         };
         // A relative path is relative to the folder the agent was working in, which is the one
         // thing the run knows and the envelope does not.
@@ -1793,16 +1837,42 @@ impl State {
     /// anchored to its head, where the scroll is a line number.
     fn scroll_reader(&mut self, delta: isize) -> bool {
         let max = self.last_reader_max_scroll;
-        let Some(reading) = self.reading.as_mut() else {
+        let Some(scroll) = self.reading.as_ref().map(|reading| reading.scroll) else {
             return false;
         };
         let target = match delta >= 0 {
-            true => reading.scroll.saturating_add(delta.unsigned_abs()).min(max),
-            false => reading.scroll.saturating_sub(delta.unsigned_abs()),
+            true => scroll.saturating_add(delta.unsigned_abs()).min(max),
+            false => scroll.saturating_sub(delta.unsigned_abs()),
         };
-        let moved = target != reading.scroll;
+        if target == scroll {
+            return false;
+        }
+        // The cursor comes along, so that what `Enter`, `y` and `o` act on is always something
+        // on screen. A line scroll is how a long fold is read, and a cursor left behind at the
+        // head of the event would leave those three keys working on a fold the user walked
+        // away from ten pages ago — and no `>` anywhere to say which one.
+        let cursor = self.fold_at(target);
+        let Some(reading) = self.reading.as_mut() else {
+            return false;
+        };
         reading.scroll = target;
-        moved
+        if let Some(cursor) = cursor {
+            reading.cursor = cursor;
+        }
+        true
+    }
+
+    /// The fold whose rows the line `row` falls in.
+    ///
+    /// `None` where there are no folds to point at: a prose event, or the source `r` put up,
+    /// both of which `fill_reader_cache` renders as one document with no spans.
+    fn fold_at(&self, row: usize) -> Option<usize> {
+        let starts = self.reader_starts();
+        (!starts.is_empty()).then(|| {
+            starts
+                .partition_point(|&start| start <= row)
+                .saturating_sub(1)
+        })
     }
 
     /// Whether the selected row is the pane the user is actually in.
@@ -1926,6 +1996,21 @@ impl State {
             return;
         };
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SELECTION).with_payload(payload));
+    }
+}
+
+/// The folds an event of this kind opens into, and empty for one that has none.
+///
+/// A prompt is the one kind a harness writes as well as a person, which is the same gate
+/// `agents::run_history` puts on its own digest — and the two have to agree, or the timeline
+/// draws an event one way and `Enter` reads it another. An agent's own message quoting a
+/// `<system-reminder>` at the start of a line is prose *about* markup: the scanner admits that
+/// shape knowingly (see `envelope`'s module doc), which costs a prompt one fold row and would
+/// cost a `result:` the whole of what the reader was opened to read.
+fn event_sections(kind: &str, text: &str) -> Vec<envelope::Section> {
+    match kind == agents::RunEntryKind::Prompt.label() {
+        true => envelope::sections(text),
+        false => Vec::new(),
     }
 }
 
@@ -3769,17 +3854,49 @@ mod tests {
         .join("\n")
     }
 
+    /// [`task_notification`] with a `note` and a `result` long enough to scroll through: what
+    /// a real one carries, where the fold rows exist precisely because the body does not fit.
+    fn long_notification() -> String {
+        // Paragraphs rather than lines: `markdown::render` reflows a run of single-newline
+        // lines into one, and forty of them come back as fourteen rows.
+        let long = |what: &str| {
+            (0..40)
+                .map(|line| format!("{what} line {line}."))
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        };
+        [
+            "<task-notification>",
+            "<task-id>a10fe836c6a9fa4ca</task-id>",
+            "<output-file>/private/tmp/claude-501/x/a10fe836c6a9fa4ca.output</output-file>",
+            "<status>completed</status>",
+            "<summary>Agent \"/code-review\" finished</summary>",
+            &format!("<note>{}</note>", long("Note")),
+            &format!("<result>{}</result>", long("Result")),
+            "</task-notification>",
+        ]
+        .join("\n")
+    }
+
     /// A run holding one prompt, with the reader open on it.
     fn reading(prompt: &str) -> State {
+        reading_entry(agents::RunEntryKind::Prompt, prompt)
+    }
+
+    /// [`reading`], for an event of some other kind.
+    fn reading_entry(kind: agents::RunEntryKind, text: &str) -> State {
         let mut state = State::default();
         state.set_rows(one_run_selected());
         let mut run = a_run();
         run.summary = None;
+        // A `Result` reaches the timeline only on a run whose newest entry is past its last
+        // summary - see `agents::run_history`. Every other kind is drawn either way.
+        run.summarized_revision = 0;
         run.entries = vec![agents::RunEntry {
             revision: 1,
             event_id: None,
-            kind: agents::RunEntryKind::Prompt,
-            text: prompt.to_owned(),
+            kind,
+            text: text.to_owned(),
             created_at_ms: None,
         }];
         state.run = Some(run);
@@ -3990,6 +4107,124 @@ mod tests {
             prose.copy_target().as_deref(),
             Some("fix the flaky reconnect test")
         );
+    }
+
+    /// A line scroll is how a long fold is read, and the cursor comes along with it: what
+    /// `Enter`, `y` and `o` act on is always something on screen. Left at the head of the
+    /// event, the cursor pointed at a fold the user had walked ten pages away from, with no
+    /// `>` anywhere to say which one - and `k` on it did nothing at all, having nowhere left
+    /// to go.
+    #[test]
+    fn scrolling_the_reader_takes_the_cursor_with_it() {
+        let mut state = reading(&long_notification());
+        // Onto `result` and open it, so there is more body than the pane has room for.
+        for _ in 0..5 {
+            press(&mut state, BareKey::Char('j'));
+        }
+        press(&mut state, BareKey::Enter);
+        // Back to the head of the event, which the cursor comes back to with it.
+        for _ in 0..80 {
+            press(&mut state, BareKey::Up);
+        }
+        let reader = state.reading.as_ref().expect("a reader");
+        assert_eq!((reader.scroll, reader.cursor), (0, 0));
+
+        for _ in 0..8 {
+            press(&mut state, BareKey::Down);
+        }
+        let starts = state.reader_starts().to_vec();
+        let reader = state.reading.as_ref().expect("a reader");
+        assert_eq!(reader.scroll, 8, "eight lines down into the event");
+        assert_ne!(
+            reader.cursor, 0,
+            "and off the fold the reader opened on, which is what `Enter` would have acted on"
+        );
+        assert_eq!(
+            Some(reader.cursor),
+            state.fold_at(reader.scroll),
+            "the cursor is the fold owning the top row"
+        );
+        assert!(starts[reader.cursor] <= reader.scroll);
+    }
+
+    /// A fold taller than the pane is shown from its beginning - the row carrying its name.
+    /// Without the winding it opened where it sat, four rows from the foot, and spent the rest
+    /// of itself below the screen.
+    #[test]
+    fn opening_a_fold_shows_it_from_its_first_row() {
+        let mut state = reading(&long_notification());
+        for _ in 0..5 {
+            press(&mut state, BareKey::Char('j'));
+        }
+        press(&mut state, BareKey::Enter);
+
+        let starts = state.reader_starts().to_vec();
+        let reader = state.reading.as_ref().expect("a reader");
+        assert_eq!(reader.cursor, 5);
+        assert_eq!(reader.scroll, starts[5], "the fold's name is the top row");
+    }
+
+    /// `r` puts up a different document, so there is no row to hold the place at and the
+    /// reader starts at the head of it. The cursor goes back with the scroll: left where it
+    /// was, it pointed forty rows below a window anchored to zero, where nothing draws it and
+    /// `Enter`, `y` and `o` would all have acted on a fold nobody could see.
+    #[test]
+    fn coming_back_from_raw_starts_at_the_top() {
+        let mut state = reading(&long_notification());
+        // Open `note`, which is long enough to push `result` off the foot, and put the cursor
+        // on `result` under it.
+        for _ in 0..4 {
+            press(&mut state, BareKey::Char('j'));
+        }
+        press(&mut state, BareKey::Enter);
+        press(&mut state, BareKey::Char('j'));
+        let starts = state.reader_starts().to_vec();
+        assert_eq!(state.reading.as_ref().expect("a reader").cursor, 5);
+        assert!(
+            starts[5] > state.last_reader_rows,
+            "the fold is off the foot at a scroll of zero"
+        );
+
+        press(&mut state, BareKey::Char('r'));
+        press(&mut state, BareKey::Char('r'));
+        let reader = state.reading.as_ref().expect("a reader");
+        assert_eq!((reader.scroll, reader.cursor), (0, 0));
+    }
+
+    /// A prompt is the one kind a harness writes as well as a person - the same gate the
+    /// timeline puts on its digest. An agent writing *about* an envelope is writing prose, and
+    /// folding it away would hide the message the reader was opened to read.
+    #[test]
+    fn a_result_that_quotes_an_envelope_opens_as_prose() {
+        let text = format!(
+            "I removed the handler. It was woken by this:\n\n{}",
+            task_notification()
+        );
+        let state = reading_entry(agents::RunEntryKind::Result, &text);
+
+        let reader = state.reading.as_ref().expect("a reader");
+        assert!(
+            reader.sections.is_empty(),
+            "no folds on an agent's own words"
+        );
+        assert_eq!(reader.envelope, None, "and nothing to name on the divider");
+        assert_eq!(
+            rows(&state),
+            markdown::render(&text, 48, markdown::Options::compact())
+                .iter()
+                .map(|line| line.text.clone())
+                .collect::<Vec<_>>()
+        );
+
+        // And the prompt beside it is still read apart, which is the half of the gate that
+        // must not have moved.
+        let prompt = reading(&task_notification());
+        assert!(!prompt
+            .reading
+            .as_ref()
+            .expect("a reader")
+            .sections
+            .is_empty());
     }
 
     /// The regression guard: everything a person typed reads, scrolls and copies exactly as it

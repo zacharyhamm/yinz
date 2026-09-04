@@ -285,6 +285,22 @@ struct InFlight {
     ticks: u32,
 }
 
+/// What a summariser should be told the user asked, from a prompt as it arrived.
+///
+/// [`envelope::question`] is a no-op for anything a person typed and reduces a harness's
+/// envelope to the sentence in it; the cut is the same [`PROMPT_CHARS`] the pane lane keeps.
+/// Both roads to a summary go through here, so the header and the body cannot disagree about
+/// what the turn was for.
+///
+/// `None` where nothing is left — a prompt that was entirely machinery, which a
+/// `<system-reminder>` on its own is: its question is `None` by design, and a turn with no
+/// question behind it is summarised without one rather than against a stale one.
+fn kept_prompt(text: &str) -> Option<String> {
+    let question = envelope::question(text);
+    let question = question.trim();
+    (!question.is_empty()).then(|| question.chars().take(PROMPT_CHARS).collect())
+}
+
 /// What to ask a model about a run: the whole of it, prompts included.
 ///
 /// The whole run rather than a delta since the last summary, because both remaining askers
@@ -857,13 +873,18 @@ impl State {
                     // hundred characters are opening tags and a temp path, and a model asked
                     // what an agent is doing cannot answer from those. A prompt somebody typed
                     // passes through untouched, which is every prompt before this existed.
-                    self.prompts.insert(
-                        pane_id,
-                        envelope::question(prompt)
-                            .chars()
-                            .take(PROMPT_CHARS)
-                            .collect(),
-                    );
+                    //
+                    // A prompt that reduces to nothing — machinery addressed to the agent and
+                    // no question at all — is the `None` arm's case rather than an empty
+                    // string kept under this pane's id.
+                    match kept_prompt(prompt) {
+                        Some(kept) => {
+                            self.prompts.insert(pane_id, kept);
+                        },
+                        None => {
+                            self.prompts.remove(&pane_id);
+                        },
+                    }
                     // And the pane is named after it, now rather than at the end of the
                     // turn. Until this, a pane got a name only when `finish_summary_with`
                     // renamed it to the model's title — so the whole time an agent was
@@ -2331,6 +2352,12 @@ impl State {
         let Some(endpoint) = endpoint else {
             return self.summarize_run_locally(run);
         };
+        let asked = run
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| entry.kind == agents::RunEntryKind::Prompt)
+            .and_then(|entry| kept_prompt(&entry.text));
         let Some(message) = run_delta(&run) else {
             // A run with no retained entries at all — every hook it saw was a tool call or a
             // lifecycle event, none of which is kept. There is nothing to describe.
@@ -2349,11 +2376,12 @@ impl State {
             // old end — so naming the run's first prompt here would assert in the header the
             // one question the body is most likely to have dropped, and describe ten turns of
             // work as an answer to the question that opened the session.
-            run.entries
-                .iter()
-                .rev()
-                .find(|entry| entry.kind == agents::RunEntryKind::Prompt)
-                .map(|entry| entry.text.as_str()),
+            //
+            // Through `kept_prompt`, which is the reduction the body beside it already had:
+            // a header that quoted the markup would tell the model the turn was about six
+            // hundred characters of opening tags and a temp path, in the same request whose
+            // history says it was about a background task.
+            asked.as_deref(),
             &message,
         );
         self.summary_seq += 1;
@@ -7204,6 +7232,69 @@ mod tests {
             !state.summaries.contains_key(&7),
             "nor put it on whoever holds pane 7 now"
         );
+    }
+
+    /// The header and the body of one request are two readings of the same run, and the header
+    /// used to be the only one still written in markup: the model was told the user asked
+    /// `<task-notification> <task-id>a10fe836…` while the history beside it said, in words,
+    /// that a background task had reported.
+    #[test]
+    fn an_archived_runs_header_is_a_question_rather_than_its_markup() {
+        let mut state = State::default();
+        let mut run = archived_run("claude:cc-session-1");
+        run.entries[0].text = task_notification();
+        state.dirty_runs.insert(run.id.clone(), run.clone());
+
+        let (asked, sent) = ask_run(&mut state, &run.id, Some(&endpoint()));
+
+        assert!(asked);
+        let body = asked_about(&sent[0].1);
+        let (_, question) = body
+            .split_once("--- the user asked ---")
+            .expect("a question in the header");
+        let question = question
+            .split_once("--- run history ---")
+            .expect("and a history under it")
+            .0;
+        assert!(
+            question.contains("background task a10fe836 completed:"),
+            "{question}"
+        );
+        assert!(
+            question.contains("The review found four issues."),
+            "{question}"
+        );
+        assert!(!question.contains('<'), "{question}");
+        // The same two things the pane lane drops, for the same reasons.
+        assert!(!question.contains("notify more than once"), "{question}");
+        assert!(!question.contains("/private/tmp"), "{question}");
+    }
+
+    /// A prompt with a question in it and then one with none. The second is a new turn rather
+    /// than a continuation of the first, so what it leaves behind is nothing at all - an empty
+    /// string kept under the pane's id would be a question the summariser has to filter out
+    /// again downstream, and one nothing here would ever clear.
+    #[test]
+    fn a_prompt_that_is_all_machinery_keeps_no_question() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+
+        feed_naming(&mut state, 7, &prompt("fix the flaky reconnect test"));
+        assert_eq!(
+            state.prompts.get(&7).map(String::as_str),
+            Some("fix the flaky reconnect test")
+        );
+
+        // A reminder is the harness talking to the agent about how to behave. It says nothing
+        // about what the turn is for, which is why its `question` is `None`.
+        feed_naming(
+            &mut state,
+            7,
+            &prompt("<system-reminder>\nBe concise.\n</system-reminder>"),
+        );
+        assert_eq!(state.prompts.get(&7), None);
     }
 
     /// A reply carrying a run id must never be taken up by the half that renames panes and
