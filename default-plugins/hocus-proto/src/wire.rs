@@ -103,12 +103,11 @@ pub const AGENT_RUN_DETAIL: &str = "agent_run_detail";
 pub const AGENT_ARCHIVE_MORE: &str = "agent_archive_more";
 /// hocus-agents → agentd: "describe this agent now".
 ///
-/// The one summary nobody has to justify. Every other one is the daemon deciding that an
-/// edge was worth an HTTP request, and every guard around it - the cooldown, the baseline,
-/// the staleness check - exists to stop it asking too often. A user who pressed a key has
-/// already answered that question, so this path keeps only the guards that protect
-/// correctness (one request per target at a time, and something to describe) and drops the
-/// ones that protect the budget.
+/// The one summary somebody asks for. The daemon buys exactly one of its own accord, when a
+/// run closes, and reads no screens at all, so this is what describes an agent that is still
+/// working. The guards left on the path are the ones that protect correctness rather than the
+/// budget: `summaries "false"`, one request per target at a time, a pane that still looks like
+/// an agent and has not dropped back to its shell prompt, and something to describe.
 ///
 /// Broadcast rather than url-addressed, for the same reason [`AGENT_REFRESH`] is: a bare
 /// `zellij:hocus-agentd` url carries none of the alias' `shared true`, so it would miss the

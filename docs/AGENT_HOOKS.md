@@ -509,10 +509,10 @@ added. `zellij hocus hooks status` says when the installed script is old.
 | Carrying it on the pane | `zellij-server/src/panes/terminal_pane.rs` (`agent`, `agent_from_run`), `screen/thread_main.rs` (`SetPaneAgent`), `screen/mod.rs` (`fire_agent_exit_hook`, `fire_agent_state_hooks`, `agent_hook_edges`) |
 | The blinking bell in the pane's corner | `zellij-server/src/panes/terminal_pane.rs` (`agent_attention_since`, `acknowledge_agent_attention`), `ui/pane_boundaries_frame.rs` (`render_agent_attention`), `screen/mod.rs` (`blinking_agent_panes`, `animation_clock_period`, `advance_agent_attention_blinks`), `zellij-utils/src/animation.rs` (`blink_is_lit`, `BLINK_PERIOD`) |
 | What a row draws | `default-plugins/hocus-proto/src/agents.rs` (`HookFeed::from_agent`, `status_cell`, `waiting_marker`, `kind_cell`, `HOOK_MARKER`) |
-| What a wait says, and the summary | same (`waiting_toast`, `turn_summary_request_body`, `local_summary`) |
+| What a wait says, and the summary | same (`waiting_toast`, `run_summary_request_body`, `local_summary`) |
 | Run types, reduction and rendering | same (`AgentRun`, `run_entry`, `run_history`, `rows::run_mutations`, `rows::hydrate_entries`) |
 | Receiving the broadcast, persisting, publishing, toasting | `default-plugins/hocus-agentd/src/main.rs` (`on_hook_with`, `record_run_event`, `summarize_run_now_with`, `finish_local_summary_with`) |
-| Summaries somebody asked for | `default-plugins/hocus-agentd/src/main.rs` (`summarize_pane_now_with`, `summarize_run_now_with`, `finish_run_summary`, `Origin::Manual`, `Span`), `default-plugins/hocus-proto/src/agents.rs` (`push_summary_entry`, `RunEntryKind::Summary`), `default-plugins/hocus-agents/src/main.rs` (`request_summary`) |
+| Summaries somebody asked for | `default-plugins/hocus-agentd/src/main.rs` (`summarize_pane_now_with`, `send_run_summary`, `summarize_run_now_with`, `finish_run_summary`, `run_delta`), `default-plugins/hocus-proto/src/agents.rs` (`push_summary_entry`, `RunEntryKind::Summary`), `default-plugins/hocus-agents/src/main.rs` (`request_summary`) |
 | Archive paging and selection | `default-plugins/hocus/src/transitions.rs`, `default-plugins/hocus-agents/src/main.rs` |
 
 The pipe's name and its two arguments — the pane, and the kind — are spelled once, in
