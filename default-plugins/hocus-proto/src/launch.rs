@@ -169,8 +169,13 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
     }
     let mode = trimmed(&spec.permission_mode);
     let resume = trimmed(&spec.resume);
+    // A Firecracker pane's hooks are installed in the guest when the VM is provisioned, so
+    // nothing is handed to the agent here. Claude Code *merges* hooks across settings sources
+    // rather than letting one override another, so a second copy inline would fire every
+    // event twice - and it would carry the local `agent-report` command, which cannot reach
+    // a session from inside a VM anyway.
     let firecracker = trimmed(&spec.firecracker).is_some();
-    let hooks = spec.hooks.unwrap_or(true);
+    let hooks = spec.hooks.unwrap_or(true) && !firecracker;
     let unknown_mode = |accepted: &[&str], mode: &str| {
         Err(format!(
             "{kind} has no permission mode {mode:?}; it accepts: {}",
@@ -201,12 +206,7 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
                 // The hooks that make the pane report its own state, handed over whole:
                 // no script, no settings file, and nothing to install first.
                 flags.push("--settings".to_owned());
-                flags.push(if firecracker {
-                    zellij_tile::agent::claude_hook_settings("zellij --pty-broker report claude")
-                        .to_string()
-                } else {
-                    claude_hook_settings_argument()
-                });
+                flags.push(claude_hook_settings_argument());
             }
         },
         Some("codex") => {
@@ -467,8 +467,11 @@ mod tests {
         assert_eq!(checkout, GitCheckout::Current);
     }
 
+    /// The VM's own install is the only one: the provider wires both agents' hooks in the
+    /// guest at provisioning, and Claude Code merges hooks across settings sources rather
+    /// than overriding, so a second copy handed in here would fire every event twice.
     #[test]
-    fn firecracker_agents_use_the_reporting_bridge_and_keep_explicit_environment() {
+    fn firecracker_agents_leave_the_hooks_to_the_guest_and_keep_explicit_environment() {
         let (command, checkout) = plan(&Spec {
             firecracker: Some("review".to_owned()),
             env: BTreeMap::from([("TOKEN".to_owned(), "explicit".to_owned())]),
@@ -479,13 +482,11 @@ mod tests {
         assert_eq!(command.target.firecracker_vm(), Some("review"));
         assert_eq!(command.path, PathBuf::from("env"));
         assert_eq!(command.args[0], "TOKEN=explicit");
-        let settings = command
-            .args
-            .iter()
-            .position(|arg| arg == "--settings")
-            .and_then(|index| command.args.get(index + 1))
-            .expect("Firecracker Claude hook settings");
-        assert!(settings.contains("zellij --pty-broker report claude"));
+        assert!(
+            !command.args.iter().any(|arg| arg == "--settings"),
+            "{:?}",
+            command.args
+        );
     }
 
     #[test]

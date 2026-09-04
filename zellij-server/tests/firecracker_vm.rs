@@ -151,7 +151,8 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
     assert_eq!(listing.vms[0].name, name);
 
     // Inside the guest: change every kind of file, read the credential back, and report a
-    // hook event the way a Claude hook in the guest does.
+    // hook event the way a Claude hook in the guest does - both by hand, and through the
+    // script provisioning installed, which is what an agent started in the pane actually runs.
     let text = run_in_guest(
         &ensured,
         concat!(
@@ -160,6 +161,19 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
             "printf 'cred-mode=%s ' \"$(stat -c %a /root/.zellij-test/auth.json)\"; ",
             "grep -q firecracker-test-secret /root/.zellij-test/auth.json && printf 'cred-ok '; ",
             "printf '{\"hook_event_name\":\"Stop\",\"session_id\":\"fc-test\"}' | zellij --pty-broker report claude && printf 'hook-reported '; ",
+            // Provisioning wired both agents, and both scripts take the broker route.
+            "test -x /root/.claude/hocus/hocus-hook.sh; ",
+            "test -x /root/.codex/hocus/hocus-hook.sh; ",
+            "grep -q 'pty-broker report claude' /root/.claude/hocus/hocus-hook.sh; ",
+            "grep -q 'pty-broker report codex' /root/.codex/hocus/hocus-hook.sh; ",
+            "grep -q hocus-hook /root/.claude/settings.json; ",
+            "grep -q hocus-hook /root/.codex/hooks.json; ",
+            "printf 'hooks-installed '; ",
+            // The installed script itself, with nothing but the event on stdin: it must find
+            // the pane by its broker token and be accepted, and say nothing on stdout.
+            "out=$(printf '{\"hook_event_name\":\"Stop\",\"session_id\":\"fc-test\"}' ",
+            "| /root/.claude/hocus/hocus-hook.sh); ",
+            "test -z \"$out\" && printf 'script-silent '; ",
             "printf 'guest-edits-done'"
         ),
         "guest-edits-done",
@@ -168,6 +182,14 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
     assert!(
         text.contains("hook-reported"),
         "the guest's hook report was not accepted by its broker: {text:?}"
+    );
+    assert!(
+        text.contains("hooks-installed"),
+        "provisioning did not install the coding-agent hooks in the guest: {text:?}"
+    );
+    assert!(
+        text.contains("script-silent"),
+        "the installed hook script did not run cleanly in the guest: {text:?}"
     );
 
     fs::write(&host_credential, "{\"token\":\"refreshed\"}").unwrap();

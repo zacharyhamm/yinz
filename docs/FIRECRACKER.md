@@ -517,12 +517,22 @@ on the server's `PATH`; a development checkout whose `zellij` is not the one on 
 `zellij_path` in the hocus plugin block, since a mismatched build can speak a different provider
 protocol.
 
-Claude hook events use a pane-scoped control sequence on the authenticated SSH terminal. Zellij
-updates the pane agent record and broadcasts the event to plugins. The control sequence does not
-open a host listener. Zellij honours it only on Firecracker panes: a local pane reports through
-`zellij action agent-report`, and an ordinary ssh pane is not trusted to write agent records,
-since any program in it could print the sequence. Configure Codex in a custom image to run
-`zellij --pty-broker report codex` for equivalent hook reporting.
+Coding-agent hooks are installed in the guest when a VM is provisioned: the provider runs
+`zellij hocus hooks install` there, which wires both Claude Code and Codex, so a `claude` or a
+`codex` typed at a shell inside a VM pane reports its own state rather than being guessed at from
+its screen. The installed script sees `ZELLIJ_REMOTE_PANE_TOKEN` in a remote pane and hands each
+event to the guest's pane broker (`zellij --pty-broker report <kind>`) instead of to a session
+that does not exist on that machine; the broker relays it to the pane's server on the pane's own
+control channel, which sets the pane's agent record and broadcasts the event to plugins. Because
+the event arrives over the transport rather than out of the pane's bytes, nothing a program prints
+into the pane can forge one, and ssh and Firecracker panes are treated alike. See
+`docs/AGENT_HOOKS.md`.
+
+Codex will not run a hook it has not been told to trust, so open `/hooks` inside the guest's codex
+once per VM and approve what the installer wrote; nothing reports until you do. A Hocus-spawned
+`claude` in a VM is handed no inline hook settings, precisely because the guest install is already
+there and Claude Code merges hooks across settings sources rather than overriding — which also
+means `hooks: false` on a spawn does not suppress hooks inside a VM.
 
 Zellij passes the remote pane's terminal and locale allowlist. It also passes environment values
 that `agent_spawn` explicitly supplies. It does not copy the rest of the host environment. Use
