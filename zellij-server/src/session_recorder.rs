@@ -235,58 +235,110 @@ pub fn spawn_session_recorder(
     Some((handle, thread))
 }
 
-fn remember_recording_error(result: anyhow::Result<()>, first_error: &mut Option<String>) {
-    use zellij_utils::errors::prelude::*;
-
-    if let Err(error) = result {
-        first_error.get_or_insert_with(|| format!("{error:#}"));
-        Err::<(), _>(error).non_fatal();
-    }
+/// The recorder thread's view of one recording: the store, the pending batch, and what the
+/// store has been told about loss so far.
+struct Recording {
+    store: Box<dyn RecordingSession>,
+    batch: Vec<RecordedEvent>,
+    batch_start: Option<Instant>,
+    /// The first storage failure, kept so a later healthy write cannot hide it.
+    first_error: Option<String>,
+    /// The loss reason last written to the store. The marker is rewritten only when the reason
+    /// changes, and a write that failed is retried at the next flush because this stays stale.
+    persisted_loss: Option<String>,
+    dropped: Arc<AtomicUsize>,
+    enabled: Arc<AtomicBool>,
 }
 
-fn mark_recording_loss(
-    store: &mut dyn RecordingSession,
-    first_error: &Option<String>,
-    dropped: &AtomicUsize,
-    enabled: bool,
-) -> anyhow::Result<()> {
-    let mut reasons: Vec<String> = first_error.iter().cloned().collect();
-    let dropped = dropped.load(Ordering::Relaxed);
-    if dropped > 0 {
-        reasons.push(format!("dropped {dropped} recording events"));
-    } else if !enabled {
-        reasons.push("recorder channel full or disconnected".to_owned());
+impl Recording {
+    fn remember(&mut self, result: anyhow::Result<()>) {
+        if let Err(error) = result {
+            self.first_error.get_or_insert_with(|| format!("{error:#}"));
+            Err::<(), _>(error).non_fatal();
+        }
     }
-    if let Some(reason) = (!reasons.is_empty()).then(|| reasons.join("; ")) {
-        store
+
+    fn loss_reason(&self) -> Option<String> {
+        let mut reasons: Vec<String> = self.first_error.iter().cloned().collect();
+        let dropped = self.dropped.load(Ordering::Relaxed);
+        if dropped > 0 {
+            reasons.push(format!("dropped {dropped} recording events"));
+        } else if !self.enabled.load(Ordering::Relaxed) {
+            reasons.push("recorder channel full or disconnected".to_owned());
+        }
+        (!reasons.is_empty()).then(|| reasons.join("; "))
+    }
+
+    /// Writes the loss marker when the reason has changed since it was last saved. An unchanged
+    /// reason costs nothing, and a write that failed is tried again on the next call.
+    fn sync_loss_marker(&mut self) -> anyhow::Result<()> {
+        let Some(reason) = self.loss_reason() else {
+            return Ok(());
+        };
+        if self.persisted_loss.as_deref() == Some(reason.as_str()) {
+            return Ok(());
+        }
+        self.store
             .mark_incomplete(&reason)
             .context("failed to mark recording incomplete")?;
+        self.persisted_loss = Some(reason);
+        Ok(())
     }
-    Ok(())
-}
 
-fn flush_recording_batch(
-    store: &mut dyn RecordingSession,
-    batch: &mut Vec<RecordedEvent>,
-    batch_start: &mut Option<Instant>,
-    first_error: &mut Option<String>,
-    dropped: &AtomicUsize,
-) {
-    use zellij_utils::errors::prelude::*;
+    /// Saves the marker, logging a failure that the next flush or pane operation will retry.
+    fn save_loss_marker(&mut self) {
+        self.sync_loss_marker()
+            .context("recording loss marker not saved; retrying at the next flush")
+            .non_fatal();
+    }
 
-    if !batch.is_empty() {
-        let result = store
-            .record_events(batch)
+    /// Records a pane operation's outcome and saves any loss it introduced right away, so the
+    /// marker is on disk before a closed pane can be listed as finished.
+    fn remember_and_save(&mut self, result: anyhow::Result<()>) {
+        self.remember(result);
+        self.save_loss_marker();
+    }
+
+    /// Writes the pending batch, then saves any loss it caused or that the channel reported
+    /// meanwhile. Empty flushes skip the marker: an idle recorder with broken storage should not
+    /// retry every 100ms, and every new loss reason reaches a non-empty flush or a pane operation.
+    fn flush(&mut self) {
+        self.batch_start = None;
+        if self.batch.is_empty() {
+            return;
+        }
+        let result = self
+            .store
+            .record_events(&self.batch)
             .context("failed to record events");
         if result.is_err() {
-            dropped.fetch_add(batch.len(), Ordering::Relaxed);
+            self.dropped.fetch_add(self.batch.len(), Ordering::Relaxed);
         }
-        remember_recording_error(result, first_error);
         // The backend does not promise retry safety. Discard failed batches, but
-        // remember the failure so finalization cannot report a complete recording.
-        batch.clear();
+        // remember the failure so the recording cannot be reported complete.
+        self.batch.clear();
+        self.remember(result);
+        self.save_loss_marker();
     }
-    *batch_start = None;
+
+    /// Flushes what is left and finishes the session, unless its loss marker cannot be saved:
+    /// a session without an end timestamp lists as running, which is more honest than complete.
+    fn finish(&mut self, ended_at_us: i64, ended_elapsed_us: i64) {
+        self.flush();
+        if let Err(error) = self.sync_loss_marker() {
+            Err::<(), _>(error)
+                .context("leaving recording unfinalized because its loss marker could not be saved")
+                .non_fatal();
+            return;
+        }
+        let finish_session = self
+            .store
+            .finish_session(ended_at_us, ended_elapsed_us)
+            .context("failed to finish session");
+        if finish_session.is_err() {
+            self.remember_and_save(finish_session);
+        }
+    }
 }
 
 fn recorder_thread(
@@ -299,9 +351,7 @@ fn recorder_thread(
     enabled: Arc<AtomicBool>,
     dropped: Arc<AtomicUsize>,
 ) {
-    use zellij_utils::errors::prelude::*;
-
-    let mut store =
+    let store =
         match data_access
             .recordings()
             .start_recording(&session_name, capture_input, started_at_us)
@@ -314,22 +364,26 @@ fn recorder_thread(
                 return;
             },
         };
-    let mut batch: Vec<RecordedEvent> = Vec::new();
-    let mut batch_start: Option<Instant> = None;
-    let mut first_error = None;
+    let mut recording = Recording {
+        store,
+        batch: Vec::new(),
+        batch_start: None,
+        first_error: None,
+        persisted_loss: None,
+        dropped,
+        enabled: enabled.clone(),
+    };
     let flush_interval = Duration::from_millis(100);
     loop {
-        if batch.len() >= 256 || batch_start.is_some_and(|start| start.elapsed() >= flush_interval)
+        if recording.batch.len() >= 256
+            || recording
+                .batch_start
+                .is_some_and(|start| start.elapsed() >= flush_interval)
         {
-            flush_recording_batch(
-                store.as_mut(),
-                &mut batch,
-                &mut batch_start,
-                &mut first_error,
-                &dropped,
-            );
+            recording.flush();
         }
-        let timeout = batch_start
+        let timeout = recording
+            .batch_start
             .map(|start| flush_interval.saturating_sub(start.elapsed()))
             .unwrap_or(flush_interval);
         // Once disabled, drain queued instructions without waiting for more.
@@ -343,64 +397,35 @@ fn recorder_thread(
         };
         match instruction {
             Ok(RecorderInstruction::Events(mut events)) => {
-                if batch.is_empty() {
-                    batch_start = Some(Instant::now());
+                if recording.batch.is_empty() {
+                    recording.batch_start = Some(Instant::now());
                 }
-                batch.append(&mut events);
+                recording.batch.append(&mut events);
             },
             Ok(RecorderInstruction::PaneMetadata { elapsed_us, panes }) => {
-                flush_recording_batch(
-                    store.as_mut(),
-                    &mut batch,
-                    &mut batch_start,
-                    &mut first_error,
-                    &dropped,
-                );
-                remember_recording_error(
-                    store
-                        .update_panes(&panes, elapsed_us)
-                        .context("failed to update panes"),
-                    &mut first_error,
-                );
+                recording.flush();
+                let result = recording
+                    .store
+                    .update_panes(&panes, elapsed_us)
+                    .context("failed to update panes");
+                recording.remember_and_save(result);
             },
             Ok(RecorderInstruction::PaneClosed {
                 terminal_id,
                 elapsed_us,
             }) => {
-                flush_recording_batch(
-                    store.as_mut(),
-                    &mut batch,
-                    &mut batch_start,
-                    &mut first_error,
-                    &dropped,
-                );
-                remember_recording_error(
-                    store
-                        .finish_pane(terminal_id, elapsed_us)
-                        .with_context(|| format!("failed to finish pane {terminal_id}")),
-                    &mut first_error,
-                );
+                recording.flush();
+                let result = recording
+                    .store
+                    .finish_pane(terminal_id, elapsed_us)
+                    .with_context(|| format!("failed to finish pane {terminal_id}"));
+                recording.remember_and_save(result);
             },
             Ok(RecorderInstruction::Stop)
             | Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
-            Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
-                flush_recording_batch(
-                    store.as_mut(),
-                    &mut batch,
-                    &mut batch_start,
-                    &mut first_error,
-                    &dropped,
-                );
-            },
+            Err(crossbeam::channel::RecvTimeoutError::Timeout) => recording.flush(),
         }
     }
-    flush_recording_batch(
-        store.as_mut(),
-        &mut batch,
-        &mut batch_start,
-        &mut first_error,
-        &dropped,
-    );
     let ended_at_us = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
@@ -412,30 +437,7 @@ fn recorder_thread(
             0
         });
     let ended_elapsed_us = started_at.elapsed().as_micros() as i64;
-    if let Err(error) = mark_recording_loss(
-        store.as_mut(),
-        &first_error,
-        &dropped,
-        enabled.load(Ordering::Relaxed),
-    ) {
-        Err::<(), _>(error)
-            .context("leaving recording unfinalized because its loss marker could not be saved")
-            .non_fatal();
-        return;
-    }
-    let finish_session = store
-        .finish_session(ended_at_us, ended_elapsed_us)
-        .context("failed to finish session");
-    if finish_session.is_err() {
-        remember_recording_error(finish_session, &mut first_error);
-        mark_recording_loss(
-            store.as_mut(),
-            &first_error,
-            &dropped,
-            enabled.load(Ordering::Relaxed),
-        )
-        .non_fatal();
-    }
+    recording.finish(ended_at_us, ended_elapsed_us);
 }
 
 #[cfg(test)]
@@ -455,6 +457,16 @@ mod tests {
         events: Vec<RecordedEvent>,
         errors: Vec<String>,
         fail_once: Option<&'static str>,
+        fail_always: Option<&'static str>,
+    }
+
+    impl RecordingLog {
+        fn marker_writes(&self) -> usize {
+            self.calls
+                .iter()
+                .filter(|call| **call == "incomplete")
+                .count()
+        }
     }
 
     struct MemoryRecordingBackend(Watched<RecordingLog>);
@@ -466,6 +478,9 @@ mod tests {
             log.calls.push(operation);
             if log.fail_once == Some(operation) {
                 log.fail_once = None;
+                anyhow::bail!("injected {operation} failure");
+            }
+            if log.fail_always == Some(operation) {
                 anyhow::bail!("injected {operation} failure");
             }
             Ok(())
@@ -550,11 +565,30 @@ mod tests {
         }
     }
 
+    /// Runs the recorder thread body against the in-memory backend until `receiver` yields
+    /// `Stop` or disconnects.
+    fn run_recorder(
+        log: &Watched<RecordingLog>,
+        receiver: crossbeam::channel::Receiver<RecorderInstruction>,
+        enabled: bool,
+        dropped: usize,
+    ) {
+        let backend = Arc::new(MemoryRecordingBackend(log.clone()));
+        recorder_thread(
+            Arc::new(DataAccess::from_backends(backend.clone(), backend)),
+            "test".to_owned(),
+            false,
+            Instant::now(),
+            0,
+            receiver,
+            Arc::new(AtomicBool::new(enabled)),
+            Arc::new(AtomicUsize::new(dropped)),
+        );
+    }
+
     #[test]
     fn recorder_thread_uses_an_injected_backend() -> anyhow::Result<()> {
-        let calls = Watched::new(RecordingLog::default());
-        let backend = Arc::new(MemoryRecordingBackend(calls.clone()));
-        let data_access = Arc::new(DataAccess::from_backends(backend.clone(), backend));
+        let log = Watched::new(RecordingLog::default());
         let (sender, receiver) = crossbeam::channel::unbounded();
         sender.send(RecorderInstruction::Events(vec![RecordedEvent::output(
             1,
@@ -571,19 +605,10 @@ mod tests {
         })?;
         sender.send(RecorderInstruction::Stop)?;
 
-        recorder_thread(
-            data_access,
-            "test".to_owned(),
-            false,
-            Instant::now(),
-            0,
-            receiver,
-            Arc::new(AtomicBool::new(true)),
-            Arc::new(AtomicUsize::new(0)),
-        );
+        run_recorder(&log, receiver, true, 0);
 
         assert_eq!(
-            calls.lock().calls,
+            log.lock().calls,
             vec!["start", "events", "panes", "pane", "session"]
         );
         Ok(())
@@ -603,7 +628,6 @@ mod tests {
                     fail_once: failure,
                     ..Default::default()
                 });
-                let backend = Arc::new(MemoryRecordingBackend(log.clone()));
                 let (sender, receiver) = crossbeam::channel::unbounded();
                 let first = RecordedEvent::output(1, 1, b"first".to_vec());
                 let last = RecordedEvent::output(1, 4, b"last".to_vec());
@@ -627,17 +651,9 @@ mod tests {
                     .unwrap();
                 // Exercise disconnect/drain finalization, with no Stop instruction.
                 drop(sender);
-                recorder_thread(
-                    Arc::new(DataAccess::from_backends(backend.clone(), backend)),
-                    "test".to_owned(),
-                    false,
-                    Instant::now(),
-                    0,
-                    receiver,
-                    Arc::new(AtomicBool::new(enabled)),
-                    Arc::new(AtomicUsize::new(dropped)),
-                );
+                run_recorder(&log, receiver, enabled, dropped);
                 let log = log.lock();
+                let case = format!("failure {failure:?}, enabled {enabled}, dropped {dropped}");
                 let expected_events = if failure == Some("events") {
                     vec![last]
                 } else {
@@ -645,43 +661,49 @@ mod tests {
                 };
                 assert_eq!(
                     log.events, expected_events,
-                    "events must be attempted once, including when draining"
+                    "events must be attempted once, including when draining ({case})"
                 );
-                let mut expected_calls =
-                    vec!["start", "events", "panes", "pane", "events", "session"];
-                if failure.is_some() || dropped > 0 || !enabled {
-                    if failure == Some("session") && (dropped > 0 || !enabled) {
-                        expected_calls.insert(expected_calls.len() - 1, "incomplete");
-                    }
-                    if failure == Some("session") {
+                // The marker is written when a loss reason first appears and whenever it
+                // changes: channel loss at the first flush, a storage failure right after the
+                // operation that failed. An unchanged reason is never rewritten.
+                let channel_loss = dropped > 0 || !enabled;
+                let mut expected_calls = vec!["start"];
+                for (index, operation) in ["events", "panes", "pane", "events", "session"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let first_of_its_kind = !expected_calls.contains(&operation);
+                    expected_calls.push(operation);
+                    let failed_here = first_of_its_kind && failure == Some(operation);
+                    if failed_here || (index == 0 && channel_loss) {
                         expected_calls.push("incomplete");
-                    } else {
-                        expected_calls.insert(expected_calls.len() - 1, "incomplete");
                     }
-                    assert_eq!(
-                        log.errors.len(),
-                        1 + usize::from(failure == Some("session") && (dropped > 0 || !enabled))
-                    );
-                    if let Some(operation) = failure {
-                        assert!(log
-                            .errors
-                            .iter()
-                            .any(|error| error.contains(&format!("injected {operation} failure"))));
-                    }
-                    let expected_dropped = dropped + usize::from(failure == Some("events"));
-                    if expected_dropped > 0 {
-                        assert!(log.errors.iter().any(|error| error
-                            .contains(&format!("dropped {expected_dropped} recording events"))));
-                    } else if !enabled {
-                        assert!(log
-                            .errors
-                            .iter()
-                            .any(|error| error.contains("recorder channel full or disconnected")));
-                    }
-                } else {
-                    assert!(log.errors.is_empty());
                 }
-                assert_eq!(log.calls, expected_calls);
+                assert_eq!(log.calls, expected_calls, "{case}");
+                assert_eq!(log.errors.len(), log.marker_writes(), "{case}");
+                let Some(last_error) = log.errors.last() else {
+                    assert!(failure.is_none() && !channel_loss, "{case}");
+                    continue;
+                };
+                if let Some(operation) = failure {
+                    assert!(
+                        last_error.contains(&format!("injected {operation} failure")),
+                        "{case}: {last_error}"
+                    );
+                }
+                let expected_dropped = dropped + usize::from(failure == Some("events"));
+                if expected_dropped > 0 {
+                    assert!(
+                        last_error
+                            .contains(&format!("dropped {expected_dropped} recording events")),
+                        "{case}: {last_error}"
+                    );
+                } else if !enabled {
+                    assert!(
+                        last_error.contains("recorder channel full or disconnected"),
+                        "{case}: {last_error}"
+                    );
+                }
             }
         }
     }
@@ -693,7 +715,6 @@ mod tests {
                 fail_once: Some("events"),
                 ..Default::default()
             });
-            let backend = Arc::new(MemoryRecordingBackend(log.clone()));
             let (sender, receiver) = crossbeam::channel::unbounded();
             let count = if trigger == "size" { 256 } else { 1 };
             sender
@@ -706,18 +727,10 @@ mod tests {
                     count
                 ]))
                 .unwrap();
-            let thread = std::thread::spawn(move || {
-                recorder_thread(
-                    Arc::new(DataAccess::from_backends(backend.clone(), backend)),
-                    "test".to_owned(),
-                    false,
-                    Instant::now(),
-                    0,
-                    receiver,
-                    Arc::new(AtomicBool::new(true)),
-                    Arc::new(AtomicUsize::new(0)),
-                )
-            });
+            let thread = {
+                let log = log.clone();
+                std::thread::spawn(move || run_recorder(&log, receiver, true, 0))
+            };
             if trigger != "stop" {
                 log.wait_until("event flush before stopping", default_timeout(), |log| {
                     log.calls.contains(&"events").then_some(())
@@ -738,25 +751,119 @@ mod tests {
     }
 
     #[test]
+    fn loss_is_persisted_before_the_pane_closes() {
+        let log = Watched::new(RecordingLog {
+            fail_once: Some("events"),
+            ..Default::default()
+        });
+        let (sender, receiver) = crossbeam::channel::unbounded();
+        sender
+            .send(RecorderInstruction::Events(vec![RecordedEvent::output(
+                1,
+                1,
+                b"lost".to_vec(),
+            )]))
+            .unwrap();
+        sender
+            .send(RecorderInstruction::PaneClosed {
+                terminal_id: 1,
+                elapsed_us: 2,
+            })
+            .unwrap();
+        sender.send(RecorderInstruction::Stop).unwrap();
+        run_recorder(&log, receiver, true, 0);
+        let log = log.lock();
+        // A pane's end timestamp is what makes a listing call it finished, so the loss must be
+        // saved before `finish_pane`, not when the session ends.
+        assert_eq!(
+            log.calls,
+            vec!["start", "events", "incomplete", "pane", "session"]
+        );
+        assert_eq!(log.errors.len(), 1);
+        assert!(log.errors[0].contains("injected events failure"));
+        assert!(log.errors[0].contains("dropped 1 recording events"));
+    }
+
+    #[test]
+    fn a_failed_loss_marker_is_retried_at_the_next_flush() {
+        let log = Watched::new(RecordingLog {
+            fail_once: Some("incomplete"),
+            ..Default::default()
+        });
+        let (sender, receiver) = crossbeam::channel::unbounded();
+        let thread = {
+            let log = log.clone();
+            std::thread::spawn(move || run_recorder(&log, receiver, true, 1))
+        };
+        let first = RecordedEvent::output(1, 1, b"first".to_vec());
+        let second = RecordedEvent::output(1, 2, b"second".to_vec());
+        sender
+            .send(RecorderInstruction::Events(vec![first.clone()]))
+            .unwrap();
+        log.wait_until("the first marker write to fail", default_timeout(), |log| {
+            (log.marker_writes() == 1).then_some(())
+        });
+        sender
+            .send(RecorderInstruction::Events(vec![second.clone()]))
+            .unwrap();
+        log.wait_until("the marker to be retried", default_timeout(), |log| {
+            (log.marker_writes() == 2).then_some(())
+        });
+        sender.send(RecorderInstruction::Stop).unwrap();
+        thread.join().unwrap();
+        let log = log.lock();
+        // Idle flushes between the two batches do not retry, and finalization does not rewrite
+        // a marker that is already saved.
+        assert_eq!(
+            log.calls,
+            vec![
+                "start",
+                "events",
+                "incomplete",
+                "events",
+                "incomplete",
+                "session"
+            ]
+        );
+        assert_eq!(log.events, vec![first, second]);
+        assert_eq!(log.errors, vec!["dropped 1 recording events".to_owned()]);
+    }
+
+    #[test]
     fn failed_loss_marker_leaves_session_unfinalized() {
         let log = Watched::new(RecordingLog {
             fail_once: Some("incomplete"),
             ..Default::default()
         });
-        let backend = Arc::new(MemoryRecordingBackend(log.clone()));
         let (sender, receiver) = crossbeam::channel::unbounded();
         sender.send(RecorderInstruction::Stop).unwrap();
-        recorder_thread(
-            Arc::new(DataAccess::from_backends(backend.clone(), backend)),
-            "test".to_owned(),
-            false,
-            Instant::now(),
-            0,
-            receiver,
-            Arc::new(AtomicBool::new(true)),
-            Arc::new(AtomicUsize::new(1)),
-        );
+        run_recorder(&log, receiver, true, 1);
         assert_eq!(log.lock().calls, vec!["start", "incomplete"]);
+    }
+
+    #[test]
+    fn a_marker_that_never_saves_leaves_the_session_unfinalized() {
+        let log = Watched::new(RecordingLog {
+            fail_always: Some("incomplete"),
+            ..Default::default()
+        });
+        let (sender, receiver) = crossbeam::channel::unbounded();
+        sender
+            .send(RecorderInstruction::Events(vec![RecordedEvent::output(
+                1,
+                1,
+                b"x".to_vec(),
+            )]))
+            .unwrap();
+        sender.send(RecorderInstruction::Stop).unwrap();
+        run_recorder(&log, receiver, true, 1);
+        let log = log.lock();
+        // One attempt at the flush, one at finalization, and no end timestamp either way.
+        assert_eq!(
+            log.calls,
+            vec!["start", "events", "incomplete", "incomplete"]
+        );
+        assert!(log.errors.is_empty());
     }
 
     #[test]
