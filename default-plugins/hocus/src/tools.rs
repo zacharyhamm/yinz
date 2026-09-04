@@ -1994,6 +1994,13 @@ pub struct Family {
 /// are ambient lists that come up unprompted. `web` is one 230-byte tool, so
 /// deferring it would cost a round trip to save nothing.
 ///
+/// The other rule is that an always-on tool must not answer with an error only a
+/// deferred one can clear. `project_list` is in `code` for that reason rather
+/// than with the project tools that change something: every reader in `code`
+/// answers "no active project; … call project_list" when the tab is outside a
+/// checkout, and a model constrained to the advertised set cannot call a tool it
+/// was never offered.
+///
 /// The deferred eight are the ones a chat either uses a lot or not at all:
 /// nothing about driving panes needs Slack, Linear or the plugin authoring set.
 pub const FAMILIES: &[Family] = &[
@@ -2032,7 +2039,8 @@ pub const FAMILIES: &[Family] = &[
     },
     Family {
         name: "code",
-        summary: "the active project's files, git history and GitHub metadata",
+        summary: "the active project's files, git history and GitHub metadata, and which \
+                  projects there are",
         deferred: false,
         tools: &[
             "find_files",
@@ -2041,6 +2049,7 @@ pub const FAMILIES: &[Family] = &[
             "git_log",
             "git_show",
             "github_read",
+            "project_list",
         ],
     },
     Family {
@@ -2132,14 +2141,9 @@ pub const FAMILIES: &[Family] = &[
     },
     Family {
         name: "project",
-        summary: "list, open and assign the project hocus works in",
+        summary: "open and assign the project hocus works in",
         deferred: true,
-        tools: &[
-            "project_list",
-            "project_assign",
-            "project_forget",
-            "project_open",
-        ],
+        tools: &["project_assign", "project_forget", "project_open"],
     },
     Family {
         name: "vm",
@@ -2170,6 +2174,17 @@ pub fn family_of(name: &str) -> Option<&'static Family> {
     FAMILIES.iter().find(|family| family.tools.contains(&name))
 }
 
+/// The deferred family `name` asks for, ignoring the padding a model sometimes
+/// leaves around a JSON string value. One resolver so the loader's answer and
+/// the transcript derivation cannot disagree: a load answered "loaded" that
+/// derived nothing would advertise the family never, and say so never.
+fn deferred_family(name: &str) -> Option<&'static Family> {
+    let name = name.trim();
+    FAMILIES
+        .iter()
+        .find(|family| family.deferred && family.name == name)
+}
+
 /// The families that have to be asked for, in the order [`FAMILIES`] lists them.
 pub fn deferred_families() -> Vec<&'static str> {
     FAMILIES
@@ -2198,11 +2213,7 @@ pub fn loaded_families<'a>(calls: impl Iterator<Item = &'a ToolCall>) -> BTreeSe
             if let Some(name) = Args::parse(&call.arguments)
                 .ok()
                 .and_then(|args| args.family)
-                .and_then(|family| {
-                    FAMILIES
-                        .iter()
-                        .find(|candidate| candidate.deferred && candidate.name == family)
-                })
+                .and_then(|family| deferred_family(&family))
                 .map(|family| family.name)
             {
                 loaded.insert(name);
@@ -2230,10 +2241,7 @@ pub fn load_family(family: Option<&str>, read_only: bool) -> String {
             deferred_families().join(", ")
         );
     };
-    let Some(family) = FAMILIES
-        .iter()
-        .find(|candidate| candidate.deferred && candidate.name == name)
-    else {
+    let Some(family) = deferred_family(name) else {
         // An always-on family is not an error worth a retry: the tools are
         // already there, and saying so is the whole answer.
         if FAMILIES.iter().any(|candidate| candidate.name == name) {

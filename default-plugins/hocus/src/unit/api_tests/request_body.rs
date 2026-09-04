@@ -132,14 +132,14 @@ fn request_body_excludes_the_empty_streaming_placeholder() {
 }
 
 /// The always-on families plus the loader, which is what a conversation that has
-/// asked for nothing is told about. The other 35 arrive when it reaches for them;
+/// asked for nothing is told about. The other 34 arrive when it reaches for them;
 /// `tools_tests::families` is where that is pinned tool by tool.
 #[test]
 fn request_body_advertises_the_tools_when_they_are_enabled() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = body_value(&cfg, &[Message::user("hi")]);
-    assert_eq!(body["tools"].as_array().unwrap().len(), 47);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 48);
 }
 
 #[test]
@@ -182,11 +182,14 @@ fn request_body_advertises_registered_extension_tools() {
 /// the ratchet rather than the number — a tool added to a deferred family now moves
 /// `full` and leaves `floor`, which is the one paid every turn, exactly where it was.
 ///
-/// Measured when this landed: the floor body is 19 338 bytes and the fully loaded tool
+/// Measured when this landed: the floor body is 19 513 bytes and the fully loaded tool
 /// array is 33 390. The four Firecracker VM tools are what the split was for — they are
-/// a deferred family, so their ~1.4kb moved `full` and left `floor` where it was. Both
-/// caps keep headroom, for the reason the old comment gave — "a ceiling with no headroom
-/// stops measuring growth and starts forbidding it".
+/// a deferred family, so their ~1.4kb moved `full` and left `floor` where it was. The
+/// 175 bytes the floor did take are `project_list`, which is always on because the
+/// always-on readers answer "no active project; … call project_list" and a model
+/// constrained to the advertised set cannot follow that otherwise. Both caps keep
+/// headroom, for the reason the old comment gave — "a ceiling with no headroom stops
+/// measuring growth and starts forbidding it".
 #[test]
 fn the_tool_payload_floor_stays_under_20_kb() {
     let mut cfg = test_config();
@@ -619,7 +622,7 @@ fn acting_sends_the_body_it_always_did() {
     cfg.tools = true;
     let transcript = [Message::user("hi")];
     let body: serde_json::Value = serde_json::from_slice(&request_body(&cfg, &transcript)).unwrap();
-    assert_eq!(body["tools"].as_array().unwrap().len(), 47);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 48);
     assert!(!body["messages"][0]["content"]
         .as_str()
         .unwrap()
