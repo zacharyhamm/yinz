@@ -8,20 +8,18 @@ pub fn generate_random_name_permission_denied() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let cache_path = plugin_host_folder.join("permissions_test.kdl");
     let (plugin_thread_sender, screen_receiver, teardown) =
-        create_plugin_thread(Some(plugin_host_folder.clone()), None);
+        create_plugin_thread(Some(plugin_host_folder), None);
 
     let received_screen_instructions = Watched::new(vec![]);
     let client_id = 1;
 
-    let screen_thread = deny_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
+    // The permission is denied, so the fixture must never get a name to print.
+    let screen_thread = deny_permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        2,
-        &PermissionType::ReadApplicationState,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
     );
 
     let plugin_should_float = Some(false);
@@ -58,7 +56,8 @@ pub fn generate_random_name_permission_denied() {
         None,
     ));
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // The key has to reach the plugin after the denial, or the test is about something else.
+    wait_for_permissions_to_be_denied(&received_screen_instructions);
 
     // Send Ctrl+Shift+A to trigger generate_random_name()
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -71,19 +70,26 @@ pub fn generate_random_name_permission_denied() {
         ),
     )]));
 
-    // Give it time to potentially (incorrectly) send the output
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    // Either outcome the fixture can print, or the crash: a denied command gets no reply and the
+    // fixture unwraps the reply, so denial in fact traps the guest. Listing the success too keeps
+    // a wrongly granted command from timing out here instead of failing the assertion below.
+    wait_for_plugin_to_handle(
+        &received_screen_instructions,
+        0,
+        &["Generated name", "empty name"],
+    );
 
-    let _ = plugin_thread_sender.send(PluginInstruction::Exit);
-    screen_thread.join().unwrap();
+    // Everything the plugin thread will ever send has been sent once teardown has joined it, and
+    // the observer returns when the last sender is gone.
     teardown();
+    screen_thread.join().unwrap();
 
     let plugin_bytes_with_name = received_screen_instructions.lock().iter().find_map(|i| {
         if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
             for plugin_render_asset in plugin_render_assets {
                 let plugin_bytes = plugin_render_asset.bytes.clone();
                 let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                if plugin_bytes.contains("Generated name:") {
+                if plugin_bytes.contains("Generated name") {
                     return Some(plugin_bytes);
                 }
             }
@@ -102,20 +108,18 @@ pub fn save_layout_permission_denied() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let cache_path = plugin_host_folder.join("permissions_test.kdl");
     let (plugin_thread_sender, screen_receiver, teardown) =
-        create_plugin_thread(Some(plugin_host_folder.clone()), None);
+        create_plugin_thread(Some(plugin_host_folder), None);
 
     let received_screen_instructions = Watched::new(vec![]);
     let client_id = 1;
 
-    let screen_thread = deny_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
+    // The permission is denied, so the save must fail rather than succeed.
+    let screen_thread = deny_permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        2,
-        &PermissionType::ChangeApplicationState,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
     );
 
     let plugin_should_float = Some(false);
@@ -152,7 +156,8 @@ pub fn save_layout_permission_denied() {
         None,
     ));
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // The key has to reach the plugin after the denial, or the test is about something else.
+    wait_for_permissions_to_be_denied(&received_screen_instructions);
 
     // Send Ctrl+Alt+A to trigger save_layout()
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -165,19 +170,25 @@ pub fn save_layout_permission_denied() {
         ),
     )]));
 
-    // Give it time to potentially (incorrectly) send the output
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    // Either outcome the fixture can print, so that a wrongly granted save fails the assertion
+    // below rather than timing out here.
+    wait_for_plugin_to_handle(
+        &received_screen_instructions,
+        0,
+        &["Save layout success", "Save layout error"],
+    );
 
-    let _ = plugin_thread_sender.send(PluginInstruction::Exit);
-    screen_thread.join().unwrap();
+    // Everything the plugin thread will ever send has been sent once teardown has joined it, and
+    // the observer returns when the last sender is gone.
     teardown();
+    screen_thread.join().unwrap();
 
     let plugin_bytes_with_save = received_screen_instructions.lock().iter().find_map(|i| {
         if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
             for plugin_render_asset in plugin_render_assets {
                 let plugin_bytes = plugin_render_asset.bytes.clone();
                 let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                if plugin_bytes.contains("Save layout") {
+                if plugin_bytes.contains("Save layout success") {
                     return Some(plugin_bytes);
                 }
             }
@@ -187,6 +198,14 @@ pub fn save_layout_permission_denied() {
 
     // Should be None because permission was denied
     assert_snapshot!(format!("{:#?}", plugin_bytes_with_save));
+    // The denied command gets no reply, which the fixture reports as a save error: the key was
+    // handled, and handled as a failure.
+    assert!(
+        rendered_assets(&received_screen_instructions.lock())
+            .iter()
+            .any(|(_, frame)| frame.contains("Save layout error")),
+        "the denied save should have been reported as an error by the fixture"
+    );
 }
 
 #[test]

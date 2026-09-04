@@ -268,23 +268,6 @@ impl Drop for Harness {
     }
 }
 
-fn frame_of(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).replace("\n\r", "\n")
-}
-
-fn rendered_assets(instructions: &[ScreenInstruction]) -> Vec<(ClientId, String)> {
-    instructions
-        .iter()
-        .filter_map(|instruction| match instruction {
-            ScreenInstruction::PluginBytes(assets) => Some(assets),
-            _ => None,
-        })
-        .flatten()
-        .map(|asset| (asset.client_id, frame_of(&asset.bytes)))
-        .filter(|(_, frame)| !frame.is_empty())
-        .collect()
-}
-
 fn scroll_up(lines: usize) -> Event {
     Event::Mouse(Mouse::ScrollUp(lines))
 }

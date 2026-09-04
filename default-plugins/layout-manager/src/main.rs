@@ -308,3 +308,54 @@ impl ZellijPlugin for State {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::screens::ErrorScreen;
+
+    fn state_with_layouts(names: &[&str]) -> State {
+        State {
+            display_layouts: names
+                .iter()
+                .map(|name| {
+                    DisplayLayout::Valid(LayoutInfo::File(
+                        (*name).to_owned(),
+                        LayoutMetadata::default(),
+                    ))
+                })
+                .collect(),
+            screen: Screen::default(),
+        }
+    }
+
+    fn names(state: &State) -> Vec<String> {
+        state.display_layouts.iter().map(|l| l.name()).collect()
+    }
+
+    #[test]
+    fn a_refused_delete_leaves_the_list_alone_and_shows_the_error() {
+        let mut state = state_with_layouts(&["a.kdl", "b.kdl"]);
+        let refused = KeyResponse::new_screen(Screen::Error(ErrorScreen {
+            message: "read-only file system".to_owned(),
+            return_to_screen: Box::new(Screen::default()),
+        }));
+
+        assert!(state.apply_key_response(refused));
+
+        assert_eq!(names(&state), vec!["a.kdl", "b.kdl"]);
+        assert!(matches!(state.screen, Screen::Error(_)));
+    }
+
+    #[test]
+    fn a_confirmed_delete_removes_the_row() {
+        let mut state = state_with_layouts(&["a.kdl", "b.kdl"]);
+        let confirmed =
+            KeyResponse::none().with_optimistic(OptimisticUpdate::Delete("a.kdl".to_owned()));
+
+        assert!(state.apply_key_response(confirmed));
+
+        assert_eq!(names(&state), vec!["b.kdl"]);
+        assert!(matches!(state.screen, Screen::LayoutList(_)));
+    }
+}

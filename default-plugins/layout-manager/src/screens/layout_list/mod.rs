@@ -1,6 +1,6 @@
 mod search;
 
-use super::{KeyResponse, OptimisticUpdate, Screen};
+use super::{ErrorScreen, KeyResponse, OptimisticUpdate, Screen};
 use crate::ui::{Controls, LayoutDetail, LayoutsTable};
 use crate::DisplayLayout;
 use search::SearchState;
@@ -63,12 +63,7 @@ impl LayoutListScreen {
                     KeyResponse::render()
                 },
                 BareKey::Delete if key.has_no_modifiers() => {
-                    if let Some(file_name) = self.get_selected_file_name(display_layouts) {
-                        let _ = delete_layout(file_name.clone());
-                        KeyResponse::none().with_optimistic(OptimisticUpdate::Delete(file_name))
-                    } else {
-                        KeyResponse::none()
-                    }
+                    self.delete_selected_layout(display_layouts, delete_layout)
                 },
                 BareKey::Char('e') if key.has_no_modifiers() => {
                     self.edit_selected_layout(display_layouts);
@@ -206,6 +201,34 @@ impl LayoutListScreen {
             InputAction::Complete => KeyResponse::none(),
             InputAction::NoAction => KeyResponse::none(),
         }
+    }
+
+    /// Asks the host to delete the selected layout and only then takes it off the list.
+    ///
+    /// The host answers synchronously and can say no - a read-only layout directory, a file
+    /// that is already gone - and a row that vanishes on a failed delete tells the user the
+    /// opposite of what happened. The host call is a parameter so the decision can be tested
+    /// off wasm, where the real `delete_layout` has no host to talk to.
+    fn delete_selected_layout(
+        &self,
+        display_layouts: &[DisplayLayout],
+        delete: impl FnOnce(String) -> Result<(), String>,
+    ) -> KeyResponse {
+        let Some(file_name) = self.get_selected_file_name(display_layouts) else {
+            return KeyResponse::none();
+        };
+        match delete(file_name.clone()) {
+            Ok(()) => KeyResponse::none().with_optimistic(OptimisticUpdate::Delete(file_name)),
+            Err(error_msg) => KeyResponse::new_screen(self.create_error_screen(&error_msg)),
+        }
+    }
+
+    /// An error screen that returns to this list, selection and all, on any key.
+    fn create_error_screen(&self, message: &str) -> Screen {
+        Screen::Error(ErrorScreen {
+            message: message.to_string(),
+            return_to_screen: Box::new(Screen::LayoutList(self.clone())),
+        })
     }
 
     fn edit_selected_layout(&self, display_layouts: &[DisplayLayout]) {
@@ -737,4 +760,116 @@ fn calculate_visible_window(
         before,
         layouts.len().saturating_sub(after + 1),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn file_layout(name: &str) -> DisplayLayout {
+        DisplayLayout::Valid(LayoutInfo::File(name.to_owned(), LayoutMetadata::default()))
+    }
+
+    fn list_with_selection(index: usize) -> LayoutListScreen {
+        LayoutListScreen {
+            selected_layout_index: index,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_confirmed_delete_takes_the_layout_off_the_list() {
+        let layouts = [file_layout("first.kdl"), file_layout("second.kdl")];
+        let screen = list_with_selection(1);
+
+        let response = screen.delete_selected_layout(&layouts, |name| {
+            assert_eq!(name, "second.kdl");
+            Ok(())
+        });
+
+        assert!(
+            matches!(response.optimistic_update, Some(OptimisticUpdate::Delete(ref name)) if name == "second.kdl"),
+            "a confirmed delete should remove the row optimistically"
+        );
+        assert!(response.new_screen.is_none());
+    }
+
+    #[test]
+    fn a_refused_delete_keeps_the_list_and_shows_the_host_error() {
+        let layouts = [file_layout("first.kdl"), file_layout("second.kdl")];
+        let screen = list_with_selection(1);
+
+        let response = screen.delete_selected_layout(&layouts, |_| {
+            Err("Failed to delete layout 'second.kdl': read-only file system".to_owned())
+        });
+
+        assert!(
+            response.optimistic_update.is_none(),
+            "a refused delete must not touch the list"
+        );
+        assert!(response.should_render);
+        let Some(Screen::Error(error)) = response.new_screen else {
+            panic!("a refused delete should show the host's error");
+        };
+        assert!(error.message.contains("read-only file system"));
+        assert!(
+            matches!(*error.return_to_screen, Screen::LayoutList(ref list) if list.selected_layout_index == 1),
+            "dismissing the error should return to the list with the selection kept"
+        );
+    }
+
+    #[test]
+    fn nothing_selected_means_nothing_to_delete() {
+        let screen = list_with_selection(0);
+        let asked = Cell::new(false);
+
+        let response = screen.delete_selected_layout(&[], |_| {
+            asked.set(true);
+            Ok(())
+        });
+
+        assert!(
+            !asked.get(),
+            "the host must not be asked about a layout that does not exist"
+        );
+        assert!(response.optimistic_update.is_none());
+        assert!(response.new_screen.is_none());
+    }
+
+    #[test]
+    fn a_builtin_layout_is_not_deletable() {
+        let layouts = [DisplayLayout::Valid(LayoutInfo::BuiltIn(
+            "default".to_owned(),
+        ))];
+        let screen = list_with_selection(0);
+        let asked = Cell::new(false);
+
+        let response = screen.delete_selected_layout(&layouts, |_| {
+            asked.set(true);
+            Ok(())
+        });
+
+        assert!(!asked.get());
+        assert!(response.optimistic_update.is_none());
+    }
+
+    #[test]
+    fn a_layout_that_failed_to_parse_is_deleted_by_its_file_name() {
+        let layouts = [DisplayLayout::Error {
+            name: "broken.kdl".to_owned(),
+            error: "unexpected token".to_owned(),
+            error_message: "Layout Error".to_owned(),
+        }];
+        let screen = list_with_selection(0);
+
+        let response = screen.delete_selected_layout(&layouts, |name| {
+            assert_eq!(name, "broken.kdl");
+            Ok(())
+        });
+
+        assert!(
+            matches!(response.optimistic_update, Some(OptimisticUpdate::Delete(ref name)) if name == "broken.kdl")
+        );
+    }
 }

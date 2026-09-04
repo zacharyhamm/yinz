@@ -874,16 +874,13 @@ pub fn copy_to_clipboard_without_permission() {
     let received_screen_instructions = Watched::new(vec![]);
     let client_id = 1;
 
-    // This test denies the permission and expects no CopyTextToClipboard instruction
-    let screen_thread = deny_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::CopyTextToClipboard,
+    // The permission is denied, so no CopyTextToClipboard may reach the screen.
+    let screen_thread = deny_permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        1,
-        &PermissionType::WriteToClipboard,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
     );
 
     let plugin_should_float = Some(false);
@@ -920,7 +917,8 @@ pub fn copy_to_clipboard_without_permission() {
         None,
     ));
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // The key has to reach the plugin after the denial, or the test is about something else.
+    wait_for_permissions_to_be_denied(&received_screen_instructions);
 
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
@@ -928,12 +926,14 @@ pub fn copy_to_clipboard_without_permission() {
         Event::Key(KeyWithModifier::new(BareKey::Char('c')).with_super_modifier()),
     )]));
 
-    // Give it time to potentially (incorrectly) send the instruction
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    // The key has been handled once the fixture prints it; a CopyTextToClipboard the host wrongly
+    // sent while handling it went down the same channel before this frame did.
+    wait_for_render_containing(&received_screen_instructions, "bare_key: Char('c')");
 
-    let _ = plugin_thread_sender.send(PluginInstruction::Exit);
-    screen_thread.join().unwrap();
+    // Everything the plugin thread will ever send has been sent once teardown has joined it, and
+    // the observer returns when the last sender is gone.
     teardown();
+    screen_thread.join().unwrap();
 
     let copy_instruction = received_screen_instructions.lock().iter().find_map(|i| {
         if let ScreenInstruction::CopyTextToClipboard(text, plugin_id) = i {
@@ -959,15 +959,13 @@ pub fn run_action_without_permission() {
     let received_screen_instructions = Watched::new(vec![]);
     let client_id = 1;
 
-    let screen_thread = deny_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::MoveFocusLeft,
+    // The permission is denied, so the action may not be routed: no MoveFocusLeft.
+    let screen_thread = deny_permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        1,
-        &PermissionType::RunActionsAsUser,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
     );
 
     let plugin_should_float = Some(false);
@@ -1004,7 +1002,8 @@ pub fn run_action_without_permission() {
         None,
     ));
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // The key has to reach the plugin after the denial, or the test is about something else.
+    wait_for_permissions_to_be_denied(&received_screen_instructions);
 
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
@@ -1012,11 +1011,15 @@ pub fn run_action_without_permission() {
         Event::Key(KeyWithModifier::new(BareKey::Char('d')).with_super_modifier()),
     )]));
 
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    // Proves the key was handled. `run_action` routes on a thread of its own, so a wrongly
+    // permitted MoveFocusLeft is not ordered before this frame - it is caught by the observer
+    // outliving that thread instead.
+    wait_for_render_containing(&received_screen_instructions, "bare_key: Char('d')");
 
-    let _ = plugin_thread_sender.send(PluginInstruction::Exit);
-    screen_thread.join().unwrap();
+    // Everything the plugin thread will ever send has been sent once teardown has joined it, and
+    // the observer returns when the last sender is gone.
     teardown();
+    screen_thread.join().unwrap();
 
     let move_focus_instruction = received_screen_instructions.lock().iter().find_map(|i| {
         if let ScreenInstruction::MoveFocusLeft(client_id, notification_end) = i {
