@@ -121,11 +121,19 @@ fn a_control_frame_overtakes_input_that_is_still_queued() {
     let (conn, mut peer) = conn_pair();
     // Fill until the socket stops accepting, so there is a real backlog.
     let payload = vec![b'x'; 64 * 1024];
+    let mut accepted = 0usize;
     for _ in 0..200 {
-        if conn.write_input(&payload).expect("write failed") == 0 {
+        let taken = conn.write_input(&payload).expect("write failed");
+        accepted += taken;
+        if taken == 0 {
             break;
         }
     }
+    assert!(
+        accepted > payload.len(),
+        "the queue took only {accepted} bytes, so there is no backlog for the \
+         resize to overtake and this test would prove nothing"
+    );
     conn.resize(WireWinsize {
         cols: 120,
         rows: 40,
@@ -135,19 +143,32 @@ fn a_control_frame_overtakes_input_that_is_still_queued() {
     .expect("resize failed");
 
     // Drain the peer and pump the connection, the way `pty_writer` re-drives it
-    // every `PENDING_DRAIN_TIMEOUT`, until nothing more comes out.
+    // every `PENDING_DRAIN_TIMEOUT`, until everything that was accepted has come
+    // out. The end condition is the byte count, not an empty read: a drain yields
+    // whole frames only, so where the socket buffer is smaller than a frame -
+    // macOS gives a `socketpair` 8KiB against Linux's ~200KiB - it comes back
+    // empty *between* frames while the queue is still full. Treating that as
+    // "drained" stopped the loop before the frames this test is about.
     let mut frames = Vec::new();
     let mut leftover = Vec::new();
-    for _ in 0..200 {
-        let batch = drain_frames(&mut peer, &mut leftover);
-        let empty = batch.is_empty();
-        frames.extend(batch);
-        // An empty write flushes without enqueuing anything.
-        let _ = conn.write_input(&[]);
-        if empty && frames.iter().any(|f| matches!(f, Frame::Control(_))) {
+    let mut delivered = 0usize;
+    for _ in 0..2000 {
+        for frame in drain_frames(&mut peer, &mut leftover) {
+            if let Frame::Input(bytes) = &frame {
+                delivered += bytes.len();
+            }
+            frames.push(frame);
+        }
+        if delivered >= accepted {
             break;
         }
+        // An empty write flushes without enqueuing anything.
+        let _ = conn.write_input(&[]);
     }
+    assert_eq!(
+        delivered, accepted,
+        "only {delivered} of the {accepted} accepted bytes ever reached the wire"
+    );
 
     let control_at = frames
         .iter()

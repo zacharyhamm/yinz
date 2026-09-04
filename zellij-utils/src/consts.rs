@@ -211,6 +211,23 @@ pub const IPC_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_m
 #[cfg(unix)]
 const IPC_CONNECT_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 
+/// Whether this kernel refuses a connection outright when the listener's backlog
+/// is full.
+///
+/// Linux queues the connect and answers `EAGAIN`, which says exactly "the
+/// backlog is full" and nothing else. The BSDs return `ECONNREFUSED` — the same
+/// errno they give for a socket file whose server is gone — so on those the
+/// answer carries no information on its own and can only be retried, never
+/// believed. Left `false` on Linux so nothing there changes.
+#[cfg(unix)]
+pub(crate) const A_FULL_BACKLOG_IS_REFUSED: bool = cfg!(any(
+    target_vendor = "apple",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+));
+
 /// Fill in a `sockaddr_un` for `path`.
 #[cfg(unix)]
 pub(crate) fn unix_socket_address(
@@ -400,6 +417,21 @@ pub fn ipc_connect(path: &std::path::Path) -> std::io::Result<interprocess::loca
         let err = std::io::Error::last_os_error();
         match err.kind() {
             std::io::ErrorKind::Interrupted => continue,
+            // A full backlog, reported the way the BSDs report it. Indistinguishable
+            // at the errno level from a socket whose server is gone, so it is
+            // retried rather than trusted: a server merely behind on `accept`
+            // takes the connection within the deadline, and one that is really
+            // gone goes on refusing and is reported as refused below — which is
+            // what lets `assert_socket` clean its socket up. Deliberately *not*
+            // rewritten as `TimedOut` on the way out: that would make a stale
+            // socket read as an unresponsive server, and `zellij -s <name>`
+            // refuses to build over one of those, so a crashed session's name
+            // would be unusable until someone deleted the file by hand.
+            std::io::ErrorKind::ConnectionRefused
+                if A_FULL_BACKLOG_IS_REFUSED && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(IPC_CONNECT_RETRY_INTERVAL);
+            },
             std::io::ErrorKind::WouldBlock => {
                 if std::time::Instant::now() >= deadline {
                     // Deliberately surfaced as `TimedOut` rather than

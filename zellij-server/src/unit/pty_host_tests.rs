@@ -161,6 +161,45 @@ fn process_alive(pid: u32) -> bool {
     kill(Pid::from_raw(pid as i32), None).is_ok()
 }
 
+/// The argv of `pid` as the kernel currently sees it, so a test can tell a shell
+/// apart from what it has `exec`ed into.
+fn process_argv(pid: u32) -> Option<Vec<String>> {
+    let pid = sysinfo::Pid::from_u32(pid);
+    let mut system = sysinfo::System::new();
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        false,
+        sysinfo::ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always),
+    );
+    let cmd = system.process(pid)?.cmd();
+    if cmd.is_empty() {
+        return None;
+    }
+    Some(
+        cmd.iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect(),
+    )
+}
+
+/// Wait until the pane's process really *is* `program`, not the shell that is
+/// about to `exec` into it.
+///
+/// `echo ready` runs before that `exec`, so pty output proves the shell started
+/// and nothing more. The distinction matters to anything that stops the child:
+/// an `exec` discards a pending continue notification on XNU, so a stop landing
+/// in the gap is a stop of a process that is about to be replaced, and the
+/// resume that follows is reported to nobody.
+fn wait_for_exec_into(pid: u32, program: &str) {
+    wait_until(
+        // argv[0], not any argument: the shell's own argv is `sh -c ... exec
+        // sleep 30`, which contains the program's name while still being the
+        // shell.
+        || process_argv(pid).is_some_and(|argv| argv[0].contains(program)),
+        &format!("the pane's process to exec into {program}"),
+    );
+}
+
 fn wait_until(mut condition: impl FnMut() -> bool, what: &str) {
     let start = Instant::now();
     while !condition() {
@@ -1583,6 +1622,7 @@ fn a_stopped_child_is_reported_and_so_is_its_continue() {
     // shell that may or may not have exec'd it away.
     let (child_pid, mut master) = host.spawn(sh("echo ready; exec sleep 30"));
     read_until(&mut master, "ready");
+    wait_for_exec_into(child_pid, "sleep");
 
     kill(Pid::from_raw(child_pid as i32), Some(Signal::SIGSTOP)).expect("could not stop the child");
     match host.recv() {
@@ -1606,6 +1646,63 @@ fn a_stopped_child_is_reported_and_so_is_its_continue() {
     // The waiter has to survive both transitions: a stop that swallowed the
     // exit would leave the pane open forever.
     kill(Pid::from_raw(child_pid as i32), Some(Signal::SIGKILL)).expect("could not kill the child");
+    match host.recv() {
+        HostToServerMsg::ChildExited { status } => assert_eq!(status, None),
+        other => panic!("expected ChildExited, got {other:?}"),
+    }
+
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+}
+
+/// The waiter polls while the child is stopped and waits blocking while it runs,
+/// so a second suspend has to find its way back onto the blocking wait. If the
+/// switch were one-way the pane would report its first `^Z` and no other.
+#[test]
+fn a_child_that_stops_again_after_continuing_is_reported_again() {
+    let (mut host, _host_id, _sock) = TestHost::start();
+    let (child_pid, mut master) = host.spawn(sh("echo ready; exec sleep 30"));
+    read_until(&mut master, "ready");
+    wait_for_exec_into(child_pid, "sleep");
+    let pid = Pid::from_raw(child_pid as i32);
+
+    for round in 0..2 {
+        kill(pid, Some(Signal::SIGSTOP)).expect("could not stop the child");
+        match host.recv() {
+            HostToServerMsg::ChildStopped { .. } => {},
+            other => panic!("round {round}: expected ChildStopped, got {other:?}"),
+        }
+        kill(pid, Some(Signal::SIGCONT)).expect("could not continue the child");
+        match host.recv() {
+            HostToServerMsg::ChildContinued => {},
+            other => panic!("round {round}: expected ChildContinued, got {other:?}"),
+        }
+    }
+
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+}
+
+/// The exit has to come back from the polled branch too. A waiter that only
+/// noticed exits while blocking would sit on a killed-while-suspended child
+/// forever, and the pane would never close.
+#[test]
+fn a_child_killed_while_stopped_still_reports_its_exit() {
+    let (mut host, _host_id, _sock) = TestHost::start();
+    let (child_pid, mut master) = host.spawn(sh("echo ready; exec sleep 30"));
+    read_until(&mut master, "ready");
+    wait_for_exec_into(child_pid, "sleep");
+    let pid = Pid::from_raw(child_pid as i32);
+
+    kill(pid, Some(Signal::SIGSTOP)).expect("could not stop the child");
+    match host.recv() {
+        HostToServerMsg::ChildStopped { .. } => {},
+        other => panic!("expected ChildStopped, got {other:?}"),
+    }
+
+    // Straight to SIGKILL with no SIGCONT in between, so the waiter is still in
+    // its polling branch when the child dies.
+    kill(pid, Some(Signal::SIGKILL)).expect("could not kill the child");
     match host.recv() {
         HostToServerMsg::ChildExited { status } => assert_eq!(status, None),
         other => panic!("expected ChildExited, got {other:?}"),
