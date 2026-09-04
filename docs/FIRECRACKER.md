@@ -162,9 +162,12 @@ Add credential files to `firecracker.json` when an agent needs a host credential
 
 The provider copies each file after SSH is ready, on every request that reaches a VM, so a
 pane opened later gets the host's current token rather than the one the VM booted with. It sets
-mode `0600` and gives the file to the guest account it logs in as, in a directory only that
-account can list. Host paths must be absolute or start with `~/`. Guest paths must be absolute
-and cannot contain parent path components. The provider never reads a credential's contents:
+mode `0600`, makes the directory `0700`, and gives both to the account that owns the guest
+directory they go into rather than to the login: the provider always logs in as root, so a
+credential mapped into another account's home would otherwise be readable by nobody who has
+to read it. For the default mappings, under `/root`, that account is root. Host paths must be
+absolute or start with `~/`. Guest paths must be absolute and cannot contain parent path
+components. The provider never reads a credential's contents:
 its subprocesses inherit its stderr, which Zellij logs and shows in the pane, so a single
 `cat` of one of these files would put a token in both.
 
@@ -180,6 +183,11 @@ account it fetched, the projects it knows - is kept, and a file that already say
 is not written to at all. The host's own `~/.claude.json` is never copied; it is a whole
 machine's project history and MCP configuration and none of that belongs in a VM. Set
 `"claude_guest_onboarding": false` to turn the seeding off.
+
+Seeding is not a credential, and a VM is not lost to it. A guest that cannot be given its
+first-run state - the write failed, or something is already there that is not a JSON object -
+is named in a warning in the Zellij log and left running, because a pane that has to answer a
+wizard is a smaller problem than a booted VM destroyed over two ssh round-trips.
 
 The host and the guest share one credential, and Claude Code rotates it: whichever side
 refreshes the token invalidates the other side's copy. In practice the host wins, because
