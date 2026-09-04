@@ -123,13 +123,18 @@ const KEYS_HELP: &str = "\
 Ctrl+l        new chat, in a new tab (also /clear)
 Ctrl+o        move the panel clear of a pane - the one it is covering, or the
               largest one you are not in (top right if it is the only pane)
-Shift+Tab     open chats: focus the tab bar
+Tab, Shift+Tab   walk the panel's ring of stops: the agent list, its history
+              half, the chat tab bar, the box you type in - and round again
 Up / Down     previous / next message in history
-Tab           complete a /command or @agent
+Tab           complete a /command or @agent, when there is something half
+              typed to complete. A box with a draft in it keeps Tab for that;
+              Esc lets go of the box so Tab walks the ring again, and
+              Shift+Tab walks it either way
 Alt+Enter, Shift+Enter   insert a newline
 PageUp / PageDown        scroll the transcript
-Esc           hide the panel - the agent list goes with it; Ctrl+e c or
-              Ctrl+e a brings the whole of it back
+Esc           let go of a box you have typed in, keeping the draft; from an
+              empty box, or one already let go of, hide the panel - the agent
+              list goes with it, and Ctrl+e c or Ctrl+e a brings it all back
 Ctrl+c        cancel a stream or tool, keep refining a
               plan, or clear the prompt
 y / n         run the pending tool call, or decline it and stop
@@ -150,17 +155,28 @@ Up / Down     choose
 Enter         select
 Esc           clear the filter, or close the list once it is empty
 
+With a box you have let go of:
+Tab, Shift+Tab   walk the ring
+Enter         send what is in the box
+type anything    take the box back and carry on writing
+Esc           hide the panel
+
 With the tab bar focused:
-Left / Right  choose (Tab / Shift+Tab too)
+Left / Right  choose
+Tab, Shift+Tab   leave the bar - the box below, or the agent list
 Enter         switch to that chat
 x             close it
 Ctrl+l        new chat
 Esc           back to the prompt
 
-With agents focused:
-Up / Down     choose
-Enter         focus pane
-Esc           return to chat";
+In the agent list (the panel's other half):
+Tab, Shift+Tab   walk the ring on into the conversation
+Up / Down     choose an agent, from either of the list's halves
+j / k         step by whatever the half you are in is made of
+Enter         focus that agent's pane, or open the event under the cursor
+s             ask for a summary of the agent under the cursor
+Ctrl+o        move the panel clear    Ctrl+r  re-read the branch
+Esc           hide the panel, the conversation with it";
 
 /// Context key carrying a chat request's stream id back on its `WebRequestResult`,
 /// so the response can be matched to the chat that asked.
@@ -454,6 +470,19 @@ pub struct State {
     /// The bar position under the highlight while Shift+Tab has the bar
     /// focused. Modal while `Some`, the way `picker` is.
     chat_tab_focus: Option<usize>,
+    /// The input box has let go of the keyboard: Esc pressed with a draft in it.
+    ///
+    /// One of the panel's four ring stops is the input box, and the box owns bare Tab for
+    /// `/command` and `@agent` completion - so with text typed there is nothing left for Tab
+    /// to mean "step forward" with. Esc is what releases it: the draft stays exactly where it
+    /// is, the cursor goes away (`ui::render` draws `show_cursor(None)`), and Tab walks the
+    /// ring again. Typing anything or pressing Enter takes the box straight back, which is
+    /// why this is cleared on `InputAction::Continue` and `InputAction::Submit` and nowhere
+    /// else - Up/Down walk the message history and are not typing.
+    ///
+    /// Not modal, unlike `picker` and `chat_tab_focus`: every key but Tab and Esc means what
+    /// it always meant, and lands in the box as it always did.
+    chat_input_released: bool,
     /// The tab the overflow controls keep visible without switching chats, per client.
     chat_tab_view: BTreeMap<ClientId, usize>,
     /// Width used by the last rendered tab bar, for exact mouse hit-testing.
@@ -656,6 +685,15 @@ pub struct State {
     /// before the first manifest could not land anyway, and `on_panes` retries every one that
     /// could not.
     pub(crate) own_is_floating: Option<bool>,
+    /// Whether the server has the keyboard on this pane, off the last manifest.
+    ///
+    /// The ring's stop state lives in two fields (`chat_tab_focus` and `chat_input_released`)
+    /// that only mean anything while this half is the focused one. Focus can leave by routes
+    /// the ring knows nothing about - a click on the other half, `Ctrl e a` - and a stop left
+    /// standing through one of those would greet the user with the tab bar highlighted, or a
+    /// released box, the next time they came back. So `on_panes` resets both when this goes
+    /// false. `None` until the first manifest, which is not "unfocused": nothing to reset yet.
+    pub(crate) own_is_focused: Option<bool>,
     /// Which tab the agent list is on, as the last `PaneUpdate` found it.
     ///
     /// Tracked separately from `own_tab_index` because the two halves can be parted: the `a` and
@@ -802,6 +840,13 @@ pub struct State {
     /// How many agent lists have been asked for. Test-only, same reason.
     #[cfg(test)]
     pub(crate) agents_launches: usize,
+    /// Every ring step that crossed the seam, as the stop the agent list was sent to.
+    ///
+    /// Test-only, for the same reason `visibility_calls` is: `focus_pane_with_id` and the
+    /// `AGENT_STRIP_TAKE` beside it have no reply off wasm, so nothing else can tell a step
+    /// that was sent from one the panel declined to make.
+    #[cfg(test)]
+    pub(crate) ring_focus_calls: Vec<(PaneId, &'static str)>,
     /// The project of `last_focused_agent`, falling back to the active tab in
     /// `tabs`.
     active_project: Option<String>,
@@ -881,6 +926,7 @@ impl Default for State {
             parked: Vec::new(),
             chat_tab: 0,
             chat_tab_focus: None,
+            chat_input_released: false,
             chat_tab_view: BTreeMap::new(),
             chat_tab_width: 0,
             picker: None,
@@ -935,6 +981,7 @@ impl Default for State {
             surface_cols: 0,
             own_tab_index: None,
             own_is_floating: None,
+            own_is_focused: None,
             agents_tab_index: None,
             agents_visible: false,
             client_tabs: BTreeMap::new(),
@@ -956,6 +1003,8 @@ impl Default for State {
             visibility_calls: Vec::new(),
             #[cfg(test)]
             agents_launches: 0,
+            #[cfg(test)]
+            ring_focus_calls: Vec::new(),
             active_project: None,
             last_quit_notice: None,
             #[cfg(test)]
@@ -1147,6 +1196,13 @@ impl ZellijPlugin for State {
                 // to redraw - a suppressed pane is not painted.
                 self.hide_panel();
                 return false;
+            },
+            wire::AGENT_STRIP_YIELD => {
+                // Tab or Shift+Tab walked off the end of the agent list's two stops. The list
+                // knows only its own plugin id, so crossing the seam is a request - the same
+                // shape as the Esc and Ctrl-o arms above.
+                return self
+                    .take_ring_focus(pipe_message.args.get(wire::PANEL_STOP).map(String::as_str));
             },
             wire::AGENT_ARCHIVE_MORE => {
                 self.load_more_agent_runs();

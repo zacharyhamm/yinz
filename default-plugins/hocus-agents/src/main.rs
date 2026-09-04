@@ -26,6 +26,16 @@
 //! the keyboard between them and so does a click; the divider is where the focus shows,
 //! because the list's own dim-against-colour already means something else.
 //!
+//! **The two halves are the front of a ring that goes on into the conversation.** `Tab` and
+//! `Shift+Tab` walk four stops, not two: this pane's list and history halves, then the
+//! conversation's tab bar and its input box, wrapping back round. The two crossings that leave
+//! this pane are requests - `wire::AGENT_STRIP_YIELD`, the same shape as the Esc and Ctrl-o
+//! ones, because hocus holds this pane's plugin id and this pane holds none of hocus's - and
+//! the two that arrive land through `wire::AGENT_STRIP_TAKE`, which names the half but does not
+//! move the keyboard; hocus has already done that. The history half is a stop only when it
+//! exists: an empty list, or a pane too short to split, has no second half, and forward from
+//! the list goes straight on to the conversation.
+//!
 //! **A summary is one more event.** The run's own is the timeline's newest row and the
 //! ones somebody asked for sit where they were asked for; nothing is held above the timeline,
 //! so the whole half is one scrolling window and a talkative model costs the events beside it
@@ -138,6 +148,12 @@ struct State {
     /// Which half the keys work. Not reset by anything hocus pushes: a strip arriving while
     /// the user is reading the history must not throw them back into the list.
     focus: Focus,
+    /// Every ring step that left this pane, as the stop the conversation was sent to.
+    ///
+    /// Test-only: `pipe_message_to_plugin` is a no-op off wasm, so nothing else can tell a
+    /// yield that was sent from one this pane declined to make.
+    #[cfg(test)]
+    ring_yields: Vec<&'static str>,
     /// Index into `rows`. Always on an `Agent` row when one exists.
     selected: usize,
     /// The last pane hocus reported focused, agent or not.
@@ -294,6 +310,13 @@ impl ZellijPlugin for State {
             // is what stops a reloaded hocus being unable to place or hide the list beside it.
             self.send_selection();
             return false;
+        }
+        if pipe_message.name == wire::AGENT_STRIP_TAKE {
+            // The ring stepped into this pane from the conversation. hocus holds our plugin id
+            // and has already moved the keyboard; all this carries is which of our two halves
+            // the arriving keys belong to.
+            return self
+                .take_ring_stop(pipe_message.args.get(wire::PANEL_STOP).map(String::as_str));
         }
         if pipe_message.name == wire::AGENT_RUN_DETAIL {
             let Some(run) = pipe_message
@@ -554,15 +577,50 @@ impl State {
             pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_REFRESH));
             return false;
         }
-        if key.bare_key == BareKey::Tab && self.last_history_rows > 0 {
-            // Modifier-agnostic: there are two halves, so shift-tab has nowhere to go that
-            // tab does not, and a terminal that spells shift-tab as a modified Tab and one
-            // that spells it its own way both land here.
-            self.focus = match self.focus {
-                Focus::List => Focus::History,
-                Focus::History => Focus::List,
-            };
-            return true;
+        if key.bare_key == BareKey::Tab {
+            // The panel is one ring of four stops - this pane's two halves, then the
+            // conversation's tab bar and its input box - and Tab walks it end to end. Two of
+            // those crossings leave this pane, and the list knows only its own plugin id, so
+            // they are asked for: `wire::AGENT_STRIP_YIELD`, the same shape as the Esc and
+            // Ctrl-o requests below and above.
+            //
+            // Directional now, where this used to be modifier-agnostic: with two stops
+            // shift-tab had nowhere to go that tab did not, and with four it does. A terminal
+            // that cannot report shift-tab, or spells it a way that does not reach us, lands in
+            // the forward arm - which costs nothing, because the ring wraps: every stop is
+            // reachable by pressing Tab alone.
+            //
+            // The history half is a stop only when there is one. `last_history_rows` is zero
+            // for an empty list and for a pane too short to split, and `render` forces the
+            // focus back to `List` in both - so the stop does not merely look empty, it is not
+            // there, and forward from the list goes straight on to the conversation. That also
+            // makes the vanishing-stop case self-healing: a pane resized short while the keys
+            // were in the history half puts them back in the list on the next frame.
+            let back = key.has_modifiers(&[KeyModifier::Shift]);
+            match (self.focus, back) {
+                (Focus::List, false) if self.last_history_rows > 0 => {
+                    self.focus = Focus::History;
+                    return true;
+                },
+                (Focus::List, false) => {
+                    self.yield_to_chat(wire::STOP_TABS);
+                    return false;
+                },
+                (Focus::History, true) => {
+                    self.focus = Focus::List;
+                    return true;
+                },
+                // Off the end of this pane, either way. Nothing to redraw: the keyboard is
+                // going to the other half, and hocus paints that.
+                (Focus::History, false) => {
+                    self.yield_to_chat(wire::STOP_TABS);
+                    return false;
+                },
+                (Focus::List, true) => {
+                    self.yield_to_chat(wire::STOP_INPUT);
+                    return false;
+                },
+            }
         }
         // The arrows always walk the list, whichever half has the keys: they are how the
         // pane is steered, and a user reading the history still wants to point at the next
@@ -1312,6 +1370,31 @@ impl State {
         );
     }
 
+    /// Hand the keyboard to the conversation, landing on `stop`.
+    ///
+    /// The asymmetric half of the ring's two crossings. hocus can focus this pane itself,
+    /// holding our plugin id off `send_selection`; we hold nothing of its, so stepping the
+    /// other way is a request - the same shape as the `AGENT_STRIP_HIDE` an Esc sends, and
+    /// carrying no `plugin_url` for the same reason: a Tab must never launch a conversation.
+    fn yield_to_chat(&mut self, stop: &'static str) {
+        #[cfg(test)]
+        self.ring_yields.push(stop);
+        pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_YIELD).with_args(
+            BTreeMap::from([(wire::PANEL_STOP.to_owned(), stop.to_owned())]),
+        ));
+    }
+
+    /// `AGENT_STRIP_TAKE`: the ring arrived from the conversation, on `stop`.
+    fn take_ring_stop(&mut self, stop: Option<&str>) -> bool {
+        let focus = match stop {
+            Some(wire::STOP_HISTORY) => Focus::History,
+            _ => Focus::List,
+        };
+        let changed = self.focus != focus;
+        self.focus = focus;
+        changed
+    }
+
     /// Tell hocus where the cursor is, and - the part hocus actually needs - who we are.
     ///
     /// Called from the plugin entry points rather than from `on_key` and `set_rows`,
@@ -1431,6 +1514,20 @@ mod tests {
                 .unwrap_or("claude")
                 .to_owned(),
         }
+    }
+
+    /// An `AGENT_STRIP_TAKE` naming `stop`, as hocus sends it when the ring steps in.
+    fn take(stop: &str) -> PipeMessage {
+        PipeMessage::new(
+            PipeSource::Plugin(0),
+            wire::AGENT_STRIP_TAKE,
+            &None,
+            &Some(BTreeMap::from([(
+                wire::PANEL_STOP.to_owned(),
+                stop.to_owned(),
+            )])),
+            false,
+        )
     }
 
     fn strip() -> Vec<StripRow> {
@@ -1846,6 +1943,97 @@ mod tests {
         assert_eq!(state.page(), history_rows - 1, "less a line of overlap");
     }
 
+    /// With no history half there is no history stop: forward from the list steps straight on
+    /// to the conversation, and the ring stays four stops only while the pane has four to give.
+    #[test]
+    fn a_pane_with_no_history_half_rings_straight_on_to_the_conversation() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(5, 40);
+        assert_eq!(state.last_history_rows, 0);
+
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Tab)));
+        assert_eq!(state.ring_yields, ["tabs"]);
+        assert_eq!(
+            state.focus,
+            Focus::List,
+            "and never claimed a half it has not got"
+        );
+    }
+
+    /// Backward off the first stop leaves the pane the other way, landing in the box.
+    #[test]
+    fn shift_tab_from_the_list_hands_the_keyboard_to_the_input_box() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(20, 40);
+        assert_eq!(state.focus, Focus::List);
+
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier()));
+        assert_eq!(state.ring_yields, ["input"]);
+    }
+
+    /// A terminal that cannot report Shift+Tab sends a plain Tab, which reads as forward. The
+    /// ring wraps, so nothing is out of reach - backward is a shortcut, never the only way.
+    #[test]
+    fn an_unreported_shift_tab_reads_as_a_forward_step() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(20, 40);
+
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
+        assert_eq!(
+            state.focus,
+            Focus::History,
+            "forward, as a bare Tab always is"
+        );
+    }
+
+    /// The ring arriving from the conversation names the half, and hocus has already moved the
+    /// keyboard: all this does is say where in the pane the arriving keys belong.
+    #[test]
+    fn a_take_lands_the_keys_on_the_half_it_names() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(20, 40);
+
+        assert!(state.pipe(take(wire::STOP_HISTORY)));
+        assert_eq!(state.focus, Focus::History);
+        assert!(state.pipe(take(wire::STOP_LIST)));
+        assert_eq!(state.focus, Focus::List);
+        assert!(
+            !state.pipe(take(wire::STOP_LIST)),
+            "already there, so nothing to redraw"
+        );
+    }
+
+    /// The reader is the whole pane while it is open, and a ring step out of something you are
+    /// reading is wrong: Esc closes it first. The same relationship the conversation's picker
+    /// has to the ring.
+    #[test]
+    fn the_reader_keeps_tab_to_itself() {
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        let mut run = a_run();
+        run.summary = None;
+        run.entries = vec![agents::RunEntry {
+            revision: 1,
+            event_id: None,
+            kind: agents::RunEntryKind::Prompt,
+            text: "implement history".to_owned(),
+            created_at_ms: None,
+        }];
+        state.run = Some(run);
+        state.render(20, 50);
+        state.on_key(KeyWithModifier::new(BareKey::Tab));
+        assert_eq!(state.focus, Focus::History);
+        state.on_key(KeyWithModifier::new(BareKey::Enter));
+        assert!(state.reading.is_some(), "the reader is open");
+
+        state.on_key(KeyWithModifier::new(BareKey::Tab));
+        assert!(state.ring_yields.is_empty(), "the reader took the key");
+    }
+
     /// The label, the rule and the scroll readout share the divider's row, and the readout is
     /// the only thing in the pane that says how far back the history is wound. A kind long
     /// enough to fill the row is cut for it rather than pushing it off the end.
@@ -1876,7 +2064,7 @@ mod tests {
         assert_eq!(state.last_history_rows, 0);
         assert!(
             !state.on_key(KeyWithModifier::new(BareKey::Tab)),
-            "no other half to go to"
+            "no other half here, so the keys carry on to the conversation"
         );
         assert_eq!(state.focus, Focus::List);
     }
@@ -2138,10 +2326,14 @@ mod tests {
         );
     }
 
-    /// `Tab` moves the keys, `j`/`k` do whatever the half they are in does with a step - a row
-    /// of the list, an event of the timeline - and the arrows walk the list from either half.
+    /// `Tab` and `Shift+Tab` walk the ring, `j`/`k` do whatever the half they are in does with
+    /// a step - a row of the list, an event of the timeline - and the arrows walk the list from
+    /// either half.
+    ///
+    /// Directional now: forward off the history half leaves this pane for the conversation, so
+    /// getting back to the list is `Shift+Tab` rather than another `Tab`.
     #[test]
-    fn tab_moves_the_focus_and_jk_follow_it() {
+    fn tab_walks_the_ring_and_jk_follow_the_focus() {
         let mut state = State::default();
         state.set_rows(unfocused(vec![
             StripRow::Project("archive".to_owned()),
@@ -2188,7 +2380,18 @@ mod tests {
 
         assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
         assert_eq!(state.focus, Focus::History);
-        assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
+        // Forward off the history half is off the end of this pane: the conversation's tab bar
+        // is the next stop, and the keys go with a request rather than a redraw.
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Tab)));
+        assert_eq!(state.ring_yields, ["tabs"]);
+        assert_eq!(
+            state.focus,
+            Focus::History,
+            "the sub-focus stays where it was left - the pane frame is what says the keys are \
+             gone, and coming back by a click should land where the user was"
+        );
+        // Backward is the way back inside the pane.
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier()));
         assert_eq!(state.focus, Focus::List);
 
         // An arrow that finds nowhere to go still took the keys back, and the divider draws

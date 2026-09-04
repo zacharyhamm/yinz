@@ -127,7 +127,7 @@ impl State {
         // the io worker, and `list` would read the directory before it landed.
         self.flush_save();
         self.save_parked();
-        self.chat_tab_focus = None;
+        self.reset_ring_stop();
         let live: Vec<u64> = self.live_chat_ids();
         let (ids, titles): (Vec<u64>, Vec<PickerRow>) = history::list(&self.private_store())
             .into_iter()

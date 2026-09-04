@@ -879,6 +879,12 @@ pub fn render(state: &mut State, rows: usize, cols: usize) {
             true => show_cursor(Some((filter_prompt(picker).width(), body_y))),
             false => show_cursor(None),
         }
+    } else if state.chat_input_released {
+        // The box let the keyboard go to the ring, and the missing caret is the only thing on
+        // screen that says so - the pane frame still reads as focused, because this half *is*
+        // the focused one; it is the stop within it that moved. A caret in a box that is not
+        // typing would be a lie, and the same lie the picker above refuses to tell.
+        show_cursor(None);
     } else if let Some(layout) = &layout {
         // Must precede any print_*: the host reads the cursor position out of
         // the render output stream in order.
@@ -1670,6 +1676,11 @@ fn render_config_banner(error: &ConfigError, y: usize, height: usize, cols: usiz
 fn help_line(state: &State) -> &'static str {
     if state.chat_tab_focus.is_some() {
         return "<←→> choose  <Enter> switch  <x> close  <Ctrl l> new  <Esc> back";
+    }
+    // Ahead of the picker and the statuses below: a released box is where the keys are, and
+    // what they do there is the nearer question than what the conversation is busy with.
+    if state.chat_input_released {
+        return "<Tab/Shift Tab> move  <Enter> send  <Esc> hide  type to edit";
     }
     match state.picker.as_ref().map(|picker| &picker.kind) {
         Some(PickerKind::Chats(_)) => {

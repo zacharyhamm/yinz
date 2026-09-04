@@ -203,6 +203,12 @@ keybinds {
         // panel comes up, cut at the split, with the keyboard here. An agent
         // list that was hidden comes back with it, and a panel with no list at
         // all — you closed its pane — opens one.
+        //
+        // These two are the way *in*, not the way across. Once the panel is up the
+        // keyboard moves with Tab and Shift+Tab, which walk one ring of four stops:
+        // the agent list, its history half, the chat tab bar and the box you type
+        // in. A box with a draft in it keeps Tab for completing a /command or an
+        // @agent — Esc lets go of the box, keeping the draft, and Tab walks again.
         bind "c" {
             LaunchOrFocusPlugin "hocus" {
                 floating true

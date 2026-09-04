@@ -503,6 +503,71 @@ fn an_agent_list_the_user_closed_is_forgotten() {
 // on top of the conversation.
 
 /// One `AGENT_SELECTION`, as the list sends on load.
+/// An `AGENT_STRIP_YIELD` naming `stop`, as the agent list sends it when the ring steps out.
+fn yielded(stop: &str) -> PipeMessage {
+    PipeMessage {
+        source: PipeSource::Plugin(7),
+        name: hocus_proto::wire::AGENT_STRIP_YIELD.to_owned(),
+        payload: None,
+        args: BTreeMap::from([(hocus_proto::wire::PANEL_STOP.to_owned(), stop.to_owned())]),
+        is_private: true,
+        pane_id: None,
+    }
+}
+
+// -- the ring's two crossings ------------------------------------------------
+
+/// Stepping out of the agent list lands on the stop the list names, on the chat that is up.
+#[test]
+fn a_yield_lands_the_keys_on_the_stop_it_names() {
+    let mut state = placed_state();
+
+    assert!(state.pipe(yielded(hocus_proto::wire::STOP_TABS)));
+    assert_eq!(state.chat_tab_focus, Some(state.chat_tab), "the tab bar");
+
+    assert!(state.pipe(yielded(hocus_proto::wire::STOP_INPUT)));
+    assert_eq!(state.chat_tab_focus, None, "and the box below it");
+    assert!(!state.chat_input_released, "arriving at the box is typing");
+}
+
+/// The request is a broadcast - the list holds no id to address it with - so it reaches a hocus
+/// the user put in their own layout too. That one is on no ring and must not be handed keys.
+#[test]
+fn a_yield_is_refused_by_a_tiled_hocus() {
+    let mut state = placed_state();
+    state.own_is_floating = Some(false);
+
+    assert!(!state.pipe(yielded(hocus_proto::wire::STOP_TABS)));
+    assert_eq!(state.chat_tab_focus, None);
+}
+
+/// And a Tab may not bring a panel back any more than an Esc may launch one to put away.
+#[test]
+fn a_yield_does_not_reveal_a_panel_that_is_down() {
+    let mut state = placed_state();
+    state.hidden = true;
+
+    assert!(!state.pipe(yielded(hocus_proto::wire::STOP_TABS)));
+    assert_eq!(state.chat_tab_focus, None);
+    assert!(state.hidden, "still down");
+}
+
+/// Hiding is an arrival at the conversation like any other: the stop resets, so the panel comes
+/// back typing rather than with the bar lit or the box let go of.
+#[test]
+fn hiding_the_panel_puts_the_box_back_in_editing() {
+    let mut state = placed_state();
+    state.input.set_text("a draft".to_owned());
+    state.on_key(KeyWithModifier::new(BareKey::Esc));
+    assert!(state.chat_input_released);
+
+    state.on_key(KeyWithModifier::new(BareKey::Esc));
+
+    assert!(state.hidden);
+    assert!(!state.chat_input_released);
+    assert_eq!(state.chat_tab_focus, None);
+}
+
 fn selection(plugin_id: u32) -> PipeMessage {
     PipeMessage {
         source: PipeSource::Plugin(plugin_id),

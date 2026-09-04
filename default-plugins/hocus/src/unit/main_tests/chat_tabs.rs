@@ -44,6 +44,10 @@ fn bar(state: &State) -> Vec<Option<u64>> {
 
 /// Shift+Tab is Tab with a modifier, which the input box would otherwise take
 /// as a completion request.
+///
+/// Also the ring's backward step out of the box, and the one that works with a draft in it:
+/// there is no reverse-completion for Shift+Tab to collide with, so it never has to be
+/// released first.
 #[test]
 fn shift_tab_focuses_the_bar_on_the_active_chat_without_typing() {
     let mut state = three_tabs();
@@ -54,6 +58,8 @@ fn shift_tab_focuses_the_bar_on_the_active_chat_without_typing() {
     assert_eq!(state.input.get_text(), "/his", "and completed nothing");
 }
 
+/// The arrows choose a chat; Tab and Shift+Tab leave the bar, because it is a stop on the
+/// panel's ring rather than a list to walk. This used to be four keys doing two jobs.
 #[test]
 fn the_highlight_moves_with_the_arrows_and_stops_at_both_ends() {
     let mut state = three_tabs();
@@ -65,13 +71,61 @@ fn the_highlight_moves_with_the_arrows_and_stops_at_both_ends() {
     assert_eq!(state.chat_tab_focus, Some(0), "already at the left edge");
 
     state.on_key(key(BareKey::Right));
-    state.on_key(key(BareKey::Tab));
-    assert_eq!(state.chat_tab_focus, Some(2), "Tab walks right too");
+    state.on_key(key(BareKey::Right));
+    assert_eq!(state.chat_tab_focus, Some(2), "walked right to the far end");
     state.on_key(key(BareKey::Right));
     assert_eq!(state.chat_tab_focus, Some(2), "and stops at the right edge");
+}
 
+/// Forward off the bar is the box below it, typing.
+#[test]
+fn tab_at_the_bar_steps_down_into_the_box() {
+    let mut state = three_tabs();
     state.on_key(shift_tab());
-    assert_eq!(state.chat_tab_focus, Some(1), "Shift+Tab walks left");
+    state.on_key(key(BareKey::Right));
+
+    assert!(state.on_key(key(BareKey::Tab)));
+    assert_eq!(state.chat_tab_focus, None, "the bar let the keyboard go");
+    assert_eq!(state.chat_tab, 1, "and switched to no chat on the way");
+
+    state.on_key(key(BareKey::Char('q')));
+    assert_eq!(state.input.get_text(), "q", "the box has the keys, editing");
+}
+
+/// Backward off the bar is the agent list's history half - or, with no list, round to the box.
+#[test]
+fn shift_tab_at_the_bar_steps_back_to_the_agent_list() {
+    let mut state = three_tabs();
+    state.agents_plugin = Some(7);
+    state.on_key(shift_tab());
+
+    assert!(state.on_key(shift_tab()));
+    assert_eq!(
+        state.ring_focus_calls,
+        [(PaneId::Plugin(7), "history")],
+        "the keyboard went to the list, landing in its history half"
+    );
+    assert_eq!(state.chat_tab_focus, None, "and this half is off its stop");
+}
+
+/// A panel with one half is a ring with two stops, and it wraps between them rather than
+/// growing the half it is missing: opening a list is what a reveal does, not a Tab.
+#[test]
+fn the_ring_wraps_within_the_chat_when_there_is_no_agent_list() {
+    let mut state = three_tabs();
+    assert_eq!(state.agents_plugin, None);
+    let launches = state.agents_launches;
+
+    assert!(state.on_key(key(BareKey::Tab)));
+    assert_eq!(state.chat_tab_focus, Some(1), "forward wrapped to the bar");
+    assert!(state.ring_focus_calls.is_empty());
+
+    assert!(state.on_key(shift_tab()));
+    assert_eq!(
+        state.chat_tab_focus, None,
+        "and backward wrapped to the box"
+    );
+    assert_eq!(state.agents_launches, launches, "no list was launched");
 }
 
 /// A keystroke falling through to the input box behind the bar would be typed
