@@ -1300,7 +1300,7 @@ impl State {
             self.plan = Plan::Planning;
         }
         let extension_specs = self.extensions.specs(self.is_planning());
-        let body = api::request_body_with_project_and_tools(
+        let (body, tool_stats) = api::request_body_with_stats(
             cfg,
             &self.messages,
             project,
@@ -1317,6 +1317,8 @@ impl State {
                 "message_count": self.messages.len(),
                 "body_bytes": body_len,
                 "allow_tools": cfg.tools,
+                "advertised_tools": tool_stats.count,
+                "tool_bytes": tool_stats.bytes,
             }),
         );
         // Only for the requests big enough to be worth explaining. A breakdown on every round

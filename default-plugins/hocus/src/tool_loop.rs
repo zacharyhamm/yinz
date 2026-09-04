@@ -1305,7 +1305,8 @@ impl State {
     pub(crate) fn run_local(&mut self, call: &ToolCall) -> Option<String> {
         if !matches!(
             call.name.as_str(),
-            "schedule"
+            tools::LOAD_TOOL
+                | "schedule"
                 | "unschedule"
                 | "project_list"
                 | "project_assign"
@@ -1332,6 +1333,10 @@ impl State {
             Err(error) => return Some(error),
         };
         Some(match call.name.as_str() {
+            // Nothing to run: the load is the call itself being in the transcript,
+            // which `tools::loaded_families` reads on the way out. This only says
+            // what the next request will advertise.
+            tools::LOAD_TOOL => tools::load_family(args.family.as_deref(), self.is_planning()),
             "schedule" => self.schedule(&args),
             "unschedule" => self.unschedule(args.job_id),
             "project_list" => self.project_list(),

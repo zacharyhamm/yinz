@@ -74,7 +74,7 @@ fn request_body_adds_the_tool_first_policy_when_tools_are_enabled() {
 fn hocus_prompt_contract_keeps_global_routing_rules() {
     assert_eq!(
         TOOL_FIRST_PROMPT,
-        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_read` then `plugin_edit` - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Make independent calls together."
+        "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Linear issues: `linear_search`/`linear_issues`/`linear_issue`. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree first. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. You write Zellij Lua plugins yourself, never by spawning an agent: `plugin_docs` is authoritative, so read only the relevant sections. `plugin_write` creates one (its confirmation grants the permissions it asks for); to change one that exists, `plugin_read` then `plugin_edit` - never re-send a whole file you did not just write. `plugin_check` compiles without writing. `plugin_reload` for the first render or the load error, `plugin_log` for what it logged; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list`/`plugin_read` read the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Not every tool named here is in the tools array: the rest are loaded on demand, and calling one by name loads its family and runs it, so call the tool you want rather than asking for it. `tools_load` is there for when you do not know the name. Make independent calls together."
     );
 }
 
@@ -131,12 +131,15 @@ fn request_body_excludes_the_empty_streaming_placeholder() {
     );
 }
 
+/// The always-on families plus the loader, which is what a conversation that has
+/// asked for nothing is told about. The other 35 arrive when it reaches for them;
+/// `tools_tests::families` is where that is pinned tool by tool.
 #[test]
 fn request_body_advertises_the_tools_when_they_are_enabled() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = body_value(&cfg, &[Message::user("hi")]);
-    assert_eq!(body["tools"].as_array().unwrap().len(), 85);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 47);
 }
 
 #[test]
@@ -162,77 +165,71 @@ fn request_body_advertises_registered_extension_tools() {
     assert_eq!(body["tools"].as_array().unwrap().last(), Some(&extension));
 }
 
-/// The tool payload is paid for on every turn, so it is capped rather than left to
-/// drift. The cap was 20kb and the payload had grown to sit just under it, which made
-/// *any* new tool fail this test rather than only an extravagant one. Raised to 21kb
-/// once it had no headroom left — a ceiling with no headroom stops measuring growth
-/// and starts forbidding it. Trim descriptions before raising it again.
+/// The tool payload is paid for on every turn and on every tool round, so it is capped
+/// rather than left to drift.
 ///
-/// Raised to 23kb when the three Linear tools arrived, and for the same reason: 21kb
-/// had again been consumed to the last dozen bytes, so the cap was refusing any new
-/// tool rather than measuring the cost of one. Their schemas were trimmed first —
-/// property descriptions folded into the one tool description, which is where the
-/// guidance costs a single copy of each JSON key instead of one per property.
+/// Two caps now, because there are two numbers and only one of them is interesting.
+/// Most tools are withheld until a conversation reaches for them
+/// (`tools::FAMILIES`), so the *floor* — the always-on families plus the loader — is
+/// what a request actually costs, and the full set is a ceiling only a chat that
+/// touches everything ever reaches.
 ///
-/// Raised to 26kb when the five plugin-authoring tools arrived. Same discipline: their
-/// property descriptions were folded into the tool descriptions first, which bought back
-/// only ~200 of the ~1.5kb the five cost — the floor for a tool is its name, its schema
-/// keys and enough description to be usable, and five of them is simply that much. The new
-/// ceiling kept ~1.4kb of headroom so it went on measuring growth rather than forbidding it.
+/// The single cap this replaces had been raised ten times, 20kb to 33kb, each time
+/// under the standing instruction to "trim descriptions before raising it again". That
+/// instruction was aimed at the wrong half: descriptions are under a quarter of the
+/// bytes and the schemas are the rest, so the discipline could never reach far enough
+/// and every new tool arrived at a ceiling with no headroom. Splitting the cap fixes
+/// the ratchet rather than the number — a tool added to a deferred family now moves
+/// `full` and leaves `floor`, which is the one paid every turn, exactly where it was.
 ///
-/// Raised again to 27kb when `agent_spawn` gained `env`, `permission_mode`, `resume` and
-/// `hooks` (R16): four arguments a launch genuinely needs, each already at the floor of a
-/// key and one short sentence.
-/// Raised to 28kb for the five skill-authoring tools after their schemas were kept minimal.
-/// Raised to 29kb when the pane-workflow docs sections arrived (`example_workflow`,
-/// `prelude_workflows`): two `plugin_docs` enum values, ~40 bytes, landing on a ceiling that
-/// had no headroom left.
-///
-/// Raised to 30kb when the guide's two oversized sections were split into their `###` children,
-/// which cost five more `plugin_docs` enum values, ~90 bytes. This is the one raise so far that
-/// *buys* tokens rather than spending them: a model that wants the permission table used to pay
-/// 16kb of "Commands", once per request for the rest of the conversation, and now pays 4.6kb.
-/// The same discipline was applied first, and this raise is what is left after it:
-/// `plugin_write`, `plugin_check`, `plugin_edit`, `plugin_reload` and `plugin_log` gave back
-/// ~400 bytes of description that the system prompt already said, and `plugin_read` spent ~150
-/// of it saying that a default read is a page rather than a file.
-///
-/// Raised to 32kb for the eight note tools, whose schemas were kept to a key and a type each
-/// — the only descriptions left are the three that say a project defaults to the active one.
-///
-/// Raised to 33kb for the three agent-history tools. The discipline came first and is most of
-/// what the raise would otherwise have been: the first draft cost 1 550 bytes and this one
-/// costs ~650, because two of the three share one `run_filter_properties()` block whose five
-/// keys carry a description only where the name does not already say it, and because the three
-/// tool descriptions gave back everything the system prompt repeats. What is left is the floor
-/// for three tools that did not exist: two schemas of five shared keys plus three of their own,
-/// one of eight, and three descriptions that have to say what a run, a revision and a hit are,
-/// since nothing else in the payload does.
-///
-/// The five Firecracker properties (`firecracker_vm`/`firecracker_image` on `new_pane`,
-/// `firecracker`/`firecracker_image` on `agent_spawn`, and the `project_use` default) consume
-/// ~660 bytes. Shortening duplicated `cwd` and `hooks` descriptions keeps the payload under
-/// the same 33kb ceiling.
-///
-/// Raised to 36kb for the four VM tools, and this raise pays off two debts rather than one.
-/// The payload had already crossed 33kb before them, at 33 384 bytes: this test was failing
-/// on the branch, so the ceiling had stopped measuring anything at all. The four tools cost
-/// 1 400 bytes on top of that, after the discipline - their four descriptions gave back ~110
-/// bytes of what the system prompt's own VM clause already says, and `vm_changes`, `vm_sync`
-/// and `vm_close` share one `vm_target_properties()` block rather than spelling `vm` and
-/// `vm_session` three times. What is left is the floor for four tools that did not exist: one
-/// with an empty schema, three with two shared keys, and four descriptions that have to say
-/// what a sync does to the user's worktree, since nothing else in the payload does. 36kb
-/// leaves ~1.2kb of headroom, the same margin the 26kb raise settled on.
+/// Measured when this landed: the floor body is 19 338 bytes and the fully loaded tool
+/// array is 33 390. The four Firecracker VM tools are what the split was for — they are
+/// a deferred family, so their ~1.4kb moved `full` and left `floor` where it was. Both
+/// caps keep headroom, for the reason the old comment gave — "a ceiling with no headroom
+/// stops measuring growth and starts forbidding it".
 #[test]
-fn hocus_prompt_contract_keeps_the_tool_payload_under_36_kb() {
+fn the_tool_payload_floor_stays_under_20_kb() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = request_body(&cfg, &[Message::user("hi")]);
     assert!(
-        body.len() < 36_000,
-        "tool payload grew to {} bytes",
+        body.len() < 20_000,
+        "the always-on tool payload grew to {} bytes",
         body.len()
+    );
+}
+
+/// The other end: what a conversation pays once it has asked for every family. Loose
+/// enough that a new domain tool lands here rather than on the floor, and tight enough
+/// that the whole set cannot quietly double.
+#[test]
+fn the_fully_loaded_tool_payload_stays_under_35_kb() {
+    let mut cfg = test_config();
+    cfg.tools = true;
+    // A load of every deferred family, which is what puts them in the array — the
+    // same route a real conversation takes, rather than a back door into `specs`.
+    let mut transcript = vec![Message::user("hi")];
+    for family in tools::deferred_families() {
+        transcript.push(Message::tool_calls(vec![ToolCall {
+            id: family.to_owned(),
+            name: tools::LOAD_TOOL.to_owned(),
+            arguments: json!({ "family": family }).to_string(),
+        }]));
+        transcript.push(Message::tool_result(family, "loaded"));
+    }
+    let body = request_body(&cfg, &transcript);
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        value["tools"].as_array().unwrap().len(),
+        tools::names().len(),
+        "every family loaded should advertise every tool",
+    );
+    // The array rather than the body: the loads that got us here are scaffolding,
+    // and a real conversation's transcript is not this one.
+    let tools_bytes = serde_json::to_vec(&value["tools"]).unwrap().len();
+    assert!(
+        tools_bytes < 35_000,
+        "the fully loaded tool payload grew to {tools_bytes} bytes",
     );
 }
 
@@ -563,11 +560,22 @@ fn planning_mode_advertises_only_the_read_only_tools() {
         .iter()
         .map(|spec| spec["function"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), tools::READ_ONLY.len());
+    // Narrower than READ_ONLY now: a read-only tool in a deferred family is
+    // withheld until the plan asks for it. Both conditions are checked here, and
+    // `tools_tests::families` pins how they compose.
     for name in &names {
         assert!(tools::READ_ONLY.contains(name), "{name} is not read-only");
     }
-    assert!(!names.contains(&"close_pane"));
+    assert!(names.contains(&"list_session"));
+    assert!(
+        names.contains(&tools::LOAD_TOOL),
+        "a plan must be able to widen"
+    );
+    assert!(!names.contains(&"close_pane"), "planning mode withholds it");
+    assert!(
+        !names.contains(&"plugin_docs"),
+        "read-only, but not loaded yet"
+    );
 }
 
 /// After the configured prompt, so a custom `system_prompt` telling the model to
@@ -611,7 +619,7 @@ fn acting_sends_the_body_it_always_did() {
     cfg.tools = true;
     let transcript = [Message::user("hi")];
     let body: serde_json::Value = serde_json::from_slice(&request_body(&cfg, &transcript)).unwrap();
-    assert_eq!(body["tools"].as_array().unwrap().len(), 85);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 47);
     assert!(!body["messages"][0]["content"]
         .as_str()
         .unwrap()
