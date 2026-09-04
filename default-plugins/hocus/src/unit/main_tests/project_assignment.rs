@@ -533,3 +533,39 @@ fn two_agents_in_the_same_path_on_different_machines_keep_their_own_branches() {
     assert_eq!(branches.get(&3).map(String::as_str), Some("main"));
     assert_eq!(branches.get(&4).map(String::as_str), Some("topic"));
 }
+
+/// An assignment the user made has to reach hocus-store, which is what names the
+/// tabs, and the only road there is the daemon. Nothing else in this plugin
+/// tells the host a tab's name any more.
+#[test]
+fn a_hand_made_assignment_is_relayed_to_the_daemon() {
+    let mut state = state_with_tab(9);
+    assert!(state.sent_tab_projects.is_empty());
+
+    state.run_local(&agent_call(
+        "project_assign",
+        r#"{"name":"named","root":"/work/named"}"#,
+    ));
+    // The relay is sent from the poll, so it cannot be forgotten by a caller.
+    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+
+    assert_eq!(state.sent_tab_projects[&9], "named");
+}
+
+/// And withdrawing it takes the name back off, rather than leaving the daemon
+/// holding an assignment nothing renews.
+#[test]
+fn forgetting_the_project_withdraws_the_relayed_assignment() {
+    let mut state = state_with_tab(9);
+    state.run_local(&agent_call(
+        "project_assign",
+        r#"{"name":"named","root":"/work/named"}"#,
+    ));
+    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+    assert_eq!(state.sent_tab_projects[&9], "named");
+
+    state.run_local(&agent_call("project_forget", r#"{"name":"named"}"#));
+    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+
+    assert!(state.sent_tab_projects.is_empty());
+}

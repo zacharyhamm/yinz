@@ -201,6 +201,16 @@ pub const ASK_ACK: &str = "hocus_ask_ack";
 pub struct PollRequest {
     pub manual_kinds: BTreeMap<u32, String>,
     pub activity: agents::Activity,
+    /// The tab-to-project assignments the user made by hand, for the daemon to
+    /// pass on to whoever names the tabs.
+    ///
+    /// hocus makes these and hocus-store publishes them, and the two never meet:
+    /// hocus is a pane the user opens, the store is a background plugin, and a
+    /// plugin cannot address another by name without launching one. The daemon
+    /// is already between them, already holds `manual_kinds` for exactly this
+    /// reason, and already echoes what it holds to every subscriber.
+    #[serde(default)]
+    pub tab_projects: BTreeMap<usize, String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -229,6 +239,12 @@ pub struct PollReply {
     /// wire for a session with no remote panes.
     #[serde(default)]
     pub repositories: BTreeMap<Location, projects::Repository>,
+    /// The hand-made tab assignments, as the last [`PollRequest`] carried them.
+    ///
+    /// Relayed rather than derived: only hocus knows what the user assigned, and
+    /// only the store publishes tab names, so this is the leg between them.
+    #[serde(default)]
+    pub tab_projects: BTreeMap<usize, String>,
     /// The terminal pane the user is looking at, if it is one.
     ///
     /// Here rather than on `AgentPane` because it is a fact about the session, not

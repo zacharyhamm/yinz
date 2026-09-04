@@ -97,14 +97,51 @@ fn a_tab_that_closed_loses_its_label() {
 #[test]
 fn a_shell_folder_becomes_no_project() {
     let mut state = state_with_tab(9);
-    let shell = agents::AgentPane {
-        title: "zsh".to_owned(),
-        command: Some("zsh".to_owned()),
-        ..agent_in(4, "/work/other", 9)
-    };
-    poll(&mut state, vec![shell]);
+    poll(&mut state, vec![shell_in(4, "/work/other", 9)]);
 
     assert!(state.projects.is_empty());
+}
+
+/// The two widths side by side. A shell's checkout is enough to *name* the tab
+/// it is in, and still not enough to remember the folder as a project — which is
+/// what keeps every `cd` from filling the registry.
+#[test]
+fn a_shell_names_its_tab_without_becoming_a_project() {
+    let mut state = state_with_tab(9);
+    poll(&mut state, vec![shell_in(4, "/work/hocus", 9)]);
+
+    assert_eq!(state.tab_project_labels[&9], "hocus");
+    assert!(state.projects.is_empty(), "no folder was remembered");
+    assert!(
+        state.auto_tab_projects.is_empty(),
+        "and no tab was assigned: only an agent's work assigns one",
+    );
+}
+
+/// An unregistered checkout still names a tab, by its repository. Naming reverts
+/// the moment the pane closes, so it can afford to answer where an assignment,
+/// which outlives the session, cannot.
+#[test]
+fn an_unregistered_checkout_names_its_tab_after_the_repository() {
+    let mut state = state_with_tab(9);
+    poll(&mut state, vec![shell_in(4, "/somewhere/zellij", 9)]);
+
+    assert_eq!(state.tab_project_labels[&9], "zellij");
+    assert!(state.projects.is_empty());
+}
+
+/// A folder Git does not claim names nothing, or a shell wandering into a home
+/// directory would rename the tab after it.
+#[test]
+fn a_plain_folder_names_no_tab() {
+    let mut state = state_with_tab(9);
+    poll_with(
+        &mut state,
+        vec![shell_in(4, "/home/me/Downloads", 9)],
+        folder,
+    );
+
+    assert!(state.tab_project_labels.is_empty());
 }
 
 #[test]
@@ -286,6 +323,7 @@ fn poll_reply_round_trips_through_json() {
         activity,
         manual_kinds: BTreeMap::new(),
         zellij_session_name: "test-session".to_owned(),
+        tab_projects: BTreeMap::new(),
         repositories: BTreeMap::from([(
             Location::local("/tmp/work"),
             projects::Repository {

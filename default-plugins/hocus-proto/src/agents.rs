@@ -2691,27 +2691,29 @@ pub fn tab_projects(
         .collect()
 }
 
-/// Every project a tab's agents are working on, sorted and without repeats.
+/// Every project a tab's panes are working on, sorted and without repeats.
 ///
-/// The other half of [`tab_projects`]: that one asks which project *owns* a tab
-/// and refuses to answer for a tab two projects share, because an assignment has
-/// to name one project. Naming the tab does not — a tab with an agent in each of
-/// two checkouts is honestly described by both, and saying so is more use than
-/// falling back to "Tab #4".
+/// The other half of [`tab_projects`], and it differs from that one twice over.
+/// That one asks which project *owns* a tab and refuses to answer for a tab two
+/// projects share, because an assignment has to name one project. Naming the tab
+/// does not — a tab with a pane in each of two checkouts is honestly described
+/// by both, and saying so is more use than falling back to "Tab #4".
+///
+/// And it counts *every* pane, where `tab_projects` counts agents. Ownership is
+/// about which project's work a tab is doing, and only an agent does work. A
+/// name is about where the tab is, and a shell sitting in a checkout answers
+/// that as well as an agent does — better, in the ordinary session that has no
+/// agents in it at all. That is why no `manual` overrides are needed here: they
+/// exist to say which panes are agents, and this no longer asks.
 ///
 /// Sorted so the label does not shuffle when the panes come back in another
-/// order. Agents only, and a tab whose agents have no known project gets no
-/// entry, exactly as in `tab_projects`.
+/// order. A tab whose panes have no known project gets no entry, as before.
 pub fn tab_project_labels(
     panes: &[AgentPane],
-    manual: &BTreeMap<u32, String>,
     owners: &BTreeMap<u32, String>,
 ) -> BTreeMap<usize, Vec<String>> {
     let mut found: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
     for pane in panes {
-        if classify(pane, manual).is_none() {
-            continue;
-        }
         let (Some((tab_id, _)), Some(owner)) = (&pane.tab, owners.get(&pane.pane_id)) else {
             continue;
         };
@@ -2721,6 +2723,25 @@ pub fn tab_project_labels(
         .into_iter()
         .map(|(tab_id, projects)| (tab_id, projects.into_iter().collect()))
         .collect()
+}
+
+/// How many projects a tab's label names before the rest are counted instead.
+const MAX_LABELLED_PROJECTS: usize = 2;
+
+/// The one string that names every project in a tab.
+///
+/// Two projects are joined; beyond that the tail is counted, because the tab bar
+/// gives a name 40 columns at the outside (`MAX_TAB_NAME_WIDTH`) and a fourth
+/// repository name would be cut off mid-word — which loses the count as well as
+/// the name. `hocus + pocus +2` keeps both.
+pub fn tab_project_label(projects: &[String]) -> Option<String> {
+    let (named, rest) = projects.split_at(projects.len().min(MAX_LABELLED_PROJECTS));
+    let named = named.join(" + ");
+    match (named.is_empty(), rest.len()) {
+        (true, _) => None,
+        (false, 0) => Some(named),
+        (false, more) => Some(format!("{named} +{more}")),
+    }
 }
 
 /// The `@`-mention bodies in a message: the maximal leading run of kind characters
@@ -5900,7 +5921,9 @@ mod tests {
             // Two projects, sorted rather than left in pane order.
             in_folder(5, "codex", "/work/pocus", 2),
             in_folder(6, "aider", "/work/hocus", 2),
-            // A shell is not an agent, and pane 9 is in no tab at all.
+            // A shell names its tab as readily as an agent does — which is the
+            // whole point, since the ordinary session has no agent in it. Pane 9
+            // is in no tab at all, and still names nothing.
             in_folder(7, "zsh", "/work/hocus", 3),
             untabbed,
         ];
@@ -5914,11 +5937,45 @@ mod tests {
         ]);
 
         assert_eq!(
-            tab_project_labels(&panes, &manual(&[]), &owners),
+            tab_project_labels(&panes, &owners),
             BTreeMap::from([
                 (1, vec!["hocus".to_owned()]),
                 (2, vec!["hocus".to_owned(), "pocus".to_owned()]),
+                (3, vec!["hocus".to_owned()]),
             ]),
+        );
+    }
+
+    /// The other half of the split from `tab_projects`, which counts only agents
+    /// because an assignment says whose *work* a tab is doing. A name says where
+    /// the tab is, and a shell answers that.
+    #[test]
+    fn only_the_label_counts_a_shell_the_assignment_does_not() {
+        let panes = vec![in_folder(7, "zsh", "/work/hocus", 3)];
+        let owners = owners(&[(7, "hocus")]);
+
+        assert_eq!(
+            tab_project_labels(&panes, &owners),
+            BTreeMap::from([(3, vec!["hocus".to_owned()])]),
+        );
+        assert!(tab_projects(&panes, &manual(&[]), &owners).is_empty());
+    }
+
+    #[test]
+    fn a_tab_in_more_projects_than_fit_counts_the_rest() {
+        let named = |names: &[&str]| -> Vec<String> {
+            names.iter().map(|name| (*name).to_owned()).collect()
+        };
+
+        assert_eq!(tab_project_label(&named(&[])), None);
+        assert_eq!(tab_project_label(&named(&["hocus"])).unwrap(), "hocus");
+        assert_eq!(
+            tab_project_label(&named(&["hocus", "pocus"])).unwrap(),
+            "hocus + pocus"
+        );
+        assert_eq!(
+            tab_project_label(&named(&["hocus", "pocus", "focus", "locus"])).unwrap(),
+            "hocus + pocus +2"
         );
     }
 
@@ -5926,7 +5983,7 @@ mod tests {
     fn a_tab_whose_agents_have_no_project_is_left_out() {
         let panes = vec![in_folder(3, "codex", "/elsewhere", 1)];
 
-        assert!(tab_project_labels(&panes, &manual(&[]), &owners(&[])).is_empty());
+        assert!(tab_project_labels(&panes, &owners(&[])).is_empty());
     }
 
     #[test]

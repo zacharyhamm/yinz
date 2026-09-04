@@ -95,6 +95,10 @@ struct State {
     /// Overrides from hocus's `agent_register`, refreshed by every subscribe.
     /// hocus stays authoritative; this is only an input to `classify`.
     manual_kinds: BTreeMap<u32, String>,
+    /// The tab-to-project assignments the user made in hocus, held only to pass
+    /// on. Nothing here reads them: the store names the tabs, and this is the
+    /// only route from the pane that makes them to the plugin that uses them.
+    tab_projects: BTreeMap<usize, String>,
     /// The event-fed terminal-pane snapshot. `None` means nothing has told us
     /// about a pane yet.
     panes: Option<Vec<agents::AgentPane>>,
@@ -529,6 +533,7 @@ impl ZellijPlugin for State {
                 .and_then(|json| serde_json::from_str::<PollRequest>(json).ok())
             {
                 self.manual_kinds = request.manual_kinds;
+                self.tab_projects = request.tab_projects;
                 self.resolve_repositories();
             }
             // Answer immediately: a hocus that just opened wants the snapshot now,
@@ -2866,6 +2871,7 @@ impl State {
             manual_kinds: self.manual_kinds.clone(),
             zellij_session_name: self.zellij_session_name.clone().unwrap_or_default(),
             repositories: self.repositories.clone(),
+            tab_projects: self.tab_projects.clone(),
             focused: self.focused,
             focused_plugin: self.focused_plugin,
             summaries: self.summaries.clone(),
@@ -4782,6 +4788,27 @@ mod tests {
         state.manual_kinds.insert(7, "codex".to_owned());
         state.publish();
         assert_eq!(state.seq, seq + 1);
+    }
+
+    /// The daemon has no opinion about tabs; it is only the road between the
+    /// plugin that makes these assignments and the one that names the tabs.
+    #[test]
+    fn a_hand_made_tab_assignment_is_carried_through_to_the_snapshot() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            tab_projects: BTreeMap::from([(4, "hocus".to_owned())]),
+            ..State::default()
+        };
+
+        state.publish_forced();
+
+        let published: PollReply =
+            serde_json::from_str(state.last_published.as_deref().expect("published"))
+                .expect("parses");
+        assert_eq!(
+            published.tab_projects,
+            BTreeMap::from([(4, "hocus".to_owned())])
+        );
     }
 
     #[test]

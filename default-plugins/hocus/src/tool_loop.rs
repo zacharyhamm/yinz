@@ -2026,6 +2026,25 @@ impl State {
             .collect()
     }
 
+    /// Pane id to the name of the project it is *in*, for every terminal pane.
+    ///
+    /// The naming counterpart of [`pane_projects`](Self::pane_projects), and
+    /// wider on both axes: every pane rather than only agents, and a checkout
+    /// nobody registered rather than only a registered project. Both widenings
+    /// are safe here for the same reason — a name is worked out afresh from the
+    /// panes that are open, so a wrong one costs a redraw, where a wrongly
+    /// remembered project costs the user a row they have to delete.
+    pub(crate) fn pane_project_labels(&self) -> BTreeMap<u32, String> {
+        self.panes
+            .iter()
+            .filter_map(|pane| {
+                let location = Self::pane_location(pane)?;
+                let label = projects::label_for_cwd(&self.repositories, &self.projects, &location)?;
+                Some((pane.pane_id, label))
+            })
+            .collect()
+    }
+
     /// Pane id to branch name, for each agent sitting in a checkout.
     ///
     /// Deliberately not gated on the folder belonging to a project the way
@@ -2061,61 +2080,9 @@ impl State {
         self.repositories.get(cwd)?.branch.as_deref()
     }
 
-    /// What Git said about an agent's folder, or about the nearest folder above
-    /// it that we have an answer for.
-    ///
-    /// The daemon probes each folder an agent is in, so an agent that `cd`s into
-    /// a subdirectory of its checkout has no answer of its own until a fresh
-    /// probe lands. It is in the same checkout it was in a moment ago, and on
-    /// screen the wait reads as the agent losing its project and getting it back.
-    /// The exact answer replaces this stand-in as soon as it arrives.
-    ///
-    /// For the project only. The branch goes through `branch_for_cwd`, which
-    /// takes no stand-in — see the reason there.
-    fn repository_for_cwd(&self, cwd: &Location) -> Option<&projects::Repository> {
-        if let Some(repository) = self.repositories.get(cwd) {
-            return Some(repository);
-        }
-        self.repositories
-            .iter()
-            // Component-wise, and on the same machine — the rule
-            // `Location::starts_with` puts on a folder, so `/work/hocus-old` is
-            // not below `/work/hocus` and neither is `/work/hocus/src` on
-            // another host.
-            .filter(|(probed, _)| cwd.starts_with(probed))
-            .max_by_key(|(probed, _)| probed.depth())
-            .map(|(_, repository)| repository)
-    }
-
-    /// The project that owns an agent's folder, when Git claims that folder.
-    ///
-    /// A folder outside a repository belongs to no project even when a project
-    /// root contains it: an agent that is not in a checkout is not working on a
-    /// project. The daemon fills `repositories` from its Git probe, so an agent
-    /// has no project for the moment between its pane appearing and that probe
-    /// landing.
-    ///
-    /// Git identity is asked first and the folder second. What a project *is* is
-    /// a repository; containment is a proxy for that, and it misfires for a
-    /// checkout that happens to sit under an unrelated project's root. The
-    /// containment answer is still worth having second — `same_repository` only
-    /// matches when both sides carry Git metadata, so a project the user named
-    /// on a plain folder is found by nothing else, and two projects sharing a
-    /// remote fall through to the folder rather than to nothing at all.
-    ///
-    /// For a pane on another machine there is no second answer, and
-    /// `projects::contains` is what says so: a project's root is a path here,
-    /// and a folder over there that spells the same path is a different place.
-    /// A remote agent is matched by its repository's remote url or not at all —
-    /// which is right, because a build box laid out like the laptop would
-    /// otherwise put every remote agent in whichever local project sits at its
-    /// path.
+    /// The project that owns a pane's folder. See [`projects::project_for_cwd`].
     fn project_for_cwd(&self, cwd: &Location) -> Option<&projects::Project> {
-        let repository = self
-            .repository_for_cwd(cwd)
-            .filter(|repository| repository.is_checkout())?;
-        projects::for_repository(&self.projects, repository)
-            .or_else(|| projects::for_cwd(&self.projects, cwd))
+        projects::project_for_cwd(&self.repositories, &self.projects, cwd)
     }
 
     /// Point everything that names a project that went away at the project that
@@ -2163,24 +2130,39 @@ impl State {
         });
         self.sync_project_skills();
         self.refresh_tab_project_labels();
+        self.send_tab_assignments();
     }
 
-    /// Work out what each tab should be called, and tell the host when it changes.
+    /// Tell the daemon when the hand-made assignments changed, so it can pass
+    /// them to the plugin that names the tabs.
     ///
-    /// The host does the naming itself from here: it knows the tab order the
-    /// `#1`/`#2` of two tabs on one project are read in, and it knows which tabs
-    /// the user has named and must be left alone. All it is missing is what a
-    /// project is, which is the one thing this plugin can say.
+    /// Here rather than at each of the four places that write `tab_projects`,
+    /// because this runs on every poll and so cannot be forgotten by a fifth.
+    /// The comparison is what keeps that from becoming a message a second.
+    fn send_tab_assignments(&mut self) {
+        if self.sent_tab_projects == self.tab_projects {
+            return;
+        }
+        self.sent_tab_projects = self.tab_projects.clone();
+        self.send_overrides();
+    }
+
+    /// Work out what each tab should be called.
+    ///
+    /// Not published from here. hocus-store is the one publisher, because a tab
+    /// has to be named in a session where no hocus pane is open — which is most
+    /// of them. This copy exists because half the plugin reads it (the tab map
+    /// the model is shown, and the tests), and it is derived by
+    /// [`projects::label_for_cwd`] and [`agents::tab_project_labels`], the same
+    /// two the store uses, so the two cannot answer differently.
     fn refresh_tab_project_labels(&mut self) {
-        let owners = self.pane_projects();
-        let detected = agents::tab_project_labels(&self.panes, &self.manual_kinds, &owners);
+        let owners = self.pane_project_labels();
+        let detected = agents::tab_project_labels(&self.panes, &owners);
         let mut labels: BTreeMap<usize, String> = detected
             .into_iter()
-            // Two projects in one tab name it after both. A tab is a place to
-            // work, not a thing that belongs to one project.
-            .map(|(tab_id, projects)| (tab_id, projects.join(" + ")))
+            .filter_map(|(tab_id, projects)| Some((tab_id, agents::tab_project_label(&projects)?)))
             .collect();
-        // An assignment the user made outranks what the agents in the tab suggest,
+        // An assignment the user made outranks what the panes in the tab suggest,
         // the same way it does everywhere else.
         for (tab_id, project) in &self.tab_projects {
             labels.insert(*tab_id, project.clone());
@@ -2188,10 +2170,7 @@ impl State {
         if !self.tabs.is_empty() {
             labels.retain(|tab_id, _| self.tabs.iter().any(|tab| tab.tab_id == *tab_id));
         }
-        if labels != self.tab_project_labels {
-            self.tab_project_labels = labels;
-            self.publish_tab_projects();
-        }
+        self.tab_project_labels = labels;
     }
 
     /// The snapshot every agent tool works from. Split out so the host calls in
@@ -2246,7 +2225,7 @@ impl State {
         tools::report_pane_agent(pane_id, agents::registered_agent(kind, cwd));
         // hocus stays authoritative for the overrides; the daemon holds a copy
         // only to classify with, so it needs the new one before its next poll.
-        self.send_manual_kinds();
+        self.send_overrides();
         format!("registered pane {pane_id} as {kind}")
     }
 
@@ -2722,7 +2701,7 @@ impl State {
                 let pane_id = pane_id as u32;
                 self.manual_kinds.insert(pane_id, kind.to_owned());
                 self.pending_agent_panes.insert(pane_id);
-                self.send_manual_kinds();
+                self.send_overrides();
                 format!("{result} (registered as {kind})")
             },
             _ => result.to_owned(),
@@ -2935,7 +2914,7 @@ impl State {
         // still holds the pane whose closing caused this prune in the first
         // place, which is how a closed agent came back.
         if kinds_pruned {
-            self.send_manual_kinds();
+            self.send_overrides();
         }
     }
 

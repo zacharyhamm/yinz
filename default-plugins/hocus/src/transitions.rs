@@ -75,28 +75,6 @@ impl State {
         self.store.joined("plugin:hocus", "hocus")
     }
 
-    /// Hand the host the tab names worked out in `refresh_tab_project_labels`.
-    ///
-    /// Gated on the permission having come back granted: the call is refused
-    /// before that, and the next poll makes it again anyway.
-    #[cfg(target_family = "wasm")]
-    pub(crate) fn publish_tab_projects(&self) {
-        if !self.granted {
-            return;
-        }
-        set_tab_projects(
-            self.tab_project_labels
-                .iter()
-                .map(|(tab_id, project)| (*tab_id as u64, project.clone()))
-                .collect(),
-        );
-    }
-
-    /// Outside a plugin there is no host to tell, and `tab_project_labels` is
-    /// what the tests read instead.
-    #[cfg(not(target_family = "wasm"))]
-    pub(crate) fn publish_tab_projects(&self) {}
-
     pub(crate) fn active_stream_id(&self) -> Option<String> {
         self.stream.as_ref().map(|stream| stream.id.clone())
     }
@@ -548,21 +526,29 @@ impl State {
     /// that was reloaded restarts its `seq` at one, and holding the old
     /// high-water mark would drop every snapshot it ever sent again.
     ///
-    /// Anything that merely has fresh overrides to send wants `send_manual_kinds`
+    /// Anything that merely has fresh overrides to send wants `send_overrides`
     /// instead. Resetting the watermark mid-stream is not free: it re-admits the
     /// snapshots already in flight, and an older one still holding a pane that
     /// has since closed will put it back on screen.
     pub(crate) fn subscribe_to_agentd(&mut self) {
         self.agent_seq = 0;
-        self.send_manual_kinds();
+        self.send_overrides();
     }
 
-    /// Tell the daemon what the manual kinds are now. Same pipe, same reply — but
-    /// no claim that the numbering restarted, because it did not.
-    pub(crate) fn send_manual_kinds(&mut self) {
+    /// Hand the daemon everything this plugin is authoritative about. Same pipe
+    /// as `subscribe_to_agentd`, same reply — but no claim that the numbering
+    /// restarted, because it did not.
+    ///
+    /// Two things travel together because they take the same road: the manual
+    /// agent kinds, which the daemon itself classifies with, and the tab-project
+    /// assignments, which it only relays on to hocus-store — the plugin that
+    /// names the tabs, and one this plugin cannot address directly without
+    /// launching a second copy of it.
+    pub(crate) fn send_overrides(&mut self) {
         let Ok(payload) = serde_json::to_string(&PollRequest {
             manual_kinds: self.manual_kinds.clone(),
             activity: self.activity.clone(),
+            tab_projects: self.tab_projects.clone(),
         }) else {
             return;
         };
@@ -756,7 +742,7 @@ impl State {
             let latches = agents::rows::latches_from_rows(&rows);
             if !latches.is_empty() {
                 self.manual_kinds.extend(latches);
-                self.send_manual_kinds();
+                self.send_overrides();
             }
         }
         let fetched = self

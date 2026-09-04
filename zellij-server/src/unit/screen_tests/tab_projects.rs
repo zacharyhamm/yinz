@@ -122,3 +122,61 @@ fn a_tab_with_two_panes_takes_the_project_name() {
 
     assert_eq!(name_of(&screen, 0), "hocus");
 }
+
+/// The tab a lone pane exits in still says so, whatever name it is wearing.
+///
+/// The marker used to be baked into the lent name, so a pane that set no title
+/// of its own handed back "Tab #1 [ EXITED ] " — which is not the tab's own name
+/// and so read as a loan, and vetoed the project. The tab went from "hocus" to
+/// "Tab #1 [ EXITED ]" the moment its shell stopped.
+#[test]
+fn a_pane_that_exits_without_a_title_keeps_the_projects_name() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_tab(&mut screen, 1, 0);
+    let tab = screen.get_tab_by_id_mut(0).unwrap();
+    tab.set_pane_frames(PaneFrameStyle::Titles);
+    tab.hold_pane(PaneId::Terminal(1), Some(2), false, RunCommand::default());
+
+    set_projects(&mut screen, &[(0, "hocus")]);
+
+    assert_eq!(name_of(&screen, 0), "hocus [ EXIT CODE: 2 ] ");
+}
+
+/// And a pane that *did* set a title keeps lending it, marker and all.
+#[test]
+fn a_pane_that_exits_with_a_title_still_lends_it() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_tab(&mut screen, 1, 0);
+    let tab = screen.get_tab_by_id_mut(0).unwrap();
+    tab.set_pane_frames(PaneFrameStyle::Titles);
+    tab.rename_pane_by_pane_id(PaneId::Terminal(1), "cargo test".as_bytes().to_vec())
+        .expect("TEST");
+    tab.hold_pane(PaneId::Terminal(1), None, false, RunCommand::default());
+
+    set_projects(&mut screen, &[(0, "hocus")]);
+
+    assert_eq!(name_of(&screen, 0), "cargo test [ EXITED ] ");
+}
+
+/// A tab in two projects is named after both, and the "#1"/"#2" a collision
+/// earns is worked out on the whole combined label rather than on either half.
+#[test]
+fn two_tabs_sharing_a_combined_label_are_numbered_by_position() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 3, 2);
+
+    set_projects(
+        &mut screen,
+        &[(0, "hocus + pocus"), (1, "hocus"), (2, "hocus + pocus")],
+    );
+
+    assert_eq!(name_of(&screen, 0), "hocus + pocus #1");
+    assert_eq!(name_of(&screen, 2), "hocus + pocus #2");
+    assert_eq!(
+        name_of(&screen, 1),
+        "hocus",
+        "a tab on one of the two projects collides with neither"
+    );
+}

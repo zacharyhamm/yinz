@@ -123,20 +123,34 @@ impl Repository {
     /// one — the same stance `poll::repository` takes when it refuses to read
     /// Git's `HEAD` as a branch name.
     pub fn checkout_label(&self) -> Option<String> {
+        let repository = self.checkout_name()?;
+        match &self.branch {
+            Some(branch) => Some(format!("{repository}:{branch}")),
+            None => Some(repository),
+        }
+    }
+
+    /// The repository half of [`checkout_label`], with no branch on it.
+    ///
+    /// What names a *tab*, where the label names a pane. A tab holds work rather
+    /// than a checkout — two panes in two worktrees of one repository are one
+    /// tab's worth of the same project — so the branch, which is exactly what
+    /// tells those two apart, is what has to come off.
+    ///
+    /// `None` for a folder Git did not claim, for the same reason the label
+    /// refuses one: a bare folder name where the reader expects a repository
+    /// would read as one.
+    pub fn checkout_name(&self) -> Option<String> {
         if !self.is_checkout() {
             return None;
         }
         // A checkout at `/` names no folder, and a lone separator on a pane frame
         // is noise rather than an address.
-        let repository = self
-            .common_dir
+        self.common_dir
             .as_deref()
             .and_then(repository_name)
-            .or_else(|| Some(folder_name(&self.root)).filter(|name| !name.is_empty()))?;
-        match &self.branch {
-            Some(branch) => Some(format!("{repository}:{branch}")),
-            None => Some(repository.to_owned()),
-        }
+            .or_else(|| Some(folder_name(&self.root)).filter(|name| !name.is_empty()))
+            .map(str::to_owned)
     }
 }
 
@@ -445,6 +459,90 @@ pub fn for_repository<'a>(projects: &'a Registry, repository: &Repository) -> Op
     matches.next().is_none().then_some(project)
 }
 
+/// The probed folder map, keyed by folder *and* machine.
+///
+/// The shape `hocus-agentd` fills from its Git probes and every reader downstream
+/// receives on the wire.
+pub type Probed = BTreeMap<Location, Repository>;
+
+/// What Git said about a folder, or about the nearest folder above it that we
+/// have an answer for.
+///
+/// The daemon probes each folder a pane is in, so a pane that `cd`s into a
+/// subdirectory of its checkout has no answer of its own until a fresh probe
+/// lands. It is in the same checkout it was in a moment ago, and on screen the
+/// wait reads as the pane losing its project and getting it back. The exact
+/// answer replaces this stand-in as soon as it arrives.
+///
+/// For the project only. A branch takes no stand-in: the folder above may have
+/// another one out.
+pub fn repository_for_cwd<'a>(probed: &'a Probed, cwd: &Location) -> Option<&'a Repository> {
+    if let Some(repository) = probed.get(cwd) {
+        return Some(repository);
+    }
+    probed
+        .iter()
+        // Component-wise, and on the same machine — the rule
+        // `Location::starts_with` puts on a folder, so `/work/hocus-old` is
+        // not below `/work/hocus` and neither is `/work/hocus/src` on
+        // another host.
+        .filter(|(probed, _)| cwd.starts_with(probed))
+        .max_by_key(|(probed, _)| probed.depth())
+        .map(|(_, repository)| repository)
+}
+
+/// The project that owns a folder, when Git claims that folder.
+///
+/// A folder outside a repository belongs to no project even when a project root
+/// contains it: a pane that is not in a checkout is not working on a project.
+/// The daemon fills the probed map from its Git probe, so a pane has no project
+/// for the moment between it appearing and that probe landing.
+///
+/// Git identity is asked first and the folder second. What a project *is* is a
+/// repository; containment is a proxy for that, and it misfires for a checkout
+/// that happens to sit under an unrelated project's root. The containment
+/// answer is still worth having second — `same_repository` only matches when
+/// both sides carry Git metadata, so a project the user named on a plain folder
+/// is found by nothing else, and two projects sharing a remote fall through to
+/// the folder rather than to nothing at all.
+///
+/// For a pane on another machine there is no second answer, and
+/// [`contains`] is what says so: a project's root is a path here, and a folder
+/// over there that spells the same path is a different place. A remote pane is
+/// matched by its repository's remote url or not at all — which is right,
+/// because a build box laid out like the laptop would otherwise put every remote
+/// pane in whichever local project sits at its path.
+pub fn project_for_cwd<'a>(
+    probed: &Probed,
+    projects: &'a Registry,
+    cwd: &Location,
+) -> Option<&'a Project> {
+    let repository =
+        repository_for_cwd(probed, cwd).filter(|repository| repository.is_checkout())?;
+    for_repository(projects, repository).or_else(|| for_cwd(projects, cwd))
+}
+
+/// What to *call* the project a folder is in, which is a wider question than
+/// which project owns it.
+///
+/// [`project_for_cwd`] answers with a registered project or with nothing, and
+/// nothing is the wrong answer for a tab: a checkout the user never registered
+/// is still plainly a place, and naming the tab after it costs nothing and
+/// reverts the moment the pane closes. Registering it would not — which is why
+/// this is a *label*, and discovery still refuses to remember a folder a shell
+/// merely sat in.
+///
+/// A folder Git does not claim gets no label. That is the line: without it every
+/// `cd` into a home directory would put a folder name on the tab bar, and a name
+/// that means nothing is worse than `Tab #3`, which at least means "the third
+/// one".
+pub fn label_for_cwd(probed: &Probed, projects: &Registry, cwd: &Location) -> Option<String> {
+    if let Some(project) = project_for_cwd(probed, projects, cwd) {
+        return Some(project.name.clone());
+    }
+    repository_for_cwd(probed, cwd)?.checkout_name()
+}
+
 /// What one discovery pass changed.
 ///
 /// The caller holds project names in other places — the tab assignments and the
@@ -694,6 +792,16 @@ mod tests {
     /// write this format now.
     fn json(projects: &Registry) -> Option<String> {
         serde_json::to_string(projects).ok()
+    }
+
+    /// A folder on this machine.
+    fn here(path: &str) -> Location {
+        Location::new(None::<String>, path)
+    }
+
+    /// A project the user named on a folder, with no Git identity of its own.
+    fn validated(name: &str, root: &str) -> Project {
+        validate(name, root).unwrap()
     }
 
     fn checkout(name: &str, root: &str) -> Project {
@@ -1436,6 +1544,117 @@ mod tests {
                 .unwrap()
                 .name,
             "hocus"
+        );
+    }
+
+    /// A tab is named by the repository alone. Two worktrees of one repository
+    /// are one project's worth of work, and the branch is exactly what would
+    /// split them into two names.
+    #[test]
+    fn a_tab_is_named_by_the_repository_without_the_branch() {
+        let primary = repository("/work/hocus", "/work/hocus/.git", Some("main"));
+        assert_eq!(primary.checkout_name().as_deref(), Some("hocus"));
+
+        let worktree = repository("/work/trees/topic", "/work/hocus/.git", Some("topic"));
+        assert_eq!(
+            worktree.checkout_name().as_deref(),
+            Some("hocus"),
+            "the primary's name, not the worktree folder's",
+        );
+
+        assert_eq!(Repository::folder("/home/me/notes").checkout_name(), None);
+    }
+
+    /// The registry is asked first: the user renamed the folder for a reason,
+    /// and that name is the one they already use for this work.
+    #[test]
+    fn a_registered_project_labels_a_folder_over_its_repository() {
+        let probed = Probed::from([(
+            here("/work/hocus"),
+            repository("/work/hocus", "/work/hocus/.git", Some("main")),
+        )]);
+        let mut projects = Registry::new();
+        projects.insert(
+            "the-workspace".to_owned(),
+            validated("the-workspace", "/work/hocus"),
+        );
+
+        assert_eq!(
+            label_for_cwd(&probed, &projects, &here("/work/hocus")).as_deref(),
+            Some("the-workspace"),
+        );
+    }
+
+    /// A checkout nobody registered still names a tab. That is the whole reason
+    /// the label is a wider question than the project.
+    #[test]
+    fn an_unregistered_checkout_labels_itself() {
+        let probed = Probed::from([(
+            here("/somewhere/zellij"),
+            repository("/somewhere/zellij", "/somewhere/zellij/.git", Some("main")),
+        )]);
+
+        assert_eq!(
+            label_for_cwd(&probed, &Registry::new(), &here("/somewhere/zellij")).as_deref(),
+            Some("zellij"),
+        );
+    }
+
+    /// And a folder Git does not claim labels nothing, however deep in a
+    /// project's root it sits — the same rule `project_for_cwd` keeps.
+    #[test]
+    fn a_plain_folder_labels_nothing_even_under_a_project() {
+        let probed = Probed::from([(
+            here("/work/hocus/notes"),
+            Repository::folder("/work/hocus/notes"),
+        )]);
+        let mut projects = Registry::new();
+        projects.insert("hocus".to_owned(), validated("hocus", "/work/hocus"));
+
+        assert_eq!(
+            label_for_cwd(&probed, &projects, &here("/work/hocus/notes")),
+            None,
+        );
+    }
+
+    /// A subdirectory of a probed checkout borrows the answer from above it,
+    /// rather than losing its project until a fresh probe lands.
+    #[test]
+    fn a_subdirectory_borrows_the_label_of_the_checkout_above_it() {
+        let probed = Probed::from([(
+            here("/work/hocus"),
+            repository("/work/hocus", "/work/hocus/.git", Some("main")),
+        )]);
+
+        assert_eq!(
+            label_for_cwd(&probed, &Registry::new(), &here("/work/hocus/src")).as_deref(),
+            Some("hocus"),
+        );
+    }
+
+    /// A folder on another machine is never filed under the local project that
+    /// happens to sit at the same path. A build box laid out like the laptop is
+    /// the ordinary case, not a corner one.
+    #[test]
+    fn a_remote_folder_is_not_labelled_by_a_local_project_at_the_same_path() {
+        let there = Location::new(Some("build-box".to_owned()), "/work/hocus");
+        let probed = Probed::from([(
+            there.clone(),
+            Repository {
+                host: Some("build-box".to_owned()),
+                ..repository("/work/hocus", "/work/hocus/.git", Some("main"))
+            },
+        )]);
+        let mut projects = Registry::new();
+        projects.insert(
+            "the-workspace".to_owned(),
+            validated("the-workspace", "/work/hocus"),
+        );
+
+        assert_eq!(
+            label_for_cwd(&probed, &projects, &there).as_deref(),
+            Some("hocus"),
+            "named by its own repository, never by the local project at that path",
         );
     }
 }
