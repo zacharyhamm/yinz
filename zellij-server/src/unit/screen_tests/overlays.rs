@@ -2243,6 +2243,90 @@ fn a_refused_fullscreen_press_repaints_what_the_expansion_covered() {
     );
 }
 
+/// A tab whose two tiled panes are stacked one above the other, so that turning the lower one
+/// into a ui pane - which is what `set_pane_selectable(false)` means: the status bar and the tab
+/// bar are toggled exactly this way - takes rows off the viewport without emptying it.
+fn new_tab_with_stacked_panes(screen: &mut Screen) {
+    let client_id = 1;
+    let layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Horizontal,
+        children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
+        ..Default::default()
+    };
+    screen
+        .new_tab(0, (vec![], vec![]), None, Some(client_id))
+        .expect("TEST");
+    screen
+        .apply_layout(
+            layout,
+            vec![],
+            vec![(1, None), (2, None)],
+            vec![],
+            HashMap::new(),
+            0,
+            true,
+            client_id,
+            None,
+        )
+        .expect("TEST");
+}
+
+/// The twin of `an_expanded_overlay_fills_the_viewport_a_resize_leaves`, for the other way the
+/// viewport moves: a pane becoming chrome. `set_pane_selectable` recomputes the viewport out of
+/// the ui panes on its edges, and an overlay expanded over the viewport - not over the whole
+/// surface - is drawn against it, so it has to be re-derived here as well.
+#[test]
+fn an_expanded_overlay_follows_the_viewport_a_ui_pane_leaves() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab_with_stacked_panes(&mut screen);
+    open_overlay_with(&mut screen, 3, overlay_coordinates());
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .toggle_pane_fullscreen(PaneId::Terminal(3));
+    let lower = screen.tabs[&0]
+        .get_pane_with_id(PaneId::Terminal(2))
+        .expect("TEST")
+        .position_and_size();
+    assert!(
+        lower.y > 0,
+        "the pane about to become chrome is the lower one"
+    );
+
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .set_pane_selectable(PaneId::Terminal(2), false);
+
+    let tab = &screen.tabs[&0];
+    // the upper pane is what the viewport is now: the lower one is chrome, and the two of them
+    // tile the whole surface between them
+    let viewport = tab
+        .get_pane_with_id(PaneId::Terminal(1))
+        .expect("TEST")
+        .position_and_size();
+    let expanded = tab
+        .get_pane_with_id(PaneId::Terminal(3))
+        .expect("TEST")
+        .current_geom();
+    assert_eq!(
+        (
+            expanded.x,
+            expanded.y,
+            expanded.cols.as_usize(),
+            expanded.rows.as_usize()
+        ),
+        (
+            viewport.x,
+            viewport.y,
+            viewport.cols.as_usize(),
+            viewport.rows.as_usize()
+        ),
+        "the expansion stops at the chrome, rather than keeping the screenful it had before it"
+    );
+}
+
 /// The same keystroke with a fullscreen floating pane underneath - the twin of
 /// `a_resize_keystroke_reaches_an_overlay_over_a_fullscreen_floating_pane`, and the state where
 /// the floating branch would happily have answered a keystroke that was never about it.
