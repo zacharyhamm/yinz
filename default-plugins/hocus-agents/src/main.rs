@@ -2611,6 +2611,7 @@ mod tests {
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),
+            host: None,
             started_at_ms: 10,
             ended_at_ms: Some(20),
             outcome: agents::RunOutcome::Completed,

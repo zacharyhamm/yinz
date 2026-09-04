@@ -2237,7 +2237,12 @@ impl State {
             "project": header
                 .cwd
                 .as_deref()
-                .and_then(|cwd| projects::for_cwd(&self.projects, &Location::local(cwd)))
+                .and_then(|cwd| {
+                    projects::for_cwd(
+                        &self.projects,
+                        &Location::new(header.host.clone(), cwd),
+                    )
+                })
                 .map(|project| project.name.clone()),
             "active": matches!(header.outcome, agents::RunOutcome::Active),
             "outcome": match header.outcome {
@@ -2261,12 +2266,13 @@ impl State {
         };
         let limit = args.limit.unwrap_or(20);
         let offset = args.offset.unwrap_or(0);
-        let (headers, more) = match run_history::list_runs(&self.store(), &filter, limit, offset) {
+        let page = match run_history::list_runs(&self.store(), &filter, limit, offset) {
             Ok(found) => found,
             Err(error) => return error,
         };
         let now_ms = agents::now_ms();
-        let runs: Vec<serde_json::Value> = headers
+        let runs: Vec<serde_json::Value> = page
+            .headers
             .iter()
             .map(|header| self.run_reply(header, now_ms))
             .collect();
@@ -2274,8 +2280,11 @@ impl State {
             "scope": scope,
             "count": runs.len(),
             "offset": offset,
-            "more": more,
-            "next_offset": more.then(|| offset.saturating_add(runs.len())),
+            "more": page.more,
+            // The rows this page consumed, not the runs it kept: a project filter is applied
+            // after the store has counted the rows, so paging on the kept count hands back
+            // the same runs for ever. See `RunPage::scanned`.
+            "next_offset": page.more.then(|| offset.saturating_add(page.scanned)),
             "runs": runs,
         })
         .to_string()

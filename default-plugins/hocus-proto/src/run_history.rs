@@ -65,6 +65,24 @@ const IN_CHUNK: usize = 500;
 /// it. Answering "no runs in this page" with an offset to retry is the honest alternative.
 const MAX_RUN_SCAN: usize = 400;
 
+/// How many runs a narrowed search will resolve into its scope before giving up on the rest.
+///
+/// A search that narrows resolves the candidate runs first (see [`search`]), and resolving
+/// them one page at a time is what stops "no matches" from meaning "no matches in the newest
+/// fifty". It still has to stop somewhere: an `IN` list of every run a machine ever recorded
+/// is a query the store will refuse, and a scope this wide is already more history than a
+/// question is really about. Reaching the cap sets `Found::truncated`, so a partial answer
+/// says it is one.
+const MAX_SCOPE_RUNS: usize = MAX_RUN_SCAN;
+
+/// How many rows resolving a scope will read to find those runs.
+///
+/// The second half of the same bound, and the one that matters for a filter almost nothing
+/// matches: a project with four runs in an archive of ten thousand would otherwise page the
+/// whole archive on every search. Reaching this is reported the same way reaching
+/// [`MAX_SCOPE_RUNS`] is.
+const MAX_SCOPE_SCAN: usize = 4_000;
+
 /// Which runs a caller is asking about. Every field `None` means every run on this machine.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Filter {
@@ -113,7 +131,7 @@ impl Filter {
 
     fn keeps(&self, header: &AgentRunHeader) -> bool {
         match trimmed(&self.root) {
-            Some(root) => matches_root(header.cwd.as_deref(), root),
+            Some(root) => matches_root(header.cwd.as_deref(), header.host.as_deref(), root),
             None => true,
         }
     }
@@ -128,7 +146,16 @@ fn trimmed(value: &Option<String>) -> Option<&str> {
 /// A prefix on path boundaries rather than `starts_with` on the raw string, so `/work/hocus`
 /// does not claim `/work/hocus-fork`. A run with no `cwd` at all — one recorded before the
 /// field existed — belongs to no project rather than to every one.
-pub fn matches_root(cwd: Option<&str>, root: &str) -> bool {
+///
+/// A run on another machine matches nothing, which is `projects::contains`' rule and is here
+/// for its reason: `/home/me/work` on a build box and `/home/me/work` here are two different
+/// folders, and a project is a folder on *this* machine. Filing a remote agent's run under a
+/// local project because the two spell the same path would put work nobody did here into the
+/// answer to "what has been done on this".
+pub fn matches_root(cwd: Option<&str>, host: Option<&str>, root: &str) -> bool {
+    if host.is_some_and(|host| !host.trim().is_empty()) {
+        return false;
+    }
     let (Some(cwd), root) = (cwd, root.trim_end_matches('/')) else {
         return false;
     };
@@ -143,19 +170,33 @@ pub fn matches_root(cwd: Option<&str>, root: &str) -> bool {
 // Listing runs
 // ---------------------------------------------------------------------------
 
+/// One page of runs, and where the page after it starts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunPage {
+    pub headers: Vec<AgentRunHeader>,
+    /// Whether more runs follow this page.
+    pub more: bool,
+    /// How many store rows this page consumed, which is what the next `offset` adds.
+    ///
+    /// Deliberately not `headers.len()`: a guest-side narrowing throws rows away *after* the
+    /// store has counted them, so a page that kept three runs out of a hundred and sixty
+    /// scanned starts the next page a hundred and sixty rows along. Paging on the kept count
+    /// re-reads all but the first three of those rows for ever, and the caller sees the same
+    /// runs on every page while the older ones stay out of reach.
+    pub scanned: usize,
+}
+
 /// One page of runs, newest first, active and archived together.
 ///
 /// Both, unlike the panel's archive pager, because the model's question is about the work and
 /// not about the pane: "what has been done on this" is answered as badly by hiding the run
 /// still doing it as by hiding the four before it.
-///
-/// Returns the page and whether more follow it.
 pub fn list_runs(
     backend: &impl Backend,
     filter: &Filter,
     limit: usize,
     offset: usize,
-) -> Result<(Vec<AgentRunHeader>, bool), String> {
+) -> Result<RunPage, String> {
     let limit = limit.clamp(1, MAX_RUNS);
     // A guest-side narrowing throws rows away after the store has counted them, so ask for
     // more than the page when one is in play. Bounded: an over-fetch that pages the whole
@@ -180,13 +221,41 @@ pub fn list_runs(
     }
     let fetched = backend.fetch(&request)?;
     let raw = fetched.len();
-    let mut headers: Vec<AgentRunHeader> = rows::run_headers_from_rows(&fetched)
+    // Kept and counted in one pass, because the page has to report both what it kept and how
+    // many rows it spent getting there. A row that overflows the page is the boundary: the
+    // rows before it are this page's, and the next page starts on it.
+    let mut headers: Vec<AgentRunHeader> = Vec::new();
+    let mut scanned = raw;
+    let mut overflowed = false;
+    for (index, header) in rows::run_headers_from_rows(&fetched)
         .into_iter()
-        .filter(|header| filter.keeps(header))
-        .collect();
-    let more = headers.len() > limit || (raw >= want && filter.narrows_in_guest());
-    headers.truncate(limit);
-    Ok((headers, more))
+        .enumerate()
+    {
+        if !filter.keeps(&header) {
+            continue;
+        }
+        if headers.len() == limit {
+            overflowed = true;
+            scanned = index;
+            break;
+        }
+        headers.push(header);
+    }
+    // A fetch that returned rows always advances, whatever the arithmetic above made of them:
+    // an offset that stands still is a caller paging for ever.
+    let scanned = match raw {
+        0 => 0,
+        raw => scanned.clamp(1, raw),
+    };
+    // `truncated` as well as the row count, because [`crate::store::MAX_FETCH_BYTES`] cuts a
+    // fetch by weight and not by `limit` — a scan stopped at three hundred rows of four
+    // hundred asked for would otherwise report that the archive ends there.
+    let more = overflowed || (filter.narrows_in_guest() && (raw >= want || fetched.truncated));
+    Ok(RunPage {
+        headers,
+        more,
+        scanned,
+    })
 }
 
 /// One run's header, whatever session it belongs to and whether or not it is still open.
@@ -296,12 +365,17 @@ pub fn entry_page(
         },
         _ => None,
     };
-    let earlier = match first {
-        Some(first) => {
+    // Measured from where the page starts, and from where it was *asked* to start when it
+    // held nothing: a read from past the end of a run has the whole run behind it, and saying
+    // `earlier: false` there tells a reader who followed a stale `next_revision` that a run it
+    // can see the entry count of has nothing in it. A page read backward from the end that
+    // came back empty is an empty run, which has nothing earlier and says so.
+    let earlier = match first.or(from) {
+        Some(boundary) => {
             let before = backend.count(
                 &FetchRequest::entity(rows::ENTRY_ENTITY)
                     .filter(Pred::eq("run_id", run_id))
-                    .filter(Pred::lt("revision", first as i64)),
+                    .filter(Pred::lt("revision", boundary as i64)),
             )?;
             before > 0
         },
@@ -379,8 +453,40 @@ pub struct Hit {
 pub struct Found {
     pub hits: Vec<Hit>,
     pub runs: BTreeMap<String, AgentRunHeader>,
-    /// Whether the limit cut the results short.
+    /// Whether this is less than the whole answer — either the hit limit cut the results
+    /// short, or the scope was too wide to resolve in full and only part of the history was
+    /// searched. One flag for both because they mean the same thing to a reader: "not
+    /// finding it here does not mean it is not there".
     pub truncated: bool,
+}
+
+/// The runs a narrowed search will look inside, and whether the cap cut them short.
+///
+/// Paged rather than taken as one [`MAX_RUNS`] page, because that page is fifty runs and a
+/// question like "has an agent looked at this before" is asked of a machine's whole history:
+/// searching the newest fifty and answering "no" is the one wrong answer this module exists to
+/// avoid. [`MAX_SCOPE_RUNS`] and [`MAX_SCOPE_SCAN`] bound it, and reaching either is reported
+/// rather than hidden.
+fn scope_runs(backend: &impl Backend, filter: &Filter) -> Result<(Vec<String>, bool), String> {
+    let mut ids: Vec<String> = Vec::new();
+    let mut offset = 0usize;
+    loop {
+        let page = list_runs(backend, filter, MAX_RUNS, offset)?;
+        ids.extend(page.headers.into_iter().map(|header| header.id));
+        if ids.len() >= MAX_SCOPE_RUNS {
+            ids.truncate(MAX_SCOPE_RUNS);
+            return Ok((ids, true));
+        }
+        // `scanned` is zero only when the fetch returned nothing at all, which is the end of
+        // the archive however many rows the filter threw away on the way there.
+        if !page.more || page.scanned == 0 {
+            return Ok((ids, false));
+        }
+        offset = offset.saturating_add(page.scanned);
+        if offset >= MAX_SCOPE_SCAN {
+            return Ok((ids, true));
+        }
+    }
 }
 
 /// Search every recorded entry's text.
@@ -407,15 +513,17 @@ pub fn search(
         return Ok(Found::default());
     }
     let limit = limit.clamp(1, MAX_MATCHES);
+    let mut partial_scope = false;
     let scope: Option<Vec<String>> = match run_id {
         Some(run_id) => Some(vec![run_id.to_owned()]),
         None if filter == &Filter::default() => None,
         None => {
-            let (headers, _) = list_runs(backend, filter, MAX_RUNS, 0)?;
-            if headers.is_empty() {
+            let (ids, cut) = scope_runs(backend, filter)?;
+            if ids.is_empty() {
                 return Ok(Found::default());
             }
-            Some(headers.into_iter().map(|header| header.id).collect())
+            partial_scope = cut;
+            Some(ids)
         },
     };
     let hits = match scope {
@@ -433,7 +541,7 @@ pub fn search(
         },
         None => hits_for(backend, query, None, limit)?,
     };
-    let truncated = hits.len() > limit;
+    let truncated = hits.len() > limit || partial_scope;
     let hits: Vec<Hit> = hits.into_iter().take(limit).collect();
     let ids: BTreeSet<String> = hits.iter().map(|hit| hit.run_id.clone()).collect();
     let runs = headers_by_id(backend, &ids)?;
@@ -522,13 +630,18 @@ pub fn snippet(text: &str, query: &str) -> String {
 ///
 /// Character index and not a byte offset, because the caller slices by characters — a byte
 /// offset from `str::find` would cut a multi-byte character in half.
+///
+/// Folded one character to one, rather than through `str::to_lowercase`, for the same reason:
+/// the index has to be an index into the *original* text, and `to_lowercase` is not
+/// length-preserving — `İ` lowercases to two characters, so one of them anywhere before the
+/// match would shift the caller's window off the hit it is supposed to be centred on.
 fn find_fold(haystack: &str, needle: &str) -> Option<usize> {
     let needle = needle.trim();
     if needle.is_empty() {
         return None;
     }
-    let hay: Vec<char> = haystack.to_lowercase().chars().collect();
-    let needle: Vec<char> = needle.to_lowercase().chars().collect();
+    let hay: Vec<char> = haystack.chars().map(fold_char).collect();
+    let needle: Vec<char> = needle.chars().map(fold_char).collect();
     // Also try the first word alone: a multi-word query rarely appears verbatim, and the
     // word it starts with usually does.
     let first: Vec<char> = needle
@@ -537,6 +650,11 @@ fn find_fold(haystack: &str, needle: &str) -> Option<usize> {
         .take_while(|c| !c.is_whitespace())
         .collect();
     window_at(&hay, &needle).or_else(|| window_at(&hay, &first))
+}
+
+/// One character folded to one, keeping the first of a multi-character lowercasing.
+fn fold_char(c: char) -> char {
+    c.to_lowercase().next().unwrap_or(c)
 }
 
 fn window_at(hay: &[char], needle: &[char]) -> Option<usize> {
@@ -593,6 +711,7 @@ mod tests {
             session_id: id.to_owned(),
             kind: kind.to_owned(),
             cwd: Some("/work/hocus".to_owned()),
+            host: None,
             started_at_ms,
             ended_at_ms: None,
             outcome: RunOutcome::Active,
@@ -801,12 +920,15 @@ mod tests {
     #[test]
     fn runs_are_listed_newest_first_across_sessions() {
         let backend = seeded();
-        let (headers, more) = list_runs(&backend, &Filter::default(), 10, 0).unwrap();
+        let page = list_runs(&backend, &Filter::default(), 10, 0).unwrap();
         assert_eq!(
-            headers.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),
+            page.headers
+                .iter()
+                .map(|h| h.id.as_str())
+                .collect::<Vec<_>>(),
             ["codex:two", "claude:one"],
         );
-        assert!(!more);
+        assert!(!page.more);
     }
 
     #[test]
@@ -816,47 +938,158 @@ mod tests {
             kind: Some("codex".to_owned()),
             ..Filter::default()
         };
-        let (headers, _) = list_runs(&backend, &by_kind, 10, 0).unwrap();
-        assert_eq!(headers.len(), 1);
-        assert_eq!(headers[0].kind, "codex");
+        let by_kind = list_runs(&backend, &by_kind, 10, 0).unwrap().headers;
+        assert_eq!(by_kind.len(), 1);
+        assert_eq!(by_kind[0].kind, "codex");
 
         let by_session = Filter {
             zellij_session_name: Some("main".to_owned()),
             ..Filter::default()
         };
-        let (headers, _) = list_runs(&backend, &by_session, 10, 0).unwrap();
-        assert_eq!(headers.len(), 1);
-        assert_eq!(headers[0].id, "claude:one");
+        let by_session = list_runs(&backend, &by_session, 10, 0).unwrap().headers;
+        assert_eq!(by_session.len(), 1);
+        assert_eq!(by_session[0].id, "claude:one");
 
         let recent = Filter {
             since_ms: Some(1_500),
             ..Filter::default()
         };
-        let (headers, _) = list_runs(&backend, &recent, 10, 0).unwrap();
-        assert_eq!(headers.len(), 1);
-        assert_eq!(headers[0].id, "codex:two");
+        let recent = list_runs(&backend, &recent, 10, 0).unwrap().headers;
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].id, "codex:two");
     }
 
     #[test]
     fn a_listing_reports_that_more_follow_it() {
         let backend = seeded();
-        let (headers, more) = list_runs(&backend, &Filter::default(), 1, 0).unwrap();
-        assert_eq!(headers.len(), 1);
-        assert!(more);
-        let (headers, more) = list_runs(&backend, &Filter::default(), 1, 1).unwrap();
-        assert_eq!(headers[0].id, "claude:one");
-        assert!(!more);
+        let first = list_runs(&backend, &Filter::default(), 1, 0).unwrap();
+        assert_eq!(first.headers.len(), 1);
+        assert!(first.more);
+        // The next page starts on the row this one stopped at, and an unnarrowed page
+        // consumes exactly what it kept.
+        assert_eq!(first.scanned, 1);
+        let second = list_runs(&backend, &Filter::default(), 1, first.scanned).unwrap();
+        assert_eq!(second.headers[0].id, "claude:one");
+        assert!(!second.more);
+    }
+
+    /// Paging a narrowed listing has to advance by the rows it *scanned*, not the runs it
+    /// kept, or every page starts a few rows in and hands back the same runs for ever.
+    #[test]
+    fn a_narrowed_listing_pages_forward_instead_of_repeating_itself() {
+        let backend = backend();
+        // Thirty runs, three of them in the project, spread so that no single scan can reach
+        // them all: at limit 1 the over-fetch is eight rows.
+        for index in 0..30u64 {
+            let mut run = run(
+                &format!("claude:{index}"),
+                "claude",
+                "main",
+                1_000 - index as i64,
+            );
+            run.cwd = Some(match index % 10 {
+                0 => "/work/hocus".to_owned(),
+                _ => "/work/other".to_owned(),
+            });
+            write(&backend, &run);
+        }
+        let filter = Filter {
+            root: Some("/work/hocus".to_owned()),
+            ..Filter::default()
+        };
+        let mut seen: Vec<String> = Vec::new();
+        let mut offset = 0usize;
+        // Bounded so a page that failed to advance fails the test rather than hanging it.
+        for _ in 0..10 {
+            let page = list_runs(&backend, &filter, 1, offset).unwrap();
+            seen.extend(page.headers.iter().map(|header| header.id.clone()));
+            if !page.more {
+                break;
+            }
+            offset = offset.saturating_add(page.scanned);
+        }
+        assert_eq!(seen, ["claude:0", "claude:10", "claude:20"]);
+    }
+
+    /// A narrowed search resolves its scope a page at a time, so a match in a run older than
+    /// the newest [`MAX_RUNS`] is still found. Answering "no" from the newest fifty is the one
+    /// wrong answer this module exists to avoid.
+    #[test]
+    fn a_narrowed_search_reaches_past_the_newest_page_of_runs() {
+        let backend = backend();
+        for index in 0..(MAX_RUNS as u64 + 10) {
+            let mut run = run(
+                &format!("claude:{index}"),
+                "claude",
+                "main",
+                1_000 - index as i64,
+            );
+            run.entries = vec![entry(
+                1,
+                RunEntryKind::Prompt,
+                match index {
+                    // The oldest run, well past the first page of the listing.
+                    59 => "teach the tokenizer about zalgo",
+                    _ => "something else entirely",
+                },
+                1_000,
+            )];
+            write(&backend, &run);
+        }
+        let by_kind = Filter {
+            kind: Some("claude".to_owned()),
+            ..Filter::default()
+        };
+        let found = search(&backend, &by_kind, None, "zalgo", 10).unwrap();
+        assert_eq!(
+            found
+                .hits
+                .iter()
+                .map(|hit| hit.run_id.as_str())
+                .collect::<Vec<_>>(),
+            ["claude:59"],
+        );
+        assert!(!found.truncated);
+    }
+
+    /// A run on another machine is not this project's work, however its folder is spelled.
+    #[test]
+    fn a_project_filter_does_not_claim_a_run_from_another_machine() {
+        let backend = backend();
+        let here = run("claude:here", "claude", "main", 1_000);
+        let mut there = run("claude:there", "claude", "main", 2_000);
+        there.host = Some("build-box".to_owned());
+        write(&backend, &here);
+        write(&backend, &there);
+        let filter = Filter {
+            root: Some("/work/hocus".to_owned()),
+            ..Filter::default()
+        };
+        let page = list_runs(&backend, &filter, 10, 0).unwrap();
+        assert_eq!(
+            page.headers
+                .iter()
+                .map(|h| h.id.as_str())
+                .collect::<Vec<_>>(),
+            ["claude:here"],
+        );
     }
 
     /// A prefix on path boundaries: a sibling folder whose name starts with the root is not
     /// inside it.
     #[test]
     fn a_project_root_does_not_claim_a_sibling_that_shares_its_name() {
-        assert!(matches_root(Some("/work/hocus"), "/work/hocus"));
-        assert!(matches_root(Some("/work/hocus/src"), "/work/hocus"));
-        assert!(matches_root(Some("/work/hocus/"), "/work/hocus"));
-        assert!(!matches_root(Some("/work/hocus-fork"), "/work/hocus"));
-        assert!(!matches_root(None, "/work/hocus"));
+        assert!(matches_root(Some("/work/hocus"), None, "/work/hocus"));
+        assert!(matches_root(Some("/work/hocus/src"), None, "/work/hocus"));
+        assert!(matches_root(Some("/work/hocus/"), None, "/work/hocus"));
+        assert!(!matches_root(Some("/work/hocus-fork"), None, "/work/hocus"));
+        assert!(!matches_root(None, None, "/work/hocus"));
+        // The same path on another machine is another folder, not this project.
+        assert!(!matches_root(
+            Some("/work/hocus"),
+            Some("build-box"),
+            "/work/hocus"
+        ));
     }
 
     // -- paging one run -------------------------------------------------
@@ -986,6 +1219,19 @@ mod tests {
         assert!(run_header(&backend, "claude:missing").unwrap().is_none());
     }
 
+    /// A page that starts past the end of a run has the whole run behind it. Saying otherwise
+    /// tells a reader who followed a stale `next_revision` that the run it can see the entry
+    /// count of holds nothing.
+    #[test]
+    fn a_page_past_the_end_of_a_run_says_what_is_behind_it() {
+        let backend = seeded();
+        let page = entry_page(&backend, "claude:one", Some(999), 10).unwrap();
+        assert!(page.entries.is_empty());
+        assert_eq!(page.total, 3);
+        assert!(page.earlier);
+        assert_eq!(page.next_revision, None);
+    }
+
     #[test]
     fn a_header_comes_back_for_a_run_that_exists() {
         let backend = seeded();
@@ -1004,6 +1250,21 @@ mod tests {
         assert!(snippet.contains("needle"), "{snippet}");
         assert!(snippet.starts_with('…'), "{snippet}");
         assert!(snippet.chars().count() <= SNIPPET_CHARS + 2);
+    }
+
+    /// The match is found at an index into the *original* text: folding through
+    /// `str::to_lowercase` is not length-preserving — `İ` becomes two characters — and a
+    /// window placed with a shifted index misses the hit it was centred on.
+    #[test]
+    fn a_snippet_is_centred_on_the_match_through_text_that_lowercases_longer() {
+        let text = format!(
+            "{}{}needle {}",
+            "İ".repeat(80),
+            "a ".repeat(15),
+            "b ".repeat(400)
+        );
+        let snippet = snippet(&text, "needle");
+        assert!(snippet.contains("needle"), "{snippet}");
     }
 
     #[test]

@@ -886,6 +886,14 @@ pub struct AgentRun {
     pub kind: String,
     #[serde(default)]
     pub cwd: Option<String>,
+    /// The machine `cwd` is on, absent for this one.
+    ///
+    /// Beside the folder rather than folded into it, exactly as `AgentPane` keeps it: a run
+    /// recorded on a build box is work in a folder that is not one of this machine's, and a
+    /// project filter that could not tell the two apart would claim it. Absent on every run
+    /// written before this field existed, which reads as local and is what those runs were.
+    #[serde(default)]
+    pub host: Option<String>,
     pub started_at_ms: i64,
     #[serde(default)]
     pub ended_at_ms: Option<i64>,
@@ -928,6 +936,7 @@ impl AgentRun {
             session_id: self.session_id.clone(),
             kind: self.kind.clone(),
             cwd: self.cwd.clone(),
+            host: self.host.clone(),
             started_at_ms: self.started_at_ms,
             ended_at_ms: self.ended_at_ms,
             outcome: self.outcome,
@@ -949,6 +958,9 @@ pub struct AgentRunHeader {
     pub kind: String,
     #[serde(default)]
     pub cwd: Option<String>,
+    /// The machine `cwd` is on, absent for this one. See [`AgentRun::host`].
+    #[serde(default)]
+    pub host: Option<String>,
     pub started_at_ms: i64,
     #[serde(default)]
     pub ended_at_ms: Option<i64>,
@@ -1567,6 +1579,7 @@ pub mod rows {
             session_id: run.session_id.clone(),
             kind: run.kind.clone(),
             cwd: run.cwd.clone(),
+            host: run.host.clone(),
             started_at_ms: run.started_at_ms,
             ended_at_ms: run.ended_at_ms,
             outcome: run.outcome,
@@ -3761,6 +3774,7 @@ mod tests {
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
+            host: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: RunOutcome::Active,
@@ -3809,6 +3823,7 @@ mod tests {
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
+            host: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: RunOutcome::Active,
@@ -3889,6 +3904,7 @@ mod tests {
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
+            host: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: RunOutcome::Active,
@@ -3941,6 +3957,7 @@ mod tests {
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
+            host: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: RunOutcome::Active,
@@ -4027,6 +4044,7 @@ mod tests {
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),
+            host: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: RunOutcome::Active,
@@ -4210,6 +4228,7 @@ mod tests {
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),
+            host: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: RunOutcome::Active,
@@ -6212,6 +6231,7 @@ mod tests {
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
+            host: None,
             started_at_ms: 10,
             ended_at_ms: Some(20),
             outcome: RunOutcome::Active,

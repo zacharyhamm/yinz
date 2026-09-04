@@ -2178,7 +2178,13 @@ impl Args {
                 "since must be a window such as 30m, 6h, 7d or 3w, not {since:?}"
             ))
         };
-        let (count, unit) = since.split_at(since.len().saturating_sub(1));
+        // The last *character*, not the last byte: `split_at` on a byte index that lands
+        // inside a multi-byte character panics, and a window the model spelled `3ч` is a
+        // thing to refuse rather than a thing to crash on.
+        let Some((unit_at, _)) = since.char_indices().next_back() else {
+            return refuse();
+        };
+        let (count, unit) = since.split_at(unit_at);
         let Ok(count) = count.parse::<i64>() else {
             return refuse();
         };
