@@ -1221,6 +1221,27 @@ impl ZellijPlugin for State {
                 self.push_strip(false);
                 return false;
             },
+            wire::AGENT_RESUME => {
+                // `r` then `y` in the agent list, on a row in the archive. Nothing to redraw
+                // here - what this opens is a terminal pane, and the strip that follows is
+                // what puts the run back among the live agents.
+                let request = pipe_message
+                    .payload
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str::<wire::ResumeRequest>(json).ok());
+                // The sender rather than `agents_plugin`, which is only set once the panel
+                // has announced itself: the answer has to go back to whoever asked, or a
+                // confirmed `y` is a key that does nothing at all. `agents_plugin` is the
+                // fallback for a request that came from somewhere else entirely.
+                let plugin_id = match pipe_message.source {
+                    PipeSource::Plugin(id) => Some(id),
+                    _ => self.agents_plugin,
+                };
+                if let (Some(request), Some(plugin_id)) = (request, plugin_id) {
+                    self.resume_run(plugin_id, &request.run_id);
+                }
+                return false;
+            },
             wire::ASK => return self.on_ask(&pipe_message),
             wire::AGENT_SNAPSHOT => {},
             _ => return false,

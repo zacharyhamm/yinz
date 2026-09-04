@@ -386,6 +386,81 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
     ))
 }
 
+/// What resuming a recorded run means: the same agent, the same session, the folder the
+/// run was in.
+///
+/// No Git work, which is the one thing that makes this different from every other launch
+/// here. A run being resumed already has its checkout — the worktree it was cut in is
+/// still there, and its path is what the run recorded as its `cwd`. So this stops at a
+/// [`CommandToRun`] rather than going through [`open`], whose host call resolves a
+/// repository root and would refuse a run recorded outside one.
+///
+/// `session_id` is the agent's own, as `AgentRun` stores it. `host` is the machine the
+/// `cwd` is on, absent for this one, in the spelling `PaneTarget::parse_display` reads.
+///
+/// Every refusal here is written to be read on a divider one row high, so each says what is
+/// missing in as few characters as it can and leaves the reasoning to these comments.
+pub fn resume_command(
+    kind: &str,
+    session_id: &str,
+    cwd: Option<&str>,
+    host: Option<&str>,
+) -> Result<CommandToRun, String> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        // A run recorded by a hook script that reported no session id of its own: its id
+        // is the `kind:pane:<n>:<started at>` fallback, and there is nothing in it to hand
+        // to `--resume`.
+        return Err("this run recorded no session id to resume".to_owned());
+    }
+    let target = PaneTarget::parse_display(host);
+    if let PaneTarget::Firecracker { vm, .. } = &target {
+        // A run records the VM's name inside `host` but neither the image it was built
+        // from nor the guest worktree it was mirrored into, and a session-scoped VM is
+        // gone by the time the run reaches the archive. Saying so beats opening a pane
+        // that cannot start. Short, because where this is read is a divider one row high:
+        // the whole of the reasoning is in this comment and in `docs/AGENT_HOOKS.md`.
+        return Err(format!(
+            "the Firecracker VM {vm} cannot be rebuilt from what the run recorded"
+        ));
+    }
+    let cwd = cwd
+        .map(str::trim)
+        .filter(|cwd| !cwd.is_empty())
+        .map(std::path::PathBuf::from);
+    // The mounts a plugin's own paths are read through. The host rewrites the cwd of a local
+    // command that starts with one of them (`translate_plugin_path`, in
+    // zellij-server/src/plugins/zellij_exports.rs), and a run's cwd is a real host path taken
+    // from the agent's hook rather than a plugin path: a run recorded in `/tmp/scratch` would
+    // resume in `$ZELLIJ_TMP_DIR/scratch`, which is the wrong folder rather than a refusal.
+    // A remote cwd is the far machine's and is passed through as it stands, so this is the
+    // local case only - and the list has to stay in step with the one over there.
+    if matches!(target, PaneTarget::Local) {
+        if let Some(mount) = cwd.as_ref().and_then(|cwd| {
+            ["/host", "/data", "/cache", "/tmp"]
+                .into_iter()
+                .find(|mount| cwd.starts_with(mount))
+        }) {
+            return Err(format!(
+                "hocus cannot open a pane under {mount}: the plugin mounts claim it"
+            ));
+        }
+    }
+    let spec = Spec {
+        kind: Some(kind.to_owned()),
+        resume: Some(session_id.to_owned()),
+        ..Default::default()
+    };
+    // The checkout is `Current` by construction - no branch is named - and it is the pane's
+    // `cwd` below that says where "current" is, not this.
+    let (command, _) = plan(&spec)?;
+    Ok(CommandToRun {
+        cwd,
+        target,
+        ..command
+    })
+}
+
 /// A field the caller filled in, or `None` for one they left blank.
 ///
 /// Whitespace-only counts as blank: a form field the user tabbed through and a JSON
@@ -961,5 +1036,111 @@ mod tests {
         .unwrap();
         assert!(command.args.is_empty());
         assert_eq!(checkout, GitCheckout::Current);
+    }
+
+    // ----------------------------------------------------------------- resuming a run
+
+    /// The whole of what `r` in the agents panel means: the same agent, the same session,
+    /// the folder the run was in - and the hooks, so the resumed pane reports itself and
+    /// the daemon adopts the run back rather than starting a second one.
+    #[test]
+    fn a_claude_run_resumes_in_the_folder_it_recorded() {
+        let command = resume_command(
+            "claude",
+            "9f3c1a7e-4b21-4d8e-9c02-1a2b3c4d5e6f",
+            Some("/home/u/proj"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(command.path, PathBuf::from("claude"));
+        assert_eq!(
+            command.args,
+            vec![
+                "--resume",
+                "9f3c1a7e-4b21-4d8e-9c02-1a2b3c4d5e6f",
+                "--settings",
+                &claude_hook_settings_argument(),
+            ]
+        );
+        assert_eq!(command.cwd, Some(PathBuf::from("/home/u/proj")));
+        assert_eq!(command.target, PaneTarget::Local);
+    }
+
+    /// `codex resume` is a subcommand, and `resume_command` goes through `plan`, so it gets
+    /// the same ordering every other caller does rather than a second spelling of its own.
+    #[test]
+    fn a_codex_run_resumes_through_its_subcommand() {
+        let command = resume_command("codex", "0192-abc", Some("/w"), None).unwrap();
+        assert_eq!(command.path, PathBuf::from("codex"));
+        assert_eq!(command.args, vec!["resume", "0192-abc"]);
+        let command = resume_command("cursor", "chat-7", None, None).unwrap();
+        assert_eq!(command.path, PathBuf::from("cursor-agent"));
+        assert_eq!(command.args, vec!["--resume", "chat-7"]);
+        // Nothing recorded, nothing claimed: the pane lands where a command pane with no cwd
+        // lands, rather than in a directory guessed at here.
+        assert_eq!(command.cwd, None);
+    }
+
+    /// A run whose hook script reported no session id is keyed by pane and start time. There
+    /// is nothing in that to hand `--resume`, and saying so beats starting a fresh agent the
+    /// user would take for their old conversation.
+    #[test]
+    fn a_run_with_no_session_id_cannot_be_resumed() {
+        let refused = resume_command("claude", "", Some("/w"), None).unwrap_err();
+        assert!(refused.contains("no session id"), "{refused}");
+        // Whitespace is blank, the way `trimmed` reads every other field.
+        assert!(resume_command("claude", "   ", None, None).is_err());
+    }
+
+    /// The kinds with no resume spelling are refused by `shape_args`, which this goes
+    /// through - so there is one list of what can be resumed, not two.
+    #[test]
+    fn a_kind_with_no_resume_spelling_is_refused() {
+        let refused = resume_command("gemini", "abc", None, None).unwrap_err();
+        assert!(refused.contains("resume spelling"), "{refused}");
+    }
+
+    /// A run on another machine keeps its target, so the pane opens where the folder is.
+    /// A Firecracker one cannot: the run records the VM's name and neither the image it was
+    /// built from nor the guest worktree, and a session-scoped VM is gone by the time the
+    /// run reaches the archive.
+    #[test]
+    fn an_ssh_run_keeps_its_host_and_a_firecracker_one_is_refused() {
+        let command = resume_command("claude", "abc", Some("/srv/w"), Some("build-box")).unwrap();
+        assert_eq!(
+            command.target,
+            PaneTarget::Ssh {
+                host: "build-box".to_owned()
+            }
+        );
+        assert_eq!(command.cwd, Some(PathBuf::from("/srv/w")));
+        let refused =
+            resume_command("claude", "abc", Some("/w"), Some("firecracker:vm-1")).unwrap_err();
+        assert!(refused.contains("vm-1"), "{refused}");
+        assert!(refused.contains("Firecracker"), "{refused}");
+    }
+
+    /// The host reads a local command's cwd through the plugin mounts, so a run recorded in
+    /// one of the four folders they claim would open its pane somewhere else entirely - in
+    /// `$ZELLIJ_TMP_DIR` rather than `/tmp`. A refusal says so; the silent version does not.
+    #[test]
+    fn a_local_folder_the_plugin_mounts_claim_is_refused() {
+        for cwd in ["/tmp/scratch-repo", "/host/w", "/data/w", "/cache/w"] {
+            let refused = resume_command("claude", "abc", Some(cwd), None).unwrap_err();
+            assert!(refused.contains("plugin mounts"), "{cwd}: {refused}");
+        }
+        // Only those four, and only on their own component boundaries.
+        assert!(resume_command("claude", "abc", Some("/tmpfoo/w"), None).is_ok());
+        assert!(resume_command("claude", "abc", Some("/home/u/proj"), None).is_ok());
+        // And not remotely: a remote cwd is a path on the far machine, which the host passes
+        // through untouched.
+        let command = resume_command(
+            "claude",
+            "abc",
+            Some("/tmp/scratch-repo"),
+            Some("build-box"),
+        )
+        .unwrap();
+        assert_eq!(command.cwd, Some(PathBuf::from("/tmp/scratch-repo")));
     }
 }

@@ -413,6 +413,31 @@ timeline, and a run whose agent supplied no session id is headed by its run id i
 shape is keyed by pane and start time, and calling it a session would be a claim it cannot
 make.
 
+Pressing `r` on an archive row resumes that run rather than making you paste its id anywhere:
+the divider asks `resume this run? y/n`, and `y` opens a pane running the same agent in the
+folder the run recorded, resuming the session — `claude --resume <id>`, `codex resume <id>`,
+`cursor --resume <id>`, whichever the run's kind spells. It asks first because it is the only
+key in the panel that starts a process and it sits beside the ones the list is walked with;
+`n`, `Esc` or simply walking on drops the question. The panel names the row and nothing else
+(`wire::AGENT_RESUME`), and hocus — which holds the archive headers, each with its session id,
+kind, cwd and host — decides what resuming it means. A refusal comes back
+(`wire::AGENT_RESUME_RESULT`) and is shown on the divider, which it takes the whole of: a run
+whose hook script reported no session id has nothing to resume, an agent kind with no resume
+spelling cannot be asked for one, a run recorded in a Firecracker VM cannot be rebuilt from
+what it stored, and a run recorded in a folder the plugin mounts claim — anything under
+`/tmp`, `/host`, `/data` or `/cache` — cannot be opened where it was, because the host reads a
+plugin's local paths through those mounts and would put the pane somewhere else entirely. A
+run that went live again between the row being drawn and the `y` is refused too: one resumed
+or warped into *this* session by naming the pane it is in, and one picked up by another zellij
+session sharing the store by reading the run's record back rather than the archive page the
+row was drawn from — that page is a snapshot, and stale by however long it has been up. Live
+agent rows ignore `r` for the same reason: `Enter` already walks to the pane, and a second
+process on one session id would be two agents writing one conversation.
+
+Because a resumed agent keeps its session id and is handed the hooks like any spawned one, the
+daemon adopts the *same* run back: its run id is unchanged, so the row leaves the archive and
+reappears among the live agents rather than a second run starting beside it.
+
 The start time is drawn as local wall clock, which a plugin cannot work out for itself: wasm
 has no timezone, WASI inherits none of the session's environment, and nothing that reads a
 zoneinfo database links into a plugin. So there is one host command for it,

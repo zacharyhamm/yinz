@@ -147,6 +147,21 @@ pub const AGENT_ARCHIVE_MORE: &str = "agent_archive_more";
 /// running daemon and launch a second one. A broadcast only ever reaches plugins that are
 /// already running, and this name is handled in the daemon and nowhere else.
 pub const AGENT_SUMMARIZE: &str = "agent_summarize";
+/// hocus-agents → hocus: start the archived run under the cursor again, resuming its
+/// session.
+///
+/// The panel names the row and nothing else, the same way [`AGENT_SUMMARIZE`] does: which
+/// agent it was, which session, and which folder it ran in are all facts hocus holds about
+/// the run, and deriving them a second time in the pane that draws the row is exactly the
+/// duplication that split hocus and hocus-agents in the first place.
+pub const AGENT_RESUME: &str = "agent_resume";
+/// hocus → hocus-agents: what became of an [`AGENT_RESUME`].
+///
+/// Sent either way, because this is a request that can be refused for reasons the panel
+/// cannot see — a run with no session id of its own, an agent kind with no resume spelling,
+/// a VM that no longer exists — and a key press that silently does nothing is the one
+/// outcome a confirmed action must not have.
+pub const AGENT_RESUME_RESULT: &str = "agent_resume_result";
 /// CLI → store: change something.
 pub const STORE_MUTATE: &str = "store_mutate";
 /// hocus/CLI → store: read something without a subscription.
@@ -314,6 +329,29 @@ pub struct SummarizeRequest {
     pub pane_id: Option<u32>,
     #[serde(default)]
     pub run_id: Option<String>,
+}
+
+/// What [`AGENT_RESUME`] names: one archived run, by the id the panel's row carries.
+///
+/// One field where [`SummarizeRequest`] has two, because only an archived run can be
+/// resumed. A live agent already has its pane, and handing its session id to a second
+/// process would put two agents on one conversation.
+#[derive(Serialize, Deserialize)]
+pub struct ResumeRequest {
+    pub run_id: String,
+}
+
+/// What became of an [`AGENT_RESUME`], as [`AGENT_RESUME_RESULT`] carries it.
+///
+/// `detail` is empty on success and is the reason otherwise — the strings
+/// `launch::resume_command` hands back, which say what is missing rather than that
+/// something is. The run id rides along so the panel can tell an answer about the row
+/// under the cursor from one about the row it has since walked off.
+#[derive(Serialize, Deserialize)]
+pub struct ResumeResult {
+    pub run_id: String,
+    #[serde(default)]
+    pub detail: String,
 }
 
 /// A change to the store. `args` stays loosely typed so the CLI can drive the
