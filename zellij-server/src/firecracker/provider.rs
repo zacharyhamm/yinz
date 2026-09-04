@@ -130,6 +130,12 @@ struct Config {
     network: Option<NetworkConfig>,
     #[serde(default)]
     credential_files: Vec<CredentialFile>,
+    /// Write Claude Code's first-run state into a guest that is given Claude Code
+    /// credentials. On by default, because a guest without it parks every agent on the
+    /// onboarding wizard: the wizard's login step does not consult an existing
+    /// `.credentials.json`, so an authenticated guest is still asked to log in.
+    #[serde(default = "default_claude_guest_onboarding")]
+    claude_guest_onboarding: bool,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -166,6 +172,9 @@ fn default_require_resource_limits() -> bool {
 }
 fn default_images_dir() -> PathBuf {
     data_dir().join("images")
+}
+fn default_claude_guest_onboarding() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -885,11 +894,162 @@ fn install_agent_hooks(state: &VmState, config: &Config) -> Result<()> {
     .map(drop)
 }
 
+/// The credentials a guest is configured to get, and the first-run state that makes them
+/// usable. The two go together: a credential nothing can reach is the same as no credential.
 fn copy_credentials(state: &VmState, config: &Config) -> Result<()> {
     config
         .credential_files
         .iter()
-        .try_for_each(|credential| copy_credential(state, config, credential))
+        .try_for_each(|credential| copy_credential(state, config, credential))?;
+    seed_claude_state(state, config)
+}
+
+/// The guest home directories that Claude Code credentials are copied into: the grandparent
+/// of every `<home>/.claude/.credentials.json` mapping, in configuration order, once each.
+fn claude_guest_homes(credentials: &[CredentialFile]) -> Vec<PathBuf> {
+    let mut homes: Vec<PathBuf> = vec![];
+    for credential in credentials {
+        if credential.guest.file_name() != Some(OsStr::new(".credentials.json")) {
+            continue;
+        }
+        let Some(directory) = credential.guest.parent() else {
+            continue;
+        };
+        if directory.file_name() != Some(OsStr::new(".claude")) {
+            continue;
+        }
+        let Some(home) = directory.parent() else {
+            continue;
+        };
+        if !homes.iter().any(|known| known == home) {
+            homes.push(home.to_owned());
+        }
+    }
+    homes
+}
+
+/// Claude Code's first-run state, written into every guest home that was given Claude Code
+/// credentials.
+///
+/// Without it a valid credential is not enough to start an agent. Claude Code gates its
+/// first run on `<home>/.claude.json`, and the wizard's login step does not consult an
+/// existing `.credentials.json`: an authenticated guest is still asked to choose a login
+/// method, and then whether it trusts its working directory. A VM has nobody to answer
+/// either question, so the pane sits on the wizard and the agent never starts.
+///
+/// The host's own `~/.claude.json` is never copied. It is the whole of somebody's project
+/// history and MCP configuration and none of that belongs in a VM; only the two flags that
+/// unblock a pane are written, merged into whatever the guest already has.
+fn seed_claude_state(state: &VmState, config: &Config) -> Result<()> {
+    if !config.claude_guest_onboarding {
+        return Ok(());
+    }
+    for home in claude_guest_homes(&config.credential_files) {
+        seed_claude_home(state, config, &home)?;
+    }
+    Ok(())
+}
+
+fn seed_claude_home(state: &VmState, config: &Config, home: &Path) -> Result<()> {
+    let path = home.join(".claude.json");
+    validate_guest_path(&path, "guest Claude Code state path")?;
+    let existing = read_guest_file(state, config, &path)?;
+    // A file that is there but unreadable as JSON is the guest's own; overwriting it would
+    // lose an agent's history to make a wizard go away. Say so and leave it alone.
+    let current = match existing.as_deref().map(serde_json::from_str) {
+        None => serde_json::Value::Object(serde_json::Map::new()),
+        Some(Ok(value @ serde_json::Value::Object(_))) => value,
+        Some(_) => {
+            eprintln!(
+                "warning: {} in the guest is not a JSON object; leaving Claude Code's \
+                 first-run state alone",
+                path.display()
+            );
+            return Ok(());
+        },
+    };
+    let Some(seeded) = claude_state_with_seed(&current, &config.guest_cwd) else {
+        return Ok(());
+    };
+    let body =
+        serde_json::to_vec(&seeded).context("failed to render the guest's Claude Code state")?;
+    run_with_input(
+        ssh_command(state, config).arg(format!(
+            "umask 077 && cat > {}",
+            shell_quote(&path.to_string_lossy())
+        )),
+        &body,
+        "failed to write Claude Code's first-run state into the guest",
+    )
+}
+
+/// `current` with the two flags an agent needs, or `None` when it already has both: a guest
+/// whose file needs nothing is not written to at all, so an agent running in it keeps the
+/// file it is holding.
+fn claude_state_with_seed(
+    current: &serde_json::Value,
+    guest_cwd: &Path,
+) -> Option<serde_json::Value> {
+    let onboarded = current.get("hasCompletedOnboarding") == Some(&serde_json::Value::Bool(true));
+    let trusted = current
+        .get("projects")
+        .and_then(|projects| projects.get(guest_cwd.to_string_lossy().as_ref()))
+        .and_then(|project| project.get("hasTrustDialogAccepted"))
+        == Some(&serde_json::Value::Bool(true));
+    if onboarded && trusted {
+        return None;
+    }
+    let mut seeded = current.clone();
+    let object = seeded.as_object_mut()?;
+    object.insert(
+        "hasCompletedOnboarding".to_owned(),
+        serde_json::Value::Bool(true),
+    );
+    let projects = object
+        .entry("projects")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !projects.is_object() {
+        *projects = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let project = projects
+        .as_object_mut()?
+        .entry(guest_cwd.to_string_lossy().into_owned())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !project.is_object() {
+        *project = serde_json::Value::Object(serde_json::Map::new());
+    }
+    project.as_object_mut()?.insert(
+        "hasTrustDialogAccepted".to_owned(),
+        serde_json::Value::Bool(true),
+    );
+    Some(seeded)
+}
+
+/// The status the guest's shell exits with when the file was not there, so that absence is
+/// distinguishable from every way a read can fail.
+const GUEST_FILE_ABSENT: i32 = 3;
+
+/// A guest file's contents, or `None` when it does not exist. A read that fails for any
+/// other reason - the guest gone, ssh refused - is that failure, not an absence.
+fn read_guest_file(state: &VmState, config: &Config, path: &Path) -> Result<Option<String>> {
+    let quoted = shell_quote(&path.to_string_lossy());
+    let context = || format!("failed to read {} in the guest", path.display());
+    let output = ssh_command(state, config)
+        .arg(format!(
+            "if [ -e {quoted} ]; then cat -- {quoted}; else exit {GUEST_FILE_ABSENT}; fi"
+        ))
+        .stderr(Stdio::inherit())
+        .output()
+        .with_context(context)?;
+    if output.status.code() == Some(GUEST_FILE_ABSENT) {
+        return Ok(None);
+    }
+    if !output.status.success() {
+        return Err(anyhow!("{}: {}", context(), output.status));
+    }
+    String::from_utf8(output.stdout)
+        .map(Some)
+        .with_context(|| format!("{}: non-UTF-8 contents", context()))
 }
 
 /// The rsync spelling of the guest directory the worktree is mirrored into, with the trailing
@@ -1946,6 +2106,19 @@ fn remove_entry(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// rsync's arguments for a credential: the guest's own identity on the file, and nothing
+/// but the owner able to read it.
+///
+/// `-a` implies `-o -g`, and rsync runs as root on the receiving side, so it would preserve
+/// the *host* user's numeric uid - a file in the guest owned by whichever guest account
+/// happens to share uid 1000. `--no-owner --no-group` hands it to whoever the provider ssh'd
+/// in as instead, which is the account that has to read it.
+///
+/// Nothing here, or anywhere else in this file, may read a credential's contents. The
+/// provider's subprocesses inherit its stderr, which the server writes to its log and shows
+/// in the pane, so a single `cat` of one of these files would put a token in both.
+const CREDENTIAL_RSYNC_ARGS: &[&str] = &["-a", "--no-owner", "--no-group", "--chmod=F600"];
+
 fn copy_credential(state: &VmState, config: &Config, credential: &CredentialFile) -> Result<()> {
     let host = expand_home(&credential.host)?;
     if !host.is_file() {
@@ -1956,18 +2129,19 @@ fn copy_credential(state: &VmState, config: &Config, credential: &CredentialFile
         .guest
         .parent()
         .context("credential guest path has no parent")?;
+    // The directory is created with root's umask, which is 0755; a 0600 file inside a
+    // directory anyone can list is fine only for as long as the guest has one account.
     run(
-        ssh_command(state, config)
-            .arg("mkdir")
-            .arg("-p")
-            .arg("--")
-            .arg(parent),
+        ssh_command(state, config).arg(format!(
+            "mkdir -p -- {parent} && chmod 700 -- {parent}",
+            parent = shell_quote(&parent.to_string_lossy())
+        )),
         "failed to create the guest credential directory",
     )?;
     let _progress = Progress::start("copying credentials into the guest");
     run(
         Command::new("rsync")
-            .args(["-a", "--chmod=F600"])
+            .args(CREDENTIAL_RSYNC_ARGS)
             .args(guest_rsync_args(state, config))
             .arg(&host)
             .arg(format!(
@@ -3558,7 +3732,20 @@ where
         &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
     )
     .with_context(|| format!("invalid provider config {}", path.display()))?;
-    let candidates = [
+    let changed = merge_credentials(&mut config, &credential_candidates(home), home, ask)?;
+    if changed {
+        fs::write(path, serde_json::to_vec_pretty(&config)?)
+            .with_context(|| format!("failed to update {}", path.display()))?;
+        println!("Updated credential mappings in {}.", path.display());
+    }
+    Ok(())
+}
+
+/// The host credentials this provider knows how to place in a guest, with where each goes
+/// and what to ask about it. One list, so `setup`'s offer and `doctor`'s report cannot come
+/// to different conclusions about what a host has.
+fn credential_candidates(home: &Path) -> Vec<(CredentialFile, PathBuf, &'static str)> {
+    vec![
         (
             CredentialFile {
                 host: PathBuf::from("~/.codex/auth.json"),
@@ -3575,12 +3762,41 @@ where
             home.join(".claude/.credentials.json"),
             "Copy Claude Code credentials into Firecracker VMs?",
         ),
-    ];
-    let changed = merge_credentials(&mut config, &candidates, home, ask)?;
-    if changed {
-        fs::write(path, serde_json::to_vec_pretty(&config)?)
-            .with_context(|| format!("failed to update {}", path.display()))?;
-        println!("Updated credential mappings in {}.", path.display());
+    ]
+}
+
+/// The host credentials that exist but that nothing copies into a guest.
+///
+/// `setup` offers each of these once, and a host that gained Claude Code after the last
+/// `setup` was run has no mapping and no way to learn that it needs one: the VM boots, the
+/// agent starts, and it asks to log in. Reported by `doctor`, which is the command that is
+/// meant to be re-run.
+fn unmapped_host_credentials(config: &Config, home: &Path) -> Vec<CredentialFile> {
+    credential_candidates(home)
+        .into_iter()
+        .filter(|(candidate, detected, _)| {
+            detected.is_file()
+                && !config.credential_files.iter().any(|existing| {
+                    existing.guest == candidate.guest
+                        && expand_home_from(&existing.host, home).ok().as_deref()
+                            == Some(detected.as_path())
+                })
+        })
+        .map(|(candidate, _, _)| candidate)
+        .collect()
+}
+
+/// Say which host credentials nothing carries into a guest, and what to write to fix it.
+fn report_unmapped_credentials(config: &Config, home: &Path, out: &mut impl Write) -> Result<()> {
+    for credential in unmapped_host_credentials(config, home) {
+        writeln!(
+            out,
+            "warning: {} exists but no Firecracker VM is given it; an agent in a VM will \
+             ask to log in. Add it to {}:\n  {}",
+            credential.host.display(),
+            config_path().display(),
+            serde_json::to_string(&credential)?,
+        )?;
     }
     Ok(())
 }
@@ -3711,6 +3927,11 @@ fn doctor() -> Result<()> {
         if let Ok(zellij) = resolve_zellij_from(None, &provider, env::var_os("PATH").as_deref()) {
             warn_about_dynamic_zellij(&zellij, None);
         }
+    }
+    // Not fatal. `setup` runs this at the end, and someone who declined the offer must not
+    // be told their host is broken for having done so.
+    if let Some(home) = env::var_os("HOME") {
+        report_unmapped_credentials(&config, Path::new(&home), &mut std::io::stdout())?;
     }
     match cgroup_root_or_skip(delegated_cgroup_root(), config.require_resource_limits)? {
         Some(cgroup) => println!(
@@ -3983,6 +4204,7 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
             require_resource_limits: default_require_resource_limits(),
             network: None,
             credential_files: vec![],
+            claude_guest_onboarding: true,
             extra: serde_json::Map::new(),
         }
     };
@@ -5389,6 +5611,7 @@ mod tests {
             require_resource_limits: default_require_resource_limits(),
             network: None,
             credential_files: vec![],
+            claude_guest_onboarding: true,
             extra: serde_json::Map::new(),
         }
     }
@@ -5832,6 +6055,122 @@ mod tests {
         assert!(managed.contains("mouse_mode false"));
         assert!(managed.contains("firecracker_provider \"/usr/local/bin/zellij-firecracker\""));
         assert!(managed.contains("firecracker_provider_timeout_secs 90"));
+    }
+
+    /// A credential lands in the guest owned by whoever the provider logs in as, readable
+    /// by nobody else. `-a` alone would preserve the host's numeric uid instead.
+    #[test]
+    fn a_credential_is_copied_without_the_hosts_ownership() {
+        assert!(CREDENTIAL_RSYNC_ARGS.contains(&"--no-owner"));
+        assert!(CREDENTIAL_RSYNC_ARGS.contains(&"--no-group"));
+        assert!(CREDENTIAL_RSYNC_ARGS.contains(&"--chmod=F600"));
+        // The two `-a` implies and that these undo; spelling either one here would be a
+        // contradiction, not a redundancy.
+        assert!(!CREDENTIAL_RSYNC_ARGS.contains(&"-o"));
+        assert!(!CREDENTIAL_RSYNC_ARGS.contains(&"-g"));
+    }
+
+    /// Seeding follows the credential: a home is one that was given a Claude Code token,
+    /// named once however many mappings point into it, and nothing else is one.
+    #[test]
+    fn claude_homes_are_the_ones_given_claude_credentials() {
+        let credential = |guest: &str| CredentialFile {
+            host: PathBuf::from("~/whatever"),
+            guest: PathBuf::from(guest),
+        };
+        assert_eq!(
+            claude_guest_homes(&[
+                credential("/root/.codex/auth.json"),
+                credential("/root/.claude/.credentials.json"),
+                credential("/home/agent/.claude/.credentials.json"),
+                credential("/root/.claude/.credentials.json"),
+                credential("/root/.claude/settings.json"),
+                credential("/root/.credentials.json"),
+            ]),
+            vec![PathBuf::from("/root"), PathBuf::from("/home/agent")],
+        );
+        assert!(claude_guest_homes(&[]).is_empty());
+    }
+
+    /// The seed adds the two flags that let an agent start and changes nothing else. What
+    /// Claude Code has already written into the file - the account it fetched, the projects
+    /// it knows - is the guest's, and a pane joining a VM must not cost it that.
+    #[test]
+    fn seeding_claude_state_keeps_what_the_guest_already_wrote() {
+        let current = serde_json::json!({
+            "oauthAccount": {"emailAddress": "someone@example.com"},
+            "projects": {"/elsewhere": {"history": ["a"]}},
+        });
+        let seeded = claude_state_with_seed(&current, Path::new("/workspace")).unwrap();
+        assert_eq!(seeded["oauthAccount"], current["oauthAccount"]);
+        assert_eq!(
+            seeded["projects"]["/elsewhere"]["history"],
+            serde_json::json!(["a"])
+        );
+        assert_eq!(seeded["hasCompletedOnboarding"], serde_json::json!(true));
+        assert_eq!(
+            seeded["projects"]["/workspace"]["hasTrustDialogAccepted"],
+            serde_json::json!(true)
+        );
+    }
+
+    /// An empty guest is the common case: the file does not exist yet, so the seed is the
+    /// whole of it.
+    #[test]
+    fn seeding_claude_state_starts_from_nothing() {
+        let seeded =
+            claude_state_with_seed(&serde_json::json!({}), Path::new("/workspace")).unwrap();
+        assert_eq!(
+            seeded,
+            serde_json::json!({
+                "hasCompletedOnboarding": true,
+                "projects": {"/workspace": {"hasTrustDialogAccepted": true}},
+            })
+        );
+    }
+
+    /// Nothing to add is nothing to write: a guest whose file already says both things is
+    /// left alone entirely, so an agent holding that file is never written out from under.
+    #[test]
+    fn seeding_claude_state_is_nothing_to_do_when_it_is_already_said() {
+        let current = serde_json::json!({
+            "hasCompletedOnboarding": true,
+            "projects": {"/workspace": {"hasTrustDialogAccepted": true}},
+        });
+        assert!(claude_state_with_seed(&current, Path::new("/workspace")).is_none());
+        // The same file, for a VM with a different working directory, still needs the trust
+        // flag for that one.
+        assert!(claude_state_with_seed(&current, Path::new("/srv/work")).is_some());
+    }
+
+    /// A host credential nothing carries into a guest is named, with the JSON that fixes
+    /// it - and one that is already mapped is not.
+    #[test]
+    fn doctor_names_a_host_credential_no_vm_is_given() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path();
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        fs::write(home.join(".claude/.credentials.json"), "{}").unwrap();
+        let mut config = provider_config(root.path());
+
+        let mut report = Vec::new();
+        report_unmapped_credentials(&config, home, &mut report).unwrap();
+        let report = String::from_utf8(report).unwrap();
+        assert!(report.contains(".claude/.credentials.json"), "{report}");
+        assert!(
+            report.contains("/root/.claude/.credentials.json"),
+            "{report}"
+        );
+        // Codex is not installed on this host, so it is not something to fix.
+        assert!(!report.contains(".codex"), "{report}");
+
+        config.credential_files.push(CredentialFile {
+            host: PathBuf::from("~/.claude/.credentials.json"),
+            guest: PathBuf::from("/root/.claude/.credentials.json"),
+        });
+        let mut report = Vec::new();
+        report_unmapped_credentials(&config, home, &mut report).unwrap();
+        assert!(report.is_empty(), "{}", String::from_utf8_lossy(&report));
     }
 
     #[test]

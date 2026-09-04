@@ -129,11 +129,21 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
     fs::write(worktree_path.join("host-only.txt"), "host-only\n").unwrap();
     fs::write(worktree_path.join("guest-deleted.txt"), "keep me\n").unwrap();
 
-    // A credential file the provider must copy in with mode 0600.
+    // Two credential files the provider must copy in with mode 0600. The second is spelled
+    // the way a Claude Code credential is, which is what asks for the guest's first-run
+    // state to be seeded beside it.
     let credentials = tempfile::tempdir().unwrap();
     let host_credential = credentials.path().join("auth.json");
     fs::write(&host_credential, "{\"token\":\"firecracker-test-secret\"}").unwrap();
-    let _config = ConfigWithCredential::new(&host_credential, "/root/.zellij-test/auth.json");
+    let host_claude_credential = credentials.path().join("claude.json");
+    fs::write(&host_claude_credential, "{\"claudeAiOauth\":{}}").unwrap();
+    let _config = ConfigWithCredential::new(&[
+        (host_credential.as_path(), "/root/.zellij-test/auth.json"),
+        (
+            host_claude_credential.as_path(),
+            "/root/.claude/.credentials.json",
+        ),
+    ]);
 
     let ensured = provider
         .ensure(
@@ -159,7 +169,12 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
             "set -e; test \"$(cat a.txt)\" = a; echo guest >> a.txt; echo new > new.txt; ",
             "rm gone.txt guest-deleted.txt; echo guest-both > both.txt; ",
             "printf 'cred-mode=%s ' \"$(stat -c %a /root/.zellij-test/auth.json)\"; ",
+            "printf 'cred-owner=%s ' \"$(stat -c %U:%G /root/.zellij-test/auth.json)\"; ",
+            "printf 'cred-dir-mode=%s ' \"$(stat -c %a /root/.zellij-test)\"; ",
             "grep -q firecracker-test-secret /root/.zellij-test/auth.json && printf 'cred-ok '; ",
+            "grep -q '\"hasCompletedOnboarding\":true' /root/.claude.json && printf 'onboarded '; ",
+            "grep -q '\"hasTrustDialogAccepted\":true' /root/.claude.json && printf 'trusted '; ",
+            "printf '{\"sentinel\":\"guest-wrote-this\"}' > /root/.claude.json; ",
             "printf '{\"hook_event_name\":\"Stop\",\"session_id\":\"fc-test\"}' | zellij --pty-broker report claude && printf 'hook-reported '; ",
             // Provisioning wired both agents, and both scripts take the broker route.
             "test -x /root/.claude/hocus/hocus-hook.sh; ",
@@ -181,7 +196,14 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
         ),
         "guest-edits-done",
     );
-    assert!(text.contains("cred-mode=600 cred-ok"), "{text}");
+    assert!(text.contains("cred-mode=600"), "{text}");
+    // `-a` alone would have preserved the host user's numeric uid here.
+    assert!(text.contains("cred-owner=root:root"), "{text}");
+    assert!(text.contains("cred-dir-mode=700"), "{text}");
+    assert!(text.contains("cred-ok"), "{text}");
+    // A credential nothing can reach is the same as no credential: without these two an
+    // agent in the guest sits on the first-run wizard and asks to log in.
+    assert!(text.contains("onboarded trusted"), "{text}");
     assert!(
         text.contains("hook-reported"),
         "the guest's hook report was not accepted by its broker: {text:?}"
@@ -207,6 +229,15 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
         .unwrap();
     let text = run_in_guest(&refreshed, "cat /root/.zellij-test/auth.json", "refreshed");
     assert!(text.contains("refreshed"), "{text}");
+
+    // The guest replaced its Claude Code state with something of its own while it was
+    // running. Seeding it again puts back the two flags an agent needs and keeps what the
+    // guest wrote - the account it fetched and the projects it knows live in this file, and
+    // a second pane joining the VM must not cost it them.
+    let text = run_in_guest(&refreshed, "cat /root/.claude.json", "sentinel");
+    assert!(text.contains("guest-wrote-this"), "{text}");
+    assert!(text.contains("\"hasCompletedOnboarding\":true"), "{text}");
+    assert!(text.contains("\"hasTrustDialogAccepted\":true"), "{text}");
 
     // Meanwhile on the host: one file both sides changed, one the host alone changed, and
     // one the host changed that the guest deleted.
@@ -461,11 +492,14 @@ struct ConfigWithCredential {
 }
 
 impl ConfigWithCredential {
-    fn new(host: &Path, guest: &str) -> Self {
+    fn new(mappings: &[(&Path, &str)]) -> Self {
         let harness = harness_config_path();
         let mut config: serde_json::Value =
             serde_json::from_slice(&fs::read(&harness).unwrap()).unwrap();
-        config["credential_files"] = serde_json::json!([{ "host": host, "guest": guest }]);
+        config["credential_files"] = mappings
+            .iter()
+            .map(|(host, guest)| serde_json::json!({ "host": host, "guest": guest }))
+            .collect();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("firecracker.json");
         fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
