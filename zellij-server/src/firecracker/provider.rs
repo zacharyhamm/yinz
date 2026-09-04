@@ -2036,6 +2036,8 @@ fn list(locked: &LockedState, session: Option<&str>) -> Result<Vec<VmEntry>> {
                 } else {
                     "provisioning".to_owned()
                 },
+                image: state.image.clone(),
+                worktree: state.worktree.clone(),
             });
         }
     }
@@ -9136,7 +9138,9 @@ mod tests {
         let locked = locked_state_in(root.path());
         let mut guests = FakeGuests::default();
         let mut running = LeasedVm::new(&locked, &mut guests, "review", &[]);
+        running.state.image = Some("rust-dev".to_owned());
         let live = LiveProcess::spawn();
+        // Writes the record, so the image set above lands with the pid.
         live.attach(&mut running);
         // A VM whose process is gone is retained before the request is answered.
         LeasedVm::new(&locked, &mut guests, "crashed", &[]);
@@ -9154,9 +9158,17 @@ mod tests {
         .unwrap();
 
         assert_eq!(response["version"], PROTOCOL_VERSION);
+        // The image and the worktree ride along, because the listing is what tells a
+        // reader which checkout - and so which branch - a VM is working on.
         assert_eq!(
             response["vms"],
-            json!([{ "session": "work", "name": "review", "state": "running" }])
+            json!([{
+                "session": "work",
+                "name": "review",
+                "state": "running",
+                "image": "rust-dev",
+                "worktree": running.host,
+            }])
         );
         let recoveries = response["recoveries"].as_array().unwrap();
         assert_eq!(recoveries.len(), 1, "{recoveries:?}");

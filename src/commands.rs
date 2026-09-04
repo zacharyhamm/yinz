@@ -59,9 +59,56 @@ pub(crate) fn firecracker(
     run_firecracker(
         command,
         &provider,
+        &git_branch,
         &mut std::io::stdout().lock(),
         &mut std::io::stderr().lock(),
     )
+}
+
+/// The branch a host worktree has out, or `None` when Git cannot say.
+///
+/// A VM mirrors a worktree, so "what is this VM working on" is answered by the branch
+/// that worktree has out. That is a Git question about a path on this machine, not one
+/// a VM provider should be asked for, so it is resolved here rather than added to the
+/// provider protocol.
+///
+/// Stdout is read whatever the exit code, and the literal `HEAD` is not a branch. Both
+/// rules come from the same command's behaviour, written up at length in
+/// `hocus-agentd`'s `poll::repository`: `--abbrev-ref HEAD` answers `HEAD` on a
+/// detached checkout, and a checkout with no commits answers `HEAD` and *then* exits
+/// 128, because an unborn branch does not resolve. A missing `git` answers `None`,
+/// which is the same "we cannot say" the listing prints as `-`.
+fn git_branch(worktree: &Path) -> Option<String> {
+    let output = process::Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    let branch = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (!branch.is_empty() && branch != "HEAD").then_some(branch)
+}
+
+/// The listing as the CLI prints it: the provider's own answer, with the branch each
+/// VM's host worktree has out folded in.
+///
+/// A wrapper rather than a field on `VmEntry` because the branch is not part of the
+/// provider protocol - it is what this command works out about the paths the provider
+/// named. `recoveries` is borrowed through unchanged.
+#[derive(serde::Serialize)]
+struct ListedVms<'a> {
+    vms: Vec<ListedVm<'a>>,
+    recoveries: &'a [zellij_server::firecracker::RecoveryEntry],
+}
+
+#[derive(serde::Serialize)]
+struct ListedVm<'a> {
+    #[serde(flatten)]
+    entry: &'a zellij_server::firecracker::VmEntry,
+    /// Absent, rather than null, when there is no branch to name - the same shape the
+    /// entry's own optional fields take, so a reader has one rule for all three.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
 }
 
 /// The session a `zellij firecracker` command acts on: `--session` if given, else the
@@ -84,9 +131,14 @@ pub(crate) fn resolve_firecracker_session(
 
 /// Run one `zellij firecracker` command against `provider`, writing the listing to
 /// `out` and each merge warning to `err`.
+///
+/// `branch_of` is injected rather than called directly so the tests stay off whatever
+/// checkouts happen to exist on the machine running them; production passes
+/// [`git_branch`].
 pub(crate) fn run_firecracker(
     command: zellij_utils::cli::Firecracker,
     provider: &zellij_server::firecracker::Provider,
+    branch_of: &dyn Fn(&Path) -> Option<String>,
     out: &mut impl std::io::Write,
     err: &mut impl std::io::Write,
 ) -> zellij_utils::errors::prelude::Result<()> {
@@ -107,14 +159,59 @@ pub(crate) fn run_firecracker(
     match command {
         Firecracker::List { session, json } => {
             let listing = provider.list(session.as_deref())?;
+            // One resolution per distinct worktree: two sessions leasing one worktree VM
+            // are two entries naming the same directory, and asking Git twice about it
+            // would be two processes for one answer.
+            let mut branches: std::collections::BTreeMap<&Path, Option<String>> =
+                std::collections::BTreeMap::new();
+            for entry in &listing.vms {
+                if let Some(worktree) = entry.worktree.as_deref() {
+                    branches
+                        .entry(worktree)
+                        .or_insert_with(|| branch_of(worktree));
+                }
+            }
+            let branch_for = |entry: &zellij_server::firecracker::VmEntry| {
+                entry
+                    .worktree
+                    .as_deref()
+                    .and_then(|worktree| branches.get(worktree).cloned().flatten())
+            };
             if json {
-                writeln!(out, "{}", serde_json::to_string(&listing)?)?;
+                writeln!(
+                    out,
+                    "{}",
+                    serde_json::to_string(&ListedVms {
+                        vms: listing
+                            .vms
+                            .iter()
+                            .map(|entry| ListedVm {
+                                entry,
+                                branch: branch_for(entry),
+                            })
+                            .collect(),
+                        recoveries: &listing.recoveries,
+                    })?
+                )?;
             } else {
                 if listing.vms.is_empty() {
                     writeln!(out, "No Firecracker VMs found.")?;
                 }
                 for entry in &listing.vms {
-                    writeln!(out, "{}\t{}\t{}", entry.session, entry.name, entry.state)?;
+                    writeln!(
+                        out,
+                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        entry.session,
+                        entry.name,
+                        entry.state,
+                        entry.image.as_deref().unwrap_or("-"),
+                        entry
+                            .worktree
+                            .as_deref()
+                            .map(|worktree| worktree.display().to_string())
+                            .unwrap_or_else(|| "-".to_owned()),
+                        branch_for(entry).as_deref().unwrap_or("-"),
+                    )?;
                 }
                 if !listing.recoveries.is_empty() {
                     writeln!(out, "Retained disks:")?;
@@ -1688,7 +1785,11 @@ mod tests {
 mod firecracker_command_tests {
     use super::{resolve_firecracker_session, run_firecracker};
     use serde_json::json;
-    use std::{fs, time::Duration};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        time::Duration,
+    };
     use tempfile::TempDir;
     use zellij_server::firecracker::Provider;
     use zellij_test_support::write_script;
@@ -1718,10 +1819,28 @@ mod firecracker_command_tests {
             .collect()
     }
 
+    /// Every worktree is on a branch named after its last path component, except
+    /// `/detached`, which has none. Enough to tell "resolved", "no worktree" and
+    /// "worktree but no branch" apart without going near a real checkout.
+    fn stub_branch(worktree: &Path) -> Option<String> {
+        if worktree == Path::new("/detached") {
+            return None;
+        }
+        Some(worktree.file_name()?.to_string_lossy().into_owned())
+    }
+
     fn run(command: Firecracker, provider: &Provider) -> (String, String) {
+        run_with_branches(command, provider, &stub_branch)
+    }
+
+    fn run_with_branches(
+        command: Firecracker,
+        provider: &Provider,
+        branch_of: &dyn Fn(&Path) -> Option<String>,
+    ) -> (String, String) {
         let mut out = Vec::new();
         let mut err = Vec::new();
-        run_firecracker(command, provider, &mut out, &mut err).unwrap();
+        run_firecracker(command, provider, branch_of, &mut out, &mut err).unwrap();
         (
             String::from_utf8(out).unwrap(),
             String::from_utf8(err).unwrap(),
@@ -1798,7 +1917,10 @@ mod firecracker_command_tests {
             r#"{"version":2,"vms":[{"session":"work","name":"review","state":"running"},{"session":"other","name":"build","state":"provisioning"}]}"#,
         );
         let (out, err) = run(list(Some("work"), false), &provider);
-        assert_eq!(out, "work\treview\trunning\nother\tbuild\tprovisioning\n");
+        assert_eq!(
+            out,
+            "work\treview\trunning\t-\t-\t-\nother\tbuild\tprovisioning\t-\t-\t-\n"
+        );
         assert_eq!(err, "");
         assert_eq!(
             requests(&dir),
@@ -1814,7 +1936,7 @@ mod firecracker_command_tests {
         let (out, _) = run(list(None, false), &provider);
         assert_eq!(
             out,
-            "work\treview\trunning\n\
+            "work\treview\trunning\t-\t-\t-\n\
              Retained disks:\n\
              work\treview\tsync-failed\t/state/recovery/abc-1-sync-failed\n\
              -\t-\tcrashed\t/state/recovery/def-2-crashed\n"
@@ -1848,6 +1970,69 @@ mod firecracker_command_tests {
         let (_dir, provider) = stub_provider(r#"{"version":2,"vms":[]}"#);
         let (out, _) = run(list(None, true), &provider);
         assert_eq!(out, "{\"vms\":[],\"recoveries\":[]}\n");
+    }
+
+    #[test]
+    fn list_names_the_image_worktree_and_branch_of_each_vm() {
+        let (_dir, provider) = stub_provider(
+            r#"{"version":2,"vms":[{"session":"work","name":"review","state":"running","image":"rust-dev","worktree":"/src/api"},{"session":"work","name":"detached","state":"running","worktree":"/detached"},{"session":"work","name":"bare","state":"provisioning"}]}"#,
+        );
+        let (out, err) = run(list(None, false), &provider);
+        assert_eq!(err, "");
+        // Three shapes, and a `-` for each thing that cannot be named: a VM with
+        // everything, one whose worktree has no branch out, and one with no worktree
+        // at all - the VM an agent got to itself.
+        assert_eq!(
+            out,
+            "work\treview\trunning\trust-dev\t/src/api\tapi\n\
+             work\tdetached\trunning\t-\t/detached\t-\n\
+             work\tbare\tprovisioning\t-\t-\t-\n"
+        );
+    }
+
+    #[test]
+    fn list_json_carries_the_branch_beside_the_provider_fields() {
+        let (_dir, provider) = stub_provider(
+            r#"{"version":2,"vms":[{"session":"work","name":"review","state":"running","image":"rust-dev","worktree":"/src/api"},{"session":"work","name":"bare","state":"running"}]}"#,
+        );
+        let (out, _) = run(list(None, true), &provider);
+        let printed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            printed["vms"],
+            json!([
+                {
+                    "session": "work",
+                    "name": "review",
+                    "state": "running",
+                    "image": "rust-dev",
+                    "worktree": "/src/api",
+                    "branch": "api",
+                },
+                // What cannot be named is left out rather than sent as null, so a
+                // reader has one rule for all three optional fields.
+                {"session": "work", "name": "bare", "state": "running"},
+            ])
+        );
+    }
+
+    /// Two sessions leasing one worktree VM are two entries naming one directory.
+    /// Resolving the branch is a process launch, so it happens once.
+    #[test]
+    fn a_worktree_shared_by_two_leases_is_resolved_once() {
+        let (_dir, provider) = stub_provider(
+            r#"{"version":2,"vms":[{"session":"work","name":"review","state":"running","worktree":"/src/api"},{"session":"other","name":"review","state":"running","worktree":"/src/api"}]}"#,
+        );
+        let calls = std::cell::RefCell::new(Vec::new());
+        let (out, _) = run_with_branches(list(None, false), &provider, &|worktree: &Path| {
+            calls.borrow_mut().push(worktree.to_path_buf());
+            Some("api".to_owned())
+        });
+        assert_eq!(calls.into_inner(), vec![PathBuf::from("/src/api")]);
+        assert_eq!(
+            out,
+            "work\treview\trunning\t-\t/src/api\tapi\n\
+             other\treview\trunning\t-\t/src/api\tapi\n"
+        );
     }
 
     #[test]

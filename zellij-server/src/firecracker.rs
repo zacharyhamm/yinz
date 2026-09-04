@@ -120,6 +120,16 @@ pub struct VmEntry {
     pub session: String,
     pub name: String,
     pub state: String,
+    /// The image the VM was booted from, and the host worktree it mirrors.
+    ///
+    /// Both are additive to protocol version 2, the way `warnings` and `recoveries` are: a
+    /// provider that does not send them is read as not knowing them rather than as having
+    /// none, which is also what an older provider's listing means. A VM with no worktree is
+    /// one an agent got to itself, and has no host directory to name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<PathBuf>,
 }
 
 /// A guest disk the provider kept instead of deleting: a VM that crashed, failed to
@@ -601,6 +611,33 @@ mod tests {
         assert_eq!(provider.timeout, Duration::from_secs(90));
     }
 
+    /// The other half of the pair: a provider that does name the image and the worktree.
+    ///
+    /// `provider_requests_and_responses_follow_the_contract` covers the omitting side, so
+    /// between them both readings of the additive fields are pinned - and the listing is
+    /// what tells a reader which branch a VM is working on, so an entry that quietly
+    /// dropped them would answer the question with nothing.
+    #[test]
+    fn a_listing_carries_the_image_and_worktree_a_provider_names() {
+        let (_dir, provider) = provider_script(
+            r#"printf '%s' '{"version":2,"vms":[{"session":"work","name":"review","state":"running","image":"rust-dev","worktree":"/repo"}]}'"#,
+            Duration::from_secs(1),
+        );
+        assert_eq!(
+            provider.list(None).unwrap(),
+            Listing {
+                vms: vec![VmEntry {
+                    session: "work".to_owned(),
+                    name: "review".to_owned(),
+                    state: "running".to_owned(),
+                    image: Some("rust-dev".to_owned()),
+                    worktree: Some(PathBuf::from("/repo")),
+                }],
+                recoveries: vec![],
+            }
+        );
+    }
+
     #[test]
     fn provider_requests_and_responses_follow_the_contract() {
         let dir = tempfile::tempdir().unwrap();
@@ -651,10 +688,14 @@ esac
         assert_eq!(
             provider.list(None).unwrap(),
             Listing {
+                // This provider names neither, which is what an older one's listing
+                // looks like: read as unknown rather than as a VM with no worktree.
                 vms: vec![VmEntry {
                     session: "work".to_owned(),
                     name: "review".to_owned(),
                     state: "running".to_owned(),
+                    image: None,
+                    worktree: None,
                 }],
                 recoveries: vec![RecoveryEntry {
                     path: PathBuf::from("/state/recovery/abc-1-sync-failed"),

@@ -356,12 +356,15 @@ the host copy of a file, one `warnings` line per such file:
 `list` returns the running VMs and the retained disks:
 
 ```json
-{"version":2,"vms":[{"session":"work","name":"review","state":"running"}],
+{"version":2,"vms":[{"session":"work","name":"review","state":"running","image":"rust-dev","worktree":"/repo"}],
  "recoveries":[{"path":"/state/recovery/<id>-<time>-sync-failed","reason":"sync-failed","retained_at":1756700000,"session":"work","name":"review","worktree":"/repo"}]}
 ```
 
 Both `warnings` and `recoveries` are optional in the response; a provider that omits them is
-read as having none.
+read as having none. A VM entry's `image` and `worktree` are optional in the same way, and
+additive to version 2: a provider that omits them is read as not knowing them, which is also
+what an older provider's listing means. A VM with no worktree is one an agent got to itself,
+and names no host directory.
 
 The guest must have a matching Zellij binary on `PATH`. OpenSSH must permit Unix-socket
 forwarding. Provider failures, invalid JSON, output over 1 MiB, and timeouts are reported to the
@@ -450,18 +453,24 @@ zellij firecracker changes review [--session work]
 zellij firecracker stop review [--session work]
 ```
 
-`list` prints one tab-separated `session`, `name`, `state` line per VM, or
-`No Firecracker VMs found.`, then any retained disks under a `Retained disks:` header as
-tab-separated `session`, `name`, `reason`, `path` lines, with `-` for a session or name the
-provider does not know. With `--json` it prints the provider's listing as one object:
+`list` prints one tab-separated `session`, `name`, `state`, `image`, `worktree`, `branch` line
+per VM, or `No Firecracker VMs found.`, then any retained disks under a `Retained disks:` header
+as tab-separated `session`, `name`, `reason`, `path` lines, with `-` for anything the provider
+does not know. With `--json` it prints the provider's listing as one object:
 
 ```json
-{"vms":[{"session":"work","name":"review","state":"running"}],
+{"vms":[{"session":"work","name":"review","state":"running","image":"rust-dev","worktree":"/repo","branch":"api"}],
  "recoveries":[{"path":"/state/recovery/<id>-<time>-sync-failed","reason":"sync-failed","retained_at":1756700000,"session":"work","name":"review","worktree":"/repo"}]}
 ```
 
 Both arrays are always present; `session`, `name`, and `worktree` in a recovery entry are
-`null` when unknown.
+`null` when unknown. A VM's `image`, `worktree` and `branch` are left out rather than sent as
+`null` when there is nothing to name.
+
+`branch` is not part of the provider protocol: a VM mirrors a host worktree, so what it is
+working on is the branch that worktree has out, which Zellij resolves itself from the path the
+provider named. It is absent for a VM with no worktree, for a detached head, and when `git`
+cannot be run at all.
 
 The provider retains disks from crashed VMs, failed provisioning, and workspace syncs that could
 not run. Recovery directories are under `$XDG_STATE_HOME/zellij/firecracker/vms/recovery`, each
