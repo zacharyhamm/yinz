@@ -11,3 +11,6 @@ workspace = true
 
 [dependencies]
 zellij-tile = { path = "../../zellij-tile" }
+
+[dev-dependencies]
+zellij-utils = { workspace = true }

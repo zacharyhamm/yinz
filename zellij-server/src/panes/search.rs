@@ -114,29 +114,31 @@ impl SearchResult {
                     '#'
                 };
 
-                let (skip, take) = if ridx as isize == s.start.line() {
-                    let skip = s.start.column();
-                    let take = if s.end.line() == s.start.line() {
-                        s.end.column() - s.start.column()
-                    } else {
-                        // Just mark the rest of the line. This number is certainly too big but the iterator takes care of this
-                        row.columns.len()
-                    };
-                    (skip, take)
-                } else if ridx as isize == s.end.line() {
-                    // We wrapped a line and the end is in this row, so take from the beginning to the end
-                    (0, s.end.column())
+                let start = if ridx as isize == s.start.line() {
+                    s.start.column()
                 } else {
-                    // We are in the middle (start is above and end is below), so mark all
-                    (0, row.columns.len())
+                    0
                 };
-
-                row.to_mut()
+                let end = if ridx as isize == s.end.line() {
+                    s.end.column()
+                } else {
+                    row.width()
+                };
+                let mut column = 0;
+                let columns = row
                     .columns
-                    .iter_mut()
-                    .skip(skip)
-                    .take(take)
-                    .for_each(|x| *x = TerminalCharacter::new(replacement_char));
+                    .iter()
+                    .flat_map(|character| {
+                        let selected = (start..end).contains(&column);
+                        column += character.width();
+                        if selected {
+                            vec![TerminalCharacter::new(replacement_char); character.width()]
+                        } else {
+                            vec![character.clone()]
+                        }
+                    })
+                    .collect();
+                *row.to_mut() = Row::from_columns(columns);
             }
         }
     }
@@ -183,6 +185,7 @@ impl SearchResult {
             return res;
         }
 
+        let needle: Vec<char> = self.needle.chars().collect();
         let mut tailit = tail.iter();
         let mut source = SearchSource::Main(row); // Where we currently get the haystack-characters from
         let orig_ridx = ridx;
@@ -196,7 +199,7 @@ impl SearchResult {
                 source.get_next_two_chars(hidx, self.whole_word_only);
 
             // Get current needle character
-            let needle_char = self.needle.chars().nth(nidx).unwrap(); // Unwrapping is safe here
+            let needle_char = needle[nidx];
 
             // Check if needle and haystack match (with search-options)
             let chars_match = self.check_if_haystack_char_matches_needle(
@@ -211,7 +214,7 @@ impl SearchResult {
                 if nidx == 0 {
                     start = Some(Position::new(ridx as i32, hidx as u16));
                 }
-                if nidx == self.needle.len() - 1 {
+                if nidx == needle.len() - 1 {
                     let mut end_found = true;
                     // If we search whole-word-only, the next non-needle char needs to be a word-boundary,
                     // otherwise its not a hit (e.g. some occurrence inside a longer word).
@@ -272,6 +275,20 @@ impl SearchResult {
         // so it could be that the end extends across more characters than the row is wide.
         // Therefore we need to reflow the end:
         for s in res.iter_mut() {
+            // Matching uses character indexes; selections use terminal columns.
+            for position in [&mut s.start, &mut s.end] {
+                let source_row = if position.line() as usize == orig_ridx {
+                    row
+                } else {
+                    tail[position.line() as usize - orig_ridx - 1]
+                };
+                position.column.0 = source_row
+                    .columns
+                    .iter()
+                    .take(position.column())
+                    .map(TerminalCharacter::width)
+                    .sum();
+            }
             while s.end.column() > row.width() {
                 s.end.column.0 -= row.width();
                 s.end.line.0 += 1;

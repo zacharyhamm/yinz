@@ -1327,3 +1327,54 @@ fn a_remote_pane_that_becomes_ready_forgets_the_loading_screen_it_buffered() {
         "the clear wiped the loading pane's scrollback view: {snapshot}"
     );
 }
+
+#[test]
+fn search_input_accepts_unicode_and_preserves_editing_commands() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let mode_info = ModeInfo {
+        mode: InputMode::Search,
+        ..Default::default()
+    };
+    let mut tab = create_new_tab(size, mode_info);
+    tab.handle_pty_bytes(1, "café 東京 🙂 end".as_bytes().to_vec())
+        .unwrap();
+
+    for (input, expected, is_error) in [
+        ("café 東京 🙂".as_bytes().to_vec(), "café 東京 🙂", false),
+        (vec![0x7f], "café 東京 ", false),
+        (vec![0x08], "café 東京", false),
+        (vec![0x08], "café 東", false),
+        ("京".as_bytes().to_vec(), "café 東京", false),
+        ("bad\ninput".as_bytes().to_vec(), "café 東京", false),
+        ("\u{85}".as_bytes().to_vec(), "café 東京", false),
+        (vec![0x1b, b'[', b'A'], "café 東京", false),
+        (vec![0xff], "café 東京", true),
+        (vec![0], "", false),
+        ("é".as_bytes().to_vec(), "é", false),
+    ] {
+        assert_eq!(tab.update_search_term(input, client_id).is_err(), is_error);
+        let mut output = Output::default();
+        tab.set_force_render();
+        tab.render(&mut output, None).unwrap();
+        let snapshot = take_snapshot(
+            output.serialize().unwrap().get(&client_id).unwrap(),
+            size.rows,
+            size.cols,
+            Palette::default(),
+        );
+        if expected.is_empty() {
+            assert!(!snapshot.contains("SEARCHING:"), "{snapshot}");
+        } else {
+            let title = snapshot.split_once("SEARCHING: ").unwrap().1;
+            assert_eq!(
+                title.split('─').next().unwrap().trim_end(),
+                expected.trim_end(),
+                "{snapshot}"
+            );
+        }
+    }
+}

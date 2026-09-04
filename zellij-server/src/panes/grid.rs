@@ -4440,9 +4440,9 @@ impl Grid {
         } else if event.right {
             value = 34;
         } else if event.wheel_up {
-            value = 68;
+            value = 96;
         } else if event.wheel_down {
-            value = 69;
+            value = 97;
         }
         if event.event_type == MouseEventType::Motion {
             value += 32;
@@ -4692,46 +4692,10 @@ impl Grid {
         }
     }
     pub fn mouse_scroll_up_signal(&self, position: &Position) -> Option<String> {
-        match (&self.mouse_mode, &self.mouse_tracking) {
-            (_, MouseTracking::Off) => None,
-            (MouseMode::NoEncoding | MouseMode::Utf8, _) => {
-                let mut msg: Vec<u8> = vec![27, b'[', b'M', b'`'];
-                msg.append(&mut utf8_mouse_coordinates(
-                    position.column() + 1,
-                    position.line() + 1,
-                ));
-                Some(String::from_utf8_lossy(&msg).into())
-            },
-            (MouseMode::Sgr, _) => {
-                let mouse_event = format!(
-                    "\u{1b}[<64;{:?};{:?}M",
-                    position.column.0 + 1,
-                    position.line.0 + 1
-                );
-                Some(mouse_event)
-            },
-        }
+        self.mouse_event_signal(&MouseEvent::new_scroll_up_event(*position))
     }
     pub fn mouse_scroll_down_signal(&self, position: &Position) -> Option<String> {
-        match (&self.mouse_mode, &self.mouse_tracking) {
-            (_, MouseTracking::Off) => None,
-            (MouseMode::NoEncoding | MouseMode::Utf8, _) => {
-                let mut msg: Vec<u8> = vec![27, b'[', b'M', b'a'];
-                msg.append(&mut utf8_mouse_coordinates(
-                    position.column() + 1,
-                    position.line() + 1,
-                ));
-                Some(String::from_utf8_lossy(&msg).into())
-            },
-            (MouseMode::Sgr, _) => {
-                let mouse_event = format!(
-                    "\u{1b}[<65;{:?};{:?}M",
-                    position.column.0 + 1,
-                    position.line.0 + 1
-                );
-                Some(mouse_event)
-            },
-        }
+        self.mouse_event_signal(&MouseEvent::new_scroll_down_event(*position))
     }
     pub fn is_alternate_mode_active(&self) -> bool {
         self.alternate_screen_state.is_some()
