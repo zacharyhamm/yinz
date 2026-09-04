@@ -238,7 +238,7 @@ impl Screen {
     ///
     /// Three things can name a tab, and they are asked in this order:
     ///
-    /// 1. A lone pane that lends its own title (see [`Tab::single_pane_tab_name`]).
+    /// 1. A lone pane that lends its own title (see [`Tab::lent_pane_title`]).
     /// 2. The project the tab is working on, when a plugin has told us of one.
     /// 3. The tab's own name — what the user typed, or the "Tab #N" it was born with.
     ///
@@ -247,6 +247,11 @@ impl Screen {
     /// its own the moment the thing that was lending it one is gone. Nothing here
     /// reaches session serialization, which wants the name the user would
     /// recognise as theirs.
+    ///
+    /// Whichever of the three wins then carries the exit marker of a lone pane
+    /// that has stopped ([`Tab::exit_marker`]). That is not a fourth name and does
+    /// not compete with the others: it says the pane is finished, which is worth
+    /// saying about a tab called "hocus" as much as about one called "vim README".
     pub(super) fn plugin_tab_names(&self) -> HashMap<usize, String> {
         // Positions, because the `#1`/`#2` a collision earns are read off the tab
         // bar left to right. Ids would number by age instead, which is invisible.
@@ -263,7 +268,7 @@ impl Screen {
         let mut seen: HashMap<&str, usize> = HashMap::new();
         let mut names = HashMap::new();
         for tab in by_position {
-            let name = match self.tab_project_name(tab) {
+            let base = match self.tab_project_name(tab) {
                 // A project only one tab is on reads better without a "#1" that
                 // implies a "#2" somewhere. Two or more, and every one of them is
                 // numbered — a bare name beside a numbered one would look like the
@@ -274,11 +279,12 @@ impl Screen {
                     format!("{} #{}", project, ordinal)
                 },
                 Some(project) => project.to_owned(),
-                None => tab
-                    .single_pane_tab_name()
-                    .unwrap_or_else(|| tab.name.clone()),
+                None => tab.lent_pane_title().unwrap_or_else(|| tab.name.clone()),
             };
-            names.insert(tab.id, name);
+            // The marker goes on whichever of the three won. It says the pane has
+            // stopped, which is as true of a tab wearing a project's name as of
+            // one wearing the title that pane lent it.
+            names.insert(tab.id, format!("{}{}", base, tab.exit_marker()));
         }
         names
     }
@@ -293,12 +299,10 @@ impl Screen {
         if !tab.tab_name_is_default() {
             return None;
         }
-        // `single_pane_tab_name` answers with the tab's own name when a lone pane
-        // has no title to lend, so what makes a pane win is having *changed* it.
-        if tab
-            .single_pane_tab_name()
-            .is_some_and(|borrowed| borrowed != tab.name)
-        {
+        // Only an actual loan outranks the project. A lone pane that set no title
+        // of its own lends nothing, and the exit marker it may still be carrying
+        // is not a name — it goes on whatever name wins, in `plugin_tab_names`.
+        if tab.lent_pane_title().is_some() {
             return None;
         }
         self.tab_projects.get(&tab.id).map(String::as_str)

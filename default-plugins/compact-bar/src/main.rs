@@ -28,7 +28,7 @@ const MSG_LAUNCH_TOOLTIP: &str = "launch_tooltip_if_not_launched";
 
 /// The widest a tab name is ever allowed to be, however much room the bar has.
 ///
-/// A lone pane lends the tab its own title (see `Tab::single_pane_tab_name` on the server), and
+/// A lone pane lends the tab its own title (see `Tab::lent_pane_title` on the server), and
 /// those run long - hostname, checkout prefix, then whatever the program set. Without a ceiling one
 /// such tab would take the whole bar on a wide terminal and push every other tab behind a "+N".
 const MAX_TAB_NAME_WIDTH: usize = 40;

@@ -283,6 +283,7 @@ fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
                 zellij_session_name: "test-session".to_owned(),
+                tab_projects: BTreeMap::new(),
                 repositories: BTreeMap::from([
                     (
                         Location::local("/work/hocus"),
@@ -368,6 +369,15 @@ fn agent_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
 }
 
 /// A state with one tab, active, that the poll can assign.
+/// A plain shell, which names a tab but is nobody's agent.
+fn shell_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
+    agents::AgentPane {
+        title: "zsh".to_owned(),
+        command: Some("zsh".to_owned()),
+        ..agent_in(pane_id, cwd, tab_id)
+    }
+}
+
 fn state_with_tab(tab_id: usize) -> State {
     let mut state = idle_state();
     state.tabs = vec![TabInfo {
@@ -455,9 +465,12 @@ fn poll_focus(
     probe: fn(&str) -> projects::Repository,
     focused: Option<u32>,
 ) {
+    // Every pane's folder, not only the agents' — the daemon keys probe retention
+    // on `pane_locations()`, so a shell's checkout is probed too. Discovery below
+    // is still fed the agents' folders alone, which is the same split the session
+    // has: what is *probed* is wider than what is *remembered*.
     let probed: Vec<(Location, projects::Repository)> = panes
         .iter()
-        .filter(|pane| agents::classify(pane, &state.manual_kinds).is_some())
         .filter_map(|pane| {
             let cwd = pane.cwd.clone()?;
             let repository = probe(&cwd);
@@ -471,8 +484,14 @@ fn poll_focus(
     // them there was the reason the stand-in path below was never driven the
     // way a session drives it.
     state.repositories = probed.iter().cloned().collect();
+    let agent_folders: BTreeSet<Location> = panes
+        .iter()
+        .filter(|pane| agents::classify(pane, &state.manual_kinds).is_some())
+        .filter_map(|pane| Some(Location::new(pane.host.clone(), pane.cwd.as_deref()?)))
+        .collect();
     let repositories: Vec<projects::Repository> = probed
         .into_iter()
+        .filter(|(location, _)| agent_folders.contains(location))
         .map(|(_, repository)| repository)
         .collect();
     state.apply_poll(
@@ -658,6 +677,7 @@ fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
                 zellij_session_name: "test-session".to_owned(),
+                tab_projects: BTreeMap::new(),
                 repositories: BTreeMap::new(),
                 focused: None,
                 focused_plugin: None,
@@ -690,6 +710,7 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
                 zellij_session_name: "test-session".to_owned(),
+                tab_projects: BTreeMap::new(),
                 repositories: BTreeMap::from([
                     (
                         Location::local("/work/hocus"),

@@ -2499,34 +2499,58 @@ impl Tab {
     pub(crate) fn tab_name_is_default(&self) -> bool {
         !self.name.is_empty() && self.name == self.default_name
     }
-    pub fn single_pane_tab_name(&self) -> Option<String> {
-        if !self.single_pane_titles() {
+    /// What a lone pane is lending its tab, or `None` when it is lending nothing.
+    ///
+    /// Nothing is the common case: a pane that has set no title of its own has
+    /// only "Pane #1" or its command to offer, and neither says more than the
+    /// tab already does. Distinguishing that from a real loan is the whole point
+    /// of returning an `Option` — a caller that has a *better* name in hand (a
+    /// project, say) needs to know whether this one is actually a name or just
+    /// the tab's own read back to it.
+    ///
+    /// The exit marker is not part of the loan. It describes the pane's fate
+    /// rather than its identity, so it belongs to whichever name ends up on the
+    /// tab — see [`Tab::exit_marker`].
+    pub fn lent_pane_title(&self) -> Option<String> {
+        if !self.single_pane_titles() || !self.tab_name_is_default() {
             return None;
         }
         let (_, pane) = self.get_selectable_tiled_content_panes().next()?;
-        let exit_marker = if pane.is_held() && pane.exited() {
-            match pane.exit_status() {
-                Some(exit_code) => format!(" [ EXIT CODE: {} ] ", exit_code),
-                None => " [ EXITED ] ".to_string(),
-            }
-        } else {
-            String::new()
-        };
+        if !pane.has_explicit_title() {
+            return None;
+        }
         // Cut the title here rather than leaving the whole string to the bar. A pane title runs
         // long - hostname, checkout prefix, then whatever the program set - and the marker is
         // appended after it, so a bar cutting the finished string to its own cap would take away
         // exactly the part the reader cannot reconstruct. Charging the marker to the budget first
         // is what keeps it.
-        let base = if self.tab_name_is_default() && pane.has_explicit_title() {
-            ellipsize(
-                &pane.display_title(),
-                Self::MAX_LENT_PANE_TITLE_WIDTH.saturating_sub(exit_marker.width()),
-            )
-        } else {
-            self.name.clone()
-        };
-        Some(format!("{}{}", base, exit_marker))
+        Some(ellipsize(
+            &pane.display_title(),
+            Self::MAX_LENT_PANE_TITLE_WIDTH.saturating_sub(self.exit_marker().width()),
+        ))
     }
+
+    /// The " [ EXITED ] " a lone pane that has stopped adds to its tab's name.
+    ///
+    /// Separate from the name it lends because it outlives the loan: a pane that
+    /// set no title lends nothing and has still exited, and the tab must say so
+    /// whether it is wearing a project's name, the user's, or its own.
+    pub fn exit_marker(&self) -> String {
+        if !self.single_pane_titles() {
+            return String::new();
+        }
+        let Some((_, pane)) = self.get_selectable_tiled_content_panes().next() else {
+            return String::new();
+        };
+        if !(pane.is_held() && pane.exited()) {
+            return String::new();
+        }
+        match pane.exit_status() {
+            Some(exit_code) => format!(" [ EXIT CODE: {} ] ", exit_code),
+            None => " [ EXITED ] ".to_string(),
+        }
+    }
+
     fn resolve_active_pane_scroll(&self, _client_id: ClientId) -> Option<(usize, usize)> {
         if !self.single_pane_titles() {
             return None;

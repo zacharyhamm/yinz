@@ -39,7 +39,13 @@ use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
 #[derive(Default)]
-struct State;
+struct State {
+    /// The tab names last handed to the host, so an unchanged map costs no host
+    /// call. The daemon already drops a snapshot identical to the last one, but
+    /// two different snapshots routinely name the tabs the same way — a pane
+    /// going busy changes the snapshot and nothing about where the panes are.
+    published_tab_names: BTreeMap<usize, String>,
+}
 
 register_plugin!(State);
 
@@ -77,7 +83,7 @@ impl ZellijPlugin for State {
             wire::AGENT_HELLO => {
                 pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE));
             },
-            wire::AGENT_SNAPSHOT => discover_from(&Host::shared(), &payload),
+            wire::AGENT_SNAPSHOT => self.on_snapshot(&Host::shared(), &payload),
             wire::STORE_MUTATE => self.handle_mutate(pipe_message.source, &payload),
             wire::STORE_QUERY => self.handle_query(pipe_message.source, &payload),
             _ => {},
@@ -89,6 +95,90 @@ impl ZellijPlugin for State {
 }
 
 impl State {
+    /// Everything one pane snapshot is worth: the projects it implies, and the
+    /// names its tabs should wear.
+    ///
+    /// One parse and one registry read for both, because they ask the same two
+    /// questions of the same folders and a second fetch could answer differently
+    /// from the first.
+    fn on_snapshot(&mut self, backend: &impl Backend, payload: &str) {
+        let Ok(reply) = serde_json::from_str::<PollReply>(payload) else {
+            return;
+        };
+        let Some(panes) = reply.panes.as_deref() else {
+            return;
+        };
+        let registry = discover_from(backend, &reply, panes);
+        self.publish_tab_names(&registry, &reply, panes);
+    }
+
+    /// Name each tab after the project its panes are in, and tell the host.
+    ///
+    /// The one publisher of tab projects in the session. It lives here, and not
+    /// in hocus where the rest of the project machinery is, because a tab has to
+    /// be named whether or not a hocus pane is open — and in most sessions one
+    /// never is. hocus keeps its own copy of this map to show the model, derived
+    /// by the same two functions so the two cannot disagree.
+    ///
+    /// The host does the rest of the naming: it knows the tab order the `#1`/`#2`
+    /// of two tabs on one project are read in, it knows which tabs the user has
+    /// named and must be left alone, and it knows when a lone pane is lending a
+    /// title of its own — all three of which outrank a project. What it is
+    /// missing is what a project is, which is the one thing this plugin can say.
+    fn publish_tab_names(
+        &mut self,
+        registry: &projects::Registry,
+        reply: &PollReply,
+        panes: &[agents::AgentPane],
+    ) {
+        let owners: BTreeMap<u32, String> = panes
+            .iter()
+            .filter_map(|pane| {
+                let location = Location::new(pane.host.clone(), pane.cwd.as_deref()?);
+                let label = projects::label_for_cwd(&reply.repositories, registry, &location)?;
+                Some((pane.pane_id, label))
+            })
+            .collect();
+        // Tab *ids*, never the tab name `AgentPane.tab` also carries — that name
+        // is the one we published last time, fed back through the manifest, and
+        // reading it here would close the loop. As it is the loop opens and shuts
+        // once: naming a tab changes the next snapshot, which derives the same map
+        // from the same ids, which publishes nothing.
+        let mut names: BTreeMap<usize, String> = agents::tab_project_labels(panes, &owners)
+            .into_iter()
+            .filter_map(|(tab_id, found)| Some((tab_id, agents::tab_project_label(&found)?)))
+            .collect();
+        // An assignment the user made in hocus outranks what the panes suggest.
+        // It reaches us by way of the daemon: hocus cannot address this plugin
+        // without launching a second copy of it.
+        for (tab_id, project) in &reply.tab_projects {
+            names.insert(*tab_id, project.clone());
+        }
+        // No pruning of tabs that closed: the map is rebuilt from the panes that
+        // are open and replaces the host's wholesale, so a tab whose panes are
+        // gone is simply absent and goes back to its own name.
+        if names == self.published_tab_names {
+            return;
+        }
+        self.published_tab_names = names;
+        self.set_tab_names();
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn set_tab_names(&self) {
+        set_tab_projects(
+            self.published_tab_names
+                .iter()
+                .map(|(tab_id, project)| (*tab_id as u64, project.clone()))
+                .collect(),
+        );
+    }
+
+    /// Outside a plugin there is no host to tell, and `published_tab_names` is
+    /// what the tests read instead.
+    #[cfg(not(target_family = "wasm"))]
+    fn set_tab_names(&self) {}
+
     fn handle_mutate(&mut self, source: PipeSource, payload: &str) {
         let outcome = match serde_json::from_str::<Mutation>(payload) {
             Ok(mutation) => (
@@ -116,26 +206,34 @@ impl State {
 }
 
 /// Add any project the agent snapshot implies, from the folders its panes are
-/// sitting in.
+/// sitting in, and hand back the registry as it stands afterwards.
 ///
 /// Driven by the daemon's snapshot rather than by a poll of our own: this plugin
 /// has no reason to look at panes otherwise, and running discovery off the same
 /// snapshot hocus sees keeps the two from disagreeing about which projects
 /// exist.
 ///
+/// The registry comes back because the caller names the tabs from it, and a
+/// second fetch there could answer differently from this one — including
+/// missing the project this pass just made.
+///
 /// One apply for the projects and the moved lists together. That is new: they
 /// used to be two independent file writes, so a crash between them left a
 /// project pointing at a root whose todos were still under the old one.
-fn discover_from(backend: &impl Backend, payload: &str) {
-    let Ok(reply) = serde_json::from_str::<PollReply>(payload) else {
-        return;
-    };
-    let Some(panes) = reply.panes else {
-        return;
-    };
+fn discover_from(
+    backend: &impl Backend,
+    reply: &PollReply,
+    panes: &[agents::AgentPane],
+) -> projects::Registry {
     // Only an agent counts. A shell sitting at a prompt is not a reason to
     // remember a folder for good, and every pane would otherwise become a
     // project the first time someone cd'd somewhere.
+    //
+    // Deliberately narrower than the naming above it, which counts every pane.
+    // The two widths are the difference between what is written down and what is
+    // merely displayed: a name is worked out again from the panes that are open
+    // and costs a redraw when it is wrong, where a remembered folder outlives
+    // the session and costs the user a row to delete.
     let repositories: Vec<projects::Repository> = panes
         .iter()
         .filter(|pane| agents::classify(pane, &reply.manual_kinds).is_some())
@@ -152,13 +250,13 @@ fn discover_from(backend: &impl Backend, payload: &str) {
 
     let Ok(rows) = backend.fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))
     else {
-        return;
+        return projects::Registry::new();
     };
     let before = projects::from_rows(&rows);
     let mut after = before.clone();
     let discovery = projects::discover(&mut after, &repositories);
     if !discovery.changed() {
-        return;
+        return after;
     }
     let mut mutations = projects::diff_mutations(&before, &after);
     // A folder's todo list and its notes move with it, in the same batch as
@@ -173,6 +271,7 @@ fn discover_from(backend: &impl Backend, payload: &str) {
         }
     }
     let _ = backend.apply(mutations);
+    after
 }
 
 /// Read the two JSON files in, once, if this is the first launch that has the
@@ -289,6 +388,15 @@ mod tests {
         names
     }
 
+    /// Drive one snapshot through the real entry point, and hand back what the
+    /// plugin made of it — the tab names included, which is the half no store
+    /// row records.
+    fn apply(backend: &Local, payload: &str) -> State {
+        let mut state = State::default();
+        state.on_snapshot(backend, payload);
+        state
+    }
+
     fn checkout(root: &str) -> projects::Repository {
         projects::Repository {
             root: root.to_owned(),
@@ -314,6 +422,165 @@ mod tests {
             detected: None,
             agent: None,
         }
+    }
+
+    /// A pane sitting in a tab, which is what it takes to name one.
+    fn pane_on_tab(pane_id: u32, command: &str, cwd: &str, tab_id: usize) -> agents::AgentPane {
+        agents::AgentPane {
+            tab: Some((tab_id, format!("Tab #{}", tab_id))),
+            ..pane_in(pane_id, command, Some(command), cwd)
+        }
+    }
+
+    /// A snapshot of several panes, each in the checkout its folder names, plus
+    /// whatever the user assigned by hand.
+    fn snapshot_of_panes(
+        panes: Vec<agents::AgentPane>,
+        assigned: BTreeMap<usize, String>,
+    ) -> String {
+        let repositories = panes
+            .iter()
+            .filter_map(|pane| {
+                let cwd = pane.cwd.clone()?;
+                let location = Location::new(pane.host.clone(), &cwd);
+                Some((location, checkout(&cwd).on_host(pane.host.clone())))
+            })
+            .collect();
+        serde_json::to_string(&PollReply {
+            panes: Some(panes),
+            activity: agents::Activity::new(),
+            manual_kinds: BTreeMap::new(),
+            zellij_session_name: String::new(),
+            repositories,
+            tab_projects: assigned,
+            focused: None,
+            hooks: agents::HookFeeds::new(),
+            focused_plugin: None,
+            summaries: agents::Summaries::new(),
+            runs: Vec::new(),
+        })
+        .expect("serialize")
+    }
+
+    /// The whole point of the change: a session with no agent in it still gets
+    /// its tabs named, because a shell says where it is as well as an agent does.
+    #[test]
+    fn a_shell_in_a_checkout_names_its_tab() {
+        let backend = backend();
+
+        let state = apply(
+            &backend,
+            &snapshot_of_panes(
+                vec![pane_on_tab(3, "zsh", "/work/hocus", 1)],
+                BTreeMap::new(),
+            ),
+        );
+
+        assert_eq!(state.published_tab_names[&1], "hocus");
+        assert!(
+            project_names(&backend).is_empty(),
+            "naming a tab is not a reason to remember the folder for good",
+        );
+    }
+
+    /// A tab is a place to work rather than a thing one project owns, so a tab
+    /// holding two checkouts is honestly described by both.
+    #[test]
+    fn a_tab_in_two_checkouts_is_named_after_both() {
+        let backend = backend();
+
+        let state = apply(
+            &backend,
+            &snapshot_of_panes(
+                vec![
+                    pane_on_tab(3, "zsh", "/work/pocus", 1),
+                    pane_on_tab(4, "zsh", "/work/hocus", 1),
+                ],
+                BTreeMap::new(),
+            ),
+        );
+
+        assert_eq!(
+            state.published_tab_names[&1], "hocus + pocus",
+            "sorted, so the name does not shuffle when the panes come back in another order",
+        );
+    }
+
+    /// The registered name, not the folder's, when the folder is a project. The
+    /// user renamed it for a reason.
+    #[test]
+    fn a_registered_project_names_the_tab_over_its_folder() {
+        let backend = backend();
+        backend
+            .apply(vec![projects::to_mutation(
+                &projects::validate("the-workspace", "/work/hocus").expect("valid"),
+            )])
+            .expect("registered");
+
+        let state = apply(
+            &backend,
+            &snapshot_of_panes(
+                vec![pane_on_tab(3, "zsh", "/work/hocus", 1)],
+                BTreeMap::new(),
+            ),
+        );
+
+        assert_eq!(state.published_tab_names[&1], "the-workspace");
+    }
+
+    /// A folder Git does not claim names nothing. Without this line every `cd`
+    /// would put a folder name on the tab bar.
+    #[test]
+    fn a_plain_folder_names_no_tab() {
+        let backend = backend();
+        let payload = snapshot_with(
+            pane_on_tab(3, "zsh", "/home/me/Downloads", 1),
+            projects::Repository::folder("/home/me/Downloads"),
+            BTreeMap::new(),
+        );
+
+        let state = apply(&backend, &payload);
+
+        assert!(state.published_tab_names.is_empty());
+    }
+
+    /// An assignment the user made in hocus outranks what the panes suggest. It
+    /// gets here by way of the daemon, which is the only road between the two
+    /// plugins.
+    #[test]
+    fn a_hand_made_assignment_outranks_the_folder() {
+        let backend = backend();
+
+        let state = apply(
+            &backend,
+            &snapshot_of_panes(
+                vec![pane_on_tab(3, "zsh", "/work/hocus", 1)],
+                BTreeMap::from([(1, "notes".to_owned())]),
+            ),
+        );
+
+        assert_eq!(state.published_tab_names[&1], "notes");
+    }
+
+    /// A tab whose panes have all gone simply has no entry in the next map, and
+    /// the host replaces the whole map, so it goes back to its own name.
+    #[test]
+    fn a_tab_whose_panes_closed_is_named_no_longer() {
+        let backend = backend();
+        let mut state = State::default();
+
+        state.on_snapshot(
+            &backend,
+            &snapshot_of_panes(
+                vec![pane_on_tab(3, "zsh", "/work/hocus", 1)],
+                BTreeMap::new(),
+            ),
+        );
+        assert_eq!(state.published_tab_names[&1], "hocus");
+
+        state.on_snapshot(&backend, &snapshot_of_panes(Vec::new(), BTreeMap::new()));
+
+        assert!(state.published_tab_names.is_empty());
     }
 
     /// A snapshot with one pane in one checkout, as the daemon sends it.
@@ -344,6 +611,9 @@ mod tests {
             // discovery is the same answer whoever asks.
             zellij_session_name: String::new(),
             repositories: BTreeMap::from([(location, repository)]),
+            // Only hocus makes these, and only when the user assigns a tab by
+            // hand. Discovery does not read them at all.
+            tab_projects: BTreeMap::new(),
             // Discovery does not read it; which pane has focus says nothing
             // about which folders are projects.
             focused: None,
@@ -364,7 +634,7 @@ mod tests {
     fn only_an_agents_folder_becomes_a_project() {
         let backend = backend();
 
-        discover_from(
+        apply(
             &backend,
             &snapshot(
                 pane_in(3, "zsh", Some("zsh"), "/tmp/plain"),
@@ -373,7 +643,7 @@ mod tests {
         );
         assert!(project_names(&backend).is_empty());
 
-        discover_from(
+        apply(
             &backend,
             &snapshot(
                 pane_in(4, "codex", Some("codex"), "/tmp/coded"),
@@ -397,7 +667,7 @@ mod tests {
         let mut pane = pane_in(3, "codex", Some("codex"), "/tmp/work");
         pane.host = Some("build-box".to_owned());
 
-        discover_from(&backend, &snapshot(pane, BTreeMap::new()));
+        apply(&backend, &snapshot(pane, BTreeMap::new()));
 
         assert!(
             project_names(&backend).is_empty(),
@@ -417,7 +687,7 @@ mod tests {
         let backend = backend();
         let worktree = "/tmp/nested/.claude/worktrees/topic";
 
-        discover_from(
+        apply(
             &backend,
             &snapshot(
                 pane_in(3, "codex", Some("codex"), "/tmp/nested"),
@@ -426,7 +696,7 @@ mod tests {
         );
         assert_eq!(project_names(&backend), vec!["nested"]);
 
-        discover_from(
+        apply(
             &backend,
             &snapshot(
                 pane_in(4, "codex", Some("codex"), worktree),
@@ -455,7 +725,7 @@ mod tests {
         let mut linked = checkout(worktree);
         linked.remote.clone_from(&remote);
         linked.worktree_status = Some(projects::WorktreeStatus::Linked);
-        discover_from(
+        apply(
             &backend,
             &snapshot_of(pane_in(3, "codex", Some("codex"), worktree), linked),
         );
@@ -479,7 +749,7 @@ mod tests {
 
         let mut main = checkout(primary);
         main.remote.clone_from(&remote);
-        discover_from(
+        apply(
             &backend,
             &snapshot_of(pane_in(4, "codex", Some("codex"), primary), main),
         );
@@ -504,7 +774,7 @@ mod tests {
     fn a_manual_kind_from_the_snapshot_counts_as_an_agent() {
         let backend = backend();
 
-        discover_from(
+        apply(
             &backend,
             &snapshot(
                 pane_in(3, "zsh", Some("zsh"), "/tmp/named"),
@@ -526,7 +796,7 @@ mod tests {
             ..pane_in(3, "zsh", Some("git status"), "/tmp/latched")
         };
 
-        discover_from(&backend, &snapshot(shelled_out, BTreeMap::new()));
+        apply(&backend, &snapshot(shelled_out, BTreeMap::new()));
 
         assert_eq!(project_names(&backend), vec!["latched"]);
     }
