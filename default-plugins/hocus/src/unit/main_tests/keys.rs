@@ -118,6 +118,199 @@ fn n_at_the_confirmation_prompt_declines_and_waits() {
     assert!(!state.is_receiving(), "and no follow-up request went out");
 }
 
+// -- the input box lets go of the ring, and takes it back --------------------
+//
+// Bare Tab in the box is completion, which leaves nothing for the ring's forward step to
+// mean while a draft is standing in it. Esc is what lets go: the text stays, the keys go
+// back to the ring, and anything typed takes the box again. The tests above are the other
+// half of that split - every one of them presses Esc on an *empty* box, which is why they
+// still hide on the first press.
+
+/// The draft is the one thing a dismissal cannot get back, so Esc protects it instead.
+#[test]
+fn esc_with_a_draft_releases_the_box_rather_than_hiding_it() {
+    let mut state = ready_state();
+    state.input.set_text("half a thought".to_owned());
+
+    assert!(state.on_key(esc()));
+
+    assert!(!state.hidden, "the panel is still up");
+    assert!(state.chat_input_released, "and the box has let the keys go");
+    assert_eq!(
+        state.input.get_text(),
+        "half a thought",
+        "with the draft in it"
+    );
+}
+
+/// And the way out is the same key again - a two-press escape hatch, not a lost one.
+#[test]
+fn a_second_esc_hides_the_released_panel() {
+    let mut state = ready_state();
+    state.input.set_text("half a thought".to_owned());
+    state.on_key(esc());
+
+    state.on_key(esc());
+
+    assert!(state.hidden);
+    assert_eq!(
+        state.input.get_text(),
+        "half a thought",
+        "the draft survives"
+    );
+}
+
+/// A box with only spaces in it has nothing to complete and so nothing to protect.
+#[test]
+fn esc_on_a_box_of_whitespace_hides() {
+    let mut state = ready_state();
+    state.input.set_text("   ".to_owned());
+
+    state.on_key(esc());
+
+    assert!(state.hidden);
+}
+
+/// Typing is how the box takes the keys back, and the key that says so is also typed: the
+/// arm that clears the flag does not consume anything.
+#[test]
+fn typing_into_a_released_box_puts_the_keys_back() {
+    let mut state = ready_state();
+    state.input.set_text("hi".to_owned());
+    state.on_key(esc());
+
+    state.on_key(KeyWithModifier::new(BareKey::Char('!')));
+
+    assert!(!state.chat_input_released);
+    assert_eq!(state.input.get_text(), "hi!");
+}
+
+/// Enter is typing too, and means what it always means in the box.
+#[test]
+fn enter_in_a_released_box_sends_it() {
+    let mut state = ready_state();
+    state.input.set_text("ship it".to_owned());
+    state.on_key(esc());
+
+    state.on_key(KeyWithModifier::new(BareKey::Enter));
+
+    assert!(!state.chat_input_released);
+    assert_eq!(state.input.get_text(), "", "the box was sent and cleared");
+}
+
+/// The arms that answer a prompt or interrupt a run return early, so the flag has to be down
+/// before them: a `y` that ran a tool used to be able to leave the box released with nothing
+/// on screen saying so.
+#[test]
+fn answering_a_prompt_from_a_released_box_takes_the_keys_back() {
+    let mut state = confirming_state();
+    state.input.set_text("wait".to_owned());
+    state.on_key(esc());
+    assert!(state.chat_input_released);
+
+    state.on_key(KeyWithModifier::new(BareKey::Char('n')));
+
+    assert!(!state.chat_input_released, "the box has the keys again");
+    assert!(state.pending.is_empty(), "and the call was still answered");
+}
+
+#[test]
+fn interrupting_from_a_released_box_takes_the_keys_back() {
+    let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");
+    state.input.set_text("wait".to_owned());
+    state.on_key(esc());
+
+    state.on_key(ctrl_c());
+
+    assert!(!state.chat_input_released);
+    assert!(!state.hidden, "interrupting is not hiding");
+}
+
+/// A paste is typing, arriving whole.
+#[test]
+fn a_paste_into_a_released_box_takes_the_keys_back() {
+    let mut state = ready_state();
+    state.input.set_text("see ".to_owned());
+    state.on_key(esc());
+
+    assert!(state.on_paste("this".to_owned()));
+
+    assert!(!state.chat_input_released);
+    assert_eq!(state.input.get_text(), "see this");
+}
+
+// -- the ring's forward step out of the box ---------------------------------
+
+/// Nothing to complete, so Tab is the ring's.
+#[test]
+fn tab_on_a_blank_box_steps_to_the_agent_list() {
+    let mut state = ready_state();
+    state.agents_plugin = Some(7);
+
+    assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
+
+    assert_eq!(state.ring_focus_calls, [(PaneId::Plugin(7), "list")]);
+}
+
+/// A draft keeps Tab for what it is for. This is the whole of the conflict, and the reason
+/// Esc grew a second job.
+#[test]
+fn tab_with_a_draft_still_completes() {
+    let mut state = ready_state();
+    state.agents_plugin = Some(7);
+    state.input.set_text("/hist".to_owned());
+
+    assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
+
+    assert_eq!(state.input.get_text(), "/history ");
+    assert!(state.ring_focus_calls.is_empty(), "and went nowhere");
+}
+
+/// Once the box is let go of, the same press steps - the draft still standing in it.
+#[test]
+fn tab_from_a_released_box_steps_to_the_agent_list() {
+    let mut state = ready_state();
+    state.agents_plugin = Some(7);
+    state.input.set_text("/hist".to_owned());
+    state.on_key(esc());
+
+    assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
+
+    assert_eq!(state.ring_focus_calls, [(PaneId::Plugin(7), "list")]);
+    assert_eq!(
+        state.input.get_text(),
+        "/hist",
+        "completed nothing on the way"
+    );
+    assert!(
+        !state.chat_input_released,
+        "and leaving resets the stop: coming back should type"
+    );
+}
+
+/// A hocus in the user's layout is on no ring - it owns no second half and can hide nothing -
+/// so Tab there is the completion it always was, and Esc does nothing at all.
+#[test]
+fn a_tiled_hocus_has_no_ring() {
+    let mut state = ready_state();
+    state.own_is_floating = Some(false);
+    state.agents_plugin = Some(7);
+
+    assert!(
+        !state.on_key(KeyWithModifier::new(BareKey::Tab)),
+        "nothing to complete"
+    );
+    assert!(state.ring_focus_calls.is_empty(), "and nowhere to step");
+
+    state.input.set_text("a draft".to_owned());
+    state.on_key(esc());
+    assert!(!state.hidden, "hide_panel refuses for a pane in a layout");
+    assert!(
+        !state.chat_input_released,
+        "and there is no ring to release to"
+    );
+}
+
 #[test]
 fn ctrl_c_cancels_the_stream() {
     let mut state = state_streaming(vec![Message::user("hi"), Message::assistant("")], "hocus-1");

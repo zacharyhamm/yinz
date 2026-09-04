@@ -97,6 +97,39 @@ pub const AGENT_STRIP_REPOSITION: &str = "agent_strip_reposition";
 ///
 /// Sent without a `plugin_url`: an Esc must never launch a hocus in order to hide one.
 pub const AGENT_STRIP_HIDE: &str = "agent_strip_hide";
+/// hocus-agents → hocus: "the ring stepped out of the list; take the keyboard".
+///
+/// The panel is one focus ring - the list half, the history half, the conversation's tab bar
+/// and its input box, walked end to end by Tab and Shift+Tab. Two of those stops are in this
+/// pane and two are in the other, so a step that crosses the seam has to be asked for: the
+/// list knows only its own plugin id, exactly as it does for [`AGENT_STRIP_HIDE`] and
+/// [`AGENT_STRIP_REPOSITION`], and hocus is the half that can focus either one.
+///
+/// [`PANEL_STOP`] names which of the conversation's two stops to land on - [`STOP_TABS`]
+/// stepping forward off the history half, [`STOP_INPUT`] stepping backward off the list half.
+///
+/// Sent without a `plugin_url`: a Tab must never launch a conversation in order to focus one.
+pub const AGENT_STRIP_YIELD: &str = "agent_strip_yield";
+/// hocus → hocus-agents: "land on this stop" - the mirror of [`AGENT_STRIP_YIELD`].
+///
+/// Only the internal stop, not the focus: hocus holds the list's plugin id and moves the
+/// keyboard itself with `focus_pane_with_id`, so all this message carries is which of the
+/// list's two halves the arriving keys belong to. [`PANEL_STOP`] names it - [`STOP_LIST`]
+/// wrapping forward off the input box, [`STOP_HISTORY`] stepping backward off the tab bar.
+///
+/// Sent without a `plugin_url`, for the reason [`AGENT_STRIP_YIELD`] is: a focus step never
+/// grows the panel a half it is missing. Revealing does that; walking the ring does not.
+pub const AGENT_STRIP_TAKE: &str = "agent_strip_take";
+/// The argument on [`AGENT_STRIP_YIELD`] and [`AGENT_STRIP_TAKE`] naming the stop to land on.
+pub const PANEL_STOP: &str = "stop";
+/// [`PANEL_STOP`]: the agent list's list half.
+pub const STOP_LIST: &str = "list";
+/// [`PANEL_STOP`]: the agent list's history half.
+pub const STOP_HISTORY: &str = "history";
+/// [`PANEL_STOP`]: the conversation's tab bar.
+pub const STOP_TABS: &str = "tabs";
+/// [`PANEL_STOP`]: the conversation's input box.
+pub const STOP_INPUT: &str = "input";
 /// hocus → hocus-agents: the full history of the selected run.
 pub const AGENT_RUN_DETAIL: &str = "agent_run_detail";
 /// hocus-agents → hocus: fetch the next page of completed run headers.

@@ -633,6 +633,15 @@ impl State {
             // hocus is the overlay panel or a pane in someone's layout, and this is where it says
             // it - see `State::own_is_floating`.
             self.own_is_floating = Some(own.is_floating);
+            // The ring's stop within this half - the bar's highlight, the released box - only
+            // means anything while the keyboard is here. It can leave by routes the ring knows
+            // nothing about: a click on the other half, `Ctrl e a`, a tool focusing a pane. A
+            // stop left standing through one of those would greet the user with the bar lit or
+            // the box let go the next time they came back, so it is dropped on the way out.
+            if self.own_is_focused == Some(true) && !own.is_focused {
+                self.reset_ring_stop();
+            }
+            self.own_is_focused = Some(own.is_focused);
             // Placement, or anything else outside hocus, may have renamed the
             // pane since our last render. Forgetting what we asked for is what
             // makes the next render assert the title again; see
@@ -820,6 +829,41 @@ impl State {
             self.chat_tab_focus = Some(self.chat_tab);
             return true;
         }
+        // The ring's forward step, and the one key the two halves of the panel share. Taken
+        // here for the same reason Shift+Tab is: the input box's Tab arm is completion, and it
+        // does not look at modifiers, so anything Tab-shaped has to be settled before the box
+        // sees it.
+        //
+        // The box's claim comes first when there is one. Tab completes a half-typed `/command`
+        // or `@agent`, which is what it is for, and only a box with nothing to complete - blank,
+        // or released with Esc - hands the key to the ring. That is the whole of the conflict:
+        // an empty box has no completion to lose, and a full one has Esc to let go with.
+        //
+        // Above the interrupt and the y/n prompt below on purpose. Stepping away from a tool
+        // waiting on an answer leaves the question standing, exactly as hiding the panel does;
+        // the answer is still wanted when the ring comes back round.
+        // Text in the box and not released falls through to the completion below.
+        if key.bare_key == BareKey::Tab
+            && key.has_no_modifiers()
+            && self.is_panel()
+            && (self.chat_input_released || self.input.get_text().trim().is_empty())
+        {
+            return self.ring_forward_from_input();
+        }
+        // Every key but the ring's own puts the keyboard back in the box, and then means
+        // exactly what it means while editing. This is only the flag; the key itself carries
+        // on down the ladder, which is what makes Enter submit and a letter type without either
+        // being written twice.
+        //
+        // Above the interrupt and the y/n arms below rather than beside the box at the bottom:
+        // those arms return early, so a `y` answering a tool or a Ctrl-c cancelling a stream
+        // would otherwise leave the box released with no way on screen to say so.
+        //
+        // Esc is the exception, because it is the one key whose meaning *depends* on the
+        // release - see the `Cancel` arm below. Tab and Shift+Tab never reach here.
+        if self.chat_input_released && key.bare_key != BareKey::Esc {
+            self.chat_input_released = false;
+        }
         // Interrupt whatever is running. This used to be Esc's job, which meant a
         // streaming reply could not be put away without also being killed - the
         // state you are most likely to want out of the way was the one state where
@@ -897,10 +941,28 @@ impl State {
         match self.input.handle_key(key) {
             InputAction::Submit => self.submit(),
             InputAction::Cancel => {
-                // Esc is unconditionally "put the panel away"; Ctrl-c is the
-                // interrupt. Nothing is torn down by hiding: a stream keeps
-                // arriving into a suppressed pane and a tool call waiting on y/n
-                // is still waiting when the panel comes back.
+                // Esc has two jobs in the box, and the draft in it says which.
+                //
+                // With text typed, the first press **releases** rather than hides. The box owns
+                // bare Tab for completion, so a draft standing in it is what blocks the ring;
+                // Esc is how the user lets go of the keyboard without losing what they wrote.
+                // The text stays exactly where it is and the cursor goes away, which is the
+                // only thing on screen that says so.
+                // `is_panel` with the rest: a hocus in the user's layout is on no ring, so
+                // there is nothing for the box to let the keys go *to* - releasing there would
+                // strand them, Tab being gated on the same test. Esc stays what it is for a
+                // tiled pane, which `hide_panel` below makes a no-op.
+                if self.is_panel()
+                    && !self.chat_input_released
+                    && !self.input.get_text().trim().is_empty()
+                {
+                    self.chat_input_released = true;
+                    return true;
+                }
+                // Otherwise - a blank box, or one already released - Esc is what it always was:
+                // "put the panel away". Ctrl-c is the interrupt. Nothing is torn down by
+                // hiding: a stream keeps arriving into a suppressed pane and a tool call
+                // waiting on y/n is still waiting when the panel comes back.
                 //
                 // Both halves, and hidden rather than unloaded: the agent list
                 // goes with the conversation, because the panel is one thing.
@@ -928,6 +990,8 @@ impl State {
         {
             return false;
         }
+        // A paste is typing: it takes a released box back, as a keystroke does.
+        self.chat_input_released = false;
         self.input.insert_text(&text);
         true
     }
@@ -948,10 +1012,13 @@ impl State {
         let last = self.chat_tab_count().saturating_sub(1);
         match key.bare_key {
             BareKey::Left => self.chat_tab_focus = Some(selected.saturating_sub(1)),
-            BareKey::Tab if Self::is_bar_key(&key) => {
-                self.chat_tab_focus = Some(selected.saturating_sub(1))
-            },
-            BareKey::Right | BareKey::Tab => self.chat_tab_focus = Some((selected + 1).min(last)),
+            BareKey::Right => self.chat_tab_focus = Some((selected + 1).min(last)),
+            // The bar is a stop on the panel's ring, so Tab and Shift+Tab leave it rather than
+            // walking it: forward is the box below, backward the agent list's history half.
+            // Choosing a chat here is the arrows' job, which is what the help line has always
+            // said - `<←→> choose`.
+            BareKey::Tab if Self::is_bar_key(&key) => return self.ring_back_from_tab_bar(),
+            BareKey::Tab => self.chat_tab_focus = None,
             BareKey::Enter => {
                 self.chat_tab_focus = None;
                 self.switch_to_tab(selected);

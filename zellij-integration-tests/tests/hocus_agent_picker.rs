@@ -497,3 +497,58 @@ fn the_agent_list_and_conversation_are_one_panel() {
     );
     zellij.quit();
 }
+
+/// The panel is one focus ring: the agent list, its history half, the chat tab bar and the box
+/// you type in, walked by Tab and Shift+Tab.
+///
+/// This is the one part of the ring no unit test can reach. The two halves are separate plugin
+/// processes and neither can focus itself into the other - the list holds no id for the
+/// conversation, so it asks (`AGENT_STRIP_YIELD`) and hocus answers - so a step across the seam
+/// is two plugins and the server's focus, all of which only exist in a running session.
+///
+/// The cursor is the tell. hocus draws one in its input box and the agent list draws none, and
+/// only the focused pane's reaches the grid, so a cursor on screen means the keys are in the
+/// conversation and no cursor means they are in the list.
+#[test]
+fn tab_walks_the_keyboard_across_the_panel() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_CONFIG)
+        .with_layout(LayoutInfo::Stringified(NO_SIDEBAR_LAYOUT.to_owned()))
+        .start();
+    let agent = zellij.expect_pty_spawn();
+    agent.output(b"$ ");
+
+    open_sidebar(&zellij);
+    zellij.send_stdin(&keys::ctrl('b'));
+    zellij.wait_until("the conversation has the keys", |grid_snapshot| {
+        grid_snapshot.contains("hocus — ") && grid_snapshot.cursor.is_some()
+    });
+    zellij.wait_until("the agents pane is populated", |grid_snapshot| {
+        grid_snapshot.contains("0  claude")
+    });
+
+    // Forward out of an empty box. Nothing to complete, so Tab is the ring's: hocus focuses the
+    // list and sends it the half to land in, and the conversation's cursor goes with the keys.
+    zellij.send_stdin(&keys::TAB);
+    zellij.wait_until("the agent list has the keys", |grid_snapshot| {
+        grid_snapshot.cursor.is_none()
+            && grid_snapshot.contains("hocus — ")
+            && grid_snapshot.contains("0  claude")
+    });
+
+    // And backward off the list's first stop is the way back - the crossing that has to travel
+    // as a request, the list having no id to focus us with.
+    zellij.send_stdin(&keys::SHIFT_TAB);
+    zellij.wait_until("the box has the keys again", |grid_snapshot| {
+        grid_snapshot.cursor.is_some() && grid_snapshot.contains("0  claude")
+    });
+
+    // The panel is still whole through all of it: a ring step is a focus, never a hide.
+    let screen = zellij.snapshot();
+    assert!(
+        screen.text.contains("hocus — ") && screen.text.contains("agents ─"),
+        "both halves are still up:\n{}",
+        screen.text
+    );
+    zellij.quit();
+}

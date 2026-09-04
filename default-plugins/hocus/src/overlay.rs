@@ -35,6 +35,24 @@
 //! always on screen together, hiding changes no rectangle: `split_panel` cuts a hidden panel
 //! exactly as it cuts the one that comes back.
 //!
+//! **The panel has one focus ring, and no index anywhere.** The two halves are four stops -
+//! the list, its history half, the conversation's tab bar, the box you type in - and `Tab` and
+//! `Shift+Tab` walk them in screen order, wrapping. Nothing stores where in the ring the user
+//! is, because nothing has to: the stop is *which pane the server has focused* times *that
+//! pane's own sub-focus* (`Focus::List`/`History` in the list, `chat_tab_focus` and
+//! `chat_input_released` here), and only the focused pane is sent a key at all. A shared index
+//! would be a second copy of what the server already knows, stale after every mouse click.
+//!
+//! What does have to cross the seam is the two steps that leave a half, and they are
+//! asymmetric for the same reason the visibility is: hocus knows both plugin ids and the list
+//! knows only its own. So hocus moves the keyboard itself (`hand_keyboard_to_agents`, which
+//! focuses the list and sends `AGENT_STRIP_TAKE` naming the half to land in), and the list
+//! *asks* (`AGENT_STRIP_YIELD`, answered by `take_ring_focus`) exactly as it does for Esc and
+//! Ctrl-o. Neither message carries a `plugin_url`: a Tab never launches a half, and never
+//! reveals a panel that is down. The box's own claim on `Tab` is completion, so a draft
+//! standing in it holds the key - `Esc` releases the box, keeping the draft, and the ring
+//! moves again.
+//!
 //! **The plugin computes the geometry, not the server.** `FloatingPaneCoordinates` measures `x`
 //! and `y` from the top-left corner only - there is no bottom or right anchoring - so "the bottom
 //! left corner, inset by a padding" cannot be stated as a coordinate. What can be stated is the
@@ -1331,8 +1349,107 @@ impl State {
         self.agents_closed = false;
         // The bar's highlight swallows every key it does not use, with nothing
         // on screen to say so once the pane is hidden. Shift+Tab is easy to hit
-        // on the way to Esc; the next reveal should type again.
+        // on the way to Esc; the next reveal should type again. The released box goes with it,
+        // for the same reason: both are ring stops, and a hidden panel is on none of them.
+        self.reset_ring_stop();
+    }
+
+    /// Put the ring back on the input box, typing.
+    ///
+    /// The two fields that say where in the ring this half stands - the bar's highlight and the
+    /// released box - only mean anything while the keyboard is here. Whenever it is not, or is
+    /// about not to be, the stop resets: arriving at the conversation from anywhere, by any
+    /// route, should be the box, ready to type. Called by `hide_panel`, by `on_panes` when the
+    /// focus has gone elsewhere, and by the ring steps that leave this half.
+    pub(crate) fn reset_ring_stop(&mut self) {
         self.chat_tab_focus = None;
+        self.chat_input_released = false;
+    }
+
+    /// Record a ring step across the seam for the tests - see [`State::ring_focus_calls`].
+    /// Compiled away outside them.
+    fn note_ring_focus(&mut self, pane: PaneId, stop: &'static str) {
+        #[cfg(test)]
+        self.ring_focus_calls.push((pane, stop));
+        #[cfg(not(test))]
+        let _ = (pane, stop);
+    }
+
+    /// Hand the keyboard to the agent list, landing on `stop`.
+    ///
+    /// The two halves of the panel are four stops of one ring, and this is the crossing hocus
+    /// can make on its own: it holds the list's plugin id (`agents_plugin`, off
+    /// `AGENT_STRIP_YIELD`'s mirror `AGENT_SELECTION`), so it moves the keyboard itself and
+    /// only *tells* the list which of its two halves the arriving keys belong to.
+    ///
+    /// **A ring step never grows the panel a half it is missing.** With no list there is nothing
+    /// to step to, and the answer is `false` so the caller can wrap within this half instead.
+    /// Opening one is what a reveal does; walking the ring is not a request for a bigger panel.
+    fn hand_keyboard_to_agents(&mut self, stop: &'static str) -> bool {
+        let Some(agents_id) = self.agents_plugin.filter(|_| self.is_panel()) else {
+            return false;
+        };
+        let pane = PaneId::Plugin(agents_id);
+        // Leaving, so this half's stop is spent: coming back should be the box.
+        self.reset_ring_stop();
+        focus_pane_with_id(pane, false, false);
+        pipe_message_to_plugin(
+            MessageToPlugin::new(hocus_proto::wire::AGENT_STRIP_TAKE).with_args(BTreeMap::from([
+                (hocus_proto::wire::PANEL_STOP.to_owned(), stop.to_owned()),
+            ])),
+        );
+        self.note_ring_focus(pane, stop);
+        true
+    }
+
+    /// Tab off the input box: forward to the agent list, or round to the tab bar with no list.
+    ///
+    /// Only reached with nothing to complete - a blank box, or one the user released with Esc -
+    /// so the box's own claim on Tab is already settled by the time this is called.
+    pub(crate) fn ring_forward_from_input(&mut self) -> bool {
+        if self.hand_keyboard_to_agents(hocus_proto::wire::STOP_LIST) {
+            return true;
+        }
+        // A panel with one half is a ring with two stops, and Tab wraps round it.
+        self.chat_input_released = false;
+        self.chat_tab_focus = Some(self.chat_tab);
+        true
+    }
+
+    /// Shift+Tab off the tab bar: back to the agent list's history half, or round to the box.
+    pub(crate) fn ring_back_from_tab_bar(&mut self) -> bool {
+        if self.hand_keyboard_to_agents(hocus_proto::wire::STOP_HISTORY) {
+            return true;
+        }
+        self.reset_ring_stop();
+        true
+    }
+
+    /// `AGENT_STRIP_YIELD`: the ring stepped off the agent list, so take the keyboard.
+    ///
+    /// The mirror of [`State::hand_keyboard_to_agents`], and asymmetric with it because the
+    /// panel is: the list knows only its own plugin id, so it cannot focus us - it asks, and
+    /// this is the answer. `show_self` is the focus, being this half's own pane.
+    pub(crate) fn take_ring_focus(&mut self, stop: Option<&str>) -> bool {
+        // The request is a broadcast - the list has no id to address it with - so it reaches
+        // every hocus there is, including one the user put in their own layout. That instance
+        // is on no ring and must not be yanked the keyboard by a Tab pressed in the panel.
+        if !self.is_panel() {
+            return false;
+        }
+        // Nor may a Tab reveal a panel that is down, any more than an Esc may launch one to
+        // hide it. `show_self` below would do exactly that, and the only way to get here with
+        // the panel hidden is a list racing its own Esc.
+        if self.hidden {
+            return false;
+        }
+        self.chat_input_released = false;
+        self.chat_tab_focus = match stop {
+            Some(hocus_proto::wire::STOP_TABS) => Some(self.chat_tab),
+            _ => None,
+        };
+        show_self(true);
+        true
     }
 
     /// Put the panel back, this half having been revealed from outside - the `c` keybinding, or

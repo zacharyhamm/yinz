@@ -1556,7 +1556,9 @@ impl State {
         let old_id = self.chat_id;
         self.log_global("new_chat", serde_json::json!({"old_chat_id": old_id}));
         self.picker = None;
-        self.chat_tab_focus = None;
+        // A new chat is a new box, and a new box types: both ring stops within this half reset
+        // with it, as they do for every other arrival at the conversation.
+        self.reset_ring_stop();
         self.open_tab(Chat::default());
         true
     }
