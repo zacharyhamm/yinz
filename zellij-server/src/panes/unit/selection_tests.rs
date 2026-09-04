@@ -32,6 +32,30 @@ fn selection_end() {
 }
 
 #[test]
+fn swap_ends_round_trips_and_keeps_the_selected_region() {
+    let mut selection = Selection::default();
+    selection.start(Position::new(10, 5));
+    selection.to(Position::new(10, 9));
+    let contained: Vec<usize> = (0..12).filter(|col| selection.contains(10, *col)).collect();
+
+    selection.swap_ends();
+    assert_eq!(selection.start, Position::new(10, 9));
+    assert_eq!(selection.end, Position::new(10, 5));
+    assert!(selection.active, "the selection is still being moved");
+    assert_eq!(
+        (0..12)
+            .filter(|col| selection.contains(10, *col))
+            .collect::<Vec<usize>>(),
+        contained,
+        "swapping the ends does not change which cells are selected"
+    );
+
+    selection.swap_ends();
+    assert_eq!(selection.start, Position::new(10, 5));
+    assert_eq!(selection.end, Position::new(10, 9));
+}
+
+#[test]
 fn add_word_to_position_extend_line_above() {
     let selection_start = Position::new(10, 10);
     let selection_end = Position::new(20, 20);

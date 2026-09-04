@@ -273,6 +273,7 @@ pub fn hints_for_mode(mi: &ModeInfo) -> Vec<Hint> {
         hint("Move selection", "Move", action_key_group(&km, &[
             &[A::MoveTextSelection{direction: Dir::Left}], &[A::MoveTextSelection{direction: Dir::Down}],
             &[A::MoveTextSelection{direction: Dir::Up}], &[A::MoveTextSelection{direction: Dir::Right}]])),
+        hint("Swap ends", "Swap", key_doing(&km, &A::SwapTextSelectionEnds)),
         hint("Copy and exit", "Copy", copy_and_exit),
     ]} else if mi.mode == IM::EnterSearch { vec![
         hint("When done", "Done", action_key(&km, &[A::SwitchToMode{input_mode: IM::Search}])),

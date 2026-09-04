@@ -59,6 +59,7 @@ macro_rules! parse_kdl_action_arguments {
                 "SwitchFocus" => Ok(Action::SwitchFocus),
                 "EditScrollback" => Ok(Action::EditScrollback { ansi: false }),
                 "ScrollUp" => Ok(Action::ScrollUp),
+                "SwapTextSelectionEnds" => Ok(Action::SwapTextSelectionEnds),
                 "ScrollDown" => Ok(Action::ScrollDown),
                 "ScrollToBottom" => Ok(Action::ScrollToBottom),
                 "ScrollToTop" => Ok(Action::ScrollToTop),
@@ -776,6 +777,7 @@ impl Action {
                 });
                 Some(node)
             },
+            Action::SwapTextSelectionEnds => Some(KdlNode::new("SwapTextSelectionEnds")),
             Action::ScrollToBottom => Some(KdlNode::new("ScrollToBottom")),
             Action::ScrollToTop => Some(KdlNode::new("ScrollToTop")),
             Action::ScrollToPreviousPrompt => Some(KdlNode::new("ScrollToPreviousPrompt")),
@@ -1563,6 +1565,9 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                 Ok(Action::EditScrollback { ansi })
             },
             "ScrollUp" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
+            "SwapTextSelectionEnds" => {
+                parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
+            },
             "ScrollDown" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
             "ScrollToBottom" => {
                 parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)

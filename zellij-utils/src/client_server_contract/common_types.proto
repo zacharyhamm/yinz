@@ -298,6 +298,7 @@ message Action {
     SetPaneAgentAction set_pane_agent = 159;
     ReconfigureAction reconfigure = 160;
     MoveTextSelectionAction move_text_selection = 161;
+    SwapTextSelectionEndsAction swap_text_selection_ends = 162;
   }
 }
 
@@ -330,6 +331,7 @@ message CopyLastCommandOutputAction {}
 message MoveTextSelectionAction {
   Direction direction = 1;
 }
+message SwapTextSelectionEndsAction {}
 message PageScrollUpAction {}
 message PageScrollDownAction {}
 message HalfPageScrollUpAction {}

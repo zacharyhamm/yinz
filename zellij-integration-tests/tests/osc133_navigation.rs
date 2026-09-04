@@ -189,6 +189,32 @@ fn keyboard_selection_copies_and_returns_to_normal_mode() {
 }
 
 #[test]
+fn swapping_the_selection_ends_moves_the_start_of_the_keyboard_selection() {
+    let mut zellij = start_with_config(COPY_CONFIG);
+    claim_terminal_with(&zellij, b"abcdef", "abcdef");
+
+    zellij.send_stdin(&keys::ctrl('p'));
+    zellij.send_stdin(&keys::key('v'));
+    // the selection is anchored at the cursor, past "abcdef", and grows leftwards over "cdef"
+    for _ in 0..4 {
+        zellij.send_stdin(&keys::key('h'));
+    }
+    // now move the anchor instead: without the swap these two keys would select "abcdef"
+    zellij.send_stdin(&keys::key('o'));
+    for _ in 0..2 {
+        zellij.send_stdin(&keys::key('h'));
+    }
+    zellij.send_stdin(&keys::ENTER);
+
+    let expected_copy = osc52_copy_of("cd");
+    zellij.wait_until_raw_output("the selection with a moved start was copied", |bytes| {
+        occurrences_of(bytes, &expected_copy) >= 1
+    });
+
+    zellij.quit();
+}
+
+#[test]
 fn copying_the_last_command_output_flashes_it_and_leaves_scroll_mode() {
     let mut zellij = start_with_config(COPY_CONFIG);
     claim_terminal_with(&zellij, MARKED_COMMAND, "second line");

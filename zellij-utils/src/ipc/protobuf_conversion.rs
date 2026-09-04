@@ -1221,6 +1221,7 @@ impl TryFrom<crate::input::actions::Action>
             SkipConfirmAction,
             StackPanesAction,
             StartOrReloadPluginAction,
+            SwapTextSelectionEndsAction,
             SwitchFocusAction,
             SwitchModeForAllClientsAction,
             SwitchSessionAction,
@@ -1408,6 +1409,9 @@ impl TryFrom<crate::input::actions::Action>
                 ActionType::MoveTextSelection(MoveTextSelectionAction {
                     direction: direction_to_proto_i32(direction),
                 })
+            },
+            crate::input::actions::Action::SwapTextSelectionEnds => {
+                ActionType::SwapTextSelectionEnds(SwapTextSelectionEndsAction {})
             },
             crate::input::actions::Action::PageScrollUp => {
                 ActionType::PageScrollUp(PageScrollUpAction {})
@@ -2399,6 +2403,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                 Ok(crate::input::actions::Action::MoveTextSelection {
                     direction: proto_i32_to_direction(action.direction)?,
                 })
+            },
+            ActionType::SwapTextSelectionEnds(_) => {
+                Ok(crate::input::actions::Action::SwapTextSelectionEnds)
             },
             ActionType::PageScrollUp(_) => Ok(crate::input::actions::Action::PageScrollUp),
             ActionType::PageScrollDown(_) => Ok(crate::input::actions::Action::PageScrollDown),

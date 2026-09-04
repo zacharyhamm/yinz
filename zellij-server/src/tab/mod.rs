@@ -349,6 +349,9 @@ pub(crate) struct Tab {
     osc8_hyperlinks: bool,
     explicitly_disable_kitty_keyboard_protocol: bool,
     mouse_hover_pane_id: HashMap<ClientId, PaneId>,
+    // the pane a keyboard text selection was started on, so that it is the pane the selection is
+    // moved, copied and finished on even if focus moved elsewhere in the meantime
+    keyboard_text_selection: HashMap<ClientId, PaneId>,
     dimmed_clients: HashSet<ClientId>,
     plugin_hover_pane_id: HashMap<ClientId, PaneId>,
     mouse_last_pane_id: HashMap<ClientId, PaneId>,
@@ -495,6 +498,7 @@ pub trait Pane {
     fn reset_selection(&mut self, _client_id: Option<ClientId>) {}
     fn start_text_selection(&mut self, _client_id: ClientId) {}
     fn move_text_selection(&mut self, _direction: Direction, _client_id: ClientId) {}
+    fn swap_text_selection_ends(&mut self, _client_id: ClientId) {}
     fn remember_copied_text_selection(&mut self, _client_id: ClientId) {}
     fn finish_text_selection(&mut self, _client_id: ClientId) {}
     fn supports_mouse_selection(&self) -> bool {
@@ -1278,6 +1282,7 @@ impl Tab {
             explicitly_disable_kitty_keyboard_protocol,
             default_editor,
             mouse_hover_pane_id: HashMap::new(),
+            keyboard_text_selection: HashMap::new(),
             plugin_hover_pane_id: HashMap::new(),
             mouse_last_pane_id: HashMap::new(),
             mouse_help_text_visible: HashMap::new(),
@@ -7368,26 +7373,47 @@ impl Tab {
     }
 
     pub fn start_text_selection(&mut self, client_id: ClientId) {
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.start_text_selection(client_id);
+        let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) else {
+            return;
+        };
+        let pane_id = active_pane.pid();
+        active_pane.start_text_selection(client_id);
+        self.keyboard_text_selection.insert(client_id, pane_id);
+    }
+
+    /// The pane a keyboard text selection is live on: the one it was started on, which is not
+    /// necessarily the focused one any more.
+    fn text_selection_pane_mut(&mut self, client_id: ClientId) -> Option<&mut Box<dyn Pane>> {
+        match self.keyboard_text_selection.get(&client_id).copied() {
+            Some(pane_id) => self.get_pane_with_id_mut(pane_id),
+            None => self.get_active_pane_or_floating_pane_mut(client_id),
         }
     }
 
     pub fn move_text_selection(&mut self, direction: Direction, client_id: ClientId) {
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.move_text_selection(direction, client_id);
+        if let Some(pane) = self.text_selection_pane_mut(client_id) {
+            pane.move_text_selection(direction, client_id);
+        }
+    }
+
+    pub fn swap_text_selection_ends(&mut self, client_id: ClientId) {
+        if let Some(pane) = self.text_selection_pane_mut(client_id) {
+            pane.swap_text_selection_ends(client_id);
         }
     }
 
     pub fn remember_copied_text_selection(&mut self, client_id: ClientId) {
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.remember_copied_text_selection(client_id);
+        if let Some(pane) = self.text_selection_pane_mut(client_id) {
+            pane.remember_copied_text_selection(client_id);
         }
     }
 
     pub fn finish_text_selection(&mut self, client_id: ClientId) {
-        if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.finish_text_selection(client_id);
+        let Some(pane_id) = self.keyboard_text_selection.remove(&client_id) else {
+            return;
+        };
+        if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
+            pane.finish_text_selection(client_id);
         }
     }
 
@@ -7567,9 +7593,13 @@ impl Tab {
     }
 
     pub fn copy_selection(&self, client_id: ClientId) -> Result<()> {
-        let selected_text = self
-            .get_active_pane(client_id)
-            .and_then(|p| p.get_selected_text(client_id));
+        // a keyboard selection is copied from the pane it was started on, which is not
+        // necessarily the focused one any more
+        let selected_text = match self.keyboard_text_selection.get(&client_id).copied() {
+            Some(pane_id) => self.get_pane_with_id(pane_id),
+            None => self.get_active_pane(client_id),
+        }
+        .and_then(|p| p.get_selected_text(client_id));
         if let Some(selected_text) = selected_text {
             self.write_selection_to_clipboard(&selected_text)
                 .with_context(|| {

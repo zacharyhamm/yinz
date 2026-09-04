@@ -529,6 +529,7 @@ enum ActionName {
     SelectCommandAtScrollPosition = 114;
     CopyLastCommandOutput = 115;
     MoveTextSelection = 116;
+    SwapTextSelectionEnds = 117;
     reserved 110;
 }
 

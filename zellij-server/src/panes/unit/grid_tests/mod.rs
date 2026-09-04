@@ -138,6 +138,117 @@ fn keyboard_selection_scrolls_past_both_viewport_boundaries() {
 }
 
 #[test]
+fn swapping_the_ends_moves_the_start_of_a_keyboard_selection() {
+    let mut grid = create_grid_with_content("abcdef");
+
+    grid.start_text_selection(Position::new(0, 2));
+    grid.move_text_selection(Direction::Right);
+    grid.move_text_selection(Direction::Right);
+    assert_eq!(grid.get_selected_text().as_deref(), Some("cd"));
+    assert_eq!(grid.cursor_coordinates(), Some((4, 0, true)));
+
+    grid.swap_text_selection_ends();
+    assert_eq!(
+        grid.get_selected_text().as_deref(),
+        Some("cd"),
+        "the swap itself selects nothing new"
+    );
+    assert_eq!(
+        grid.cursor_coordinates(),
+        Some((2, 0, true)),
+        "the cursor marks the end that is now being moved"
+    );
+
+    grid.move_text_selection(Direction::Left);
+    grid.move_text_selection(Direction::Left);
+    assert_eq!(
+        grid.get_selected_text().as_deref(),
+        Some("abcd"),
+        "movement now grows the selection from its start"
+    );
+
+    grid.swap_text_selection_ends();
+    grid.move_text_selection(Direction::Right);
+    assert_eq!(
+        grid.get_selected_text().as_deref(),
+        Some("abcde"),
+        "swapping back returns movement to the original end"
+    );
+
+    grid.finish_text_selection();
+    assert_eq!(
+        grid.cursor_coordinates(),
+        Some((6, 0, true)),
+        "leaving the selection hands the cursor back to the terminal"
+    );
+}
+
+#[test]
+fn a_swapped_keyboard_selection_scrolls_from_its_start() {
+    let mut grid = create_grid_with_scrollback();
+    let lines_above = grid.lines_above.len();
+
+    grid.start_text_selection(Position::new(1, 1));
+    grid.move_text_selection(Direction::Right);
+    grid.move_text_selection(Direction::Right);
+    grid.swap_text_selection_ends();
+
+    grid.move_text_selection(Direction::Up);
+    assert_eq!(grid.lines_above.len(), lines_above);
+    assert_eq!(grid.selection.start, Position::new(1, 3));
+    assert_eq!(grid.selection.end, Position::new(0, 1));
+
+    grid.move_text_selection(Direction::Up);
+    assert_eq!(grid.lines_above.len(), lines_above - 1);
+    assert_eq!(
+        grid.selection.start,
+        Position::new(2, 3),
+        "the end that is not being moved rides the buffer"
+    );
+    assert_eq!(
+        grid.selection.end,
+        Position::new(0, 1),
+        "the end being moved stays pinned to the viewport edge"
+    );
+}
+
+#[test]
+fn the_cell_under_the_keyboard_selection_cursor_is_the_one_being_drawn_on() {
+    let mut grid = create_grid_with_content("abcdef");
+
+    // the pty cursor sits past the end of the text, the selection cursor on the live end
+    assert!(grid.get_character_under_cursor().is_none());
+
+    grid.start_text_selection(Position::new(0, 2));
+    let (cursor_x, cursor_y, _) = grid.cursor_coordinates().unwrap();
+    assert_eq!(
+        grid.get_character_at(cursor_x, cursor_y).unwrap().character,
+        'c',
+        "the fake cursor paints the character it is drawn over, not the one under the pty cursor"
+    );
+}
+
+#[test]
+fn a_mouse_selection_hands_the_cursor_back_to_the_pty() {
+    let mut grid = create_grid_with_content("abcdef");
+    let pty_cursor = (6, 0, true);
+
+    grid.start_text_selection(Position::new(0, 2));
+    grid.move_text_selection(Direction::Right);
+    assert_eq!(grid.cursor_coordinates(), Some((3, 0, true)));
+
+    grid.start_selection(&Position::new(0, 0));
+    assert_eq!(
+        grid.cursor_coordinates(),
+        Some(pty_cursor),
+        "a mouse selection takes over from the keyboard one"
+    );
+    grid.update_selection(&Position::new(0, 3));
+    grid.end_selection(&Position::new(0, 3));
+    assert_eq!(grid.cursor_coordinates(), Some(pty_cursor));
+}
+
+#[test]
 fn keyboard_selection_preserves_the_cursor_row_at_the_right_margin() {
     let mut grid = create_grid_with_content(&format!("short\r\n{}", "x".repeat(80)));
 

@@ -1169,6 +1169,7 @@ pub enum ActionName {
     SelectCommandAtScrollPosition = 114,
     CopyLastCommandOutput = 115,
     MoveTextSelection = 116,
+    SwapTextSelectionEnds = 117,
 }
 impl ActionName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1290,6 +1291,7 @@ impl ActionName {
             ActionName::SelectCommandAtScrollPosition => "SelectCommandAtScrollPosition",
             ActionName::CopyLastCommandOutput => "CopyLastCommandOutput",
             ActionName::MoveTextSelection => "MoveTextSelection",
+            ActionName::SwapTextSelectionEnds => "SwapTextSelectionEnds",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1408,6 +1410,7 @@ impl ActionName {
             "SelectCommandAtScrollPosition" => Some(Self::SelectCommandAtScrollPosition),
             "CopyLastCommandOutput" => Some(Self::CopyLastCommandOutput),
             "MoveTextSelection" => Some(Self::MoveTextSelection),
+            "SwapTextSelectionEnds" => Some(Self::SwapTextSelectionEnds),
             _ => None,
         }
     }

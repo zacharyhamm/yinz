@@ -873,6 +873,7 @@ pub struct Grid {
     pub pending_messages_to_pty: Vec<Vec<u8>>,
     pub selection: Selection,
     copied_text_selection: Option<Selection>,
+    text_selection_active: bool,
     pub title: Option<String>,
     pub is_scrolled: bool,
     pub link_handler: Rc<RefCell<LinkHandler>>,
@@ -1295,6 +1296,7 @@ impl Grid {
             osc133_command_selection: true,
             command_output_flash: None,
             copied_text_selection: None,
+            text_selection_active: false,
             word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
         }
     }
@@ -2364,11 +2366,29 @@ impl Grid {
     /// bounds) so that the host terminal can position the cursor for IME even
     /// when the app has hidden it. The bool is true when the cursor is visible.
     pub fn cursor_coordinates(&self) -> Option<(usize, usize, bool)> {
+        if let Some((x, y)) = self.text_selection_cursor() {
+            // in a keyboard selection the cursor marks the end being moved, so that swapping
+            // the ends is visible before the next movement key
+            return Some((x, y, true));
+        }
         if self.cursor.x >= self.width || self.cursor.y >= self.height {
             None
         } else {
             Some((self.cursor.x, self.cursor.y, !self.cursor_is_hidden))
         }
+    }
+    /// While a keyboard selection is live, the cell of the end being moved - `None` otherwise.
+    /// Panes render their cursor here so that swapping the ends is visible right away.
+    pub fn text_selection_cursor(&self) -> Option<(usize, usize)> {
+        if !self.text_selection_active {
+            return None;
+        }
+        let end = self.selection.end;
+        if end.line.0 < 0 || end.line.0 >= self.height as isize || self.width == 0 {
+            return None;
+        }
+        let column = end.column.0.min(self.width.saturating_sub(1));
+        Some((column, end.line.0 as usize))
     }
     pub fn selection_cursor_coordinates(&self) -> Option<(usize, usize)> {
         if self.cursor.x > self.width || self.cursor.y >= self.height {
@@ -2763,9 +2783,14 @@ impl Grid {
         }
     }
     pub fn get_character_under_cursor(&self) -> Option<TerminalCharacter> {
-        let absolute_x_in_line = self.get_absolute_character_index(self.cursor.x, self.cursor.y)?;
+        self.get_character_at(self.cursor.x, self.cursor.y)
+    }
+    /// The character at a viewport cell - the cursor is not necessarily there, eg. when a
+    /// keyboard selection has moved the rendered cursor to the end being moved.
+    pub fn get_character_at(&self, x: usize, y: usize) -> Option<TerminalCharacter> {
+        let absolute_x_in_line = self.get_absolute_character_index(x, y)?;
         self.viewport
-            .get(self.cursor.y)
+            .get(y)
             .and_then(|current_line| current_line.columns.get(absolute_x_in_line))
             .cloned()
     }
@@ -3482,6 +3507,8 @@ impl Grid {
 
     pub fn start_selection(&mut self, start: &Position) {
         let old_selection = self.selection;
+        // a mouse selection takes over from a keyboard one, cursor included
+        self.text_selection_active = false;
         self.click.record_click(*start);
 
         if self.click.is_double_click() {
@@ -3523,6 +3550,7 @@ impl Grid {
     pub fn start_text_selection(&mut self, start: Position) {
         let old_selection = self.selection;
         self.copied_text_selection = None;
+        self.text_selection_active = true;
         self.selection.start(start);
         self.update_selected_lines(&old_selection, &self.selection.clone());
         self.mark_for_rerender();
@@ -3553,6 +3581,13 @@ impl Grid {
         self.update_selected_lines(&old_selection, &self.selection.clone());
         self.mark_for_rerender();
     }
+    pub fn swap_text_selection_ends(&mut self) {
+        if !self.selection.is_active() {
+            return;
+        }
+        self.selection.swap_ends();
+        self.mark_for_rerender();
+    }
     pub fn remember_copied_text_selection(&mut self) {
         let mut copied_text_selection = self.selection;
         copied_text_selection.finalize();
@@ -3560,6 +3595,7 @@ impl Grid {
     }
     pub fn finish_text_selection(&mut self) {
         let old_selection = self.selection;
+        self.text_selection_active = false;
         if let Some(copied_text_selection) = self.copied_text_selection.take() {
             self.selection = copied_text_selection;
         } else if self.selection.is_active() {
@@ -3601,6 +3637,7 @@ impl Grid {
     }
 
     pub fn end_selection(&mut self, end: &Position) {
+        self.text_selection_active = false;
         if !self.click.is_double_click() && !self.click.is_triple_click() {
             let old_selection = self.selection;
             self.selection.end(*end);
@@ -3617,6 +3654,7 @@ impl Grid {
 
     pub fn reset_selection(&mut self) {
         let old_selection = self.selection;
+        self.text_selection_active = false;
         self.selection.reset();
         self.update_selected_lines(&old_selection, &self.selection.clone());
         self.mark_for_rerender();
