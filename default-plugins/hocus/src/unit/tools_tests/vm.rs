@@ -12,19 +12,11 @@ fn vm_argv_for(name: &str, arguments: &str) -> Result<Vec<String>, String> {
     )
 }
 
-fn pane(id: u32, host: Option<&str>) -> agents::AgentPane {
-    agents::AgentPane {
-        pane_id: id,
-        title: format!("pane {id}"),
-        command: None,
-        cwd: None,
-        host: host.map(str::to_owned),
-        firecracker_image: None,
-        firecracker_worktree: None,
-        status: agents::AgentStatus::Running,
-        tab: None,
-        detected: None,
-        agent: None,
+fn pane(id: u32, host: Option<&str>) -> zellij_tile::prelude::PaneInfo {
+    zellij_tile::prelude::PaneInfo {
+        id,
+        target: PaneTarget::parse_display(host),
+        ..Default::default()
     }
 }
 
@@ -98,7 +90,7 @@ fn a_vm_name_zellij_would_refuse_never_reaches_the_cli() {
 
 #[test]
 fn only_the_panes_running_in_that_vm_are_selected() {
-    let panes = [
+    let mut panes = vec![
         pane(1, Some("firecracker:review")),
         // Local: the manifest gives it no host at all.
         pane(2, None),
@@ -107,7 +99,26 @@ fn only_the_panes_running_in_that_vm_are_selected() {
         pane(4, Some("firecracker:other")),
         pane(5, Some("firecracker:review")),
     ];
-    assert_eq!(firecracker_panes("review", &panes), vec![1, 5]);
-    assert_eq!(firecracker_panes("other", &panes), vec![4]);
-    assert!(firecracker_panes("absent", &panes).is_empty());
+    let mut plugin = pane(6, Some("firecracker:review"));
+    plugin.is_plugin = true;
+    panes.push(plugin);
+    let current = SessionInfo {
+        name: "work".to_owned(),
+        panes: zellij_tile::prelude::PaneManifest {
+            panes: std::collections::HashMap::from([(0, panes)]),
+        },
+        ..Default::default()
+    };
+    assert_eq!(firecracker_panes("review", "work", &current), vec![1, 5]);
+    assert_eq!(firecracker_panes("other", "work", &current), vec![4]);
+    assert!(firecracker_panes("absent", "work", &current).is_empty());
+    assert!(firecracker_panes("review", "other", &current).is_empty());
+}
+
+#[test]
+fn padded_vm_names_use_the_validated_name() {
+    assert_eq!(
+        vm_argv_for("vm_close", r#"{"vm":"  review  "}"#).unwrap(),
+        vm_argv_for("vm_close", r#"{"vm":"review"}"#).unwrap(),
+    );
 }

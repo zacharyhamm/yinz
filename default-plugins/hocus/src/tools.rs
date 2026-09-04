@@ -12,7 +12,6 @@
 
 use std::collections::BTreeMap;
 
-use hocus_proto::agents;
 use hocus_proto::launch;
 use hocus_proto::location::Location;
 use hocus_proto::paths;
@@ -253,8 +252,8 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         "vm_close" => {
             let vm = args.vm.as_deref().unwrap_or("a VM");
             format!(
-                "writes {vm}'s work into its host worktree the same way, then closes its \
-                 panes and destroys the VM; nothing is left to go back to"
+                "requests closure of matching local panes and releases the session's lease on {vm}; \
+                 the last lease triggers merge and teardown, or disk recovery if unready"
             )
         },
         "slack_post" => {
@@ -1832,7 +1831,8 @@ pub fn specs() -> Value {
         ),
         tool(
             "vm_close",
-            "Merge back as vm_sync does, then close the VM's panes and destroy it.",
+            "Release the session's VM lease, requesting closure of matching panes only in this session. \
+             The last lease triggers merge and teardown; an unready VM retains its disk for recovery.",
             json!({
                 "type": "object",
                 "properties": vm_target_properties(),
@@ -2664,13 +2664,11 @@ pub const PROJECT_READ_TOOLS: [&str; 6] = [
 /// Intercepted in `run_head` for the same reason the Slack tools are: managing a VM means
 /// running the provider, a subprocess with a JSON protocol on its stdin, and a wasm plugin
 /// can neither start one nor reach the state directory it keeps. The CLI already does the
-/// whole job - it resolves the same `firecracker_provider` from the same config, because
-/// the plugin host runs commands with the server's own environment.
+/// whole job. The subprocess receives the session's config file and directory through
+/// the environment so it resolves the same provider configuration on disk.
 pub const VM_TOOLS: [&str; 4] = ["vm_list", "vm_changes", "vm_sync", "vm_close"];
 
-/// Context key carrying the panes `vm_close` closed, comma-separated, from the call to
-/// its result. Round-trips through the host because by the time the stop answers, those
-/// panes are gone from the snapshot and counting them again would answer zero.
+/// Context key carrying pane closure requests through to the command result.
 pub const VM_CLOSED_PANES_CONTEXT: &str = "vm_closed_panes";
 
 /// The argv for one VM tool, or the reason it will not run.
@@ -2718,21 +2716,18 @@ pub fn vm_argv(
     Ok(argv)
 }
 
-/// The panes of this session running in `vm`, in id order.
-///
-/// A Firecracker pane's `host` is `firecracker:<vm>` - the display form `PaneTarget`
-/// round-trips through - so the manifest already says which VM every pane is in and
-/// nothing new has to be carried to find out. Pure, so the selection is testable; the
-/// closing itself is a host call.
-pub fn firecracker_panes(vm: &str, panes: &[agents::AgentPane]) -> Vec<u32> {
-    let mut ids: Vec<u32> = panes
-        .iter()
-        .filter(|pane| {
-            PaneTarget::parse_display(pane.host.as_deref())
-                .firecracker_vm()
-                .is_some_and(|running_in| running_in == vm)
-        })
-        .map(|pane| pane.pane_id)
+/// Local terminal panes for this VM lease, in id order. Pane ids are session-local.
+pub fn firecracker_panes(vm: &str, session: &str, current: &SessionInfo) -> Vec<u32> {
+    if session != current.name {
+        return vec![];
+    }
+    let mut ids: Vec<u32> = current
+        .panes
+        .panes
+        .values()
+        .flatten()
+        .filter(|pane| !pane.is_plugin && pane.target.firecracker_vm() == Some(vm))
+        .map(|pane| pane.id)
         .collect();
     ids.sort_unstable();
     ids
@@ -3742,40 +3737,24 @@ mod host {
         }
     }
 
-    /// The whole session as compact JSON. `SessionInfo` carries a great deal the
-    /// model has no use for — viewport geometry, tab and pane history, plugin
-    /// configuration — and every field of it would be paid for in tokens on
-    /// every subsequent turn of the conversation.
-    /// This session's own name, asked of the host.
-    ///
-    /// `State::zellij_session_name` is filled from `hocus-agentd`'s poll reply, which is
-    /// the right source while there is a daemon - it is already holding the name, and
-    /// every per-pane row hocus writes is keyed by it. But the daemon is optional, and a
-    /// session that loads hocus without it would leave every per-VM tool refusing
-    /// forever. Managing a VM has nothing to do with agents, so it asks the host
-    /// instead when the snapshot has not named the session yet.
-    pub fn current_session_name() -> Option<String> {
-        let snapshot = get_session_list().ok()?;
-        snapshot
+    /// The current session and its panes, read from the host without an agent daemon.
+    pub fn current_session_info() -> Result<SessionInfo, String> {
+        get_session_list()
+            .map_err(|error| format!("could not list sessions: {error}"))?
             .live_sessions
-            .iter()
+            .into_iter()
             .find(|session| session.is_current_session)
-            .map(|session| session.name.clone())
+            .filter(|session| !session.name.trim().is_empty())
+            .ok_or_else(|| "the current session is not in the session list".to_owned())
     }
 
+    /// The whole session as compact JSON. Omit geometry, history and configuration
+    /// that the model does not need on every subsequent turn.
     fn list_session() -> String {
-        let snapshot = match get_session_list() {
-            Ok(snapshot) => snapshot,
-            Err(error) => return format!("could not list sessions: {error}"),
-        };
-        let Some(session) = snapshot
-            .live_sessions
-            .iter()
-            .find(|session| session.is_current_session)
-        else {
-            return "the current session is not in the session list".to_owned();
-        };
-        session_listing(session).to_string()
+        match current_session_info() {
+            Ok(session) => session_listing(&session).to_string(),
+            Err(error) => error,
+        }
     }
 
     /// The other live sessions, terminal panes only.
@@ -4439,7 +4418,7 @@ mod host {
 
 #[cfg(target_arch = "wasm32")]
 pub use host::{
-    current_session_name, dispatch, grant_permissions, new_pane_with_context, observe_plugin,
+    current_session_info, dispatch, grant_permissions, new_pane_with_context, observe_plugin,
     plugin_fs_exists, plugin_fs_list, plugin_fs_read, plugin_fs_write, plugin_log_tail,
     reload_plugin, report_pane_agent, spawn_in_checkout,
 };
@@ -4526,11 +4505,12 @@ pub fn spawn_in_checkout(_args: &Args, _source: Option<String>) -> String {
     "tools are unavailable outside zellij".to_owned()
 }
 
-/// Off wasm there is no host to ask, so the snapshot's name is the only one there is.
-/// The loop tests set it directly, which is what makes both branches reachable there.
+/// Native tests supply the host snapshot explicitly.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn current_session_name() -> Option<String> {
-    None
+pub fn current_session_info() -> Result<SessionInfo, String> {
+    test_seams::CURRENT_SESSION
+        .with_borrow(Clone::clone)
+        .ok_or_else(|| "the current session is not in the session list".to_owned())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -4546,6 +4526,7 @@ pub mod test_seams {
     use std::cell::{Cell, RefCell};
 
     thread_local! {
+        pub static CURRENT_SESSION: RefCell<Option<super::SessionInfo>> = const { RefCell::new(None) };
         pub static PLUGIN_FS_EXISTS: Cell<Option<bool>> = const { Cell::new(None) };
         pub static RELOAD_CALLS: Cell<usize> = const { Cell::new(0) };
         pub static PLUGIN_SOURCE: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -4558,6 +4539,7 @@ pub mod test_seams {
     pub const MAX_RELOAD_CALLS: usize = 8;
 
     pub fn reset() {
+        CURRENT_SESSION.with_borrow_mut(|session| *session = None);
         PLUGIN_FS_EXISTS.set(None);
         RELOAD_CALLS.set(0);
         PLUGIN_SOURCE.with_borrow_mut(|source| *source = None);

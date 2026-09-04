@@ -5971,15 +5971,29 @@ fn get_session_list(env: &mut PluginEnv) {
 
     let response = match session_scan_state() {
         Some(state) => {
-            let (session_name, available_layouts, plugin_list) = {
+            let (session_name, mut current, plugin_list) = {
                 let name = state.current_session_name.lock().unwrap().clone();
                 let info = state.current_session_info.lock().unwrap().clone();
                 let plugins = state.current_session_plugin_list.lock().unwrap().clone();
-                (name, info.available_layouts, plugins)
+                (name, info, plugins)
             };
 
-            let (live_sessions_map, resurrectable_sessions_map) =
-                scan_session_list_default_dirs(&session_name, &available_layouts, &plugin_list);
+            let (mut live_sessions_map, mut resurrectable_sessions_map) =
+                scan_session_list_default_dirs(
+                    &session_name,
+                    &current.available_layouts,
+                    &plugin_list,
+                );
+
+            // Disk metadata can lag and omits pane targets. The host's current snapshot
+            // is authoritative for local panes, even before the first serialization.
+            if !current.name.is_empty() {
+                current.name = session_name.clone();
+                current.is_current_session = true;
+                current.populate_plugin_list(plugin_list);
+                resurrectable_sessions_map.remove(&session_name);
+                live_sessions_map.insert(session_name, current);
+            }
 
             let _ = env
                 .senders

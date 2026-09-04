@@ -26,9 +26,10 @@ use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMIN
 /// it was called with, one call per line.
 const STUB: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$(dirname "$0")/calls"
+printf '%s\n' "$ZELLIJ_CONFIG_FILE" "$ZELLIJ_CONFIG_DIR" >> "$(dirname "$0")/config-env"
 case "$2" in
   list)
-    printf '%s' '{"vms":[{"session":"work","name":"review","state":"running","image":"rust-dev","worktree":"/src/api","branch":"api"},{"session":"other","name":"bare","state":"provisioning"}],"recoveries":[]}'
+    printf '%s' '{"vms":[{"session":"work","name":"review","state":"running","image":"rust-dev","worktree":"/src/api","branch":"vm-branch-proof"},{"session":"other","name":"bare","state":"provisioning"}],"recoveries":[]}'
     ;;
   changes) printf '3\n' ;;
   sync)
@@ -66,8 +67,13 @@ fn clear(zellij: &TestSession, gone: &str) {
 }
 
 const HOCUS_LAYOUT: &str = r#"layout {
-    pane {
+    pane focus=true size="80%" {
         plugin location="hocus"
+    }
+    pane split_direction="vertical" {
+        pane command="sh" firecracker_vm="review"
+        pane command="sh" firecracker_vm="other-vm"
+        pane command="sh"
     }
 }
 "#;
@@ -79,21 +85,16 @@ fn the_vm_tools_reach_the_zellij_cli_and_answer_with_what_it_said() {
     let stub = root.join("zellij");
     write_stub(&stub);
 
-    // `hocus-agentd` is loaded because it is what names the session: every per-VM
-    // tool sends `--session`, and hocus takes that name from the daemon's poll reply
-    // the way the rest of its per-pane state comes from there. That is the production
-    // path, so it is the one under test.
+    // No agent daemon: VM targeting must come directly from the host snapshot.
     let config = format!(
         r#"plugins {{
   hocus location="zellij:hocus" {{
     shared true
     zellij_path "{}"
   }}
-  hocus-agentd location="zellij:hocus-agentd"
   hocus-store location="zellij:hocus-store"
 }}
 load_plugins clear-defaults=true {{
-  "hocus-agentd"
   "hocus-store"
 }}
 "#,
@@ -102,6 +103,7 @@ load_plugins clear-defaults=true {{
 
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(&config)
+        .with_config_dir(root.clone())
         .with_layout(LayoutInfo::Stringified(HOCUS_LAYOUT.to_owned()))
         .start();
 
@@ -113,16 +115,23 @@ load_plugins clear-defaults=true {{
         !grid_snapshot.contains("Allow? (y/n)")
     });
 
+    let panes: Vec<_> = (0..3).map(|_| zellij.expect_pty_spawn()).collect();
+    let review = panes.iter().find(|pane| {
+        matches!(pane.terminal_action(), Some(zellij_utils::input::command::TerminalAction::RunCommand(command))
+            if command.target.firecracker_vm() == Some("review"))
+    }).expect("the review VM pane");
+    review.output(b"review-pane-live");
+
     // The listing comes back as a table, not as the JSON the CLI printed, and it
     // carries the worktree and branch the VM is working on.
     submit(&zellij, "/vm_list");
     zellij.wait_until("the listing names the branch", |grid_snapshot| {
-        grid_snapshot.contains("validate") || grid_snapshot.contains("api")
+        grid_snapshot.contains("vm-branch-proof")
     });
     zellij.wait_until("and the VM it belongs to", |grid_snapshot| {
         grid_snapshot.contains("review")
     });
-    clear(&zellij, "review");
+    clear(&zellij, "vm-branch-proof");
 
     submit(&zellij, r#"/vm_changes {"vm": "review"}"#);
     zellij.wait_until("the count is a sentence", |grid_snapshot| {
@@ -141,6 +150,33 @@ load_plugins clear-defaults=true {{
     });
     clear(&zellij, "synced");
 
+    submit(
+        &zellij,
+        r#"/vm_close {"vm":"review","vm_session":"other-session"}"#,
+    );
+    zellij.wait_until("another session's lease was released", |grid_snapshot| {
+        grid_snapshot.contains("VM stop request completed")
+            && grid_snapshot.contains("review-pane-live")
+    });
+    assert!(panes.iter().all(|pane| !pane.is_exited()));
+    clear(&zellij, "VM stop request completed");
+
+    submit(&zellij, r#"/vm_close {"vm": "  review  "}"#);
+    zellij.wait_until(
+        "the stop request completed without a daemon",
+        |grid_snapshot| {
+            grid_snapshot.contains("VM stop request completed")
+                && grid_snapshot.contains("requested closure")
+                && !grid_snapshot.contains("review-pane-live")
+        },
+    );
+    for pane in &panes {
+        if pane.terminal_id() != review.terminal_id() {
+            assert!(!pane.is_exited(), "an unrelated pane was closed");
+        }
+    }
+    clear(&zellij, "VM stop request completed");
+
     // A VM name Zellij would refuse never reaches a process.
     submit(&zellij, r#"/vm_changes {"vm": "a/b"}"#);
     zellij.wait_until("a bad name is refused here", |grid_snapshot| {
@@ -153,16 +189,29 @@ load_plugins clear-defaults=true {{
     // quitting so every call has certainly been written.
     let calls = fs::read_to_string(root.join("calls")).expect("the stub was called");
     let calls: Vec<&str> = calls.lines().collect();
-    // The session name is generated per test run, so it is checked for being there
-    // and non-empty rather than compared. Everything else is exact - the refused VM
-    // name is absent because it never got as far as a process.
-    assert_eq!(calls.len(), 3, "the stub was called with {calls:?}");
+    // The refused VM name is absent because it never got as far as a process.
+    assert_eq!(calls.len(), 5, "the stub was called with {calls:?}");
     assert_eq!(calls[0], "firecracker list --json");
-    for (call, verb) in calls[1..].iter().zip(["changes", "sync"]) {
+    for (call, verb) in [calls[1], calls[2], calls[4]]
+        .iter()
+        .zip(["changes", "sync", "stop"])
+    {
         let expected = format!("firecracker {verb} review --session ");
         let session = call
             .strip_prefix(&expected)
             .unwrap_or_else(|| panic!("{call:?} is not {expected:?} plus a session"));
-        assert!(!session.is_empty(), "{call:?} names no session");
+        assert_eq!(session, zellij.session_name());
+    }
+    assert_eq!(calls[3], "firecracker stop review --session other-session");
+
+    let config_env =
+        fs::read_to_string(root.join("config-env")).expect("the CLI config environment");
+    let config_env: Vec<&str> = config_env.lines().collect();
+    assert_eq!(config_env.len(), calls.len() * 2);
+    for paths in config_env.chunks_exact(2) {
+        let config_path = Path::new(paths[0]);
+        assert!(config_path.is_absolute(), "{config_path:?}");
+        assert!(fs::read_to_string(config_path).unwrap().contains(&config));
+        assert_eq!(Path::new(paths[1]), root);
     }
 }

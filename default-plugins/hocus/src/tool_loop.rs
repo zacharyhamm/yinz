@@ -766,12 +766,9 @@ impl State {
     /// comes back as `RunCommandResult` carrying this call's id, the way the project
     /// readers and the Slack tools answer.
     ///
-    /// `vm_close` does one thing before it defers: it closes this session's panes on
-    /// the VM. That order is deliberate. The stop merges the guest into the host
-    /// worktree, and a pane still connected is an agent still able to write into the
-    /// guest while the merge reads it; closing first means the merge sees a settled
-    /// tree. If the stop then fails, nothing is lost - the VM is still there under the
-    /// same name, and `vm_list` finds it - which is why the panes can safely go first.
+    /// `vm_close` requests closure of matching local panes before releasing the VM lease.
+    /// Closure is asynchronous: this does not guarantee that guest writes have stopped.
+    /// A failed stop may already have terminated the VM and retained its disk for recovery.
     pub(crate) fn start_vm_tool(&mut self, call: &ToolCall) -> bool {
         let args = match tools::Args::parse(&call.arguments) {
             Ok(args) => args,
@@ -783,37 +780,31 @@ impl State {
         // `vm_list` is machine-wide and names no session; the other three act on one
         // VM, which is held by a session. An explicit `vm_session` is how the model
         // reaches a VM `vm_list` showed under another session's name.
-        let session = match args
+        let explicit_session = args
             .vm_session
             .as_deref()
             .map(str::trim)
-            .filter(|session| !session.is_empty())
-        {
-            Some(session) => session.to_owned(),
-            None => {
-                // The snapshot's name first, then the host's. The snapshot is empty until
-                // the daemon's first poll reply, and there need not be a daemon at all -
-                // managing a VM has nothing to do with agents, so it must not wait on one.
-                // Sending `--session ""` would ask the provider about a session that
-                // cannot exist, so a name neither source has is still refused.
-                let name = match self.zellij_session_name.trim() {
-                    "" => tools::current_session_name().unwrap_or_default(),
-                    name => name.to_owned(),
-                };
-                if name.trim().is_empty() && call.name != "vm_list" {
-                    self.finish_head(
-                        "this session is not named yet; retry in a moment, or pass vm_session",
-                    );
-                    return true;
+            .filter(|session| !session.is_empty());
+        let current =
+            if call.name == "vm_close" || (call.name != "vm_list" && explicit_session.is_none()) {
+                match tools::current_session_info() {
+                    Ok(session) => Some(session),
+                    Err(error) => {
+                        self.finish_head(error);
+                        return true;
+                    },
                 }
-                name
-            },
-        };
+            } else {
+                None
+            };
+        let session = explicit_session
+            .or_else(|| current.as_ref().map(|session| session.name.as_str()))
+            .unwrap_or_default();
         let Ok(zellij) = self.cfg.as_ref().map(|cfg| cfg.zellij.clone()) else {
             self.finish_head("hocus is not configured");
             return true;
         };
-        let argv = match tools::vm_argv(&call.name, &args, &zellij, &session) {
+        let argv = match tools::vm_argv(&call.name, &args, &zellij, session) {
             Ok(argv) => argv,
             Err(error) => {
                 self.finish_head(error);
@@ -822,14 +813,16 @@ impl State {
         };
         let mut context = BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]);
         if call.name == "vm_close" {
-            let vm = args.vm.as_deref().unwrap_or_default();
-            let closed = tools::firecracker_panes(vm, &self.panes);
+            // vm_argv has already validated this trimmed name.
+            let vm = args.vm.as_deref().unwrap_or_default().trim();
+            let closed = current
+                .as_ref()
+                .map(|current| tools::firecracker_panes(vm, session, current))
+                .unwrap_or_default();
             for pane_id in &closed {
                 close_pane_with_id(PaneId::Terminal(*pane_id));
             }
-            // Carried through the host so the result can say what was closed: by the
-            // time it comes back these panes are gone from the snapshot, and a count
-            // recomputed then would always be zero.
+            // Record requests, not confirmed closures, including if the stop fails.
             context.insert(
                 tools::VM_CLOSED_PANES_CONTEXT.to_owned(),
                 closed
@@ -842,7 +835,13 @@ impl State {
         let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
         run_command_with_output_limit(
             &borrowed,
-            BTreeMap::new(),
+            self.env
+                .iter()
+                .filter(|(key, _)| {
+                    matches!(key.as_str(), "ZELLIJ_CONFIG_FILE" | "ZELLIJ_CONFIG_DIR")
+                })
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
             // The CLI resolves nothing relative to the cwd, and `.` is the one value the
             // host does not rewrite into a preopen that does not exist - see
             // `start_project_read` for the whole story.

@@ -2445,7 +2445,24 @@ fn init_session(
         .unwrap();
 
     let zellij_cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let session_env_vars: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let mut session_env_vars: std::collections::BTreeMap<String, String> =
+        std::env::vars().collect();
+    // CLI paths are not necessarily present in the server's inherited environment.
+    // Expose them to plugins so their child CLI commands use this session's config.
+    for (key, path) in [
+        (
+            zellij_utils::consts::ZELLIJ_CONFIG_FILE_ENV,
+            cli_assets.config_file_path.as_ref(),
+        ),
+        (
+            zellij_utils::consts::ZELLIJ_CONFIG_DIR_ENV,
+            cli_assets.config_dir.as_ref(),
+        ),
+    ] {
+        if let Some(path) = path {
+            session_env_vars.insert(key.to_owned(), zellij_cwd.join(path).display().to_string());
+        }
+    }
 
     let (available_layouts, available_layout_errors) = get_available_layouts(&config_options);
 

@@ -1104,15 +1104,41 @@ fn todo_written(name: &str, value: &Value) -> Option<String> {
 /// later turn of the conversation, so it is a table rather than the JSON: the same
 /// facts at a fraction of the tokens.
 ///
-/// Anything the provider could not name prints `-`. The raw text is answered whole when
-/// it is not the JSON we asked for, because a CLI that printed something else is telling
-/// the model something, and swallowing it would leave `vm_list` silently empty.
+/// Optional fields the provider could not name print `-`. Unexpected output is
+/// diagnosed rather than mistaken for an empty listing.
 pub fn vm_listing(stdout: &str) -> String {
-    let Ok(value) = serde_json::from_str::<Value>(stdout) else {
-        return stdout.to_owned();
+    let invalid = || {
+        if stdout.trim().is_empty() {
+            "vm_list returned an empty response".to_owned()
+        } else {
+            format!("vm_list returned an invalid listing:\n{stdout}")
+        }
     };
-    let vms = array(&value, "vms");
-    let recoveries = array(&value, "recoveries");
+    let Ok(value) = serde_json::from_str::<Value>(stdout) else {
+        return invalid();
+    };
+    let (Some(vms), Some(recoveries)) = (
+        value.get("vms").and_then(Value::as_array),
+        value.get("recoveries").and_then(Value::as_array),
+    ) else {
+        return invalid();
+    };
+    let has_fields = |row: &Value, fields: &[&str]| {
+        fields.iter().all(|field| {
+            row.get(field)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+        })
+    };
+    if !vms
+        .iter()
+        .all(|vm| has_fields(vm, &["session", "name", "state"]))
+        || !recoveries
+            .iter()
+            .all(|recovery| has_fields(recovery, &["path", "reason"]))
+    {
+        return invalid();
+    }
     let mut out = String::new();
     if vms.is_empty() {
         out.push_str("No Firecracker VMs are running.");
