@@ -6,11 +6,13 @@ Audited revision: `6e84ff04a169b59e6486ac4734986afae10194a9` (`main`). This docu
 
 Checkboxes track findings for review. They do not represent approved fixes or a remediation plan. All findings were unchecked when this report was created.
 
-The A-group findings were revalidated against `4f3245ef4` and remediated on 2026-09-04. The B and C findings were revalidated against `e8376b353` and remediated the same day. Their original evidence below describes the audited code; the remediation notes describe the fixes and regression coverage.
+The A-group findings were revalidated against `4f3245ef4` and remediated on 2026-09-04. The B and C findings were revalidated against `e8376b353` and remediated the same day. The E findings were revalidated against `dd11e2b16` and remediated the same day. Their original evidence below describes the audited code; the remediation notes describe the fixes and regression coverage.
 
 A-group validation: all 20 focused configuration/recorder tests passed. `cargo x ci check` passed format, lint, all 6,798 selected workspace tests (45 skipped), and doctests. `cargo x integration-test -j 16` passed all 344 whole-app tests with no skips.
 
 B/C-group validation: the five permission-denial tests pass 10/10 in a loop and all fail with `check_command_permission` forced to grant; the seven new layout-manager tests pass. `cargo x ci check` passed format, lint, all 6,841 workspace tests (45 skipped), and doctests. `cargo x integration-test -j 16` passed all 344 whole-app tests with no skips.
+
+E-group validation: `NEXTEST_TEST_THREADS=16 cargo x ci check` passed format, lint, all 6,845 workspace tests (45 skipped), and doctests. An earlier gate also passed at default concurrency; a subsequent default-concurrency run produced empty-observer failures in `dump_session_layout_plugin_command`, `shared_plugin_has_one_instance_serving_all_clients`, `plugin_workers`, and `plugin_workers_persist_state`. All four passed in isolation and in the full gate with 16 test workers. The preset integration snapshots were reviewed and updated to include the restored Agent entry. `cargo x integration-test -j 16` then passed all 344 whole-app tests with no skips.
 
 ## 1. Executive Summary (Minto Top)
 
@@ -89,29 +91,35 @@ Governing thought: The downloader's success result does not establish that its d
 
 Governing thought: Users encounter different input capabilities depending on which separately maintained path handles their action.
 
-- [ ] **Finding E.1: Scrollback search silently rejects all non-ASCII text** (P2, High)
+- [x] **Finding E.1: Scrollback search silently rejects all non-ASCII text** (P2, High)
   - Where: `zellij-server/src/tab/mod.rs:7945`, `zellij-server/src/tab/mod.rs:7947`, `zellij-server/src/tab/mod.rs:7951`, `zellij-server/src/tab/mod.rs:7961`.
   - Problem: The comment promises "printable unicode" and describes only a wide-character limitation, but the predicate accepts printable ASCII bytes and selected control bytes. Any non-ASCII UTF-8 sequence rejects the entire input buffer, after which the function returns success.
   - Impact: Users cannot search accented letters, CJK text, or emoji. A mixed pasted search term is discarded in full, and the misleading comment points maintainers toward the wrong limitation.
   - Trigger: Type or paste a search buffer containing any non-ASCII character.
   - Confidence basis: The byte whitelist conclusively excludes every non-ASCII UTF-8 sequence.
   - Dimensions flagged by: Readability/Maintainability, Docs/Onboarding/UX.
+  - Remediation: Search input validates decoded UTF-8 characters instead of ASCII bytes, retaining reset/backspace/delete and rejecting other control characters. Invalid UTF-8 returns a contextual error. The matcher indexes a character vector and converts matched character indexes to terminal columns before producing selections; debug highlights preserve wide-character cell widths. Matching remains codepoint-based, with the existing ASCII case-folding/word-boundary rules and renderer limitations for combining marks and multi-codepoint graphemes.
+  - Regression coverage: Accented text, CJK, emoji, mixed Unicode input, wide characters before and inside matches, wrapped matches, whole-word retry, exact selection columns, debug highlights, Unicode deletion/reset, rejected controls, and invalid UTF-8 through the tab input boundary.
 
-- [ ] **Finding E.2: Configuration presets erase agent keyboard entry points** (P2, High)
+- [x] **Finding E.2: Configuration presets erase agent keyboard entry points** (P2, High)
   - Where: `default-plugins/configuration/src/presets.rs:242`, `default-plugins/configuration/src/presets_screen.rs:149`, `default-plugins/configuration/src/presets_screen.rs:213`, `zellij-utils/src/kdl/mod.rs:5179`, `zellij-utils/assets/config/default.kdl:176`, `zellij-utils/assets/config/default.kdl:208`, `zellij-utils/assets/config/default.kdl:227`.
   - Problem: Six separately maintained preset templates omit the canonical Agent-mode and Hocus bindings. Their `keybinds clear-defaults=true` replaces the base keymap, so those omissions remove working shortcuts rather than inheriting them.
   - Impact: Applying a preset, including during setup, removes keyboard entry points for agent creation, the agent list, and conversation panel. Saving the preset persists the omission across sessions.
   - Trigger: Apply a configuration preset; persistent impact occurs when the preset is saved.
   - Confidence basis: Template searches, UI application paths, and parser replacement semantics agree.
   - Dimensions flagged by: Duplication/Complexity, Docs/Onboarding/UX.
+  - Remediation: All six preset templates insert one shared Agent keybinding fragment with the canonical creation, duplication, list, and conversation actions and their plugin placement flags. Mode entry follows the selected primary modifier plus `e`, with `Ctrl e` when no primary modifier exists. Unlock-first uses plain `e` after unlocking, preserves text-entry modes and Pane mode's embed action, and returns to Locked after agent actions or Enter/Esc; other presets return to Normal.
+  - Regression coverage: Parsed effective keymaps for all six templates, alternate and combined modifiers, the no-primary fallback, locked/text-entry exclusions, exit modes, canonical plugin action equality, preservation through configuration serialization/reparse, and whole-app status-bar snapshots showing Agent entry after switching presets.
 
-- [ ] **Finding E.3: Production mouse encoders disagree on wheel bytes** (P2, High)
+- [x] **Finding E.3: Production mouse encoders disagree on wheel bytes** (P2, High)
   - Where: `zellij-server/src/panes/grid.rs:4442`, `zellij-server/src/panes/grid.rs:4501`, `zellij-server/src/panes/grid.rs:4698`, `zellij-server/src/panes/grid.rs:4719`, `zellij-server/src/tab/mouse_handler.rs:2200`, `zellij-server/src/tab/mouse_handler.rs:2268`.
   - Problem: The generic X10/UTF8 encoder uses wheel base values `68`/`69`, while specialized wheel encoders use `96`/`97`. Normal wheel handling uses the specialized path; Alt+wheel forwarding uses the generic path, so the difference exceeds the intended modifier bits.
   - Impact: Applications using these mouse modes receive inconsistent wheel reports depending on the gesture path. Maintaining both implementations makes protocol changes vulnerable to further drift.
   - Trigger: A pane using X10/UTF8 mouse reporting receives Alt+wheel. This specific discrepancy does not apply to SGR reporting.
   - Confidence basis: Both emitted-byte constructions and their production callers are visible; application-specific reactions were not exercised.
   - Dimensions flagged by: Duplication/Complexity.
+  - Remediation: The generic X10/UTF8 encoder uses wheel base values `96`/`97`. Specialized up/down methods now delegate to that encoder using the existing wheel-event constructors, so both production paths share encoding and tracking behavior.
+  - Regression coverage: Exact up/down bytes for X10, UTF8, and SGR across all modifier combinations and enabled tracking modes; disabled tracking; and Alt+wheel forwarding through the tab in all three encodings.
 
 ## 3. Full Inventory (Grouped, Lower Impact Last)
 

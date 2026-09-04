@@ -1,8 +1,65 @@
+fn agent_keybinds(entry_key: &str, exit_mode: &str, unlock_first: bool) -> String {
+    let excluded_modes = if unlock_first {
+        r#""agent" "locked" "renametab" "renamepane" "entersearch""#
+    } else {
+        r#""agent" "locked""#
+    };
+    format!(
+        r#"
+    shared_except {excluded_modes} {{
+        bind "{entry_key}" {{ SwitchToMode "Agent"; }}
+    }}
+    agent {{
+        bind "{entry_key}" {{ SwitchToMode "Normal"; }}
+        bind "Enter" "Esc" {{ SwitchToMode "{exit_mode}"; }}
+        bind "n" {{
+            LaunchOrFocusPlugin "hocus-new-agent" {{
+                floating true
+                overlay true
+                modal true
+                move_to_focused_tab true
+            }};
+            SwitchToMode "{exit_mode}"
+        }}
+        bind "d" {{
+            LaunchOrFocusPlugin "hocus-duplicate-agent" {{
+                floating true
+                overlay true
+                modal true
+                move_to_focused_tab true
+            }};
+            SwitchToMode "{exit_mode}"
+        }}
+        bind "a" {{
+            LaunchOrFocusPlugin "hocus-agents" {{
+                floating true
+                overlay true
+                awaits_placement true
+                move_to_focused_tab true
+            }};
+            SwitchToMode "{exit_mode}"
+        }}
+        bind "c" {{
+            LaunchOrFocusPlugin "hocus" {{
+                floating true
+                overlay true
+                awaits_placement true
+                move_to_focused_tab true
+            }};
+            SwitchToMode "{exit_mode}"
+        }}
+    }}
+"#
+    )
+}
+
 pub fn unlock_first_keybinds(primary_modifier: String, secondary_modifier: String) -> String {
+    let agent_keybinds = agent_keybinds("e", "Locked", true);
     format!(
         r#"
 default_mode "locked"
 keybinds clear-defaults=true {{
+{agent_keybinds}
     normal {{
     }}
     locked {{
@@ -236,10 +293,12 @@ pub fn default_keybinds(primary_modifier: String, secondary_modifier: String) ->
     } else if secondary_modifier.is_empty() {
         return default_keybinds_no_secondary_modifier(primary_modifier);
     }
+    let agent_keybinds = agent_keybinds(&format!("{primary_modifier} e"), "Normal", false);
     format!(
         r#"
 default_mode "normal"
 keybinds clear-defaults=true {{
+{agent_keybinds}
     normal {{}}
     locked {{
         bind "{primary_modifier} g" {{ SwitchToMode "Normal"; }}
@@ -487,10 +546,12 @@ keybinds clear-defaults=true {{
 }
 
 pub fn default_keybinds_no_primary_modifier(secondary_modifier: String) -> String {
+    let agent_keybinds = agent_keybinds("Ctrl e", "Normal", false);
     format!(
         r#"
 default_mode "normal"
 keybinds clear-defaults=true {{
+{agent_keybinds}
     normal {{}}
     locked {{}}
     resize {{
@@ -701,10 +762,12 @@ keybinds clear-defaults=true {{
 }
 
 pub fn default_keybinds_no_secondary_modifier(primary_modifier: String) -> String {
+    let agent_keybinds = agent_keybinds(&format!("{primary_modifier} e"), "Normal", false);
     format!(
         r#"
 default_mode "normal"
 keybinds clear-defaults=true {{
+{agent_keybinds}
     normal {{}}
     locked {{
         bind "{primary_modifier} g" {{ SwitchToMode "Normal"; }}
@@ -930,10 +993,13 @@ keybinds clear-defaults=true {{
 }
 
 pub fn default_keybinds_no_modifiers() -> String {
-    r#"
+    [
+        r#"
 default_mode "normal"
 keybinds clear-defaults=true {
-    normal {}
+"#,
+        &agent_keybinds("Ctrl e", "Normal", false),
+        r#"    normal {}
     locked {}
     resize {
         bind "h" "Left" { Resize "Increase Left"; }
@@ -1117,18 +1183,21 @@ keybinds clear-defaults=true {
         bind "Enter" "Esc" { SwitchToMode "Normal"; }
     }
 }
-"#
-    .to_string()
+"#,
+    ]
+    .concat()
 }
 
 pub fn non_colliding_default_keybinds(
     primary_modifier: String,
     secondary_modifier: String,
 ) -> String {
+    let agent_keybinds = agent_keybinds(&format!("{primary_modifier} e"), "Normal", false);
     format!(
         r#"
 default_mode "normal"
 keybinds clear-defaults=true {{
+{agent_keybinds}
     normal {{}}
     locked {{
         bind "{primary_modifier} g" {{ SwitchToMode "Normal"; }}
@@ -1402,6 +1471,125 @@ mod tests {
             default_keybinds("Ctrl".into(), "Ctrl".into()),
         ] {
             assert_selection_bindings(config, "Normal");
+        }
+    }
+
+    #[test]
+    fn generated_presets_preserve_agent_bindings_after_parsing_and_saving() {
+        use zellij_utils::data::{InputMode, KeyWithModifier};
+        use zellij_utils::input::{actions::Action, config::Config};
+
+        let canonical = Config::from_kdl(
+            include_str!("../../../zellij-utils/assets/config/default.kdl"),
+            None,
+        )
+        .unwrap();
+        let canonical_agent = &canonical.keybinds.0[&InputMode::Agent];
+        for (text, entry, exit_mode) in [
+            (
+                unlock_first_keybinds("Ctrl".into(), "Alt".into()),
+                "e",
+                InputMode::Locked,
+            ),
+            (
+                default_keybinds("Ctrl".into(), "Alt".into()),
+                "Ctrl e",
+                InputMode::Normal,
+            ),
+            (
+                default_keybinds("".into(), "Alt".into()),
+                "Ctrl e",
+                InputMode::Normal,
+            ),
+            (
+                default_keybinds("Ctrl".into(), "".into()),
+                "Ctrl e",
+                InputMode::Normal,
+            ),
+            (
+                default_keybinds("".into(), "".into()),
+                "Ctrl e",
+                InputMode::Normal,
+            ),
+            (
+                default_keybinds("Ctrl".into(), "Ctrl".into()),
+                "Ctrl e",
+                InputMode::Normal,
+            ),
+            (
+                default_keybinds("Alt".into(), "Ctrl".into()),
+                "Alt e",
+                InputMode::Normal,
+            ),
+            (
+                default_keybinds("Ctrl Alt".into(), "Shift".into()),
+                "Ctrl Alt e",
+                InputMode::Normal,
+            ),
+        ] {
+            let config = Config::from_kdl(&text, Some(canonical.clone())).unwrap();
+            let reparsed = Config::from_kdl(&config.to_string(false), None).unwrap();
+            assert_eq!(
+                config.keybinds.0[&InputMode::Agent],
+                reparsed.keybinds.0[&InputMode::Agent]
+            );
+            for config in [&config, &reparsed] {
+                let key: KeyWithModifier = entry.parse().unwrap();
+                assert_eq!(config.options.default_mode, Some(exit_mode));
+                assert_eq!(
+                    config.keybinds.0[&InputMode::Normal][&key],
+                    vec![Action::SwitchToMode {
+                        input_mode: InputMode::Agent
+                    }]
+                );
+                assert!(config
+                    .keybinds
+                    .0
+                    .get(&InputMode::Locked)
+                    .and_then(|bindings| bindings.get(&key))
+                    .is_none());
+                let agent = &config.keybinds.0[&InputMode::Agent];
+                assert_eq!(
+                    agent[&key],
+                    vec![Action::SwitchToMode {
+                        input_mode: InputMode::Normal
+                    }]
+                );
+                for key in ["Enter", "Esc"] {
+                    assert_eq!(
+                        agent[&key.parse().unwrap()],
+                        vec![Action::SwitchToMode {
+                            input_mode: exit_mode
+                        }]
+                    );
+                }
+                for key in ["n", "d", "a", "c"] {
+                    let key: KeyWithModifier = key.parse().unwrap();
+                    let actions = &agent[&key];
+                    assert_eq!(actions.len(), 2);
+                    assert_eq!(actions[0], canonical_agent[&key][0]);
+                    assert_eq!(
+                        actions[1],
+                        Action::SwitchToMode {
+                            input_mode: exit_mode
+                        }
+                    );
+                }
+                if exit_mode == InputMode::Locked {
+                    for mode in [
+                        InputMode::RenameTab,
+                        InputMode::RenamePane,
+                        InputMode::EnterSearch,
+                    ] {
+                        assert!(!config.keybinds.0[&mode].contains_key(&key));
+                    }
+                    // The shared plain-e entry must not replace Pane mode's embed action.
+                    assert_eq!(
+                        config.keybinds.0[&InputMode::Pane][&key][0],
+                        Action::TogglePaneEmbedOrFloating
+                    );
+                }
+            }
         }
     }
 }

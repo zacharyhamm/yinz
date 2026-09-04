@@ -1013,3 +1013,88 @@ mod scroll_region_and_forwarding;
 mod sixel_and_ui;
 mod vttest;
 mod wide_chars;
+
+#[test]
+fn unicode_search_uses_character_indexes_and_terminal_columns() {
+    for (content, needle, start, end) in [
+        ("界 café 東京 🙂 end".to_owned(), "café", (0, 3), (0, 7)),
+        ("界 café 東京 🙂 end".to_owned(), "東京", (0, 8), (0, 12)),
+        ("界 café 東京 🙂 end".to_owned(), "🙂", (0, 13), (0, 15)),
+        (
+            "界 café 東京 🙂 end".to_owned(),
+            "café 東京 🙂",
+            (0, 3),
+            (0, 15),
+        ),
+        (
+            format!("{}界é🙂z", " ".repeat(77)),
+            "界é🙂",
+            (0, 77),
+            (1, 2),
+        ),
+    ] {
+        let mut grid = create_grid_with_content(&content);
+        grid.set_search_string(needle);
+        let selections = &grid.search_results.selections;
+        assert_eq!(selections.len(), 1, "{needle:?} in {content:?}");
+        assert_eq!(selections[0].start, Position::new(start.0, start.1));
+        assert_eq!(selections[0].end, Position::new(end.0, end.1));
+    }
+
+    let mut grid = create_grid_with_content("界 café 東京 🙂 end");
+    grid.set_search_string("café 東京 🙂");
+    assert!(format!("{grid:?}").contains("界 ############ end"));
+
+    let mut grid = create_grid_with_content("界 éx é ");
+    grid.search_results.whole_word_only = true;
+    grid.set_search_string("é");
+    assert_eq!(grid.search_results.selections.len(), 1);
+    assert_eq!(grid.search_results.selections[0].start, Position::new(0, 6));
+    assert_eq!(grid.search_results.selections[0].end, Position::new(0, 7));
+}
+
+#[test]
+fn wheel_reports_share_encoding_and_preserve_modifiers() {
+    use zellij_utils::input::mouse::MouseEvent;
+
+    let position = Position::new(4, 6);
+    for encoding in ["", "\u{1b}[?1005h", "\u{1b}[?1006h"] {
+        for tracking in [1000, 1002, 1003] {
+            let grid = create_grid_with_content(&format!("\u{1b}[?{tracking}h{encoding}"));
+            for (event, base, specialized) in [
+                (
+                    MouseEvent::new_scroll_up_event(position),
+                    64,
+                    grid.mouse_scroll_up_signal(&position),
+                ),
+                (
+                    MouseEvent::new_scroll_down_event(position),
+                    65,
+                    grid.mouse_scroll_down_signal(&position),
+                ),
+            ] {
+                assert_eq!(specialized, grid.mouse_event_signal(&event));
+                for modifiers in 0..8 {
+                    let mut event = event;
+                    event.shift = modifiers & 1 != 0;
+                    event.alt = modifiers & 2 != 0;
+                    event.ctrl = modifiers & 4 != 0;
+                    let button = base | (modifiers << 2);
+                    let expected = if encoding == "\u{1b}[?1006h" {
+                        format!("\u{1b}[<{button};7;5M")
+                    } else {
+                        format!("\u{1b}[M{}'%", char::from(button + 32))
+                    };
+                    assert_eq!(grid.mouse_event_signal(&event), Some(expected));
+                }
+            }
+        }
+        let grid = create_grid_with_content(encoding);
+        assert_eq!(grid.mouse_scroll_up_signal(&position), None);
+        assert_eq!(grid.mouse_scroll_down_signal(&position), None);
+        assert_eq!(
+            grid.mouse_event_signal(&MouseEvent::new_alt_scroll_up_event(position)),
+            None
+        );
+    }
+}

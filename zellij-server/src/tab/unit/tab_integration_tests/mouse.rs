@@ -1275,44 +1275,50 @@ fn twenty_marked_commands() -> Vec<u8> {
 
 #[test]
 fn alt_wheel_over_a_mouse_tracking_pane_is_forwarded_instead_of_jumping_prompts() {
-    let size = Size {
-        cols: 121,
-        rows: 20,
-    };
-    let client_id = 1;
+    for (encoding, expected) in [
+        ("", "\u{1b}[Mhg%"),
+        ("\u{1b}[?1005h", "\u{1b}[Mhg%"),
+        ("\u{1b}[?1006h", "\u{1b}[<72;71;5M"),
+    ] {
+        let size = Size {
+            cols: 121,
+            rows: 20,
+        };
+        let client_id = 1;
 
-    let mut pty_instruction_bus = MockPtyInstructionBus::new();
-    let mut tab = create_new_tab_with_mock_pty_writer(
-        size,
-        ModeInfo::default(),
-        pty_instruction_bus.pty_write_sender(),
-    );
-    pty_instruction_bus.start();
+        let mut pty_instruction_bus = MockPtyInstructionBus::new();
+        let mut tab = create_new_tab_with_mock_pty_writer(
+            size,
+            ModeInfo::default(),
+            pty_instruction_bus.pty_write_sender(),
+        );
+        pty_instruction_bus.start();
 
-    tab.handle_pty_bytes(1, Vec::from("\u{1b}[?1002h\u{1b}[?1006h".as_bytes()))
+        tab.handle_pty_bytes(1, format!("\u{1b}[?1002h{encoding}").into_bytes())
+            .unwrap();
+        tab.handle_pty_bytes(1, twenty_marked_commands()).unwrap();
+
+        tab.handle_mouse_event_with_passthrough(
+            &MouseEvent::new_alt_scroll_up_event(Position::new(5, 71)),
+            client_id,
+            None,
+        )
         .unwrap();
-    tab.handle_pty_bytes(1, twenty_marked_commands()).unwrap();
 
-    tab.handle_mouse_event_with_passthrough(
-        &MouseEvent::new_alt_scroll_up_event(Position::new(5, 71)),
-        client_id,
-        None,
-    )
-    .unwrap();
+        pty_instruction_bus.exit();
 
-    pty_instruction_bus.exit();
-
-    assert_eq!(
-        pty_instruction_bus.clone_output(),
-        vec!["\u{1b}[<72;71;5M".to_string()],
-        "a pane that tracks the mouse receives alt wheel just like a plain wheel"
-    );
-    assert!(
-        !tab.get_pane_with_id(PaneId::Terminal(1))
-            .map(|pane| pane.is_scrolled())
-            .unwrap_or(false),
-        "a forwarded alt wheel must not also scroll the host pane"
-    );
+        assert_eq!(
+            pty_instruction_bus.clone_output(),
+            vec![expected.to_string()],
+            "a pane that tracks the mouse receives alt wheel just like a plain wheel"
+        );
+        assert!(
+            !tab.get_pane_with_id(PaneId::Terminal(1))
+                .map(|pane| pane.is_scrolled())
+                .unwrap_or(false),
+            "a forwarded alt wheel must not also scroll the host pane"
+        );
+    }
 }
 
 #[test]
