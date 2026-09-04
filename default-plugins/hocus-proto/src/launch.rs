@@ -266,6 +266,26 @@ pub fn claude_hook_settings_argument() -> String {
         .to_string()
 }
 
+/// The spec's environment, plus what a Firecracker guest needs to run the agent it was
+/// asked for.
+///
+/// A guest logs in as root, and `claude --dangerously-skip-permissions` refuses to run as
+/// root. The refusal stands in for "you have no sandbox", and here the VM *is* the sandbox -
+/// which is the whole reason the pane was asked for - so the pane would otherwise die on a
+/// check that has already been satisfied. `IS_SANDBOX` is how Claude Code is told so.
+///
+/// A caller that sets the variable itself keeps its value. Nothing is added for a local
+/// pane, which runs as the user and needs none of this.
+fn guest_environment(spec: &Spec, kind: Option<&str>) -> BTreeMap<String, String> {
+    let mut env = spec.env.clone();
+    let firecracker = trimmed(&spec.firecracker).is_some();
+    if firecracker && kind == Some("claude") && trimmed(&spec.permission_mode) == Some("skip") {
+        env.entry("IS_SANDBOX".to_owned())
+            .or_insert_with(|| "1".to_owned());
+    }
+    env
+}
+
 /// What to run, and what to do to the repository before running it.
 ///
 /// The error strings are the ones shown to whoever asked — the modal puts them in its
@@ -295,14 +315,19 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
         args.push(prompt.to_owned());
     }
 
+    let env = guest_environment(spec, kind.as_deref());
+
     // An environment is an `env(1)` wrapper: assignments first, then the program and its
     // arguments. `env` execs, so the pane's foreground process is still the agent, and the
     // session names the record for it rather than for `env` (`agent_kind_of`).
-    let (path, args) = if spec.env.is_empty() {
+    //
+    // Everything here is visible in `ps` and in the pane's title, so it carries settings,
+    // never secrets. A credential reaches a Firecracker guest as a file, through the
+    // provider's `credential_files`.
+    let (path, args) = if env.is_empty() {
         (program, args)
     } else {
-        let mut wrapped: Vec<String> = spec
-            .env
+        let mut wrapped: Vec<String> = env
             .iter()
             .map(|(key, value)| format!("{key}={value}"))
             .collect();
@@ -638,6 +663,74 @@ mod tests {
             hooks: Some(false),
             ..spec(kind)
         }
+    }
+
+    /// A guest logs in as root, where `--dangerously-skip-permissions` refuses to run. The
+    /// VM is the sandbox the flag is asking after, so the pane says so rather than dying on
+    /// a check it has already passed.
+    #[test]
+    fn a_firecracker_claude_skipping_permissions_declares_its_sandbox() {
+        let (command, _) = plan(&Spec {
+            firecracker: Some("review".to_owned()),
+            permission_mode: Some("skip".to_owned()),
+            ..without_hooks("claude")
+        })
+        .unwrap();
+        assert_eq!(command.path, PathBuf::from("env"));
+        assert_eq!(
+            command.args,
+            vec!["IS_SANDBOX=1", "claude", "--dangerously-skip-permissions"]
+        );
+        assert_eq!(
+            zellij_tile::agent::agent_kind_of(&command.path, &command.args).as_deref(),
+            Some("claude"),
+        );
+    }
+
+    /// Nothing is added anywhere else: a local pane runs as the user and needs none of it,
+    /// a milder permission mode was never refused, and another agent's root check is not
+    /// this one's to answer.
+    #[test]
+    fn nothing_else_declares_a_sandbox() {
+        for spec in [
+            Spec {
+                permission_mode: Some("skip".to_owned()),
+                ..without_hooks("claude")
+            },
+            Spec {
+                firecracker: Some("review".to_owned()),
+                permission_mode: Some("acceptEdits".to_owned()),
+                ..without_hooks("claude")
+            },
+            Spec {
+                firecracker: Some("review".to_owned()),
+                permission_mode: Some("skip".to_owned()),
+                ..without_hooks("codex")
+            },
+        ] {
+            let (command, _) = plan(&spec).unwrap();
+            assert_ne!(command.path, PathBuf::from("env"), "{spec:?}");
+            assert!(
+                !command.args.iter().any(|arg| arg.starts_with("IS_SANDBOX")),
+                "{command:?}"
+            );
+        }
+    }
+
+    /// A caller who set the variable meant it.
+    #[test]
+    fn an_explicit_sandbox_value_is_kept() {
+        let (command, _) = plan(&Spec {
+            firecracker: Some("review".to_owned()),
+            permission_mode: Some("skip".to_owned()),
+            env: BTreeMap::from([("IS_SANDBOX".to_owned(), "0".to_owned())]),
+            ..without_hooks("claude")
+        })
+        .unwrap();
+        assert_eq!(
+            command.args.first().map(String::as_str),
+            Some("IS_SANDBOX=0")
+        );
     }
 
     #[test]

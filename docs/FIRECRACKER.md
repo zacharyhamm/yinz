@@ -160,9 +160,37 @@ Add credential files to `firecracker.json` when an agent needs a host credential
 }
 ```
 
-The provider copies each file after SSH is ready. It sets mode `0600` in the guest. Host paths
-must be absolute or start with `~/`. Guest paths must be absolute and cannot contain parent path
-components.
+The provider copies each file after SSH is ready, on every request that reaches a VM, so a
+pane opened later gets the host's current token rather than the one the VM booted with. It sets
+mode `0600` and gives the file to the guest account it logs in as, in a directory only that
+account can list. Host paths must be absolute or start with `~/`. Guest paths must be absolute
+and cannot contain parent path components. The provider never reads a credential's contents:
+its subprocesses inherit its stderr, which Zellij logs and shows in the pane, so a single
+`cat` of one of these files would put a token in both.
+
+A credential is not on its own enough to run Claude Code. It gates its first run on
+`~/.claude.json`, and the wizard's login step does not consult an existing
+`.credentials.json`: a guest with a working token is still asked to choose a login method,
+and then whether it trusts its working directory. Neither question has anyone to answer it in
+a VM, so a pane would sit on the wizard and the agent would never start. Wherever
+`credential_files` puts a Claude Code credential at `<home>/.claude/.credentials.json`, the
+provider therefore also writes `<home>/.claude.json`, setting `hasCompletedOnboarding` and
+marking `guest_cwd` trusted. It merges: whatever Claude Code has already written there - the
+account it fetched, the projects it knows - is kept, and a file that already says both things
+is not written to at all. The host's own `~/.claude.json` is never copied; it is a whole
+machine's project history and MCP configuration and none of that belongs in a VM. Set
+`"claude_guest_onboarding": false` to turn the seeding off.
+
+The host and the guest share one credential, and Claude Code rotates it: whichever side
+refreshes the token invalidates the other side's copy. In practice the host wins, because
+every request that reaches the VM pushes the host's copy over the guest's. A VM left running
+for hours without a new pane can still find its token stale, and the fix is to open a pane in
+it, which re-pushes. A VM that must not depend on the host's session at all wants a second
+Anthropic login of its own.
+
+`doctor` names a host credential that exists but that no `credential_files` entry carries into
+a guest, and prints the JSON that fixes it - `setup` offers each mapping once, so a host that
+gained Claude Code afterwards has no mapping and no other way to find out.
 
 The network command accepts `--subnet`, `--taps`, and `--dns`. By default it uses the
 uid-derived `10.<uid-high>.<uid-low>.0/24` subnet described above, 16 TAP devices, and `1.1.1.1`. Remove the host network with:
@@ -536,7 +564,15 @@ means `hooks: false` on a spawn does not suppress hooks inside a VM.
 
 Zellij passes the remote pane's terminal and locale allowlist. It also passes environment values
 that `agent_spawn` explicitly supplies. It does not copy the rest of the host environment. Use
-`credential_files` for required credentials.
+`credential_files` for required credentials: an `agent_spawn` environment becomes an `env(1)`
+wrapper around the agent, so it is visible in the guest's `ps` and in the pane's title, and
+carries settings rather than secrets.
+
+A guest logs in as root, and `claude --dangerously-skip-permissions` refuses to run as root.
+The refusal stands in for "you have no sandbox", and a Firecracker pane is the sandbox it is
+asking after, so `agent_spawn` with `permission_mode: "skip"` declares `IS_SANDBOX=1` for a
+Claude agent in a VM. A spec that sets the variable itself keeps its value, and a local pane
+is untouched.
 
 The provider stores VM state under `$XDG_STATE_HOME/zellij/firecracker`. It stores the base image
 under `$XDG_DATA_HOME/zellij/firecracker`. A crashed server can leave a VM running, so use the
