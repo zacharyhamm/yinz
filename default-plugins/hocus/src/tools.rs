@@ -63,6 +63,10 @@ pub fn call_needs_confirmation(call: &ToolCall) -> bool {
         // Scheduling is otherwise free; handing a job standing permission to use
         // tools without asking again is the confirmable part.
         "schedule" => Args::parse(&call.arguments).is_ok_and(|args| args.auto_confirm),
+        // No prompt means nothing runs until a human types into the new pane —
+        // the same shape as a bare `new_pane`. A prompt hands the new agent an
+        // instruction to act on immediately, which is the confirmable part.
+        "agent_spawn" => has_prompt(call),
         name => needs_confirmation(name),
     }
 }
@@ -83,6 +87,16 @@ fn names_a_command(call: &ToolCall) -> bool {
         .unwrap_or(true)
 }
 
+/// True when an `agent_spawn` call hands the new agent a `prompt` to act on,
+/// rather than leaving the pane for a human to type into. Arguments we
+/// cannot read might carry a prompt, so the safe reading is "this acts" —
+/// the same `unwrap_or(true)` reasoning as `names_a_command`.
+fn has_prompt(call: &ToolCall) -> bool {
+    Args::parse(&call.arguments)
+        .map(|args| args.prompt.as_deref().is_some_and(|p| !p.trim().is_empty()))
+        .unwrap_or(true)
+}
+
 /// Tools that need explicit confirmation before dispatch whatever they are
 /// given. `call_needs_confirmation` is the question the tool loop actually asks;
 /// this is the part of the answer that does not depend on the arguments.
@@ -94,7 +108,6 @@ pub fn needs_confirmation(name: &str) -> bool {
             | "send_input"
             | "agent_send"
             | "agent_control"
-            | "agent_spawn"
             // The one tool that removes something the user meant to keep.
             | "project_forget"
             | "slack_post"
@@ -184,7 +197,9 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
             Some("close") => format!("closes {pane} and the agent running in it"),
             _ => format!("interrupts, restarts or closes the agent in {pane}"),
         },
-        "agent_spawn" => {
+        // Only the shape that stops: a spawn with no prompt is not confirmed, so
+        // it has nothing to say here. See `call_needs_confirmation`.
+        "agent_spawn" if has_prompt(call) => {
             // Read off the plan, never re-derived: the sentence has to promise what
             // dispatch will do, and a default spelled out a second time here is a
             // default that can come to differ from the one that runs.

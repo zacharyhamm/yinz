@@ -98,7 +98,7 @@ fn every_advertised_tool_is_covered_by_the_confirmation_table() {
         .collect();
     assert_eq!(names.len(), 81);
     let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
-    assert_eq!(confirmed, 13);
+    assert_eq!(confirmed, 12);
 }
 
 /// The invariant the name table cannot state on its own: whatever decides to
@@ -473,7 +473,7 @@ fn the_label_says_whose_question_the_pane_is_wearing() {
 fn spawning_an_agent_on_a_branch_says_where_the_branch_and_the_worktree_go() {
     let worktree = consequence(&call(
         "agent_spawn",
-        r#"{"agent":"claude","branch":"fix-parser"}"#,
+        r#"{"agent":"claude","branch":"fix-parser","prompt":"fix the parser"}"#,
     ))
     .unwrap();
     assert!(worktree.contains("running `claude`"), "{worktree}");
@@ -482,7 +482,7 @@ fn spawning_an_agent_on_a_branch_says_where_the_branch_and_the_worktree_go() {
 
     let in_place = consequence(&call(
         "agent_spawn",
-        r#"{"agent":"codex","branch":"topic","base":"develop","worktree":false}"#,
+        r#"{"agent":"codex","branch":"topic","base":"develop","worktree":false,"prompt":"go"}"#,
     ))
     .unwrap();
     assert!(in_place.contains("switching this checkout"), "{in_place}");
@@ -496,7 +496,11 @@ fn spawning_an_agent_on_a_branch_says_where_the_branch_and_the_worktree_go() {
 /// to run `cursor-agent` is naming the editor, not the agent.
 #[test]
 fn the_consequence_names_the_program_that_will_actually_run() {
-    let sentence = consequence(&call("agent_spawn", r#"{"agent":"cursor"}"#)).unwrap();
+    let sentence = consequence(&call(
+        "agent_spawn",
+        r#"{"agent":"cursor","prompt":"go"}"#,
+    ))
+    .unwrap();
     assert!(sentence.contains("`cursor-agent`"), "{sentence}");
 }
 
@@ -504,6 +508,49 @@ fn the_consequence_names_the_program_that_will_actually_run() {
 /// consequence for the call it always took.
 #[test]
 fn spawning_without_a_branch_promises_no_repository_changes() {
-    let sentence = consequence(&call("agent_spawn", r#"{"command":"zsh"}"#)).unwrap();
+    let sentence = consequence(&call(
+        "agent_spawn",
+        r#"{"command":"zsh","prompt":"go"}"#,
+    ))
+    .unwrap();
     assert_eq!(sentence, "opens a new pane running `zsh`");
+}
+
+/// Spawning with no prompt leaves the pane for a human to type into, the same
+/// shape as a bare `new_pane` — it does not stop, and has nothing to say.
+#[test]
+fn spawning_without_a_prompt_does_not_stop() {
+    assert!(!call_needs_confirmation(&call(
+        "agent_spawn",
+        r#"{"agent":"claude","branch":"fix-parser"}"#
+    )));
+    assert_eq!(
+        consequence(&call(
+            "agent_spawn",
+            r#"{"agent":"claude","branch":"fix-parser"}"#
+        )),
+        None
+    );
+    // Blank counts as absent.
+    assert!(!call_needs_confirmation(&call(
+        "agent_spawn",
+        r#"{"command":"zsh","prompt":"   "}"#
+    )));
+}
+
+/// A prompt hands the new agent an instruction to act on immediately — that is
+/// the confirmable part, regardless of any other argument.
+#[test]
+fn spawning_with_a_prompt_stops() {
+    assert!(call_needs_confirmation(&call(
+        "agent_spawn",
+        r#"{"command":"zsh","prompt":"go"}"#
+    )));
+}
+
+/// Arguments the model got wrong are not a bare spawn — they are a call nobody
+/// can read, the one case that most needs a human to look at it.
+#[test]
+fn an_agent_spawn_whose_arguments_do_not_parse_still_stops() {
+    assert!(call_needs_confirmation(&call("agent_spawn", "not json at all")));
 }
