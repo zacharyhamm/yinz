@@ -169,8 +169,11 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
             "grep -q hocus-hook /root/.claude/settings.json; ",
             "grep -q hocus-hook /root/.codex/hooks.json; ",
             "printf 'hooks-installed '; ",
-            // The installed script itself, with nothing but the event on stdin: it must find
-            // the pane by its broker token and be accepted, and say nothing on stdout.
+            // The installed script itself, with nothing but the event on stdin. It swallows
+            // the broker's own output and always exits 0, so what this proves is the half
+            // the line above cannot: the script runs clean and puts nothing on stdout,
+            // which some events would inject into the agent's context. Acceptance is the
+            // direct `--pty-broker report` above.
             "out=$(printf '{\"hook_event_name\":\"Stop\",\"session_id\":\"fc-test\"}' ",
             "| /root/.claude/hocus/hocus-hook.sh); ",
             "test -z \"$out\" && printf 'script-silent '; ",
@@ -273,7 +276,8 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
 }
 
 /// Two sessions on the same worktree share one VM; it survives the first release and
-/// stops on the last.
+/// stops on the last. Joining is also the only moment a VM provisioned by an older Zellij
+/// meets this one, so it is where the guest's hooks are brought up to date.
 #[test]
 #[ignore = "requires /dev/kvm and a built Firecracker test image"]
 fn two_sessions_share_a_worktree_vm_until_the_last_one_leaves() {
@@ -298,6 +302,18 @@ fn two_sessions_share_a_worktree_vm_until_the_last_one_leaves() {
             &AtomicBool::new(false),
         )
         .unwrap();
+
+    // A VM outlives the server that made it. Take its hooks away, the way a VM that has
+    // been running since before this Zellij has none, and let the join put them back:
+    // nothing else installs them, and a `claude` spawned into the VM is handed no inline
+    // settings to fall back on.
+    let cleared = run_in_guest(
+        &ensured,
+        "set -e; rm -f /root/.claude/settings.json; printf 'hooks-cleared'",
+        "hooks-cleared",
+    );
+    assert!(cleared.contains("hooks-cleared"), "{cleared}");
+
     let joined = provider
         .ensure(
             second,
@@ -310,6 +326,15 @@ fn two_sessions_share_a_worktree_vm_until_the_last_one_leaves() {
     assert_eq!(
         joined.ssh_host, ensured.ssh_host,
         "the second session got its own VM"
+    );
+    let restored = run_in_guest(
+        &joined,
+        "set -e; grep -q hocus-hook /root/.claude/settings.json; printf 'hooks-restored'",
+        "hooks-restored",
+    );
+    assert!(
+        restored.contains("hooks-restored"),
+        "joining a running VM left it without the coding-agent hooks: {restored:?}"
     );
 
     let sessions_of = |provider: &Provider| -> Vec<String> {

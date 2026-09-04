@@ -46,6 +46,13 @@ pub type Wire = Arc<Mutex<UnixStream>>;
 /// How often to look for panes nobody has come back for.
 const REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const TERMINATION_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long a hook reporting from inside a remote pane will wait on this machine's broker.
+///
+/// Under both agents' own hook budgets (`CLAUDE_HOOK_TIMEOUT_SECONDS` is 5,
+/// `CODEX_HOOK_TIMEOUT_SECONDS` 3) on purpose: this is the route *every* hook event in a
+/// remote pane takes, so a wedged broker must cost a bounded wait and let the script exit 0
+/// on its own terms, rather than stalling every tool call until the agent kills the hook.
+const AGENT_REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// How often to look, given how long a pane is allowed to sit unclaimed.
 ///
@@ -1081,6 +1088,9 @@ pub fn report_agent_hook() -> Result<()> {
 /// The report itself, against a given broker socket: a fresh connection, the
 /// handshake every connection starts with, the report, and the broker's word
 /// on whether anyone was there to get it.
+///
+/// Every step is bounded by [`AGENT_REPORT_TIMEOUT`]: an agent is waiting on this, and a
+/// broker that has stopped answering must not be able to hold up the pane's work.
 pub fn report_agent_hook_to(
     socket: &std::path::Path,
     pane_token: &str,
@@ -1089,6 +1099,13 @@ pub fn report_agent_hook_to(
 ) -> Result<()> {
     let mut stream = UnixStream::connect(socket)
         .with_context(|| format!("no remote pane broker at {}", socket.display()))?;
+    // Set before the clone below, which shares this socket and so inherits both.
+    stream
+        .set_read_timeout(Some(AGENT_REPORT_TIMEOUT))
+        .context("failed to bound an agent report")?;
+    stream
+        .set_write_timeout(Some(AGENT_REPORT_TIMEOUT))
+        .context("failed to bound an agent report")?;
     protocol::write_control(
         &mut stream,
         &ServerToBrokerMsg::Hello {

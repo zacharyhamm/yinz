@@ -422,6 +422,12 @@ fn ensure(
             match existing_vm_disposition(&existing, name, image) {
                 Disposition::Join => {
                     copy_credentials(&existing, config)?;
+                    // A VM outlives the server that made it, so a join is also the only
+                    // moment a VM provisioned by an older Zellij is met by this one. Both
+                    // steps are idempotent and both are how a running VM catches up:
+                    // nothing else installs the hooks, and a spawned agent is handed no
+                    // inline settings to fall back on.
+                    install_agent_hooks(&existing, config)?;
                     if !existing.leases.iter().any(|lease| lease == session) {
                         existing.leases.push(session.to_owned());
                         write_state(&state_path, &existing)?;
@@ -857,6 +863,11 @@ fn provision_guest(state: &VmState, config: &Config) -> Result<()> {
 /// Run in the guest rather than written from here, so the installer stays in one place: the
 /// guest's own binary bakes its own path into the script it writes, and the script picks the
 /// broker route by itself once it sees the pane token every remote pane carries.
+///
+/// Run on every join as well as on provisioning, and idempotent for that reason: the install
+/// rewrites the script and replaces its own settings entries rather than adding to them, so a
+/// VM that has been running since an older Zellij catches up the first time a session asks
+/// for it again.
 ///
 /// A failure here fails the VM, the way a failed credential copy does. An image whose Zellij
 /// is too old to have this command is too old to serve a pane at all: the broker socket is
