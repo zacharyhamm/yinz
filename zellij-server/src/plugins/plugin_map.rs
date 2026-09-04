@@ -17,10 +17,10 @@ use crate::{thread_bus::ThreadSenders, ClientId};
 
 use prost::Message;
 use tokio::sync::mpsc::UnboundedSender;
+use zellij_utils::data_access::DataAccess;
 use zellij_utils::plugin_api::action::ProtobufPluginConfiguration;
 use zellij_utils::plugin_api::event::ProtobufEvent;
 use zellij_utils::plugin_api::pipe_message::ProtobufPipeMessage;
-use zellij_utils::plugin_data_store::PluginDataStore;
 
 use crate::plugins::queues::Queues;
 use crate::plugins::wasm_bridge::WasmBridge;
@@ -426,10 +426,8 @@ pub struct PluginEnv {
     pub owner_client_id: ClientId,
     #[allow(dead_code)]
     pub plugin_own_data_dir: PathBuf,
-    /// The zellij data dir (where eg. session recordings live)
-    pub zellij_data_dir: PathBuf,
-    /// The data store shared by every plugin, partitioned by namespace.
-    pub plugin_data_store: Arc<PluginDataStore>,
+    /// The process-wide provider shared by recording and plugin data.
+    pub data_access: Arc<DataAccess>,
     /// The work queues, shared with the plugin thread. A plugin enqueues and reads status
     /// straight from here rather than asking the plugin thread, because a plugin that waits for
     /// the plugin thread while holding its own lock deadlocks the moment another plugin loads

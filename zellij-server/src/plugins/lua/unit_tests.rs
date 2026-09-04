@@ -4,10 +4,10 @@ use std::sync::{Arc, Mutex};
 
 use strum::IntoEnumIterator;
 use zellij_utils::data::{BareKey, CommandType, Event, KeyWithModifier, PermissionType};
+use zellij_utils::data_access::DataAccess;
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::layout::RunPluginLocation;
 use zellij_utils::input::plugins::PluginConfig;
-use zellij_utils::plugin_data_store::PluginDataStore;
 
 use super::{check_lua_plugin, load_lua_plugin};
 use crate::plugins::plugin_limits::PluginResourceLimits;
@@ -37,8 +37,7 @@ fn test_env() -> PluginEnv {
         senders: ThreadSenders::default().silently_fail_on_send(),
         wasi_ctx: None,
         plugin_own_data_dir: PathBuf::from("."),
-        zellij_data_dir: PathBuf::from("."),
-        plugin_data_store: Arc::new(PluginDataStore::new(&PathBuf::from("."))),
+        data_access: Arc::new(DataAccess::sqlite(&PathBuf::from("."))),
         queues: Default::default(),
         plugin_own_cache_dir: PathBuf::from("."),
         tab_index: Some(0),
@@ -3337,7 +3336,7 @@ fn the_data_sugar_builds_requests_the_host_accepts() {
     let store = tempfile::tempdir().unwrap();
     let mut env = test_env();
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
-    env.plugin_data_store = Arc::new(PluginDataStore::new(store.path()));
+    env.data_access = Arc::new(DataAccess::sqlite(store.path()));
     let mut plugin = load_lua_plugin(source, "test.lua", env).unwrap();
     let out = String::from_utf8(plugin.render(1, 500).unwrap()).unwrap();
     for (i, part) in out.split('|').enumerate() {
@@ -3375,7 +3374,7 @@ fn the_catalog_answers_with_the_entities_the_plugin_may_see() {
     let store = tempfile::tempdir().unwrap();
     let mut env = test_env();
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
-    env.plugin_data_store = Arc::new(PluginDataStore::new(store.path()));
+    env.data_access = Arc::new(DataAccess::sqlite(store.path()));
     let mut plugin = load_lua_plugin(source, "test.lua", env).unwrap();
     let out = String::from_utf8(plugin.render(1, 500).unwrap()).unwrap();
     assert_eq!(out.trim(), "note@2[title:text:false,done:bool:true]");
@@ -3389,7 +3388,8 @@ fn the_hocus_todos_example_reads_a_project_list_out_of_the_shared_namespace() {
     use zellij_utils::data::{AttrDef, EntityDef, Mutation, PermissionStatus};
 
     let store_dir = tempfile::tempdir().unwrap();
-    let store = PluginDataStore::new(store_dir.path());
+    let data_access = Arc::new(DataAccess::sqlite(store_dir.path()));
+    let store = data_access.plugin_data();
     // Exactly the definitions `hocus-proto`'s `store::shared_defs()` declares for these two, by
     // another plugin - this one declares nothing.
     store
@@ -3459,7 +3459,7 @@ fn the_hocus_todos_example_reads_a_project_list_out_of_the_shared_namespace() {
     let source = example_plugin("hocus-todos.lua");
     let mut env = test_env();
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
-    env.plugin_data_store = Arc::new(store);
+    env.data_access = data_access;
     let mut plugin = load_lua_plugin(&source, "hocus-todos.lua", env).unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
     plugin
@@ -3496,7 +3496,8 @@ fn the_hocus_notes_example_reads_a_projects_notes_out_of_the_shared_namespace() 
     use zellij_utils::data::{AttrDef, EntityDef, Mutation, PermissionStatus};
 
     let store_dir = tempfile::tempdir().unwrap();
-    let store = PluginDataStore::new(store_dir.path());
+    let data_access = Arc::new(DataAccess::sqlite(store_dir.path()));
+    let store = data_access.plugin_data();
     let owner = "zellij:hocus-store";
     store
         .define_entity(
@@ -3607,7 +3608,7 @@ fn the_hocus_notes_example_reads_a_projects_notes_out_of_the_shared_namespace() 
     let source = example_plugin("hocus-notes.lua");
     let mut env = test_env();
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
-    env.plugin_data_store = Arc::new(store);
+    env.data_access = data_access;
     let mut plugin = load_lua_plugin(&source, "hocus-notes.lua", env).unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
     plugin
@@ -3662,7 +3663,8 @@ fn the_catalog_shows_shared_namespaces_only_with_the_permission_and_never_a_priv
         return M
     "#;
     let store_dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(PluginDataStore::new(store_dir.path()));
+    let data_access = Arc::new(DataAccess::sqlite(store_dir.path()));
+    let store = data_access.plugin_data();
     // Two namespaces this plugin did not declare: one published, one another plugin's own.
     for (namespace, entity) in [("shared:hocus", "todo"), ("plugin:someone_else", "secret")] {
         store
@@ -3679,7 +3681,7 @@ fn the_catalog_shows_shared_namespaces_only_with_the_permission_and_never_a_priv
     let run = |permissions: Vec<PermissionType>| {
         let mut env = test_env();
         env.permissions = Arc::new(Mutex::new(Some(permissions.into_iter().collect())));
-        env.plugin_data_store = store.clone();
+        env.data_access = data_access.clone();
         let mut plugin = load_lua_plugin(source, "test.lua", env).unwrap();
         String::from_utf8(plugin.render(1, 200).unwrap())
             .unwrap()

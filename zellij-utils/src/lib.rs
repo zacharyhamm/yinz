@@ -31,6 +31,8 @@ pub mod channels; // Requires tokio
 #[cfg(not(target_family = "wasm"))]
 pub mod common_path;
 #[cfg(not(target_family = "wasm"))]
+pub mod data_access;
+#[cfg(not(target_family = "wasm"))]
 pub mod downloader; // Requires tokio
 #[cfg(not(target_family = "wasm"))]
 pub mod ipc; // Requires interprocess

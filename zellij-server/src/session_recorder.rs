@@ -5,6 +5,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+use zellij_utils::data_access::DataAccess;
 use zellij_utils::session_recording::{PaneMetadata, RecordedEvent};
 
 #[derive(Debug)]
@@ -173,6 +174,7 @@ impl SessionRecorderHandle {
 }
 
 pub fn spawn_session_recorder(
+    data_access: Arc<DataAccess>,
     data_dir: PathBuf,
     session_name: String,
     capture_input: bool,
@@ -219,7 +221,7 @@ pub fn spawn_session_recorder(
     let enabled_clone = enabled.clone();
     let thread = std::thread::spawn(move || {
         recorder_thread(
-            data_dir,
+            data_access,
             session_name,
             capture_input,
             started_at,
@@ -233,7 +235,7 @@ pub fn spawn_session_recorder(
 }
 
 fn recorder_thread(
-    data_dir: PathBuf,
+    data_access: Arc<DataAccess>,
     session_name: String,
     capture_input: bool,
     started_at: Instant,
@@ -242,18 +244,17 @@ fn recorder_thread(
     enabled: Arc<AtomicBool>,
     dropped: Arc<AtomicUsize>,
 ) {
-    let mut store = match zellij_utils::session_recording::RecordingStore::open(
-        &data_dir,
-        &session_name,
-        capture_input,
-        started_at_us,
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            log::error!("failed to start session recorder: {}", e);
-            return;
-        },
-    };
+    let mut store =
+        match data_access
+            .recordings()
+            .start_recording(&session_name, capture_input, started_at_us)
+        {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("failed to start session recorder: {}", e);
+                return;
+            },
+        };
     let mut batch: Vec<RecordedEvent> = Vec::new();
     let mut batch_start: Option<Instant> = None;
     loop {
@@ -485,12 +486,143 @@ fn recorder_thread(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    use zellij_utils::data_access::{PluginDataBackend, RecordingBackend, RecordingSession};
+    use zellij_utils::plugin_data::{
+        ApplyReport, DataEntityInfo, DataError, DataRows, DataSchemaInfo, EntityDef, FetchRequest,
+        Mutation,
+    };
+
+    struct MemoryRecordingBackend(Arc<std::sync::Mutex<Vec<&'static str>>>);
+    struct MemoryRecordingSession(Arc<std::sync::Mutex<Vec<&'static str>>>);
+
+    impl PluginDataBackend for MemoryRecordingBackend {
+        fn define_entity(
+            &self,
+            _: &str,
+            _: &str,
+            _: &EntityDef,
+            _: bool,
+        ) -> Result<DataSchemaInfo, DataError> {
+            Ok(DataSchemaInfo::default())
+        }
+
+        fn catalog(&self, _: Option<&str>) -> Result<Vec<DataEntityInfo>, DataError> {
+            Ok(Vec::new())
+        }
+
+        fn fetch(&self, _: &str, _: &FetchRequest) -> Result<DataRows, DataError> {
+            Ok(DataRows::default())
+        }
+
+        fn count(&self, _: &str, _: &FetchRequest) -> Result<u64, DataError> {
+            Ok(0)
+        }
+
+        fn apply(&self, _: &str, _: &[Mutation]) -> Result<ApplyReport, DataError> {
+            Ok(ApplyReport::default())
+        }
+    }
+
+    impl RecordingBackend for MemoryRecordingBackend {
+        fn start_recording(
+            &self,
+            _: &str,
+            _: bool,
+            _: i64,
+        ) -> anyhow::Result<Box<dyn RecordingSession>> {
+            self.0.lock().unwrap().push("start");
+            Ok(Box::new(MemoryRecordingSession(self.0.clone())))
+        }
+
+        fn list(&self) -> anyhow::Result<Vec<zellij_utils::data::RecordingSummary>> {
+            Ok(Vec::new())
+        }
+
+        fn search(&self, _: &str, _: usize) -> anyhow::Result<Vec<zellij_utils::data::SearchHit>> {
+            Ok(Vec::new())
+        }
+
+        fn export(&self, _: i64, _: &mut dyn std::io::Write) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl RecordingSession for MemoryRecordingSession {
+        fn record_events(&mut self, _: &[RecordedEvent]) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push("events");
+            Ok(())
+        }
+
+        fn update_panes(&mut self, _: &[PaneMetadata], _: i64) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push("panes");
+            Ok(())
+        }
+
+        fn finish_pane(&mut self, _: u32, _: i64) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push("pane");
+            Ok(())
+        }
+
+        fn finish_session(&mut self, _: i64, _: i64) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push("session");
+            Ok(())
+        }
+
+        fn mark_incomplete(&mut self, _: &str) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push("incomplete");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn recorder_thread_uses_an_injected_backend() -> anyhow::Result<()> {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let backend = Arc::new(MemoryRecordingBackend(calls.clone()));
+        let data_access = Arc::new(DataAccess::from_backends(backend.clone(), backend));
+        let (sender, receiver) = crossbeam::channel::unbounded();
+        sender.send(RecorderInstruction::Events(vec![RecordedEvent::output(
+            1,
+            1,
+            b"x".to_vec(),
+        )]))?;
+        sender.send(RecorderInstruction::PaneMetadata {
+            elapsed_us: 2,
+            panes: Vec::new(),
+        })?;
+        sender.send(RecorderInstruction::PaneClosed {
+            terminal_id: 1,
+            elapsed_us: 3,
+        })?;
+        sender.send(RecorderInstruction::Stop)?;
+
+        recorder_thread(
+            data_access,
+            "test".to_owned(),
+            false,
+            Instant::now(),
+            0,
+            receiver,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicUsize::new(0)),
+        );
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["start", "events", "panes", "pane", "session"]
+        );
+        Ok(())
+    }
 
     #[test]
     fn records_through_thread() -> anyhow::Result<()> {
         let dir = tempdir()?;
-        let (handle, thread) =
-            spawn_session_recorder(dir.path().to_path_buf(), "test".to_string(), true).unwrap();
+        let (handle, thread) = spawn_session_recorder(
+            Arc::new(DataAccess::sqlite(dir.path())),
+            dir.path().to_path_buf(),
+            "test".to_string(),
+            true,
+        )
+        .unwrap();
         let metadata = PaneMetadata {
             terminal_id: 1,
             tab_id: 0,
@@ -594,7 +726,7 @@ mod tests {
         let (sender, receiver) = crossbeam::channel::unbounded();
         sender.send(RecorderInstruction::Stop)?;
         recorder_thread(
-            dir.path().to_path_buf(),
+            Arc::new(DataAccess::sqlite(dir.path())),
             "test".to_string(),
             false,
             Instant::now(),
@@ -615,7 +747,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("file");
         std::fs::write(&file_path, b"hello").unwrap();
-        let result = spawn_session_recorder(file_path, "test".to_string(), true);
+        let result = spawn_session_recorder(
+            Arc::new(DataAccess::sqlite(dir.path())),
+            file_path,
+            "test".to_string(),
+            true,
+        );
         assert!(result.is_none(), "should return None for invalid data_dir");
     }
 

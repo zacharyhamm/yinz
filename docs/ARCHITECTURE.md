@@ -1,5 +1,13 @@
 This document details the different components of the code base in plain English. The intention is to provide a high level description rather than a more detailed drill-down of each internal mechanism.
 
+## Data access
+
+The server constructs one host-only `DataAccess` provider and shares it with the plugin runtime
+and session recorder. Plugin data and recordings use backend-neutral synchronous interfaces;
+SQLite is the default and currently only backend. Its files, SQL migrations, transactions, FTS5
+indexes, and connection settings stay inside the concrete SQLite implementations. CLI recording
+commands construct the same default provider at their entrypoint.
+
 ## Screen (zellij-server/src/screen/)
 The Screen is responsible for managing the relationship between the panes currently displayed on screen.
 It is in charge of actions such as: 

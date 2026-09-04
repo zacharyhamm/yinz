@@ -4696,8 +4696,12 @@ fn data_define_entity(
 ) {
     let plugin_url = Url::from(&env.plugin.location).to_string();
     let response = match resolve_data_namespace(env, namespace).and_then(|namespace| {
-        env.plugin_data_store
-            .define_entity(&namespace, &plugin_url, &def, allow_destructive)
+        env.data_access.plugin_data().define_entity(
+            &namespace,
+            &plugin_url,
+            &def,
+            allow_destructive,
+        )
     }) {
         Ok(info) => DataDefineResponse::Ok(info),
         Err(e) => DataDefineResponse::Err(e.to_string()),
@@ -4713,7 +4717,9 @@ fn data_apply(env: &mut PluginEnv, namespace: Option<String>, mutations: Vec<Mut
     let response = match resolve_data_namespace(env, namespace).and_then(|namespace| {
         Ok((
             namespace.clone(),
-            env.plugin_data_store.apply(&namespace, &mutations)?,
+            env.data_access
+                .plugin_data()
+                .apply(&namespace, &mutations)?,
         ))
     }) {
         Ok((namespace, outcome)) => {
@@ -4731,7 +4737,7 @@ fn data_apply(env: &mut PluginEnv, namespace: Option<String>, mutations: Vec<Mut
 
 fn data_fetch(env: &mut PluginEnv, request: FetchRequest) {
     let response = match resolve_fetch_namespace(env, &request)
-        .and_then(|namespace| env.plugin_data_store.fetch(&namespace, &request))
+        .and_then(|namespace| env.data_access.plugin_data().fetch(&namespace, &request))
     {
         Ok(rows) => DataFetchResponse::Ok(rows),
         Err(e) => DataFetchResponse::Err(e.to_string()),
@@ -4745,7 +4751,7 @@ fn data_fetch(env: &mut PluginEnv, request: FetchRequest) {
 
 fn data_count(env: &mut PluginEnv, request: FetchRequest) {
     let response = match resolve_fetch_namespace(env, &request)
-        .and_then(|namespace| env.plugin_data_store.count(&namespace, &request))
+        .and_then(|namespace| env.data_access.plugin_data().count(&namespace, &request))
     {
         Ok(count) => DataCountResponse::Ok(count),
         Err(e) => DataCountResponse::Err(e.to_string()),
@@ -4788,12 +4794,13 @@ fn catalog_entities(
 ) -> Result<Vec<DataEntityInfo>, DataError> {
     if namespace.is_some() {
         let namespace = resolve_data_namespace(env, namespace)?;
-        return env.plugin_data_store.catalog(Some(&namespace));
+        return env.data_access.plugin_data().catalog(Some(&namespace));
     }
     let own = plugin_data_store::private_namespace(Url::from(&env.plugin.location).as_ref());
     let shared_visible = may_reach_shared_namespaces(env);
     Ok(env
-        .plugin_data_store
+        .data_access
+        .plugin_data()
         .catalog(None)?
         .into_iter()
         .filter(|entity| {
@@ -4805,7 +4812,7 @@ fn catalog_entities(
 
 fn data_watch(env: &mut PluginEnv, request: FetchRequest, mode: WatchMode) {
     let response = match resolve_fetch_namespace(env, &request).and_then(|namespace| {
-        env.plugin_data_store.register_watch(
+        env.data_access.plugin_data().register_watch(
             &namespace,
             env.plugin_id,
             env.client_id,
@@ -4834,7 +4841,8 @@ fn data_watch(env: &mut PluginEnv, request: FetchRequest, mode: WatchMode) {
 
 fn data_unwatch(env: &mut PluginEnv, watch_id: u64) {
     let response = match env
-        .plugin_data_store
+        .data_access
+        .plugin_data()
         .unregister_watch(env.plugin_id, watch_id)
     {
         Ok(()) => DataUnwatchResponse::Ok,
@@ -4856,7 +4864,8 @@ fn data_unwatch(env: &mut PluginEnv, watch_id: u64) {
 /// — which is the normal case, not an exotic one.
 fn notify_watchers(env: &PluginEnv, namespace: &str, touched_entities: &BTreeSet<String>) {
     let changed = match env
-        .plugin_data_store
+        .data_access
+        .plugin_data()
         .refresh_watches(namespace, touched_entities)
     {
         Ok(changed) => changed,
@@ -5316,11 +5325,10 @@ fn get_tab_info(env: &mut PluginEnv, tab_id: usize) {
 }
 
 fn list_recordings(env: &mut PluginEnv) {
-    let recordings = zellij_utils::session_recording::list_recordings(&env.zellij_data_dir)
-        .unwrap_or_else(|e| {
-            log::error!("Failed to list recordings for plugin {}: {}", env.name(), e);
-            Vec::new()
-        });
+    let recordings = env.data_access.recordings().list().unwrap_or_else(|e| {
+        log::error!("Failed to list recordings for plugin {}: {}", env.name(), e);
+        Vec::new()
+    });
     let response = ProtobufListRecordingsResponse {
         recordings: recordings.into_iter().map(|r| r.into()).collect(),
     };
@@ -5365,16 +5373,18 @@ fn list_notifications(env: &mut PluginEnv) {
 // ponytail: search indexes FTS inline on the plugin thread; move to a worker if large recordings
 // stall plugin calls
 fn search_recordings(env: &mut PluginEnv, query: String, limit: usize) {
-    let hits =
-        zellij_utils::session_recording::search_recordings(&env.zellij_data_dir, &query, limit)
-            .unwrap_or_else(|e| {
-                log::error!(
-                    "Failed to search recordings for plugin {}: {}",
-                    env.name(),
-                    e
-                );
-                Vec::new()
-            });
+    let hits = env
+        .data_access
+        .recordings()
+        .search(&query, limit)
+        .unwrap_or_else(|e| {
+            log::error!(
+                "Failed to search recordings for plugin {}: {}",
+                env.name(),
+                e
+            );
+            Vec::new()
+        });
     let response = ProtobufSearchRecordingsResponse {
         hits: hits.into_iter().map(|h| h.into()).collect(),
     };

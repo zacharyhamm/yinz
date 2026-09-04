@@ -6,11 +6,13 @@ use lazy_static::lazy_static;
 use serial_test::serial;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tempfile::tempdir;
 use wasmi::Engine;
 use zellij_utils::data::{
     BareKey, Event, InputMode, KeyWithModifier, ModeInfo, PermissionStatus, PermissionType,
 };
+use zellij_utils::data_access::DataAccess;
 
 use zellij_utils::errors::ErrorContext;
 use zellij_utils::input::actions::Action;
@@ -398,6 +400,7 @@ fn create_plugin_thread_with_hooks(
     config.set_max_recursion_depth(1000);
     let engine = Engine::new(&config);
     let data_dir = PathBuf::from(tempdir().unwrap().path());
+    let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let layout_dir = PathBuf::from(tempdir().unwrap().path());
     let user_plugin_dir =
         user_plugin_dir.unwrap_or_else(|| PathBuf::from(tempdir().unwrap().path()));
@@ -421,6 +424,7 @@ fn create_plugin_thread_with_hooks(
                 plugin_bus,
                 engine,
                 data_dir,
+                data_access,
                 Box::default(),
                 Some(layout_dir),
                 Some(user_plugin_dir),
@@ -497,6 +501,7 @@ fn create_plugin_thread_with_server_receiver(
     config.set_max_recursion_depth(1000);
     let engine = Engine::new(&config);
     let data_dir = PathBuf::from(tempdir().unwrap().path());
+    let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let default_shell = PathBuf::from(".");
     let default_shell_action = None; // TODO: change me
     let initiating_client_id = 1;
@@ -508,6 +513,7 @@ fn create_plugin_thread_with_server_receiver(
                 plugin_bus,
                 engine,
                 data_dir,
+                data_access,
                 Box::default(),
                 None,
                 None,
@@ -591,6 +597,7 @@ fn create_plugin_thread_with_pty_receiver(
     config.set_max_recursion_depth(1000);
     let engine = Engine::new(&config);
     let data_dir = PathBuf::from(tempdir().unwrap().path());
+    let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let layout_dir = layout_dir.unwrap_or_else(|| PathBuf::from(tempdir().unwrap().path()));
     let user_plugin_dir = PathBuf::from(tempdir().unwrap().path());
     let default_shell = PathBuf::from(".");
@@ -604,6 +611,7 @@ fn create_plugin_thread_with_pty_receiver(
                 plugin_bus,
                 engine,
                 data_dir,
+                data_access,
                 Box::default(),
                 Some(layout_dir),
                 Some(user_plugin_dir),
@@ -681,6 +689,7 @@ fn create_plugin_thread_with_background_jobs_receiver(
     config.set_max_recursion_depth(1000);
     let engine = Engine::new(&config);
     let data_dir = PathBuf::from(tempdir().unwrap().path());
+    let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let default_shell = PathBuf::from(".");
     let default_shell_action = None; // TODO: change me
     let initiating_client_id = 1;
@@ -692,6 +701,7 @@ fn create_plugin_thread_with_background_jobs_receiver(
                 plugin_bus,
                 engine,
                 data_dir,
+                data_access,
                 Box::default(),
                 None,
                 None,

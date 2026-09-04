@@ -84,10 +84,8 @@ fn dropping_an_attribute_is_refused_unless_it_is_asked_for() {
     let err = store.define_entity(NS, OWNER, &shrunk, false).unwrap_err();
     assert_err!(err, DataError::RefusedMigration(_));
     // the definition is untouched, so nothing was half-migrated
-    assert!(store
-        .entity_definition(NS, "agent")
-        .unwrap()
-        .unwrap()
+    assert!(store.catalog(Some(NS)).unwrap()[0]
+        .def
         .attr_named("summary")
         .is_some());
 }

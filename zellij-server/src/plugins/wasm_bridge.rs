@@ -35,10 +35,10 @@ use zellij_utils::data::{
     LayoutWithError, PaneContents, PaneRenderReport, PermissionStatus, PermissionType, PipeMessage,
     PipeSource, QueueJobOutcome,
 };
+use zellij_utils::data_access::DataAccess;
 use zellij_utils::downloader::Downloader;
 use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::permission::PermissionCache;
-use zellij_utils::plugin_data_store::PluginDataStore;
 
 use crate::panes::PaneId;
 use crate::{
@@ -110,7 +110,7 @@ pub struct LoadingContext {
     pub default_mode: InputMode,
     pub keybinds: Keybinds,
     pub zellij_data_dir: PathBuf,
-    pub plugin_data_store: Arc<PluginDataStore>,
+    pub data_access: Arc<DataAccess>,
     pub queues: Arc<Mutex<Queues>>,
     pub size: Size,
     pub cancel: Arc<AtomicBool>,
@@ -165,7 +165,7 @@ impl LoadingContext {
             plugin_config,
             tab_index,
             zellij_data_dir: wasm_bridge.zellij_data_dir.clone(),
-            plugin_data_store: wasm_bridge.plugin_data_store.clone(),
+            data_access: wasm_bridge.data_access.clone(),
             queues: wasm_bridge.queues.clone(),
             size,
             // Made by the load or reload this context is for; a context built for a plugin
@@ -189,9 +189,7 @@ pub struct WasmBridge {
     connected_clients: Arc<Mutex<Vec<ClientId>>>,
     senders: ThreadSenders,
     zellij_data_dir: PathBuf,
-    /// The data store every plugin shares. Built here so that there is one connection and one
-    /// watch registry for the whole server, and cloned into each plugin's environment.
-    plugin_data_store: Arc<PluginDataStore>,
+    data_access: Arc<DataAccess>,
     plugin_map: Arc<Mutex<PluginMap>>,
     plugin_executor: Arc<PinnedExecutor>,
     next_plugin_id: PluginId,
@@ -267,6 +265,7 @@ impl WasmBridge {
         senders: ThreadSenders,
         engine: Engine,
         zellij_data_dir: PathBuf,
+        data_access: Arc<DataAccess>,
         path_to_default_shell: PathBuf,
         zellij_cwd: PathBuf,
         session_env_vars: std::collections::BTreeMap<String, String>,
@@ -295,12 +294,11 @@ impl WasmBridge {
             &plugin_cache,
             &engine,
         ));
-        let plugin_data_store = Arc::new(PluginDataStore::new(&zellij_data_dir));
         WasmBridge {
             connected_clients,
             senders,
             zellij_data_dir,
-            plugin_data_store,
+            data_access,
             plugin_map,
             plugin_executor,
             path_to_default_shell,
@@ -695,7 +693,9 @@ impl WasmBridge {
 
             // Drop its data store watches. They are keyed on a plugin id the server is free to
             // reuse, so leaving them would send a later plugin someone else's rows.
-            self.plugin_data_store.drop_watches_for_plugin(plugin_id);
+            self.data_access
+                .plugin_data()
+                .drop_watches_for_plugin(plugin_id);
 
             // Send worker exit messages
             for (_worker_name, worker_sender) in workers {

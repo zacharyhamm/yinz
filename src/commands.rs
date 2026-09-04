@@ -1216,9 +1216,10 @@ pub(crate) fn recordings(
     data_dir: PathBuf,
 ) -> anyhow::Result<()> {
     use zellij_utils::cli::Recordings as RecordingsCli;
+    let data_access = zellij_utils::data_access::DataAccess::sqlite(&data_dir);
     match command {
         RecordingsCli::List { json } => {
-            let summaries = zellij_utils::session_recording::list_recordings(&data_dir)?;
+            let summaries = data_access.recordings().list()?;
             if json {
                 println!("{}", serde_json::to_string(&summaries)?);
             } else {
@@ -1242,25 +1243,16 @@ pub(crate) fn recordings(
                             e.into()
                         }
                     })?;
-                zellij_utils::session_recording::export_recording(
-                    &data_dir,
-                    recording_id,
-                    &mut file,
-                )?;
+                data_access.recordings().export(recording_id, &mut file)?;
             } else {
                 let stdout = std::io::stdout();
                 let mut handle = stdout.lock();
-                zellij_utils::session_recording::export_recording(
-                    &data_dir,
-                    recording_id,
-                    &mut handle,
-                )?;
+                data_access.recordings().export(recording_id, &mut handle)?;
             }
             Ok(())
         },
         RecordingsCli::Search { query, limit, json } => {
-            let hits =
-                zellij_utils::session_recording::search_recordings(&data_dir, &query, limit)?;
+            let hits = data_access.recordings().search(&query, limit)?;
             if json {
                 println!("{}", serde_json::to_string(&hits)?);
             } else {
