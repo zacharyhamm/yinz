@@ -409,6 +409,29 @@ async fn partial_response_without_content_range_is_rejected() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn partial_response_with_unrepresentable_exclusive_end_is_rejected() {
+    let (dir, downloader) = fixture();
+    write_part(&dir, b"0");
+    let (url, _requests) = serve(vec![Exchange::new(
+        "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 1-18446744073709551615/*\r\nContent-Length: 0",
+        b"",
+    )])
+    .await;
+
+    let err = downloader
+        .download(&url, Some(FILE_NAME))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err, DownloaderError::InvalidRange { .. }),
+        "{err:?}"
+    );
+    assert!(!part(&dir).exists());
+    assert!(!cached(&dir).exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn partial_response_to_a_full_request_is_rejected() {
     let (dir, downloader) = fixture();
     let (url, mut requests) = serve(vec![Exchange::new(
@@ -591,6 +614,10 @@ fn parse_content_range_accepts_only_a_satisfied_byte_range() {
     };
     assert_eq!(parse_content_range("bytes 4-9/10"), range(4, 9, Some(10)));
     assert_eq!(parse_content_range("bytes 4-9/*"), range(4, 9, None));
+    assert_eq!(
+        parse_content_range("bytes 0-18446744073709551614/*"),
+        range(0, u64::MAX - 1, None)
+    );
     assert_eq!(parse_content_range("BYTES 0-0/1"), range(0, 0, Some(1)));
     assert_eq!(
         parse_content_range("  bytes  4-9/10 "),
@@ -603,6 +630,7 @@ fn parse_content_range_accepts_only_a_satisfied_byte_range() {
         "bytes 4-10/10",
         "bytes 4-9",
         "bytes a-b/c",
+        "bytes 0-18446744073709551615/*",
         "items 4-9/10",
         "",
     ] {

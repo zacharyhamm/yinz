@@ -283,16 +283,30 @@ impl SearchResult {
         // way `Row::split_to_rows_of_length` does, measured against the grid width rather
         // than the main row: a wide character that did not fit leaves the main row short of
         // the grid width, and a tail row is wrapped by the grid, not by the row above it.
+        let mut source_line = None;
+        let mut character_index = 0;
+        let mut line_offset = 0;
+        let mut column = 0;
         for s in res.iter_mut() {
             for position in [&mut s.start, &mut s.end] {
-                let source_row = if position.line() as usize == orig_ridx {
+                let position_line = position.line() as usize;
+                let source_row = if position_line == orig_ridx {
                     row
                 } else {
-                    tail[position.line() as usize - orig_ridx - 1]
+                    tail[position_line - orig_ridx - 1]
                 };
-                let mut line_offset = 0;
-                let mut column = 0;
-                for character in source_row.columns.iter().take(position.column()) {
+                if source_line != Some(position_line) {
+                    source_line = Some(position_line);
+                    character_index = 0;
+                    line_offset = 0;
+                    column = 0;
+                }
+                for character in source_row
+                    .columns
+                    .iter()
+                    .skip(character_index)
+                    .take(position.column() - character_index)
+                {
                     let width = character.width();
                     if grid_width > 0 && column + width > grid_width {
                         line_offset += 1;
@@ -300,6 +314,7 @@ impl SearchResult {
                     }
                     column += width;
                 }
+                character_index = position.column();
                 position.line.0 += line_offset;
                 position.column.0 = column;
             }
