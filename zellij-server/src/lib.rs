@@ -23,6 +23,7 @@ pub mod notifications;
 mod pane_groups;
 mod plugins;
 pub use plugins::check_lua_plugin;
+mod locked_escape;
 pub mod plugin_authoring;
 mod pty;
 #[cfg(unix)]
@@ -200,6 +201,7 @@ pub enum ServerInstruction {
     },
     DisconnectAllClientsExcept(ClientId),
     ChangeMode(ClientId, InputMode, Option<NotificationEnd>),
+    ResolveLockedEscape(ClientId, uuid::Uuid),
     ChangeModeForAllClients(InputMode),
     Reconfigure {
         client_id: ClientId,
@@ -238,6 +240,7 @@ impl From<&ServerInstruction> for ServerContext {
         match server_instruction {
             ServerInstruction::FirstClientConnected(..) => ServerContext::NewClient,
             ServerInstruction::AttachWatcherClient(..) => ServerContext::AttachClient,
+            ServerInstruction::ResolveLockedEscape(..) => ServerContext::ChangeMode,
             other => {
                 let name: &'static str = other.into();
                 ServerContext::from_str(name).unwrap_or_else(|_| {
@@ -441,6 +444,7 @@ pub(crate) struct SessionMetaData {
     pub current_input_modes: HashMap<ClientId, InputMode>,
     pub session_configuration: SessionConfiguration,
     pub key_passthrough_clients: HashMap<ClientId, PaneId>,
+    pub locked_escapes: HashMap<ClientId, locked_escape::LockedEscape>,
     screen_thread: Option<thread::JoinHandle<()>>,
     pty_thread: Option<thread::JoinHandle<()>>,
     plugin_thread: Option<thread::JoinHandle<()>>,
@@ -455,6 +459,27 @@ pub(crate) struct SessionMetaData {
 }
 
 impl SessionMetaData {
+    fn change_input_mode(
+        &mut self,
+        client_id: ClientId,
+        input_mode: InputMode,
+        completion: Option<NotificationEnd>,
+    ) -> Result<()> {
+        self.locked_escapes.remove(&client_id);
+        let base_mode = self
+            .session_configuration
+            .get_client_default_input_mode(&client_id);
+        self.current_input_modes.insert(client_id, input_mode);
+        self.senders
+            .send_to_screen(ScreenInstruction::ChangeMode(
+                input_mode,
+                Some(base_mode),
+                client_id,
+                completion,
+            ))
+            .context("changing client input mode")
+    }
+
     pub fn get_client_keybinds_and_mode(
         &self,
         client_id: &ClientId,
@@ -480,6 +505,7 @@ impl SessionMetaData {
         client_id: ClientId,
         notify_guest: bool,
     ) {
+        self.locked_escapes.remove(&client_id);
         if let Some(pane_id) = self.key_passthrough_clients.remove(&client_id) {
             let pane_still_active = self.key_passthrough_clients.values().any(|p| *p == pane_id);
             if !pane_still_active && notify_guest {
@@ -497,6 +523,7 @@ impl SessionMetaData {
         }
     }
     pub fn change_mode_for_all_clients(&mut self, input_mode: InputMode) {
+        self.locked_escapes.clear();
         let all_clients: Vec<ClientId> = self.current_input_modes.keys().copied().collect();
         for client_id in all_clients {
             self.current_input_modes.insert(client_id, input_mode);
@@ -509,6 +536,7 @@ impl SessionMetaData {
     ) {
         let mut new_plugin_config = None;
         for (client_id, new_config) in config_changes {
+            self.locked_escapes.remove(&client_id);
             let new_config = self.session_configuration.with_plugin_defaults(new_config);
             if new_plugin_config.is_none() {
                 new_plugin_config = Some(new_config.plugins.clone());
@@ -1928,21 +1956,19 @@ pub fn start_server_impl(
             ServerInstruction::ChangeMode(client_id, input_mode, completion) => {
                 let mut session_data = session_data.write().unwrap();
                 let session_data = session_data.as_mut().unwrap();
-                let base_mode = session_data
-                    .session_configuration
-                    .get_client_default_input_mode(&client_id);
                 session_data
-                    .current_input_modes
-                    .insert(client_id, input_mode);
-                session_data
-                    .senders
-                    .send_to_screen(ScreenInstruction::ChangeMode(
-                        input_mode,
-                        Some(base_mode),
-                        client_id,
-                        completion,
-                    ))
-                    .unwrap();
+                    .change_input_mode(client_id, input_mode, completion)
+                    .fatal();
+            },
+            ServerInstruction::ResolveLockedEscape(client_id, token) => {
+                let mut guard = session_data
+                    .write()
+                    .to_anyhow()
+                    .context("locking escape state")
+                    .fatal();
+                if let Some(session) = guard.as_mut() {
+                    session.resolve_locked_escape(client_id, token).non_fatal();
+                }
             },
             ServerInstruction::ChangeModeForAllClients(input_mode) => {
                 session_data
@@ -2177,6 +2203,7 @@ pub fn start_server_impl(
             ) => {
                 let mut session_data = session_data.write().unwrap();
                 if let Some(session_data) = session_data.as_mut() {
+                    session_data.locked_escapes.remove(&client_id);
                     let previous_pane = session_data
                         .key_passthrough_clients
                         .get(&client_id)
@@ -2662,6 +2689,7 @@ fn init_session(
         background_jobs_thread: Some(background_jobs_thread),
         session_recorder_thread,
         key_passthrough_clients: HashMap::new(),
+        locked_escapes: HashMap::new(),
         config_file_path: cli_assets.config_file_path,
         config_dir: cli_assets.config_dir,
     }

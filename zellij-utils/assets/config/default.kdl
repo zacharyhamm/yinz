@@ -5,6 +5,8 @@ keybinds {
         // bind "Alt c" { Copy; }
     }
     locked {
+        // Ctrl+g waits 250ms before unlocking. Follow it with plain g within
+        // that time to send Ctrl+g to the terminal and stay locked.
         bind "Ctrl g" { SwitchToMode "Normal"; }
     }
     resize {

@@ -150,7 +150,7 @@ pin_context_to_instruction! {
     mod server;
     instruction: ServerInstruction;
     context: ServerContext;
-    special: ["FirstClientConnected", "AttachWatcherClient"];
+    special: ["FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape"];
     only_special: ["NewClient", "AttachClient"];
 }
 

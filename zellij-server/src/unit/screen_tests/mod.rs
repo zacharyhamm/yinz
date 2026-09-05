@@ -817,6 +817,7 @@ impl MockScreen {
             config_file_path: self.session_metadata.config_file_path.clone(),
             config_dir: self.session_metadata.config_dir.clone(),
             key_passthrough_clients: self.session_metadata.key_passthrough_clients.clone(),
+            locked_escapes: self.session_metadata.locked_escapes.clone(),
         }
     }
 }
@@ -873,6 +874,7 @@ impl MockScreen {
             config_file_path: None,
             config_dir: None,
             key_passthrough_clients: Default::default(),
+            locked_escapes: Default::default(),
         };
 
         let os_input = FakeInputOutput::default();
