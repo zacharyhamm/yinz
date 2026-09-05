@@ -60,6 +60,14 @@ impl State {
         &self.store
     }
 
+    /// Who this hocus writes rows as: its machine, and the session it is in.
+    ///
+    /// The session name arrives with the daemon's first snapshot, so this is not `is_known`
+    /// until then — which is why the per-pane reads and writes hold back until it is.
+    pub(crate) fn owner(&self) -> agents::rows::Owner {
+        agents::rows::Owner::new(self.host_id.clone(), self.zellij_session_name.clone())
+    }
+
     /// hocus's own namespace: the archive and the up-arrow history.
     ///
     /// Private because nothing else reads them, which also means nothing has to
@@ -571,7 +579,7 @@ impl State {
         // The archive and the up-arrow history, in hocus's own namespace: only
         // this plugin reads them, so nothing has to be coordinated. This is also
         // where the old JSON files are read in, once.
-        let prompts = history::open(&self.private_store())
+        let prompts = history::open(&self.private_store(), &self.host_id)
             .is_ok()
             .then(|| history::load_prompts(&self.private_store()));
         if let Some(prompts) = prompts {
@@ -667,8 +675,14 @@ impl State {
     /// countdown resumes from where the wall clock says it is.
     pub(crate) fn restore_persisted(&mut self) {
         let now = now_secs();
-        let fetch = |entity: &str| FetchRequest::entity(entity).limit(store::LIST_FETCH_LIMIT);
-        let fetched = self.store().fetch(&fetch(jobs::ENTITY)).ok();
+        // Scoped to this machine, unlike the reads below it. A job is a prompt that will be
+        // typed into a session, so restoring another machine's would fire its work here. The
+        // session name has not arrived yet at load, which is why this is the machine and not
+        // the full owner — see `jobs::job_uid`.
+        let fetched = self
+            .store()
+            .fetch(&jobs::owned_request(&self.owner()).limit(store::LIST_FETCH_LIMIT))
+            .ok();
         if let Some(rows) = fetched {
             let mut restored = 0;
             let mut held = 0;
@@ -731,11 +745,11 @@ impl State {
     /// Runs once, on that first snapshot. Same rule as the rows themselves: hocus is the only
     /// writer, so nothing watches them and one read is enough.
     pub(crate) fn restore_pane_rows(&mut self) {
-        if self.zellij_session_name.is_empty() || self.restored_pane_rows {
+        let owner = self.owner();
+        if !owner.is_known() || self.restored_pane_rows {
             return;
         }
         self.restored_pane_rows = true;
-        let owner = self.zellij_session_name.clone();
         let fetch = |entity: &str| {
             agents::rows::owned_rows_request(entity, &owner).limit(store::LIST_FETCH_LIMIT)
         };
@@ -917,57 +931,51 @@ impl State {
     }
 
     pub(crate) fn persist_job(&mut self, row: jobs::JobRow) {
-        self.write_store_quietly("job", vec![jobs::to_mutation(&row)]);
+        let owner = self.owner();
+        self.write_store_quietly("job", vec![jobs::to_mutation(&owner, &row)]);
     }
 
     pub(crate) fn forget_jobs(&mut self, job_ids: Vec<u64>) {
         if job_ids.is_empty() {
             return;
         }
-        self.write_store_quietly("job", vec![jobs::delete_mutation(job_ids)]);
+        let owner = self.owner();
+        self.write_store_quietly("job", vec![jobs::delete_mutation(&owner, job_ids)]);
     }
 
     pub(crate) fn persist_latch(&mut self, pane_id: u32, kind: &str) {
-        // Nothing per-pane is written before the first snapshot names the session: the store
-        // is shared by every session on the machine, so a row that cannot say which session's
-        // pane 5 it means is a row that collides with somebody else's. The next snapshot
-        // arrives within a heartbeat, and `agent_register` re-persists from `manual_kinds`.
-        if self.zellij_session_name.is_empty() {
+        // Nothing per-pane is written before the first snapshot names the session: the store is
+        // shared by every session that reaches it, so a row that cannot say whose pane 5 it
+        // means is a row that collides with somebody else's. The next snapshot arrives within a
+        // heartbeat, and `agent_register` re-persists from `manual_kinds`.
+        let owner = self.owner();
+        if !owner.is_known() {
             return;
         }
         self.write_store_quietly(
             "agent_latch",
-            vec![agents::rows::latch_mutation(
-                &self.zellij_session_name,
-                pane_id,
-                kind,
-            )],
+            vec![agents::rows::latch_mutation(&owner, pane_id, kind)],
         );
     }
 
     pub(crate) fn forget_latches(&mut self, pane_ids: Vec<u32>) {
-        if pane_ids.is_empty() || self.zellij_session_name.is_empty() {
+        let owner = self.owner();
+        if pane_ids.is_empty() || !owner.is_known() {
             return;
         }
         self.write_store_quietly(
             "agent_latch",
-            vec![agents::rows::latch_delete_mutation(
-                &self.zellij_session_name,
-                pane_ids,
-            )],
+            vec![agents::rows::latch_delete_mutation(&owner, pane_ids)],
         );
     }
 
     /// Mirror the daemon's summaries, writing only what changed.
     pub(crate) fn persist_summaries(&mut self, before: &agents::Summaries) {
-        if self.zellij_session_name.is_empty() {
+        let owner = self.owner();
+        if !owner.is_known() {
             return;
         }
-        let mutations = agents::rows::summary_diff_mutations(
-            &self.zellij_session_name,
-            before,
-            &self.summaries,
-        );
+        let mutations = agents::rows::summary_diff_mutations(&owner, before, &self.summaries);
         self.write_store_quietly("agent_summary", mutations);
     }
 

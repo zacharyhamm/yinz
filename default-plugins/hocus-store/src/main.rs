@@ -62,7 +62,7 @@ impl ZellijPlugin for State {
             eprintln!("hocus-store: {error}");
             return;
         }
-        import_legacy(&backend);
+        import_legacy(&backend, &get_plugin_ids().host_id);
         match backend.watch(
             &FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT),
             WatchMode::Rows,
@@ -309,15 +309,15 @@ fn discover_from(
 /// than "is the table empty?" — emptiness is a state a user can reach honestly,
 /// by crossing off and clearing the last todo, and that must not resurrect the
 /// file on the next launch.
-fn import_legacy(backend: &impl Backend) {
-    if !imported(backend, "projects") {
+fn import_legacy(backend: &impl Backend, host_id: &str) {
+    if !imported(backend, host_id, "projects") {
         let registry = projects::parse_legacy(&legacy_bytes(projects::FILE));
         let mut mutations: Vec<zellij_tile::prelude::Mutation> =
             registry.values().map(projects::to_mutation).collect();
-        mutations.push(marker("projects"));
+        mutations.push(marker(host_id, "projects"));
         let _ = backend.apply(mutations);
     }
-    if !imported(backend, "todos") {
+    if !imported(backend, host_id, "todos") {
         let lists = todos::parse_legacy(&legacy_bytes(todos::FILE));
         // One apply per level per list, because a child's parent_id is the id
         // the store gave its parent, which is only known once that row exists.
@@ -333,20 +333,20 @@ fn import_legacy(backend: &impl Backend) {
                 }
             }
         }
-        let _ = backend.apply(vec![marker("todos")]);
+        let _ = backend.apply(vec![marker(host_id, "todos")]);
     }
 }
 
-fn marker(what: &str) -> zellij_tile::prelude::Mutation {
-    zellij_tile::prelude::Mutation::put("import_marker")
-        .uid(what)
-        .set("what", what)
-        .build()
+/// The host is carried in from `load` rather than asked for here. `get_plugin_ids` is a host
+/// shim, and this file's tests run natively, where the shims read real stdin — see `store`'s
+/// module doc.
+fn marker(host_id: &str, what: &str) -> zellij_tile::prelude::Mutation {
+    store::import_marker_mutation(host_id, what)
 }
 
-fn imported(backend: &impl Backend, what: &str) -> bool {
+fn imported(backend: &impl Backend, host_id: &str, what: &str) -> bool {
     backend
-        .count(&FetchRequest::entity("import_marker").filter(Pred::eq("what", what)))
+        .count(&store::import_marker_request(host_id, what))
         .map(|count| count > 0)
         // An error here means the store is unreachable, and the import would
         // fail too. Claiming it is done is the safe direction: a retry next

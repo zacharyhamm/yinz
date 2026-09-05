@@ -863,6 +863,15 @@ pub struct AgentRun {
     pub pane_id: u32,
     #[serde(default)]
     pub zellij_session_name: String,
+    /// The machine whose server owns this run, with `zellij_session_name` — see
+    /// [`rows::Owner`]. Not to be confused with [`AgentRun::host`], which is where the agent's
+    /// *folder* is: an agent working over ssh on a build box is owned by the server that opened
+    /// the pane, not by the box.
+    ///
+    /// Empty on runs recorded before the store could be shared between machines, which reads as
+    /// "this one" and was true when there was only one.
+    #[serde(default)]
+    pub host_id: String,
     #[serde(default)]
     pub session_id: String,
     pub kind: String,
@@ -912,12 +921,22 @@ impl AgentRun {
     /// `ended_at_ms` and `outcome` are cleared because the session that lost the pane closed
     /// the run when it saw the pane leave. It could not tell a warp from a `kill`; this is the
     /// answer arriving afterwards.
-    pub fn adopted_by(mut self, pane_id: u32, zellij_session_name: &str) -> AgentRun {
+    ///
+    /// The new owner is both halves at once. A warp between machines moves the host as well as
+    /// the session, and taking one without the other would leave the row claiming an owner that
+    /// is half of each — which no guard would then match.
+    pub fn adopted_by(mut self, pane_id: u32, owner: &rows::Owner) -> AgentRun {
         self.pane_id = pane_id;
-        self.zellij_session_name = zellij_session_name.to_owned();
+        self.zellij_session_name = owner.zellij_session_name.clone();
+        self.host_id = owner.host_id.clone();
         self.ended_at_ms = None;
         self.outcome = RunOutcome::Active;
         self
+    }
+
+    /// Who owns this run now.
+    pub fn owner(&self) -> rows::Owner {
+        rows::Owner::new(self.host_id.clone(), self.zellij_session_name.clone())
     }
 
     pub fn header(&self) -> AgentRunHeader {
@@ -1253,8 +1272,43 @@ pub mod rows {
     use crate::store::Backend;
     use std::collections::{BTreeMap, BTreeSet};
     use zellij_tile::prelude::{
-        DataRows, DataValue, FetchRequest, Mutation, Pred, SortDir, MAX_FETCH_ROWS,
+        DataRows, DataValue, FetchRequest, Mutation, Pred, PutBuilder, SortDir, MAX_FETCH_ROWS,
     };
+
+    /// Which server a row belongs to: the machine, and the session on it.
+    ///
+    /// One type rather than two arguments because forgetting the host half is exactly the bug
+    /// this exists to prevent, and a pair of `&str` parameters invites it — the two were a
+    /// single `zellij_session_name` for as long as the store was per-machine, and every call
+    /// site that scopes a row would otherwise have to remember to grow a second one.
+    ///
+    /// A session name alone stopped being an owner when `plugin_data_url` could point at
+    /// Postgres: two machines can each run a session called `main`, and the pane ids those
+    /// sessions hand out mean nothing to each other. It was never quite stable either, since a
+    /// session can be renamed — the host half is what a row keeps across that.
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    pub struct Owner {
+        pub host_id: String,
+        pub zellij_session_name: String,
+    }
+
+    impl Owner {
+        pub fn new(host_id: impl Into<String>, zellij_session_name: impl Into<String>) -> Self {
+            Owner {
+                host_id: host_id.into(),
+                zellij_session_name: zellij_session_name.into(),
+            }
+        }
+
+        /// Whether this names a session at all.
+        ///
+        /// The session name arrives from the daemon's first snapshot and is empty until then, so
+        /// callers hold back their per-pane reads and writes until it is known — see
+        /// `restore_pane_rows`. The host id is available from load and is not part of the test.
+        pub fn is_known(&self) -> bool {
+            !self.zellij_session_name.is_empty()
+        }
+    }
 
     pub const LATCH_ENTITY: &str = "agent_latch";
     pub const SUMMARY_ENTITY: &str = "agent_summary";
@@ -1284,10 +1338,10 @@ pub mod rows {
     /// kilobytes — and small next to the two megabytes a fetch may hand back.
     pub const RUN_DETAIL_BYTES: usize = 256 * 1024;
 
-    pub fn active_runs_request(zellij_session_name: &str) -> FetchRequest {
+    pub fn active_runs_request(owner: &Owner) -> FetchRequest {
         FetchRequest::entity(RUN_ENTITY)
             .filter(Pred::eq("active", true))
-            .filter(Pred::eq("zellij_session_name", zellij_session_name))
+            .filter(owned_by(owner))
             .select(["payload"])
     }
 
@@ -1310,10 +1364,16 @@ pub mod rows {
         format!("{run_id}#{revision}")
     }
 
-    pub fn entry_mutation(run_id: &str, entry: &RunEntry) -> Mutation {
+    /// One entry on a run's timeline.
+    ///
+    /// `host_id` is attribution rather than key — the uid is `{run_id}#{revision}`, and a run id
+    /// carries the agent's own session uuid, which does not collide between machines. It is here
+    /// so that a search across a shared history can say where a hit happened.
+    pub fn entry_mutation(run_id: &str, host_id: &str, entry: &RunEntry) -> Mutation {
         let mut put = Mutation::put(ENTRY_ENTITY)
             .uid(entry_uid(run_id, entry.revision))
             .set("run_id", run_id)
+            .set("host_id", host_id)
             .set("revision", entry.revision as i64)
             .set("kind", entry.kind.label())
             .set("text", entry.text.clone());
@@ -1471,53 +1531,79 @@ pub mod rows {
         }
     }
 
-    /// A pane's row key. The session is half of it because the store is not per-session: one
-    /// file holds every zellij server on the machine, so a bare pane id makes two sessions'
-    /// pane 5 into one row.
-    fn pane_uid(zellij_session_name: &str, pane_id: u32) -> String {
-        format!("{zellij_session_name}:{pane_id}")
-    }
-
-    /// Only this session's rows. Every prune and every restore is scoped by it, so one session
-    /// closing a pane cannot delete another's row for the pane id it happens to share.
-    fn owned_by(zellij_session_name: &str) -> Pred {
-        Pred::eq("zellij_session_name", zellij_session_name)
-    }
-
-    /// This session's latches, or summaries — `entity` is [`LATCH_ENTITY`] or
-    /// [`SUMMARY_ENTITY`].
-    pub fn owned_rows_request(entity: &str, zellij_session_name: &str) -> FetchRequest {
-        FetchRequest::entity(entity).filter(owned_by(zellij_session_name))
-    }
-
-    /// Rows left behind by the version of these entities that keyed on the pane id alone.
+    /// A pane's row key: the machine, the session on it, and the pane.
     ///
-    /// They cannot be reached by any predicate that a current row matches, and their uids
-    /// collide with nothing, so they would simply accumulate. Dropped once, on the first write
-    /// after the migration.
+    /// All three, because none of the shorter keys is unique. A bare pane id makes two sessions'
+    /// pane 5 into one row — every zellij server on a machine shares one store. Adding the
+    /// session fixed that and stopped there, which was right while the store was a file per
+    /// machine; pointed at a shared Postgres it puts two machines' `main:5` back into one row.
+    fn pane_uid(owner: &Owner, pane_id: u32) -> String {
+        format!(
+            "{}:{}:{}",
+            owner.host_id, owner.zellij_session_name, pane_id
+        )
+    }
+
+    /// Only this server's rows. Every prune and every restore is scoped by it, so one session
+    /// closing a pane cannot delete another's row for the pane id it happens to share.
+    fn owned_by(owner: &Owner) -> Pred {
+        Pred::eq("host_id", owner.host_id.clone()).and(Pred::eq(
+            "zellij_session_name",
+            owner.zellij_session_name.clone(),
+        ))
+    }
+
+    /// The two columns that say who a row belongs to, for a `Put` that writes one.
+    ///
+    /// Always both, and in one place, so that a row cannot be written with a uid naming a host
+    /// and a column that disagrees.
+    fn owner_values(put: PutBuilder, owner: &Owner) -> PutBuilder {
+        put.set("host_id", owner.host_id.clone())
+            .set("zellij_session_name", owner.zellij_session_name.clone())
+    }
+
+    /// This server's latches, or summaries — `entity` is [`LATCH_ENTITY`] or
+    /// [`SUMMARY_ENTITY`].
+    pub fn owned_rows_request(entity: &str, owner: &Owner) -> FetchRequest {
+        FetchRequest::entity(entity).filter(owned_by(owner))
+    }
+
+    /// Rows left behind by earlier versions of these entities: the one that keyed on the pane id
+    /// alone, and the one that keyed on the session without the machine.
+    ///
+    /// Neither can be reached by a predicate that a current row matches, and their uids collide
+    /// with nothing, so they would simply accumulate. Dropped once, on the first write after the
+    /// migration.
+    ///
+    /// An empty `host_id` is the marker for the second kind, since that is what the migration
+    /// fills the new column with. It cannot be told apart from a row this machine wrote before
+    /// upgrading, which is the point: the pane ids in it belong to a server that is gone either
+    /// way, and a stale latch is worth less than a wrong one.
     pub fn stale_unowned_delete_mutations() -> Vec<Mutation> {
         [LATCH_ENTITY, SUMMARY_ENTITY]
             .into_iter()
-            .map(|entity| Mutation::delete(entity, owned_by("")))
+            .map(|entity| Mutation::delete(entity, Pred::eq("host_id", "")))
             .collect()
     }
 
-    pub fn latch_mutation(zellij_session_name: &str, pane_id: u32, kind: &str) -> Mutation {
-        Mutation::put(LATCH_ENTITY)
-            .uid(pane_uid(zellij_session_name, pane_id))
-            .set("pane_id", pane_id)
-            .set("zellij_session_name", zellij_session_name)
-            .set("kind", kind)
-            .build()
+    pub fn latch_mutation(owner: &Owner, pane_id: u32, kind: &str) -> Mutation {
+        owner_values(
+            Mutation::put(LATCH_ENTITY)
+                .uid(pane_uid(owner, pane_id))
+                .set("pane_id", pane_id),
+            owner,
+        )
+        .set("kind", kind)
+        .build()
     }
 
     pub fn latch_delete_mutation(
-        zellij_session_name: &str,
+        owner: &Owner,
         pane_ids: impl IntoIterator<Item = u32>,
     ) -> Mutation {
         Mutation::delete(
             LATCH_ENTITY,
-            Pred::is_in("pane_id", pane_ids).and(owned_by(zellij_session_name)),
+            Pred::is_in("pane_id", pane_ids).and(owned_by(owner)),
         )
     }
 
@@ -1534,18 +1620,16 @@ pub mod rows {
             .collect()
     }
 
-    pub fn summary_mutation(
-        zellij_session_name: &str,
-        pane_id: u32,
-        summary: &Summary,
-    ) -> Mutation {
-        let mut put = Mutation::put(SUMMARY_ENTITY)
-            .uid(pane_uid(zellij_session_name, pane_id))
-            .set("pane_id", pane_id)
-            .set("zellij_session_name", zellij_session_name)
-            .set("text", summary.text.clone())
-            .set("title", summary.title.clone())
-            .set("awaiting", summary.awaiting);
+    pub fn summary_mutation(owner: &Owner, pane_id: u32, summary: &Summary) -> Mutation {
+        let mut put = owner_values(
+            Mutation::put(SUMMARY_ENTITY)
+                .uid(pane_uid(owner, pane_id))
+                .set("pane_id", pane_id),
+            owner,
+        )
+        .set("text", summary.text.clone())
+        .set("title", summary.title.clone())
+        .set("awaiting", summary.awaiting);
         if let Some(created_at_ms) = summary.created_at_ms {
             put = put.set("created_at_ms", created_at_ms);
         }
@@ -1553,12 +1637,12 @@ pub mod rows {
     }
 
     pub fn summary_delete_mutation(
-        zellij_session_name: &str,
+        owner: &Owner,
         pane_ids: impl IntoIterator<Item = u32>,
     ) -> Mutation {
         Mutation::delete(
             SUMMARY_ENTITY,
-            Pred::is_in("pane_id", pane_ids).and(owned_by(zellij_session_name)),
+            Pred::is_in("pane_id", pane_ids).and(owned_by(owner)),
         )
     }
 
@@ -1586,7 +1670,7 @@ pub mod rows {
     /// made: an unchanged summary produces no write, so a poll that changes nothing is
     /// silent - and a summary the daemon re-stamped without changing a word of is unchanged.
     pub fn summary_diff_mutations(
-        zellij_session_name: &str,
+        owner: &Owner,
         before: &Summaries,
         after: &Summaries,
     ) -> Vec<Mutation> {
@@ -1597,7 +1681,7 @@ pub mod rows {
                     .get(pane_id)
                     .is_some_and(|b| summary_says_same(b, summary))
             })
-            .map(|(pane_id, summary)| summary_mutation(zellij_session_name, *pane_id, summary))
+            .map(|(pane_id, summary)| summary_mutation(owner, *pane_id, summary))
             .collect();
         let gone: Vec<u32> = before
             .keys()
@@ -1605,7 +1689,7 @@ pub mod rows {
             .copied()
             .collect();
         if !gone.is_empty() {
-            mutations.push(summary_delete_mutation(zellij_session_name, gone));
+            mutations.push(summary_delete_mutation(owner, gone));
         }
         mutations
     }
@@ -1620,6 +1704,7 @@ pub mod rows {
                 "zellij_session_name",
                 DataValue::from(run.zellij_session_name.clone()),
             ),
+            ("host_id", DataValue::from(run.host_id.clone())),
             ("kind", DataValue::from(run.kind.clone())),
             ("active", DataValue::from(run.ended_at_ms.is_none())),
             ("started_at_ms", DataValue::from(run.started_at_ms)),
@@ -1649,6 +1734,7 @@ pub mod rows {
             id: run.id.clone(),
             pane_id: run.pane_id,
             zellij_session_name: run.zellij_session_name.clone(),
+            host_id: run.host_id.clone(),
             session_id: run.session_id.clone(),
             kind: run.kind.clone(),
             cwd: run.cwd.clone(),
@@ -1685,28 +1771,32 @@ pub mod rows {
         mutations.extend(
             run.entries
                 .iter()
-                .map(|entry| entry_mutation(&run.id, entry)),
+                .map(|entry| entry_mutation(&run.id, &run.host_id, entry)),
         );
         mutations
     }
 
     /// Write a run *only while it is still ours*.
     ///
-    /// Every session on a machine shares one store, so two daemons can hold opinions about one
-    /// run id — which is exactly what a warp arranges. The session that lost the pane closes
-    /// the run when it notices the pane gone; the session that gained it has by then reopened
-    /// the same row under its own name. An unconditional `Put` from the loser would overwrite
-    /// the winner's copy with a stale, closed one, and the entries the agent has produced
-    /// since would be gone.
+    /// Every session sharing a store can hold opinions about one run id — which is exactly what
+    /// a warp arranges. The session that lost the pane closes the run when it notices the pane
+    /// gone; the session that gained it has by then reopened the same row under its own name.
+    /// An unconditional `Put` from the loser would overwrite the winner's copy with a stale,
+    /// closed one, and the entries the agent has produced since would be gone.
     ///
     /// The predicate settles that inside the transaction rather than by hoping about order: a
-    /// row already claimed by another session matches nothing, and the write is simply
-    /// dropped. An adoption is deliberately *not* guarded — claiming the row is precisely the
-    /// write that changes `zellij_session_name`, so it must be a `Put`.
-    pub fn run_owned_mutation(run: &AgentRun, owner: &str) -> Mutation {
+    /// row already claimed by another session matches nothing, and the write is simply dropped.
+    /// An adoption is deliberately *not* guarded — claiming the row is precisely the write that
+    /// changes the owner, so it must be a `Put`.
+    ///
+    /// The owner is the machine and the session, not the session alone. On a store shared
+    /// between machines a session called `main` on one of them would otherwise pass the guard
+    /// held by `main` on another and close a run it has nothing to do with — worse than no
+    /// guard, because it looks like one.
+    pub fn run_owned_mutation(run: &AgentRun, owner: &Owner) -> Mutation {
         let mut update = Mutation::update(
             RUN_ENTITY,
-            Pred::eq("uid", run.id.clone()).and(Pred::eq("zellij_session_name", owner)),
+            Pred::eq("uid", run.id.clone()).and(owned_by(owner)),
         );
         for (attr, value) in run_values(run) {
             update = update.set(attr, value);
@@ -3080,6 +3170,15 @@ pub fn list_json(
 mod tests {
     use super::*;
 
+    /// The machine most of these tests are on. Named, rather than empty, so that a helper which
+    /// forgot to write `host_id` fails a test instead of matching the pre-migration rows.
+    const HOST: &str = "host-a";
+
+    /// An owner on [`HOST`]. The cross-machine cases spell `Owner::new` out.
+    fn owner(zellij_session_name: &str) -> rows::Owner {
+        rows::Owner::new(HOST, zellij_session_name)
+    }
+
     #[test]
     fn a_registered_record_names_the_kind_and_nothing_it_does_not_know() {
         let record = registered_agent("reviewer", Some("/work".to_owned()));
@@ -4162,6 +4261,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "zellij".to_owned(),
+            host_id: HOST.to_owned(),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -4288,6 +4388,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "zellij".to_owned(),
+            host_id: HOST.to_owned(),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -4370,6 +4471,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "zellij".to_owned(),
+            host_id: HOST.to_owned(),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -4424,6 +4526,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "zellij".to_owned(),
+            host_id: HOST.to_owned(),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -4512,6 +4615,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "zellij".to_owned(),
+            host_id: HOST.to_owned(),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),
@@ -4537,7 +4641,9 @@ mod tests {
         foreign.session_id = "session-2".to_owned();
         foreign.zellij_session_name = "another-zellij".to_owned();
         local.apply(rows::run_mutations(&foreign)).unwrap();
-        let active = local.fetch(&rows::active_runs_request("zellij")).unwrap();
+        let active = local
+            .fetch(&rows::active_runs_request(&owner("zellij")))
+            .unwrap();
         // The metadata comes back from the run's own row; the timeline is rows of its own, and
         // arrives only once it is asked for.
         let mut restored = rows::runs_from_rows(&active);
@@ -4597,14 +4703,18 @@ mod tests {
                 .set("pane_id", run.pane_id)
                 .set("session_id", run.session_id.clone())
                 .set("zellij_session_name", run.zellij_session_name.clone())
+                .set("host_id", run.host_id.clone())
                 .set("kind", run.kind.clone())
                 .set("active", true)
                 .set("started_at_ms", run.started_at_ms)
                 .set("payload", serde_json::to_string(&run).unwrap())
                 .build()])
             .unwrap();
-        let mut restored =
-            rows::runs_from_rows(&local.fetch(&rows::active_runs_request("zellij")).unwrap());
+        let mut restored = rows::runs_from_rows(
+            &local
+                .fetch(&rows::active_runs_request(&owner("zellij")))
+                .unwrap(),
+        );
         assert_eq!(
             restored,
             vec![run.clone()],
@@ -4686,8 +4796,11 @@ mod tests {
             &texts.iter().map(String::as_str).collect::<Vec<_>>(),
         );
         local.apply(rows::run_mutations(&run)).unwrap();
-        let mut restored =
-            rows::runs_from_rows(&local.fetch(&rows::active_runs_request("zellij")).unwrap());
+        let mut restored = rows::runs_from_rows(
+            &local
+                .fetch(&rows::active_runs_request(&owner("zellij")))
+                .unwrap(),
+        );
         rows::hydrate_entries(&local, &mut restored);
         assert_eq!(restored, vec![run]);
     }
@@ -4697,6 +4810,7 @@ mod tests {
             id: id.to_owned(),
             pane_id,
             zellij_session_name: session.to_owned(),
+            host_id: HOST.to_owned(),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),
@@ -4750,7 +4864,7 @@ mod tests {
         run.ended_at_ms = Some(20);
         run.outcome = RunOutcome::Closed;
         losing
-            .apply(vec![rows::run_owned_mutation(&run, "here")])
+            .apply(vec![rows::run_owned_mutation(&run, &owner("here"))])
             .unwrap();
         assert_eq!(
             stored_run(&losing, "claude:session-1").outcome,
@@ -4758,7 +4872,7 @@ mod tests {
         );
 
         // The gaining session finds it by the id the record carried, and claims it.
-        let adopted = stored_run(&gaining, "claude:session-1").adopted_by(2, "there");
+        let adopted = stored_run(&gaining, "claude:session-1").adopted_by(2, &owner("there"));
         assert_eq!(adopted.entries.len(), 1, "the history came with it");
         assert_eq!(adopted.started_at_ms, 10, "and so did when it began");
         assert_eq!(adopted.outcome, RunOutcome::Active);
@@ -4789,7 +4903,7 @@ mod tests {
         losing.apply(rows::run_mutations(&run)).unwrap();
 
         // The gaining session gets there first, and the agent keeps working.
-        let mut adopted = stored_run(&gaining, "claude:session-1").adopted_by(2, "there");
+        let mut adopted = stored_run(&gaining, "claude:session-1").adopted_by(2, &owner("there"));
         adopted.revision += 1;
         adopted.entries.push(RunEntry {
             revision: adopted.revision,
@@ -4805,7 +4919,7 @@ mod tests {
         released.ended_at_ms = Some(20);
         released.outcome = RunOutcome::Closed;
         losing
-            .apply(vec![rows::run_owned_mutation(&released, "here")])
+            .apply(vec![rows::run_owned_mutation(&released, &owner("here"))])
             .unwrap();
 
         let stored = stored_run(&losing, "claude:session-1");
@@ -4832,7 +4946,7 @@ mod tests {
         run.ended_at_ms = Some(20);
         run.outcome = RunOutcome::Closed;
         local
-            .apply(vec![rows::run_owned_mutation(&run, "here")])
+            .apply(vec![rows::run_owned_mutation(&run, &owner("here"))])
             .unwrap();
 
         let stored = stored_run(&local, "claude:session-1");
@@ -4850,7 +4964,7 @@ mod tests {
         );
         assert!(
             local
-                .fetch(&rows::active_runs_request("here"))
+                .fetch(&rows::active_runs_request(&owner("here")))
                 .unwrap()
                 .rows
                 .is_empty(),
@@ -4908,14 +5022,17 @@ mod tests {
         here.define_all(&store::shared_defs()).unwrap();
         let there = here.joined(store::SHARED, "hocus");
 
-        here.apply(vec![rows::latch_mutation("here", 5, "reviewer")])
+        here.apply(vec![rows::latch_mutation(&owner("here"), 5, "reviewer")])
             .unwrap();
         there
-            .apply(vec![rows::latch_mutation("there", 5, "builder")])
+            .apply(vec![rows::latch_mutation(&owner("there"), 5, "builder")])
             .unwrap();
         let latches_of = |backend: &dyn Backend, session: &str| {
             let rows = backend
-                .fetch(&rows::owned_rows_request(rows::LATCH_ENTITY, session))
+                .fetch(&rows::owned_rows_request(
+                    rows::LATCH_ENTITY,
+                    &owner(session),
+                ))
                 .unwrap();
             rows::latches_from_rows(&rows)
         };
@@ -4929,7 +5046,7 @@ mod tests {
         );
 
         // And a prune reaches only its own.
-        here.apply(vec![rows::latch_delete_mutation("here", [5])])
+        here.apply(vec![rows::latch_delete_mutation(&owner("here"), [5])])
             .unwrap();
         assert!(latches_of(&here, "here").is_empty());
         assert_eq!(
@@ -4937,6 +5054,100 @@ mod tests {
             BTreeMap::from([(5, "builder".to_owned())]),
             "the other session's pane 5 is a different pane"
         );
+    }
+
+    /// The same collision one size up: two *machines*, one Postgres, one session name, one pane
+    /// id. Session names are not unique between machines — `main` is the obvious case — so
+    /// scoping by session alone put two machines' pane 5 back into the row the session key had
+    /// just separated, and each machine's prune deleted the other's.
+    #[test]
+    fn per_pane_rows_belong_to_one_machine_as_well_as_one_session() {
+        use crate::store::{self, Backend};
+
+        let laptop = store::Local::shared("hocus");
+        laptop.define_all(&store::shared_defs()).unwrap();
+        let build_box = laptop.joined(store::SHARED, "hocus");
+
+        // Both sessions are called `main`, which is what makes this a collision rather than a
+        // coincidence.
+        let on_laptop = rows::Owner::new("host-laptop", "main");
+        let on_build_box = rows::Owner::new("host-build-box", "main");
+
+        laptop
+            .apply(vec![rows::latch_mutation(&on_laptop, 5, "reviewer")])
+            .unwrap();
+        build_box
+            .apply(vec![rows::latch_mutation(&on_build_box, 5, "builder")])
+            .unwrap();
+
+        let latches_of = |backend: &dyn Backend, owner: &rows::Owner| {
+            let rows = backend
+                .fetch(&rows::owned_rows_request(rows::LATCH_ENTITY, owner))
+                .unwrap();
+            rows::latches_from_rows(&rows)
+        };
+        assert_eq!(
+            latches_of(&laptop, &on_laptop),
+            BTreeMap::from([(5, "reviewer".to_owned())])
+        );
+        assert_eq!(
+            latches_of(&build_box, &on_build_box),
+            BTreeMap::from([(5, "builder".to_owned())]),
+            "the other machine's pane 5 is a different pane"
+        );
+
+        // And a prune reaches only its own machine's.
+        laptop
+            .apply(vec![rows::latch_delete_mutation(&on_laptop, [5])])
+            .unwrap();
+        assert!(latches_of(&laptop, &on_laptop).is_empty());
+        assert_eq!(
+            latches_of(&build_box, &on_build_box),
+            BTreeMap::from([(5, "builder".to_owned())]),
+            "one machine's prune deleted another machine's row"
+        );
+    }
+
+    /// The ownership guard, one size up. A run released by one session is written under a
+    /// predicate naming its owner, so a session that has since taken the pane keeps its copy.
+    /// With the owner as a bare session name, `main` on one machine passed the guard held by
+    /// `main` on another — worse than no guard, because it looks like one.
+    #[test]
+    fn a_guarded_run_write_does_not_match_another_machines_session_of_the_same_name() {
+        use crate::store::{self, Backend};
+
+        let laptop = store::Local::shared("hocus-agentd");
+        laptop.define_all(&store::shared_defs()).unwrap();
+        let build_box = laptop.joined(store::SHARED, "hocus-agentd");
+
+        let on_laptop = rows::Owner::new("host-laptop", "main");
+        let on_build_box = rows::Owner::new("host-build-box", "main");
+
+        // The build box owns the run, and has said something recent about it.
+        let mut run = a_run_with_entries("claude:session-1", "main", 7, &["answered"]);
+        run.host_id = on_build_box.host_id.clone();
+        build_box.apply(rows::run_mutations(&run)).unwrap();
+
+        // The laptop's session, also called `main`, closes a run it believes it lost.
+        let mut stale = run.clone();
+        stale.host_id = on_laptop.host_id.clone();
+        stale.ended_at_ms = Some(99);
+        stale.outcome = RunOutcome::Completed;
+        laptop
+            .apply(vec![rows::run_owned_mutation(&stale, &on_laptop)])
+            .unwrap();
+
+        let live = rows::runs_from_rows(
+            &build_box
+                .fetch(&rows::active_runs_request(&on_build_box))
+                .unwrap(),
+        );
+        assert_eq!(
+            live.len(),
+            1,
+            "the other machine's write closed a run it does not own"
+        );
+        assert_eq!(live[0].outcome, RunOutcome::Active);
     }
 
     /// The v1 → v2 migration is one the store performs unasked, and it had better be: every
@@ -4973,8 +5184,8 @@ mod tests {
         // Two sessions can now hold pane 5, which is what the unique index forbade.
         local
             .apply(vec![
-                rows::latch_mutation("here", 5, "reviewer"),
-                rows::latch_mutation("there", 5, "builder"),
+                rows::latch_mutation(&owner("here"), 5, "reviewer"),
+                rows::latch_mutation(&owner("there"), 5, "builder"),
             ])
             .expect("one pane id, two sessions");
 
@@ -6787,6 +6998,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 3,
             zellij_session_name: "zellij".to_owned(),
+            host_id: HOST.to_owned(),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,

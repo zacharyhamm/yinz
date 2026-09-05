@@ -176,7 +176,7 @@ fn a_scheduled_job_survives_open_store() {
         .apply(
             hocus_proto::jobs::from_rows(&rows)
                 .iter()
-                .map(hocus_proto::jobs::to_mutation)
+                .map(|row| hocus_proto::jobs::to_mutation(&restarted.owner(), row))
                 .collect(),
         )
         .expect("copied");
@@ -372,9 +372,9 @@ fn a_restored_job_waits_for_its_chat() {
     state
         .store()
         .apply(vec![
-            hocus_proto::jobs::to_mutation(&held_row(1, Some(3))),
-            hocus_proto::jobs::to_mutation(&held_row(2, Some(3))),
-            hocus_proto::jobs::to_mutation(&held_row(3, None)),
+            hocus_proto::jobs::to_mutation(&state.owner(), &held_row(1, Some(3))),
+            hocus_proto::jobs::to_mutation(&state.owner(), &held_row(2, Some(3))),
+            hocus_proto::jobs::to_mutation(&state.owner(), &held_row(3, None)),
         ])
         .expect("written");
     state.open_store();
@@ -484,8 +484,8 @@ fn stop_jobs_clears_held_jobs_too() {
     state
         .store()
         .apply(vec![
-            hocus_proto::jobs::to_mutation(&held_row(7, Some(3))),
-            hocus_proto::jobs::to_mutation(&held_row(8, Some(4))),
+            hocus_proto::jobs::to_mutation(&state.owner(), &held_row(7, Some(3))),
+            hocus_proto::jobs::to_mutation(&state.owner(), &held_row(8, Some(4))),
         ])
         .expect("written");
     state.open_store();
@@ -506,7 +506,10 @@ fn stop_jobs_clears_held_jobs_too() {
     // And one by id.
     state
         .store()
-        .apply(vec![hocus_proto::jobs::to_mutation(&held_row(9, Some(3)))])
+        .apply(vec![hocus_proto::jobs::to_mutation(
+            &state.owner(),
+            &held_row(9, Some(3)),
+        )])
         .expect("written");
     state.restore_persisted();
     assert_eq!(state.unschedule(Some(9)), "cancelled job 9");

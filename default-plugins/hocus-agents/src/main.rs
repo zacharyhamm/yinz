@@ -3835,6 +3835,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 3,
             zellij_session_name: "zellij".to_owned(),
+            host_id: String::new(),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),

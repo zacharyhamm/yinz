@@ -7,9 +7,12 @@
 //! "has an agent looked at this before", "what did the one in that pane conclude" — and
 //! answering it means searching a machine's whole history and then reading around a hit.
 //!
-//! Machine-wide is the default rather than a widening, and that is the store's doing: there is
-//! one `plugin-data.db` per machine, not per session, so a run recorded in a session that has
-//! since been closed is as legible as one still going. Narrowing to a session is the option.
+//! Store-wide is the default rather than a widening, and that is the store's doing: it is not
+//! per session, so a run recorded in a session that has since been closed is as legible as one
+//! still going. With the default SQLite backend that means everything on this machine; with
+//! `plugin_data_url` pointing at Postgres it means everything on every machine sharing it, which
+//! is a better answer to "have I had an agent look at this before" than one machine's share of
+//! it. Narrowing — to a session, to a machine — is the option.
 //!
 //! Its own module rather than more of `agents.rs` for the reason [`crate::notes`] is its own:
 //! reading is a different job from recording, and `agents.rs` is already the largest file in
@@ -83,11 +86,21 @@ const MAX_SCOPE_RUNS: usize = MAX_RUN_SCAN;
 /// [`MAX_SCOPE_RUNS`] is.
 const MAX_SCOPE_SCAN: usize = 4_000;
 
-/// Which runs a caller is asking about. Every field `None` means every run on this machine.
+/// Which runs a caller is asking about. Every field `None` means every run in the store — which
+/// is every run on this machine, or on every machine sharing a Postgres.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Filter {
     /// One zellij session's runs, by name.
+    ///
+    /// A session name is only unique within a machine, so this is worth pairing with
+    /// [`Filter::host_id`] on a shared store — two machines can each have a `main`.
     pub zellij_session_name: Option<String>,
+    /// One machine's runs, by its host id. See `agents::rows::Owner`.
+    ///
+    /// Left `None` by default, and deliberately: "have I had an agent look at this before" is a
+    /// better question when it can answer across every machine the user works on, which is what
+    /// a shared store now makes possible. Narrowing is the option, as it is for the session.
+    pub host_id: Option<String>,
     /// A project root. Matched against a run's `cwd` by prefix, in the guest — see
     /// [`matches_root`].
     pub root: Option<String>,
@@ -107,6 +120,9 @@ impl Filter {
         let mut preds = Vec::new();
         if let Some(session) = self.session() {
             preds.push(Pred::eq("zellij_session_name", session));
+        }
+        if let Some(host_id) = trimmed(&self.host_id) {
+            preds.push(Pred::eq("host_id", host_id));
         }
         if let Some(kind) = trimmed(&self.kind) {
             preds.push(Pred::eq("kind", kind));
@@ -697,6 +713,9 @@ pub use agents::short_age;
 
 #[cfg(test)]
 mod tests {
+    /// The machine these runs were recorded on.
+    const HOST: &str = "host-a";
+
     use super::*;
     use crate::agents::{AgentRun, RunOutcome};
     use crate::store::{self, shared_defs};
@@ -720,11 +739,23 @@ mod tests {
         }
     }
 
+    /// One entry row as the v1 definition held it: no `host_id`, which came later.
+    fn old_entry_put(run_id: &str, entry: &RunEntry) -> zellij_tile::prelude::Mutation {
+        zellij_tile::prelude::Mutation::put(rows::ENTRY_ENTITY)
+            .uid(format!("{run_id}#{}", entry.revision))
+            .set("run_id", run_id)
+            .set("revision", entry.revision as i64)
+            .set("kind", entry.kind.label())
+            .set("text", entry.text.clone())
+            .build()
+    }
+
     fn run(id: &str, kind: &str, session: &str, started_at_ms: i64) -> AgentRun {
         AgentRun {
             id: id.to_owned(),
             pane_id: 7,
             zellij_session_name: session.to_owned(),
+            host_id: HOST.to_owned(),
             session_id: id.to_owned(),
             kind: kind.to_owned(),
             cwd: Some("/work/hocus".to_owned()),
@@ -868,8 +899,10 @@ mod tests {
             .attr(zellij_tile::prelude::AttrDef::text("text").required())
             .attr(zellij_tile::prelude::AttrDef::int("created_at_ms"));
         backend.define(&before).expect("the old definition");
+        // Hand-written rather than through `rows::entry_mutation`, which sets columns this
+        // definition does not have: the point is a row as the old schema really held it.
         backend
-            .apply(vec![rows::entry_mutation(
+            .apply(vec![old_entry_put(
                 "claude:old",
                 &entry(1, RunEntryKind::Prompt, "an archaeological finding", 1),
             )])
@@ -910,7 +943,7 @@ mod tests {
             .define(&crate::store::agent_run_def())
             .expect("the run entity");
         owner
-            .apply(vec![rows::entry_mutation(
+            .apply(vec![old_entry_put(
                 "claude:old",
                 &entry(1, RunEntryKind::Prompt, "a foreign finding", 1),
             )])

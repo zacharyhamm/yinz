@@ -57,9 +57,12 @@ fn ready_state() -> State {
         // because it is what `is_panel` reads, and without it Esc, `show_self` and every other
         // panel gesture below are correctly refused - see `State::own_is_floating`.
         own_is_floating: Some(true),
-        // Every per-pane row this plugin writes is keyed by session as well as pane id, so a
-        // state that has never heard a snapshot writes none. Standing in for the first one.
+        // Every per-pane row this plugin writes is keyed by host and session as well as pane
+        // id, so a state that has never heard a snapshot writes none. Standing in for the
+        // first one. The host is named rather than left empty so that a helper which forgot to
+        // write it fails a test instead of matching the pre-migration rows.
         zellij_session_name: "test-session".to_owned(),
+        host_id: "test-host".to_owned(),
         cfg: Config::resolve(
             &BTreeMap::new(),
             &BTreeMap::from([("OPENAI_API_KEY".to_owned(), "sk-test".to_owned())]),

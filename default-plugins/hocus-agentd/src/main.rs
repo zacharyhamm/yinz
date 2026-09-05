@@ -213,6 +213,9 @@ struct State {
     /// Hook-backed runs currently attached to a pane. Completed runs live in the shared store;
     /// dirty completed rows ride the snapshot that announces their end.
     zellij_session_name: Option<String>,
+    /// The machine this daemon runs on, read once at load. The other half of a row's owner —
+    /// see `agents::rows::Owner`.
+    host_id: String,
     runs: BTreeMap<u32, agents::AgentRun>,
     dirty_runs: BTreeMap<String, agents::AgentRun>,
     /// Runs whose pane is gone from this session, so their write has to be guarded: a warped
@@ -442,6 +445,9 @@ impl ZellijPlugin for State {
         // unconditionally, so this value-returning call is actually answered rather than
         // dropped — and a dropped one would block on a read that never completes.
         self.env = get_session_environment_variables();
+        // Which machine's rows these are. Constant for the life of the process, and needed
+        // before any per-pane row is read or written.
+        self.host_id = get_plugin_ids().host_id;
 
         let _ = store::Host::shared().define_all(&store::shared_defs());
 
@@ -637,7 +643,7 @@ impl State {
         };
         self.set_zellij_session_name(session_name.clone());
         if let Ok(rows) = store::Host::shared()
-            .fetch(&agents::rows::active_runs_request(&session_name).limit(MAX_FETCH_ROWS))
+            .fetch(&agents::rows::active_runs_request(&self.owner()).limit(MAX_FETCH_ROWS))
         {
             let mut runs = agents::rows::runs_from_rows(&rows);
             self.hydrate_runs(&mut runs);
@@ -682,17 +688,31 @@ impl State {
         self.resolve_repositories();
     }
 
+    /// Who this daemon writes rows as: its machine, and the session it is in.
+    ///
+    /// The session name is empty until the first snapshot names it, which is why the callers
+    /// that write per-pane rows check `is_known` first.
+    fn owner(&self) -> agents::rows::Owner {
+        agents::rows::Owner::new(
+            self.host_id.clone(),
+            self.zellij_session_name.clone().unwrap_or_default(),
+        )
+    }
+
     fn set_zellij_session_name(&mut self, name: String) {
         if self.zellij_session_name.as_ref() == Some(&name) {
             return;
         }
         self.zellij_session_name = Some(name.clone());
+        let host_id = self.host_id.clone();
         for run in self.runs.values_mut() {
             run.zellij_session_name = name.clone();
+            run.host_id = host_id.clone();
             self.dirty_runs.insert(run.id.clone(), run.clone());
         }
         for run in self.dirty_runs.values_mut() {
             run.zellij_session_name = name.clone();
+            run.host_id = host_id.clone();
         }
     }
 
@@ -1058,12 +1078,12 @@ impl State {
             self.finish_run(pane_id, agents::RunOutcome::Completed, now_ms);
             return;
         }
-        let zellij_session_name = self.zellij_session_name.clone().unwrap_or_default();
+        let owner = self.owner();
         if !self.runs.contains_key(&pane_id) {
             // The manifest usually gets here first, but a hook can beat it: the pane arrives
             // and the agent speaks before the next `PaneUpdate`. Looking again costs one fetch
             // on the first event of a run and nothing after.
-            self.adopt_stored_run(pane_id, kind, &event.session_id, &zellij_session_name);
+            self.adopt_stored_run(pane_id, kind, &event.session_id, &owner);
         }
         // Read after the adoption above: a run it picked up is not a new one.
         let new_run = !self.runs.contains_key(&pane_id);
@@ -1085,7 +1105,8 @@ impl State {
             .or_insert_with(|| agents::AgentRun {
                 id: agents::run_id(kind, pane_id, &event.session_id, now_ms),
                 pane_id,
-                zellij_session_name,
+                zellij_session_name: owner.zellij_session_name.clone(),
+                host_id: owner.host_id.clone(),
                 session_id: event.session_id.clone(),
                 kind: kind.to_owned(),
                 cwd: event.cwd.clone(),
@@ -1156,8 +1177,14 @@ impl State {
     /// The hook-side twin of `adopt_arrived_runs`. It has no record to read, so it builds the
     /// candidate id from the event: the same derivation, from the same session id the record
     /// would have carried.
-    fn adopt_stored_run(&mut self, pane_id: u32, kind: &str, session_id: &str, owner: &str) {
-        if session_id.trim().is_empty() || owner.is_empty() {
+    fn adopt_stored_run(
+        &mut self,
+        pane_id: u32,
+        kind: &str,
+        session_id: &str,
+        owner: &agents::rows::Owner,
+    ) {
+        if session_id.trim().is_empty() || !owner.is_known() {
             return;
         }
         if !self.run_lookups.insert(pane_id) {
@@ -1276,7 +1303,10 @@ impl State {
     ///
     /// The marks are handed back rather than moved here, because a refused batch writes
     /// nothing, and a mark advanced anyway would lose every entry it had claimed to store.
-    fn dirty_run_mutations(&self, owner: &str) -> (Vec<Mutation>, Vec<(String, u64)>) {
+    fn dirty_run_mutations(
+        &self,
+        owner: &agents::rows::Owner,
+    ) -> (Vec<Mutation>, Vec<(String, u64)>) {
         let mut mutations = Vec::with_capacity(self.dirty_runs.len());
         let mut written: Vec<(String, u64)> = Vec::new();
         for run in self.dirty_runs.values() {
@@ -1299,7 +1329,7 @@ impl State {
             // with neither copy.
             let from = self.persisted_revision.get(&run.id).copied().unwrap_or(0);
             for entry in run.entries.iter().filter(|entry| entry.revision > from) {
-                mutations.push(agents::rows::entry_mutation(&run.id, entry));
+                mutations.push(agents::rows::entry_mutation(&run.id, &run.host_id, entry));
             }
             if let Some(newest) = run.entries.last().map(|entry| entry.revision) {
                 written.push((run.id.clone(), newest.max(from)));
@@ -1309,10 +1339,8 @@ impl State {
     }
 
     fn persist_dirty_runs(&mut self) {
-        let Some(owner) = self.zellij_session_name.clone() else {
-            return;
-        };
-        if self.dirty_runs.is_empty() {
+        let owner = self.owner();
+        if !owner.is_known() || self.dirty_runs.is_empty() {
             return;
         }
         let (mutations, written) = self.dirty_run_mutations(&owner);
@@ -1765,17 +1793,18 @@ impl State {
     /// Pick up the run of any agent pane that arrived carrying one.
     ///
     /// The other half of a warp. `AgentInfo` travels with the pane, so the record is right the
-    /// moment it lands — but the run behind it is a row in a store shared by every session on
-    /// this machine, under an id that means nothing to a pane id or a session name. This is
-    /// where that id is looked up.
+    /// moment it lands — but the run behind it is a row in a store shared by every session that
+    /// reaches it, under an id that means nothing to a pane id or a session name. This is where
+    /// that id is looked up.
     ///
     /// Driven off the manifest rather than off the next hook, because an agent that arrives
     /// mid-think may say nothing for minutes, and until it does the run would sit in the
     /// archive marked closed while the pane it belongs to is plainly working.
     fn adopt_arrived_runs(&mut self) {
-        let Some(owner) = self.zellij_session_name.clone() else {
+        let owner = self.owner();
+        if !owner.is_known() {
             return;
-        };
+        }
         let candidates: Vec<(u32, String)> = self
             .panes
             .iter()
@@ -3396,6 +3425,7 @@ mod tests {
             id: "claude:cc-session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "here".to_owned(),
+            host_id: "host-a".to_owned(),
             session_id: "cc-session-1".to_owned(),
             kind: CLAUDE.to_owned(),
             cwd: Some("/work".to_owned()),
@@ -3421,7 +3451,7 @@ mod tests {
                 created_at_ms: Some(10),
             }],
         };
-        run = run.adopted_by(2, "there");
+        run = run.adopted_by(2, &agents::rows::Owner::new("host-a", "there"));
         state.adopt_run(2, run.clone());
 
         let live = state.runs.get(&2).expect("the run is this pane's now");
@@ -5158,6 +5188,7 @@ mod tests {
             id: "claude:s".to_owned(),
             pane_id: 7,
             zellij_session_name: "here".to_owned(),
+            host_id: "host-a".to_owned(),
             session_id: "s".to_owned(),
             kind: CLAUDE.to_owned(),
             cwd: None,
@@ -6208,7 +6239,8 @@ mod tests {
         );
         let run_id = state.runs[&7].id.clone();
         // One run row, one entry row.
-        let (first, written) = state.dirty_run_mutations("zellij");
+        let (first, written) =
+            state.dirty_run_mutations(&agents::rows::Owner::new("host-a", "zellij"));
         assert_eq!(first.len(), 2);
         assert_eq!(written, vec![(run_id.clone(), 1)]);
 
@@ -6223,7 +6255,8 @@ mod tests {
             },
             None,
         );
-        let (second, written) = state.dirty_run_mutations("zellij");
+        let (second, written) =
+            state.dirty_run_mutations(&agents::rows::Owner::new("host-a", "zellij"));
         assert_eq!(second.len(), 2, "the run row and the one new entry");
         assert_eq!(written, vec![(run_id.clone(), 2)]);
 
@@ -6241,7 +6274,8 @@ mod tests {
             },
             None,
         );
-        let (released, written) = state.dirty_run_mutations("zellij");
+        let (released, written) =
+            state.dirty_run_mutations(&agents::rows::Owner::new("host-a", "zellij"));
         assert_eq!(
             released.len(),
             2,
@@ -6263,6 +6297,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "zellij".to_owned(),
+            host_id: "host-a".to_owned(),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -6283,7 +6318,8 @@ mod tests {
         state.released_runs.insert(run.id.clone());
         state.dirty_runs.insert(run.id.clone(), run.clone());
 
-        let (mutations, written) = state.dirty_run_mutations("zellij");
+        let (mutations, written) =
+            state.dirty_run_mutations(&agents::rows::Owner::new("host-a", "zellij"));
         assert_eq!(
             mutations.len(),
             3,
@@ -7617,6 +7653,7 @@ mod tests {
             id: "claude:cc-session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "here".to_owned(),
+            host_id: "host-a".to_owned(),
             session_id: "cc-session-1".to_owned(),
             kind: CLAUDE.to_owned(),
             cwd: Some("/work".to_owned()),
@@ -7656,6 +7693,7 @@ mod tests {
             id: id.to_owned(),
             pane_id: 7,
             zellij_session_name: "here".to_owned(),
+            host_id: "host-a".to_owned(),
             session_id: "cc-session-1".to_owned(),
             kind: CLAUDE.to_owned(),
             cwd: Some("/work".to_owned()),

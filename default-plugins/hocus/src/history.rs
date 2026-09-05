@@ -167,6 +167,7 @@ fn message_mutation(chat_id: u64, seq: usize, message: &Message) -> Mutation {
 /// this errs long.
 pub fn save(
     backend: &impl Backend,
+    host_id: &str,
     id: &mut Option<u64>,
     messages: &[Message],
     saved_len: usize,
@@ -179,7 +180,16 @@ pub fn save(
         None => {
             // No uid: the store allocates the id, and there is nothing to
             // upsert against on a chat that has never been written.
-            let mut chat = Mutation::put("chat").set("title", title.clone());
+            //
+            // The host is written once, here, and never updated. It says where the
+            // conversation happened, which matters now that an archive can span machines —
+            // and it stays true afterwards, unlike the session, which a warp can change.
+            // It is not part of any key: the id comes from the database, so two machines
+            // never mint the same one, and the `(chat_id, seq)` rewrite below stays a
+            // single-writer problem per chat.
+            let mut chat = Mutation::put("chat")
+                .set("title", title.clone())
+                .set("host_id", host_id);
             if let Some(usage) = usage {
                 chat = chat
                     .set("input_tokens", usage.input_tokens)
@@ -587,30 +597,30 @@ pub fn import_legacy(_backend: &impl Backend) {}
 /// there is no single transaction to join. A crash midway re-imports, which
 /// duplicates chats — the alternative is a marker written first, where a crash
 /// loses them. Duplicates are visible and deletable; a silent loss is not.
-pub fn open(backend: &impl Backend) -> Result<(), String> {
+pub fn open(backend: &impl Backend, host_id: &str) -> Result<(), String> {
     backend.define_all(&store::private_defs())?;
-    if !imported(backend, "chats") {
+    if !imported(backend, host_id, "chats") {
         import_legacy(backend);
-        backend.apply(vec![marker("chats")])?;
+        backend.apply(vec![marker(host_id, "chats")])?;
     }
-    if !imported(backend, "prompts") {
+    if !imported(backend, host_id, "prompts") {
         import_legacy_prompts(backend);
-        backend.apply(vec![marker("prompts")])?;
+        backend.apply(vec![marker(host_id, "prompts")])?;
     }
     trim_prompts(backend);
     Ok(())
 }
 
-pub(crate) fn marker(what: &str) -> Mutation {
-    Mutation::put("import_marker")
-        .uid(what)
-        .set("what", what)
-        .build()
+/// The host is carried in rather than asked for. `get_plugin_ids` is a host shim, and these run
+/// in a native test binary where the shims read real stdin — see `store`'s module doc. The state
+/// has it from load anyway.
+pub(crate) fn marker(host_id: &str, what: &str) -> Mutation {
+    store::import_marker_mutation(host_id, what)
 }
 
-pub(crate) fn imported(backend: &impl Backend, what: &str) -> bool {
+pub(crate) fn imported(backend: &impl Backend, host_id: &str, what: &str) -> bool {
     backend
-        .count(&FetchRequest::entity("import_marker").filter(Pred::eq("what", what)))
+        .count(&store::import_marker_request(host_id, what))
         .map(|count| count > 0)
         // An error means the store is unreachable and the import would fail
         // too. Claiming it is done is the safe direction: a retry next launch
@@ -622,6 +632,8 @@ pub(crate) fn imported(backend: &impl Backend, what: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// The machine these chats were saved on.
+    const HOST: &str = "test-host";
     use super::*;
 
     fn backend() -> store::Local {
@@ -744,7 +756,7 @@ mod tests {
         ];
 
         let mut id = None;
-        save(&backend, &mut id, &messages, 0, None, None).expect("saved");
+        save(&backend, HOST, &mut id, &messages, 0, None, None).expect("saved");
         let id = id.expect("an id was allocated");
         assert_eq!(load(&backend, id).expect("loaded"), messages);
     }
@@ -755,7 +767,7 @@ mod tests {
         let messages = [Message::user("one")];
 
         let mut old_id = None;
-        save(&backend, &mut old_id, &messages, 0, None, None).expect("saved old chat");
+        save(&backend, HOST, &mut old_id, &messages, 0, None, None).expect("saved old chat");
         assert_eq!(load_usage(&backend, old_id.expect("old id")), Ok(None));
 
         let usage = TokenUsage {
@@ -763,7 +775,7 @@ mod tests {
             output_tokens: 34,
         };
         let mut id = None;
-        save(&backend, &mut id, &messages, 0, None, Some(usage)).expect("saved usage");
+        save(&backend, HOST, &mut id, &messages, 0, None, Some(usage)).expect("saved usage");
         assert_eq!(load_usage(&backend, id.expect("id")), Ok(Some(usage)));
     }
 
@@ -779,11 +791,11 @@ mod tests {
         };
         let mut id = None;
         let mut messages = vec![Message::user("one")];
-        let saved = save(&backend, &mut id, &messages, 0, None, Some(usage)).expect("saved");
+        let saved = save(&backend, HOST, &mut id, &messages, 0, None, Some(usage)).expect("saved");
         let id = id.expect("id");
 
         messages.push(Message::assistant("two"));
-        save(&backend, &mut Some(id), &messages, saved, None, None).expect("saved again");
+        save(&backend, HOST, &mut Some(id), &messages, saved, None, None).expect("saved again");
 
         assert_eq!(load_usage(&backend, id), Ok(Some(usage)));
     }
@@ -827,6 +839,7 @@ mod tests {
         let mut id = None;
         save(
             &backend,
+            HOST,
             &mut id,
             &[Message::user("one")],
             0,
@@ -850,11 +863,11 @@ mod tests {
         let backend = backend();
         let mut id = None;
         let messages = vec![Message::user("one")];
-        let saved = save(&backend, &mut id, &messages, 0, None, None).expect("saved");
+        let saved = save(&backend, HOST, &mut id, &messages, 0, None, None).expect("saved");
         let first = id.expect("an id");
 
         let messages = vec![Message::user("one"), Message::assistant("two")];
-        save(&backend, &mut id, &messages, saved, None, None).expect("saved");
+        save(&backend, HOST, &mut id, &messages, saved, None, None).expect("saved");
         assert_eq!(id, Some(first), "the id must not move");
         assert_eq!(load(&backend, first).expect("loaded").len(), 2);
     }
@@ -866,11 +879,11 @@ mod tests {
         let backend = backend();
         let mut id = None;
         let mut messages = vec![Message::user("one")];
-        let mut saved = save(&backend, &mut id, &messages, 0, None, None).expect("saved");
+        let mut saved = save(&backend, HOST, &mut id, &messages, 0, None, None).expect("saved");
 
         for text in ["two", "three", "four"] {
             messages.push(Message::assistant(text));
-            saved = save(&backend, &mut id, &messages, saved, None, None).expect("saved");
+            saved = save(&backend, HOST, &mut id, &messages, saved, None, None).expect("saved");
         }
         assert_eq!(load(&backend, id.expect("id")).expect("loaded"), messages);
     }
@@ -882,10 +895,10 @@ mod tests {
         let backend = backend();
         let mut id = None;
         let mut messages = vec![Message::user("ask"), Message::assistant("par")];
-        let saved = save(&backend, &mut id, &messages, 0, Some(1), None).expect("saved");
+        let saved = save(&backend, HOST, &mut id, &messages, 0, Some(1), None).expect("saved");
 
         messages[1] = Message::assistant("partial reply");
-        save(&backend, &mut id, &messages, saved, Some(1), None).expect("saved");
+        save(&backend, HOST, &mut id, &messages, saved, Some(1), None).expect("saved");
 
         let loaded = load(&backend, id.expect("id")).expect("loaded");
         assert_eq!(loaded[1].content, "partial reply");
@@ -898,11 +911,11 @@ mod tests {
         let backend = backend();
         let mut id = None;
         let mut messages = vec![Message::user("ask"), Message::assistant("")];
-        let saved = save(&backend, &mut id, &messages, 0, Some(1), None).expect("saved");
+        let saved = save(&backend, HOST, &mut id, &messages, 0, Some(1), None).expect("saved");
 
         messages[1] = Message::assistant("the reply");
         messages.push(Message::notice("a typed tool"));
-        save(&backend, &mut id, &messages, saved, Some(1), None).expect("saved");
+        save(&backend, HOST, &mut id, &messages, saved, Some(1), None).expect("saved");
 
         let loaded = load(&backend, id.expect("id")).expect("loaded");
         assert_eq!(loaded[1].content, "the reply");
@@ -921,10 +934,10 @@ mod tests {
             Message::assistant("two"),
             Message::notice("three"),
         ];
-        let saved = save(&backend, &mut id, &messages, 0, None, None).expect("saved");
+        let saved = save(&backend, HOST, &mut id, &messages, 0, None, None).expect("saved");
 
         let shorter = vec![Message::user("one"), Message::notice("three")];
-        save(&backend, &mut id, &shorter, saved, None, None).expect("saved");
+        save(&backend, HOST, &mut id, &shorter, saved, None, None).expect("saved");
 
         assert_eq!(load(&backend, id.expect("id")).expect("loaded"), shorter);
     }
@@ -934,7 +947,16 @@ mod tests {
         let backend = backend();
         for text in ["first question", "second question"] {
             let mut id = None;
-            save(&backend, &mut id, &[Message::user(text)], 0, None, None).expect("saved");
+            save(
+                &backend,
+                HOST,
+                &mut id,
+                &[Message::user(text)],
+                0,
+                None,
+                None,
+            )
+            .expect("saved");
         }
         let listed = list(&backend);
         assert_eq!(listed.len(), 2);
@@ -950,6 +972,7 @@ mod tests {
         let mut id = None;
         let saved = save(
             &backend,
+            HOST,
             &mut id,
             &[Message::notice("hello")],
             0,
@@ -960,7 +983,7 @@ mod tests {
         assert_eq!(list(&backend)[0].title, "(empty)");
 
         let messages = vec![Message::notice("hello"), Message::user("the question")];
-        save(&backend, &mut id, &messages, saved, None, None).expect("saved");
+        save(&backend, HOST, &mut id, &messages, saved, None, None).expect("saved");
         assert_eq!(list(&backend)[0].title, "the question");
     }
 
@@ -975,8 +998,8 @@ mod tests {
     #[test]
     fn the_import_runs_once() {
         let backend = backend();
-        assert!(!imported(&backend, "chats"));
-        open(&backend).expect("opened");
-        assert!(imported(&backend, "chats"));
+        assert!(!imported(&backend, HOST, "chats"));
+        open(&backend, HOST).expect("opened");
+        assert!(imported(&backend, HOST, "chats"));
     }
 }

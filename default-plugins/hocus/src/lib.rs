@@ -573,6 +573,9 @@ pub struct State {
     /// see `store::agent_latch_def`. Empty until the first snapshot, and nothing per-pane is
     /// written while it is.
     zellij_session_name: String,
+    /// The machine this hocus runs on, read once at load. With `zellij_session_name` it is what
+    /// owns this session's rows in the shared store — see `agents::rows::Owner`.
+    host_id: String,
     /// Whether `restore_pane_rows` has run. It waits for the session name, so it cannot ride
     /// on `restore_persisted`'s single call at load.
     restored_pane_rows: bool,
@@ -984,6 +987,7 @@ impl Default for State {
             repositories: BTreeMap::new(),
             manual_kinds: BTreeMap::new(),
             zellij_session_name: String::new(),
+            host_id: String::new(),
             restored_pane_rows: false,
             pending_agent_panes: BTreeSet::new(),
             activity: BTreeMap::new(),
@@ -1069,7 +1073,11 @@ impl Default for State {
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.kdl = configuration;
-        self.own_plugin_id = get_plugin_ids().plugin_id;
+        let ids = get_plugin_ids();
+        self.own_plugin_id = ids.plugin_id;
+        // Which machine's rows this hocus writes. Constant for the process, and read before the
+        // store is opened so that nothing can write a row without it.
+        self.host_id = ids.host_id;
         self.open_store();
         subscribe(&[
             EventType::Key,

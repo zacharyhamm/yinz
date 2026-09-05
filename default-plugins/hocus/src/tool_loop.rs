@@ -2450,14 +2450,14 @@ impl State {
 
     /// The filter these three share, and a phrase naming what it selected.
     ///
-    /// The label is not decoration. Machine-wide is the default, so an answer with
-    /// four runs in it has to say whether that is four runs on this machine or four
-    /// in this session — otherwise an empty result reads as "this never happened"
-    /// when it means "not here".
+    /// The label is not decoration. Everything the store holds is the default, so an
+    /// answer with four runs in it has to say whether that is four runs across the
+    /// archive or four in this session — otherwise an empty result reads as "this
+    /// never happened" when it means "not here".
     fn run_filter(&self, args: &tools::Args) -> Result<(run_history::Filter, String), String> {
         let mut scope = Vec::new();
-        let zellij_session_name = match args.this_session {
-            false => None,
+        let (zellij_session_name, host_id) = match args.this_session {
+            false => (None, None),
             true => {
                 // Empty until the daemon's first poll reply names it. Matching on
                 // `""` would silently select every run that never had a session
@@ -2466,12 +2466,15 @@ impl State {
                 if name.is_empty() {
                     return Err(
                         "this session is not named yet; retry in a moment, or drop this_session \
-                         to search every session on this machine"
+                         to search every session in the archive"
                             .to_owned(),
                     );
                 }
                 scope.push(format!("session {name}"));
-                Some(name.to_owned())
+                // The machine as well as the name: with a store shared between machines a
+                // session called `main` here and a `main` elsewhere are two different sessions,
+                // and "this session" means this one.
+                (Some(name.to_owned()), Some(self.host_id.clone()))
             },
         };
         if !args.this_session {
@@ -2513,6 +2516,7 @@ impl State {
         Ok((
             run_history::Filter {
                 zellij_session_name,
+                host_id,
                 root,
                 kind: kind.map(str::to_owned),
                 since_ms,
