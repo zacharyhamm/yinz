@@ -351,7 +351,20 @@ pub fn edit_source_and_permissions(
     source: &str,
     args: &Args,
 ) -> Result<(Edited, Vec<PermissionType>), String> {
-    let edited = plugin_source::apply_edits(source, &args.edit_batch()?)?;
+    let edited = plugin_source::apply_edits(source, &args.edit_batch()?).map_err(|mut error| {
+        // Both pre-confirmation and execution failures become transcript entries. Bound the
+        // complete diagnostic by bytes, including batch context and the truncation marker.
+        if error.len() > crate::MAX_TOOL_OUTPUT {
+            const SUFFIX: &str = "\n[truncated]";
+            let mut end = crate::MAX_TOOL_OUTPUT - SUFFIX.len();
+            while !error.is_char_boundary(end) {
+                end -= 1;
+            }
+            error.truncate(end);
+            error.push_str(SUFFIX);
+        }
+        error
+    })?;
     let before = requested_permissions(source);
     let added = requested_permissions(&edited.source)
         .into_iter()
@@ -5110,6 +5123,7 @@ pub mod test_seams {
         pub static CURRENT_SESSION: RefCell<Option<super::SessionInfo>> = const { RefCell::new(None) };
         pub static PLUGIN_FS_EXISTS: Cell<Option<bool>> = const { Cell::new(None) };
         pub static RELOAD_CALLS: Cell<usize> = const { Cell::new(0) };
+        pub static PLUGIN_WRITE_CALLS: Cell<usize> = const { Cell::new(0) };
         pub static PLUGIN_ENTRIES: RefCell<Option<Vec<zellij_tile::prelude::FsEntry>>> = const { RefCell::new(None) };
         pub static PLUGIN_READS: RefCell<super::BTreeMap<String, Result<String, String>>> = const { RefCell::new(super::BTreeMap::new()) };
         pub static PLUGIN_SOURCE: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -5127,6 +5141,7 @@ pub mod test_seams {
         PLUGIN_ENTRIES.with_borrow_mut(|entries| *entries = None);
         PLUGIN_READS.with_borrow_mut(super::BTreeMap::clear);
         RELOAD_CALLS.set(0);
+        PLUGIN_WRITE_CALLS.set(0);
         PLUGIN_SOURCE.with_borrow_mut(|source| *source = None);
         GRANTED_PERMISSIONS.with_borrow_mut(Vec::clear);
     }
@@ -5162,6 +5177,7 @@ pub const PLUGIN_FOLDER_UNREACHABLE: &str =
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn plugin_fs_write(_path: &str, _source: &str, _overwrite: bool) -> Result<bool, String> {
+    test_seams::PLUGIN_WRITE_CALLS.set(test_seams::PLUGIN_WRITE_CALLS.get() + 1);
     match test_seams::PLUGIN_SOURCE.with_borrow(Option::is_some) {
         true => Ok(true),
         false => Err(PLUGIN_FOLDER_UNREACHABLE.to_owned()),

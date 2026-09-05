@@ -1073,8 +1073,9 @@ impl State {
         let mut skipped = names.len().saturating_sub(tools::FOLDER_FILES_CAP);
         let mut files = Vec::new();
         for name in names.into_iter().take(tools::FOLDER_FILES_CAP) {
-            let path = tools::plugin_fs_path(Some(&name))?;
-            match tools::plugin_fs_read_capped(&path, tools::FOLDER_READ_BYTES) {
+            match tools::plugin_fs_path(Some(&name))
+                .and_then(|path| tools::plugin_fs_read_capped(&path, tools::FOLDER_READ_BYTES))
+            {
                 Ok(contents) => files.push((name, contents)),
                 Err(error) if only.is_some() => return Err(error),
                 Err(_) => skipped += 1,
