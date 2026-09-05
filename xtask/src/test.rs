@@ -20,6 +20,7 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
         sh,
         flags::Build {
             release: false,
+            profile: None,
             no_plugins: false,
             plugins_only: true,
             args: vec![],

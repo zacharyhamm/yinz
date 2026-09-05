@@ -64,6 +64,9 @@ xflags::xflags! {
         /// Generate a runnable `zellij` executable and install its builtin plugins
         cmd install {
             required destination: PathBuf
+            /// Cargo profile to build with (e.g. `dev` for a fast, unoptimized install).
+            /// Defaults to `release`.
+            optional --profile name: String
             /// Where to put the builtin plugin wasm. Defaults to what the built binary
             /// reports: `<data dir>/builtins/<version>`, or `$PREFIX/share/zellij/builtins/<version>`
             /// when PREFIX is set. Nothing is pruned under an explicit directory.
@@ -162,6 +165,8 @@ xflags::xflags! {
         cmd build {
             /// Build in release mode without debug symbols
             optional -r, --release
+            /// Cargo profile to build with (e.g. `dev`). Mutually exclusive with `--release`
+            optional --profile name: String
             /// Build only the plugins
             optional -p, --plugins-only
             /// Build everything except the plugins
@@ -260,6 +265,7 @@ pub struct Install {
     pub destination: PathBuf,
     pub args: Vec<OsString>,
 
+    pub profile: Option<String>,
     pub builtins_dir: Option<PathBuf>,
     pub no_builtins: bool,
 }
@@ -333,6 +339,7 @@ pub struct Build {
     pub args: Vec<OsString>,
 
     pub release: bool,
+    pub profile: Option<String>,
     pub plugins_only: bool,
     pub no_plugins: bool,
 }

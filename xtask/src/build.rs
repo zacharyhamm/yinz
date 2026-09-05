@@ -41,6 +41,11 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
         eprintln!("Cannot use both '--no-plugins' and '--plugins-only'");
         std::process::exit(1);
     }
+    if flags.release && flags.profile.is_some() {
+        eprintln!("Cannot use both '--release' and '--profile'");
+        std::process::exit(1);
+    }
+    let profile = profile_of(&flags);
 
     // zellij-utils requires protobuf definition files to be present. Usually these are
     // auto-generated with `build.rs`-files, but this is currently broken for us.
@@ -49,37 +54,8 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
     // [1]: https://github.com/zellij-org/zellij/pull/2711#issuecomment-1695015818
     run_proto_codegen(sh, false);
 
-    if flags.release && !flags.no_plugins {
-        ensure_release_plugins(sh)?;
-    } else if !flags.no_plugins
-        && (plugins_force()
-            || plugin_outputs_missing(plugin_names().into_iter().map(debug_plugin_path))
-            || plugin_sources_changed())
-    {
-        // Build all plugins in a single invocation so Cargo can unify transitive dependency
-        // features across all of them and compile shared crates (e.g. zellij-utils) only once.
-        let plugin_members: Vec<&WorkspaceMember> = crate::workspace_members()
-            .iter()
-            .filter(|m| m.build && m.crate_name.contains("plugins"))
-            .collect();
-
-        if !plugin_members.is_empty() {
-            eprintln!();
-            let msg = ">> Building plugins";
-            crate::status(msg);
-            eprintln!("{}", msg);
-
-            let mut base_cmd = cmd!(sh, "{cargo} build --target wasm32-wasip1");
-            for member in &plugin_members {
-                base_cmd = base_cmd.args(["-p", plugin_name_of(member)?]);
-            }
-            base_cmd.run().context("failed to build plugins")?;
-            write_plugin_stamp(sh);
-        }
-    } else if !flags.no_plugins {
-        let msg = ">> Plugins unchanged since last build, skipping (set ZELLIJ_FORCE_PLUGINS=1 to rebuild)";
-        crate::status(msg);
-        eprintln!("{}", msg);
+    if !flags.no_plugins {
+        ensure_plugins(sh, profile)?;
     }
 
     // Build non-plugin crates (native target).
@@ -96,10 +72,7 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
             crate::status(&msg);
             println!("{}", msg);
 
-            let mut base_cmd = cmd!(sh, "{cargo} build");
-            if flags.release {
-                base_cmd = base_cmd.arg("--release");
-            }
+            let mut base_cmd = cmd!(sh, "{cargo} build --profile {profile}");
             base_cmd = base_cmd.args(&flags.args);
             base_cmd.run().with_context(err_context)?;
         }
@@ -110,6 +83,27 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
 
 fn plugins_force() -> bool {
     std::env::var_os("ZELLIJ_FORCE_PLUGINS").is_some()
+}
+
+/// The cargo profile a [`flags::Build`] asks for: an explicit `--profile` wins, otherwise
+/// `--release` picks `release` and a plain build picks `dev`.
+pub fn profile_of(flags: &flags::Build) -> &str {
+    match flags.profile.as_deref() {
+        Some(profile) => profile,
+        None if flags.release => "release",
+        None => "dev",
+    }
+}
+
+/// The directory under `target/` cargo builds a profile into. Cargo names the two built-in
+/// profiles' directories differently from the profiles themselves; every other profile gets a
+/// directory of its own name.
+pub fn profile_dir(profile: &str) -> &str {
+    match profile {
+        "dev" | "test" => "debug",
+        "release" | "bench" => "release",
+        other => other,
+    }
 }
 
 /// The plugin crates `cargo x build -p` builds, by wasm file stem.
@@ -124,10 +118,15 @@ pub fn plugin_names() -> Vec<&'static str> {
 /// Plugins that exist for the test suites and must not be installed for users.
 pub const TEST_ONLY_PLUGINS: &[&str] = &["fixture-plugin-for-tests", "shared-test"];
 
-fn wasm_target_path(profile: &str, plugin_name: &str) -> PathBuf {
+/// Where a plugin build for `profile` leaves a plugin.
+pub fn plugin_path(profile: &str, plugin_name: &str) -> PathBuf {
+    wasm_target_path(profile_dir(profile), plugin_name)
+}
+
+fn wasm_target_path(profile_dir: &str, plugin_name: &str) -> PathBuf {
     crate::target_dir()
         .join("wasm32-wasip1")
-        .join(profile)
+        .join(profile_dir)
         .join(plugin_name)
         .with_extension("wasm")
 }
@@ -140,10 +139,6 @@ pub fn release_plugin_path(plugin_name: &str) -> PathBuf {
 /// Where the debug plugin build leaves a plugin - what a debug zellij looks for first.
 pub fn debug_plugin_path(plugin_name: &str) -> PathBuf {
     wasm_target_path("debug", plugin_name)
-}
-
-fn plugin_outputs_missing(paths: impl IntoIterator<Item = PathBuf>) -> bool {
-    paths.into_iter().any(|path| !path.is_file())
 }
 
 /// Hashes the inputs which can change plugin wasm, so checkout and worktree mtime changes do not
@@ -302,10 +297,10 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Make sure every plugin's release wasm is present and fresh under
-/// `target/wasm32-wasip1/release`, building only when the inputs changed since the last
-/// release build (or `ZELLIJ_FORCE_PLUGINS` is set).
-pub fn ensure_release_plugins(sh: &Shell) -> anyhow::Result<()> {
+/// Make sure every plugin's wasm is present and fresh under
+/// `target/wasm32-wasip1/<profile dir>`, building only when the inputs changed since the last
+/// build of that profile (or `ZELLIJ_FORCE_PLUGINS` is set).
+pub fn ensure_plugins(sh: &Shell, profile: &str) -> anyhow::Result<()> {
     let plugin_members: Vec<&WorkspaceMember> = crate::workspace_members()
         .iter()
         .filter(|m| m.build && m.crate_name.contains("plugins"))
@@ -317,34 +312,49 @@ pub fn ensure_release_plugins(sh: &Shell) -> anyhow::Result<()> {
     let missing = plugin_members
         .iter()
         .any(|member| match plugin_name_of(member) {
-            Ok(name) => !release_plugin_path(name).is_file(),
+            Ok(name) => !plugin_path(profile, name).is_file(),
             Err(_) => true,
         });
-    let stale = plugins_force() || missing || release_plugin_sources_changed();
+    let stale = plugins_force() || missing || plugin_sources_changed(profile);
 
     if !stale {
-        let msg = ">> Release plugins up to date, skipping plugin build";
-        crate::status(msg);
+        let msg = format!(
+            ">> Plugins ({profile}) unchanged since last build, skipping \
+             (set ZELLIJ_FORCE_PLUGINS=1 to rebuild)"
+        );
+        crate::status(&msg);
         eprintln!("{}", msg);
         return Ok(());
     }
 
-    let msg = ">> Building plugins (release)";
-    crate::status(msg);
+    eprintln!();
+    let msg = format!(">> Building plugins ({profile})");
+    crate::status(&msg);
     eprintln!("{}", msg);
 
-    build_plugins_release(sh, &plugin_members)
+    build_plugins(sh, profile, &plugin_members)
 }
 
-fn build_plugins_release(sh: &Shell, plugin_members: &[&WorkspaceMember]) -> anyhow::Result<()> {
+/// Build all plugins in a single invocation so Cargo can unify transitive dependency features
+/// across all of them and compile shared crates (e.g. zellij-utils) only once.
+fn build_plugins(
+    sh: &Shell,
+    profile: &str,
+    plugin_members: &[&WorkspaceMember],
+) -> anyhow::Result<()> {
     let cargo = crate::cargo()?;
-    let mut base_cmd = cmd!(sh, "{cargo} build --target wasm32-wasip1 --release");
+    let mut base_cmd = cmd!(
+        sh,
+        "{cargo} build --target wasm32-wasip1 --profile {profile}"
+    );
     for member in plugin_members {
         let plugin_name = plugin_name_of(member)?;
         base_cmd = base_cmd.args(["-p", plugin_name]);
     }
-    base_cmd.run().context("failed to build release plugins")?;
-    write_release_plugin_stamp(sh);
+    base_cmd
+        .run()
+        .with_context(|| format!("failed to build plugins ({profile})"))?;
+    write_plugin_stamp(sh, profile);
     Ok(())
 }
 
@@ -356,32 +366,25 @@ fn plugin_name_of(member: &WorkspaceMember) -> anyhow::Result<&'static str> {
         .1)
 }
 
-fn plugin_stamp_path() -> PathBuf {
-    crate::target_dir().join(".xtask-plugins-stamp")
+/// One freshness stamp per profile directory. The two built-in profiles keep the names they
+/// have always had, so an existing tree does not rebuild its plugins once.
+fn plugin_stamp_path(profile: &str) -> PathBuf {
+    let name = match profile_dir(profile) {
+        "debug" => ".xtask-plugins-stamp".to_string(),
+        "release" => ".xtask-plugins-release-stamp".to_string(),
+        other => format!(".xtask-plugins-{other}-stamp"),
+    };
+    crate::target_dir().join(name)
 }
 
-fn release_plugin_stamp_path() -> PathBuf {
-    crate::target_dir().join(".xtask-plugins-release-stamp")
-}
-
-fn write_plugin_stamp(sh: &Shell) {
+fn write_plugin_stamp(sh: &Shell, profile: &str) {
     if let Some(hash) = hash_plugin_inputs() {
-        let _ = sh.write_file(plugin_stamp_path(), hash);
+        let _ = sh.write_file(plugin_stamp_path(profile), hash);
     }
 }
 
-fn write_release_plugin_stamp(sh: &Shell) {
-    if let Some(hash) = hash_plugin_inputs() {
-        let _ = sh.write_file(release_plugin_stamp_path(), hash);
-    }
-}
-
-fn plugin_sources_changed() -> bool {
-    sources_changed_since(&plugin_stamp_path())
-}
-
-fn release_plugin_sources_changed() -> bool {
-    sources_changed_since(&release_plugin_stamp_path())
+fn plugin_sources_changed(profile: &str) -> bool {
+    sources_changed_since(&plugin_stamp_path(profile))
 }
 
 fn sources_changed_since(stamp_path: &Path) -> bool {
@@ -537,16 +540,40 @@ mod tests {
     }
 
     #[test]
-    fn missing_plugin_output_is_not_fresh() {
-        let root = tempfile::tempdir().unwrap();
-        let present = root.path().join("present.wasm");
-        fs::write(&present, "wasm").unwrap();
+    fn profile_dirs_follow_cargo() {
+        // Cargo builds the two built-in profiles into directories that are not named after the
+        // profile; every other profile gets a directory of its own name.
+        assert_eq!(profile_dir("dev"), "debug");
+        assert_eq!(profile_dir("test"), "debug");
+        assert_eq!(profile_dir("release"), "release");
+        assert_eq!(profile_dir("bench"), "release");
+        assert_eq!(profile_dir("release-fast"), "release-fast");
+    }
 
-        assert!(!plugin_outputs_missing([present.clone()]));
-        assert!(plugin_outputs_missing([
-            present,
-            root.path().join("missing.wasm"),
-        ]));
+    #[test]
+    fn each_profile_gets_its_own_plugin_stamp() {
+        // The two built-in profiles keep the stamp names they have always had, so an existing
+        // tree does not rebuild its plugins once after this flag was added.
+        assert!(plugin_stamp_path("dev").ends_with(".xtask-plugins-stamp"));
+        assert!(plugin_stamp_path("release").ends_with(".xtask-plugins-release-stamp"));
+        assert!(plugin_stamp_path("release-fast").ends_with(".xtask-plugins-release-fast-stamp"));
+    }
+
+    #[test]
+    fn profile_flag_wins_over_release() {
+        let build = |release, profile: Option<&str>| flags::Build {
+            release,
+            profile: profile.map(str::to_string),
+            plugins_only: false,
+            no_plugins: false,
+            args: vec![],
+        };
+        assert_eq!(profile_of(&build(false, None)), "dev");
+        assert_eq!(profile_of(&build(true, None)), "release");
+        assert_eq!(
+            profile_of(&build(false, Some("release-fast"))),
+            "release-fast"
+        );
     }
 
     #[test]

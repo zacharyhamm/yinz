@@ -52,6 +52,7 @@ fn e2e_build(sh: &Shell) -> anyhow::Result<()> {
         sh,
         flags::Build {
             release: true,
+            profile: None,
             no_plugins: false,
             plugins_only: true,
             args: vec![],
@@ -163,6 +164,7 @@ fn build_release(sh: &Shell) -> anyhow::Result<()> {
         sh,
         flags::Build {
             release: true,
+            profile: None,
             no_plugins: false,
             plugins_only: true,
             args: vec![],
@@ -238,6 +240,7 @@ fn cross_compile(sh: &Shell, target: &OsString) -> anyhow::Result<()> {
         sh,
         flags::Build {
             release: true,
+            profile: None,
             no_plugins: false,
             plugins_only: true,
             args: vec![],

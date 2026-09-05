@@ -29,6 +29,7 @@ pub fn make(sh: &Shell, flags: flags::Make) -> anyhow::Result<()> {
                 sh,
                 flags::Build {
                     release: flags.release,
+                    profile: None,
                     no_plugins: false,
                     plugins_only: false,
                     args: vec![],
@@ -43,18 +44,26 @@ pub fn make(sh: &Shell, flags: flags::Make) -> anyhow::Result<()> {
 ///
 /// Runs the following steps in sequence:
 ///
-/// - [`build`](build::build) (release, plugins only)
-/// - [`build`](build::build) (release, without plugins)
+/// - [`build`](build::build) (the chosen profile, plugins only)
+/// - [`build`](build::build) (the chosen profile, without plugins)
 /// - Copy the executable to [target file](flags::Install::destination)
 /// - Copy the builtin plugin wasm to the directory the binary will look in
+///
+/// The profile is `release` unless `--profile` names another one; everything the install
+/// touches - the binary, the firecracker provider, the builtin wasm - comes from that profile's
+/// target directory.
 pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
     let err_context = || format!("failed to run pipeline 'install' with args {flags:?}");
+
+    let profile = flags.profile.as_deref().unwrap_or("release");
+    let profile_dir = build::profile_dir(profile);
 
     // Build and optimize plugins
     build::build(
         sh,
         flags::Build {
-            release: true,
+            release: false,
+            profile: Some(profile.to_string()),
             no_plugins: false,
             plugins_only: true,
             args: vec![],
@@ -65,7 +74,8 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
         build::build(
             sh,
             flags::Build {
-                release: true,
+                release: false,
+                profile: Some(profile.to_string()),
                 no_plugins: true,
                 plugins_only: false,
                 args: flags.args.clone(),
@@ -89,7 +99,7 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
         destination
     };
     sh.change_dir(crate::project_root());
-    let binary = crate::target_dir().join("release").join("zellij");
+    let binary = crate::target_dir().join(profile_dir).join("zellij");
     // Copy to a temp file and rename, rather than overwriting in place: on macOS an in-place
     // overwrite keeps the inode, so the kernel serves its cached (now stale) code signature and
     // SIGKILLs the binary on exec. A rename gives it a fresh inode.
@@ -109,7 +119,7 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
         if provider_excluded_by_args(&flags.args) {
             println!(
                 "Skipping zellij-firecracker: not part of this build \
-                 (build it with 'cargo x build --release')"
+                 (build it with 'cargo x build --profile {profile}')"
             );
         } else {
             println!();
@@ -117,12 +127,17 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
             crate::status(msg);
             println!("{}", msg);
             let cargo = crate::cargo().with_context(err_context)?;
-            match cmd!(sh, "{cargo} build --release --bin zellij-firecracker")
-                .args(&flags.args)
-                .run()
+            match cmd!(
+                sh,
+                "{cargo} build --profile {profile} --bin zellij-firecracker"
+            )
+            .args(&flags.args)
+            .run()
             {
                 Ok(()) => {
-                    let provider = crate::target_dir().join("release/zellij-firecracker");
+                    let provider = crate::target_dir()
+                        .join(profile_dir)
+                        .join("zellij-firecracker");
                     let provider_destination = destination.with_file_name("zellij-firecracker");
                     let provider_tmp = provider_destination.with_extension("xtask-install-tmp");
                     sh.copy_file(&provider, &provider_tmp)
@@ -138,7 +153,8 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
     }
 
     if !flags.no_builtins {
-        install_builtins(sh, &binary, flags.builtins_dir.as_deref()).with_context(err_context)?;
+        install_builtins(sh, &binary, profile, flags.builtins_dir.as_deref())
+            .with_context(err_context)?;
     }
 
     Ok(())
@@ -147,8 +163,9 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
 /// Whether forwarded `cargo build` args restrict the build to bins other than the provider.
 ///
 /// A `--bin` filter is the only way an `install` can legitimately not want a `zellij-firecracker`
-/// beside its `zellij`: everything else that changes what cargo builds (`--target`, `--profile`)
-/// moves the `zellij` binary too, and copying that fails before this question is asked.
+/// beside its `zellij`: a forwarded `--target` moves the `zellij` binary too, and copying that
+/// fails before this question is asked. The profile is not forwarded here - `install --profile`
+/// picks it, and the provider follows it.
 #[cfg(target_os = "linux")]
 fn provider_excluded_by_args(args: &[std::ffi::OsString]) -> bool {
     let mut filtered = false;
@@ -197,7 +214,12 @@ fn builtin_dirs_of(sh: &Shell, binary: &Path) -> anyhow::Result<(PathBuf, PathBu
     }
 }
 
-fn install_builtins(sh: &Shell, binary: &Path, explicit_dir: Option<&Path>) -> anyhow::Result<()> {
+fn install_builtins(
+    sh: &Shell,
+    binary: &Path,
+    profile: &str,
+    explicit_dir: Option<&Path>,
+) -> anyhow::Result<()> {
     let (dir, prune) = match explicit_dir {
         Some(dir) => (dir.to_path_buf(), false),
         None => {
@@ -208,6 +230,20 @@ fn install_builtins(sh: &Shell, binary: &Path, explicit_dir: Option<&Path>) -> a
             (if system_install { system } else { user }, true)
         },
     };
+
+    // The versioned dir is shared by every installed zellij of this version, so wasm built for
+    // another profile replaces what they all load - and an unoptimized plugin is noticeably
+    // slower. Say so before writing, while the user can still stop and use --no-builtins or
+    // --builtins-dir instead.
+    if profile != "release" {
+        eprintln!(
+            ">> Note: installing '{profile}' plugin wasm, which is unoptimized and replaces the \
+             release wasm every installed zellij of this version loads. Re-run \
+             'cargo x install <dest>' with no --profile to put the release wasm back, or pass \
+             --no-builtins / --builtins-dir to leave {} alone.",
+            dir.display()
+        );
+    }
 
     // Said before anything is written: under `sudo`, HOME is root's, and the user should see
     // that this is about to land in root's data dir rather than theirs.
@@ -227,7 +263,7 @@ fn install_builtins(sh: &Shell, binary: &Path, explicit_dir: Option<&Path>) -> a
         .filter(|name| !build::TEST_ONLY_PLUGINS.contains(name))
         .collect();
     for name in &names {
-        install_one_builtin(&dir, name)?;
+        install_one_builtin(&dir, profile, name)?;
     }
 
     if prune {
@@ -239,11 +275,15 @@ fn install_builtins(sh: &Shell, binary: &Path, explicit_dir: Option<&Path>) -> a
 /// Copy one plugin in atomically: write beside the destination and rename over it, so a
 /// server that opens the file mid-copy sees either the old plugin or the new one, never a
 /// half-written file. Identical bytes are left alone.
-fn install_one_builtin(dir: &Path, name: &str) -> anyhow::Result<()> {
-    let from = build::release_plugin_path(name);
+fn install_one_builtin(dir: &Path, profile: &str, name: &str) -> anyhow::Result<()> {
+    let from = build::plugin_path(profile, name);
     let to = dir.join(name).with_extension("wasm");
-    let bytes = std::fs::read(&from)
-        .with_context(|| format!("no release build of plugin '{name}' at {}", from.display()))?;
+    let bytes = std::fs::read(&from).with_context(|| {
+        format!(
+            "no '{profile}' build of plugin '{name}' at {}",
+            from.display()
+        )
+    })?;
     if std::fs::read(&to).ok().as_deref() == Some(bytes.as_slice()) {
         return Ok(());
     }
@@ -319,6 +359,7 @@ pub fn run(sh: &Shell, flags: flags::Run) -> anyhow::Result<()> {
                 sh,
                 flags::Build {
                     release: false,
+                    profile: None,
                     no_plugins: false,
                     plugins_only: true,
                     args: vec![],
@@ -341,6 +382,7 @@ pub fn run(sh: &Shell, flags: flags::Run) -> anyhow::Result<()> {
             sh,
             flags::Build {
                 release: false,
+                profile: None,
                 no_plugins: false,
                 plugins_only: true,
                 args: vec![],
@@ -502,6 +544,7 @@ pub fn publish(sh: &Shell, flags: flags::Publish) -> anyhow::Result<()> {
             sh,
             flags::Build {
                 release: true,
+                profile: None,
                 no_plugins: false,
                 plugins_only: true,
                 args: vec![],

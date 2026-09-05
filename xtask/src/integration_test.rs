@@ -19,6 +19,7 @@ pub fn integration_test(sh: &Shell, flags: flags::IntegrationTest) -> anyhow::Re
         sh,
         flags::Build {
             release: false,
+            profile: None,
             no_plugins: false,
             plugins_only: true,
             args: vec![],
