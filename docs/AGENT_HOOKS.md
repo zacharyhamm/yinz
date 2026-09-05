@@ -627,8 +627,13 @@ on its own:
   still deciding a `Bash` call when it fires, and it names no `permission_mode` for anyone to
   read — so toasting on it meant a `Bash cargo` interruption for a prompt that approved itself a
   moment later. A prompt the classifier does refuse is still drawn in the row and marked `!`; it
-  is just not interrupted over. A notification with no request before it — a Claude Code without
-  the `PermissionRequest` hook — enters the wait itself and is announced as before.
+  is just not interrupted over. The promise modes are an allowlist
+  (`agent::PROMISED_ANSWER_MODES`) rather than a list of exceptions to `UNATTENDED_MODES`, so
+  that is how *any* mode nobody has classified behaves: a permission mode added later stays
+  quiet until somebody decides its silence is a promise, and forgetting costs a toast never sent
+  rather than the `Bash cargo` interruption above. A notification with no request before it — a
+  Claude Code without the `PermissionRequest` hook — enters the wait itself and is announced as
+  before.
 
 ### And the pane itself says so
 
