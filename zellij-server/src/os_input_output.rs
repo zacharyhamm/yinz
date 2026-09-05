@@ -671,8 +671,12 @@ impl ServerOsInputOutput {
     /// Resolve where a command runs: nothing for a local one, the ssh host for an
     /// ssh one, and for a Firecracker one the endpoint the provider hands back once
     /// the VM is up. The returned command is the one to send there (a Firecracker
-    /// command gets the guest cwd filled in); the second is the command as asked
-    /// for, kept so a re-run can resolve it again.
+    /// command gets the guest cwd filled in); the second is the command as asked for,
+    /// kept so a re-run can resolve it again - plus the identity the provider resolved,
+    /// which is the VM's worktree and only when the caller named none. That much is not
+    /// "where it ran this time" but what the pane *is*, and the pane outlives the run:
+    /// it is what the restart hook names and what the held pane serializes. See the
+    /// comment on the adoption below.
     fn resolve_target(
         &self,
         mut cmd: RunCommand,
@@ -731,6 +735,13 @@ impl ServerOsInputOutput {
         // not a duplicate of the pane. The provider has it on record, so ask rather than
         // guess - and only when the caller named none, since what the caller named is what
         // the VM was ensured with.
+        //
+        // Both commands, because the two halves reach different readers and neither covers
+        // the other. `cmd` is the transport's, which `remote_pane_worktree` reads back for
+        // the manifest. `rerun_cmd` is the one `HoldPane` carries: it becomes the held
+        // pane's `invoked_with`, which is what the layout serializer writes
+        // `firecracker_worktree=` from, and it is what the agent restart hook reads its
+        // `agent_firecracker_*` payload off - all-or-nothing on the worktree being there.
         let mut rerun_cmd = rerun_cmd;
         if let Some(worktree) = &ensured.worktree {
             for target in [&mut cmd.target, &mut rerun_cmd.target] {

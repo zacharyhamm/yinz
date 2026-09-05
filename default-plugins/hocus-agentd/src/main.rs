@@ -137,6 +137,10 @@ struct State {
     /// the scrollback editor is suppressed, not closed, and it keeps its folder
     /// across that. A host that went away with it would key the folder as local
     /// for as long as the pane stayed hidden.
+    ///
+    /// The *raw* manifest is authoritative both ways, though: a pane that leaves its
+    /// machine keeps its id, so this follows the manifest's answer down as well as up.
+    /// See `rebuild_panes`.
     hosts: BTreeMap<u32, String>,
     /// The host worktree each Firecracker pane's VM mirrors, for the panes in one.
     ///
@@ -144,7 +148,9 @@ struct State {
     /// repository of its own that matches no project here — see
     /// `agents::checkout_location`, which is where the rule lives. Kept beside `hosts`
     /// and pruned with it for the reason `hosts` is: the pane list is the *visible*
-    /// panes, and a suppressed pane keeps its folder.
+    /// panes, and a suppressed pane keeps its folder. Retracted with it too, and for the
+    /// same reason - a pane re-run on this machine is not in a VM any more, and this
+    /// outranks its folder rather than losing to it.
     firecracker_worktrees: BTreeMap<u32, String>,
     activity: agents::Activity,
     /// The checkout each agent pane's frame is currently decorated with.
@@ -1519,16 +1525,43 @@ impl State {
             .collect();
         // From the raw manifest for the same reason the maps above are pruned
         // against it: a suppressed pane is still a pane, still on its machine.
+        //
+        // Both directions, because a pane can leave its machine without leaving the
+        // manifest: `RunCommandInPane` re-runs a pane in place, keeping its id, and a VM
+        // pane re-run here comes back `Local`. Insert-only, the pane would keep answering
+        // with the checkout it left - `checkout_location` reads the worktree *before* the
+        // folder, so the stale half is the one that wins.
         for pane in self.manifest.panes.values().flatten() {
-            if let Some(host) = pane.host.clone() {
-                self.hosts.insert(pane.id, host);
+            // Plugin ids and terminal ids are separate number spaces, so a plugin pane
+            // clearing by `pane.id` would retract a terminal pane's answer. The same
+            // guard `manifest_pane_ids` applies, and a no-op for the inserts either way.
+            if pane.is_plugin {
+                continue;
+            }
+            match pane.host.clone() {
+                Some(host) => {
+                    self.hosts.insert(pane.id, host);
+                },
+                None => {
+                    self.hosts.remove(&pane.id);
+                },
             }
             // The host path a Firecracker pane's VM mirrors, which is what identifies
             // its work. Read from the target rather than from the pane's folder: the
             // folder is a guest path.
-            if let Some(worktree) = pane.target.firecracker_worktree() {
-                self.firecracker_worktrees
-                    .insert(pane.id, worktree.display().to_string());
+            match pane.target.firecracker_worktree() {
+                Some(worktree) => {
+                    self.firecracker_worktrees
+                        .insert(pane.id, worktree.display().to_string());
+                },
+                // Retracted on the pane leaving Firecracker, not on the worktree being
+                // absent: a pane that joined a VM by name is `Firecracker` with no
+                // worktree of its own until the provider answers, and clearing in that
+                // window would drop the answer the server is about to send.
+                None if !pane.target.is_firecracker() => {
+                    self.firecracker_worktrees.remove(&pane.id);
+                },
+                None => {},
             }
         }
         let mut panes = terminal_panes(&self.manifest, &self.tabs);
@@ -3641,6 +3674,73 @@ mod tests {
         state.manifest.panes.insert(0, vec![]);
         state.rebuild_panes();
         assert_eq!(state.location_of(7), None);
+    }
+
+    /// A pane can leave its VM without leaving the manifest: `RunCommandInPane` re-runs it
+    /// in place and it keeps its id. Both halves have to be retracted, and the worktree
+    /// especially — `checkout_location` reads it *before* the folder, so a stale one wins
+    /// over the folder the pane is really in and pins the frame prefix, the probed
+    /// checkout and the run's project to a checkout the pane left.
+    #[test]
+    fn a_firecracker_pane_re_run_on_this_machine_stops_answering_with_the_vms_worktree() {
+        let mut state = State::default();
+        let mut vm = PaneInfo {
+            id: 7,
+            title: "claude".to_owned(),
+            host: Some("firecracker:review".to_owned()),
+            ..PaneInfo::default()
+        };
+        vm.target =
+            PaneTarget::firecracker("review", None, Some(std::path::Path::new("/work/hocus")))
+                .expect("a valid VM name and an absolute worktree");
+        state.manifest.panes.insert(0, vec![vm]);
+        state.cwds.insert(7, "/workspace".to_owned());
+        state.rebuild_panes();
+        assert_eq!(state.location_of(7), Some(local("/work/hocus")));
+
+        // Re-run here: the same pane id, a local target, and no host — which is exactly
+        // what the server reports, since it retracts both when the pane is respawned.
+        state.manifest.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                title: "claude".to_owned(),
+                ..PaneInfo::default()
+            }],
+        );
+        state.cwds.insert(7, "/other/repo".to_owned());
+        state.rebuild_panes();
+
+        assert_eq!(state.location_of(7), Some(local("/other/repo")));
+        assert!(state.firecracker_worktrees.is_empty());
+        assert!(
+            state.hosts.is_empty(),
+            "and not left keyed to the machine it is no longer on",
+        );
+    }
+
+    /// What the retraction is keyed on, and why it is not keyed on the worktree being
+    /// absent: `new-pane --firecracker review` joins a VM somebody else provisioned and
+    /// names no worktree of its own, so such a pane is a Firecracker one whose target says
+    /// nothing until the provider answers. A pane still in a VM keeps what it was told,
+    /// whatever its own target names — only leaving the VM retracts it.
+    #[test]
+    fn a_pane_still_in_a_vm_keeps_its_worktree_though_its_target_names_none() {
+        let mut state = State::default();
+        let mut joining = PaneInfo {
+            id: 7,
+            title: "claude".to_owned(),
+            host: Some("firecracker:review".to_owned()),
+            ..PaneInfo::default()
+        };
+        joining.target = PaneTarget::firecracker("review", None, None).expect("a valid VM name");
+        state.manifest.panes.insert(0, vec![joining]);
+        state
+            .firecracker_worktrees
+            .insert(7, "/work/hocus".to_owned());
+        state.rebuild_panes();
+
+        assert_eq!(state.location_of(7), Some(local("/work/hocus")));
     }
 
     /// A VM mirrors a folder on this machine, so that folder is what Git is asked

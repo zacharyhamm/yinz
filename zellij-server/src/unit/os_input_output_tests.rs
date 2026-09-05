@@ -90,7 +90,10 @@ fn a_firecracker_pane_adopts_the_worktree_the_provider_names() {
         Some(Path::new("/work/hocus"))
     );
     // The rerun command too, so a held pane that is run again keeps the identity rather
-    // than waiting for the next ensure to hand it back.
+    // than waiting for the next ensure to hand it back. Not redundant with the resolved
+    // command: this is the one `HoldPane` carries, and it is the only word the layout
+    // serializer and the agent restart hook get - the manifest merge patches `PaneInfo`
+    // and never the pane's `invoked_with`.
     assert_eq!(
         rerun.target.firecracker_worktree(),
         Some(Path::new("/work/hocus"))
