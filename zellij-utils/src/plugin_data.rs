@@ -836,6 +836,11 @@ impl FetchRequest {
 }
 
 /// A write. A batch of these is applied in one transaction, all or nothing.
+///
+/// `expect_rev` on a `Put` or an `Update` makes it a compare-and-set: the write applies only if
+/// the row is still at the revision the caller read, and the whole batch is refused with
+/// [`DataError::Conflict`] otherwise. See [`REV_ABSENT`] for the "and it must not exist yet"
+/// case. Without it a write is unconditional, which is what every write was before this existed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Mutation {
     /// Insert a row, or replace the one with this `uid` if it exists. With `uid` unset it always
@@ -844,16 +849,32 @@ pub enum Mutation {
         entity: String,
         uid: Option<String>,
         values: Vec<(String, DataValue)>,
+        /// The `rev` the row must be at, if the caller is guarding on one. Meaningless without a
+        /// `uid`, since a Put with no uid always inserts and there is no row to compare against.
+        #[serde(default)]
+        expect_rev: Option<i64>,
     },
     /// Set attributes on every row matching `filter`.
     Update {
         entity: String,
         filter: Pred,
         values: Vec<(String, DataValue)>,
+        /// The `rev` the matched rows must be at. Folded into the filter, so an update guarding
+        /// on a revision matches only rows at that revision — with a filter naming one row, which
+        /// is the normal case, that is a compare-and-set on that row.
+        #[serde(default)]
+        expect_rev: Option<i64>,
     },
     /// Remove every row matching `filter`.
     Delete { entity: String, filter: Pred },
 }
+
+/// The `expect_rev` that means *this row must not exist yet*.
+///
+/// Zero rather than a separate variant because no stored row is ever at revision 0 — the column
+/// starts at 1 — so it is an impossible revision and reads as "before the first write". A Put
+/// guarded on it inserts or conflicts, and never overwrites.
+pub const REV_ABSENT: i64 = 0;
 
 impl Mutation {
     pub fn put(entity: impl Into<String>) -> PutBuilder {
@@ -861,6 +882,7 @@ impl Mutation {
             entity: entity.into(),
             uid: None,
             values: Vec::new(),
+            expect_rev: None,
         }
     }
 
@@ -869,6 +891,7 @@ impl Mutation {
             entity: entity.into(),
             filter,
             values: Vec::new(),
+            expect_rev: None,
         }
     }
 
@@ -895,6 +918,7 @@ impl Mutation {
                 entity,
                 uid,
                 values,
+                expect_rev,
             } => {
                 if let Some(uid) = uid {
                     reject_nul("uid", &DataValue::Text(uid.clone()))?;
@@ -905,12 +929,24 @@ impl Mutation {
                         entity
                     )));
                 }
+                // A Put with no uid always inserts, so there is no row for a revision to be
+                // about. Silently ignoring the guard would be the dangerous reading: the caller
+                // asked for a compare-and-set and would get an unconditional insert.
+                if expect_rev.is_some() && uid.is_none() {
+                    return Err(DataError::InvalidQuery(format!(
+                        "a Put into `{}` expects a revision but names no uid; without one it \
+                         always inserts and there is no row to compare against",
+                        entity
+                    )));
+                }
+                validate_expect_rev(*expect_rev)?;
                 validate_value_attrs(values)
             },
             Mutation::Update {
                 entity,
                 filter,
                 values,
+                expect_rev,
             } => {
                 filter.validate()?;
                 if values.is_empty() {
@@ -919,10 +955,34 @@ impl Mutation {
                         entity
                     )));
                 }
+                // `REV_ABSENT` means "must not exist", which an Update cannot honour: it only
+                // ever touches rows that are already there.
+                if *expect_rev == Some(REV_ABSENT) {
+                    return Err(DataError::InvalidQuery(format!(
+                        "an Update of `{}` expects revision {}, which means the row does not \
+                         exist; use a Put to insert one",
+                        entity, REV_ABSENT
+                    )));
+                }
+                validate_expect_rev(*expect_rev)?;
                 validate_value_attrs(values)
             },
             Mutation::Delete { filter, .. } => filter.validate(),
         }
+    }
+}
+
+/// A revision below [`REV_ABSENT`] never existed, so a guard naming one could only ever fail.
+/// Rejecting it up front turns a write that would have silently conflicted forever into an error
+/// the plugin author can read.
+fn validate_expect_rev(expect_rev: Option<i64>) -> Result<(), DataError> {
+    match expect_rev {
+        Some(rev) if rev < REV_ABSENT => Err(DataError::InvalidQuery(format!(
+            "expected revision {} is negative; revisions start at 1, and {} means the row must \
+             not exist yet",
+            rev, REV_ABSENT
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -948,6 +1008,7 @@ pub struct PutBuilder {
     entity: String,
     uid: Option<String>,
     values: Vec<(String, DataValue)>,
+    expect_rev: Option<i64>,
 }
 
 impl PutBuilder {
@@ -962,11 +1023,24 @@ impl PutBuilder {
         self
     }
 
+    /// Apply only if the row is still at `rev`. Needs a `uid`; [`REV_ABSENT`] means it must not
+    /// exist yet.
+    pub fn expect_rev(mut self, rev: i64) -> Self {
+        self.expect_rev = Some(rev);
+        self
+    }
+
+    /// Apply only if this row does not exist yet. [`PutBuilder::expect_rev`] with [`REV_ABSENT`].
+    pub fn expect_absent(self) -> Self {
+        self.expect_rev(REV_ABSENT)
+    }
+
     pub fn build(self) -> Mutation {
         Mutation::Put {
             entity: self.entity,
             uid: self.uid,
             values: self.values,
+            expect_rev: self.expect_rev,
         }
     }
 }
@@ -983,6 +1057,7 @@ pub struct UpdateBuilder {
     entity: String,
     filter: Pred,
     values: Vec<(String, DataValue)>,
+    expect_rev: Option<i64>,
 }
 
 impl UpdateBuilder {
@@ -991,11 +1066,18 @@ impl UpdateBuilder {
         self
     }
 
+    /// Apply only to rows still at `rev`, and refuse the batch if none match.
+    pub fn expect_rev(mut self, rev: i64) -> Self {
+        self.expect_rev = Some(rev);
+        self
+    }
+
     pub fn build(self) -> Mutation {
         Mutation::Update {
             entity: self.entity,
             filter: self.filter,
             values: self.values,
+            expect_rev: self.expect_rev,
         }
     }
 }
@@ -1047,6 +1129,14 @@ pub struct ApplyReport {
     pub rows_deleted: u64,
     /// The `id` of each row inserted or replaced by a `Put`, in order.
     pub ids: Vec<i64>,
+    /// Rows affected by each mutation of the batch, in the order they were given.
+    ///
+    /// The totals above cannot answer "did *that* one match": a batch is one number, and a write
+    /// that quietly matched nothing looks exactly like one that matched a row somebody else's
+    /// write had already covered. A caller guarding by hand — filtering on a `rev` it read rather
+    /// than passing `expect_rev` — reads its own entry here.
+    #[serde(default)]
+    pub per_mutation: Vec<u64>,
 }
 
 /// What the store did in response to a schema declaration.
@@ -1123,6 +1213,13 @@ pub enum DataError {
     UnknownEntity(String),
     /// The plugin lacks the permission for what it asked.
     PermissionDenied(String),
+    /// A write guarded with `expect_rev` found the row at another revision, or gone.
+    ///
+    /// Its own variant rather than a count the caller has to inspect, because the answer is
+    /// always the same — re-read and decide again — and because a batch is one transaction: the
+    /// conflict has already rolled the other mutations back, so it is a failure of the call
+    /// rather than a detail of it.
+    Conflict(String),
     /// Anything from the storage engine, its connection, or the filesystem.
     Storage(String),
 }
@@ -1136,6 +1233,7 @@ impl fmt::Display for DataError {
             | DataError::RefusedMigration(m)
             | DataError::UnknownEntity(m)
             | DataError::PermissionDenied(m)
+            | DataError::Conflict(m)
             | DataError::Storage(m) => write!(f, "{}", m),
         }
     }

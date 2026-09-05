@@ -842,6 +842,7 @@ mod tests {
             rows_written: 1,
             rows_deleted: 0,
             ids: vec![42],
+            per_mutation: vec![1],
         };
         assert_eq!(field(&reply.finish(&report), "id"), 42);
     }

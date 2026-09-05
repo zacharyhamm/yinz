@@ -4723,6 +4723,61 @@ fn the_data_sugar_builds_requests_the_host_accepts() {
     }
 }
 
+/// A Lua plugin gets the same compare-and-set the wasm side does. Both halves are load-bearing:
+/// `expect_rev` has to survive the trip out (it is deserialized into `Mutation` by serde, and a
+/// field the table does not name has to read as "unguarded"), and `per_mutation` has to survive
+/// the trip back.
+#[test]
+fn a_lua_plugin_can_guard_a_write_on_a_revision() {
+    let source = r#"
+        local M = {}
+        function M.render()
+          zellij.data.define {
+            name = "note", version = 1,
+            attrs = { { "title", "text", required = true } },
+          }
+          local out = {}
+
+          -- Claiming a uid nobody holds works; claiming it twice does not.
+          zellij.data.apply(zellij.data.put("note", { title = "first" }, "n1",
+                                            zellij.data.REV_ABSENT))
+          local ok = pcall(function()
+            zellij.data.apply(zellij.data.put("note", { title = "again" }, "n1",
+                                              zellij.data.REV_ABSENT))
+          end)
+          out[#out + 1] = "claimed-twice:" .. tostring(ok)
+
+          -- The revision comes back on the row, and a write naming it lands.
+          local rows = zellij.data.fetch { entity = "note" }
+          local rev = rows[1].rev
+          out[#out + 1] = "rev:" .. tostring(rev)
+          local report = zellij.data.apply(
+            zellij.data.put("note", { title = "second" }, "n1", rev))
+          out[#out + 1] = "per_mutation:" .. tostring(report.per_mutation[1])
+
+          -- The same revision a second time is stale, and the row keeps what it had.
+          local fresh = pcall(function()
+            zellij.data.apply(zellij.data.put("note", { title = "third" }, "n1", rev))
+          end)
+          out[#out + 1] = "stale:" .. tostring(fresh)
+          out[#out + 1] = "title:" .. zellij.data.fetch { entity = "note" }[1].title
+
+          return table.concat(out, "|")
+        end
+        return M
+    "#;
+    let store = tempfile::tempdir().unwrap();
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    env.data_access = Arc::new(DataAccess::sqlite(store.path()));
+    let mut plugin = load_lua_plugin(source, "test.lua", env).unwrap();
+    let out = String::from_utf8(plugin.render(1, 500).unwrap()).unwrap();
+    assert_eq!(
+        out.trim(),
+        "claimed-twice:false|rev:1|per_mutation:1|stale:false|title:second"
+    );
+}
+
 /// The catalog is what a plugin reaches for when it does not know the schema, so what matters is
 /// that a declared entity comes back with its columns readable as plain Lua - and that the kind is
 /// spelled the way `zellij.data.define` spells it, not the way the wire does.

@@ -179,6 +179,10 @@ pub struct Put {
     pub uid: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, repeated, tag="3")]
     pub values: ::prost::alloc::vec::Vec<AttrValue>,
+    /// The revision the row must be at for this write to apply. 0 means it must not exist yet.
+    /// Absent is an unconditional write, which is what every write was before this field.
+    #[prost(int64, optional, tag="4")]
+    pub expect_rev: ::core::option::Option<i64>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -189,6 +193,8 @@ pub struct Update {
     pub filter: ::core::option::Option<Pred>,
     #[prost(message, repeated, tag="3")]
     pub values: ::prost::alloc::vec::Vec<AttrValue>,
+    #[prost(int64, optional, tag="4")]
+    pub expect_rev: ::core::option::Option<i64>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -265,6 +271,9 @@ pub struct ApplyReport {
     pub rows_deleted: u64,
     #[prost(int64, repeated, tag="3")]
     pub ids: ::prost::alloc::vec::Vec<i64>,
+    /// Rows affected by each mutation of the batch, in order.
+    #[prost(uint64, repeated, tag="4")]
+    pub per_mutation: ::prost::alloc::vec::Vec<u64>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
