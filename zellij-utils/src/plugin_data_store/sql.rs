@@ -13,7 +13,14 @@ pub(super) fn storage_err(context: &str, e: impl std::fmt::Display) -> DataError
 /// An error type a database driver produces. Implemented by each backend for its driver's error,
 /// so that [`SqlContext`] is available on driver results without a blanket impl that would also
 /// match `Result<_, DataError>`.
-pub(super) trait StorageError: std::fmt::Display {}
+pub(super) trait StorageError: std::fmt::Display {
+    fn into_data_error(self, context: &str) -> DataError
+    where
+        Self: Sized,
+    {
+        storage_err(context, self)
+    }
+}
 
 /// Attach context to a failed driver call.
 ///
@@ -28,11 +35,11 @@ pub(super) trait SqlContext<T> {
 
 impl<T, E: StorageError> SqlContext<T> for Result<T, E> {
     fn ctx(self, context: &str) -> Result<T, DataError> {
-        self.map_err(|e| storage_err(context, e))
+        self.map_err(|e| e.into_data_error(context))
     }
 
     fn with_ctx(self, context: impl FnOnce() -> String) -> Result<T, DataError> {
-        self.map_err(|e| storage_err(&context(), e))
+        self.map_err(|e| e.into_data_error(&context()))
     }
 }
 

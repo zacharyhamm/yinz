@@ -585,10 +585,11 @@ number. Mutations are `put(entity, values, uid)`, `update(entity, filter, values
 `all(...)`, `any(...)`, `negate(p)`. Attribute kinds are `text`, `int`, `real`, `bool`, `blob`
 and `json`; a value written as `{ json = table }` is stored as JSON and `{ blob = "bytes" }` as
 a blob. To clear an attribute, write `zellij.data.null` - a `nil` has no key for a mutation to
-read. `id`, `uid`, `created_at` and `updated_at` are on every row without being declared - and so
-**cannot be declared**. `rowid` and `oid` are reserved too, and a `define` that names any of the
-six fails whole, with no entity created. Read them, sort by them, filter on them; just do not
-put them in `attrs`.
+read. `id`, `uid`, `created_at` and `updated_at` are on every row without being declared.
+Read them, sort by them, and filter on them, but do not put them in `attrs`.
+`rowid`, `oid`, `xmin`, `xmax`, `cmin`, `cmax`, `ctid` and `tableoid` are also reserved attribute
+names on both backends. A `define` that declares any reserved attribute fails without creating
+an entity or changing existing schema and data.
 
 ### Sharing a namespace
 

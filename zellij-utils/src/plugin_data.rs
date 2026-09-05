@@ -41,8 +41,21 @@ pub const MAX_NAME_LEN: usize = 63;
 /// Prefix that marks a namespace as shared between plugins.
 pub const SHARED_NAMESPACE_PREFIX: &str = "shared:";
 
-/// Columns the store owns on every entity table. A declared attribute may not take these names.
-pub const RESERVED_ATTR_NAMES: &[&str] = &["id", "uid", "created_at", "updated_at", "rowid", "oid"];
+/// Store-owned and database-reserved column names. Declared attributes may not take these names.
+pub const RESERVED_ATTR_NAMES: &[&str] = &[
+    "id",
+    "uid",
+    "created_at",
+    "updated_at",
+    "rowid",
+    "oid",
+    "xmin",
+    "xmax",
+    "cmin",
+    "cmax",
+    "ctid",
+    "tableoid",
+];
 
 /// The storage class of a declared attribute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1234,10 +1247,14 @@ mod tests {
     }
 
     #[test]
-    fn reserved_names_are_fine_for_entities() {
+    fn reserved_names_are_fine_for_entities_and_namespaces() {
         // The reservation is about column names. An entity called `id` never reaches SQL, because
         // entity names are mapped through the registry table.
-        assert_eq!(validate_name("id", NameKind::Entity), Ok(()));
+        for name in RESERVED_ATTR_NAMES {
+            assert_eq!(validate_name(name, NameKind::Entity), Ok(()));
+            assert_eq!(validate_name(name, NameKind::Namespace), Ok(()));
+            assert_eq!(validate_namespace(Some(&format!("shared:{name}"))), Ok(()));
+        }
     }
 
     #[test]
