@@ -751,6 +751,15 @@ person or a model is turns or minutes back. Carry it with the value: put it in w
 out, take it back as an argument, and guard on *that*. hocus does exactly this for
 `todo_edit` and `note_edit`, whose `expect_rev` argument is the rev the listing showed.
 
+**A guard belongs to the batch, not to one row in it.** Some writes replace something without
+touching the row that names it — hocus replacing a note's tags is one: the tags are their own
+rows, and a `delete` cannot carry a revision at all. A batch like that is still a replacement
+composed from a reading, so it earns a guard, and the way to give it one is to put a guarded
+`update` of the owning row into the same batch. Since `apply` is all or nothing, a refused guard
+rolls the rest back. The other half of the same rule: guard the row *once*. Two guarded writes
+of one row in a batch is the second finding the revision the first just advanced, and the batch
+refusing itself over a race nobody ran.
+
 `apply` answers with `per_mutation` as well as `rows_written` and `rows_deleted` — rows affected
 by each mutation, in the order you gave them. The totals cannot say *which* mutation matched, so
 this is what to read when you guard by hand, by filtering on `rev` yourself, instead of failing

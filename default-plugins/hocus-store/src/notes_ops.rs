@@ -170,11 +170,14 @@ pub fn run_mutate(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
             let body = arg(args, "body");
             let tags = strings_arg(args, "tags")?;
             let mut mutations = Vec::new();
-            if title.is_some() || body.is_some() {
+            let edits_text = title.is_some() || body.is_some();
+            if edits_text {
                 mutations.extend(notes::plan_edit(&note, title, body, rev_arg(args))?.0);
             }
             if let Some(tags) = &tags {
-                mutations.extend(notes::plan_set_tags(id, tags)?.0);
+                // Guarded only when the text edit above has not already guarded this note; see
+                // the model-facing twin in `hocus`, and `notes::plan_set_tags`.
+                mutations.extend(notes::plan_set_tags(&note, tags, rev_arg(args), !edits_text)?.0);
             }
             if mutations.is_empty() {
                 return Err("give a title, a body, tags, or some of each".to_owned());
@@ -449,6 +452,56 @@ mod tests {
         .unwrap();
         let back = parsed(&run_query(&backend, "note_list", &json!({ "global": true })).unwrap());
         assert_eq!(back["count"], 1);
+    }
+
+    /// The same guard on an edit that only replaces the tags. A tag set is replaced whole, so
+    /// it is composed from a reading exactly as a body is, and it used to be written unguarded:
+    /// `expect_rev` only reached `plan_edit`, which only runs when there is text to edit.
+    #[test]
+    fn a_tags_only_edit_carrying_a_stale_revision_is_refused_and_says_why() {
+        let backend = backend();
+        let note = parsed(
+            &run_mutate(
+                &backend,
+                "note_add",
+                &json!({ "project": "work", "title": "t", "body": "b", "tags": ["old"] }),
+            )
+            .unwrap(),
+        );
+        let (id, saw) = (note["id"].clone(), note["rev"].clone());
+
+        run_mutate(
+            &backend,
+            "note_edit",
+            &json!({ "id": id, "tags": ["theirs"] }),
+        )
+        .unwrap();
+
+        let error = run_mutate(
+            &backend,
+            "note_edit",
+            &json!({ "id": id, "tags": ["mine"], "expect_rev": saw }),
+        )
+        .unwrap_err();
+        assert!(error.contains("edited by somebody else"), "{error}");
+        let now = parsed(&run_query(&backend, "note_get", &json!({ "id": id })).unwrap());
+        assert_eq!(
+            now["tags"],
+            json!(["theirs"]),
+            "the refused write changed nothing"
+        );
+
+        // And the same call naming what it read goes through.
+        run_mutate(
+            &backend,
+            "note_edit",
+            &json!({ "id": id, "tags": ["mine"], "expect_rev": now["rev"] }),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed(&run_query(&backend, "note_get", &json!({ "id": id })).unwrap())["tags"],
+            json!(["mine"])
+        );
     }
 
     /// A caller that says what revision it composed its text from is refused when somebody has

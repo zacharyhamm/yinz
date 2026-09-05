@@ -21,7 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::agents::{self, rows, AgentRunHeader, RunEntry, RunEntryKind};
-use crate::store::Backend;
+use crate::store::{self, Backend};
 use zellij_tile::prelude::{FetchRequest, Pred, SortDir};
 
 /// Runs one listing may return. A page the model reads, not a page a UI scrolls.
@@ -122,7 +122,17 @@ impl Filter {
             preds.push(Pred::eq("zellij_session_name", session));
         }
         if let Some(host_id) = trimmed(&self.host_id) {
-            preds.push(Pred::eq("host_id", host_id));
+            // A run recorded before the `host_id` column existed carries the migration's empty
+            // default, and a closed run is never rewritten, so nothing will ever fill it in.
+            // Paired with a session name this is `agents::rows::owned_or_unclaimed`'s bargain —
+            // an unclaimed row is this session's, and a session name only means anything within
+            // one machine — and it is what `this_session` asks, since that arm sets both. Asked
+            // alone the question is about one machine, and a row that names none cannot answer
+            // it: on a shared store the tolerance would hand back every machine's oldest runs.
+            preds.push(match self.session() {
+                Some(_) => store::host_or_legacy(host_id),
+                None => Pred::eq("host_id", host_id),
+            });
         }
         if let Some(kind) = trimmed(&self.kind) {
             preds.push(Pred::eq("kind", kind));
@@ -972,6 +982,83 @@ mod tests {
         // shared store, and what "have I had an agent look at this before" is really asking.
         let every = search(&backend, &Filter::default(), None, "parser", 10).unwrap();
         assert_eq!(every.hits.len(), 3, "{:?}", every.hits);
+    }
+
+    /// `this_session` has to reach the runs recorded before the `host_id` column existed.
+    ///
+    /// Every one of them carries the migration's empty default, and a closed run is never
+    /// rewritten, so nothing will ever fill it in. Read strictly, the tool that narrows to this
+    /// session answers "no runs" for a session with years of them, while the unnarrowed search
+    /// still finds them — which reads as a bug in the history, not in the filter.
+    ///
+    /// The session half is what makes the tolerance safe, and is `rows::owned_or_unclaimed`'s
+    /// bargain: a session name only means anything within one machine.
+    #[test]
+    fn narrowing_to_this_session_reaches_the_runs_that_predate_the_host_column() {
+        let backend = backend();
+
+        let mut mine = run("claude:mine", "claude", "main", 3_000);
+        mine.entries = vec![entry(1, RunEntryKind::Prompt, "fix the parser", 3_000)];
+        write(&backend, &mine);
+
+        let mut legacy = run("claude:legacy", "claude", "main", 2_000);
+        legacy.host_id = String::new();
+        legacy.entries = vec![entry(1, RunEntryKind::Prompt, "fix the parser", 2_000)];
+        write(&backend, &legacy);
+
+        // Another machine's session, sharing both the store and the name `main`.
+        let mut theirs = run("claude:theirs", "claude", "main", 4_000);
+        theirs.host_id = "another-machine".to_owned();
+        theirs.entries = vec![entry(1, RunEntryKind::Prompt, "fix the parser", 4_000)];
+        write(&backend, &theirs);
+
+        // A run of this machine's, in a different session.
+        let mut elsewhere = run("claude:elsewhere", "claude", "other", 5_000);
+        elsewhere.entries = vec![entry(1, RunEntryKind::Prompt, "fix the parser", 5_000)];
+        write(&backend, &elsewhere);
+
+        let this_session = Filter {
+            zellij_session_name: Some("main".to_owned()),
+            host_id: Some(HOST.to_owned()),
+            ..Filter::default()
+        };
+        assert_eq!(
+            listed(&backend, &this_session),
+            BTreeSet::from(["claude:mine".to_owned(), "claude:legacy".to_owned()]),
+            "an unclaimed run is this session's; another machine's `main` is not"
+        );
+
+        // A search narrows through the same predicate.
+        let found = search(&backend, &this_session, None, "parser", 10).unwrap();
+        let hits: BTreeSet<&str> = found.hits.iter().map(|hit| hit.run_id.as_str()).collect();
+        assert_eq!(
+            hits,
+            BTreeSet::from(["claude:mine", "claude:legacy"]),
+            "{:?}",
+            found.hits
+        );
+
+        // Asked about a machine on its own, with no session to pair it with, the question is
+        // about that machine — and a row naming none cannot answer it. Tolerating `""` here
+        // would hand every machine's oldest runs to whoever asked first.
+        let host_alone = Filter {
+            host_id: Some("another-machine".to_owned()),
+            ..Filter::default()
+        };
+        assert_eq!(
+            listed(&backend, &host_alone),
+            BTreeSet::from(["claude:theirs".to_owned()])
+        );
+    }
+
+    /// The ids `list_runs` gives back for a filter, as a set.
+    fn listed(backend: &impl Backend, filter: &Filter) -> BTreeSet<String> {
+        list_runs(backend, filter, 10, 0)
+            .unwrap()
+            .headers
+            .into_iter()
+            .map(|header| header.id)
+            .collect()
     }
 
     /// The `notes::search` fallback, pinned here too: FTS5 tokenizes on word boundaries, so a
