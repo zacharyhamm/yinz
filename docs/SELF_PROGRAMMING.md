@@ -57,6 +57,16 @@ Entry points: `zellij-utils/src/data.rs` (`AgentInfo`), `zellij-utils/src/agent.
 reading, the event list), `zellij-server/src/panes/terminal_pane.rs`, `screen/thread_main.rs`
 (`SetPaneAgent`), `src/hocus_hooks.rs`, `default-plugins/hocus-agentd/src/main.rs`.
 
+Where an agent pane *goes* is the server's too. Every spawn route - hocus's tools and modal,
+`zellij run -- claude`, a keybinding's `Run` - ends in one `NewPane` on the screen thread, and
+`screen/agent_placement.rs` decides there, from the same two signals the record starts from: the
+plugin context marker, or a command line that names a known agent (`zellij_utils::agent::KINDS`,
+the one list `hocus-agentd` detects with). The rule is a size, not a count: the tab's tiled
+panes and the newcomer are imagined sharing the viewport equally, and a share below
+`agent_pane_min_columns` x `agent_pane_min_rows` (80x24 by default; 0 turns it off) sends the
+pane to the roomiest other tab that clears the floor, or to a tab of its own. Area rather than
+rows and columns because an equal share fixes an area and not a shape.
+
 ### Observation from outside
 
 - **`zellij events [--type …] [--json]`** streams the state events (`PaneUpdate`, `TabUpdate`,

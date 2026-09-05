@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 use unicode_width::UnicodeWidthStr;
 
 use crate::markdown::{MdLine, MdStyle};
@@ -92,73 +91,11 @@ pub struct AgentPane {
     pub agent: Option<AgentInfo>,
 }
 
-/// Every agent we know.
-///
-/// Canonical names only. The `-cli`, `-code` and `-agent` aliases this used to spell
-/// out are what `kind_of` gets from the leading dash-segment, along with the ones no
-/// table could have listed: an installer that drops `muse-bin-0.1.0-R708.1` on the
-/// path names the same agent as one that drops `muse`.
-const KINDS: &[&str] = &[
-    "muse", "codex", "claude", "cursor", "qwen", "gemini", "aider", "cline", "opencode", "pi",
-];
-
-/// Programs that run another program named in their own arguments. Half the table
-/// above ships as a `#!/usr/bin/env node` shim, so the real argv is
-/// `["node", "/opt/bin/gemini"]` and the first word names no agent at all.
-const INTERPRETERS: &[&str] = &[
-    "node", "bun", "deno", "npx", "python", "python3", "ruby", "perl", "uv", "uvx",
-];
-
-/// The program a command-line word names: the file name of its path.
-fn program(word: &str) -> &str {
-    Path::new(word)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(word)
-}
-
-/// The kind a program name is: its file name, then that without an extension, then
-/// its leading dash-segment.
-///
-/// Each step strips decoration a packager added and the user never typed — `claude.js`
-/// from a shim, `-0.1.0-R708.1` from a versioned binary, `-cli` from a published name.
-/// The segment is still a whole one, so `pipenv` is not `pi`.
-fn kind_of(word: &str) -> Option<&'static str> {
-    let name = program(word).to_lowercase();
-    let stem = name.split('.').next().unwrap_or_default();
-    [
-        name.as_str(),
-        stem,
-        stem.split('-').next().unwrap_or_default(),
-    ]
-    .iter()
-    .find_map(|candidate| KINDS.iter().find(|kind| *kind == candidate).copied())
-}
-
-/// The agent kind a command line names, or `None`.
-///
-/// Whole tokens, never a substring: `pi` against a substring would make every `pip
-/// install` shell an agent, and an agent is something the model may send input to.
-///
-/// This is the half of detection that can be *trusted over time*: a pane that is
-/// running an agent right now is one, whatever it is called. `hocus-agentd` latches
-/// on this and nothing else.
-pub fn kind_from_command(command: &str) -> Option<&'static str> {
-    let mut words = command.split_whitespace();
-    let first = words.next().unwrap_or_default();
-    if let Some(kind) = kind_of(first) {
-        return Some(kind);
-    }
-    // Later words count only behind an interpreter. Otherwise `git commit -m
-    // "ask claude"` would be an agent, which is the same reason detection is
-    // token-based rather than substring-based.
-    if INTERPRETERS.contains(&program(first).to_lowercase().as_str()) {
-        if let Some(kind) = words.find_map(kind_of) {
-            return Some(kind);
-        }
-    }
-    None
-}
+// The command-line classifier - `KINDS`, `kind_of`, `kind_from_command` - lives in
+// `zellij_utils::agent` now, because the server reads it too: where a spawned agent pane
+// goes is decided before the process has said anything, from the same list `hocus-agentd`
+// latches "detected" from. Re-exported so every caller in the plugins keeps one name for it.
+pub use zellij_tile::agent::{kind_from_command, kind_of, program, KINDS};
 
 /// The agent kind a pane title names, or `None`.
 ///

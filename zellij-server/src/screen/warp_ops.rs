@@ -601,15 +601,23 @@ impl Screen {
                 NewPanePlacement::Floating(None),
                 ClientTabIndexOrPaneId::ClientId(client_id),
             ),
+            // The tab is named rather than left as "wherever the client is": a warp's
+            // placement is the user's explicit choice, and `agent_pane_target` re-routes a
+            // client-relative agent pane out of a crowded tab while it honours a named one.
+            // Resolved now, on the screen thread, it is still the tab the client is looking at.
             WarpPlacement::FocusedTab => (
                 NewPanePlacement::Tiled {
                     direction: None,
                     borderless: Some(payload.borderless),
                 },
-                ClientTabIndexOrPaneId::ClientId(client_id),
+                match self.tab_a_client_is_looking_at(client_id) {
+                    Some(tab_index) => ClientTabIndexOrPaneId::TabIndex(tab_index),
+                    None => ClientTabIndexOrPaneId::ClientId(client_id),
+                },
             ),
             WarpPlacement::NewTab => {
-                let tab_index = self.new_tab_for_adopted_pane(invoked_with.clone(), client_id)?;
+                let tab_index =
+                    self.new_tab_for_adopted_pane(invoked_with.clone(), client_id, true)?;
                 (
                     NewPanePlacement::Tiled {
                         direction: None,
@@ -670,15 +678,23 @@ impl Screen {
         Ok(())
     }
 
-    /// A tab of its own for an adopted pane, following `break_pane`'s dance.
+    /// A tab of its own for an adopted pane, following `break_pane`'s dance. Also what a
+    /// spawned agent pane gets when no tab has room for it (`agent_placement`), which is why
+    /// the caller says whether the client follows the pane there.
     ///
     /// `ignore_run_instruction` is the load-bearing part: without it the new tab's
     /// layout template also spawns a default shell, and the user gets two panes
     /// where they asked for one.
-    fn new_tab_for_adopted_pane(
+    ///
+    /// The client is seated in the tab only when it follows the pane there, as the
+    /// `NewTab` arm in `thread_main` does: `apply_layout` moves the client out of its
+    /// source tab only on a focus change, so seating it here for an unfocused spawn would
+    /// leave it connected to two tabs at once.
+    pub(super) fn new_tab_for_adopted_pane(
         &mut self,
         invoked_with: Option<Run>,
         client_id: ClientId,
+        should_change_focus_to_new_tab: bool,
     ) -> Result<usize> {
         let err_context = || "failed to open a tab for an adopted pane".to_string();
         let default_layout = self.default_layout.clone();
@@ -687,7 +703,8 @@ impl Screen {
             default_layout.swap_tiled_layouts.clone(),
             default_layout.swap_floating_layouts.clone(),
         );
-        self.new_tab(tab_index, swap_layouts, None, Some(client_id))?;
+        let client_for_tab = should_change_focus_to_new_tab.then_some(client_id);
+        self.new_tab(tab_index, swap_layouts, None, client_for_tab)?;
         let (mut tiled_panes_layout, floating_panes_layout) = default_layout.new_tab();
         tiled_panes_layout.ignore_run_instruction(invoked_with);
         self.bus
@@ -700,7 +717,7 @@ impl Screen {
                 tab_index,
                 None,
                 false,
-                true,
+                should_change_focus_to_new_tab,
                 client_id,
                 None,
             ))

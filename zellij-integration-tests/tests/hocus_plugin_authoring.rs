@@ -326,9 +326,16 @@ fn a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end() {
         .join("agent-hook-loop");
     fs::create_dir_all(&config_dir).unwrap();
     let plugin_dir = config_dir.join("plugins");
+    // The agent shares the first tab with the shell: with the placement rule on, `claude`
+    // would get a tab of its own here (one pane's share of this terminal is under the default
+    // floor - see `agent_pane_placement.rs`), and a pane alone in its tab draws no frame, so
+    // nothing on screen would say "claude". Placement is not what this test is about.
     let zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config_dir(config_dir.clone())
-        .with_config(&format!("user_plugin_dir \"{}\"", plugin_dir.display()))
+        .with_config(&format!(
+            "user_plugin_dir \"{}\"\nagent_pane_min_columns 0",
+            plugin_dir.display()
+        ))
         .start();
     claim_first_terminal_and_wait_for_prompt(&zellij);
 

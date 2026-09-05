@@ -120,6 +120,7 @@ use zellij_utils::{
     ipc::{ClientAttributes, PixelDimensions},
 };
 
+mod agent_placement;
 mod break_panes;
 mod capabilities;
 mod context_menu;
@@ -759,6 +760,9 @@ pub(crate) struct Screen {
     next_notification_id: u64,
     notification_position: NotificationPosition,
     notification_timeout_secs: u64,
+    /// The floor a spawned agent pane's equal share of a tab must clear, columns by rows;
+    /// zero in either turns the rule off. See `agent_placement`.
+    agent_pane_min_size: Size,
     auto_layout: bool,
     session_serialization: bool,
     serialize_pane_viewport: bool,
@@ -1264,6 +1268,7 @@ impl Screen {
         nested_session_handling: NestedSessionHandling,
         notification_position: NotificationPosition,
         notification_timeout_secs: u64,
+        agent_pane_min_size: Size,
     ) -> Self {
         let session_name = mode_info.session_name.clone().unwrap_or_default();
         let session_info = SessionInfo::new(session_name.clone());
@@ -1317,6 +1322,7 @@ impl Screen {
             next_notification_id: 0,
             notification_position,
             notification_timeout_secs,
+            agent_pane_min_size,
             auto_layout,
             session_is_mirrored,
             copy_options,
@@ -3357,6 +3363,7 @@ impl Screen {
         nested_session_handling: NestedSessionHandling,
         dangerously_enable_paste_buffer_read: bool,
         host_notification_protocol: HostNotificationProtocol,
+        agent_pane_min_size: Size,
         client_id: ClientId,
     ) -> Result<()> {
         let should_support_arrow_fonts = !simplified_ui;
@@ -3411,6 +3418,7 @@ impl Screen {
         {
             *self.stacked_pane_list.borrow_mut() = stacked_pane_list;
         }
+        self.agent_pane_min_size = agent_pane_min_size;
         if let Some(copy_to_clipboard) = copy_to_clipboard {
             self.copy_options.clipboard = copy_to_clipboard;
         }

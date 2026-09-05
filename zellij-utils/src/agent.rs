@@ -184,6 +184,115 @@ pub fn agent_kind_of(program: &Path, args: &[String]) -> Option<String> {
     None
 }
 
+/// Every agent we know.
+///
+/// Canonical names only. The `-cli`, `-code` and `-agent` aliases this used to spell
+/// out are what `kind_of` gets from the leading dash-segment, along with the ones no
+/// table could have listed: an installer that drops `muse-bin-0.1.0-R708.1` on the
+/// path names the same agent as one that drops `muse`.
+///
+/// One list for everyone who asks what an agent is: `hocus-agentd`, which latches a pane's
+/// "detected" kind from its command, and the server, which decides where a spawned agent
+/// pane goes before the process has said anything. Two lists would be two answers.
+pub const KINDS: &[&str] = &[
+    "muse", "codex", "claude", "cursor", "qwen", "gemini", "aider", "cline", "opencode", "pi",
+];
+
+/// Programs that run another program named in their own arguments. Half the table
+/// above ships as a `#!/usr/bin/env node` shim, so the real argv is
+/// `["node", "/opt/bin/gemini"]` and the first word names no agent at all.
+const INTERPRETERS: &[&str] = &[
+    "node", "bun", "deno", "npx", "python", "python3", "ruby", "perl", "uv", "uvx",
+];
+
+/// The program a command-line word names: the file name of its path.
+pub fn program(word: &str) -> &str {
+    Path::new(word)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(word)
+}
+
+/// The kind a program name is: its file name, then that without an extension, then
+/// its leading dash-segment.
+///
+/// Each step strips decoration a packager added and the user never typed — `claude.js`
+/// from a shim, `-0.1.0-R708.1` from a versioned binary, `-cli` from a published name.
+/// The segment is still a whole one, so `pipenv` is not `pi`.
+pub fn kind_of(word: &str) -> Option<&'static str> {
+    let name = program(word).to_lowercase();
+    let stem = name.split('.').next().unwrap_or_default();
+    [
+        name.as_str(),
+        stem,
+        stem.split('-').next().unwrap_or_default(),
+    ]
+    .iter()
+    .find_map(|candidate| KINDS.iter().find(|kind| *kind == candidate).copied())
+}
+
+/// The agent kind a command line names, or `None`.
+///
+/// Whole tokens, never a substring: `pi` against a substring would make every `pip
+/// install` shell an agent, and an agent is something the model may send input to.
+///
+/// This is the half of detection that can be *trusted over time*: a pane that is
+/// running an agent right now is one, whatever it is called. `hocus-agentd` latches
+/// on this and nothing else.
+pub fn kind_from_command(command: &str) -> Option<&'static str> {
+    let mut words = command.split_whitespace();
+    let first = words.next().unwrap_or_default();
+    if let Some(kind) = kind_of(first) {
+        return Some(kind);
+    }
+    // Later words count only behind an interpreter. Otherwise `git commit -m
+    // "ask claude"` would be an agent, which is the same reason detection is
+    // token-based rather than substring-based.
+    if INTERPRETERS.contains(&program(first).to_lowercase().as_str()) {
+        if let Some(kind) = words.find_map(kind_of) {
+            return Some(kind);
+        }
+    }
+    None
+}
+
+/// The agent kind a command the session holds as a program and its arguments names, or
+/// `None` - a `RunCommand` about to become a pane.
+///
+/// Reads the *program* and nothing else: the `env(1)`-unwrapped program word, or, behind an
+/// interpreter, the script the interpreter runs. [`kind_from_command`] scans every word behind
+/// an interpreter, and that is fine for the label `hocus-agentd` puts on a pane, but this
+/// decides where the pane *goes*, and a `python3 gemini_test.py --api gemini` moved to another
+/// tab costs the user a layout, where a wrong label costs nothing.
+///
+/// `env` is looked through the way [`agent_kind_of`] does, because that is how a plugin hands
+/// an agent its environment, and `env` is not an interpreter in the sense above: its program
+/// is not among its own arguments' interpreters but after its assignments.
+pub fn kind_from_program_and_args(program_path: &Path, args: &[String]) -> Option<&'static str> {
+    let name = agent_kind_of(program_path, args)?;
+    if let Some(kind) = kind_of(&name) {
+        return Some(kind);
+    }
+    if INTERPRETERS.contains(&name.to_lowercase().as_str()) {
+        return interpreted_script(args).and_then(kind_of);
+    }
+    None
+}
+
+/// The script an interpreter's arguments run: the first word that is neither an option nor a
+/// runner's `run` subcommand (`uv run pi`, `bun run claude`, `deno run --allow-all x`).
+///
+/// `args` is the whole argument list, which may still hold `env`'s assignments and the
+/// interpreter itself ahead of the script; both are skipped along with the options, since
+/// neither an assignment nor an interpreter is a script.
+fn interpreted_script(args: &[String]) -> Option<&str> {
+    args.iter()
+        .map(String::as_str)
+        .filter(|arg| !arg.starts_with('-') && !arg.contains('='))
+        .filter(|arg| !INTERPRETERS.contains(&program(arg).to_lowercase().as_str()))
+        .find(|arg| *arg != "run")
+}
+
 /// The event name that ends a session, and so ends the pane's record.
 pub const HOOK_SESSION_END: &str = "SessionEnd";
 
@@ -985,6 +1094,70 @@ mod tests {
             Some("codex")
         );
         assert_eq!(agent_kind_of(Path::new("env"), &args(&["FOO=1"])), None);
+    }
+
+    #[test]
+    fn a_command_line_names_an_agent_by_its_first_word_or_behind_an_interpreter() {
+        for (command, kind) in [
+            ("claude", "claude"),
+            ("claude-code --resume", "claude"),
+            ("/usr/local/bin/Codex --resume", "codex"),
+            ("/Users/x/.local/bin/muse-bin-0.1.0-R708.1 --resume", "muse"),
+            ("node /opt/bin/gemini", "gemini"),
+            ("pi-agent", "pi"),
+        ] {
+            assert_eq!(kind_from_command(command), Some(kind), "{command}");
+        }
+        for command in ["zsh", "pipenv run pi", "git commit -m 'ask claude'", ""] {
+            assert_eq!(kind_from_command(command), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn a_program_and_its_arguments_name_an_agent_through_env_and_an_interpreter() {
+        let args = |list: &[&str]| list.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            kind_from_program_and_args(Path::new("/usr/bin/claude"), &args(&["--model", "opus"])),
+            Some("claude")
+        );
+        assert_eq!(
+            kind_from_program_and_args(Path::new("env"), &args(&["FOO=1", "codex", "--resume"])),
+            Some("codex")
+        );
+        assert_eq!(
+            kind_from_program_and_args(
+                Path::new("/usr/bin/env"),
+                &args(&["node", "/opt/bin/gemini"])
+            ),
+            Some("gemini")
+        );
+        for (program_path, list) in [
+            (
+                "node",
+                &["--max-old-space-size=4096", "/opt/bin/claude"][..],
+            ),
+            ("uvx", &["pi"]),
+            ("uv", &["run", "pi"]),
+        ] {
+            assert!(
+                kind_from_program_and_args(Path::new(program_path), &args(list)).is_some(),
+                "{program_path} {list:?}"
+            );
+        }
+        // Only the script counts behind an interpreter: this decides where a pane goes.
+        for (program_path, list) in [
+            ("python3", &["gemini_test.py", "--api", "gemini"][..]),
+            ("node", &["build.js", "--preset", "claude-3"]),
+            ("uv", &["run", "x", "--with", "pi"]),
+            ("/bin/zsh", &["-c", "claude"]),
+            ("env", &["FOO=1"]),
+        ] {
+            assert_eq!(
+                kind_from_program_and_args(Path::new(program_path), &args(list)),
+                None,
+                "{program_path} {list:?}"
+            );
+        }
     }
 
     fn event(name: &str) -> HookEvent {

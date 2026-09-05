@@ -1,5 +1,6 @@
 use zellij_utils::errors::prelude::*;
 
+use super::agent_placement::AgentPlacement;
 use super::warp_ops::{PANE_WARP_SCREEN_RESERVE, TAB_WARP_SCREEN_RESERVE};
 use super::{
     active_tab, active_tab_and_connected_client_id,
@@ -35,7 +36,8 @@ use zellij_utils::input::config::Config;
 use zellij_utils::input::get_mode_info;
 use zellij_utils::input::layout::{Layout, Run};
 use zellij_utils::input::options::{
-    PaneFrameStyle, DEFAULT_NOTIFICATION_TIMEOUT_SECS, DEFAULT_WORD_SEPARATORS,
+    PaneFrameStyle, DEFAULT_AGENT_PANE_MIN_COLUMNS, DEFAULT_AGENT_PANE_MIN_ROWS,
+    DEFAULT_NOTIFICATION_TIMEOUT_SECS, DEFAULT_WORD_SEPARATORS,
 };
 use zellij_utils::ipc::{ClientAttributes, ServerToClientMsg};
 use zellij_utils::nested_session;
@@ -148,6 +150,14 @@ pub(crate) fn screen_thread_main(
     let notification_timeout_secs = config_options
         .notification_timeout
         .unwrap_or(DEFAULT_NOTIFICATION_TIMEOUT_SECS);
+    let agent_pane_min_size = Size {
+        cols: config_options
+            .agent_pane_min_columns
+            .unwrap_or(DEFAULT_AGENT_PANE_MIN_COLUMNS),
+        rows: config_options
+            .agent_pane_min_rows
+            .unwrap_or(DEFAULT_AGENT_PANE_MIN_ROWS),
+    };
     let layout_dir = config_options.layout_dir;
     #[cfg(test)]
     let default_shell = config_options
@@ -265,6 +275,7 @@ pub(crate) fn screen_thread_main(
         nested_session_handling,
         notification_position,
         notification_timeout_secs,
+        agent_pane_min_size,
     );
     screen.config_file_path = config_file_path;
     screen.config_dir = config_dir;
@@ -283,7 +294,6 @@ pub(crate) fn screen_thread_main(
     }
     screen.set_host_notification_protocol(host_notification_protocol);
 
-    let mut pending_tab_ids: HashSet<usize> = HashSet::new();
     let mut pending_tab_switches: HashSet<(usize, ClientId)> = HashSet::new(); // usize is the
                                                                                // tab_index
     let mut pending_events_waiting_for_tab: Vec<ScreenInstruction> = vec![];
@@ -402,7 +412,7 @@ pub(crate) fn screen_thread_main(
                 initial_pane_title,
                 hold_for_command,
                 invoked_with,
-                new_pane_placement,
+                mut new_pane_placement,
                 start_suppressed,
                 client_or_tab_index,
                 mut completion_tx,
@@ -411,6 +421,19 @@ pub(crate) fn screen_thread_main(
                 completion_tx.as_mut().map(|c| c.set_affected_pane_id(pid));
 
                 let blocking_notification = if set_blocking { completion_tx } else { None };
+
+                // An agent's pane may be sent to a roomier tab than the one it was asked for,
+                // or to a tab of its own - `agent_pane_target` says when. Every other pane
+                // keeps the target it came with.
+                let AgentPlacement {
+                    target: client_or_tab_index,
+                    focus_after_placing,
+                } = screen.agent_pane_target(
+                    invoked_with.as_ref(),
+                    &mut new_pane_placement,
+                    start_suppressed,
+                    client_or_tab_index,
+                );
 
                 match client_or_tab_index {
                     ClientTabIndexOrPaneId::ClientId(client_id)
@@ -558,6 +581,17 @@ pub(crate) fn screen_thread_main(
                         }
                     },
                 };
+                // A `TabIndex` target places without a client, so a pane redirected to a tab
+                // that already exists is brought to its client here. A tab made for the pane
+                // needs nothing: `apply_layout` moves the client when the layout lands.
+                if let Some(client_id) = focus_after_placing {
+                    // The pane is placed by now; a focus that misses is not a reason to skip
+                    // the hooks, the report and the render below.
+                    screen
+                        .focus_pane_with_id(pid, false, false, client_id)
+                        .non_fatal();
+                    screen.sync_scroll_mode_on_focus(client_id).non_fatal();
+                }
                 // Before the replay: a pane that exited before the screen created it starts,
                 // and then exits, in that order.
                 screen.fire_agent_start_for_new_pane(pid);
@@ -1840,7 +1874,6 @@ pub(crate) fn screen_thread_main(
                 completion_tx,
             ) => {
                 let tab_index = screen.get_new_tab_id();
-                pending_tab_ids.insert(tab_index);
                 let client_id_for_new_tab = if should_change_focus_to_new_tab {
                     Some(client_id)
                 } else {
@@ -1932,8 +1965,7 @@ pub(crate) fn screen_thread_main(
                         .non_fatal();
                     }
                 }
-                pending_tab_ids.remove(&tab_id);
-                if pending_tab_ids.is_empty() {
+                if !screen.has_pending_tabs() {
                     for (tab_index, client_id) in pending_tab_switches.drain() {
                         screen.go_to_tab(tab_index + 1, client_id)?;
                     }
@@ -2008,12 +2040,12 @@ pub(crate) fn screen_thread_main(
                     screen.active_tab_ids.keys().next().copied()
                 };
                 match client_id_to_switch {
-                    // we must make sure pending_tab_ids is empty because otherwise we cannot be
+                    // we must make sure no tab is pending because otherwise we cannot be
                     // sure this instruction is applied at the right time (eg. we might have a
                     // pending tab that will become not-pending after this instruction and change
                     // the client focus, which should have happened before this instruction and not
                     // after)
-                    Some(client_id) if pending_tab_ids.is_empty() => {
+                    Some(client_id) if !screen.has_pending_tabs() => {
                         screen.go_to_tab(tab_index as usize, client_id)?;
                         screen.render(None)?;
                     },
@@ -2110,7 +2142,7 @@ pub(crate) fn screen_thread_main(
                 screen.render(None)?;
             },
             ScreenInstruction::MoveTabLeft(client_id, completion_tx) => {
-                if pending_tab_ids.is_empty() {
+                if !screen.has_pending_tabs() {
                     screen.move_active_tab_to_left(client_id)?;
                     screen.render(None)?;
                 } else {
@@ -2120,7 +2152,7 @@ pub(crate) fn screen_thread_main(
                 }
             },
             ScreenInstruction::MoveTabRight(client_id, completion_tx) => {
-                if pending_tab_ids.is_empty() {
+                if !screen.has_pending_tabs() {
                     screen.move_active_tab_to_right(client_id)?;
                     screen.render(None)?;
                 } else {
@@ -3420,6 +3452,19 @@ pub(crate) fn screen_thread_main(
                         c.set_exit_status(1);
                         c.set_error_message(format!("Pane with id {:?} not found", pane_id));
                     }
+                } else if screen.has_pending_tabs() {
+                    // Deferred for the reason `GoToTab` is: a tab whose layout has not landed
+                    // has provisional geometry, and its layout landing may move the client
+                    // itself. A plugin that spawned a pane into a tab made for it focuses the
+                    // pane in the same breath, and that focus should land after the layout,
+                    // on the tab as it really is.
+                    pending_events_waiting_for_tab.push(ScreenInstruction::FocusPaneWithId(
+                        pane_id,
+                        should_float_if_hidden,
+                        should_be_in_place_if_hidden,
+                        client_id,
+                        completion_tx,
+                    ));
                 } else {
                     let already_focused = screen
                         .get_active_pane_id(&client_id)
@@ -4160,6 +4205,7 @@ pub(crate) fn screen_thread_main(
                 nested_session_handling,
                 dangerously_enable_paste_buffer_read,
                 host_notification_protocol,
+                agent_pane_min_size,
             } => {
                 screen.host_theme_dark_styling = host_theme_dark;
                 screen.host_theme_light_styling = host_theme_light;
@@ -4194,6 +4240,7 @@ pub(crate) fn screen_thread_main(
                         nested_session_handling,
                         dangerously_enable_paste_buffer_read,
                         host_notification_protocol,
+                        agent_pane_min_size,
                         client_id,
                     )
                     .non_fatal();
@@ -5080,7 +5127,7 @@ pub(crate) fn screen_thread_main(
                 screen.log_and_report_session_state()?;
             },
             ScreenInstruction::MoveTabWithTabId(tab_id, direction, _completion_tx) => {
-                if pending_tab_ids.is_empty() {
+                if !screen.has_pending_tabs() {
                     screen.move_tab_by_id(tab_id, direction)?;
                     screen.render(None)?;
                 } else {

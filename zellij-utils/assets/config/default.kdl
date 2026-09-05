@@ -807,6 +807,17 @@ load_plugins {
 //
 // stacked_resize false
 
+// The smallest tiled pane worth giving a newly spawned coding agent, as a terminal
+// size. Before an agent pane joins a tab, zellij projects the area each tiled pane
+// would have if the tab's tiled panes (floating ones aside) shared the viewport
+// equally, and compares it with columns x rows. A tab that would fall below it
+// sends the agent to the roomiest other tab that stays above it, or to a new tab.
+// Set either to 0 to always open agents where they were asked for.
+// Default: 80 and 24
+//
+// agent_pane_min_columns 80
+// agent_pane_min_rows 24
+
 // Whether to let programs running inside panes read the paste buffer (clipboard)
 // with the OSC 52 escape sequence. When enabled, any program in any pane -
 // including one running on a remote machine over SSH - can read the clipboard

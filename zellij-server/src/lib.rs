@@ -127,7 +127,10 @@ use zellij_utils::envs;
 use zellij_utils::pane_size::Size;
 
 use zellij_utils::input::cli_assets::CliAssets;
-use zellij_utils::input::options::{PaneFrameStyle, DEFAULT_WORD_SEPARATORS};
+use zellij_utils::input::options::{
+    PaneFrameStyle, DEFAULT_AGENT_PANE_MIN_COLUMNS, DEFAULT_AGENT_PANE_MIN_ROWS,
+    DEFAULT_WORD_SEPARATORS,
+};
 
 use wasmi::Engine;
 
@@ -564,6 +567,16 @@ impl SessionMetaData {
                     rounded_corners: new_config.ui.pane_frames.rounded_corners,
                     hide_session_name: new_config.ui.pane_frames.hide_session_name,
                     stacked_resize: new_config.options.stacked_resize.unwrap_or(true),
+                    agent_pane_min_size: Size {
+                        cols: new_config
+                            .options
+                            .agent_pane_min_columns
+                            .unwrap_or(DEFAULT_AGENT_PANE_MIN_COLUMNS),
+                        rows: new_config
+                            .options
+                            .agent_pane_min_rows
+                            .unwrap_or(DEFAULT_AGENT_PANE_MIN_ROWS),
+                    },
                     stacked_pane_list: new_config.options.stacked_pane_list.unwrap_or(true),
                     default_editor: new_config.options.scrollback_editor.clone(),
                     advanced_mouse_actions: new_config

@@ -2779,7 +2779,8 @@ impl State {
             // The one thing this route did not do. `spawn_in_checkout` goes through a host
             // call that marks the pane as an agent's itself; an agent with no branch to cut
             // opens an ordinary command pane, so it has to say so here or the `agent_exit`
-            // hook will never fire for it.
+            // hook will never fire for it. The marker also opens the pane near the plugin,
+            // as that host call does, so the server places both routes the same way.
             tools::new_pane_with_context(&pane, launch::agent_pane_context())
         } else {
             let mut configured = args.clone();

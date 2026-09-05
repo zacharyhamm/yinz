@@ -41,6 +41,38 @@ fn firecracker_provider_options_round_trip() {
 }
 
 #[test]
+fn agent_pane_floor_options_round_trip() {
+    let document: KdlDocument = r#"
+        agent_pane_min_columns 100
+        agent_pane_min_rows 0
+    "#
+    .parse()
+    .unwrap();
+    let options = Options::from_kdl(&document).unwrap();
+    assert_eq!(options.agent_pane_min_columns, Some(100));
+    assert_eq!(
+        options.agent_pane_min_rows,
+        Some(0),
+        "zero is how the rule is turned off"
+    );
+
+    let mut serialized = KdlDocument::new();
+    serialized
+        .nodes_mut()
+        .append(&mut Options::to_kdl(&options, false));
+    assert_eq!(Options::from_kdl(&serialized).unwrap(), options);
+
+    let unset = Options::from_kdl(&KdlDocument::new()).unwrap();
+    assert_eq!(unset.agent_pane_min_columns, None);
+    assert_eq!(unset.agent_pane_min_rows, None);
+
+    for negative in ["agent_pane_min_columns -1", "agent_pane_min_rows -24"] {
+        let document: KdlDocument = negative.parse().unwrap();
+        assert!(Options::from_kdl(&document).is_err(), "{negative}");
+    }
+}
+
+#[test]
 fn config_options_to_string() {
     let fake_config = r##"
         simplified_ui true

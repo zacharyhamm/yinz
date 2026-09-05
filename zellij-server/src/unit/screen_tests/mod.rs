@@ -430,6 +430,7 @@ fn create_new_screen_with_capture(
         NestedSessionHandling::default(),
         NotificationPosition::default(),
         DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+        Size { rows: 0, cols: 0 }, // agent placement off; a test that wants it sets the floor
     );
     (
         seed_first_client_size(screen, size),
@@ -479,6 +480,11 @@ impl MockScreen {
         std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
         let mut config = self.config.clone();
         config.options.advanced_mouse_actions = Some(self.advanced_mouse_actions);
+        // Off unless a test turns it on: a `MockScreen` has no plugin thread to apply a new
+        // tab's layout, so an agent pane sent to a tab of its own would sit in a pending tab
+        // for the rest of the test, its held command and bytes buffered and never replayed.
+        config.options.agent_pane_min_columns.get_or_insert(0);
+        config.options.agent_pane_min_rows.get_or_insert(0);
         let client_attributes = self.client_attributes.clone();
         let default_layout = self.default_layout.clone();
         let screen_bus = Bus::new(
@@ -1068,6 +1074,7 @@ fn create_new_screen_with_message_capture(
         NestedSessionHandling::default(),
         NotificationPosition::default(),
         DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+        Size { rows: 0, cols: 0 }, // agent placement off; a test that wants it sets the floor
     );
     (seed_first_client_size(screen, size), messages)
 }
@@ -1214,6 +1221,7 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
         NestedSessionHandling::default(),
         NotificationPosition::default(),
         DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+        Size { rows: 0, cols: 0 }, // agent placement off; a test that wants it sets the floor
     );
     (
         seed_first_client_size(screen, size),
@@ -1358,6 +1366,7 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
         NestedSessionHandling::default(),
         NotificationPosition::default(),
         DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+        Size { rows: 0, cols: 0 }, // agent placement off; a test that wants it sets the floor
     );
     (
         seed_first_client_size(screen, size),
@@ -1488,6 +1497,7 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
         NestedSessionHandling::default(),
         NotificationPosition::default(),
         DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+        Size { rows: 0, cols: 0 }, // agent placement off; a test that wants it sets the floor
     );
     seed_first_client_size(screen, size)
 }
@@ -1745,6 +1755,18 @@ fn adopted_pane_placement_target(
     placement: zellij_utils::data::WarpPlacement,
     client_id: ClientId,
 ) -> ClientTabIndexOrPaneId {
+    let (_, _, target) = adopted_pane_new_pane(screen, placement, client_id, RunCommand::default());
+    target
+}
+
+/// Adopt a pane running `cmd` with the given placement and return what the `NewPane` it
+/// asks for says: the run it was invoked with, its placement, and its target.
+fn adopted_pane_new_pane(
+    screen: &mut Screen,
+    placement: zellij_utils::data::WarpPlacement,
+    client_id: ClientId,
+    cmd: RunCommand,
+) -> (Option<Run>, NewPanePlacement, ClientTabIndexOrPaneId) {
     use zellij_utils::data::WarpedPane;
 
     let (to_screen, screen_receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
@@ -1755,7 +1777,7 @@ fn adopted_pane_placement_target(
             WarpedPane::default(),
             placement,
             client_id,
-            RunCommand::default(),
+            cmd,
             vec![],
             None,
         )
@@ -1763,7 +1785,9 @@ fn adopted_pane_placement_target(
     screen_receiver
         .try_iter()
         .find_map(|(instruction, _)| match instruction {
-            ScreenInstruction::NewPane(_, _, _, _, _, _, target, _, _) => Some(target),
+            ScreenInstruction::NewPane(_, _, _, invoked_with, placement, _, target, _, _) => {
+                Some((invoked_with, placement, target))
+            },
             _ => None,
         })
         .expect("the adopted pane should have asked for a pane")
@@ -2031,6 +2055,7 @@ fn notification_history_keeps_dismissed_toasts() {
     mock_screen.teardown(vec![screen_thread]);
 }
 
+mod agent_placement;
 mod animation_clock;
 mod break_and_move_panes;
 mod break_panes_to_tab;
