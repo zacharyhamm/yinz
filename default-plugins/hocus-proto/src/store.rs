@@ -145,15 +145,47 @@ pub fn note_tag_def() -> EntityDef {
 /// emptiness is a state a user can reach honestly — crossing off and clearing
 /// the last todo would otherwise resurrect the file on the next launch.
 pub fn import_marker_def() -> EntityDef {
-    EntityDef::new("import_marker", 1).attr(AttrDef::text("what").required())
+    EntityDef::new("import_marker", 2)
+        .attr(AttrDef::text("what").required())
+        // The files this marker is about are on one machine's disk. Without the host, the first
+        // machine to import would mark the job done for every machine sharing the database, and
+        // the rest would never read their own files.
+        .attr(AttrDef::text("host_id").indexed().required().default(""))
+}
+
+/// The write that records a one-time import as done, and the read that asks whether it is.
+///
+/// Shared by both plugins that import, rather than a copy each, because the pair only works if
+/// the two agree about the uid — and they now have a `host_id` to agree about as well.
+///
+/// The files an import reads are on one machine's disk. Without the host in the key, the first
+/// machine to import would mark the job done for everyone sharing the database, and the rest
+/// would never read their own.
+pub fn import_marker_mutation(host_id: &str, what: &str) -> Mutation {
+    Mutation::put("import_marker")
+        .uid(format!("{host_id}:{what}"))
+        .set("what", what)
+        .set("host_id", host_id)
+        .build()
+}
+
+/// Whether this machine has already done the named import.
+pub fn import_marker_request(host_id: &str, what: &str) -> FetchRequest {
+    FetchRequest::entity("import_marker")
+        .filter(Pred::eq("what", what).and(Pred::eq("host_id", host_id)))
 }
 
 /// One conversation. Holding the title here is the point of the entity: listing
 /// the archive used to mean reading and parsing every transcript in it purely to
 /// recover the first line of each.
 pub fn chat_def() -> EntityDef {
-    EntityDef::new("chat", 1)
+    EntityDef::new("chat", 2)
         .attr(AttrDef::text("title").required())
+        // Attribution, not key. A chat's id is allocated by the database, so two machines never
+        // mint the same one, and the `(chat_id, seq)` rewrite that saves a transcript stays a
+        // single-writer problem per chat. This is so the archive can say where a conversation
+        // happened once the archive spans machines.
+        .attr(AttrDef::text("host_id").indexed().required().default(""))
         .attr(AttrDef::int("legacy_id"))
         .attr(AttrDef::int("input_tokens"))
         .attr(AttrDef::int("output_tokens"))
@@ -200,8 +232,29 @@ pub fn prompt_def() -> EntityDef {
 /// wait for `/history` to reopen its chat rather than fire into whichever chat
 /// is on screen; a null one lands in the foreground, having nowhere else to go.
 pub fn job_def() -> EntityDef {
-    EntityDef::new("job", 1)
-        .attr(AttrDef::int("job_id").unique().required())
+    EntityDef::new("job", 2)
+        // Which machine armed this job. Not decoration: `job_id` comes from a counter each
+        // hocus keeps in its own memory, so two servers allocate the same ids, and a restore
+        // that read the table unscoped would take over another machine's jobs and fire its
+        // prompts into this session.
+        //
+        // The machine and not the session, because jobs are restored at load and the session
+        // name has not arrived yet — see `jobs::job_uid`. `zellij_session_name` is recorded
+        // beside it as attribution, not as part of the key.
+        //
+        // Empty on jobs armed before this existed. Those are left alone rather than adopted:
+        // they name a server that is gone, and firing its old prompts at whoever upgrades first
+        // is worse than dropping them.
+        .attr(AttrDef::text("host_id").indexed().required().default(""))
+        .attr(
+            AttrDef::text("zellij_session_name")
+                .indexed()
+                .required()
+                .default(""),
+        )
+        // Unique per machine, not globally: two machines' counters collide, and a global
+        // constraint would make the second one's write fail outright.
+        .attr(AttrDef::int("job_id").required())
         .attr(AttrDef::int("chat_id"))
         .attr(AttrDef::real("every").required())
         .attr(AttrDef::int("next_due_at").required())
@@ -210,16 +263,22 @@ pub fn job_def() -> EntityDef {
         .attr(AttrDef::boolean("auto_confirm").required().default(false))
 }
 
-/// A kind the user set on a pane by hand with `agent_register`, keyed by session *and* pane
-/// id. Pruned as panes go, so a stale row names a pane id that has since been reused only
+/// A kind the user set on a pane by hand with `agent_register`, keyed by host, session *and*
+/// pane id. Pruned as panes go, so a stale row names a pane id that has since been reused only
 /// until the next snapshot.
 ///
-/// The session is half the key because this namespace is not one: every zellij server on the
-/// machine shares one store file, so a bare pane id made session A's pane 5 and session B's
-/// pane 5 into one row — each overwriting the other's kind, and A's prune deleting B's rows
-/// outright. `pane_id` stays indexed for the prune, but no longer unique.
+/// The session is part of the key because this namespace is not one: every zellij server on a
+/// machine shares one store, so a bare pane id made session A's pane 5 and session B's pane 5
+/// into one row — each overwriting the other's kind, and A's prune deleting B's rows outright.
+///
+/// The host is the rest of it, and for the same reason one size up. With `plugin_data_url`
+/// pointing at Postgres the store is shared between *machines*, and a session name is not
+/// unique across them: two machines each running a session called `main` put their panes back
+/// into one row, and each prune deletes the other's. A pane id means nothing outside the server
+/// that allocated it, so a row about one has to say which server that was.
+/// `pane_id` stays indexed for the prune, but is not unique and never was.
 pub fn agent_latch_def() -> EntityDef {
-    EntityDef::new("agent_latch", 2)
+    EntityDef::new("agent_latch", 3)
         .attr(AttrDef::int("pane_id").indexed().required())
         .attr(
             AttrDef::text("zellij_session_name")
@@ -227,14 +286,15 @@ pub fn agent_latch_def() -> EntityDef {
                 .required()
                 .default(""),
         )
+        .attr(AttrDef::text("host_id").indexed().required().default(""))
         .attr(AttrDef::text("kind").required())
 }
 
-/// What the daemon's model last said about an idle agent's pane, keyed by session and pane id
-/// for the same reason [`agent_latch_def`] is. The activity hash is deliberately not here: it
-/// is not stable across runs.
+/// What the daemon's model last said about an idle agent's pane, keyed by host, session and
+/// pane id for the same reason [`agent_latch_def`] is. The activity hash is deliberately not
+/// here: it is not stable across runs.
 pub fn agent_summary_def() -> EntityDef {
-    EntityDef::new("agent_summary", 2)
+    EntityDef::new("agent_summary", 3)
         .attr(AttrDef::int("pane_id").indexed().required())
         .attr(
             AttrDef::text("zellij_session_name")
@@ -242,6 +302,7 @@ pub fn agent_summary_def() -> EntityDef {
                 .required()
                 .default(""),
         )
+        .attr(AttrDef::text("host_id").indexed().required().default(""))
         .attr(AttrDef::text("text").required())
         .attr(AttrDef::text("title").required().default(""))
         .attr(AttrDef::boolean("awaiting").required().default(false))
@@ -254,10 +315,17 @@ pub fn agent_summary_def() -> EntityDef {
 /// One hook-backed agent session. Archive pages fetch `header`; only the selected row fetches
 /// `payload`, while the scalar columns provide cheap predicates and ordering.
 pub fn agent_run_def() -> EntityDef {
-    EntityDef::new("agent_run", 2)
+    EntityDef::new("agent_run", 3)
         .attr(AttrDef::int("pane_id").indexed().required())
         .attr(AttrDef::text("session_id").indexed().required().default(""))
         .attr(AttrDef::text("zellij_session_name").indexed())
+        // The machine whose server recorded this run. Half of the run's owner, with
+        // `zellij_session_name` — see `agents::rows::Owner`. A run adopted after a warp is
+        // claimed by writing both, and the guarded close that hands it over names both, so a
+        // session called `main` on one machine cannot close a run belonging to `main` on
+        // another. Empty on every run written before the store could be shared between
+        // machines, which reads as "this one", and was true when there was only one.
+        .attr(AttrDef::text("host_id").indexed().required().default(""))
         // Indexed so a listing can ask for one agent's runs. `cwd` deliberately is not a
         // column at all: it lives in `header`, and narrowing by project is a guest-side pass
         // over the page rather than a predicate.
@@ -285,8 +353,12 @@ pub fn agent_run_def() -> EntityDef {
 /// `revision` is the run's own monotonic counter, which is what orders the timeline; `id`
 /// order agrees with it, since a row is written when its entry is made.
 pub fn agent_run_entry_def() -> EntityDef {
-    EntityDef::new("agent_run_entry", 2)
+    EntityDef::new("agent_run_entry", 3)
         .attr(AttrDef::text("run_id").indexed().required())
+        // Attribution rather than key: `run_id` already carries the agent's own session id,
+        // which is a uuid and unique across machines, so entries do not collide. This is what
+        // lets a search over every machine's history say where a hit happened.
+        .attr(AttrDef::text("host_id").indexed().required().default(""))
         .attr(AttrDef::int("revision").required())
         // The provider's own id for the event behind this entry, where it has one. Nullable:
         // an entry the daemon made itself — a summary somebody asked for — has no event.

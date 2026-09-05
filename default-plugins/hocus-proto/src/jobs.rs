@@ -4,7 +4,8 @@
 //! as a wall-clock second: the countdown itself stays in memory, and the row moves only when a
 //! job is armed or fires, so the store is not written once a second per job.
 
-use zellij_tile::prelude::{DataRows, DataValue, Mutation, Pred};
+use crate::agents::rows::Owner;
+use zellij_tile::prelude::{DataRows, DataValue, FetchRequest, Mutation, Pred};
 
 pub const ENTITY: &str = "job";
 
@@ -72,9 +73,15 @@ pub fn from_rows(rows: &DataRows) -> Vec<JobRow> {
 
 /// The write that stores one job. Every attribute is set, as `projects::to_mutation` does:
 /// an upsert only writes what it names.
-pub fn to_mutation(job: &JobRow) -> Mutation {
+///
+/// The uid names the owner as well as the job id, and has to: `job_id` comes from a counter each
+/// hocus keeps in its own memory, so two servers both allocate 1, 2, 3. On a shared store a bare
+/// id put their jobs into one row.
+pub fn to_mutation(owner: &Owner, job: &JobRow) -> Mutation {
     Mutation::put(ENTITY)
-        .uid(job.job_id.to_string())
+        .uid(job_uid(owner, job.job_id))
+        .set("host_id", owner.host_id.clone())
+        .set("zellij_session_name", owner.zellij_session_name.clone())
         .set("job_id", job.job_id)
         .set(
             "chat_id",
@@ -88,9 +95,39 @@ pub fn to_mutation(job: &JobRow) -> Mutation {
         .build()
 }
 
-/// The write that forgets the named jobs.
-pub fn delete_mutation(job_ids: impl IntoIterator<Item = u64>) -> Mutation {
-    Mutation::delete(ENTITY, Pred::is_in("job_id", job_ids))
+/// The write that forgets the named jobs. Scoped to this machine, so cancelling job 3 here does
+/// not cancel another machine's job 3.
+pub fn delete_mutation(owner: &Owner, job_ids: impl IntoIterator<Item = u64>) -> Mutation {
+    Mutation::delete(ENTITY, Pred::is_in("job_id", job_ids).and(owned_by(owner)))
+}
+
+/// A job's row key: the machine that armed it, and its id there.
+///
+/// The machine and not the session, deliberately. Jobs are restored once at load, before the
+/// first snapshot has named the session, so a session-scoped read could not run at all — and
+/// sharing jobs between the sessions on one machine is what has always happened, since the uid
+/// used to be the bare id. This keeps that exactly and stops only the new leak, which is one
+/// machine restoring another's jobs and firing its prompts here.
+fn job_uid(owner: &Owner, job_id: u64) -> String {
+    format!("{}:{}", owner.host_id, job_id)
+}
+
+/// Only this machine's jobs.
+fn owned_by(owner: &Owner) -> Pred {
+    Pred::eq("host_id", owner.host_id.clone())
+}
+
+/// The jobs this machine armed.
+///
+/// Scoped, and that is the whole point: an unscoped read on a shared store restores another
+/// machine's jobs and fires its scheduled prompts into this session.
+///
+/// Jobs written before the store could be shared have an empty `host_id` and are deliberately
+/// left where they are. They name a server that no longer exists — the `chat_id` on one points
+/// into an archive this machine may not have — and reviving them under a new owner would fire
+/// somebody's old prompts at whoever upgraded first.
+pub fn owned_request(owner: &Owner) -> FetchRequest {
+    FetchRequest::entity(ENTITY).filter(owned_by(owner))
 }
 
 /// The jobs as the rows a fetch would return; the inverse of [`from_rows`], for tests.
@@ -124,6 +161,11 @@ mod tests {
     use crate::store::{self, Backend};
     use zellij_tile::prelude::{FetchRequest, SortDir};
 
+    /// The machine these jobs were armed on.
+    fn owner() -> Owner {
+        Owner::new("host-a", "zellij")
+    }
+
     fn job(id: u64) -> JobRow {
         JobRow {
             job_id: id,
@@ -134,6 +176,68 @@ mod tests {
             show: id == 1,
             auto_confirm: id == 2,
         }
+    }
+
+    /// Two machines sharing one Postgres, each with its own job counter starting at 1.
+    ///
+    /// The counter lives in each hocus's memory, so both mint job 1. With the bare id as the uid
+    /// they were one row; with an unscoped restore each machine took over the other's jobs and
+    /// fired its prompts.
+    #[test]
+    fn jobs_belong_to_the_machine_that_armed_them() {
+        let laptop = store::Local::shared("hocus");
+        laptop.define_all(&store::shared_defs()).unwrap();
+        let build_box = laptop.joined(store::SHARED, "hocus");
+
+        let on_laptop = Owner::new("host-laptop", "main");
+        let on_build_box = Owner::new("host-build-box", "main");
+
+        let mut theirs = job(1);
+        theirs.prompt = "run the build".to_owned();
+        laptop
+            .apply(vec![to_mutation(&on_laptop, &job(1))])
+            .unwrap();
+        build_box
+            .apply(vec![to_mutation(&on_build_box, &theirs)])
+            .unwrap();
+
+        let restored = |backend: &dyn Backend, owner: &Owner| {
+            from_rows(&backend.fetch(&owned_request(owner)).unwrap())
+        };
+        assert_eq!(restored(&laptop, &on_laptop), vec![job(1)]);
+        assert_eq!(
+            restored(&build_box, &on_build_box),
+            vec![theirs.clone()],
+            "one machine's job 1 overwrote another's"
+        );
+
+        // And cancelling job 1 here leaves job 1 there alone.
+        laptop
+            .apply(vec![delete_mutation(&on_laptop, [1])])
+            .unwrap();
+        assert!(restored(&laptop, &on_laptop).is_empty());
+        assert_eq!(restored(&build_box, &on_build_box), vec![theirs]);
+    }
+
+    /// A job armed before the store could be shared has no owner, and is left where it is rather
+    /// than adopted: it names a server that is gone, and its `chat_id` points into an archive the
+    /// machine reading it may not have.
+    #[test]
+    fn a_job_with_no_owner_is_not_restored() {
+        let local = store::Local::shared("hocus");
+        local.define_all(&store::shared_defs()).unwrap();
+        // The old shape: a bare job id for a uid, and no owner columns.
+        local
+            .apply(vec![zellij_tile::prelude::Mutation::put(ENTITY)
+                .uid("1")
+                .set("job_id", 1_u64)
+                .set("every", 60.0)
+                .set("next_due_at", 1_700_000_000_i64)
+                .set("prompt", "an old prompt")
+                .build()])
+            .unwrap();
+        let owner = Owner::new("host-a", "main");
+        assert!(from_rows(&local.fetch(&owned_request(&owner)).unwrap()).is_empty());
     }
 
     #[test]
@@ -147,7 +251,10 @@ mod tests {
         let local = store::Local::shared("hocus");
         local.define_all(&store::shared_defs()).unwrap();
         local
-            .apply(vec![to_mutation(&job(1)), to_mutation(&job(2))])
+            .apply(vec![
+                to_mutation(&owner(), &job(1)),
+                to_mutation(&owner(), &job(2)),
+            ])
             .unwrap();
         let fetch = FetchRequest::entity(ENTITY).sort_by("job_id", SortDir::Asc);
         assert_eq!(
@@ -159,13 +266,13 @@ mod tests {
         let mut moved = job(1);
         moved.next_due_at += 60;
         moved.chat_id = None;
-        local.apply(vec![to_mutation(&moved)]).unwrap();
+        local.apply(vec![to_mutation(&owner(), &moved)]).unwrap();
         assert_eq!(
             from_rows(&local.fetch(&fetch).unwrap()),
             vec![moved, job(2)]
         );
 
-        local.apply(vec![delete_mutation([1])]).unwrap();
+        local.apply(vec![delete_mutation(&owner(), [1])]).unwrap();
         assert_eq!(from_rows(&local.fetch(&fetch).unwrap()), vec![job(2)]);
     }
 }

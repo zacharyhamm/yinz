@@ -112,12 +112,13 @@ fn summaries_are_mirrored_and_restored_without_their_hash() {
     // `store::agent_summary_def`.
     let mut restarted = State {
         zellij_session_name: "test-session".to_owned(),
+        host_id: "test-host".to_owned(),
         ..State::default()
     };
     restarted
         .store()
         .apply(vec![agents::rows::summary_mutation(
-            "test-session",
+            &restarted.owner(),
             3,
             &summary("reviewing", 7),
         )])

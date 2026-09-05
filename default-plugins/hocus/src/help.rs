@@ -33,7 +33,7 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ),
     (
         "history",
-        "/history\n\nShow the saved chats, the newest first, up to fifty of them. Every session on this machine is included, not this session alone. A dot marks a chat that still runs. Select a chat to open it again. The chat on the screen stays in its tab.",
+        "/history\n\nShow the saved chats, the newest first, up to fifty of them. Every session sharing this archive is included, not this session alone. A dot marks a chat that still runs. Select a chat to open it again. The chat on the screen stays in its tab.",
     ),
     (
         "models",
@@ -287,7 +287,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "agent_runs",
-        "Show what the agents on this machine did, the most recent first. Every session on this machine is included, and a session that stopped is included too. Take a run_id from here to agent_run. With this_session, the tool answers with an error until the daemon knows the name of this session.",
+        "Show what the agents in this archive did, the most recent first. Every session sharing it is included, and a session that stopped is included too. Take a run_id from here to agent_run. With this_session, the tool answers with an error until the daemon knows the name of this session.",
     ),
     (
         "agent_run",
@@ -295,7 +295,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "agent_history_search",
-        "Search what the agents on this machine were asked, and what they answered. Take the run_id and the revision of a hit to agent_run, to read the text around it. With this_session, the tool answers with an error until the daemon knows the name of this session.",
+        "Search what the agents in this archive were asked, and what they answered. Take the run_id and the revision of a hit to agent_run, to read the text around it. With this_session, the tool answers with an error until the daemon knows the name of this session.",
     ),
     (
         "agent_spawn",

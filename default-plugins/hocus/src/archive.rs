@@ -80,6 +80,7 @@ impl State {
         let mut id = self.chat_id.take();
         let written = history::save(
             &self.private_store(),
+            &self.host_id,
             &mut id,
             &self.messages,
             saved_len,

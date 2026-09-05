@@ -636,12 +636,13 @@ fn a_registered_kind_survives_open_store() {
     // restores them when the first one names the session.
     let mut restarted = State {
         zellij_session_name: "test-session".to_owned(),
+        host_id: "test-host".to_owned(),
         ..State::default()
     };
     restarted
         .store()
         .apply(vec![agents::rows::latch_mutation(
-            "test-session",
+            &restarted.owner(),
             4,
             "reviewer",
         )])

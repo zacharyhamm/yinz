@@ -205,6 +205,7 @@ fn seed_run(state: &State, session_id: &str, host: Option<&str>, ended: bool) {
         id: agents::run_id("claude", 3, session_id, 10),
         pane_id: 3,
         zellij_session_name: "main".to_owned(),
+        host_id: "test-host".to_owned(),
         session_id: session_id.to_owned(),
         kind: "claude".to_owned(),
         cwd: Some("/work/hocus".to_owned()),

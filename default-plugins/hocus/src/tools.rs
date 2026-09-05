@@ -722,10 +722,11 @@ fn slack_properties() -> Value {
 /// so a filter cannot come to mean one thing to a listing and another to a
 /// search.
 ///
-/// Every one of them is optional and the default is the whole machine, which is
-/// the store's own shape rather than a choice made here: there is one database
-/// per machine and not per session, so a run recorded in a session that has
-/// since been closed is as readable as one still going.
+/// Every one of them is optional and the default is the whole archive, which is
+/// the store's own shape rather than a choice made here: it is not per session,
+/// so a run recorded in a session that has since been closed is as readable as
+/// one still going. That archive is this machine's, or — with `plugin_data_url`
+/// pointing at Postgres — every machine sharing it.
 fn run_filter_properties() -> Value {
     json!({
         "kind": { "type": "string", "description": "claude, codex." },
@@ -1458,7 +1459,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "agent_runs",
-            "List agent runs, newest first, from every session on this machine. The way in to \
+            "List agent runs, newest first, from every session sharing this archive. The way in to \
              agent_run.",
             json!({
                 "type": "object",
@@ -1488,7 +1489,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "agent_history_search",
-            "Search what agents were asked and said, across every run on this machine. A hit's \
+            "Search what agents were asked and said, across every run in this archive. A hit's \
              run_id and revision go to agent_run to read around it.",
             json!({
                 "type": "object",
@@ -2009,8 +2010,8 @@ pub const READ_ONLY: &[&str] = &[
     "list_orphaned_panes",
     "read_pane",
     "agent_list",
-    // What every agent on this machine has already been asked and has already
-    // said. Read-only in the strongest sense available: these three never write,
+    // What every agent sharing this archive has already been asked and has
+    // already said. Read-only in the strongest sense available: these three never write,
     // and the rows they read are another process's record.
     "agent_runs",
     "agent_run",

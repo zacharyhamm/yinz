@@ -77,6 +77,7 @@ fn stored_run(
         id: id.to_owned(),
         pane_id: 7,
         zellij_session_name: session.to_owned(),
+        host_id: "test-host".to_owned(),
         session_id: id.to_owned(),
         kind: kind.to_owned(),
         cwd: Some(cwd.to_owned()),

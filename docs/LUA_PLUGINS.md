@@ -698,11 +698,49 @@ number. Mutations are `put(entity, values, uid)`, `update(entity, filter, values
 `all(...)`, `any(...)`, `negate(p)`. Attribute kinds are `text`, `int`, `real`, `bool`, `blob`
 and `json`; a value written as `{ json = table }` is stored as JSON and `{ blob = "bytes" }` as
 a blob. To clear an attribute, write `zellij.data.null` - a `nil` has no key for a mutation to
-read. `id`, `uid`, `created_at` and `updated_at` are on every row without being declared.
+read. `id`, `uid`, `created_at`, `updated_at` and `rev` are on every row without being declared.
 Read them, sort by them, and filter on them, but do not put them in `attrs`.
 `rowid`, `oid`, `xmin`, `xmax`, `cmin`, `cmax`, `ctid` and `tableoid` are also reserved attribute
 names on both backends. A `define` that declares any reserved attribute fails without creating
 an entity or changing existing schema and data.
+
+### Writing without losing somebody else's write
+
+`rev` is the row's revision. It starts at 1 and the store advances it on every write that touches
+the row, which is what lets two writers tell a row they read from a row somebody has since
+changed. That matters more than it used to: the store is shared by every session on the machine,
+and with `plugin_data_url` pointing at Postgres it is shared by every machine pointed at that
+database.
+
+Pass the `rev` you read as the fourth argument to `put` or `update` and the write becomes a
+compare-and-set — it applies only if the row is still at that revision, and the whole `apply`
+fails otherwise, rolling back everything else in the batch. `zellij.data.REV_ABSENT` (0) is the
+other direction: the row must *not* exist yet, so a `put` guarded on it claims a uid or fails.
+
+```lua
+local rows = zellij.data.fetch { entity = "note", filter = zellij.data.eq("uid", "n1") }
+local note = rows[1]
+local ok, err = pcall(function()
+  zellij.data.apply(
+    zellij.data.put("note", { title = note.title .. "!" }, "n1", note.rev))
+end)
+if not ok then
+  -- Somebody wrote it first. Read it again and decide what to do with their version.
+end
+```
+
+A guarded `put` never inserts: if the row has been deleted since you read it, the write conflicts
+rather than bringing it back, because resurrecting it would lose the delete just as surely as an
+unguarded write loses an edit.
+
+`apply` answers with `per_mutation` as well as `rows_written` and `rows_deleted` — rows affected
+by each mutation, in the order you gave them. The totals cannot say *which* mutation matched, so
+this is what to read when you guard by hand, by filtering on `rev` yourself, instead of failing
+the batch.
+
+One thing the store does not do: a watch is only re-run by writes made in the same zellij server.
+On a shared Postgres, another machine's write does not wake your watcher. Re-fetch if you need to
+see what somebody else did.
 
 ### Sharing a namespace
 
@@ -810,8 +848,8 @@ rows do not carry - list caps, tree shape, project discovery, a note's tags and 
 plugin that adds a row by hand can produce a list hocus will not accept. Mutate through hocus's
 tools (`/todo_add`, `/todo_done`, `/note_add`) or `zellij pipe` to `hocus-store` instead.
 
-`id`, `uid`, `created_at` and `updated_at` are on every row without being declared, here as
-anywhere else.
+`id`, `uid`, `created_at`, `updated_at` and `rev` are on every row without being declared, here
+as anywhere else.
 
 **`project`** - the project registry. `uid` is the name.
 
@@ -872,7 +910,9 @@ than the whole table - and not at all when there are none, since an empty `is_in
 
 | Attribute | Kind | |
 |---|---|---|
-| `job_id` | int | required, unique |
+| `host_id` | text | required, indexed; the machine that armed it. `uid` is `<host id>:<job id>` |
+| `zellij_session_name` | text | required, indexed; the session that armed it, as attribution — not part of the key |
+| `job_id` | int | required; a per-machine counter, so it is *not* unique across machines |
 | `chat_id` | int | the chat that armed it; null for one never saved |
 | `every` | real | seconds |
 | `next_due_at` | int | wall-clock seconds; written when armed and when it fires, never per tick |
@@ -881,20 +921,25 @@ than the whole table - and not at all when there are none, since an empty `is_in
 | `auto_confirm` | bool | required |
 
 **`agent_latch`** - a kind set on a pane by hand with `agent_register`. **`agent_summary`** - what
-the daemon's model last said about an idle agent's pane. Both are keyed `<session>:<pane id>`:
+the daemon's model last said about an idle agent's pane. Both are keyed
+`<host id>:<session>:<pane id>`:
 
 | Attribute | Kind | |
 |---|---|---|
 | `pane_id` | int | required, indexed |
 | `zellij_session_name` | text | required, indexed |
+| `host_id` | text | required, indexed; the machine the pane is on |
 | `kind` | text | `agent_latch` only - `claude`, `codex`, ... |
 | `text`, `title` | text | `agent_summary` only |
 | `awaiting` | bool | `agent_summary` only |
 | `created_at_ms` | int | `agent_summary` only - epoch milliseconds it was made; absent on a summary stored before this attribute existed |
 
-The session is half the key because the store is not per-session: one file serves every zellij
-server on the machine, so a bare pane id would make two sessions' pane 5 into one row. Filter by
-`zellij_session_name` unless you mean every session.
+The session and the host are part of the key because the store is neither per-session nor, with
+Postgres, per-machine: a bare pane id would make two sessions' pane 5 into one row, and a
+session name alone would do the same to two machines that both run a session called `main`. A
+pane id means nothing outside the server that handed it out, so filter on **both**
+`host_id` and `zellij_session_name` before believing a `pane_id`. Rows written before this
+existed have an empty `host_id`.
 
 **`agent_run`** - one hook-backed agent session, live or finished. `uid` is `<kind>:<session id>`.
 
@@ -903,6 +948,7 @@ server on the machine, so a bare pane id would make two sessions' pane 5 into on
 | `pane_id` | int | required, indexed |
 | `session_id` | text | required, indexed; the agent's own |
 | `zellij_session_name` | text | indexed |
+| `host_id` | text | required, indexed; the machine whose server owns the run. Empty on runs recorded before this attribute existed |
 | `kind` | text | required |
 | `active` | bool | required, indexed; false once the run ended |
 | `started_at_ms` | int | required |
@@ -918,6 +964,7 @@ result, or a summary somebody asked for. `uid` is `<run uid>#<revision>`.
 | Attribute | Kind | |
 |---|---|---|
 | `run_id` | text | required, indexed; the `agent_run` uid this belongs to |
+| `host_id` | text | required, indexed; where the entry was recorded. Attribution only — a run id carries the agent's own session uuid, so entries do not collide between machines |
 | `revision` | int | required; the run's own counter, and what orders the timeline |
 | `event_id` | text | the provider's id for the event behind it, where it has one |
 | `kind` | text | required; `prompt`, `plan`, `question`, `step`, `result`, `summary` |
