@@ -1,8 +1,9 @@
 //! Interpreter-local widget state. All rendering and interaction lives in zellij-tile.
 use mlua::{Lua, LuaSerdeExt, Table, UserData, UserDataMethods, Value};
 use serde::Deserialize;
+use zellij_tile::text;
 use zellij_tile::ui_components::{forms::*, serialize_text_with_coordinates, Text};
-use zellij_tile::{markdown, text};
+use zellij_tile_markdown as markdown;
 use zellij_utils::data::{KeyWithModifier, Mouse};
 
 #[derive(Deserialize)]

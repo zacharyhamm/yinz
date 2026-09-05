@@ -139,6 +139,10 @@ fn workspace_members() -> &'static Vec<WorkspaceMember> {
                 build: false,
             },
             WorkspaceMember {
+                crate_name: "zellij-tile-markdown",
+                build: false,
+            },
+            WorkspaceMember {
                 crate_name: "zellij-client",
                 build: false,
             },

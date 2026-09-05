@@ -7023,26 +7023,105 @@ fn hocus_tools_registers_once_launched_and_answers_calls_over_rpc() {
 
 #[test]
 fn the_forms_example_routes_events_and_cursor_commands_and_reloads_cleanly() {
-    let source = example_plugin("forms.lua");
+    let source = example_plugin("forms.lua").replace(
+        "\nreturn M",
+        "\nM.form = form\nM.state = function() return confirming, status, scroll, line_count, page_rows end\nreturn M",
+    );
     let mut plugin = load(&source).unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
     let initial = plugin.render(24, 60).unwrap();
     assert!(!initial.is_empty());
     plugin.update(&Event::PastedText("日本語".into())).unwrap();
     assert_ne!(plugin.render(24, 60).unwrap(), initial);
-    // Enter submits and opens the confirmation; the next Enter chooses Save.
-    for key in [
-        BareKey::Enter,
-        BareKey::Enter,
-        BareKey::PageDown,
-        BareKey::PageUp,
-    ] {
-        plugin
-            .update(&Event::Key(KeyWithModifier::new(key)))
-            .unwrap();
-        plugin.render(24, 60).unwrap();
-    }
-    for (rows, cols) in [(0, 0), (1, 1), (2, 8), (24, 60)] {
+    plugin
+        .lua
+        .globals()
+        .set("demo", plugin.plugin.clone())
+        .unwrap();
+    let check = plugin
+        .lua
+        .load(
+            r#"
+local f = demo.form
+local function key(k)
+  return demo.update{name='key', key=k, bare_key=k, key_modifiers={}}
+end
+local function press(id)
+  f:focus(id)
+  assert(key('Enter'))
+end
+local function state() return demo.state() end
+assert(f:value('name'):find('日本語', 1, true))
+f:set_value('name', '  ')
+press('preview')
+local confirming, status = state()
+assert(not confirming and status == 'Required: name' and f:focused_id() == 'name')
+f:set_value('name', 'demo | **literal**')
+f:set_value('branch', '')
+press('preview')
+confirming, status = state()
+assert(not confirming and status == 'Required: branch' and f:focused_id() == 'branch')
+demo.update{name='pasted_text', value='feature/日本語'}
+f:focus('description')
+f:set_value('description', '# Custom heading')
+assert(key('Enter'))
+assert(not state()) -- Only the Preview button submits.
+f:focus('layout')
+key('Down')
+demo.update{name='key', key='w', bare_key={Char='w'}, key_modifiers={}}
+key('Enter')
+assert(f:value('layout') == 5)
+f:focus('mode')
+key('Right')
+assert(f:value('mode') == 2)
+f:focus('frames')
+demo.update{name='key', key=' ', bare_key={Char=' '}, key_modifiers={}}
+assert(f:value('frames') == false)
+demo.render(24, 120)
+demo.update{name='mouse', value={LeftClick={5, 9}}}
+demo.update{name='mouse', value={Release={5, 9}}}
+assert(f:value('frames') == true)
+f:focus('preview')
+local before = demo.render(24, 120)
+press('preview')
+assert(state())
+demo.render(24, 120)
+key('Esc')
+assert(not state() and f:value('branch') == 'feature/日本語')
+assert(demo.render(24, 120) == before)
+press('preview')
+key('Enter')
+confirming, status = state()
+assert(not confirming and status == 'Preview updated — nothing saved')
+local submitted = demo.render(24, 120)
+assert(submitted ~= before)
+local function contains(frame, text)
+  local bytes = {}
+  for i=1,#text do bytes[i] = tostring(text:byte(i)) end
+  return frame:find(table.concat(bytes, ','), 1, true)
+end
+assert(contains(submitted, 'Custom heading'))
+assert(contains(submitted, 'demo | **literal**'))
+key('PageDown')
+assert(demo.render(24, 120) ~= submitted)
+key('PageUp')
+assert(demo.render(24, 120) == submitted)
+for i=1,100 do key('PageDown') end
+demo.render(100, 120)
+local _, _, scroll, count, height = state()
+assert(scroll == math.max(0, count-height))
+press('reset')
+assert(f:value('name') == '作業 workspace' and f:value('description') == '**Hello** from 日本語')
+assert(f:value('layout') == 1 and f:value('mode') == 1 and f:value('frames') == true)
+assert(f:value('branch') == 'main' and f:focused_id() == 'name')
+"#,
+        )
+        .into_function()
+        .unwrap();
+    plugin.plugin.set("load", check).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    assert_eq!(plugin.render(24, 60).unwrap(), initial);
+    for (rows, cols) in [(0, 0), (1, 1), (2, 8), (24, 60), (24, 100), (24, 120)] {
         plugin.render(rows, cols).unwrap();
     }
     drop(plugin);

@@ -16,6 +16,7 @@ workspace = true
 zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }
 zellij-process = { path = "../zellij-process", version = "0.45.0" }
 zellij-tile = { path = "../zellij-tile" }
+zellij-tile-markdown = { path = "../zellij-tile-markdown" }
 ansi_term = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { version = "0.1.50", default-features = false }

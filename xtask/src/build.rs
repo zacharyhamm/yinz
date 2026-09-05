@@ -13,6 +13,7 @@ use xshell::{cmd, Shell};
 const PLUGIN_INPUT_DIRS: &[&str] = &[
     "default-plugins",
     "zellij-tile/src",
+    "zellij-tile-markdown/src",
     "zellij-tile-utils/src",
     "zellij-utils/src",
     "zellij-utils/assets",
@@ -25,6 +26,7 @@ const PLUGIN_INPUT_FILES: &[&str] = &[
     "xtask/src/build.rs",
     "xtask/src/main.rs",
     "zellij-tile/Cargo.toml",
+    "zellij-tile-markdown/Cargo.toml",
     "zellij-tile-utils/Cargo.toml",
     "zellij-utils/Cargo.toml",
 ];
