@@ -67,6 +67,34 @@ panes and the newcomer are imagined sharing the viewport equally, and a share be
 pane to the roomiest other tab that clears the floor, or to a tab of its own. Area rather than
 rows and columns because an equal share fixes an area and not a shape.
 
+### Which agents share a piece of work
+
+A tab often holds several agents that are not on the same thing. `hocus-agentd` probes each
+agent pane's folder with `git rev-parse` and keeps the answer as a
+`hocus_proto::projects::Repository`; `Repository::checkout_label()` reduces that to
+`repo:branch` - `hocus:topic` - which is the fewest words that still tell two worktrees of one
+repository apart. That label goes on the pane's frame as a title prefix
+(`refresh_title_prefixes_with`), and it is also what groups agents visually: focus an agent and
+the *other* agent panes in the same tab carrying the same label are drawn with a gentle tint,
+through `PluginCommand::SetRelatedPanes` (`refresh_related_agents_with`).
+
+`SetRelatedPanes` replaces the whole set rather than marking and unmarking, so the daemon says
+what is related *now* and never has to remember what the session still believes; a reload
+re-asserts by saying it again, and the empty set is what takes a highlight down. The daemon's
+cache is an `Option`, precisely so a fresh instance's empty set still transmits. Server-side the
+mark is a `bool` on the pane (`Pane::has_related_highlight`), set a whole session at a time by
+`Tab::set_related_panes` and read by `frame_color`
+(`zellij-server/src/ui/pane_contents_and_ui.rs`), where it sits at the bottom of the precedence
+ladder: focus, a pane group, a hover and a bell flash all win over it. Deliberately *not* a
+`FrameColorOverride` - that is one slot per pane shared with the bell and the red exit status,
+and an ambient hint must not take it.
+
+Two known limits, both stated rather than fixed: the set is session-wide, because
+`panes::focused_pane` reports the active tab's focus with no client to attribute it to, so a
+second attached client sees the first's highlight; and a pane stacked *under* the visible member
+of a stack is suppressed, which drops it from `panes::terminal_panes` - the same blind spot the
+title prefix already has.
+
 ### Observation from outside
 
 - **`zellij events [--type …] [--json]`** streams the state events (`PaneUpdate`, `TabUpdate`,
@@ -172,8 +200,8 @@ hook change: `cargo x integration-test -- -j 16 -E 'test(a_written_hook)'`.
 
 ## Notes for the next session
 
-**Proto numbers in use** (next free): plugin `CommandName` 281 (`SpawnAgent`) / payload
-field 222 (next 282 / 223); `SpawnAgentPayload` field 6 (`automatic_firecracker_vm`, next 7); `AgentSpawnSpec` field 18 (`allow_outside_worktree`, next 19); `SpawnAgentResponse` field 4 (`cwd`, next 5) - this note had gone stale once already, having missed
+**Proto numbers in use** (next free): plugin `CommandName` 284 (`SetRelatedPanes`) / payload
+field 225 (next 285 / 226); `SpawnAgentPayload` field 6 (`automatic_firecracker_vm`, next 7); `AgentSpawnSpec` field 18 (`allow_outside_worktree`, next 19); `SpawnAgentResponse` field 4 (`cwd`, next 5) - this note had gone stale once already, having missed
 `DataCatalog` 278 / 219 and `SetQuitNotice` 279 / 220, so read the `.proto` rather than
 trusting it; plugin `EventType` 58 (`AgentEvent`), event payload field 52; IPC `Action`
 oneof 163 (`agent_event`; 161–162 are `main`'s text-selection actions; next 164); IPC

@@ -454,6 +454,7 @@ pub enum ScreenContext {
     FlashPaneFrameColor,
     GroupAndUngroupPanes,
     HighlightAndUnhighlightPanes,
+    SetRelatedPanes,
     RevealPaneWithId,
     FloatMultiplePanes,
     EmbedMultiplePanes,

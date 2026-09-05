@@ -530,6 +530,20 @@ pub trait Pane {
     fn was_an_agent(&self) -> bool {
         false
     }
+    /// Whether this pane is kin of the focused one - one of a set some plugin named through
+    /// `PluginCommand::SetRelatedPanes` - so its frame is drawn with a gentle tint.
+    ///
+    /// State on the pane rather than a set threaded through the render, for the same reason
+    /// `agent_attention_since` is: the frame is decided per pane, and a pane that closes
+    /// takes its answer with it. Only terminal panes carry one; agents are terminals.
+    fn has_related_highlight(&self) -> bool {
+        false
+    }
+    /// Mark or unmark this pane as kin of the focused one. Answers whether it changed, so a
+    /// caller setting a whole session's worth can tell whether anything needs redrawing.
+    fn set_related_highlight(&mut self, _related: bool) -> bool {
+        false
+    }
     /// When this pane's agent entered a wait a person has to answer, while nobody has yet.
     /// `None` once it has been answered, and for every pane that is not an unanswered wait.
     fn agent_attention_since(&self) -> Option<Instant> {
@@ -7856,13 +7870,13 @@ impl Tab {
         self.is_pending
     }
 
-    pub fn add_red_pane_frame_color_override(
-        &mut self,
-        pane_id: PaneId,
-        error_text: Option<String>,
-    ) {
-        if let Some(pane) = self
-            .tiled_panes
+    /// This tab's pane with `pane_id`, wherever it is standing: tiled, floating, an overlay,
+    /// or suppressed under something else.
+    ///
+    /// Suppressed included on purpose - a pane set aside is still a pane, and a mark aimed at
+    /// it must land so that it is right when the pane comes back.
+    fn pane_mut(&mut self, pane_id: PaneId) -> Option<&mut Box<dyn Pane>> {
+        self.tiled_panes
             .get_pane_mut(pane_id)
             .or_else(|| self.floating_panes.get_pane_mut(pane_id))
             .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
@@ -7871,7 +7885,13 @@ impl Tab {
                     .get_mut(&pane_id)
                     .map(|s_p| &mut s_p.pane)
             })
-        {
+    }
+    pub fn add_red_pane_frame_color_override(
+        &mut self,
+        pane_id: PaneId,
+        error_text: Option<String>,
+    ) {
+        if let Some(pane) = self.pane_mut(pane_id) {
             pane.add_red_pane_frame_color_override(error_text);
         }
     }
@@ -7881,19 +7901,25 @@ impl Tab {
         error_text: Option<String>,
         client_id: Option<ClientId>,
     ) {
-        if let Some(pane) = self
-            .tiled_panes
-            .get_pane_mut(pane_id)
-            .or_else(|| self.floating_panes.get_pane_mut(pane_id))
-            .or_else(|| self.overlay_panes.get_pane_mut(pane_id))
-            .or_else(|| {
-                self.suppressed_panes
-                    .get_mut(&pane_id)
-                    .map(|s_p| &mut s_p.pane)
-            })
-        {
+        if let Some(pane) = self.pane_mut(pane_id) {
             pane.add_highlight_pane_frame_color_override(error_text, client_id);
         }
+    }
+    /// Mark exactly the panes in `related` as kin of the focused one, and unmark every other
+    /// pane in this tab. Answers whether anything changed, so the caller can skip a render.
+    ///
+    /// Assigning to *every* pane rather than only to the members is what clears the previous
+    /// set: the sender says what is related now and is not asked to remember what it last
+    /// said, so a plugin that reloads re-asserts by simply saying it again.
+    pub fn set_related_panes(&mut self, related: &HashSet<PaneId>) -> bool {
+        let mut changed = false;
+        for pane_id in self.get_all_pane_ids() {
+            let is_related = related.contains(&pane_id);
+            if let Some(pane) = self.pane_mut(pane_id) {
+                changed |= pane.set_related_highlight(is_related);
+            }
+        }
+        changed
     }
 
     /// Whether `pane_id`'s frame override has finished fading, so the caller can stop asking for

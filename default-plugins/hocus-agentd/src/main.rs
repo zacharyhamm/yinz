@@ -177,6 +177,15 @@ struct State {
     /// on every publish and only a difference is sent. See
     /// `refresh_title_prefixes_with`.
     title_prefixes: BTreeMap<u32, String>,
+    /// The agent panes the session has been told are kin of the focused one.
+    ///
+    /// `None` until the first send, and that is the whole point of the `Option`: a
+    /// freshly loaded daemon has no idea what the session still believes, and an empty
+    /// `BTreeSet` would compare equal to the empty set it wants to assert and so never
+    /// send it. `None` differs from everything, so a load - or a reload after a crash -
+    /// always says something, and saying the empty set is exactly what clears a stale
+    /// highlight.
+    related_panes: Option<BTreeSet<u32>>,
     /// What Git said about each folder, keyed by folder *and machine*.
     repositories: BTreeMap<Location, projects::Repository>,
     /// Local probes in flight. Only ever local: a remote folder is answered by
@@ -3083,6 +3092,83 @@ impl State {
         self.title_prefixes = wanted;
     }
 
+    /// The other agent panes in the focused agent's tab that are on the same checkout.
+    ///
+    /// Empty whenever there is nothing to say: no focus, focus on a plugin or a shell, a
+    /// folder Git did not claim, or one no probe has answered for yet. Empty is a real
+    /// answer here rather than an absence - it is what takes a highlight down.
+    ///
+    /// The key is `checkout_label` - `repo:branch` - and not the folder, which is the whole
+    /// point: two panes in one worktree match, and so do two worktrees of one repository
+    /// that have the same branch out, while two different branches of one repository do
+    /// not. It is also the string already on these panes' title prefixes, so what lights up
+    /// and what the frame says agree by construction.
+    fn related_agent_panes(&self) -> BTreeSet<u32> {
+        let empty = BTreeSet::new();
+        // `focused` is the focused *terminal* pane of the active tab, so a plugin pane with
+        // the keyboard already answers `None` here - see `panes::focused_pane`.
+        let Some(focused_id) = self.focused else {
+            return empty;
+        };
+        let Some(focused) = self
+            .panes
+            .iter()
+            .flatten()
+            .find(|pane| pane.pane_id == focused_id)
+        else {
+            return empty;
+        };
+        if agents::classify(focused, &self.manual_kinds).is_none() {
+            return empty;
+        }
+        // A pane whose manifest position is in no tab we know about. "The same tab" has no
+        // meaning there, so say nothing rather than guess at one.
+        let Some(tab_id) = focused.tab.as_ref().map(|(id, _)| *id) else {
+            return empty;
+        };
+        let Some(label) = self.checkout_label_of(focused) else {
+            return empty;
+        };
+        self.panes
+            .iter()
+            .flatten()
+            .filter(|pane| pane.pane_id != focused_id)
+            .filter(|pane| pane.tab.as_ref().map(|(id, _)| *id) == Some(tab_id))
+            .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
+            .filter(|pane| self.checkout_label_of(pane).as_ref() == Some(&label))
+            .map(|pane| pane.pane_id)
+            .collect()
+    }
+
+    /// `repo:branch` for a pane's folder, or `None` for a folder that is not a checkout or
+    /// has not been probed yet. The same lookup `refresh_title_prefixes_with` makes.
+    fn checkout_label_of(&self, pane: &agents::AgentPane) -> Option<String> {
+        self.repositories
+            .get(&self.pane_location(pane)?)?
+            .checkout_label()
+    }
+
+    /// Tell the session which agent panes are kin of the focused one.
+    fn refresh_related_agents(&mut self) {
+        self.refresh_related_agents_with(|pane_ids| {
+            set_related_panes(pane_ids.into_iter().map(PaneId::Terminal).collect())
+        });
+    }
+
+    /// The body of [`refresh_related_agents`], with the host call injected so the tests can
+    /// watch it - the same shape `refresh_title_prefixes_with` takes.
+    fn refresh_related_agents_with(&mut self, send: impl FnOnce(Vec<u32>)) {
+        let wanted = self.related_agent_panes();
+        // `Some(wanted)` compared against `None` on the first pass, so a fresh or reloaded
+        // daemon always asserts - including the empty set, which is what clears whatever a
+        // previous instance left on the session.
+        if self.related_panes.as_ref() == Some(&wanted) {
+            return;
+        }
+        send(wanted.iter().copied().collect());
+        self.related_panes = Some(wanted);
+    }
+
     fn publish(&mut self) {
         self.publish_with_force(false);
     }
@@ -3095,6 +3181,7 @@ impl State {
 
     fn publish_with_force(&mut self, force: bool) {
         self.refresh_title_prefixes();
+        self.refresh_related_agents();
         let reply = PollReply {
             panes: self.panes.clone(),
             activity: self.activity.clone(),
@@ -3223,6 +3310,149 @@ mod tests {
             )]),
             ..State::default()
         }
+    }
+
+    /// What `refresh_related_agents` would have told the session, or `None` when it said
+    /// nothing at all. The empty vector and `None` are different answers here: one takes a
+    /// highlight down, the other leaves it alone.
+    fn related(state: &mut State) -> Option<Vec<u32>> {
+        let mut sent = None;
+        state.refresh_related_agents_with(|pane_ids| sent = Some(pane_ids));
+        sent
+    }
+
+    fn in_tab(mut pane: agents::AgentPane, tab_id: usize) -> agents::AgentPane {
+        pane.tab = Some((tab_id, format!("tab {tab_id}")));
+        pane
+    }
+
+    /// One tab holding four agents across three checkouts, plus a shell, and a fifth agent
+    /// in another tab. Every case the highlight has to tell apart is in here:
+    ///
+    /// - 7 and 8 are two agents in the *same* worktree,
+    /// - 9 is a worktree of the same repository with the same branch out, which counts,
+    /// - 10 is the repository's primary checkout on a different branch, which does not,
+    /// - 11 is a shell, not an agent,
+    /// - 12 is an agent in the same worktree as 7, but in another tab.
+    fn related_agents() -> State {
+        let topic = "/work/hocus/.worktrees/topic";
+        let twin = "/work/hocus/.worktrees/topic-twin";
+        let primary = "/work/hocus";
+        State {
+            focused: Some(7),
+            panes: Some(vec![
+                in_tab(pane(7, "claude", topic), 0),
+                in_tab(pane(8, "claude", topic), 0),
+                in_tab(pane(9, "claude", twin), 0),
+                in_tab(pane(10, "claude", primary), 0),
+                in_tab(pane(11, "zsh", topic), 0),
+                in_tab(pane(12, "claude", topic), 1),
+            ]),
+            repositories: BTreeMap::from([
+                (
+                    Location::local(topic),
+                    checkout(topic, "/work/hocus/.git", "topic"),
+                ),
+                (
+                    Location::local(twin),
+                    checkout(twin, "/work/hocus/.git", "topic"),
+                ),
+                (
+                    Location::local(primary),
+                    checkout(primary, "/work/hocus/.git", "main"),
+                ),
+            ]),
+            ..State::default()
+        }
+    }
+
+    /// The feature, in one assertion: the sibling in the same worktree and the worktree on
+    /// the same branch light up; the other branch, the shell and the other tab do not.
+    #[test]
+    fn focusing_an_agent_lights_up_its_checkout_siblings() {
+        let mut state = related_agents();
+        assert_eq!(related(&mut state), Some(vec![8, 9]));
+    }
+
+    /// The whole reason the key is `checkout_label` and not the folder: a second worktree of
+    /// one repository with the same branch out is the same piece of work.
+    #[test]
+    fn a_different_branch_of_the_same_repository_is_not_a_sibling() {
+        let mut state = related_agents();
+        state.focused = Some(10);
+        assert_eq!(
+            related(&mut state),
+            Some(vec![]),
+            "the primary checkout is on `main`, and nothing else here is"
+        );
+    }
+
+    /// A fresh daemon has no idea what the session still believes, so it says so even when
+    /// it has nothing to highlight. Without this a reload could not clear a stale tint.
+    #[test]
+    fn a_fresh_daemon_asserts_the_empty_set() {
+        let mut state = State::default();
+        assert_eq!(related(&mut state), Some(vec![]));
+    }
+
+    /// This runs on every publish, and a publish happens several times a poll.
+    #[test]
+    fn an_unchanged_set_is_not_sent_again() {
+        let mut state = related_agents();
+        related(&mut state);
+        assert_eq!(related(&mut state), None);
+    }
+
+    /// Focus moving off the agent takes the highlight down rather than leaving it standing
+    /// on the last agent that had it.
+    #[test]
+    fn focusing_a_shell_clears_the_highlight() {
+        let mut state = related_agents();
+        related(&mut state);
+        state.focused = Some(11);
+        assert_eq!(related(&mut state), Some(vec![]));
+    }
+
+    /// `focused` is `None` while a plugin pane holds the keyboard - the hocus sidebar, say.
+    /// The highlight is about agents, so it goes away rather than freezing.
+    #[test]
+    fn a_focused_plugin_clears_the_highlight() {
+        let mut state = related_agents();
+        related(&mut state);
+        state.focused = None;
+        assert_eq!(related(&mut state), Some(vec![]));
+    }
+
+    /// A folder no probe has answered for yet has no checkout to be a sibling of. Saying
+    /// nothing beats guessing, and the next probe publishes again.
+    #[test]
+    fn an_unprobed_folder_highlights_nothing() {
+        let mut state = related_agents();
+        state.repositories.clear();
+        assert_eq!(related(&mut state), Some(vec![]));
+    }
+
+    /// A folder Git did not claim is not a checkout, and two of them sharing a parent are
+    /// not related by anything this feature knows about.
+    #[test]
+    fn a_folder_outside_a_checkout_highlights_nothing() {
+        let mut state = related_agents();
+        state.repositories.insert(
+            Location::local("/work/hocus/.worktrees/topic"),
+            projects::Repository::folder("/work/hocus/.worktrees/topic"),
+        );
+        assert_eq!(related(&mut state), Some(vec![]));
+    }
+
+    /// A pane in no tab we know about: "the same tab" means nothing there, so nothing is
+    /// highlighted rather than every agent on the same checkout session-wide.
+    #[test]
+    fn an_agent_in_no_tab_highlights_nothing() {
+        let mut state = related_agents();
+        if let Some(panes) = state.panes.as_mut() {
+            panes[0].tab = None;
+        }
+        assert_eq!(related(&mut state), Some(vec![]));
     }
 
     /// The point of the feature: the agent's frame says which checkout it is in,

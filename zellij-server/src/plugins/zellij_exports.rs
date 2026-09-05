@@ -868,6 +868,9 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 panes_to_highlight.into_iter().map(|p| p.into()).collect(),
                 panes_to_unhighlight.into_iter().map(|p| p.into()).collect(),
             ),
+            PluginCommand::SetRelatedPanes(pane_ids) => {
+                set_related_panes(env, pane_ids.into_iter().map(|p| p.into()).collect())
+            },
             PluginCommand::RevealPaneWithId(pane_id, label) => {
                 reveal_pane_with_id(env, pane_id.into(), label)
             },
@@ -7342,6 +7345,12 @@ fn highlight_and_unhighlight_panes(
         ));
 }
 
+fn set_related_panes(env: &PluginEnv, pane_ids: HashSet<PaneId>) {
+    let _ = env
+        .senders
+        .send_to_screen(ScreenInstruction::SetRelatedPanes(pane_ids));
+}
+
 fn reveal_pane_with_id(env: &PluginEnv, pane_id: PaneId, label: Option<String>) {
     let _ = env
         .senders
@@ -7761,6 +7770,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::SetQuitNotice
         | CommandType::GroupAndUngroupPanes
         | CommandType::HighlightAndUnhighlightPanes
+        | CommandType::SetRelatedPanes
         | CommandType::RevealPaneWithId
         | CommandType::CloseMultiplePanes
         | CommandType::FloatMultiplePanes

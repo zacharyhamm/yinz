@@ -171,8 +171,9 @@ pub use super::generated_api::api::{
         SetPaneBorderlessPayload, SetPaneColorPayload,
         SetPaneFrameStylePayload as ProtobufSetPaneFrameStylePayload,
         SetPaneRegexHighlightsPayload, SetPaneTitlePrefixPayload, SetQuitNoticePayload,
-        SetSelfMouseSelectionSupportPayload, SetTabProjectsPayload, SetTimeoutPayload,
-        ShowCursorPayload, ShowFloatingPanesPayload as ProtobufShowFloatingPanesPayload,
+        SetRelatedPanesPayload, SetSelfMouseSelectionSupportPayload, SetTabProjectsPayload,
+        SetTimeoutPayload, ShowCursorPayload,
+        ShowFloatingPanesPayload as ProtobufShowFloatingPanesPayload,
         ShowFloatingPanesResponse as ProtobufShowFloatingPanesResponse, ShowPaneWithIdPayload,
         SpawnAgentPayload, SpawnAgentResponse as ProtobufSpawnAgentResponse, StackPanesPayload,
         SubscribePayload, SwitchSessionPayload, SwitchTabToIdPayload, SwitchTabToPayload,
@@ -2630,6 +2631,18 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     _ => Err("Mismatched payload for HighlightAndUnhighlightPanes"),
                 }
             },
+            Some(CommandName::SetRelatedPanes) => match protobuf_plugin_command.payload {
+                Some(Payload::SetRelatedPanesPayload(payload)) => {
+                    Ok(PluginCommand::SetRelatedPanes(
+                        payload
+                            .pane_ids
+                            .into_iter()
+                            .filter_map(|p| p.try_into().ok())
+                            .collect(),
+                    ))
+                },
+                _ => Err("Mismatched payload for SetRelatedPanes"),
+            },
             Some(CommandName::SetPaneTitlePrefix) => match protobuf_plugin_command.payload {
                 Some(Payload::SetPaneTitlePrefixPayload(payload)) => {
                     Ok(PluginCommand::SetPaneTitlePrefix {
@@ -4915,6 +4928,12 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     },
                 )),
             }),
+            PluginCommand::SetRelatedPanes(pane_ids) => Ok(ProtobufPluginCommand {
+                name: CommandName::SetRelatedPanes as i32,
+                payload: Some(Payload::SetRelatedPanesPayload(SetRelatedPanesPayload {
+                    pane_ids: pane_ids.iter().filter_map(|&p| p.try_into().ok()).collect(),
+                })),
+            }),
             PluginCommand::SetPaneTitlePrefix { pane_id, prefix } => Ok(ProtobufPluginCommand {
                 name: CommandName::SetPaneTitlePrefix as i32,
                 payload: Some(Payload::SetPaneTitlePrefixPayload(
@@ -6972,6 +6991,28 @@ mod tests {
         }
     }
 
+    /// The empty set is a value here, not an absence: it is how a highlight is *taken
+    /// down*, and an encoding that turned it into "nothing to say" would leave a stale
+    /// tint on panes that are no longer kin of anything.
+    #[test]
+    fn set_related_panes_protobuf_round_trip() {
+        for pane_ids in [
+            vec![],
+            vec![PaneId::Terminal(7)],
+            vec![PaneId::Terminal(7), PaneId::Terminal(8), PaneId::Plugin(3)],
+        ] {
+            let original = PluginCommand::SetRelatedPanes(pane_ids.clone());
+            let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
+            let decoded: PluginCommand = protobuf.try_into().expect("decode");
+            match decoded {
+                PluginCommand::SetRelatedPanes(decoded_pane_ids) => {
+                    assert_eq!(decoded_pane_ids, pane_ids);
+                },
+                other => panic!("expected SetRelatedPanes, got {:?}", other),
+            }
+        }
+    }
+
     /// `None` is a value here, not an absence: it is how the prefix is *dropped*,
     /// so an encoding that lost the difference between "no prefix" and "clear the
     /// prefix" would leave a stale checkout on a pane that is no longer an agent.
@@ -7544,6 +7585,7 @@ mod tests {
                 | PluginCommand::OpenFileInPlaceOfPlugin(..)
                 | PluginCommand::GroupAndUngroupPanes(..)
                 | PluginCommand::HighlightAndUnhighlightPanes(..)
+                | PluginCommand::SetRelatedPanes(..)
                 | PluginCommand::RevealPaneWithId(..)
                 | PluginCommand::CloseMultiplePanes(_)
                 | PluginCommand::FloatMultiplePanes(_)
