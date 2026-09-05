@@ -90,6 +90,20 @@ const PROMPT_CHARS: usize = 600;
 #[cfg(test)]
 const CLAUDE: &str = "claude";
 
+/// The VM a Firecracker pane is in, and the host worktree that VM mirrors.
+///
+/// The two are kept together because neither answers on its own. The worktree is what
+/// identifies the pane's work — its own folder is a guest path in a copy of that one — but a
+/// pane that joined a VM by name carries no worktree of its own until the provider answers,
+/// so an absent worktree cannot be read as "no longer in a VM". The VM is what tells those
+/// two apart: the answer belongs to the VM it was given for, and a pane in another one has
+/// left it behind. See `rebuild_panes`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VmCheckout {
+    vm: String,
+    worktree: String,
+}
+
 #[derive(Default)]
 struct State {
     /// Overrides from hocus's `agent_register`, refreshed by every subscribe.
@@ -151,7 +165,10 @@ struct State {
     /// panes, and a suppressed pane keeps its folder. Retracted with it too, and for the
     /// same reason - a pane re-run on this machine is not in a VM any more, and this
     /// outranks its folder rather than losing to it.
-    firecracker_worktrees: BTreeMap<u32, String>,
+    ///
+    /// The VM is kept beside the worktree because it is what the retraction is keyed on;
+    /// see `VmCheckout` and `rebuild_panes`.
+    firecracker_worktrees: BTreeMap<u32, VmCheckout>,
     activity: agents::Activity,
     /// The checkout each agent pane's frame is currently decorated with.
     ///
@@ -307,6 +324,32 @@ struct InFlight {
 /// `None` where nothing is left — a prompt that was entirely machinery, which a
 /// `<system-reminder>` on its own is: its question is `None` by design, and a turn with no
 /// question behind it is summarised without one rather than against a stale one.
+/// Put the machine and the worktree the pane is on *now* onto its run, answering whether
+/// either moved.
+///
+/// A run carries its own copy of both because it outlives its pane: an archived run has
+/// nothing left to ask which project it was work on, and `run_history::matches_root` reads
+/// what is stored rather than what a pane could say. So the copy has to be kept level, and
+/// by whichever of the two roads sees the move first — the hook that arrives after a warp,
+/// and the manifest that names a worktree the run's first hook beat. Left to the hook alone,
+/// a run whose agent never spoke again would be archived with the identity it was born with.
+fn relocate_run(
+    run: &mut agents::AgentRun,
+    host: Option<String>,
+    worktree: Option<String>,
+) -> bool {
+    let mut moved = false;
+    if run.host != host {
+        run.host = host;
+        moved = true;
+    }
+    if run.worktree != worktree {
+        run.worktree = worktree;
+        moved = true;
+    }
+    moved
+}
+
 fn kept_prompt(text: &str) -> Option<String> {
     let question = envelope::question(text);
     let question = question.trim();
@@ -1032,7 +1075,10 @@ impl State {
         // And, for a pane in a Firecracker VM, the host worktree that folder is a copy of.
         // The run outlives the pane, so it has to carry its own answer: an archived VM run
         // has nothing left to ask which project it was work on.
-        let worktree = self.firecracker_worktrees.get(&pane_id).cloned();
+        let worktree = self
+            .firecracker_worktrees
+            .get(&pane_id)
+            .map(|checkout| checkout.worktree.clone());
         let run = self
             .runs
             .entry(pane_id)
@@ -1064,18 +1110,7 @@ impl State {
                 changed = true;
             }
         }
-        // Kept level with the pane on every hook and not only at the start, so a run whose
-        // pane was warped to another machine stops claiming the folder it had here. The
-        // worktree goes with it: a run adopted into a VM pane, or one whose first hook beat
-        // the manifest that named the worktree, would otherwise keep the wrong identity.
-        if run.host != host {
-            run.host = host;
-            changed = true;
-        }
-        if run.worktree != worktree {
-            run.worktree = worktree;
-            changed = true;
-        }
+        changed |= relocate_run(run, host, worktree);
         if let Some((kind, text)) = agents::run_entry(event) {
             // The text the entry will keep, not the event's own prompt: the id is stored beside
             // that text and compared against ids taken from other entries' text, and
@@ -1528,7 +1563,8 @@ impl State {
         //
         // Both directions, because a pane can leave its machine without leaving the
         // manifest: `RunCommandInPane` re-runs a pane in place, keeping its id, and a VM
-        // pane re-run here comes back `Local`. Insert-only, the pane would keep answering
+        // pane re-run here comes back `Local` — or in another VM, which is a different
+        // machine and just as much a departure. Insert-only, the pane would keep answering
         // with the checkout it left - `checkout_location` reads the worktree *before* the
         // folder, so the stale half is the one that wins.
         for pane in self.manifest.panes.values().flatten() {
@@ -1549,19 +1585,32 @@ impl State {
             // The host path a Firecracker pane's VM mirrors, which is what identifies
             // its work. Read from the target rather than from the pane's folder: the
             // folder is a guest path.
-            match pane.target.firecracker_worktree() {
-                Some(worktree) => {
-                    self.firecracker_worktrees
-                        .insert(pane.id, worktree.display().to_string());
+            match (
+                pane.target.firecracker_vm(),
+                pane.target.firecracker_worktree(),
+            ) {
+                (Some(vm), Some(worktree)) => {
+                    self.firecracker_worktrees.insert(
+                        pane.id,
+                        VmCheckout {
+                            vm: vm.to_owned(),
+                            worktree: worktree.display().to_string(),
+                        },
+                    );
                 },
-                // Retracted on the pane leaving Firecracker, not on the worktree being
-                // absent: a pane that joined a VM by name is `Firecracker` with no
-                // worktree of its own until the provider answers, and clearing in that
-                // window would drop the answer the server is about to send.
-                None if !pane.target.is_firecracker() => {
+                // Not retracted on the worktree being absent: a pane that joined a VM by
+                // name is `Firecracker` with no worktree of its own until the provider
+                // answers, and clearing in that window would drop the answer the server is
+                // about to send. It is the *VM* the answer was given for, so a pane in a
+                // different one has left it behind as surely as one re-run on this machine.
+                (Some(vm), None)
+                    if self
+                        .firecracker_worktrees
+                        .get(&pane.id)
+                        .is_some_and(|checkout| checkout.vm == vm) => {},
+                _ => {
                     self.firecracker_worktrees.remove(&pane.id);
                 },
-                None => {},
             }
         }
         let mut panes = terminal_panes(&self.manifest, &self.tabs);
@@ -1593,6 +1642,24 @@ impl State {
         self.cwds.retain(|id, _| live.contains(id));
         self.hosts.retain(|id, _| live.contains(id));
         self.firecracker_worktrees.retain(|id, _| live.contains(id));
+        // The runs' own copies of the two maps above, kept level here as well as on the next
+        // hook. Every run left is one whose pane is live — the closed ones were released just
+        // above — so the maps are the answer for all of them. Doing it only on a hook leaves a
+        // run whose agent has fallen silent archived with the identity it was born with, and
+        // an archived run has no pane left for `matches_root` to fall back on. See
+        // `relocate_run`.
+        for (pane_id, run) in self.runs.iter_mut() {
+            let moved = relocate_run(
+                run,
+                self.hosts.get(pane_id).cloned(),
+                self.firecracker_worktrees
+                    .get(pane_id)
+                    .map(|checkout| checkout.worktree.clone()),
+            );
+            if moved {
+                self.dirty_runs.insert(run.id.clone(), run.clone());
+            }
+        }
         // A pane that closes stops being an agent because it stops being in the
         // manifest — the same rule as the two maps above, which is what keeps
         // the latch from being one more thing that can go stale.
@@ -1994,7 +2061,9 @@ impl State {
     /// hidden.
     fn location_of(&self, pane_id: u32) -> Option<Location> {
         agents::checkout_location(
-            self.firecracker_worktrees.get(&pane_id).map(String::as_str),
+            self.firecracker_worktrees
+                .get(&pane_id)
+                .map(|checkout| checkout.worktree.as_str()),
             self.hosts.get(&pane_id).map(String::as_str),
             self.cwds.get(&pane_id).map(String::as_str),
         )
@@ -3581,7 +3650,15 @@ mod tests {
             cwds: BTreeMap::from([(pane_id, guest_cwd.to_owned())]),
             hosts: BTreeMap::from([(pane_id, host)]),
             firecracker_worktrees: worktree
-                .map(|worktree| BTreeMap::from([(pane_id, worktree.to_owned())]))
+                .map(|worktree| {
+                    BTreeMap::from([(
+                        pane_id,
+                        VmCheckout {
+                            vm: vm.to_owned(),
+                            worktree: worktree.to_owned(),
+                        },
+                    )])
+                })
                 .unwrap_or_default(),
             ..State::default()
         }
@@ -3719,6 +3796,48 @@ mod tests {
         );
     }
 
+    /// The same departure without leaving Firecracker: a pane re-run into another VM keeps
+    /// its id and comes back `Firecracker` with no worktree of its own, which is the shape
+    /// of a join in progress. The VM is what tells the two apart — the answer was given for
+    /// the VM the pane was in, and this pane is in a different one.
+    #[test]
+    fn a_firecracker_pane_moved_to_another_vm_stops_answering_with_the_first_vms_worktree() {
+        let mut state = State::default();
+        let mut vm = PaneInfo {
+            id: 7,
+            title: "claude".to_owned(),
+            host: Some("firecracker:review".to_owned()),
+            ..PaneInfo::default()
+        };
+        vm.target =
+            PaneTarget::firecracker("review", None, Some(std::path::Path::new("/work/hocus")))
+                .expect("a valid VM name and an absolute worktree");
+        state.manifest.panes.insert(0, vec![vm]);
+        state.cwds.insert(7, "/workspace".to_owned());
+        state.rebuild_panes();
+        assert_eq!(state.location_of(7), Some(local("/work/hocus")));
+
+        let mut moved = PaneInfo {
+            id: 7,
+            title: "claude".to_owned(),
+            host: Some("firecracker:dev".to_owned()),
+            ..PaneInfo::default()
+        };
+        moved.target = PaneTarget::firecracker("dev", None, None).expect("a valid VM name");
+        state.manifest.panes.insert(0, vec![moved]);
+        state.rebuild_panes();
+
+        assert!(
+            state.firecracker_worktrees.is_empty(),
+            "the first VM's worktree is not the second VM's",
+        );
+        assert_eq!(
+            state.location_of(7),
+            Some(Location::new(Some("firecracker:dev"), "/workspace")),
+            "and the pane falls back to the guest folder it is really in",
+        );
+    }
+
     /// What the retraction is keyed on, and why it is not keyed on the worktree being
     /// absent: `new-pane --firecracker review` joins a VM somebody else provisioned and
     /// names no worktree of its own, so such a pane is a Firecracker one whose target says
@@ -3735,9 +3854,13 @@ mod tests {
         };
         joining.target = PaneTarget::firecracker("review", None, None).expect("a valid VM name");
         state.manifest.panes.insert(0, vec![joining]);
-        state
-            .firecracker_worktrees
-            .insert(7, "/work/hocus".to_owned());
+        state.firecracker_worktrees.insert(
+            7,
+            VmCheckout {
+                vm: "review".to_owned(),
+                worktree: "/work/hocus".to_owned(),
+            },
+        );
         state.rebuild_panes();
 
         assert_eq!(state.location_of(7), Some(local("/work/hocus")));
@@ -7408,6 +7531,43 @@ mod tests {
         feed(&mut state, 7, &prompt("and now the timeout"), None);
         let run = state.runs.get(&7).expect("the pane's run");
         assert_eq!(run.host, None);
+    }
+
+    /// And it is repaired by the manifest as well as by the next hook, because there may not
+    /// be a next hook. A run whose first event beat the manifest that named its VM's worktree
+    /// would otherwise be archived with none, and `matches_root` files a run with a host and
+    /// no worktree under no project at all — the run vanishes from `agent_runs --project`.
+    #[test]
+    fn a_manifest_repairs_a_run_whose_first_hook_beat_it() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/workspace")]),
+            ..State::default()
+        };
+        feed(&mut state, 7, &prompt("rewrite the retry backoff"), None);
+        let run = state.runs.get(&7).expect("the pane's run");
+        assert_eq!(run.worktree, None, "the hook got here first");
+        let run_id = run.id.clone();
+        state.dirty_runs.clear();
+
+        let mut vm = PaneInfo {
+            id: 7,
+            title: "claude".to_owned(),
+            host: Some("firecracker:review".to_owned()),
+            ..PaneInfo::default()
+        };
+        vm.target =
+            PaneTarget::firecracker("review", None, Some(std::path::Path::new("/work/hocus")))
+                .expect("a valid VM name and an absolute worktree");
+        state.manifest.panes.insert(0, vec![vm]);
+        state.rebuild_panes();
+
+        let run = state.runs.get(&7).expect("the pane's run");
+        assert_eq!(run.worktree.as_deref(), Some("/work/hocus"));
+        assert_eq!(run.host.as_deref(), Some("firecracker:review"));
+        assert!(
+            state.dirty_runs.contains_key(&run_id),
+            "and the repair is written, not only held",
+        );
     }
 
     /// Two presses against an agent that has not moved produce the same sentence twice, and
