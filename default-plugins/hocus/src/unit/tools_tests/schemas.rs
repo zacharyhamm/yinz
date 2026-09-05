@@ -99,15 +99,11 @@ fn the_agent_history_tools_require_only_what_they_cannot_default() {
 
 /// They read rows another process wrote and change nothing, so planning mode
 /// gets them. The generic tests cover that the names are real and unconfirmed;
-/// this one pins that they are on the list at all.
+/// this one pins that they are on the list at all — and, since they sit in the
+/// deferred `agent` family, that a plan which loads it is actually offered them.
 #[test]
 fn the_agent_history_tools_are_available_when_planning() {
-    let listed: Vec<String> = read_only_specs()
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|spec| spec["function"]["name"].as_str().map(str::to_owned))
-        .collect();
+    let listed = advertised(&read_only_specs_for(&loaded(&["agent"])));
     for name in ["agent_runs", "agent_run", "agent_history_search"] {
         assert!(
             listed.contains(&name.to_owned()),
@@ -417,9 +413,11 @@ fn every_read_only_tool_is_a_real_tool() {
     for tool in READ_ONLY {
         assert!(names.contains(&(*tool).to_owned()), "no such tool: {tool}");
     }
+    // Counted rather than compared as sets, which is what catches the one fault
+    // the loop above cannot: a name written into the allowlist twice.
     assert_eq!(
-        read_only_specs().as_array().map(Vec::len),
-        Some(READ_ONLY.len()),
+        advertised(&read_only_specs_for(&every_family())).len(),
+        READ_ONLY.len(),
         "the filtered specs and the allowlist disagree",
     );
 }
@@ -440,6 +438,8 @@ fn nothing_read_only_is_ever_confirmed() {
 /// rather than left to whoever last edited the list.
 #[test]
 fn the_tools_that_act_are_withheld_from_planning() {
+    // Everything loaded, so nothing here is absent merely for want of a family.
+    let listed = advertised(&read_only_specs_for(&every_family()));
     for tool in [
         "close_pane",
         "new_pane",
@@ -461,14 +461,11 @@ fn the_tools_that_act_are_withheld_from_planning() {
         "plugin_reload",
     ] {
         assert!(!READ_ONLY.contains(&tool), "{tool} is not read-only");
+        assert!(
+            !listed.contains(&tool.to_owned()),
+            "{tool} is advertised to a plan"
+        );
     }
-    let listed: Vec<String> = read_only_specs()
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|spec| spec["function"]["name"].as_str().map(str::to_owned))
-        .collect();
-    assert!(!listed.contains(&"close_pane".to_owned()));
 }
 
 /// The VM tools name a VM with `vm`, never with `name`.
@@ -577,13 +574,7 @@ fn the_orienting_plugin_tools_are_available_when_planning() {
         assert!(READ_ONLY.contains(&tool), "{tool} is not read-only");
     }
     assert!(!READ_ONLY.contains(&"plugin_edit"));
-    let planning = read_only_specs_for(&["plugin"].into_iter().collect());
-    let listed: Vec<String> = planning
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|spec| spec["function"]["name"].as_str().map(str::to_owned))
-        .collect();
+    let listed = advertised(&read_only_specs_for(&loaded(&["plugin"])));
     assert!(
         listed.iter().any(|name| name == "plugin_search"),
         "{listed:?}"
