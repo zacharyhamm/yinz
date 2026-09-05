@@ -1837,7 +1837,8 @@ pub fn start_server_impl(
                     started_at.elapsed(),
                     if result.is_ok() { "ok" } else { "error" }
                 );
-                remove_client!(client_id, os_input, session_state, session_data);
+                // The router queues RemoveClient after ConnStatus. Leave ownership there:
+                // removing twice can close a new connection that reuses this client ID.
             },
             ServerInstruction::Log(
                 lines_to_log,

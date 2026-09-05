@@ -1030,3 +1030,176 @@ fn an_env_wrapped_agent_is_named_for_the_agent() {
     );
     assert_eq!(agent(&fired[0].2).1.kind, "codex");
 }
+
+#[test]
+fn accepted_hook_reports_keep_events_and_state_in_arrival_order_across_creation() {
+    use zellij_utils::agent::report::{AgentReport, AgentReportState};
+    let mut mock = MockScreen::new(Size { cols: 80, rows: 20 });
+    // No plugin consumer runs: screen delivery must only enqueue its events.
+    let plugins = mock.plugin_receiver.take().unwrap();
+    let instruction = |hook: &str, state: AgentReportState| {
+        let json = serde_json::json!({"hook_event_name": hook}).to_string();
+        let event = serde_json::from_str(&json).unwrap();
+        ScreenInstruction::AgentReport(
+            AgentReport {
+                report_id: "00000000-0000-4000-8000-000000000001".into(),
+                pane_id: zellij_utils::data::PaneId::Terminal(2),
+                state,
+                event: Some(zellij_utils::agent::AgentEvent::from_hook(
+                    "claude", 2, &event, json,
+                )),
+                trace: false,
+                process_id: 42,
+                kind: "claude".into(),
+            },
+            std::time::Instant::now(),
+        )
+    };
+    let screen_thread = mock.run(None, vec![]);
+    // The target pane does not exist yet; its complete reports must wait in order.
+    mock.to_screen
+        .send(instruction(
+            "PreToolUse",
+            AgentReportState::Set(report(AgentState::Busy, None)),
+        ))
+        .unwrap();
+    mock.to_screen
+        .send(instruction(
+            "Stop",
+            AgentReportState::Set(report(AgentState::Waiting, None)),
+        ))
+        .unwrap();
+    mock.to_screen.send(new_pane(2, None)).unwrap();
+    mock.to_screen
+        .send(instruction("PostToolUse", AgentReportState::Unchanged))
+        .unwrap();
+    mock.to_screen
+        .send(instruction(
+            "Stop",
+            AgentReportState::Set(report(AgentState::Waiting, None)),
+        ))
+        .unwrap();
+    mock.to_screen
+        .send(instruction("SessionEnd", AgentReportState::Clear))
+        .unwrap();
+    mock.teardown(vec![screen_thread]);
+    let mut state = None;
+    let mut observed = vec![];
+    for (instruction, _) in plugins.try_iter() {
+        if let PluginInstruction::Update(updates) = instruction {
+            for (_, _, event) in updates {
+                match event {
+                    Event::SessionUpdate(sessions, _) => {
+                        for session in sessions {
+                            for pane in session.panes.panes.values().flatten() {
+                                if pane.id == 2 && !pane.is_plugin {
+                                    state = pane.agent.as_ref().map(|a| a.state);
+                                }
+                            }
+                        }
+                    },
+                    Event::AgentEvent(event) => observed.push((event.hook, state)),
+                    _ => {},
+                }
+            }
+        }
+    }
+    assert_eq!(
+        observed,
+        vec![
+            ("PreToolUse".into(), Some(AgentState::Busy)),
+            ("Stop".into(), Some(AgentState::Waiting)),
+            ("PostToolUse".into(), Some(AgentState::Waiting)),
+            ("Stop".into(), Some(AgentState::Waiting)),
+            ("SessionEnd".into(), None),
+        ]
+    );
+}
+
+#[test]
+fn report_router_acknowledges_with_screen_and_plugins_paused_and_no_active_client() {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use std::sync::RwLock;
+    use std::time::Duration;
+    use zellij_utils::agent::report::{AgentReport, AgentReportState};
+    use zellij_utils::ipc::IpcSenderWithContext;
+    let mut mock = MockScreen::new(Size { cols: 80, rows: 20 });
+    mock.screen_receiver
+        .as_ref()
+        .unwrap()
+        .try_iter()
+        .for_each(drop);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("report.sock");
+    let listener = ListenerOptions::new()
+        .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+        .create_sync()
+        .unwrap();
+    let client =
+        LocalSocketStream::connect(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+            .unwrap();
+    let server = listener.accept().unwrap();
+    let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(client);
+    let report = AgentReport {
+        report_id: "00000000-0000-4000-8000-000000000001".into(),
+        pane_id: zellij_utils::data::PaneId::Terminal(2),
+        state: AgentReportState::Clear,
+        event: None,
+        trace: false,
+        process_id: 42,
+        kind: "claude".into(),
+    };
+    sender
+        .send_client_msg(ClientToServerMsg::AgentReport(report.clone()))
+        .unwrap();
+    let session = Arc::new(RwLock::new(Some(mock.clone_session_metadata())));
+    // Keep the session owner alive while the router exits. Dropping SessionMetaData sends
+    // thread Exit instructions, which are unrelated to reporting.
+    let router_session = session.clone();
+    let os = mock.os_input.clone();
+    let to_server = mock.to_server.clone();
+    let (finished, done) = std::sync::mpsc::channel();
+    let router = std::thread::spawn(move || {
+        let result = crate::route::route_thread_main(
+            router_session,
+            Arc::new(RwLock::new(crate::SessionState::new())),
+            Box::new(os),
+            to_server,
+            IpcReceiverWithContext::new(server),
+            99,
+            Duration::from_secs(1),
+        );
+        finished.send(result).unwrap();
+    });
+    // Neither consumer is running. The router must finish without their participation.
+    done.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
+    router.join().unwrap();
+    assert_eq!(
+        mock.os_input
+            .server_to_client_messages
+            .lock()
+            .unwrap()
+            .get(&99)
+            .unwrap(),
+        &vec![ServerToClientMsg::AgentReportAccepted {
+            report_id: report.report_id.clone()
+        }]
+    );
+    assert!(
+        matches!(mock.screen_receiver.as_ref().unwrap().try_recv().unwrap().0,
+        ScreenInstruction::AgentReport(queued, _) if queued == report)
+    );
+    assert!(mock.plugin_receiver.as_ref().unwrap().is_empty());
+    let removals = mock
+        .server_receiver
+        .as_ref()
+        .unwrap()
+        .try_iter()
+        .filter(|(message, _)| matches!(message, ServerInstruction::RemoveClient(99)))
+        .count();
+    assert_eq!(
+        removals, 1,
+        "duplicate removal can close a later client with the same ID"
+    );
+    mock.teardown(vec![]);
+}

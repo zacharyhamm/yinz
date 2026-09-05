@@ -39,6 +39,10 @@ isahc = { workspace = true }
 # the `e2e` feature that also compiles the module using it.
 ssh2 = { version = "0.9.1", optional = true }
 
+[[test]]
+name = "agent_report"
+path = "src/tests/agent_report.rs"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 insta = "1.48"

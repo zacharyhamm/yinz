@@ -44,6 +44,71 @@ use zellij_utils::nested_session;
 use zellij_utils::nested_session::NestedSessionMessage;
 use zellij_utils::pane_size::Size;
 
+fn apply_queued_agent_report(
+    screen: &mut Screen,
+    report: &zellij_utils::agent::report::AgentReport,
+    accepted_at: std::time::Instant,
+) -> Result<bool> {
+    use zellij_utils::agent::report::AgentReportState;
+    let pane_id = report.pane_id.into();
+    if screen.tab_containing_pane(pane_id).is_none() {
+        return Ok(false);
+    }
+    let mut trace = report.diagnostics();
+    trace.session = screen.session_name.clone();
+    trace.record("screen_queue", accepted_at.elapsed(), "ok");
+    let started = std::time::Instant::now();
+    trace.record("state", Duration::ZERO, "enter");
+    let result = match &report.state {
+        AgentReportState::Unchanged => Ok(true),
+        AgentReportState::Clear => apply_pane_agent_report(screen, pane_id, None),
+        AgentReportState::Set(agent) => {
+            apply_pane_agent_report(screen, pane_id, Some(agent.clone()))
+        },
+    };
+    trace.record(
+        "state",
+        started.elapsed(),
+        if result.is_ok() { "ok" } else { "error" },
+    );
+    result?;
+    let started = std::time::Instant::now();
+    trace.record("event_enqueue", Duration::ZERO, "enter");
+    let result = if let Some(event) = &report.event {
+        screen
+            .bus
+            .senders
+            .send_to_plugin(PluginInstruction::Update(vec![(
+                None,
+                None,
+                zellij_utils::data::Event::AgentEvent(event.clone()),
+            )]))
+    } else {
+        Ok(())
+    };
+    trace.record(
+        "event_enqueue",
+        started.elapsed(),
+        if result.is_ok() { "ok" } else { "error" },
+    );
+    result?;
+    Ok(true)
+}
+
+// Reports waiting for creation are applied here, before newer instructions already in the
+// queue. Re-enqueuing them at the tail would invert their state and event arrival order.
+pub(super) fn replay_pending_pane_event(
+    screen: &mut Screen,
+    event: ScreenInstruction,
+) -> Result<()> {
+    if let ScreenInstruction::AgentReport(report, accepted_at) = event {
+        apply_queued_agent_report(screen, &report, accepted_at)?;
+    } else {
+        screen.bus.senders.send_to_screen(event)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn apply_pane_agent_report(
     screen: &mut Screen,
     pane_id: PaneId,
@@ -607,7 +672,7 @@ pub(crate) fn screen_thread_main(
                 screen.fire_agent_start_for_new_pane(pid);
                 if let Some(pending_events) = pending_events_waiting_for_pane.remove(&pid) {
                     for event in pending_events {
-                        screen.bus.senders.send_to_screen(event).non_fatal();
+                        replay_pending_pane_event(&mut screen, event).non_fatal();
                     }
                 }
                 screen.log_and_report_session_state()?;
@@ -644,7 +709,7 @@ pub(crate) fn screen_thread_main(
 
                 if let Some(pending_events) = pending_events_waiting_for_pane.remove(&pid) {
                     for event in pending_events {
-                        screen.bus.senders.send_to_screen(event).non_fatal();
+                        replay_pending_pane_event(&mut screen, event).non_fatal();
                     }
                 }
 
@@ -2001,7 +2066,7 @@ pub(crate) fn screen_thread_main(
                 for pane_id in new_terminal_pane_ids {
                     if let Some(pending_events) = pending_events_waiting_for_pane.remove(&pane_id) {
                         for event in pending_events {
-                            screen.bus.senders.send_to_screen(event).non_fatal();
+                            replay_pending_pane_event(&mut screen, event).non_fatal();
                         }
                     }
                 }
@@ -2023,11 +2088,11 @@ pub(crate) fn screen_thread_main(
                 }
 
                 for event in pending_events_waiting_for_client.drain(..) {
-                    screen.bus.senders.send_to_screen(event).non_fatal();
+                    replay_pending_pane_event(&mut screen, event).non_fatal();
                 }
 
                 for event in pending_events_waiting_for_tab.drain(..) {
-                    screen.bus.senders.send_to_screen(event).non_fatal();
+                    replay_pending_pane_event(&mut screen, event).non_fatal();
                 }
 
                 screen.render(None)?;
@@ -2454,7 +2519,7 @@ pub(crate) fn screen_thread_main(
                     attach_started_at.elapsed()
                 );
                 for event in pending_events_waiting_for_client.drain(..) {
-                    screen.bus.senders.send_to_screen(event).non_fatal();
+                    replay_pending_pane_event(&mut screen, event).non_fatal();
                 }
                 log::info!(
                     "attach trace: screen client_id={client_id} log_and_report_session_state begin"
@@ -2843,11 +2908,11 @@ pub(crate) fn screen_thread_main(
                 }
 
                 for event in pending_events_waiting_for_client.drain(..) {
-                    screen.bus.senders.send_to_screen(event).non_fatal();
+                    replay_pending_pane_event(&mut screen, event).non_fatal();
                 }
 
                 for event in pending_events_waiting_for_tab.drain(..) {
-                    screen.bus.senders.send_to_screen(event).non_fatal();
+                    replay_pending_pane_event(&mut screen, event).non_fatal();
                 }
 
                 // Single render and log after all tabs are updated (performance optimization)
@@ -4310,6 +4375,14 @@ pub(crate) fn screen_thread_main(
                     },
                 }
                 screen.render(None)?;
+            },
+            ScreenInstruction::AgentReport(report, accepted_at) => {
+                if !apply_queued_agent_report(&mut screen, &report, accepted_at)? {
+                    pending_events_waiting_for_pane
+                        .entry(report.pane_id.into())
+                        .or_default()
+                        .push(ScreenInstruction::AgentReport(report, accepted_at));
+                }
             },
             ScreenInstruction::SetPaneAgent(pane_id, agent, _completion) => {
                 if !apply_pane_agent_report(&mut screen, pane_id, agent.clone())? {

@@ -3447,7 +3447,7 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
-    #[prost(oneof="client_to_server_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27")]
+    #[prost(oneof="client_to_server_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
 /// Nested message and enum types in `ClientToServerMsg`.
@@ -3503,6 +3503,8 @@ pub mod client_to_server_msg {
         RequestSessionList(super::RequestSessionListMsg),
         #[prost(message, tag="27")]
         HostTerminalFocusChanged(super::HostTerminalFocusChangedMsg),
+        #[prost(message, tag="29")]
+        AgentReport(super::AgentReportMsg),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -3665,6 +3667,28 @@ pub struct HostTerminalFocusChangedMsg {
     #[prost(bool, tag="1")]
     pub focused: bool,
 }
+/// A complete report. Acceptance transfers ownership to the in-memory screen queue.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AgentReportMsg {
+    #[prost(string, tag="1")]
+    pub report_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag="2")]
+    pub pane_id: ::core::option::Option<PaneId>,
+    /// 0 unchanged, 1 clear, 2 set (requires agent).
+    #[prost(uint32, tag="3")]
+    pub state: u32,
+    #[prost(message, optional, tag="4")]
+    pub agent: ::core::option::Option<AgentInfo>,
+    #[prost(message, optional, tag="5")]
+    pub event: ::core::option::Option<AgentEventAction>,
+    #[prost(bool, tag="6")]
+    pub trace: bool,
+    #[prost(uint32, tag="7")]
+    pub process_id: u32,
+    #[prost(string, tag="8")]
+    pub kind: ::prost::alloc::string::String,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum HostTerminalThemeIndication {
@@ -3694,7 +3718,7 @@ impl HostTerminalThemeIndication {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerToClientMsg {
-    #[prost(oneof="server_to_client_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 20")]
+    #[prost(oneof="server_to_client_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 20, 21")]
     pub message: ::core::option::Option<server_to_client_msg::Message>,
 }
 /// Nested message and enum types in `ServerToClientMsg`.
@@ -3736,6 +3760,8 @@ pub mod server_to_client_msg {
         EmitNestedSessionFrame(super::EmitNestedSessionFrameMsg),
         #[prost(message, tag="20")]
         EventUpdate(super::EventUpdateMsg),
+        #[prost(message, tag="21")]
+        AgentReportAccepted(super::AgentReportAcceptedMsg),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -3853,4 +3879,10 @@ pub struct ForwardQueryToHostMsg {
 pub struct EmitNestedSessionFrameMsg {
     #[prost(bytes="vec", tag="1")]
     pub payload_bytes: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AgentReportAcceptedMsg {
+    #[prost(string, tag="1")]
+    pub report_id: ::prost::alloc::string::String,
 }

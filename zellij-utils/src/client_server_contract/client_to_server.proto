@@ -30,6 +30,7 @@ message ClientToServerMsg {
     SixelSupportMsg sixel_support = 24;
     RequestSessionListMsg request_session_list = 25;
     HostTerminalFocusChangedMsg host_terminal_focus_changed = 27;
+    AgentReportMsg agent_report = 29;
   }
 }
 
@@ -145,4 +146,17 @@ message RequestSessionListMsg {
 
 message HostTerminalFocusChangedMsg {
   bool focused = 1;
+}
+
+// A complete report. Acceptance transfers ownership to the in-memory screen queue.
+message AgentReportMsg {
+  string report_id = 1;
+  PaneId pane_id = 2;
+  // 0 unchanged, 1 clear, 2 set (requires agent).
+  uint32 state = 3;
+  optional AgentInfo agent = 4;
+  optional AgentEventAction event = 5;
+  bool trace = 6;
+  uint32 process_id = 7;
+  string kind = 8;
 }

@@ -118,6 +118,7 @@ impl PixelDimensions {
     strum_macros::VariantNames,
 )]
 pub enum ClientToServerMsg {
+    AgentReport(crate::agent::report::AgentReport),
     DetachSession {
         client_ids: Vec<ClientId>,
     },
@@ -208,6 +209,9 @@ pub enum ClientToServerMsg {
     strum_macros::VariantNames,
 )]
 pub enum ServerToClientMsg {
+    AgentReportAccepted {
+        report_id: String,
+    },
     Render {
         content: String,
     },

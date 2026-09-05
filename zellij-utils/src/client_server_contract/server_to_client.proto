@@ -23,6 +23,7 @@ message ServerToClientMsg {
     ForwardQueryToHostMsg forward_query_to_host = 16;
     EmitNestedSessionFrameMsg emit_nested_session_frame = 18;
     EventUpdateMsg event_update = 20;
+    AgentReportAcceptedMsg agent_report_accepted = 21;
   }
 }
 
@@ -102,3 +103,5 @@ message ForwardQueryToHostMsg {
 message EmitNestedSessionFrameMsg {
   bytes payload_bytes = 1;
 }
+
+message AgentReportAcceptedMsg { string report_id = 1; }

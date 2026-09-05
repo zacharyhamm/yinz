@@ -3,13 +3,14 @@ use std::str::FromStr;
 
 use crate::{
     client_server_contract::client_server_contract::{
-        client_to_server_msg, server_to_client_msg, ActionMsg, AttachClientMsg,
-        AttachWatcherClientMsg, BackgroundColorMsg, CliPipeOutputMsg, ClientExitedMsg,
-        ClientToServerMsg as ProtoClientToServerMsg, ColorRegistersMsg, ConfigFileUpdatedMsg,
-        ConnStatusMsg, ConnectedMsg, DesktopNotificationResponseMsg, DetachSessionMsg,
-        EmitNestedSessionFrameMsg, EventUpdateMsg, ExitMsg, ExitReason as ProtoExitReason,
-        FirstClientConnectedMsg, ForegroundColorMsg, ForwardQueryToHostMsg,
-        ForwardedReplyFromHostMsg, HostTerminalFocusChangedMsg, HostTerminalThemeChangedMsg,
+        client_to_server_msg, server_to_client_msg, ActionMsg, AgentReportAcceptedMsg,
+        AgentReportMsg, AttachClientMsg, AttachWatcherClientMsg, BackgroundColorMsg,
+        CliPipeOutputMsg, ClientExitedMsg, ClientToServerMsg as ProtoClientToServerMsg,
+        ColorRegistersMsg, ConfigFileUpdatedMsg, ConnStatusMsg, ConnectedMsg,
+        DesktopNotificationResponseMsg, DetachSessionMsg, EmitNestedSessionFrameMsg,
+        EventUpdateMsg, ExitMsg, ExitReason as ProtoExitReason, FirstClientConnectedMsg,
+        ForegroundColorMsg, ForwardQueryToHostMsg, ForwardedReplyFromHostMsg,
+        HostTerminalFocusChangedMsg, HostTerminalThemeChangedMsg,
         HostTerminalThemeIndication as ProtoHostTerminalThemeIndication,
         InputMode as ProtoInputMode, KeyMsg, KillSessionMsg, KittyGraphicsSupportMsg,
         LayoutMetadata as ProtoLayoutMetadata, LogErrorMsg, LogMsg, NestedSessionFrameFromHostMsg,
@@ -40,6 +41,24 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
 
     fn try_from(msg: ClientToServerMsg) -> Result<Self> {
         let message = match msg {
+            ClientToServerMsg::AgentReport(report) => {
+                use crate::agent::report::AgentReportState;
+                let (state, agent) = match report.state {
+                    AgentReportState::Unchanged => (0, None),
+                    AgentReportState::Clear => (1, None),
+                    AgentReportState::Set(agent) => (2, Some(agent_info_to_proto(agent))),
+                };
+                client_to_server_msg::Message::AgentReport(AgentReportMsg {
+                    report_id: report.report_id,
+                    pane_id: Some(report.pane_id.into()),
+                    state,
+                    agent,
+                    event: report.event.map(agent_event_to_proto),
+                    trace: report.trace,
+                    process_id: report.process_id,
+                    kind: report.kind,
+                })
+            },
             ClientToServerMsg::DetachSession { client_ids } => {
                 client_to_server_msg::Message::DetachSession(DetachSessionMsg {
                     client_ids: client_ids.into_iter().map(|id| id as u32).collect(),
@@ -182,6 +201,29 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
 
     fn try_from(msg: ProtoClientToServerMsg) -> Result<Self> {
         match msg.message {
+            Some(client_to_server_msg::Message::AgentReport(msg)) => {
+                use crate::agent::report::{AgentReport, AgentReportState};
+                let state = match (msg.state, msg.agent) {
+                    (0, None) => AgentReportState::Unchanged,
+                    (1, None) => AgentReportState::Clear,
+                    (2, Some(agent)) => AgentReportState::Set(agent_info_from_proto(agent)?),
+                    _ => return Err(anyhow!("invalid agent report state")),
+                };
+                let report = AgentReport {
+                    report_id: msg.report_id,
+                    pane_id: msg
+                        .pane_id
+                        .context("agent report missing pane")?
+                        .try_into()?,
+                    state,
+                    event: msg.event.map(agent_event_from_proto).transpose()?,
+                    trace: msg.trace,
+                    process_id: msg.process_id,
+                    kind: msg.kind,
+                };
+                report.validate()?;
+                Ok(ClientToServerMsg::AgentReport(report))
+            },
             Some(client_to_server_msg::Message::DetachSession(detach)) => {
                 Ok(ClientToServerMsg::DetachSession {
                     client_ids: detach.client_ids.into_iter().map(|id| id as u16).collect(),
@@ -333,6 +375,11 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
 impl From<ServerToClientMsg> for ProtoServerToClientMsg {
     fn from(msg: ServerToClientMsg) -> Self {
         let message = match msg {
+            ServerToClientMsg::AgentReportAccepted { report_id } => {
+                server_to_client_msg::Message::AgentReportAccepted(AgentReportAcceptedMsg {
+                    report_id,
+                })
+            },
             ServerToClientMsg::Render { content } => {
                 server_to_client_msg::Message::Render(RenderMsg { content })
             },
@@ -435,6 +482,11 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
 
     fn try_from(msg: ProtoServerToClientMsg) -> Result<Self> {
         match msg.message {
+            Some(server_to_client_msg::Message::AgentReportAccepted(msg)) => {
+                Ok(ServerToClientMsg::AgentReportAccepted {
+                    report_id: msg.report_id,
+                })
+            },
             Some(server_to_client_msg::Message::Render(render)) => Ok(ServerToClientMsg::Render {
                 content: render.content,
             }),

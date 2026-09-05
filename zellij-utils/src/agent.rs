@@ -9,6 +9,7 @@
 /// What to run to start a coding agent, and what Git setup to do first. Shared by the
 /// server's `SpawnAgent` handler and every hocus launcher.
 pub mod launch;
+pub mod report;
 
 use crate::data::{AgentInfo, AgentSource, AgentState};
 use serde::{Deserialize, Serialize};
