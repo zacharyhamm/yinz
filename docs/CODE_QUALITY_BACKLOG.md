@@ -29,11 +29,13 @@ completion includes focused regression coverage and a passing `cargo x ci check`
   actions require their own capabilities; internal DCS payloads are bounded; the Kitty graphics
   quota is a hard retained-byte limit; debug plugin builds detect missing wasm and build-recipe
   changes; and Kitty/termwiz stdin parsing has one owner for every byte.
-- **Fifth round** (2026-09-04 maintainability pass): **#13**. The plugin downloader rejects
-  non-2xx responses before touching the cache, resumes only on a `206` whose `Content-Range`
-  starts at the partial file's length, lets a `200` replace the partial file, checks the stored
-  length against `Content-Length`/`Content-Range`, and reports a failed HTTP-client build as an
-  error instead of a silent success.
+- **Fifth round** (2026-09-04 maintainability pass): **#13**. The plugin downloader accepts
+  only a `200`/`203` (replacing the partial file), a `206` whose `Content-Range` starts at the
+  partial file's length, or a `416` on a resume (discarding the partial file and refetching);
+  every other status is rejected before touching the cache. It requests an identity encoding and
+  rejects any other `Content-Encoding`, checks the stored length against
+  `Content-Length`/`Content-Range`, and reports a failed HTTP-client build as an error instead of
+  a silent success.
 
 ## Next up
 

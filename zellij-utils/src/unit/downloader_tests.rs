@@ -67,13 +67,18 @@ async fn serve(exchanges: Vec<Exchange>) -> (String, mpsc::UnboundedReceiver<Str
     (url, request_rx)
 }
 
-fn range_header(head: &str) -> Option<String> {
+fn request_header(head: &str, name: &str) -> Option<String> {
     head.lines().find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        name.trim()
-            .eq_ignore_ascii_case("range")
+        let (header, value) = line.split_once(':')?;
+        header
+            .trim()
+            .eq_ignore_ascii_case(name)
             .then(|| value.trim().to_owned())
     })
+}
+
+fn range_header(head: &str) -> Option<String> {
+    request_header(head, "range")
 }
 
 fn fixture() -> (TempDir, Downloader) {
@@ -135,6 +140,135 @@ async fn full_response_is_cached_at_the_returned_path() {
         range_header(&head),
         None,
         "a fresh download asks for everything"
+    );
+    assert_eq!(
+        request_header(&head, "accept-encoding").as_deref(),
+        Some("identity"),
+        "the bytes are requested as stored"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn range_not_satisfiable_on_resume_discards_the_partial_file_and_refetches() {
+    let (dir, downloader) = fixture();
+    write_part(&dir, BODY);
+    let (url, mut requests) = serve(vec![
+        Exchange::new(
+            "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */10\r\nContent-Length: 4",
+            b"nope",
+        ),
+        Exchange::new("HTTP/1.1 200 OK\r\nContent-Length: 10", BODY),
+    ])
+    .await;
+
+    let path = downloader.download(&url, Some(FILE_NAME)).await.unwrap();
+
+    assert_eq!(read(&path), BODY);
+    assert_eq!(entries(&dir), vec![FILE_NAME.to_owned()], "no .part left");
+    let first = requests.recv().await.unwrap();
+    assert_eq!(range_header(&first).as_deref(), Some("bytes=10-"));
+    let second = requests.recv().await.unwrap();
+    assert_eq!(
+        range_header(&second),
+        None,
+        "the refetch asks for the whole artifact"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn range_not_satisfiable_on_a_full_request_is_an_error() {
+    let (dir, downloader) = fixture();
+    let (url, _requests) = serve(vec![Exchange::new(
+        "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 4",
+        b"nope",
+    )])
+    .await;
+
+    let err = downloader
+        .download(&url, Some(FILE_NAME))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            &err,
+            DownloaderError::UnexpectedStatus { status, .. } if *status == StatusCode::RANGE_NOT_SATISFIABLE
+        ),
+        "{err:?}"
+    );
+    assert!(entries(&dir).is_empty(), "nothing was written");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn non_authoritative_full_response_is_cached() {
+    let (dir, downloader) = fixture();
+    let (url, _requests) = serve(vec![Exchange::new(
+        "HTTP/1.1 203 Non-Authoritative Information\r\nContent-Length: 10",
+        BODY,
+    )])
+    .await;
+
+    let path = downloader.download(&url, Some(FILE_NAME)).await.unwrap();
+
+    assert_eq!(read(&path), BODY);
+    assert_eq!(entries(&dir), vec![FILE_NAME.to_owned()]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn success_statuses_without_a_body_are_rejected() {
+    let (dir, downloader) = fixture();
+    write_part(&dir, b"old");
+    let (url, _requests) = serve(vec![Exchange::new("HTTP/1.1 204 No Content", b"")]).await;
+
+    let err = downloader
+        .download(&url, Some(FILE_NAME))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            &err,
+            DownloaderError::UnexpectedStatus { status, .. } if *status == StatusCode::NO_CONTENT
+        ),
+        "{err:?}"
+    );
+    assert!(!cached(&dir).exists(), "an empty body is not the artifact");
+    assert_eq!(read(&part(&dir)), b"old", "the partial file is left alone");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compressed_response_is_rejected_before_anything_is_written() {
+    let (dir, downloader) = fixture();
+    let gzip_bytes = b"\x1f\x8b\x08\x00not really gzip";
+    let (url, mut requests) = serve(vec![Exchange::new(
+        &format!(
+            "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}",
+            gzip_bytes.len()
+        ),
+        gzip_bytes,
+    )])
+    .await;
+
+    let err = downloader
+        .download(&url, Some(FILE_NAME))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            &err,
+            DownloaderError::UnexpectedEncoding { url: u, encoding } if *u == url && encoding == "gzip"
+        ),
+        "{err:?}"
+    );
+    assert!(
+        entries(&dir).is_empty(),
+        "encoded bytes must never reach the cache or the partial file"
+    );
+    let head = requests.recv().await.unwrap();
+    assert_eq!(
+        request_header(&head, "accept-encoding").as_deref(),
+        Some("identity")
     );
 }
 

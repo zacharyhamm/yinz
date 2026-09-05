@@ -7967,11 +7967,13 @@ impl Tab {
         self.tiled_panes.panes_to_hide_count()
     }
 
-    pub fn update_search_term(&mut self, buf: Vec<u8>, client_id: ClientId) -> Result<()> {
+    /// Input that is not text is dropped, the same as a control sequence: a keystroke is never a
+    /// reason to fail the screen thread, so this cannot error.
+    pub fn update_search_term(&mut self, buf: Vec<u8>, client_id: ClientId) {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            let s = str::from_utf8(&buf).with_context(|| {
-                format!("failed to update search term to '{buf:?}' for client {client_id}")
-            })?;
+            let Ok(s) = str::from_utf8(&buf) else {
+                return;
+            };
             // Accept text plus the existing reset, backspace and delete commands.
             let is_updatable = s
                 .chars()
@@ -7980,7 +7982,6 @@ impl Tab {
                 active_pane.update_search_term(s);
             }
         }
-        Ok(())
     }
 
     pub fn search_down(&mut self, client_id: ClientId) {
