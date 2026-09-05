@@ -1,7 +1,8 @@
 #![cfg(unix)]
 
 use zellij_integration_tests::{
-    claim_first_terminal_and_wait_for_prompt, keys, start_zellij, TestSession,
+    claim_first_terminal_and_wait_for_prompt, keys, start_zellij, TestRunner, TestSession,
+    TERMINAL_SIZE,
 };
 
 fn lock(zellij: &TestSession) {
@@ -45,6 +46,28 @@ fn locked_escape_accepts_kitty_keys_but_writes_a_legacy_ctrl_g_byte() {
         terminal.wait_for_stdin("Kitty chord and locked Ctrl+p", |bytes| bytes
             .ends_with(b"\x10")),
         b"\x07\x10"
+    );
+    zellij.quit();
+}
+
+/// `locked_escape_timeout_ms 0` turns the prefix off: Ctrl+g unlocks at once, and there is
+/// no way left to quote it into the pane.
+#[test]
+fn a_zero_timeout_unlocks_immediately_and_never_quotes_ctrl_g() {
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("locked_escape_timeout_ms 0")
+        .start();
+    let terminal = claim_first_terminal_and_wait_for_prompt(&zellij);
+    terminal.disable_echo();
+    lock(&zellij);
+    zellij.send_stdin(b"\x07g!");
+    zellij.wait_until("unlocked without waiting out a window", |grid| {
+        grid.contains("PANE")
+    });
+    // The g and the ! arrive as ordinary input in Normal mode; no 0x07 is written.
+    assert_eq!(
+        terminal.wait_for_stdin("no quoted Ctrl+g", |bytes| bytes.ends_with(b"!")),
+        b"g!"
     );
     zellij.quit();
 }

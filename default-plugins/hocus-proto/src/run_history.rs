@@ -1331,13 +1331,7 @@ mod tests {
             None,
             &here
         ));
-        assert!(matches_root(
-            Some("/work/hocus/"),
-            None,
-            HOST,
-            None,
-            &here
-        ));
+        assert!(matches_root(Some("/work/hocus/"), None, HOST, None, &here));
         assert!(!matches_root(
             Some("/work/hocus-fork"),
             None,

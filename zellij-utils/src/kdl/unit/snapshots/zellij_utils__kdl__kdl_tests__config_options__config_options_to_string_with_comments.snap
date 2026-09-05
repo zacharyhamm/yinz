@@ -154,6 +154,10 @@ on_force_close "quit"
 // 
 scroll_buffer_size 100
  
+// How long a locked-mode Ctrl+g waits for a plain g that would quote it into
+// the pane, in milliseconds. 0 unlocks immediately and never quotes Ctrl+g.
+locked_escape_timeout_ms 400
+ 
 // Provide a command to execute when copying text. The text will be piped to
 // the stdin of the program to perform the copy. This can be used with
 // terminal emulators which do not support the OSC 52 ANSI control sequence
