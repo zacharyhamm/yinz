@@ -1054,6 +1054,23 @@ fn unicode_search_uses_character_indexes_and_terminal_columns() {
 }
 
 #[test]
+fn search_match_ending_on_a_full_tail_row_below_a_wide_char_wrap_stays_on_that_row() {
+    // "xy" ends row 0 at column 79; the wide character does not fit in the last cell, so it
+    // wraps and leaves the main row one column short of the grid. Row 1 is exactly 80 wide
+    // and the match ends on its last cell, which must not be reflowed onto a third row.
+    let tail = format!("界{}z", "a".repeat(77));
+    let content = format!("{}xy{tail}", " ".repeat(77));
+    let mut grid = create_grid_with_content(&content);
+    assert_eq!(grid.viewport[0].width(), 79);
+    assert_eq!(grid.viewport[1].width(), 80);
+    grid.set_search_string(&format!("xy{tail}"));
+    let selections = &grid.search_results.selections;
+    assert_eq!(selections.len(), 1);
+    assert_eq!(selections[0].start, Position::new(0, 77));
+    assert_eq!(selections[0].end, Position::new(1, 80));
+}
+
+#[test]
 fn wheel_reports_share_encoding_and_preserve_modifiers() {
     use zellij_utils::input::mouse::MouseEvent;
 

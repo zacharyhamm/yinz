@@ -468,7 +468,7 @@ impl Config {
                 // Checking two parses of the serialized text cannot detect state
                 // the serializer discarded. Check NewTab against the source too.
                 if !self.preserves_new_tab_bindings(&parsed_config) {
-                    Err::<(), _>(anyhow!("Refusing to save configuration that changes NewTab bindings; reload referenced layouts before saving")).non_fatal();
+                    Err::<(), _>(anyhow!("Refusing to save configuration: a NewTab binding's layout is not what its saved form loads. If the default layout changed on disk, save or touch the config file so the session re-reads it, then save again")).non_fatal();
                     return Err(Some(config_file_path.clone()));
                 }
                 let backed_up_file_name = Config::backup_current_config(&config_file_path)?;
@@ -507,32 +507,61 @@ impl Config {
     fn preserves_new_tab_bindings(&self, parsed: &Config) -> bool {
         use super::actions::Action;
 
-        fn normalize_tiled(layout: &mut super::layout::TiledPaneLayout) {
-            // The plugin wire represents an unspecified border as false.
+        use super::layout::{FloatingPaneLayout, TiledPaneLayout};
+
+        // The plugin wire represents an unspecified border as false and carries no pane
+        // colours at all, so neither can be compared after an action has crossed it.
+        fn normalize_tiled(layout: &mut TiledPaneLayout) {
             if layout.borderless == Some(false) {
                 layout.borderless = None;
             }
+            layout.default_fg = None;
+            layout.default_bg = None;
             for child in &mut layout.children {
                 normalize_tiled(child);
             }
         }
 
+        fn normalize_floating(layout: &mut FloatingPaneLayout) {
+            layout.default_fg = None;
+            layout.default_bg = None;
+        }
+
         fn normalized(action: &Action) -> Action {
             let mut action = action.clone();
             if let Action::NewTab {
+                layout_source,
                 tiled_layout,
+                floating_layouts,
                 swap_tiled_layouts,
                 swap_floating_layouts,
                 ..
             } = &mut action
             {
+                if layout_source.is_some() {
+                    // Only the reference is written; the file it names is the layout's
+                    // source of truth, so its current contents are not the binding's state.
+                    *tiled_layout = None;
+                    floating_layouts.clear();
+                    *swap_tiled_layouts = None;
+                    *swap_floating_layouts = None;
+                    return action;
+                }
                 if let Some(layout) = tiled_layout {
                     normalize_tiled(layout);
                 }
+                floating_layouts.iter_mut().for_each(normalize_floating);
                 if let Some(layouts) = swap_tiled_layouts {
                     for (constraints, _) in layouts {
                         for layout in constraints.values_mut() {
                             normalize_tiled(layout);
+                        }
+                    }
+                }
+                if let Some(layouts) = swap_floating_layouts {
+                    for (constraints, _) in layouts {
+                        for layouts in constraints.values_mut() {
+                            layouts.iter_mut().for_each(normalize_floating);
                         }
                     }
                 }

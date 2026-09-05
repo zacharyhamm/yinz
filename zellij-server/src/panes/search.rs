@@ -179,7 +179,13 @@ impl SearchResult {
 
     /// Search a row and its tail.
     /// The tail are all the non-canonical lines below `row`, with `row` not necessarily being canonical itself.
-    pub(crate) fn search_row(&self, mut ridx: usize, row: &Row, tail: &[&Row]) -> Vec<Selection> {
+    pub(crate) fn search_row(
+        &self,
+        mut ridx: usize,
+        row: &Row,
+        tail: &[&Row],
+        grid_width: usize,
+    ) -> Vec<Selection> {
         let mut res = Vec::new();
         if self.needle.is_empty() || row.columns.is_empty() {
             return res;
@@ -271,27 +277,31 @@ impl SearchResult {
             }
         }
 
-        // The tail may have not been wrapped yet (when coming from lines_below),
-        // so it could be that the end extends across more characters than the row is wide.
-        // Therefore we need to reflow the end:
+        // Matching uses character indexes; selections use terminal columns. The tail may
+        // also not have been wrapped yet (when coming from lines_below), so a position can
+        // sit past the grid width on its row. Both are settled in one pass that wraps the
+        // way `Row::split_to_rows_of_length` does, measured against the grid width rather
+        // than the main row: a wide character that did not fit leaves the main row short of
+        // the grid width, and a tail row is wrapped by the grid, not by the row above it.
         for s in res.iter_mut() {
-            // Matching uses character indexes; selections use terminal columns.
             for position in [&mut s.start, &mut s.end] {
                 let source_row = if position.line() as usize == orig_ridx {
                     row
                 } else {
                     tail[position.line() as usize - orig_ridx - 1]
                 };
-                position.column.0 = source_row
-                    .columns
-                    .iter()
-                    .take(position.column())
-                    .map(TerminalCharacter::width)
-                    .sum();
-            }
-            while s.end.column() > row.width() {
-                s.end.column.0 -= row.width();
-                s.end.line.0 += 1;
+                let mut line_offset = 0;
+                let mut column = 0;
+                for character in source_row.columns.iter().take(position.column()) {
+                    let width = character.width();
+                    if grid_width > 0 && column + width > grid_width {
+                        line_offset += 1;
+                        column = 0;
+                    }
+                    column += width;
+                }
+                position.line.0 += line_offset;
+                position.column.0 = column;
             }
         }
         res
@@ -337,6 +347,7 @@ impl SearchResult {
         amount: usize,
         viewport: &VecDeque<Row>,
         grid_height: usize,
+        grid_width: usize,
     ) -> bool {
         let mut found_something = false;
         self.selections
@@ -359,7 +370,7 @@ impl SearchResult {
                         break;
                     }
                 }
-                let selections = self.search_row(0, row, &tail);
+                let selections = self.search_row(0, row, &tail, grid_width);
                 for selection in selections.iter().rev() {
                     self.selections.insert(0, *selection);
                     found_something = true;
@@ -375,6 +386,7 @@ impl SearchResult {
         viewport: &VecDeque<Row>,
         lines_below: &VecDeque<Row>,
         grid_height: usize,
+        grid_width: usize,
     ) -> bool {
         let mut found_something = false;
         self.selections
@@ -388,7 +400,7 @@ impl SearchResult {
         if !self.needle.is_empty() {
             if let Some(row) = viewport.back() {
                 let tail: Vec<&Row> = lines_below.iter().take_while(|r| !r.is_canonical).collect();
-                let selections = self.search_row(viewport.len() - 1, row, &tail);
+                let selections = self.search_row(viewport.len() - 1, row, &tail, grid_width);
                 for selection in selections {
                     // We are only interested in results that start in the this new row
                     if selection.start.line() as usize == viewport.len() - 1 {
@@ -457,7 +469,7 @@ impl Grid {
                     break;
                 }
             }
-            let selections = self.search_results.search_row(ridx, row, &tail);
+            let selections = self.search_results.search_row(ridx, row, &tail, self.width);
             for sel in &selections {
                 // Cast works because we can' be negative here
                 self.output_buffer

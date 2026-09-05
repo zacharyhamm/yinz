@@ -1842,18 +1842,20 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
 
                 let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
+                // The reference is kept as written so that saving the configuration
+                // writes it back unchanged; only loading resolves a relative path.
                 let layout_source = command_metadata
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "layout"))
-                    .map(PathBuf::from)
+                    .map(PathBuf::from);
+                let layout = layout_source
+                    .clone()
                     .map(|path| {
                         if path.extension().is_some() || path.components().count() > 1 {
                             current_dir.join(path)
                         } else {
                             path
                         }
-                    });
-                let layout = layout_source
-                    .clone()
+                    })
                     .or_else(|| config_options.default_layout.clone());
                 let focus_override = command_metadata.and_then(|c_m| {
                     kdl_child_bool_value_for_entry(c_m, "should_change_focus_to_new_tab")

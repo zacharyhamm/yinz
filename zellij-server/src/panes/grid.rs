@@ -1792,9 +1792,9 @@ impl Grid {
                 command_output_flash.move_down(1);
             }
             // Move all search-selections down one line as well
-            found_something = self
-                .search_results
-                .move_down(1, &self.viewport, self.height);
+            found_something =
+                self.search_results
+                    .move_down(1, &self.viewport, self.height, self.width);
         }
         self.output_buffer.update_all_lines();
         found_something
@@ -1859,9 +1859,13 @@ impl Grid {
                 command_output_flash.move_up(1);
             }
             // Move all search-selections up one line as well
-            found_something =
-                self.search_results
-                    .move_up(1, &self.viewport, &self.lines_below, self.height);
+            found_something = self.search_results.move_up(
+                1,
+                &self.viewport,
+                &self.lines_below,
+                self.height,
+                self.width,
+            );
             self.output_buffer.update_all_lines();
         }
         if self.lines_below.is_empty() {

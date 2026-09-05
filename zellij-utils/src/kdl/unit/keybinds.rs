@@ -175,30 +175,36 @@ fn new_tab_without_swap_layouts_can_be_saved_after_ipc() {
 }
 
 #[test]
-fn new_tab_relative_layout_source_is_resolved_when_parsed() {
+fn new_tab_relative_layout_source_is_kept_as_written() {
     let dir = tempfile::tempdir_in(".").unwrap();
-    let layout_path = dir.path().join("custom.kdl");
-    std::fs::write(&layout_path, NEW_TAB_LAYOUT).unwrap();
-    let config = new_tab_config(
-        &format!("{{ layout {:?}; }}", layout_path.display().to_string()),
-        dir.path(),
-    );
+    std::fs::write(dir.path().join("custom.kdl"), NEW_TAB_LAYOUT).unwrap();
+    let layout_path = std::path::Path::new(".")
+        .join(dir.path().file_name().unwrap())
+        .join("custom.kdl");
+    assert!(layout_path.is_relative() && layout_path.exists());
+    let reference = layout_path.display().to_string();
+    let config = new_tab_config(&format!("{{ layout {reference:?}; }}"), dir.path());
     let binding = &config.keybinds.0[&InputMode::Normal]
         [&KeyWithModifier::new(BareKey::Char('t')).with_ctrl_modifier()];
     match &binding[0] {
-        Action::NewTab { layout_source, .. } => {
-            assert_eq!(
-                layout_source.as_ref().unwrap(),
-                &std::env::current_dir().unwrap().join(layout_path)
-            );
+        Action::NewTab {
+            layout_source,
+            tiled_layout,
+            ..
+        } => {
+            assert_eq!(layout_source.as_ref().unwrap(), &layout_path);
+            assert_eq!(tiled_layout.as_ref().unwrap().children.len(), 2);
         },
         _ => panic!("expected NewTab"),
     }
+    let serialized = config.to_string(false);
+    assert!(
+        serialized.contains(&format!("layout {reference:?}")),
+        "{serialized}"
+    );
     assert_eq!(
         config.keybinds,
-        Config::from_kdl(&config.to_string(false), None)
-            .unwrap()
-            .keybinds
+        Config::from_kdl(&serialized, None).unwrap().keybinds
     );
 }
 
@@ -206,19 +212,120 @@ fn new_tab_relative_layout_source_is_resolved_when_parsed() {
 fn new_tab_lossy_save_leaves_existing_config_and_backups_untouched() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("custom.kdl"), NEW_TAB_LAYOUT).unwrap();
-    let config = new_tab_config(r#"{ layout "custom"; }"#, dir.path());
     let config_path = dir.path().join("config.kdl");
     let existing = "// do not overwrite\n";
     std::fs::write(&config_path, existing).unwrap();
+    // A bare NewTab in the saved text would drop the binding's referenced layout.
+    let config = new_tab_config(r#"{ layout "custom"; }"#, dir.path());
     let lossy = new_tab_config("", dir.path()).to_string(false);
     assert!(config.write_config_to_disk(lossy, &config_path).is_err());
-    // Even with a reference, changed layout contents require a reload before saving.
+    // An implicit default layout is saved as `NewTab {}`, which loads whatever the default
+    // layout is at load time: a binding whose layout is not that cannot be saved faithfully.
+    let config = new_tab_config("{}", dir.path());
     std::fs::write(dir.path().join("custom.kdl"), "layout { pane; }\n").unwrap();
     assert!(config
         .write_config_to_disk(config.to_string(false), &config_path)
         .is_err());
     assert_eq!(std::fs::read_to_string(&config_path).unwrap(), existing);
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+}
+
+#[test]
+fn new_tab_inline_layout_without_a_reference_cannot_be_saved() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("custom.kdl"), NEW_TAB_LAYOUT).unwrap();
+    let config_path = dir.path().join("config.kdl");
+    let mut config = new_tab_config("{}", dir.path());
+    let binding = config
+        .keybinds
+        .0
+        .get_mut(&InputMode::Normal)
+        .unwrap()
+        .get_mut(&KeyWithModifier::new(BareKey::Char('t')).with_ctrl_modifier())
+        .unwrap();
+    // A plugin can bind a layout it built itself, which no saved text can reproduce.
+    if let Action::NewTab { tiled_layout, .. } = &mut binding[0] {
+        tiled_layout.as_mut().unwrap().children.clear();
+    }
+    assert!(config
+        .write_config_to_disk(config.to_string(false), &config_path)
+        .is_err());
+    assert!(!config_path.exists());
+}
+
+#[test]
+fn new_tab_referenced_layout_can_be_saved_after_the_file_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("custom.kdl"), NEW_TAB_LAYOUT).unwrap();
+    let config_path = dir.path().join("config.kdl");
+    let config = new_tab_config(r#"{ layout "custom"; name "work"; }"#, dir.path());
+    std::fs::write(dir.path().join("custom.kdl"), "layout { pane; }\n").unwrap();
+    let written = config
+        .write_config_to_disk(config.to_string(false), &config_path)
+        .unwrap();
+    let saved = std::fs::read_to_string(&config_path).unwrap();
+    assert!(saved.contains(r#"layout "custom""#), "{saved}");
+    let binding = &written.keybinds.0[&InputMode::Normal]
+        [&KeyWithModifier::new(BareKey::Char('t')).with_ctrl_modifier()];
+    match &binding[0] {
+        Action::NewTab {
+            layout_source,
+            tiled_layout,
+            tab_name,
+            ..
+        } => {
+            assert_eq!(
+                layout_source.as_deref(),
+                Some(std::path::Path::new("custom"))
+            );
+            assert_eq!(tab_name.as_deref(), Some("work"));
+            // The saved reference loads the file as it is now.
+            assert_eq!(tiled_layout.as_ref().unwrap().children.len(), 1);
+        },
+        action => panic!("expected NewTab, got {action:?}"),
+    }
+}
+
+#[test]
+fn new_tab_with_pane_colours_can_be_saved_after_ipc() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("custom.kdl"),
+        r##"
+layout {
+    pane default_fg="#ff0000" default_bg="#000000" { pane; pane default_fg="#00ff00"; }
+    floating_panes {
+        pane default_fg="#0000ff" default_bg="#ffffff"
+    }
+    swap_tiled_layout name="columns" {
+        tab max_panes=3 { pane default_bg="#101010"; pane; pane; }
+    }
+    swap_floating_layout name="floats" {
+        floating_panes max_panes=2 { pane default_fg="#202020"; pane; }
+    }
+}
+"##,
+    )
+    .unwrap();
+    for metadata in ["{}", r#"{ layout "custom"; }"#] {
+        let mut config = new_tab_config(metadata, dir.path());
+        let binding = config
+            .keybinds
+            .0
+            .get_mut(&InputMode::Normal)
+            .unwrap()
+            .get_mut(&KeyWithModifier::new(BareKey::Char('t')).with_ctrl_modifier())
+            .unwrap();
+        assert!(format!("{:?}", binding[0]).contains("default_fg: Some("));
+        // The plugin action wire carries no pane colours.
+        let wire: crate::plugin_api::action::ProtobufAction =
+            binding[0].clone().try_into().unwrap();
+        binding[0] = wire.try_into().unwrap();
+        assert!(!format!("{:?}", binding[0]).contains("default_fg: Some("));
+        config
+            .write_config_to_disk(config.to_string(false), &dir.path().join("config.kdl"))
+            .unwrap_or_else(|e| panic!("{metadata}: {e:?}"));
+    }
 }
 
 #[test]
