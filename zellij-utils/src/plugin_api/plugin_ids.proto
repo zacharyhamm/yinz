@@ -8,6 +8,7 @@ message PluginIds {
   string initial_cwd = 3;
   uint32 client_id = 4;
   string hostname = 5;
+  string host_id = 6;
 }
 
 message ZellijVersion {

@@ -8,6 +8,7 @@ pub mod envs;
 pub mod errors;
 pub mod home;
 mod home_unix;
+pub mod host_identity;
 
 #[cfg(target_os = "windows")]
 compile_error!("Zellij does not support Windows");

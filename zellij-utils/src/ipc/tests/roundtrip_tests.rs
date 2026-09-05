@@ -604,6 +604,7 @@ fn test_client_messages() {
                 detachable_panes: None,
                 plugin_data_url: None,
                 plugin_data_schema: None,
+                host_id: None,
                 firecracker_provider: None,
                 firecracker_provider_timeout_secs: None,
                 pane_frames: Some(true),

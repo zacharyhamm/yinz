@@ -12,6 +12,8 @@ pub struct PluginIds {
     pub client_id: u32,
     #[prost(string, tag="5")]
     pub hostname: ::prost::alloc::string::String,
+    #[prost(string, tag="6")]
+    pub host_id: ::prost::alloc::string::String,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
