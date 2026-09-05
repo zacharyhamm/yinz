@@ -5124,9 +5124,16 @@ pub enum PluginCommand {
     /// `source_directory` is the repository a branch or worktree is made in, as a plugin path
     /// (`/host`, a relative path, or an absolute one); absent, the plugin's own folder. `cwd`
     /// is where the pane runs when `spec` names no branch, and is ignored when a checkout is
-    /// made. With neither, a spec with no branch runs at the repository root of
-    /// `source_directory` when it is one, else in that folder. `name` titles the pane;
-    /// `context` round-trips on `command_pane_exited` beside the agent marker the host adds.
+    /// made. With neither, a spec with no branch runs in `source_directory` as it stands.
+    /// `name` titles the pane; `context` round-trips on `command_pane_exited` beside the agent
+    /// marker the host adds.
+    ///
+    /// `automatic_firecracker_vm` is what a Firecracker `spec` means by its VM. *True*: the
+    /// host names the VM after the folder the pane runs in and mirrors that folder into it, so
+    /// agents on one checkout share one VM - the name in `spec` is a placeholder. *False*: the
+    /// pane runs in the VM `spec` names, as named; a checkout the host made is still mirrored
+    /// in, and with none there is nothing to mirror - the pane starts in the VM's own
+    /// workspace, which is how an agent gets a VM of its own.
     SpawnAgent {
         spec: AgentSpawnSpec,
         #[serde(default)]
@@ -5137,6 +5144,8 @@ pub enum PluginCommand {
         name: Option<String>,
         #[serde(default)]
         context: BTreeMap<String, String>,
+        #[serde(default)]
+        automatic_firecracker_vm: bool,
     },
     /// What this plugin wants said, and decided, when the session is about to end.
     ///

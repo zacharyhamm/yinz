@@ -169,7 +169,8 @@ list of numbers.
 `pane_id` (a number), `kind`, `hook` (`UserPromptSubmit`, `PreToolUse`, `Stop`, …), `state`
 (`Busy`/`Waiting`/`Idle` as the event moved the pane's record, or nil), `detail`, `prompt`,
 `last_message` (what the agent said, on a `Stop`), `tool_name`, `cwd`, `session_id`, and `raw`,
-the agent's own JSON. It needs `read_application_state`, and `zellij events --type agent_event`
+the agent's own JSON. An event over 64 KiB is pruned - prose to 8 K characters - and `prompt` and
+`last_message` are cut the same way `raw` is. It needs `read_application_state`, and `zellij events --type agent_event`
 streams the same thing to a shell. See *Agents*.
 
 Instead of one big `if`, you can register handlers:
@@ -517,7 +518,10 @@ The argv, the permission-mode flags, the resume spelling and the inline hooks ar
 same planner hocus's `agent_spawn` and the New agent modal use, so `agent = "cursor"` runs
 `cursor-agent` everywhere. `branch` cuts the branch (worktree by default, `worktree = false` for
 this checkout); an existing branch or worktree is reused. `source_directory` is the repository
-that happens in, as a plugin path, `/host` by default. The pane is an agent pane from its first
+that happens in, as a plugin path, `/host` by default. `firecracker` names a session-scoped VM to
+run in (`firecracker_image` its image); with `automatic_firecracker_vm = true` the host names the
+VM after the folder the pane runs in and mirrors that folder into it instead, so agents on one
+checkout share one VM. The pane is an agent pane from its first
 moment: its record is on `pane_update`, its exit fires `agent_exit`. Answers with the pane id
 (`{ Terminal = n }`), raises on failure. Needs `run_commands`.
 

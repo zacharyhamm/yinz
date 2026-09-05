@@ -768,6 +768,8 @@ pub struct SpawnAgentPayload {
     pub name: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, repeated, tag="5")]
     pub context: ::prost::alloc::vec::Vec<ContextItem>,
+    #[prost(bool, tag="6")]
+    pub automatic_firecracker_vm: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

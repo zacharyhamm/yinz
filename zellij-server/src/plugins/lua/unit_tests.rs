@@ -559,6 +559,44 @@ fn a_raising_after_callback_still_settles_the_other_due_deadlines() {
     assert_eq!(plugin.render(1, 80).unwrap(), b"second");
 }
 
+/// A sleeper due on the tick whose `after` callback raises is resumed on that same tick. Its
+/// task is queued when the sweep settles the sleep; had the callback's error left `deliver`
+/// before the drain, the task would sit queued until some later event happened to arrive -
+/// and with no other deadline or subscription, none would.
+#[test]
+fn a_raising_after_callback_does_not_strand_a_sleeper_due_on_the_same_tick() {
+    let mut plugin = load(
+        r#"
+        local zellij = require("zellij")
+        local M = { log = {}, now = 0 }
+        os.time = function() return M.now end
+        zellij.set_timeout = function() end
+        function M.load()
+          zellij.subscribe { "custom_message" }
+          zellij.after(1, function() error("broke") end)
+          zellij.task(function()
+            zellij.await(zellij.async.sleep(1))
+            table.insert(M.log, "woke")
+          end)
+        end
+        function M.update(event)
+          if event.name == "custom_message" then M.now = tonumber(event.message) end
+        end
+        function M.render() return table.concat(M.log, " ") end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    plugin
+        .update(&Event::CustomMessage("1".to_owned(), String::new()))
+        .unwrap();
+    let error = plugin.update(&Event::Timer(1.0)).expect_err("reported");
+    assert!(format!("{error:#}").contains("broke"), "{error:#}");
+    // No further event: the one timer tick both reported the error and woke the sleeper.
+    assert_eq!(plugin.render(1, 80).unwrap(), b"woke");
+}
+
 #[test]
 fn a_list_payload_arrives_whole_rather_than_unwrapped() {
     // `TabUpdate(Vec<TabInfo>)` and a multi-field tuple variant serialize identically, so
@@ -2061,6 +2099,7 @@ fn spawn_agent_is_built_from_a_nested_spec_table() {
             cwd,
             name,
             context,
+            automatic_firecracker_vm,
         }) => {
             assert_eq!(
                 spec,
@@ -2076,6 +2115,7 @@ fn spawn_agent_is_built_from_a_nested_spec_table() {
             assert_eq!(cwd, None);
             assert_eq!(name, Some("fixer".to_owned()));
             assert_eq!(context.get("step").map(String::as_str), Some("1"));
+            assert!(!automatic_firecracker_vm, "an omitted flag reads as false");
         },
         Ok(other) => panic!("built the wrong command: {other:?}"),
         Err(e) => panic!("{e:#}"),

@@ -13,6 +13,7 @@ pub mod launch;
 use crate::data::{AgentInfo, AgentSource, AgentState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::borrow::Cow;
 use std::path::Path;
 
 /// The Claude Code hook events a record is read from, in the order Claude Code fires them.
@@ -123,7 +124,10 @@ pub const CLAUDE_HOOK_REPORT_COMMAND: &str = "zellij action agent-report --hook-
 /// The fields a reader wants are derived here, once - `state` by [`hook_state`], `detail` by
 /// [`hook_detail`] - so a plugin never re-reads Claude Code's schema; `raw` is the agent's own
 /// JSON, bounded by [`HOOK_BROADCAST_MAX_BYTES`], for the one reader that keeps a run's history
-/// and needs more than these say (`tool_input`, the permission mode, the subagent).
+/// and needs more than these say (`tool_input`, the permission mode, the subagent). The two
+/// prose fields, `prompt` and `last_message`, are read off the same bounded event `raw` was
+/// written from: an event that fit keeps them whole, and one that was pruned has them cut the
+/// way `raw` has - the cap is on the whole event, not on one field of it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentEvent {
     /// The terminal pane the agent runs in.
@@ -138,9 +142,9 @@ pub struct AgentEvent {
     pub state: Option<AgentState>,
     /// The tool it names, cut to a few words - what a `busy · Bash cargo` row shows.
     pub detail: Option<String>,
-    /// What the user asked for, on a `UserPromptSubmit`.
+    /// What the user asked for, on a `UserPromptSubmit`. Cut exactly as `raw`'s copy is.
     pub prompt: Option<String>,
-    /// What the agent said last, on a `Stop` or `StopFailure`.
+    /// What the agent said last, on a `Stop` or `StopFailure`. Cut exactly as `raw`'s copy is.
     pub last_message: Option<String>,
     /// The tool about to run or just finished.
     pub tool_name: Option<String>,
@@ -154,6 +158,10 @@ impl AgentEvent {
     /// Read `event` the way the record is read - one reading, so a plugin and the pane's
     /// record cannot disagree about what the event meant - and keep `json` as it arrived.
     pub fn from_hook(kind: &str, pane_id: u32, event: &HookEvent, json: String) -> Self {
+        // The prose comes off the bounded event, not `event`: a prompt or a final message has
+        // no bound in Claude Code's schema, and copying it whole beside a pruned `raw` would
+        // hand every subscribing plugin the very bytes the prune exists to keep out.
+        let (bounded, raw) = event.broadcast(json);
         AgentEvent {
             pane_id,
             kind: kind.to_owned(),
@@ -161,11 +169,11 @@ impl AgentEvent {
             session_id: Some(event.session_id.clone()).filter(|id| !id.is_empty()),
             state: hook_state(event),
             detail: hook_detail(event),
-            prompt: event.prompt.clone(),
-            last_message: event.last_assistant_message.clone(),
+            prompt: bounded.prompt.clone(),
+            last_message: bounded.last_assistant_message.clone(),
             tool_name: event.tool_name.clone(),
             cwd: event.cwd.clone(),
-            raw: event.broadcast_json(json),
+            raw,
         }
     }
 }
@@ -637,19 +645,28 @@ impl HookEvent {
     /// control character — and there are several fields drawing on the budget. The last step
     /// spends nothing, leaving the metadata alone, so the descent always ends under the cap.
     pub fn broadcast_json(&self, json: String) -> String {
+        self.broadcast(json).1
+    }
+
+    /// [`broadcast_json`](Self::broadcast_json), with the event the bytes were written from
+    /// beside them: `self` when `json` fit, the prune otherwise. A field read off it says what
+    /// `raw` says, which is how [`AgentEvent::from_hook`] keeps its typed prose under the
+    /// same cap as the JSON it travels with.
+    pub fn broadcast(&self, json: String) -> (Cow<'_, HookEvent>, String) {
         if json.len() <= HOOK_BROADCAST_MAX_BYTES {
-            return json;
+            return (Cow::Borrowed(self), json);
         }
         let mut budget = PRUNED_INPUT_BUDGET;
         loop {
-            if let Ok(candidate) = serde_json::to_string(&self.pruned_to(budget)) {
+            let pruned = self.pruned_to(budget);
+            if let Ok(candidate) = serde_json::to_string(&pruned) {
                 if candidate.len() <= HOOK_BROADCAST_MAX_BYTES || budget == 0 {
-                    return candidate;
+                    return (Cow::Owned(pruned), candidate);
                 }
             } else if budget == 0 {
                 // Unreachable: this struct has no map keys and no non-finite numbers, so it
                 // serializes. Returning the original is still better than looping.
-                return json;
+                return (Cow::Borrowed(self), json);
             }
             budget /= 8;
         }
@@ -1816,6 +1833,44 @@ mod tests {
         assert_eq!(hook_state(&arrived), hook_state(&asking));
         assert_eq!(arrived.tool_name.as_deref(), Some("AskUserQuestion"));
         assert!(waiting_detail(&arrived).is_some());
+    }
+
+    /// The typed `prompt` and `last_message` are bounded the way `raw` is, and say what it
+    /// says: a multi-megabyte final message must not reach every plugin's memory through the
+    /// typed field after the prune kept it out of the JSON.
+    #[test]
+    fn a_typed_events_prose_is_bounded_like_its_raw_json() {
+        let huge = "x".repeat(2 * 1024 * 1024);
+        let stop = HookEvent {
+            last_assistant_message: Some(huge.clone()),
+            prompt: Some(huge),
+            ..event("Stop")
+        };
+        let json = serde_json::to_string(&stop).expect("the event serializes");
+        let typed = AgentEvent::from_hook("claude", 7, &stop, json);
+        assert!(typed.raw.len() <= HOOK_BROADCAST_MAX_BYTES);
+        let arrived: HookEvent = serde_json::from_str(&typed.raw).expect("still an event");
+        assert_eq!(typed.last_message, arrived.last_assistant_message);
+        assert_eq!(typed.prompt, arrived.prompt);
+        assert!(typed
+            .last_message
+            .as_ref()
+            .is_some_and(|message| message.chars().count() == PRUNED_MESSAGE_CHARS));
+        assert!(typed
+            .prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.chars().count() == PRUNED_MESSAGE_CHARS));
+
+        // Under the cap, whole - nearly every event.
+        let small = HookEvent {
+            last_assistant_message: Some("Ran the tests; they pass.".to_owned()),
+            ..event("Stop")
+        };
+        let json = serde_json::to_string(&small).expect("the event serializes");
+        let typed = AgentEvent::from_hook("claude", 7, &small, json.clone());
+        assert_eq!(typed.raw, json);
+        assert_eq!(typed.last_message, small.last_assistant_message);
+        assert_eq!(typed.prompt, None);
     }
 
     /// An event that already fits travels exactly as it arrived.
