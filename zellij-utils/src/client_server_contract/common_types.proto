@@ -1442,6 +1442,7 @@ message Options {
   optional uint64 firecracker_provider_timeout_secs = 71;
   optional uint32 agent_pane_min_columns = 72;
   optional uint32 agent_pane_min_rows = 73;
+  optional uint64 locked_escape_timeout_ms = 75;
 }
 
 enum OnForceClose {

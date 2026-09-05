@@ -4,6 +4,9 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use zellij_utils::{channels, input::config::Config};
 
+/// The default window, as `SessionConfiguration` resolves it for an unconfigured session.
+const DEFAULT_TIMEOUT: Duration = Duration::from_millis(DEFAULT_LOCKED_ESCAPE_TIMEOUT_MS);
+
 fn key(value: &str) -> KeyWithModifier {
     KeyWithModifier::from_str(value).unwrap()
 }
@@ -115,10 +118,64 @@ fn locked_escape_routing_respects_custom_bindings_and_explicit_passthrough() {
     }
 }
 
+/// The config's `locked_escape_timeout_ms` sizes the window, and 0 turns the prefix off
+/// entirely: Ctrl+g is handed on to its binding rather than held.
+#[test]
+fn locked_escape_window_follows_the_configured_timeout() {
+    for (kdl, expected) in [
+        ("", Some(DEFAULT_TIMEOUT)),
+        (
+            "locked_escape_timeout_ms 1000",
+            Some(Duration::from_secs(1)),
+        ),
+        ("locked_escape_timeout_ms 0", None),
+    ] {
+        let mut session = session();
+        let config = Config::from_kdl(kdl, Some(Config::from_default_assets().unwrap())).unwrap();
+        session
+            .session_configuration
+            .set_saved_configuration(config);
+        let session_data = Arc::new(RwLock::new(Some(session)));
+        let (tx, _rx) = channels::unbounded();
+        let before = Instant::now();
+        let result = prepare_input(
+            ClientToServerMsg::Key {
+                key: key("Ctrl g"),
+                raw_bytes: vec![7],
+                is_kitty_keyboard_protocol: false,
+            },
+            &session_data,
+            &SenderWithContext::new(tx),
+            1,
+        )
+        .unwrap();
+        let guard = session_data.read().unwrap();
+        let session = guard.as_ref().unwrap();
+        match expected {
+            Some(timeout) => {
+                assert!(result.is_none(), "{kdl:?} should hold the key");
+                let deadline = session.locked_escapes[&1].deadline;
+                assert!(
+                    deadline >= before + timeout && deadline <= Instant::now() + timeout,
+                    "{kdl:?} deadline is not {timeout:?} out"
+                );
+            },
+            None => {
+                assert!(
+                    matches!(result, Some(ClientToServerMsg::Key { .. })),
+                    "{kdl:?} should pass the key straight through"
+                );
+                assert!(session.locked_escapes.is_empty());
+                assert_eq!(session.current_input_modes[&1], InputMode::Locked);
+            },
+        }
+    }
+}
+
 #[test]
 fn locked_escape_deadline_and_modifiers_are_exact() {
     let now = Instant::now();
-    let pending = LockedEscape::new(now);
+    let pending = LockedEscape::new(now, DEFAULT_TIMEOUT);
     assert!(pending.completes(&key("g"), now));
     assert!(pending.completes(&key("g"), pending.deadline - Duration::from_nanos(1)));
     assert!(!pending.completes(&key("g"), pending.deadline));
@@ -133,8 +190,8 @@ fn locked_escape_resolution_is_per_client_and_stale_tokens_are_harmless() {
     let mut session = session();
     let (screen_tx, screen_rx) = channels::unbounded();
     session.senders.to_screen = Some(SenderWithContext::new(screen_tx));
-    let old = LockedEscape::new(Instant::now());
-    let new = LockedEscape::new(Instant::now());
+    let old = LockedEscape::new(Instant::now(), DEFAULT_TIMEOUT);
+    let new = LockedEscape::new(Instant::now(), DEFAULT_TIMEOUT);
     session.locked_escapes.insert(1, new);
     session.locked_escapes.insert(2, old);
     session.resolve_locked_escape(1, old.token).unwrap();
@@ -169,7 +226,7 @@ fn locked_escape_resolution_is_per_client_and_stale_tokens_are_harmless() {
 #[test]
 fn locked_escape_is_cancelled_by_mode_configuration_and_disconnect_changes() {
     let mut session = session();
-    let pending = LockedEscape::new(Instant::now());
+    let pending = LockedEscape::new(Instant::now(), DEFAULT_TIMEOUT);
     session.locked_escapes.insert(1, pending);
     session.change_input_mode(1, InputMode::Pane, None).unwrap();
     assert!(!session.locked_escapes.contains_key(&1));
@@ -192,7 +249,7 @@ fn locked_escape_completion_writes_raw_ctrl_g_for_both_encodings() {
         // The subject is byte routing, not the real clock or scheduler.
         session.locked_escapes.insert(
             1,
-            LockedEscape::new(Instant::now() + Duration::from_secs(60)),
+            LockedEscape::new(Instant::now(), Duration::from_secs(60)),
         );
         let session_data = Arc::new(RwLock::new(Some(session)));
         let (tx, _rx) = channels::unbounded();
@@ -243,7 +300,7 @@ fn locked_escape_fallback_updates_mode_and_queues_unlock_before_returning_input(
         let mut session = session();
         session.locked_escapes.insert(
             1,
-            LockedEscape::new(Instant::now() + Duration::from_secs(60)),
+            LockedEscape::new(Instant::now(), Duration::from_secs(60)),
         );
         let (screen_tx, screen_rx) = channels::unbounded();
         session.senders.to_screen = Some(SenderWithContext::new(screen_tx));
@@ -277,7 +334,7 @@ fn locked_escape_fallback_updates_mode_and_queues_unlock_before_returning_input(
 #[test]
 fn locked_escape_resize_does_not_resolve_or_extend_the_prefix() {
     let mut session = session();
-    let pending = LockedEscape::new(Instant::now());
+    let pending = LockedEscape::new(Instant::now(), DEFAULT_TIMEOUT);
     session.locked_escapes.insert(1, pending);
     let session_data = Arc::new(RwLock::new(Some(session)));
     let (tx, _rx) = channels::unbounded();

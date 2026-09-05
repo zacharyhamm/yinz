@@ -17,7 +17,9 @@ use crate::{
     global_async_runtime::get_tokio_runtime, ClientId, ServerInstruction, SessionMetaData,
 };
 
-const LOCKED_ESCAPE_TIMEOUT: Duration = Duration::from_millis(250);
+/// The window used when `locked_escape_timeout_ms` is not set in the config. 0 there disables
+/// the prefix entirely, so a locked-mode Ctrl+g unlocks immediately.
+pub(crate) const DEFAULT_LOCKED_ESCAPE_TIMEOUT_MS: u64 = 250;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LockedEscape {
@@ -26,10 +28,10 @@ pub(crate) struct LockedEscape {
 }
 
 impl LockedEscape {
-    fn new(now: Instant) -> Self {
+    fn new(now: Instant, timeout: Duration) -> Self {
         Self {
             token: Uuid::new_v4(),
-            deadline: now + LOCKED_ESCAPE_TIMEOUT,
+            deadline: now + timeout,
         }
     }
 
@@ -156,6 +158,14 @@ pub(crate) fn prepare_input(
             if session.key_passthrough_clients.contains_key(&client_id) {
                 return Ok(Some(instruction));
             }
+            let timeout = session
+                .session_configuration
+                .get_client_locked_escape_timeout(&client_id);
+            if timeout.is_zero() {
+                // The prefix is configured off: Ctrl+g goes straight to its binding, which
+                // means no pending escape to hold and no timer to expire it.
+                return Ok(Some(instruction));
+            }
             let Some((bindings, mode, default_mode)) =
                 session.get_client_keybinds_and_mode(&client_id)
             else {
@@ -171,7 +181,7 @@ pub(crate) fn prepare_input(
             if !starts_escape(key, *mode, &actions) {
                 return Ok(Some(instruction));
             }
-            let pending = LockedEscape::new(Instant::now());
+            let pending = LockedEscape::new(Instant::now(), timeout);
             session.locked_escapes.insert(client_id, pending);
             pending
         };

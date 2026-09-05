@@ -573,6 +573,15 @@ pub struct Options {
     #[clap(long, value_parser)]
     #[serde(default)]
     pub dangerously_enable_paste_buffer_read: Option<bool>,
+
+    /// How long, in milliseconds, a locked-mode Ctrl+g is held as a prefix: type a plain `g`
+    /// within the window to send a literal Ctrl+g to the pane and stay locked, otherwise the
+    /// window expires and the mode switches to Normal. 0 disables the prefix entirely, so
+    /// Ctrl+g unlocks immediately.
+    /// default is 250
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub locked_escape_timeout_ms: Option<u64>,
 }
 
 #[derive(ValueEnum, Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Default)]
@@ -636,6 +645,9 @@ impl Options {
         let explicit_theme_hue = other.explicit_theme_hue.or(self.explicit_theme_hue);
         let on_force_close = other.on_force_close.or(self.on_force_close);
         let scroll_buffer_size = other.scroll_buffer_size.or(self.scroll_buffer_size);
+        let locked_escape_timeout_ms = other
+            .locked_escape_timeout_ms
+            .or(self.locked_escape_timeout_ms);
         let copy_command = other.copy_command.or_else(|| self.copy_command.clone());
         let copy_clipboard = other.copy_clipboard.or(self.copy_clipboard);
         let copy_on_select = other.copy_on_select.or(self.copy_on_select);
@@ -736,6 +748,7 @@ impl Options {
             mirror_session,
             on_force_close,
             scroll_buffer_size,
+            locked_escape_timeout_ms,
             copy_command,
             copy_clipboard,
             copy_on_select,
@@ -846,6 +859,9 @@ impl Options {
         let explicit_theme_hue = other.explicit_theme_hue.or(self.explicit_theme_hue);
         let on_force_close = other.on_force_close.or(self.on_force_close);
         let scroll_buffer_size = other.scroll_buffer_size.or(self.scroll_buffer_size);
+        let locked_escape_timeout_ms = other
+            .locked_escape_timeout_ms
+            .or(self.locked_escape_timeout_ms);
         let copy_command = other.copy_command.or_else(|| self.copy_command.clone());
         let copy_clipboard = other.copy_clipboard.or(self.copy_clipboard);
         let copy_on_select = other.copy_on_select.or(self.copy_on_select);
@@ -930,6 +946,7 @@ impl Options {
             mirror_session,
             on_force_close,
             scroll_buffer_size,
+            locked_escape_timeout_ms,
             copy_command,
             copy_clipboard,
             copy_on_select,

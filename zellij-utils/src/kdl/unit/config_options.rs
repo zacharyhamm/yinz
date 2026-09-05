@@ -41,6 +41,31 @@ fn firecracker_provider_options_round_trip() {
 }
 
 #[test]
+fn locked_escape_timeout_options_round_trip() {
+    let document: KdlDocument = "locked_escape_timeout_ms 400".parse().unwrap();
+    let options = Options::from_kdl(&document).unwrap();
+    assert_eq!(options.locked_escape_timeout_ms, Some(400));
+
+    let mut serialized = KdlDocument::new();
+    serialized
+        .nodes_mut()
+        .append(&mut Options::to_kdl(&options, false));
+    assert_eq!(Options::from_kdl(&serialized).unwrap(), options);
+
+    // 0 is meaningful: it disables the Ctrl+g prefix rather than being an error.
+    let disabled: KdlDocument = "locked_escape_timeout_ms 0".parse().unwrap();
+    assert_eq!(
+        Options::from_kdl(&disabled)
+            .unwrap()
+            .locked_escape_timeout_ms,
+        Some(0)
+    );
+
+    let negative: KdlDocument = "locked_escape_timeout_ms -1".parse().unwrap();
+    assert!(Options::from_kdl(&negative).is_err());
+}
+
+#[test]
 fn agent_pane_floor_options_round_trip() {
     let document: KdlDocument = r#"
         agent_pane_min_columns 100
@@ -90,6 +115,7 @@ fn config_options_to_string() {
         mirror_session true
         on_force_close "quit"
         scroll_buffer_size 100
+        locked_escape_timeout_ms 400
         copy_command "pbcopy"
         copy_clipboard "system"
         copy_on_select false
@@ -137,6 +163,7 @@ fn config_options_to_string_with_comments() {
         mirror_session true
         on_force_close "quit"
         scroll_buffer_size 100
+        locked_escape_timeout_ms 400
         copy_command "pbcopy"
         copy_clipboard "system"
         copy_on_select false

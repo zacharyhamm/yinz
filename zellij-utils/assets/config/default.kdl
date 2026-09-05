@@ -6,7 +6,9 @@ keybinds {
     }
     locked {
         // Ctrl+g waits 250ms before unlocking. Follow it with plain g within
-        // that time to send Ctrl+g to the terminal and stay locked.
+        // that time to send Ctrl+g to the terminal and stay locked. Change the
+        // window with `locked_escape_timeout_ms`, or set it to 0 to unlock
+        // immediately and never quote Ctrl+g.
         bind "Ctrl g" { SwitchToMode "Normal"; }
     }
     resize {
