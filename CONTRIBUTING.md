@@ -111,6 +111,18 @@ PREFIX=/usr cargo x install /usr/bin/zellij     # as root, with `sudo -E` to kee
 `--builtins-dir <dir>` puts the plugins somewhere else (and prunes nothing there);
 `--no-builtins` installs the binary only.
 
+`--profile <name>` builds with another cargo profile instead of `release` - the binary, the
+plugins and `zellij-firecracker` all come from that profile's target directory:
+
+```sh
+cargo x install ~/bin/zellij --profile dev      # fast: no LTO, no whole-program link
+```
+
+The `builtins/<version>` folder is shared by every installed zellij of that version, so a
+non-release install replaces the wasm they all load with unoptimized plugins (it says so before
+writing). Re-running `cargo x install <dest>` with no `--profile` puts the release wasm back;
+`--no-builtins` or `--builtins-dir <dir>` leaves the shared folder alone.
+
 On Linux, the same command installs `zellij-firecracker` beside `zellij`. On x86_64, it also runs
 setup when Firecracker is on `PATH` and `/dev/kvm` is usable. See
 [`docs/FIRECRACKER.md`](docs/FIRECRACKER.md) for details.

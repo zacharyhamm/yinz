@@ -51,7 +51,7 @@ each command forwards to a different place:
 |---|---|
 | `x test` | `cargo nextest run` — nextest flags, not libtest ones |
 | `x integration-test` | `cargo nextest run` — nextest flags, not libtest ones |
-| `x build`, `x install` | the native `cargo build`, repeated per crate (never the wasm plugin build); `x install` also takes `--builtins-dir <dir>` / `--no-builtins` |
+| `x build`, `x install` | the native `cargo build`, repeated per crate (never the wasm plugin build); `x install` also takes `--profile <name>` (default `release`; `--profile dev` for a fast install), `--builtins-dir <dir>` / `--no-builtins` |
 | `x run` | zellij itself (after `cargo run --`) |
 | `x bench` | criterion (after `cargo bench --`) — criterion flags, not libtest ones |
 | `x ci e2e` | the e2e test runner |
