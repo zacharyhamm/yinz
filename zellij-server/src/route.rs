@@ -2701,6 +2701,22 @@ pub(crate) fn route_thread_main(
                         return Ok(false);
                     }
 
+                    if matches!(&instruction, ClientToServerMsg::Key { .. }) {
+                        session_state
+                            .write()
+                            .to_anyhow()
+                            .context("tracking active client")?
+                            .set_last_active_client(client_id);
+                    }
+                    let Some(instruction) = crate::locked_escape::prepare_input(
+                        instruction,
+                        &session_data,
+                        &to_server,
+                        client_id,
+                    )?
+                    else {
+                        return Ok(false);
+                    };
                     match instruction {
                         ClientToServerMsg::AgentReport(_) => unreachable!("handled before action dispatch"),
                         ClientToServerMsg::Key {
@@ -2708,12 +2724,6 @@ pub(crate) fn route_thread_main(
                             raw_bytes,
                             is_kitty_keyboard_protocol,
                         } => {
-                            // Track this as the last active client
-                            session_state
-                                .write()
-                                .unwrap()
-                                .set_last_active_client(client_id);
-
                             // Cloned before `key` is moved into the passthrough branch below, so
                             // it survives to ask an open menu about a key that resolves to
                             // something other than a write - see the `actions_dismiss_context_menu`
@@ -3366,6 +3376,14 @@ pub(crate) fn route_thread_main(
     }
     // One removal per route. Duplicate removals can close a newer connection after the
     // listener reuses this client ID, including an unrelated agent report.
+    if let Some(session) = session_data
+        .write()
+        .to_anyhow()
+        .context("cancelling disconnected escape")?
+        .as_mut()
+    {
+        session.locked_escapes.remove(&client_id);
+    }
     let _ = to_server.send(ServerInstruction::RemoveClient(client_id));
     Ok(())
 }
