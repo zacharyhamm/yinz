@@ -72,13 +72,13 @@ pub(super) fn is_agent_spawn(invoked_with: Option<&Run>) -> bool {
 /// The cells each tiled pane would have if `tiled_panes` of them and one newcomer shared a
 /// viewport equally.
 pub(super) fn projected_share(viewport: Viewport, tiled_panes: usize) -> usize {
-    viewport.rows * viewport.cols / (tiled_panes + 1)
+    viewport.rows.saturating_mul(viewport.cols) / (tiled_panes + 1)
 }
 
 /// The area a share has to clear, or `None` when either side of the floor is zero and the rule
 /// is off.
 pub(super) fn floor_of(min_size: Size) -> Option<usize> {
-    (min_size.rows > 0 && min_size.cols > 0).then(|| min_size.rows * min_size.cols)
+    (min_size.rows > 0 && min_size.cols > 0).then(|| min_size.rows.saturating_mul(min_size.cols))
 }
 
 /// A tab that could take the pane: its stable id, its position on the bar, and the share it
@@ -150,9 +150,10 @@ impl Screen {
     /// the pane itself if it means to, and a spawn from `agent_spawn` should not pull the user
     /// off what they were looking at.
     ///
-    /// Pending tabs are not candidates: their layout has not landed, so their pane count is
-    /// not yet real. A tab made here is pending for the plugin → pty → screen round trip that
-    /// applies its layout, so a burst of spawns faster than that opens a tab each; the next
+    /// Pending and fullscreen tabs are not candidates: a pending layout has not landed, so its
+    /// pane count is not yet real, and adding a pane to a fullscreen tab would dismiss its
+    /// fullscreen state. A tab made here is pending for the plugin → pty → screen round trip
+    /// that applies its layout, so a burst of spawns faster than that opens a tab each; the next
     /// spawn after the round trip sees the tab as it is.
     ///
     /// A failure to make a tab is not a reason to lose the pane: it is logged and the pane
@@ -185,11 +186,7 @@ impl Screen {
                 (source, connected, wants_focus)
             },
             ClientTabIndexOrPaneId::PaneId(pane_id) => {
-                let source = self
-                    .tabs
-                    .values()
-                    .find(|tab| tab.has_pane_with_pid(&pane_id))
-                    .map(|tab| tab.id);
+                let source = self.tab_id_containing_pane(pane_id);
                 let client_id = self
                     .active_tab_ids
                     .iter()
@@ -228,7 +225,9 @@ impl Screen {
         let candidates: Vec<Candidate> = self
             .tabs
             .values()
-            .filter(|tab| tab.id != source_tab_id && !tab.is_pending())
+            .filter(|tab| {
+                tab.id != source_tab_id && !tab.is_pending() && !tab.is_fullscreen_active()
+            })
             .filter_map(|tab| {
                 Some(Candidate {
                     tab_id: tab.id,

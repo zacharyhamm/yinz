@@ -589,8 +589,12 @@ pub(crate) fn screen_thread_main(
                     // the hooks, the report and the render below.
                     screen
                         .focus_pane_with_id(pid, false, false, client_id)
+                        .context("failed to focus agent pane after placing it in another tab")
                         .non_fatal();
-                    screen.sync_scroll_mode_on_focus(client_id).non_fatal();
+                    screen
+                        .sync_scroll_mode_on_focus(client_id)
+                        .context("failed to synchronize scroll mode after focusing an agent pane")
+                        .non_fatal();
                 }
                 // Before the replay: a pane that exited before the screen created it starts,
                 // and then exits, in that order.
