@@ -1,8 +1,9 @@
-use super::super::Grid;
+use super::super::{Grid, Row};
 use super::MAX_DCS_PAYLOAD_BYTES;
 use crate::panes::grid::SixelImageStore;
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::link_handler::LinkHandler;
+use crate::panes::terminal_character::TerminalCharacter;
 use base64::engine::general_purpose::STANDARD as BASE64_ENCODER;
 use base64::engine::Engine as _;
 use insta::assert_snapshot;
@@ -1051,6 +1052,35 @@ fn unicode_search_uses_character_indexes_and_terminal_columns() {
     assert_eq!(grid.search_results.selections.len(), 1);
     assert_eq!(grid.search_results.selections[0].start, Position::new(0, 6));
     assert_eq!(grid.search_results.selections[0].end, Position::new(0, 7));
+}
+
+#[test]
+fn dense_ascii_search_finds_every_cell_in_a_large_grid() {
+    let mut grid = create_grid_with_content("");
+    grid.width = 640;
+    grid.viewport = (0..100)
+        .map(|_| {
+            Row::from_columns(
+                (0..640)
+                    .map(|_| TerminalCharacter::new_singlewidth('x'))
+                    .collect(),
+            )
+            .canonical()
+        })
+        .collect();
+
+    grid.set_search_string("x");
+
+    assert_eq!(grid.search_results.selections.len(), 640 * 100);
+    for (index, selection) in grid.search_results.selections.iter().enumerate() {
+        let line = index / 640;
+        let column = index % 640;
+        assert_eq!(selection.start, Position::new(line as i32, column as u16));
+        assert_eq!(
+            selection.end,
+            Position::new(line as i32, (column + 1) as u16)
+        );
+    }
 }
 
 #[test]

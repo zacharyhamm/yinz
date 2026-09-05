@@ -87,8 +87,8 @@ struct ContentRange {
 
 /// Parses a `Content-Range` value, accepting only a satisfied byte range. Returns `None` for a
 /// missing or non-`bytes` unit, the unsatisfied `bytes */N` form (only legal on a 416), a range
-/// whose end precedes its start or reaches past the complete length, or unparsable numbers. A
-/// `*` complete length is accepted as unknown.
+/// whose end precedes its start, whose exclusive end cannot be represented, or which reaches past
+/// the complete length, or unparsable numbers. A `*` complete length is accepted as unknown.
 fn parse_content_range(value: &str) -> Option<ContentRange> {
     let value = value.trim();
     let (unit, rest) = value.split_once(|c: char| c.is_ascii_whitespace())?;
@@ -99,7 +99,7 @@ fn parse_content_range(value: &str) -> Option<ContentRange> {
     let (first, last) = range.split_once('-')?;
     let first = first.trim().parse::<u64>().ok()?;
     let last = last.trim().parse::<u64>().ok()?;
-    if last < first {
+    if last < first || last == u64::MAX {
         return None;
     }
     let complete_length = match complete.trim() {
