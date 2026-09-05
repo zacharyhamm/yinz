@@ -3740,6 +3740,8 @@ pub struct AgentSpawnSpec {
     pub args: Vec<String>,
     /// Passed as `--model <model>`, the one flag every agent spells the same.
     pub model: Option<String>,
+    /// Optional reasoning effort, translated by the shared launch planner.
+    pub effort: Option<String>,
     /// An opening prompt, passed as the last positional argument - which is how `claude`,
     /// `codex` and `cursor-agent` all take one.
     pub prompt: Option<String>,
@@ -5114,6 +5116,16 @@ pub enum PluginCommand {
     SetPaneAgentRun {
         pane_id: PaneId,
         run_id: Option<String>,
+    },
+    /// Read validated workflow configuration at the Git worktree root.
+    ProjectConfigRead {
+        directory: PathBuf,
+    },
+    /// Validate and atomically replace configuration if the previous source still matches.
+    ProjectConfigWrite {
+        directory: PathBuf,
+        source: String,
+        expected: Option<String>,
     },
     /// Start a coding agent in a command pane near this plugin, the way hocus's `agent_spawn`
     /// and the `hocus-new-agent` modal do: plan its argv with `agent::launch::plan` (per-kind

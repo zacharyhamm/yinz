@@ -267,6 +267,25 @@ pub fn scan_argv(roots: &[String]) -> Vec<String> {
     argv
 }
 
+/// Install the shipped setup prompt only when the user has no copy, then scan normally.
+pub fn user_scan_argv(root: &str) -> Vec<String> {
+    let install = r#"source=$1; root=$2
+if [ ! -L "$root/project-setup" ] && [ ! -e "$root/project-setup/SKILL.md" ] && [ ! -L "$root/project-setup/SKILL.md" ]; then
+  mkdir -p -- "$root/project-setup" || exit 1
+  (set -C; printf '%s' "$source" > "$root/project-setup/SKILL.md") || exit 1
+fi
+set -- "$root"
+"#;
+    vec![
+        "sh".into(),
+        "-c".into(),
+        format!("{install}{}", scan_script()),
+        "sh".into(),
+        include_str!("../skills/project-setup/SKILL.md").into(),
+        root.into(),
+    ]
+}
+
 const SKILL_SOURCE_VAR: &str = "HOCUS_SKILL_SOURCE";
 
 /// Resolve one skill below a trusted tier root. The root may itself be a symlink (a configured

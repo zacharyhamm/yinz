@@ -169,6 +169,8 @@ pub struct TerminalPane {
     /// the live record would disarm itself on every clean exit. The record is what the agent
     /// says now; this is that it was ever an agent at all.
     was_an_agent: bool,
+    last_agent_kind: Option<String>,
+    last_agent_cwd: Option<String>,
     /// When the agent here entered a wait a person has to answer, while nobody has answered
     /// it yet. Drives the blinking indicator in the frame's top-right corner, and nothing
     /// else.
@@ -1349,6 +1351,12 @@ impl Pane for TerminalPane {
     fn agent_info(&self) -> Option<&AgentInfo> {
         self.agent.as_ref()
     }
+    fn last_agent_cwd(&self) -> Option<&str> {
+        self.last_agent_cwd.as_deref()
+    }
+    fn last_agent_kind(&self) -> Option<&str> {
+        self.last_agent_kind.as_deref()
+    }
     fn was_an_agent(&self) -> bool {
         self.was_an_agent
     }
@@ -1356,6 +1364,12 @@ impl Pane for TerminalPane {
         // Before the equality check: a record that repeats itself still says this is an agent
         // pane, and the memory is set once and never taken back.
         self.was_an_agent |= agent.is_some();
+        if let Some(agent) = &agent {
+            self.last_agent_kind = Some(agent.kind.clone());
+            if agent.cwd.is_some() {
+                self.last_agent_cwd = agent.cwd.clone();
+            }
+        }
         if self.agent == agent {
             return false;
         }
@@ -1496,6 +1510,8 @@ impl Pane for TerminalPane {
                     {
                         self.agent = None;
                         self.was_an_agent = false;
+                        self.last_agent_kind = None;
+                        self.last_agent_cwd = None;
                     }
                     self.invoked_with = Some(Run::Command(replacement.clone()));
                     replacement
@@ -1775,6 +1791,8 @@ impl TerminalPane {
             remote_host: None,
             title_prefix: None,
             was_an_agent: agent.is_some(),
+            last_agent_kind: agent.as_ref().map(|agent| agent.kind.clone()),
+            last_agent_cwd: agent.as_ref().and_then(|agent| agent.cwd.clone()),
             agent,
             // A pane the spawn path opened as an agent pane starts `Busy`, so there is
             // never a wait to draw before the first report arrives.

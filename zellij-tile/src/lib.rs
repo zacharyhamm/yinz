@@ -243,3 +243,5 @@ macro_rules! register_worker {
          }
     };
 }
+
+pub use zellij_utils::project_config;

@@ -359,6 +359,7 @@ fn the_plugin_family_reads_before_it_writes() {
     assert_eq!(
         readers,
         [
+            "project_config_read",
             "plugin_docs",
             "plugin_check",
             "plugin_list",

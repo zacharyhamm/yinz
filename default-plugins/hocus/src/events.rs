@@ -319,7 +319,11 @@ impl State {
         if !self.granted {
             return;
         }
-        let argv = skills::scan_argv(&roots);
+        let argv = if source == skills::Source::User && roots.len() == 1 {
+            skills::user_scan_argv(&roots[0])
+        } else {
+            skills::scan_argv(&roots)
+        };
         #[cfg(test)]
         {
             self.last_skill_scan = Some(argv.clone());

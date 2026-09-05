@@ -521,6 +521,12 @@ pub trait Pane {
     }
     /// Whether this pane has ever held an agent record. Sticky, unlike the record itself,
     /// which a `SessionEnd` hook clears just before the agent's process exits.
+    fn last_agent_cwd(&self) -> Option<&str> {
+        None
+    }
+    fn last_agent_kind(&self) -> Option<&str> {
+        None
+    }
     fn was_an_agent(&self) -> bool {
         false
     }
@@ -4260,6 +4266,14 @@ impl Tab {
     }
     /// `pane_id`'s agent record, wherever the pane is - the screen reads it before a change so
     /// that a hook can be told what the record moved from.
+    pub fn pane_last_agent_cwd(&self, pane_id: PaneId) -> Option<String> {
+        self.get_pane_with_id(pane_id)
+            .and_then(|pane| pane.last_agent_cwd().map(str::to_owned))
+    }
+    pub fn pane_last_agent_kind(&self, pane_id: PaneId) -> Option<String> {
+        self.get_pane_with_id(pane_id)
+            .and_then(|pane| pane.last_agent_kind().map(str::to_owned))
+    }
     pub fn pane_agent_info(&self, pane_id: PaneId) -> Option<AgentInfo> {
         self.floating_panes
             .get(&pane_id)

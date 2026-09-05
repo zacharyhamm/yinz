@@ -359,3 +359,28 @@ fn skill_tools_stay_below_the_tier_root_and_refresh_after_mutations() {
     .unwrap();
     assert!(!overwrite[2].contains("set -C"));
 }
+
+#[test]
+fn project_setup_is_installed_without_overwriting_user_edits() {
+    let root = std::env::temp_dir().join(format!("hocus-project-setup-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let argv = user_scan_argv(root.to_str().unwrap());
+    let run = || {
+        std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .output()
+            .unwrap()
+    };
+    assert!(run().status.success());
+    let file = root.join("project-setup/SKILL.md");
+    let source = std::fs::read_to_string(&file).unwrap();
+    assert!(source.contains("project_config_write"));
+    validate_source("project-setup", &source).unwrap();
+    std::fs::write(&file, "User instructions.").unwrap();
+    assert!(run().status.success());
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "User instructions."
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}

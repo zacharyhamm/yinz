@@ -120,6 +120,7 @@ pub fn needs_confirmation(name: &str) -> bool {
             // here: it re-runs a file approved one step earlier, and plugin-manager already
             // reloads a plugin on a keypress - so confirming both would cost two prompts per
             // write-reload-fix iteration to say the same thing twice.
+            | "project_config_write"
             | "plugin_write"
             | "plugin_edit"
             | "skill_write"
@@ -285,6 +286,10 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         },
         // The authoring act: an LLM putting code into the user's config dir. It is inert until
         // something loads it, which is why the write is the prompt and the reload is not.
+        "project_config_write" => {
+            "writes the proposed .zellij.kdl workflow settings; stale changes are refused"
+                .to_owned()
+        },
         "plugin_write" => {
             let name = args.name.as_deref().unwrap_or("a plugin");
             let mut sentence = match args.overwrite {
@@ -1511,6 +1516,7 @@ pub fn specs() -> Value {
                     "args": { "type": "array", "items": { "type": "string" } },
                     "prompt": { "type": "string", "description": "What to start the agent on." },
                     "model": { "type": "string" },
+                    "effort": { "type": "string", "description": "Reasoning effort. Cursor requires model." },
                     "cwd": {
                         "type": "string",
                         "description": "Defaults to the focused pane's. A host path, so not \
@@ -1811,11 +1817,11 @@ pub fn specs() -> Value {
                 "required": ["query"],
             }),
         ),
+        tool("project_config_read", "Read active project .zellij.kdl source and settings.", json!({"type":"object","properties":{}})),
+        tool("project_config_write", "Confirm and write .zellij.kdl. expected is the exact previous source, null if absent. Does not execute CI.", json!({"type":"object","properties":{"source":{"type":"string"},"expected":{"type":["string","null"]}},"required":["source","expected"]})),
         tool(
             "plugin_read",
-            "Read one of the user's Lua plugins. `name` is a file name, .lua optional. 300 \
-             lines from `start_line` (default 1); `line_count` changes the span. Read the range \
-             you will change before you edit; plugin_outline and plugin_search say where.",
+            "Read user Lua plugin source: 300 lines from start_line=1 unless line_count is set. name may omit .lua. Use plugin_outline or plugin_search before you edit.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1828,10 +1834,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_check",
-            "Compile a Lua plugin source without writing or loading it. plugin_write runs this \
-             check itself and refuses a source that fails it, so use this to try a fix before \
-             writing, not after. A source that compiles can still fail at load; plugin_reload \
-             shows that.",
+            "Compile Lua without writing or loading. plugin_write already compiles before confirmation. Use plugin_reload to check runtime behavior.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1843,11 +1846,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_write",
-            "Write a Lua plugin. `source` is the complete file; it is compiled before anything \
-             is asked or written, and a compile error is the answer. Approving the write grants \
-             the permissions the source requests, and plugin_reload comes next. `overwrite` is \
-             required to replace one that exists - plugin_edit changes one that works. `name` \
-             may be `folder/module` for a file the plugin loads with require(\"folder.module\").",
+            "Write complete Lua source after compilation and confirmation. Approval grants requested permissions. overwrite is required for existing files. name accepts folder/module for require. Use plugin_edit for edits, then plugin_reload.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1860,12 +1859,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_edit",
-            "Change part of a plugin in place: `old_string` becomes `new_string`, matching the \
-             file exactly and once unless replace_all - or `edits`, a list of {old_string, \
-             new_string, replace_all} applied in order, each against the text the one before \
-             produced, under one confirmation. Compiled before it is written, and not written \
-             at all if any edit misses or it would not compile; the version replaced is kept as \
-             <name>.bak. The answer names the lines that changed.",
+            "Replace exact old_string with new_string once, or all with replace_all. Alternatively apply edits in order. Confirm once; not written at all if compilation or any match fails. Keep the previous source as <name>.bak; report changed lines.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2008,6 +2002,7 @@ fn load_tool_description() -> String {
 /// outlives the turn; and `focus`, `rename` and `scroll_pane` are harmless to
 /// the session but move the screen under someone who is reading a plan.
 pub const READ_ONLY: &[&str] = &[
+    "project_config_read",
     // The session, as it is.
     "list_session",
     "list_other_sessions",
@@ -2213,6 +2208,8 @@ pub const FAMILIES: &[Family] = &[
         summary: "write, edit, search, check, reload and read Zellij Lua plugins",
         deferred: true,
         tools: &[
+            "project_config_read",
+            "project_config_write",
             "plugin_docs",
             "plugin_list",
             "plugin_read",
@@ -2685,7 +2682,9 @@ pub struct Args {
     // above are `agent_spawn`'s too — `prompt` is `schedule`'s, reused rather than
     // shadowed. `worktree_path` is spelled out because `path` is the file tools'.
     pub agent: Option<String>,
+    pub expected: Option<String>,
     pub model: Option<String>,
+    pub effort: Option<String>,
     pub branch: Option<String>,
     pub base: Option<String>,
     pub worktree: Option<bool>,
@@ -2949,6 +2948,7 @@ impl Args {
             command,
             args,
             model: self.model.clone(),
+            effort: self.effort.clone(),
             prompt: self.prompt.clone(),
             branch: self.branch.clone(),
             base: self.base.clone(),
@@ -3295,7 +3295,9 @@ pub const SKILL_FILE_TOOLS: [&str; 4] =
 /// `get_user_plugin_dir`, for the reload URL and the permission grant). None runs a command;
 /// every one but `plugin_reload` answers at once - a reload is fire-and-forget on the host, so
 /// that one defers until the pane has had time to show what happened.
-pub const PLUGIN_TOOLS: [&str; 10] = [
+pub const PLUGIN_TOOLS: [&str; 12] = [
+    "project_config_read",
+    "project_config_write",
     "plugin_docs",
     "plugin_check",
     "plugin_list",
@@ -3370,6 +3372,13 @@ pub fn edit_compile_report(name: &str, error: &str) -> String {
 /// Checked before the confirmation rather than at write time, so nobody is asked to approve a
 /// file the loader would only reject.
 pub fn uncompilable_write(call: &ToolCall) -> Option<String> {
+    if call.name == "project_config_write" {
+        let args = Args::parse(&call.arguments).ok()?;
+        return match args.source {
+            Some(source) => zellij_tile::project_config::parse(&source).err(),
+            None => Some("source is required".into()),
+        };
+    }
     if call.name != "plugin_write" {
         return None;
     }

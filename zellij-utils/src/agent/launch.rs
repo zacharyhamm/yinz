@@ -94,9 +94,43 @@ pub fn worktree_path_for(branch: &str) -> String {
 pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<String>), String> {
     let mut leading = Vec::new();
     let mut flags = Vec::new();
-    if let Some(model) = trimmed(&spec.model) {
+    let mut model = trimmed(&spec.model).map(str::to_owned);
+    if let Some(effort) = trimmed(&spec.effort) {
+        let accepted: &[&str] = match kind {
+            Some("codex") => &["none", "minimal", "low", "medium", "high", "xhigh"],
+            Some("claude" | "cursor") => &["low", "medium", "high", "xhigh", "max"],
+            _ => &[],
+        };
+        if !accepted.contains(&effort) {
+            return Err(format!(
+                "{} does not support effort {effort:?}; accepted: {}",
+                kind.unwrap_or("this command"),
+                accepted.join(", ")
+            ));
+        }
+        match kind {
+            Some("codex") => flags.extend([
+                "-c".to_owned(),
+                format!("model_reasoning_effort=\"{effort}\""),
+            ]),
+            Some("claude") => flags.extend(["--effort".to_owned(), effort.to_owned()]),
+            Some("cursor") => {
+                let value = model
+                    .as_mut()
+                    .ok_or("Cursor effort requires an explicit model")?;
+                if value.contains(['[', ']']) {
+                    return Err(
+                        "Cursor effort requires a model without bracket overrides".to_owned()
+                    );
+                }
+                value.push_str(&format!("[effort={effort}]"));
+            },
+            _ => unreachable!(),
+        }
+    }
+    if let Some(model) = model {
         flags.push("--model".to_owned());
-        flags.push(model.to_owned());
+        flags.push(model);
     }
     let mode = trimmed(&spec.permission_mode);
     let resume = trimmed(&spec.resume);
@@ -413,6 +447,44 @@ mod tests {
             kind: Some(kind.to_owned()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn effort_is_translated_or_rejected() {
+        for (kind, expected) in [
+            (
+                "codex",
+                vec![
+                    "-c",
+                    "model_reasoning_effort=\"high\"",
+                    "--model",
+                    "example",
+                ],
+            ),
+            ("claude", vec!["--effort", "high", "--model", "example"]),
+            ("cursor", vec!["--model", "example[effort=high]"]),
+        ] {
+            let (command, _) = plan(&Spec {
+                model: Some("example".into()),
+                effort: Some("high".into()),
+                hooks: Some(false),
+                ..spec(kind)
+            })
+            .unwrap();
+            assert_eq!(command.args, expected);
+        }
+        for kind in ["cursor", "unknown"] {
+            assert!(plan(&Spec {
+                effort: Some("high".into()),
+                ..spec(kind)
+            })
+            .is_err());
+        }
+        assert!(plan(&Spec {
+            effort: Some("invalid".into()),
+            ..spec("codex")
+        })
+        .is_err());
     }
 
     /// The modal's own defaults, which are now this module's: a worktree off `main`

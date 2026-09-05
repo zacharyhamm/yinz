@@ -1282,6 +1282,15 @@ local function deliver_pipe(message)
   return intercepted
 end
 
+-- Workflow settings at the Git worktree root. These calls only read/write data.
+zellij.project_config = {}
+function zellij.project_config.read(directory)
+  return dispatch("project_config_read", { directory = directory })
+end
+function zellij.project_config.write(directory, source, expected)
+  return dispatch("project_config_write", { directory = directory, source = source, expected = expected })
+end
+
 -- Agents -------------------------------------------------------------------------------------
 ---
 --- A real table rather than a manufactured dispatcher, so `zellij.agent.spawn` and its siblings
@@ -1291,7 +1300,7 @@ zellij.agent = {}
 --- The fields of `AgentSpawnSpec`, in `zellij.agent.spawn`'s flat table. Everything else the
 --- author writes (`source_directory`, `cwd`, `name`, `context`) is the command's own.
 local SPAWN_SPEC_FIELDS = {
-  "kind", "command", "args", "model", "prompt", "branch", "base", "worktree", "worktree_path",
+  "kind", "command", "args", "model", "effort", "prompt", "branch", "base", "worktree", "worktree_path",
   "env", "permission_mode", "resume", "hooks", "firecracker", "firecracker_image",
 }
 

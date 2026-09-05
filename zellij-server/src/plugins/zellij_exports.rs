@@ -630,6 +630,12 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::GetLocalUtcOffset { epoch_ms } => get_local_utc_offset(env, epoch_ms),
             PluginCommand::DataUnwatch { watch_id } => data_unwatch(env, watch_id),
             PluginCommand::ScanHostFolder(folder_to_scan) => scan_host_folder(env, folder_to_scan),
+            PluginCommand::ProjectConfigRead { directory } => project_config(env, directory, None),
+            PluginCommand::ProjectConfigWrite {
+                directory,
+                source,
+                expected,
+            } => project_config(env, directory, Some((source, expected))),
             PluginCommand::FsRead { path, max_bytes } => fs_read(env, path, max_bytes),
             PluginCommand::FsList { path } => fs_list(env, path),
             PluginCommand::FsMetadata { path } => fs_metadata(env, path),
@@ -2570,15 +2576,44 @@ fn spawn_agent(
     automatic_firecracker_vm: bool,
 ) {
     let result: SpawnAgentResponse = (|| {
+        context.remove("agent_workflow_owner");
+        if let Some(role) = context.get("agent_workflow_role") {
+            if !["message", "repair"].contains(&role.as_str())
+                || context
+                    .get("agent_workflow_run")
+                    .is_none_or(|run| run.is_empty())
+            {
+                return Err(
+                    "workflow helpers require a run identifier and message or repair role".into(),
+                );
+            }
+            if spec.branch.is_some() || spec.firecracker.is_some() || spec.worktree == Some(true) {
+                return Err("workflow helpers must run in the existing host checkout".into());
+            }
+            context.insert("agent_workflow_owner".into(), env.plugin_id.to_string());
+        }
         let (mut command, checkout) = zellij_utils::agent::launch::plan(&spec)?;
         // The marker's value is the agent's kind - the program - which is what the pane's
         // agent record starts from. See `agent_from_run` in `panes::terminal_pane`.
         let kind = zellij_utils::agent::agent_kind_of(&command.path, &command.args)
             .unwrap_or_else(|| "true".to_owned());
+        let host_workflow = context.contains_key("agent_workflow_role");
         let source = source_directory
-            .map(|path| translate_plugin_path(env, path))
+            .map(|path| {
+                if host_workflow && path.is_absolute() {
+                    path
+                } else {
+                    translate_plugin_path(env, path)
+                }
+            })
             .unwrap_or_else(|| env.plugin_cwd.clone());
-        let cwd = cwd.map(|path| translate_plugin_path(env, path));
+        let cwd = cwd.map(|path| {
+            if host_workflow && path.is_absolute() {
+                path
+            } else {
+                translate_plugin_path(env, path)
+            }
+        });
         let checkout_made = !matches!(checkout, GitCheckout::Current);
         let folder = agent_folder(checkout, cwd, source)?;
         place_agent(
@@ -5726,6 +5761,46 @@ fn virtual_path(env: &PluginEnv, real: &Path, requested: &Path) -> PathBuf {
     real.to_path_buf()
 }
 
+fn project_config(
+    env: &mut PluginEnv,
+    directory: PathBuf,
+    write: Option<(String, Option<String>)>,
+) {
+    let result = (|| -> Result<Vec<u8>> {
+        let directory = if directory.is_absolute() {
+            directory
+        } else {
+            env.plugin_cwd.join(directory)
+        };
+        let root = zellij_utils::project_config::root(&directory).map_err(|e| anyhow!(e))?;
+        let own = env
+            .plugin_cwd
+            .canonicalize()
+            .context("cannot resolve plugin directory")?;
+        if !root.starts_with(own) && !has_permission(env, PermissionType::FullHdAccess) {
+            return Err(anyhow!(
+                "project configuration outside the plugin directory requires FullHdAccess"
+            ));
+        }
+        let snapshot = if let Some((source, expected)) = write {
+            zellij_utils::project_config::access_root(&root, Some((&source, expected.as_deref())))
+                .map_err(|e| anyhow!(e))?
+        } else {
+            zellij_utils::project_config::access_root(&root, None).map_err(|e| anyhow!(e))?
+        };
+        serde_json::to_vec(&snapshot).context("could not serialize project configuration")
+    })();
+    let response = ProtobufFsReadResponse {
+        result: Some(match result {
+            Ok(contents) => fs_read_response::Result::Contents(contents),
+            Err(e) => fs_read_response::Result::Error(format!("{e:#}")),
+        }),
+    };
+    wasi_write_object(env, &response.encode_to_vec())
+        .context("could not send project configuration")
+        .non_fatal();
+}
+
 fn fs_read(env: &mut PluginEnv, path: PathBuf, max_bytes: Option<usize>) {
     let cap = max_bytes
         .unwrap_or(MAX_FS_READ_BYTES)
@@ -7503,10 +7578,12 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         // Nominal: the handler refuses anything that is not a builtin, and a builtin is never
         // asked. Listed so that the command is not permissionless on paper.
         CommandType::GrantPluginPermissions => PermissionType::ChangeApplicationState,
-        CommandType::FsRead | CommandType::FsList | CommandType::FsMetadata => {
-            PermissionType::ReadFiles
-        },
-        CommandType::FsWrite
+        CommandType::ProjectConfigRead
+        | CommandType::FsRead
+        | CommandType::FsList
+        | CommandType::FsMetadata => PermissionType::ReadFiles,
+        CommandType::ProjectConfigWrite
+        | CommandType::FsWrite
         | CommandType::FsRemove
         | CommandType::FsCreateDir
         | CommandType::FsRename => PermissionType::WriteFiles,
@@ -7621,6 +7698,18 @@ mod permission_tests {
             Some(PermissionType::MessageAndLaunchOtherPlugins)
         );
         assert_eq!(command_permission(CommandType::PostMessageToPlugin), None);
+    }
+
+    #[test]
+    fn project_configuration_requires_file_permissions() {
+        assert_eq!(
+            command_permission(CommandType::ProjectConfigRead),
+            Some(PermissionType::ReadFiles)
+        );
+        assert_eq!(
+            command_permission(CommandType::ProjectConfigWrite),
+            Some(PermissionType::WriteFiles)
+        );
     }
 
     #[test]

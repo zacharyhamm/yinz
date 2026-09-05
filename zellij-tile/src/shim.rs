@@ -4076,6 +4076,39 @@ extern "C" {
 #[cfg(not(target_arch = "wasm32"))]
 unsafe fn host_run_plugin_command() {}
 
+/// Read project workflow settings; requires ReadFiles.
+pub fn project_config_read(
+    directory: PathBuf,
+) -> Result<zellij_utils::project_config::Snapshot, String> {
+    project_config_response(PluginCommand::ProjectConfigRead { directory })
+}
+
+/// Write previously reviewed settings; requires WriteFiles, and rejects stale source.
+pub fn project_config_write(
+    directory: PathBuf,
+    source: String,
+    expected: Option<String>,
+) -> Result<zellij_utils::project_config::Snapshot, String> {
+    project_config_response(PluginCommand::ProjectConfigWrite {
+        directory,
+        source,
+        expected,
+    })
+}
+
+fn project_config_response(
+    command: PluginCommand,
+) -> Result<zellij_utils::project_config::Snapshot, String> {
+    let response: ProtobufFsReadResponse = fs_command_response(command)?;
+    match response.result {
+        Some(fs_read_response::Result::Contents(contents)) => {
+            serde_json::from_slice(&contents).map_err(|e| e.to_string())
+        },
+        Some(fs_read_response::Result::Error(error)) => Err(error),
+        None => Err("Missing project configuration reply".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
