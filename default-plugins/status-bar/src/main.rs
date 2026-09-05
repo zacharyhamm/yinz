@@ -3,6 +3,8 @@ mod keybind_hints;
 mod one_line_ui;
 mod second_line;
 mod status_block;
+#[cfg(test)]
+mod test_support;
 mod tip;
 
 use ansi_term::{

@@ -895,16 +895,21 @@ fn render_secondary_info(
         !supports_arrow_fonts,
         help.session_dimmed.unwrap_or(false),
     );
-    // The two tenants of the right-hand slot. Only the keybinds are clickable, so the status
+    // The two tenants of the right-hand slot. The hint only gets it when it has something to
+    // draw - a mode with none of these actions bound, or a slot too narrow for the short form,
+    // leaves it to the block rather than blanking it. Only the keybinds are clickable, so the
     // block hands back no hit ranges - the click handling already no-ops on `None`.
-    let (content, new_pane_range, floating_range) = if info.hint_revealed {
-        secondary_keybinds(help, tab_info, max_len, new_pane_hovered, floating_hovered)
-    } else {
-        (
+    let hint = info
+        .hint_revealed
+        .then(|| secondary_keybinds(help, tab_info, max_len, new_pane_hovered, floating_hovered))
+        .flatten();
+    let (content, new_pane_range, floating_range) = match hint {
+        Some(hint) => hint,
+        None => (
             status_block(help, &info.agent_counts, &info.clock, max_len),
             None,
             None,
-        )
+        ),
     };
     secondary_info.append(&content);
     let remaining_space = max_len.saturating_sub(secondary_info.len).saturating_sub(1); // 1 for the end padding of the line
@@ -938,13 +943,19 @@ fn should_show_focus_and_resize_shortcuts(tab_info: Option<&TabInfo>) -> bool {
     }
 }
 
+/// The keybind hint for the right-hand slot, or `None` when it has nothing to say.
+///
+/// Two ways to have nothing: the current mode binds none of these actions - locked mode binds
+/// only its way out, and everything here lives under `shared_except "locked"` - or the slot is
+/// too narrow for even the short form. Either way the slot goes back to the clock rather than
+/// being blanked, so a hover in locked mode is a no-op; see [`render_secondary_info`].
 fn secondary_keybinds(
     help: &ModeInfo,
     tab_info: Option<&TabInfo>,
     max_len: usize,
     new_pane_hovered: bool,
     floating_hovered: bool,
-) -> LineWithButtonRanges {
+) -> Option<LineWithButtonRanges> {
     let mut secondary_info = LinePart::default();
     let mut new_pane_range;
     let mut floating_range;
@@ -1221,7 +1232,7 @@ fn secondary_keybinds(
     }
 
     if secondary_info.len <= max_len {
-        return (secondary_info, new_pane_range, floating_range);
+        return hint_with_content(secondary_info, new_pane_range, floating_range);
     }
     let mut short_line = LinePart::default();
     if no_common_modifier {
@@ -1355,26 +1366,21 @@ fn secondary_keybinds(
         floating_range = ribbon_range(floating_start, short_line.len);
     }
     if short_line.len <= max_len {
-        (short_line, new_pane_range, floating_range)
-    } else if max_len >= 3 {
-        let overflow_text = Text::new(format!("{:>width$}", "...", width = max_len));
-        let part = if help.session_dimmed.unwrap_or(false) {
-            serialize_text(&overflow_text.disabled().opaque())
-        } else {
-            serialize_text(&overflow_text.color_range(0, ..).opaque())
-        };
-        let len = max_len;
-        (LinePart { part, len }, None, None)
+        hint_with_content(short_line, new_pane_range, floating_range)
     } else {
-        (
-            LinePart {
-                part: "".to_owned(),
-                len: 0,
-            },
-            None,
-            None,
-        )
+        // Neither form fits. An ellipsis in the slot says less than the clock does, and the
+        // clock has its own narrower forms to fall back through.
+        None
     }
+}
+
+/// A hint that drew nothing is not a hint - hand the slot back so the clock keeps it.
+fn hint_with_content(
+    line: LinePart,
+    new_pane_range: Option<(usize, usize)>,
+    floating_range: Option<(usize, usize)>,
+) -> Option<LineWithButtonRanges> {
+    (line.len > 0).then_some((line, new_pane_range, floating_range))
 }
 
 fn text_as_line_part_with_emphasis(text: String, emphases_index: usize, dimmed: bool) -> LinePart {
@@ -1824,6 +1830,68 @@ fn get_common_modifiers(mut keyvec: Vec<&KeyWithModifier>) -> Vec<KeyModifier> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::test_support::{plain_text, with_shipped_keybinds};
+
+    /// An arbitrary but fixed instant, read at UTC so the test does not depend on the host.
+    const FIXED_MS: i64 = 1_757_000_000_000;
+
+    /// The right-hand slot as text, for a mode and a width.
+    fn secondary_slot(mode: InputMode, hint_revealed: bool, max_len: usize) -> String {
+        let mode_info = with_shipped_keybinds(mode);
+        let info = SecondaryInfo {
+            hint_revealed,
+            agent_counts: AgentCounts {
+                busy: 2,
+                waiting: 0,
+                idle: 0,
+            },
+            clock: Clock::at(FIXED_MS, 0),
+        };
+        let (line, _, _) = render_secondary_info(&mode_info, None, max_len, false, false, &info)
+            .expect("the slot fits at these widths");
+        plain_text(line)
+    }
+
+    // The regression this guards: hovering the bar in locked mode revealed a hint that had
+    // nothing to draw - locked mode binds none of these actions - and the slot went blank
+    // instead of keeping the clock.
+    #[test]
+    fn a_hint_with_nothing_to_say_leaves_the_slot_to_the_clock() {
+        let clock = Clock::at(FIXED_MS, 0);
+        let revealed = secondary_slot(InputMode::Locked, true, 200);
+        assert!(
+            revealed.contains(&clock.time),
+            "expected the clock in the slot, got {:?}",
+            revealed
+        );
+        assert_eq!(revealed, secondary_slot(InputMode::Locked, false, 200));
+    }
+
+    #[test]
+    fn a_hint_that_has_something_to_say_still_takes_the_slot() {
+        let clock = Clock::at(FIXED_MS, 0);
+        let revealed = secondary_slot(InputMode::Normal, true, 200);
+        assert!(
+            revealed.contains("New Pane") && revealed.contains("Floating"),
+            "expected the shortcuts in the slot, got {:?}",
+            revealed
+        );
+        assert!(!revealed.contains(&clock.time));
+    }
+
+    // A slot too narrow for even the short form used to draw "...", which says less than the
+    // time does - and the clock has its own narrower forms to fall back through.
+    #[test]
+    fn a_hint_too_wide_for_the_slot_leaves_it_to_the_clock() {
+        let clock = Clock::at(FIXED_MS, 0);
+        let revealed = secondary_slot(InputMode::Normal, true, 12);
+        assert!(
+            revealed.contains(&clock.time) && !revealed.contains("..."),
+            "expected the clock in the narrow slot, got {:?}",
+            revealed
+        );
+    }
 
     fn ctrl(character: char) -> Option<KeyWithModifier> {
         Some(KeyWithModifier::new_with_modifiers(
