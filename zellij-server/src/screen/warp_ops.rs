@@ -595,6 +595,10 @@ impl Screen {
         // A pane whose child is already gone should arrive held, showing its exit
         // status, rather than pretending to run.
         let hold_for_command = child_exit_status.map(|_| cmd.clone());
+        let focus_client = match placement {
+            WarpPlacement::FocusedTab => self.connected_client_to_act_for(client_id),
+            _ => None,
+        };
 
         let (placement, tab_target) = match placement {
             WarpPlacement::Floating => (
@@ -641,6 +645,15 @@ impl Screen {
                 false,
             ))
             .with_context(err_context)?;
+
+        if let Some(client_id) = focus_client {
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::FocusPaneWithId(
+                    pane_id, false, false, client_id, None,
+                ))
+                .with_context(err_context)?;
+        }
 
         if let Some(agent) = payload.agent {
             self.bus

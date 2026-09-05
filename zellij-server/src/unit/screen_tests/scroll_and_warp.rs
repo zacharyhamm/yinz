@@ -172,6 +172,126 @@ fn an_adopted_pane_from_a_client_with_no_screen_goes_to_the_attached_clients_tab
 }
 
 #[test]
+fn an_adopted_focused_tab_pane_gets_focus_and_leaves_scroll_mode() {
+    for default_mode in [InputMode::Normal, InputMode::Locked] {
+        for requester in [1, 7] {
+            let size = Size { cols: 80, rows: 20 };
+            let mut mock_screen = MockScreen::new(size);
+            let client_id = mock_screen.main_client_id;
+            mock_screen.config.options.default_mode = Some(default_mode);
+            // Two panes would each get 800 cells, below this 1600-cell floor.
+            mock_screen.config.options.agent_pane_min_columns = Some(80);
+            mock_screen.config.options.agent_pane_min_rows = Some(20);
+            let screen_thread = mock_screen.run(None, vec![]);
+            let instructions = Watched::new(vec![]);
+            let server_receiver = mock_screen.server_receiver.take().unwrap();
+            let server_thread = log_actions_in_thread!(
+                instructions,
+                ServerInstruction::KillSession,
+                server_receiver
+            );
+            mock_screen
+                .to_screen
+                .send(ScreenInstruction::ChangeMode(
+                    InputMode::Scroll,
+                    None,
+                    client_id,
+                    None,
+                ))
+                .expect("TEST");
+            mock_screen
+                .to_screen
+                .send(ScreenInstruction::AdoptedPaneReady {
+                    terminal_id: 50,
+                    payload: Box::default(),
+                    placement: zellij_utils::data::WarpPlacement::FocusedTab,
+                    client_id: requester,
+                    cmd: RunCommand {
+                        command: PathBuf::from("claude"),
+                        ..Default::default()
+                    },
+                    buffered: vec![],
+                    child_exit_status: None,
+                })
+                .expect("TEST");
+            mock_screen.received_background_jobs.wait_until(
+                "the adopted agent to be focused in the selected tab",
+                zellij_test_support::default_timeout(),
+                |jobs| {
+                    jobs.iter().find_map(|job| match job {
+                        BackgroundJob::ReportSessionInfo(_, info)
+                            if info.tabs.len() == 1
+                                && info.panes.panes.get(&0).is_some_and(|panes| {
+                                    panes.len() == 2
+                                        && panes.iter().any(|pane| {
+                                            pane.id == 50 && !pane.is_plugin && pane.is_focused
+                                        })
+                                }) =>
+                        {
+                            Some(())
+                        },
+                        _ => None,
+                    })
+                },
+            );
+            instructions.wait_until(
+                "focus to request the configured default mode for the attached client",
+                zellij_test_support::default_timeout(),
+                |instructions| {
+                    instructions
+                        .iter()
+                        .any(|instruction| {
+                            matches!(instruction, ServerInstruction::ChangeMode(cid, mode, _)
+                            if *cid == client_id && *mode == default_mode)
+                        })
+                        .then_some(())
+                },
+            );
+            mock_screen.teardown(vec![server_thread, screen_thread]);
+        }
+    }
+}
+
+#[test]
+fn an_adopted_focused_tab_pane_without_attached_clients_is_placed_without_focus() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
+    new_tab(&mut screen, 1, 0);
+    screen.remove_client(1).expect("TEST");
+    assert_eq!(screen.connected_client_to_act_for(7), None);
+    let (to_screen, receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
+    screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    screen
+        .place_adopted_pane(
+            50,
+            WarpedPane::default(),
+            zellij_utils::data::WarpPlacement::FocusedTab,
+            7,
+            RunCommand::default(),
+            vec![],
+            None,
+        )
+        .expect("TEST");
+    let instructions: Vec<_> = receiver
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .collect();
+    assert!(matches!(
+        instructions.as_slice(),
+        [ScreenInstruction::NewPane(
+            PaneId::Terminal(50),
+            _,
+            _,
+            _,
+            _,
+            _,
+            ClientTabIndexOrPaneId::TabIndex(0),
+            _,
+            _
+        )]
+    ));
+}
+
+#[test]
 fn an_adopted_agent_pane_lands_in_the_focused_tab_however_crowded_it_is() {
     // The user asked for the focused tab. `agent_pane_target` moves a
     // client-relative agent pane out of a tab whose share would fall below the

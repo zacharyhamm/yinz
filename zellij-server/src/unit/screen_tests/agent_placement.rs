@@ -631,6 +631,58 @@ fn a_tab_made_for_an_agent_pane_is_pending_until_its_layout_lands() {
     assert!(!screen.has_pending_tabs(), "the layout landed");
 }
 
+#[test]
+fn a_failed_layout_override_clears_the_pending_tab() {
+    use zellij_utils::input::layout::SplitSize;
+
+    let mut screen = screen_with_floor();
+    tab_with_panes(&mut screen, 0, 1, 1);
+    screen
+        .new_tab(1, (vec![], vec![]), None, Some(CLIENT))
+        .expect("TEST");
+    assert!(screen.has_pending_tabs());
+
+    let layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Horizontal,
+        children: vec![TiledPaneLayout {
+            split_size: Some(SplitSize::Fixed(SURFACE.rows + 1)),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    // Fixed sizes fail even on the layout applier's retry ignoring percentages.
+    for ignore_percentages in [false, true] {
+        assert!(layout
+            .position_panes_in_space(&(&SURFACE).into(), None, ignore_percentages, true)
+            .is_err());
+    }
+
+    let tab = screen.tabs.get_mut(&1).expect("TEST");
+    assert!(tab.is_pending());
+    tab.override_layout(
+        layout,
+        vec![],
+        None,
+        None,
+        vec![],
+        vec![],
+        HashMap::new(),
+        false,
+        false,
+        CLIENT,
+        None,
+    )
+    .expect("layout errors are handled internally");
+    assert!(
+        !tab.is_pending(),
+        "a failed override finishes loading the tab"
+    );
+    assert!(
+        !screen.has_pending_tabs(),
+        "navigation must no longer defer"
+    );
+}
+
 /// The plugin that spawned the pane focuses it in the same breath as the spawn response. The
 /// focus waits for the tab's layout: its completion is answered only once the layout lands.
 #[test]
