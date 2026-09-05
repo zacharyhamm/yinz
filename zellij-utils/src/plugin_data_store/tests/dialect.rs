@@ -108,8 +108,8 @@ fn a_put_with_a_uid_is_an_upsert_that_keeps_created_at() {
         sql,
         "INSERT INTO \"e_7\" (\"uid\", \"created_at\", \"updated_at\", \"project\") \
          VALUES (?1, ?2, ?3, ?4) ON CONFLICT(\"uid\") DO UPDATE SET \
-         \"project\" = excluded.\"project\", \"updated_at\" = excluded.\"updated_at\" \
-         RETURNING \"id\""
+         \"project\" = excluded.\"project\", \"updated_at\" = excluded.\"updated_at\", \
+         \"rev\" = \"e_7\".\"rev\" + 1 RETURNING \"id\""
     );
     assert_eq!(
         params,
@@ -131,7 +131,7 @@ fn updates_and_deletes_bind_their_filters_after_their_assignments() {
         build_update(&SQLITE, &schema(), &Pred::eq("uid", "a1"), &values, 9).unwrap();
     assert_eq!(
         sql,
-        "UPDATE \"e_7\" SET \"project\" = ?1, \"updated_at\" = ?2 WHERE \"e_7\".\"uid\" = ?3"
+        "UPDATE \"e_7\" SET \"project\" = ?1, \"updated_at\" = ?2, \"rev\" = \"rev\" + 1 WHERE \"e_7\".\"uid\" = ?3"
     );
     assert_eq!(params.len(), 3);
     let (sql, params) = build_delete(&SQLITE, &schema(), &Pred::not_null("project")).unwrap();

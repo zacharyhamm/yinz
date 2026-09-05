@@ -28,6 +28,7 @@ use super::dialect::Dialect;
 use super::engine;
 use super::executor::Executor;
 use super::sql::{quote_ident, SqlContext, StorageError};
+use super::store_migrations;
 
 use self::dialect::POSTGRES;
 use self::value::read_value;
@@ -36,22 +37,6 @@ use self::value::read_value;
 /// Arbitrary, and shared with any other application that happens to pick the same number, which
 /// costs a little waiting and nothing else.
 const SCHEMA_LOCK_KEY: i64 = 0x7a65_6c6c_696a_5f70; // "zellij_p"
-
-/// The store's own tables, in the order they came to exist. `bootstrap` applies the ones past the
-/// recorded version and records the new one, so a database created by an older zellij is brought
-/// forward on connect.
-const MIGRATIONS: &[&str] = &[
-    // 1: the entity registry.
-    r#"CREATE TABLE store_entities (
-           id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-           namespace TEXT COLLATE "C" NOT NULL,
-           entity TEXT COLLATE "C" NOT NULL,
-           version BIGINT NOT NULL,
-           definition TEXT NOT NULL,
-           owner_plugin TEXT NOT NULL,
-           UNIQUE (namespace, entity)
-       );"#,
-];
 
 /// The Postgres plugin-data backend. It connects lazily on first use.
 pub struct PostgresPluginDataBackend {
@@ -274,6 +259,13 @@ impl PostgresPluginDataBackend {
             "failed to bootstrap the plugin data store",
             bootstrap(&mut connection.client, &self.schema),
         )?;
+        // Not through `self.in_transaction`: this runs inside `with_client`, which is holding the
+        // connection mutex, and taking it again would deadlock. The advisory lock is what makes
+        // this safe against another server connecting at the same moment.
+        in_transaction_on(&mut connection, "store migration", |exec| {
+            exec.lock_schema()?;
+            store_migrations::migrate_store(exec)
+        })?;
         Ok(connection)
     }
 
@@ -283,28 +275,38 @@ impl PostgresPluginDataBackend {
         what: &str,
         f: impl FnOnce(&mut dyn Executor) -> Result<T, DataError>,
     ) -> Result<T, DataError> {
-        self.with_client(|client| {
-            client.run("failed to begin transaction", async {
-                client
-                    .client
-                    .batch_execute("BEGIN")
-                    .await
-                    .with_ctx(|| format!("failed to begin a {what} transaction"))
-            })?;
-            let result = f(&mut PgExec(client));
-            if result.is_ok() || !client.is_closed() {
-                let command = if result.is_ok() { "COMMIT" } else { "ROLLBACK" };
-                client.run(command, async {
-                    client
-                        .client
-                        .batch_execute(command)
-                        .await
-                        .with_ctx(|| format!("failed to {command} the {what}"))
-                })?;
-            }
-            result
-        })
+        self.with_client(|client| in_transaction_on(client, what, f))
     }
+}
+
+/// [`PostgresPluginDataBackend::in_transaction`] against a connection already in hand.
+///
+/// Split out so that `connect` can open a transaction on the connection it is still building,
+/// before that connection is reachable through the backend's mutex.
+fn in_transaction_on<T>(
+    client: &mut Connection,
+    what: &str,
+    f: impl FnOnce(&mut dyn Executor) -> Result<T, DataError>,
+) -> Result<T, DataError> {
+    client.run("failed to begin transaction", async {
+        client
+            .client
+            .batch_execute("BEGIN")
+            .await
+            .with_ctx(|| format!("failed to begin a {what} transaction"))
+    })?;
+    let result = f(&mut PgExec(client));
+    if result.is_ok() || !client.is_closed() {
+        let command = if result.is_ok() { "COMMIT" } else { "ROLLBACK" };
+        client.run(command, async {
+            client
+                .client
+                .batch_execute(command)
+                .await
+                .with_ctx(|| format!("failed to {command} the {what}"))
+        })?;
+    }
+    result
 }
 
 impl PluginDataBackend for PostgresPluginDataBackend {
@@ -342,12 +344,14 @@ impl PluginDataBackend for PostgresPluginDataBackend {
     }
 }
 
-/// Make sure the schema and the store's own tables exist and are current, then point the session
-/// at the schema.
+/// Make sure the schema exists, then point the session at it.
 ///
-/// Runs under the advisory lock from start to finish. `CREATE SCHEMA IF NOT EXISTS` races with
-/// itself across two connections — both see nothing, one of them fails — and so does anything
-/// that follows it.
+/// Runs under the advisory lock: `CREATE SCHEMA IF NOT EXISTS` races with itself across two
+/// connections — both see nothing, one of them fails.
+///
+/// Only the schema. The store's own tables are brought up to date afterwards by
+/// [`store_migrations::migrate_store`], on the synchronous side, because those steps are shared
+/// with SQLite and are written against [`Executor`] rather than against a Postgres client.
 async fn bootstrap(client: &mut Client, schema: &str) -> Result<(), DataError> {
     let schema_q = quote_ident(schema);
     let tx = client
@@ -356,43 +360,10 @@ async fn bootstrap(client: &mut Client, schema: &str) -> Result<(), DataError> {
         .ctx("failed to begin the bootstrap transaction")?;
     tx.batch_execute(&format!(
         "SELECT pg_advisory_xact_lock({SCHEMA_LOCK_KEY});
-         CREATE SCHEMA IF NOT EXISTS {schema_q};
-         SET LOCAL search_path TO {schema_q};
-         CREATE TABLE IF NOT EXISTS store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+         CREATE SCHEMA IF NOT EXISTS {schema_q};"
     ))
     .await
     .ctx("failed to prepare the plugin data store's schema")?;
-    let version: i64 = tx
-        .query_opt(
-            "SELECT value FROM store_meta WHERE key = 'schema_version'",
-            &[],
-        )
-        .await
-        .ctx("failed to read the store's schema version")?
-        .map(|row| row.get::<_, String>(0))
-        .map(|value| value.parse::<i64>().unwrap_or(0))
-        .unwrap_or(0);
-    let current = MIGRATIONS.len() as i64;
-    if version > current {
-        return Err(DataError::Storage(format!(
-            "the plugin data store in schema `{}` is at version {}, newer than this zellij's {}",
-            schema, version, current
-        )));
-    }
-    for (index, migration) in MIGRATIONS.iter().enumerate().skip(version as usize) {
-        tx.batch_execute(migration)
-            .await
-            .with_ctx(|| format!("failed to apply store migration {}", index + 1))?;
-    }
-    if version < current {
-        tx.execute(
-            "INSERT INTO store_meta (key, value) VALUES ('schema_version', $1)
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            &[&current.to_string()],
-        )
-        .await
-        .ctx("failed to record the store's schema version")?;
-    }
     tx.commit().await.ctx("failed to commit the bootstrap")?;
     client
         .batch_execute(&format!("SET search_path TO {schema_q};"))

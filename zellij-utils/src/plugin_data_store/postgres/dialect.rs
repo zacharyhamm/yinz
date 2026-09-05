@@ -44,13 +44,34 @@ impl Dialect for PostgresDialect {
         }
     }
 
-    fn store_columns(&self) -> [String; 4] {
+    fn store_columns(&self) -> [String; 5] {
         [
             "id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY".to_owned(),
             "uid TEXT COLLATE \"C\" UNIQUE".to_owned(),
             "created_at BIGINT NOT NULL".to_owned(),
             "updated_at BIGINT NOT NULL".to_owned(),
+            "rev BIGINT NOT NULL DEFAULT 1".to_owned(),
         ]
+    }
+
+    fn rev_column_added(&self) -> &'static str {
+        "BIGINT NOT NULL DEFAULT 1"
+    }
+
+    fn registry_ddl(&self) -> &'static str {
+        r#"CREATE TABLE IF NOT EXISTS store_entities (
+               id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+               namespace TEXT COLLATE "C" NOT NULL,
+               entity TEXT COLLATE "C" NOT NULL,
+               version BIGINT NOT NULL,
+               definition TEXT NOT NULL,
+               owner_plugin TEXT NOT NULL,
+               UNIQUE (namespace, entity)
+           );"#
+    }
+
+    fn store_meta_ddl(&self) -> &'static str {
+        "CREATE TABLE IF NOT EXISTS store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
     }
 
     fn literal(&self, value: &DataValue) -> Result<String, DataError> {

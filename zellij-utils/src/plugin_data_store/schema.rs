@@ -7,7 +7,9 @@
 use crate::plugin_data::{AttrDef, AttrKind, DataError, EntityDef};
 
 /// The store's own columns, present on every entity table.
-pub(super) const STORE_COLUMNS: &[&str] = &["id", "uid", "created_at", "updated_at"];
+///
+/// The order matches [`super::dialect::Dialect::store_columns`], which supplies the definitions.
+pub(super) const STORE_COLUMNS: &[&str] = &["id", "uid", "created_at", "updated_at", "rev"];
 
 /// A stored entity, as read back from the registry.
 #[derive(Debug, Clone)]
