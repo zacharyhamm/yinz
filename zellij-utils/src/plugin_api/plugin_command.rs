@@ -203,7 +203,7 @@ use crate::data::{
     OverlayPlacement, PaneGitProbe, PaneId, PermissionType, PluginCommand, QueueSnapshot,
     QueueStatusResponse, RecordingSummary, RegexHighlight, RenameLayoutResponse,
     SaveLayoutResponse, SearchHit, SessionInfo, SessionListSnapshot, SpawnAgentResponse,
-    WarpPaneResponse, WarpPlacement,
+    SpawnedAgent, WarpPaneResponse, WarpPlacement,
 };
 use crate::input::actions::Action;
 use crate::input::layout::PercentOrFixed;
@@ -6394,7 +6394,7 @@ impl From<AgentSpawnSpec> for ProtobufAgentSpawnSpec {
             branch: spec.branch,
             base: spec.base,
             worktree: spec.worktree,
-            worktree_path: spec.worktree_path,
+            worktree_dir: spec.worktree_dir,
             env: spec
                 .env
                 .into_iter()
@@ -6405,6 +6405,8 @@ impl From<AgentSpawnSpec> for ProtobufAgentSpawnSpec {
             hooks: spec.hooks,
             firecracker: spec.firecracker,
             firecracker_image: spec.firecracker_image,
+            reuse: spec.reuse,
+            allow_outside_worktree: spec.allow_outside_worktree,
         }
     }
 }
@@ -6421,7 +6423,7 @@ impl From<ProtobufAgentSpawnSpec> for AgentSpawnSpec {
             branch: spec.branch,
             base: spec.base,
             worktree: spec.worktree,
-            worktree_path: spec.worktree_path,
+            worktree_dir: spec.worktree_dir,
             env: spec
                 .env
                 .into_iter()
@@ -6432,18 +6434,26 @@ impl From<ProtobufAgentSpawnSpec> for AgentSpawnSpec {
             hooks: spec.hooks,
             firecracker: spec.firecracker,
             firecracker_image: spec.firecracker_image,
+            reuse: spec.reuse,
+            allow_outside_worktree: spec.allow_outside_worktree,
         }
     }
 }
 
 impl From<SpawnAgentResponse> for ProtobufSpawnAgentResponse {
     fn from(response: SpawnAgentResponse) -> Self {
-        let result = match response {
-            Ok(pane_id) => spawn_agent_response::Result::PaneId(pane_id.try_into().unwrap()),
-            Err(error) => spawn_agent_response::Result::Error(error),
+        let (result, branch, cwd) = match response {
+            Ok(agent) => (
+                spawn_agent_response::Result::PaneId(agent.pane_id.try_into().unwrap()),
+                agent.branch,
+                agent.cwd.map(|cwd| cwd.display().to_string()),
+            ),
+            Err(error) => (spawn_agent_response::Result::Error(error), None, None),
         };
         Self {
             result: Some(result),
+            branch,
+            cwd,
         }
     }
 }
@@ -6452,8 +6462,14 @@ impl TryFrom<ProtobufSpawnAgentResponse> for SpawnAgentResponse {
     type Error = &'static str;
 
     fn try_from(response: ProtobufSpawnAgentResponse) -> Result<Self, Self::Error> {
+        let branch = response.branch;
+        let cwd = response.cwd.map(PathBuf::from);
         match response.result {
-            Some(spawn_agent_response::Result::PaneId(pane_id)) => Ok(Ok(pane_id.try_into()?)),
+            Some(spawn_agent_response::Result::PaneId(pane_id)) => Ok(Ok(SpawnedAgent {
+                pane_id: pane_id.try_into()?,
+                branch,
+                cwd,
+            })),
             Some(spawn_agent_response::Result::Error(error)) => Ok(Err(error)),
             None => Err("SpawnAgentResponse without a result"),
         }
@@ -6859,7 +6875,9 @@ mod tests {
                 branch: Some("fix-parser".to_owned()),
                 base: Some("main".to_owned()),
                 worktree: Some(true),
-                worktree_path: Some(".worktrees/fix-parser".to_owned()),
+                worktree_dir: Some(".worktrees".to_owned()),
+                reuse: Some(true),
+                allow_outside_worktree: Some(true),
                 env: BTreeMap::from([("TOKEN".to_owned(), "t".to_owned())]),
                 permission_mode: Some("skip".to_owned()),
                 resume: Some("last".to_owned()),

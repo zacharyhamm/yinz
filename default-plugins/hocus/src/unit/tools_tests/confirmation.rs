@@ -496,6 +496,37 @@ fn spawning_an_agent_on_a_branch_says_where_the_branch_and_the_worktree_go() {
     assert!(!in_place.contains("worktree"), "{in_place}");
 }
 
+/// Two things the sentence has to promise correctly now that the host decides them:
+/// whether a taken name is joined or stepped around, and whether the agent will be
+/// loose in the checkout the user is working in.
+#[test]
+fn the_sentence_says_whether_a_name_is_joined_and_whether_the_agent_is_left_loose() {
+    let fresh = consequence(&call(
+        "agent_spawn",
+        r#"{"agent":"claude","branch":"fix-parser","prompt":"fix the parser"}"#,
+    ))
+    .unwrap();
+    assert!(fresh.contains("the next free name"), "{fresh}");
+
+    let reusing = consequence(&call(
+        "agent_spawn",
+        r#"{"agent":"claude","branch":"fix-parser","reuse":true,"prompt":"fix the parser"}"#,
+    ))
+    .unwrap();
+    assert!(reusing.contains("existing or new"), "{reusing}");
+    assert!(!reusing.contains("the next free name"), "{reusing}");
+
+    let loose = consequence(&call(
+        "agent_spawn",
+        r#"{"agent":"claude","allow_outside_worktree":true,"prompt":"go"}"#,
+    ))
+    .unwrap();
+    assert!(
+        loose.contains("in the current checkout rather than a worktree of its own"),
+        "{loose}"
+    );
+}
+
 /// `cursor` is the one agent that is not its own program, and the sentence names
 /// the program — telling someone you are about to run `cursor` when you are about
 /// to run `cursor-agent` is naming the editor, not the agent.

@@ -9,7 +9,8 @@
 --   prompt    what to ask the agent for
 --   check     the shell command whose exit status says whether it did it
 --   agent     claude, codex or cursor
---   branch    a branch to work on, in a worktree of its own (absent: the checkout as it is)
+--   branch    a branch to work on, in a worktree of its own (absent: the checkout as it is,
+--             which the host only allows because of `allow_outside_worktree` below)
 --   retries   how many times a failure is handed back before giving up
 --   trace     "true" to log every command dispatched and every event received
 --
@@ -82,6 +83,9 @@ function M.load(config)
       kind = config.agent,
       prompt = config.prompt,
       branch = config.branch,
+      -- Without a branch there is no worktree to cut, and an agent loose in the checkout
+      -- somebody is working in has to be asked for rather than fallen into.
+      allow_outside_worktree = config.branch == nil,
       name = "harness: " .. config.agent,
     }
     M.pane = pane

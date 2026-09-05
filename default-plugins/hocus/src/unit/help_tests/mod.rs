@@ -135,7 +135,13 @@ fn a_long_option_list_becomes_one_word() {
         "/new_tab [cwd=<string>] [name=<string>]"
     );
     // The table is what the usage line defers to, so it must be whole.
-    for key in ["worktree_path", "permission_mode", "firecracker_image"] {
+    for key in [
+        "worktree_dir",
+        "reuse",
+        "allow_outside_worktree",
+        "permission_mode",
+        "firecracker_image",
+    ] {
         assert!(help("agent_spawn").contains(key), "{key} is named nowhere");
     }
 }

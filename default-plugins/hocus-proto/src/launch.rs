@@ -14,7 +14,7 @@ pub use zellij_tile::agent::launch::*;
 
 use std::cell::Cell;
 use std::time::{SystemTime, UNIX_EPOCH};
-use zellij_tile::prelude::{PaneId, HOCUS_AGENT_PANE_CONTEXT};
+use zellij_tile::prelude::{SpawnedAgent, HOCUS_AGENT_PANE_CONTEXT};
 
 /// A VM used by exactly one automatic agent when no worktree will be mirrored.
 pub fn unique_firecracker_vm() -> String {
@@ -41,7 +41,7 @@ pub fn unique_firecracker_vm() -> String {
 /// Always with a repository, and so always with a folder for a Firecracker VM to be named
 /// after and mirror: the modal's VM name is a placeholder the host replaces.
 #[cfg(target_family = "wasm")]
-pub fn open(spec: &Spec, source_directory: std::path::PathBuf) -> Result<PaneId, String> {
+pub fn open(spec: &Spec, source_directory: std::path::PathBuf) -> Result<SpawnedAgent, String> {
     zellij_tile::shim::spawn_agent(
         spec.clone(),
         Some(source_directory),
@@ -59,7 +59,7 @@ pub fn open(spec: &Spec, source_directory: std::path::PathBuf) -> Result<PaneId,
 /// [`crate::store::Host`]'s stub does: a test that reaches here has left the pure
 /// half, and should say so instead of passing against a pane that was never opened.
 #[cfg(not(target_family = "wasm"))]
-pub fn open(_spec: &Spec, _source_directory: std::path::PathBuf) -> Result<PaneId, String> {
+pub fn open(_spec: &Spec, _source_directory: std::path::PathBuf) -> Result<SpawnedAgent, String> {
     Err("agents cannot be started outside zellij".to_owned())
 }
 

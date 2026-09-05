@@ -224,14 +224,26 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
             }
             // Named in full, because this is the half that writes to the user's
             // repository and a confirmation that hid it would be worth nothing.
+            let reuse = args.reuse.unwrap_or(false);
             match checkout {
-                GitCheckout::NewWorktree { base, path, .. } => sentence.push_str(&format!(
-                    ", on a new worktree `{}` branched from `{base}`",
-                    path.display()
-                )),
+                GitCheckout::NewWorktree { base, path, .. } => {
+                    sentence.push_str(&format!(
+                        ", on a{} worktree `{}` branched from `{base}`",
+                        if reuse { "n existing or new" } else { " new" },
+                        path.display()
+                    ));
+                    if !reuse {
+                        sentence.push_str(" (the next free name if that one is taken)");
+                    }
+                },
                 GitCheckout::NewBranch { branch, base } => sentence.push_str(&format!(
                     ", after switching this checkout to a new branch `{branch}` off `{base}`"
                 )),
+                // The half worth naming here is not the git work - there is none - but where
+                // the agent will be: loose in a checkout somebody is working in.
+                GitCheckout::Current if args.allow_outside_worktree.unwrap_or(false) => {
+                    sentence.push_str(", in the current checkout rather than a worktree of its own")
+                },
                 GitCheckout::Current => {},
             }
             sentence
@@ -1532,7 +1544,7 @@ pub fn specs() -> Value {
                     },
                     "branch": {
                         "type": "string",
-                        "description": "Branch to create; omit to work in the current checkout.",
+                        "description": "Branch to create; its worktree is named after it.",
                     },
                     "base": {
                         "type": "string",
@@ -1542,9 +1554,23 @@ pub fn specs() -> Value {
                         "type": "boolean",
                         "description": "Defaults true when branch is given.",
                     },
-                    "worktree_path": {
+                    "worktree_dir": {
                         "type": "string",
-                        "description": format!("From the repo root. Defaults to {}<branch>.", launch::WORKTREE_PREFIX),
+                        "description": format!(
+                            "The directory the worktree is placed in, from the repo root. \
+                             Defaults to {}. The worktree itself is always named for the branch.",
+                            launch::WORKTREE_PREFIX,
+                        ),
+                    },
+                    "reuse": {
+                        "type": "boolean",
+                        "description": "Join the existing branch or worktree of this name \
+                                        instead of cutting the next free one (<branch>-2).",
+                    },
+                    "allow_outside_worktree": {
+                        "type": "boolean",
+                        "description": "Required to start an agent anywhere but a linked \
+                                        worktree - the primary checkout, or no repository.",
                     },
                     "env": {
                         "type": "object",
@@ -2683,7 +2709,7 @@ pub struct Args {
     pub kind: Option<String>,
     // Starting an agent. `command`, `args`, `cwd`, `project`, `kind` and `prompt`
     // above are `agent_spawn`'s too — `prompt` is `schedule`'s, reused rather than
-    // shadowed. `worktree_path` is spelled out because `path` is the file tools'.
+    // shadowed. `worktree_dir` is spelled out because `path` is the file tools'.
     pub agent: Option<String>,
     pub expected: Option<String>,
     pub model: Option<String>,
@@ -2691,7 +2717,9 @@ pub struct Args {
     pub branch: Option<String>,
     pub base: Option<String>,
     pub worktree: Option<bool>,
-    pub worktree_path: Option<String>,
+    pub worktree_dir: Option<String>,
+    pub reuse: Option<bool>,
+    pub allow_outside_worktree: Option<bool>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     pub permission_mode: Option<String>,
@@ -2960,7 +2988,9 @@ impl Args {
             branch: self.branch.clone(),
             base: self.base.clone(),
             worktree: self.worktree,
-            worktree_path: self.worktree_path.clone(),
+            worktree_dir: self.worktree_dir.clone(),
+            reuse: self.reuse,
+            allow_outside_worktree: self.allow_outside_worktree,
             env: self.env.clone(),
             permission_mode: self.permission_mode.clone(),
             resume: self.resume.clone(),
@@ -4783,10 +4813,12 @@ mod host {
         // The git work resolves the repository from this folder, so it cannot be left
         // unset. The focused pane's cwd is the one the user would mean.
         let source = source.map_or_else(focused_cwd, PathBuf::from);
-        let checkout = match launch::plan(spec) {
-            Ok((_, checkout)) => checkout,
-            Err(error) => return error,
-        };
+        // Planned here only to refuse a spec the host would refuse anyway, before a pane is
+        // opened for it. What the agent *got* is the host's to say - a name already taken is
+        // cut afresh with a suffix - so the report below reads the answer, not this.
+        if let Err(error) = launch::plan(spec) {
+            return error;
+        }
         match zellij_tile::shim::spawn_agent(
             spec.clone(),
             Some(source),
@@ -4795,18 +4827,16 @@ mod host {
             BTreeMap::new(),
             automatic_firecracker_vm,
         ) {
-            Ok(pane) => {
-                let (id, is_plugin) = split_pane_id(pane);
+            Ok(agent) => {
+                let (id, is_plugin) = split_pane_id(agent.pane_id);
                 let mut opened = json!({
                     "opened": true, "pane_id": id, "is_plugin": is_plugin,
                 });
-                match checkout {
-                    GitCheckout::NewWorktree { branch, path, .. } => {
-                        opened["branch"] = json!(branch);
-                        opened["cwd"] = json!(path.display().to_string());
-                    },
-                    GitCheckout::NewBranch { branch, .. } => opened["branch"] = json!(branch),
-                    GitCheckout::Current => {},
+                if let Some(branch) = agent.branch {
+                    opened["branch"] = json!(branch);
+                }
+                if let Some(cwd) = agent.cwd {
+                    opened["cwd"] = json!(cwd.display().to_string());
                 }
                 opened.to_string()
             },

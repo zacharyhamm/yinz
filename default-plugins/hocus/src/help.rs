@@ -299,7 +299,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "agent_spawn",
-        "Start a coding agent in a new pane. Give agent for a known agent, or command for a different program; a call with neither is an error. Give kind to name an agent that hocus does not know: lowercase letters, digits, _ or -, up to 32 characters. Give branch to cut a new branch. The branch gets a git worktree of its own, under the repository root; with worktree set to false, this checkout moves to the new branch instead. A cwd outside the project is an error. Give permission_mode as skip for no permission checks, or as one of the modes of the agent itself. To write a zellij Lua plugin, use plugin_write instead of an agent.",
+        "Start a coding agent in a new pane. Give agent for a known agent, or command for a different program; a call with neither is an error. Give kind to name an agent that hocus does not know: lowercase letters, digits, _ or -, up to 32 characters. Give branch to cut a new branch. The branch gets a git worktree of its own, named after it, in worktree_dir under the repository root (.worktrees/ by default); with worktree set to false, this checkout moves to the new branch instead. A branch or worktree name already taken is cut afresh as <branch>-2, unless reuse says the existing one is the work you mean. An agent that would start anywhere but a linked worktree - the primary checkout, or a folder that is no repository - is refused unless allow_outside_worktree says so. A cwd outside the project is an error. Give permission_mode as skip for no permission checks, or as one of the modes of the agent itself. To write a zellij Lua plugin, use plugin_write instead of an agent.",
     ),
     (
         "slack_status",

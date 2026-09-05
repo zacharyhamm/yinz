@@ -27,6 +27,7 @@ const BASE: &str = "base";
 const BRANCH: &str = "branch";
 const WORKTREE: &str = "worktree";
 const PATH: &str = "path";
+const REUSE: &str = "reuse";
 /// Which question a `RunCommandResult` is answering, and which round it belongs
 /// to. Both travel in the command's context, which comes back verbatim.
 const GIT_PROBE: &str = "git_probe";
@@ -101,7 +102,6 @@ struct State {
     projects: Registry,
     plugin_id: u32,
     job: Job,
-    path_edited: bool,
     firecracker_image_edited: bool,
     error: Option<String>,
     /// What the fork modal is forking, for its status row. Outlived by the error, which
@@ -167,11 +167,20 @@ impl Default for State {
             .checkbox(WORKTREE, "Use worktree", Checkbox::new(true))
             .combo(
                 PATH,
-                // Named because a relative path is anchored to the repository's
+                // Where the worktree is *placed*, never what it is called: a worktree
+                // is named after its branch, here and everywhere else. Named "from
+                // repo root" because a relative path is anchored to the repository's
                 // primary checkout, not to the pane's cwd — which differs whenever
                 // the agent asking sits in a worktree already.
-                "Worktree path (from repo root)",
+                "Worktree directory (from repo root)",
                 Combo::empty().with_text(launch::WORKTREE_PREFIX),
+            )
+            // Off, because joining work somebody else has open is a thing to ask for.
+            // Unticked, a branch name already taken is cut afresh as `<branch>-2`.
+            .checkbox(
+                REUSE,
+                "Reuse existing branch or worktree",
+                Checkbox::new(false),
             )
             .button("create", Button::new("Create agent"))
             // Half a form filled in and an Enter pressed out of habit used to
@@ -189,7 +198,6 @@ impl Default for State {
             projects: Registry::new(),
             plugin_id: 0,
             job: Job::New,
-            path_edited: false,
             firecracker_image_edited: false,
             error: None,
             note: None,
@@ -632,13 +640,16 @@ fn branch_suggestions(stdout: &str) -> Vec<String> {
         .collect()
 }
 
-/// The repository's linked worktrees, written the way the field is labelled.
+/// The directories this repository's linked worktrees already live in, written the
+/// way the field is labelled.
 ///
-/// `git worktree list --porcelain` opens each block with a `worktree <path>`
-/// line and lists the primary checkout first. That first entry is dropped: it is
-/// the repository itself, which is what "use worktree" unticked already means,
-/// and offering it as a worktree path would be offering to work in the main
-/// checkout under another name.
+/// The field names where a worktree is *placed*, never the worktree itself - that
+/// is always the branch - so what is on offer is each existing worktree's parent,
+/// deduplicated, and not the worktrees themselves.
+///
+/// `git worktree list --porcelain` opens each block with a `worktree <path>` line
+/// and lists the primary checkout first. That first entry is dropped: it is the
+/// repository itself, which is what "use worktree" unticked already means.
 ///
 /// The rest are relativised against it, because the field is anchored to the
 /// primary checkout ("from repo root") - and left absolute when they live
@@ -652,14 +663,24 @@ fn worktree_suggestions(porcelain: &str) -> Vec<String> {
     let Some(primary) = paths.next() else {
         return vec![];
     };
-    paths
-        .map(|path| {
-            Path::new(path)
-                .strip_prefix(primary)
-                .map(|relative| relative.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| path.to_owned())
-        })
-        .collect()
+    let mut directories: Vec<String> = vec![];
+    for path in paths {
+        let directory = Path::new(path)
+            .parent()
+            .unwrap_or_else(|| Path::new(path))
+            .to_path_buf();
+        let written = directory
+            .strip_prefix(primary)
+            .map(|relative| relative.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| directory.to_string_lossy().into_owned());
+        // A worktree sitting directly in the primary checkout relativises to
+        // nothing, and an empty suggestion is not one.
+        if written.is_empty() || directories.contains(&written) {
+            continue;
+        }
+        directories.push(written);
+    }
+    directories
 }
 
 /// What the project select offers, and the index of the one that starts
@@ -835,15 +856,6 @@ impl State {
         if id == WORKTREE && self.dialog.form().checked(WORKTREE) {
             self.set_checked(CREATE_BRANCH, true);
         }
-        if id == PATH {
-            self.path_edited = true;
-        }
-        if id == BRANCH && !self.path_edited {
-            let branch = self.dialog.form().text(BRANCH).to_owned();
-            if let Some(combo) = self.dialog.form_mut().combo_by_id_mut(PATH) {
-                combo.set_text(launch::worktree_path_for(&branch));
-            }
-        }
     }
 
     fn set_text(&mut self, id: &str, text: &str) {
@@ -943,8 +955,8 @@ impl State {
         }
         let source = source_directory(self.dialog.form(), &self.projects, &self.source_directory);
         match launch::open(&spec(self.dialog.form()), source) {
-            Ok(pane_id) => {
-                hand_over_focus(pane_id);
+            Ok(agent) => {
+                hand_over_focus(agent.pane_id);
                 false
             },
             Err(error) => {
@@ -1006,7 +1018,16 @@ fn spec(form: &Form) -> launch::Spec {
         // underneath an unchecked `create_branch`, and reporting it there would ask
         // `launch` for a worktree with nothing to put in it.
         worktree: form.checked(CREATE_BRANCH).then(|| form.checked(WORKTREE)),
-        worktree_path: Some(form.text(PATH).to_owned()),
+        // Only alongside a worktree, for the same reason: `launch` refuses a directory
+        // to put a worktree in on a spec that will not cut one.
+        worktree_dir: (form.checked(CREATE_BRANCH) && form.checked(WORKTREE))
+            .then(|| form.text(PATH).to_owned()),
+        reuse: Some(form.checked(REUSE)),
+        // The modal's exemption from the guard `agent_spawn` and `zellij.agent.spawn` are
+        // held to. Unticking "Use worktree" is a person looking straight at the box and
+        // saying so, which is the whole of what the override asks a caller to do; making
+        // them tick a second box beside it would say nothing the first did not.
+        allow_outside_worktree: Some(!form.checked(CREATE_BRANCH) || !form.checked(WORKTREE)),
         ..Default::default()
     }
 }
@@ -1025,7 +1046,7 @@ fn request(form: &Form) -> Result<(CommandToRun, GitCheckout), String> {
             return Err("branch and base are required".to_owned());
         }
         if form.checked(WORKTREE) && form.text(PATH).trim().is_empty() {
-            return Err("worktree path is required".to_owned());
+            return Err("worktree directory is required".to_owned());
         }
     }
     launch::plan(&spec(form))
@@ -1108,8 +1129,8 @@ mod tests {
     #[test]
     fn the_modal_is_tall_enough_for_the_whole_dialog() {
         let state = State::default();
-        assert_eq!(modal_height(&state.dialog), "19");
-        assert_eq!(state.dialog.height() + FRAME_ROWS, 19);
+        assert_eq!(modal_height(&state.dialog), "20");
+        assert_eq!(state.dialog.height() + FRAME_ROWS, 20);
     }
 
     #[test]
@@ -1240,8 +1261,30 @@ mod tests {
         state.set_text(PATH, "");
         assert_eq!(
             request(state.dialog.form()).unwrap_err(),
-            "worktree path is required"
+            "worktree directory is required"
         );
+    }
+
+    /// The modal's exemption from the guard every other caller is held to: unticking
+    /// a box is the deliberate act the override asks for, so the spec carries it. With
+    /// the box ticked there is a worktree to land in and nothing to excuse.
+    #[test]
+    fn leaving_the_worktree_box_unticked_carries_the_override_itself() {
+        let mut state = State::default();
+        state.set_text(BRANCH, "topic");
+        assert_eq!(
+            spec(state.dialog.form()).allow_outside_worktree,
+            Some(false)
+        );
+
+        state.set_checked(WORKTREE, false);
+        assert_eq!(spec(state.dialog.form()).allow_outside_worktree, Some(true));
+        // And a directory to put a worktree in is not reported when none is cut:
+        // `launch` refuses that pairing.
+        assert_eq!(spec(state.dialog.form()).worktree_dir, None);
+
+        state.set_checked(CREATE_BRANCH, false);
+        assert_eq!(spec(state.dialog.form()).allow_outside_worktree, Some(true));
     }
 
     #[test]
@@ -1514,18 +1557,21 @@ mod tests {
         assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "");
     }
 
-    /// The primary checkout is not a worktree path anyone can ask for - leaving
-    /// the "use worktree" box unticked is what running there means - and the
-    /// rest are written the way the field is labelled.
+    /// The field says where a worktree is *placed*, so what is offered is the
+    /// directories the linked ones already live in, each once. The primary checkout
+    /// is not among them - leaving the "use worktree" box unticked is what running
+    /// there means - and the rest are written the way the field is labelled.
     #[test]
-    fn the_worktree_suggestions_are_the_linked_checkouts_relative_to_the_root() {
+    fn the_worktree_suggestions_are_the_directories_the_linked_checkouts_live_in() {
         let porcelain = "worktree /work/zellij\nHEAD abcd\nbranch refs/heads/main\n\
              \nworktree /work/zellij/.worktrees/topic\nHEAD ef01\nbranch refs/heads/topic\n\
+             \nworktree /work/zellij/.worktrees/other\nHEAD ef02\nbranch refs/heads/other\n\
              \nworktree /elsewhere/detached\nHEAD 2345\ndetached\n";
         assert_eq!(
             worktree_suggestions(porcelain),
-            // The one outside the root cannot be written relative to it.
-            [".worktrees/topic", "/elsewhere/detached"]
+            // Two worktrees in one directory are one suggestion, and the one outside
+            // the root cannot be written relative to it.
+            [".worktrees", "/elsewhere"]
         );
         // A repository with no linked worktrees has nothing to suggest, and a
         // folder that is not a checkout answers with nothing at all.
@@ -1563,7 +1609,7 @@ mod tests {
         ));
         assert_eq!(
             state.dialog.form().combo_by_id(PATH).unwrap().suggestions(),
-            [".worktrees/topic"]
+            [".worktrees"]
         );
         // The text the field started with is the value; a suggestion list never
         // touches it.

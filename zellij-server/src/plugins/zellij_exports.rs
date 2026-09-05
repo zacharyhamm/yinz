@@ -63,8 +63,8 @@ use zellij_utils::data::{
     OpenTerminalNearPluginResponse, OpenTerminalPaneInPlaceOfPaneIdResponse, OpenTerminalResponse,
     OriginatingPlugin, OrphanedPane, OverlayPlacement, PaneFrameStyle, PaneScrollbackResponse,
     PermissionStatus, PermissionType, PluginPermission, RegexHighlight, RenameLayoutResponse,
-    SaveLayoutResponse, SpawnAgentResponse, TabMetadata, WarpPaneResponse, WarpPlacement,
-    HOCUS_AGENT_PANE_CONTEXT,
+    SaveLayoutResponse, SpawnAgentResponse, SpawnedAgent, TabMetadata, WarpPaneResponse,
+    WarpPlacement, HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::home::{absolute_lexical, default_layout_dir, default_user_plugin_dir};
 use zellij_utils::input::permission::PermissionCache;
@@ -2626,7 +2626,29 @@ fn spawn_agent(
             }
         });
         let checkout_made = !matches!(checkout, GitCheckout::Current);
-        let folder = agent_folder(checkout, cwd, source)?;
+        // A Firecracker pane with nothing of this machine in it does not run in `folder` at
+        // all - `place_agent` leaves the guest's own workspace alone - so there is no host
+        // checkout for the guard to have an opinion about. Computed once, here, so the two
+        // cannot come to disagree about which case this is.
+        let guest_only =
+            command.target.is_firecracker() && !automatic_firecracker_vm && !checkout_made;
+        // An agent loose in the checkout the user is working in - or in a folder that is no
+        // repository at all - is a thing to ask for, not a thing to fall into by leaving
+        // `branch` out. The resolved folder is what is checked, not the spec: a branch held
+        // by another worktree sends the agent there, and that is a worktree.
+        //
+        // Workflow helpers are the exception, and were before this: they are *required* to
+        // run in the existing host checkout (see above), so refusing them for it would leave
+        // them nowhere to run.
+        let guard = if spec.allow_outside_worktree.unwrap_or(false) || host_workflow || guest_only {
+            WorktreeGuard::Waived
+        } else {
+            WorktreeGuard::Required
+        };
+        let prepared = agent_folder(checkout, cwd, source, spec.reuse.unwrap_or(false), guard)?;
+        let branch = prepared.branch;
+        let folder = prepared.path;
+        let reported_cwd = checkout_made.then(|| folder.clone());
         place_agent(
             &mut command,
             folder,
@@ -2635,6 +2657,11 @@ fn spawn_agent(
         )?;
         context.insert(HOCUS_AGENT_PANE_CONTEXT.to_owned(), kind);
         spawn_command_pane_near_plugin(env, command, context, name, true)
+            .map(|pane_id| SpawnedAgent {
+                pane_id,
+                branch,
+                cwd: reported_cwd,
+            })
             .ok_or_else(|| "Zellij did not open the agent pane".to_owned())
     })();
     let response = ProtobufSpawnAgentResponse::from(result);
@@ -2653,11 +2680,50 @@ fn agent_folder(
     checkout: GitCheckout,
     cwd: Option<PathBuf>,
     source: PathBuf,
-) -> Result<PathBuf, String> {
+    reuse: bool,
+    guard: WorktreeGuard,
+) -> Result<PreparedCheckout, String> {
     match (checkout, cwd) {
-        (GitCheckout::Current, Some(cwd)) => Ok(cwd),
-        (GitCheckout::Current, None) => Ok(source),
-        (checkout, _) => prepare_git_checkout_in(source, checkout),
+        (GitCheckout::Current, Some(cwd)) => {
+            guard.check(&cwd)?;
+            Ok(PreparedCheckout {
+                path: cwd,
+                branch: None,
+            })
+        },
+        (GitCheckout::Current, None) => {
+            guard.check(&source)?;
+            Ok(PreparedCheckout {
+                path: source,
+                branch: None,
+            })
+        },
+        (checkout, _) => prepare_git_checkout_in(source, checkout, reuse, guard),
+    }
+}
+
+/// Whether the folder an agent is about to be left in has to be a *linked* worktree.
+///
+/// Asked at each point where a destination is settled and **before any git work is done**,
+/// rather than of the folder a finished checkout answers with: a refusal that has already
+/// switched the user's checkout onto a new branch has left them worse off than the spawn
+/// they asked for.
+#[derive(Clone, Copy, PartialEq)]
+enum WorktreeGuard {
+    Required,
+    Waived,
+}
+
+impl WorktreeGuard {
+    fn check(self, path: &std::path::Path) -> Result<(), String> {
+        if self == WorktreeGuard::Waived || linked_worktree(path)? {
+            return Ok(());
+        }
+        Err(format!(
+            "{} is not a linked git worktree; give a branch to cut one, or set \
+             allow_outside_worktree",
+            path.display()
+        ))
     }
 }
 
@@ -2707,22 +2773,43 @@ fn prepare_git_checkout(
     checkout: GitCheckout,
 ) -> Result<PathBuf, String> {
     let source_directory = translate_plugin_path(env, source_directory);
-    prepare_git_checkout_in(source_directory, checkout)
+    // Reuse, because that is what this call has always meant and what a plugin opening a
+    // command pane in a checkout asks for: the branch it names is the work it is pointing
+    // at. Only `spawn_agent` asks for the other thing, and it says so.
+    // No guard: this command has never had one. It puts a *plugin's* command pane in a
+    // checkout rather than leaving an agent loose in one.
+    prepare_git_checkout_in(source_directory, checkout, true, WorktreeGuard::Waived)
+        .map(|prepared| prepared.path)
+}
+
+/// A checkout the host has made or found: the folder to run in, and the branch it holds when
+/// there is one. The branch is answered rather than assumed because it is not always the one
+/// asked for - a taken name is cut afresh with a suffix.
+#[derive(Debug)]
+struct PreparedCheckout {
+    path: PathBuf,
+    branch: Option<String>,
 }
 
 /// Put the repository into the state the request describes, and answer with the
 /// folder the command should run in.
 ///
-/// "New" in [`GitCheckout::NewBranch`] and [`GitCheckout::NewWorktree`] means
-/// *the one asked for*, created if it is not there yet. A branch or a worktree
-/// that already exists is not a collision to report - it is the work the caller
-/// is pointing at, and the agent belongs in it. Only a path that exists without
-/// being a worktree of this repository still fails, because that is a genuine
-/// clash rather than something to reuse.
+/// With `reuse`, "new" in [`GitCheckout::NewBranch`] and [`GitCheckout::NewWorktree`]
+/// means *the one asked for*, created if it is not there yet: a branch or a worktree
+/// that already exists is the work the caller is pointing at, and the agent belongs in
+/// it. Only a path that exists without being a worktree of this repository still fails,
+/// because that is a genuine clash rather than something to reuse.
+///
+/// Without it, a name already taken is a collision and the next free one is cut instead -
+/// `<branch>-2`, `<branch>-3`, and the worktree renamed with it, so the two never come
+/// apart. Two agents asked for the same branch by two different people is the case this
+/// is for: joining them silently is how one of them loses work.
 fn prepare_git_checkout_in(
     source_directory: PathBuf,
     checkout: GitCheckout,
-) -> Result<PathBuf, String> {
+    reuse: bool,
+    guard: WorktreeGuard,
+) -> Result<PreparedCheckout, String> {
     let root_output = process::Command::new("git")
         .arg("-C")
         .arg(&source_directory)
@@ -2734,25 +2821,52 @@ fn prepare_git_checkout_in(
     }
     let root = PathBuf::from(String::from_utf8_lossy(&root_output.stdout).trim());
     match checkout {
-        GitCheckout::Current => Ok(root),
+        GitCheckout::Current => {
+            guard.check(&root)?;
+            Ok(PreparedCheckout {
+                path: root,
+                branch: None,
+            })
+        },
         GitCheckout::NewBranch { branch, base } => {
             validate_git_names(&root, &branch, &base)?;
-            // A branch checked out somewhere else cannot be switched to here -
-            // git allows one checkout of a branch at a time - so the agent goes
-            // to the worktree already holding it rather than nowhere at all.
-            if let Some(worktree) = worktree_holding(&root, &branch)? {
-                return Ok(worktree);
+            if reuse {
+                // A branch checked out somewhere else cannot be switched to here -
+                // git allows one checkout of a branch at a time - so the agent goes
+                // to the worktree already holding it rather than nowhere at all.
+                if let Some(worktree) = worktree_holding(&root, &branch)? {
+                    guard.check(&worktree)?;
+                    return Ok(PreparedCheckout {
+                        path: worktree,
+                        branch: Some(branch),
+                    });
+                }
             }
-            if branch_exists(&root, &branch) {
+            // Every route left lands in `root` - this checkout moves to the branch - so
+            // the guard is settled here, before the switch that would otherwise leave a
+            // refused request with the user's checkout already moved.
+            guard.check(&root)?;
+            if reuse && branch_exists(&root, &branch) {
                 run_git(&root, &["switch", &branch], "switch to the branch")?;
-            } else {
-                run_git(
-                    &root,
-                    &["switch", "-c", &branch, &base],
-                    "create and switch to the branch",
-                )?;
+                return Ok(PreparedCheckout {
+                    path: root,
+                    branch: Some(branch),
+                });
             }
-            Ok(root)
+            let branch = if reuse {
+                branch
+            } else {
+                free_branch(&root, &branch)?
+            };
+            run_git(
+                &root,
+                &["switch", "-c", &branch, &base],
+                "create and switch to the branch",
+            )?;
+            Ok(PreparedCheckout {
+                path: root,
+                branch: Some(branch),
+            })
         },
         GitCheckout::NewWorktree { branch, base, path } => {
             // Anchored to the primary checkout, not to the caller's. A relative path
@@ -2766,28 +2880,141 @@ fn prepare_git_checkout_in(
             } else {
                 root.join(path)
             };
-            // The path first, because it is the more specific of the two ways a
-            // request can already be satisfied: a worktree sitting there is the
-            // folder the caller named, whatever branch it happens to hold, and
-            // nothing about it is changed.
-            if let Some(existing) = worktree_at(&root, &path)? {
-                return Ok(existing);
+            if reuse {
+                // The path first, because it is the more specific of the two ways a
+                // request can already be satisfied: a worktree sitting there is the
+                // folder the caller named, whatever branch it happens to hold, and
+                // nothing about it is changed. That branch is what is answered - the
+                // one asked for was not used - and a detached checkout holds none.
+                if let Some(existing) = worktree_at(&root, &path)? {
+                    guard.check(&existing.path)?;
+                    return Ok(PreparedCheckout {
+                        path: existing.path,
+                        branch: existing.branch,
+                    });
+                }
+                if let Some(existing) = worktree_holding(&root, &branch)? {
+                    guard.check(&existing)?;
+                    return Ok(PreparedCheckout {
+                        path: existing,
+                        branch: Some(branch),
+                    });
+                }
+                let path_string = path.to_string_lossy().into_owned();
+                // An existing branch already has a history, so it is checked out as
+                // it stands and the base has nothing to say about it.
+                // What is cut below needs no check and could not have one: `git worktree
+                // add` always makes a linked worktree, and `linked_worktree` of a folder
+                // that does not exist yet answers false.
+                let args: Vec<&str> = if branch_exists(&root, &branch) {
+                    vec!["worktree", "add", "--", &path_string, &branch]
+                } else {
+                    vec!["worktree", "add", "-b", &branch, "--", &path_string, &base]
+                };
+                run_git(&root, &args, "create the worktree")?;
+                return Ok(PreparedCheckout {
+                    path,
+                    branch: Some(branch),
+                });
             }
-            if let Some(existing) = worktree_holding(&root, &branch)? {
-                return Ok(existing);
-            }
+            // A worktree is named after its branch, so one search settles both: the
+            // first suffix whose branch does not exist and whose folder is free.
+            let (branch, path) = free_worktree(&root, &path, &branch)?;
             let path_string = path.to_string_lossy().into_owned();
-            // An existing branch already has a history, so it is checked out as
-            // it stands and the base has nothing to say about it.
-            let args: Vec<&str> = if branch_exists(&root, &branch) {
-                vec!["worktree", "add", "--", &path_string, &branch]
-            } else {
-                vec!["worktree", "add", "-b", &branch, "--", &path_string, &base]
-            };
-            run_git(&root, &args, "create the worktree")?;
-            Ok(path)
+            run_git(
+                &root,
+                &["worktree", "add", "-b", &branch, "--", &path_string, &base],
+                "create the worktree",
+            )?;
+            Ok(PreparedCheckout {
+                path,
+                branch: Some(branch),
+            })
         },
     }
+}
+
+/// How many suffixes are tried before a request is answered with a refusal rather than
+/// another `git worktree list`. A hundred agents on one branch name is not a case to serve
+/// quietly; it is a case to say something about.
+const FREE_NAME_ATTEMPTS: u32 = 100;
+
+/// `name`, `name-2`, `name-3`, … — the names a collision walks through.
+fn suffixed(name: &str, attempt: u32) -> String {
+    if attempt == 0 {
+        name.to_owned()
+    } else {
+        format!("{name}-{}", attempt + 1)
+    }
+}
+
+/// The first of those names no branch has taken.
+fn free_branch(root: &std::path::Path, branch: &str) -> Result<String, String> {
+    (0..FREE_NAME_ATTEMPTS)
+        .map(|attempt| suffixed(branch, attempt))
+        .find(|candidate| !branch_exists(root, candidate))
+        .ok_or_else(|| format!("git could not find a free branch name near {branch}"))
+}
+
+/// The first name free as *both* a branch and a folder, with the worktree renamed to match -
+/// the same suffix on the branch and on the folder's last component, so the two never come
+/// apart.
+///
+/// One listing for the whole search rather than one per candidate: the answer only has to be
+/// free of what is there now, and a race with another `git worktree add` is caught by git
+/// itself. A folder that is not a worktree counts as taken here rather than as the hard
+/// failure it is under reuse — the point of a suffix is to step around what is in the way.
+fn free_worktree(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    branch: &str,
+) -> Result<(String, PathBuf), String> {
+    let parent = path.parent().unwrap_or(root).to_path_buf();
+    // The folder's own last component carries the suffix, not the whole branch name: a
+    // branch with a `/` in it is laid out as folders (`.worktrees/feature/foo`), and
+    // joining `feature/foo` onto that folder's parent would bury the worktree a level
+    // deeper than the path the request was planned and confirmed with.
+    let leaf = path
+        .file_name()
+        .map(|leaf| leaf.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("{} is not a usable worktree path", path.display()))?;
+    let existing = worktrees(root)?;
+    for attempt in 0..FREE_NAME_ATTEMPTS {
+        let candidate = suffixed(branch, attempt);
+        let path = parent.join(suffixed(&leaf, attempt));
+        let taken = branch_exists(root, &candidate)
+            || path.exists()
+            || existing
+                .iter()
+                .any(|worktree| same_path(&worktree.path, &path));
+        if !taken {
+            return Ok((candidate, path));
+        }
+    }
+    Err(format!(
+        "git could not find a free worktree name near {branch}"
+    ))
+}
+
+/// Whether `folder` is a *linked* worktree: a checkout of a repository that is not that
+/// repository's primary one.
+///
+/// A folder that is no repository at all answers false rather than failing — "not a
+/// worktree" is the answer being asked for, and a spawn outside a repository is exactly one
+/// of the cases the caller has to own up to.
+fn linked_worktree(folder: &std::path::Path) -> Result<bool, String> {
+    let output = process::Command::new("git")
+        .arg("-C")
+        .arg(folder)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|error| format!("failed to run git: {error}"))?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    let root = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let primary = primary_worktree(&root)?;
+    Ok(!same_path(&root, &primary))
 }
 
 /// The repository's primary worktree — the checkout a relative worktree path is
@@ -2859,12 +3086,13 @@ fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
     worktrees
 }
 
-/// The checkout already sitting at `path`, if one is.
-fn worktree_at(root: &std::path::Path, path: &std::path::Path) -> Result<Option<PathBuf>, String> {
+/// The checkout already sitting at `path`, if one is - branch included, because the
+/// caller reuses it as it stands and has to report the branch it holds rather than the
+/// one that was asked for.
+fn worktree_at(root: &std::path::Path, path: &std::path::Path) -> Result<Option<Worktree>, String> {
     Ok(worktrees(root)?
         .into_iter()
-        .find(|worktree| same_path(&worktree.path, path))
-        .map(|worktree| worktree.path))
+        .find(|worktree| same_path(&worktree.path, path)))
 }
 
 /// The checkout that has `branch` out, if any has.
@@ -7653,6 +7881,38 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
 mod permission_tests {
     use super::*;
 
+    /// `prepare_git_checkout_in` asking for reuse, which is what every test written before
+    /// reuse became a request meant by it: an existing branch or worktree is the work being
+    /// pointed at. The tests whose subject *is* the other behaviour call the real one with
+    /// `false` and say so.
+    fn reusing_checkout_in(
+        source_directory: PathBuf,
+        checkout: GitCheckout,
+    ) -> Result<PathBuf, String> {
+        prepare_git_checkout_in(source_directory, checkout, true, WorktreeGuard::Waived)
+            .map(|prepared| prepared.path)
+    }
+
+    /// The same call without reuse: a name already taken is stepped around rather than
+    /// joined. The guard is waived here as it is above - the tests whose subject *is* the
+    /// guard pass `WorktreeGuard::Required` themselves.
+    fn cutting_checkout_in(
+        source_directory: PathBuf,
+        checkout: GitCheckout,
+    ) -> Result<PreparedCheckout, String> {
+        prepare_git_checkout_in(source_directory, checkout, false, WorktreeGuard::Waived)
+    }
+
+    /// `agent_folder` likewise, answering the folder alone.
+    fn agent_folder_reusing(
+        checkout: GitCheckout,
+        cwd: Option<PathBuf>,
+        source: PathBuf,
+    ) -> Result<PathBuf, String> {
+        agent_folder(checkout, cwd, source, true, WorktreeGuard::Waived)
+            .map(|prepared| prepared.path)
+    }
+
     fn repository() -> tempfile::TempDir {
         let temp = tempfile::tempdir().unwrap();
         for args in [
@@ -7847,7 +8107,7 @@ mod permission_tests {
     fn git_checkout_request_creates_a_worktree_from_the_base() {
         let repository = repository();
         let target = repository.path().join(".worktrees/topic");
-        let cwd = prepare_git_checkout_in(
+        let cwd = reusing_checkout_in(
             repository.path().to_owned(),
             GitCheckout::NewWorktree {
                 branch: "topic".to_owned(),
@@ -7911,11 +8171,11 @@ mod permission_tests {
         std::fs::create_dir_all(&elsewhere).unwrap();
 
         assert_eq!(
-            agent_folder(GitCheckout::Current, None, subdirectory.clone()).unwrap(),
+            agent_folder_reusing(GitCheckout::Current, None, subdirectory.clone()).unwrap(),
             subdirectory
         );
         assert_eq!(
-            agent_folder(
+            agent_folder_reusing(
                 GitCheckout::Current,
                 Some(elsewhere.clone()),
                 subdirectory.clone()
@@ -7929,7 +8189,7 @@ mod permission_tests {
             branch: "topic".to_owned(),
             base: "main".to_owned(),
         };
-        let switched = agent_folder(checkout, Some(elsewhere), subdirectory).unwrap();
+        let switched = agent_folder_reusing(checkout, Some(elsewhere), subdirectory).unwrap();
         assert_eq!(resolved(&switched), resolved(repository.path()));
     }
 
@@ -7938,7 +8198,7 @@ mod permission_tests {
         let repository = repository();
         let subdirectory = repository.path().join("src/nested");
         std::fs::create_dir_all(&subdirectory).unwrap();
-        let checkout = prepare_git_checkout_in(subdirectory, GitCheckout::Current).unwrap();
+        let checkout = reusing_checkout_in(subdirectory, GitCheckout::Current).unwrap();
         let expected = crate::firecracker::worktree_vm_name(&resolved(repository.path()));
 
         for placeholder in ["first", "second"] {
@@ -7963,10 +8223,9 @@ mod permission_tests {
             branch: "topic".to_owned(),
             base: "main".to_owned(),
         };
-        let first = prepare_git_checkout_in(primary_repository.path().to_owned(), checkout.clone())
-            .unwrap();
-        let second =
-            prepare_git_checkout_in(primary_repository.path().to_owned(), checkout).unwrap();
+        let first =
+            reusing_checkout_in(primary_repository.path().to_owned(), checkout.clone()).unwrap();
+        let second = reusing_checkout_in(primary_repository.path().to_owned(), checkout).unwrap();
         let expected = crate::firecracker::worktree_vm_name(&resolved(primary_repository.path()));
         for cwd in [first, second] {
             let mut command = firecracker_command("placeholder");
@@ -7980,9 +8239,8 @@ mod permission_tests {
             branch: "topic".to_owned(),
             base: "main".to_owned(),
         };
-        let first =
-            prepare_git_checkout_in(repository.path().to_owned(), checkout.clone()).unwrap();
-        let second = prepare_git_checkout_in(repository.path().to_owned(), checkout).unwrap();
+        let first = reusing_checkout_in(repository.path().to_owned(), checkout.clone()).unwrap();
+        let second = reusing_checkout_in(repository.path().to_owned(), checkout).unwrap();
         assert_eq!(resolved(&first), resolved(&existing));
         assert_eq!(resolved(&second), resolved(&existing));
 
@@ -7998,7 +8256,7 @@ mod permission_tests {
     fn a_worktree_request_from_inside_a_worktree_anchors_to_the_primary() {
         let repository = repository();
         let first = worktree(repository.path(), "first", "first");
-        let cwd = prepare_git_checkout_in(
+        let cwd = reusing_checkout_in(
             first.clone(),
             GitCheckout::NewWorktree {
                 branch: "second".to_owned(),
@@ -8028,7 +8286,7 @@ mod permission_tests {
         let repository = repository();
         let first = worktree(repository.path(), "first", "first");
         let target = repository.path().join("elsewhere/second");
-        let cwd = prepare_git_checkout_in(
+        let cwd = reusing_checkout_in(
             first,
             GitCheckout::NewWorktree {
                 branch: "second".to_owned(),
@@ -8046,7 +8304,7 @@ mod permission_tests {
     #[test]
     fn branch_only_switches_the_current_checkout() {
         let repository = repository();
-        prepare_git_checkout_in(
+        reusing_checkout_in(
             repository.path().to_owned(),
             GitCheckout::NewBranch {
                 branch: "topic".to_owned(),
@@ -8092,7 +8350,7 @@ mod permission_tests {
     fn a_worktree_that_already_exists_at_the_path_is_reused_as_it_stands() {
         let repository = repository();
         let existing = worktree(repository.path(), "topic", "topic");
-        let cwd = prepare_git_checkout_in(
+        let prepared = prepare_git_checkout_in(
             repository.path().to_owned(),
             GitCheckout::NewWorktree {
                 // Neither the branch nor the base the worktree was made with:
@@ -8101,9 +8359,14 @@ mod permission_tests {
                 base: "main".to_owned(),
                 path: PathBuf::from(".worktrees/topic"),
             },
+            true,
+            WorktreeGuard::Waived,
         )
         .unwrap();
-        assert_eq!(resolved(&cwd), resolved(&existing));
+        assert_eq!(resolved(&prepared.path), resolved(&existing));
+        // The branch the folder holds, not the one that was asked for and not used:
+        // that is what the agent is reported as sitting on.
+        assert_eq!(prepared.branch.as_deref(), Some("topic"));
         assert_eq!(branch_of(&existing).as_deref(), Some("topic"));
         // Nothing was created for the branch that was asked for and not used.
         assert!(!branch_exists(repository.path(), "other"));
@@ -8115,7 +8378,7 @@ mod permission_tests {
     fn a_branch_checked_out_elsewhere_answers_with_that_worktree() {
         let repository = repository();
         let existing = worktree(repository.path(), "first", "topic");
-        let cwd = prepare_git_checkout_in(
+        let cwd = reusing_checkout_in(
             repository.path().to_owned(),
             GitCheckout::NewWorktree {
                 branch: "topic".to_owned(),
@@ -8134,7 +8397,7 @@ mod permission_tests {
     fn an_existing_branch_gets_a_worktree_without_being_recreated() {
         let repository = repository();
         branch(repository.path(), "topic");
-        let cwd = prepare_git_checkout_in(
+        let cwd = reusing_checkout_in(
             repository.path().to_owned(),
             GitCheckout::NewWorktree {
                 branch: "topic".to_owned(),
@@ -8156,7 +8419,7 @@ mod permission_tests {
     fn an_existing_branch_is_switched_to_rather_than_recreated() {
         let repository = repository();
         branch(repository.path(), "topic");
-        let cwd = prepare_git_checkout_in(
+        let cwd = reusing_checkout_in(
             repository.path().to_owned(),
             GitCheckout::NewBranch {
                 branch: "topic".to_owned(),
@@ -8172,7 +8435,7 @@ mod permission_tests {
     fn a_branch_request_for_a_branch_held_elsewhere_answers_with_that_worktree() {
         let repository = repository();
         let existing = worktree(repository.path(), "first", "topic");
-        let cwd = prepare_git_checkout_in(
+        let cwd = reusing_checkout_in(
             repository.path().to_owned(),
             GitCheckout::NewBranch {
                 branch: "topic".to_owned(),
@@ -8193,7 +8456,7 @@ mod permission_tests {
         let occupied = repository.path().join(".worktrees/topic");
         std::fs::create_dir_all(&occupied).unwrap();
         std::fs::write(occupied.join("file"), "content").unwrap();
-        let error = prepare_git_checkout_in(
+        let error = reusing_checkout_in(
             repository.path().to_owned(),
             GitCheckout::NewWorktree {
                 branch: "topic".to_owned(),
@@ -8206,6 +8469,201 @@ mod permission_tests {
             error.starts_with("git could not create the worktree"),
             "{error}"
         );
+    }
+
+    /// Without reuse, a name already taken is stepped around rather than joined - and
+    /// the worktree is renamed with its branch, because a worktree is named after the
+    /// branch it holds and that is the whole of 116.
+    #[test]
+    fn a_taken_name_is_cut_afresh_with_the_worktree_renamed_to_match() {
+        let repository = repository();
+        let request = || GitCheckout::NewWorktree {
+            branch: "topic".to_owned(),
+            base: "main".to_owned(),
+            path: PathBuf::from(".worktrees/topic"),
+        };
+        let first = cutting_checkout_in(repository.path().to_owned(), request()).unwrap();
+        assert_eq!(first.branch.as_deref(), Some("topic"));
+        assert_eq!(
+            resolved(&first.path),
+            resolved(&repository.path().join(".worktrees/topic"))
+        );
+
+        let second = cutting_checkout_in(repository.path().to_owned(), request()).unwrap();
+        assert_eq!(second.branch.as_deref(), Some("topic-2"));
+        assert_eq!(
+            resolved(&second.path),
+            resolved(&repository.path().join(".worktrees/topic-2"))
+        );
+        let third = cutting_checkout_in(repository.path().to_owned(), request()).unwrap();
+        assert_eq!(third.branch.as_deref(), Some("topic-3"));
+
+        // Reuse is the other answer to the same request: the first worktree, as it stands.
+        let reused = reusing_checkout_in(repository.path().to_owned(), request()).unwrap();
+        assert_eq!(resolved(&reused), resolved(&first.path));
+    }
+
+    /// A folder in the way that is not a worktree is a hard failure under reuse (above);
+    /// without it there is nothing to reuse and everything to step around, so the name
+    /// moves on instead.
+    #[test]
+    fn a_folder_in_the_way_is_stepped_around_rather_than_failed_without_reuse() {
+        let repository = repository();
+        let occupied = repository.path().join(".worktrees/topic");
+        std::fs::create_dir_all(&occupied).unwrap();
+        std::fs::write(occupied.join("file"), "content").unwrap();
+        let prepared = cutting_checkout_in(
+            repository.path().to_owned(),
+            GitCheckout::NewWorktree {
+                branch: "topic".to_owned(),
+                base: "main".to_owned(),
+                path: PathBuf::from(".worktrees/topic"),
+            },
+        )
+        .unwrap();
+        assert_eq!(prepared.branch.as_deref(), Some("topic-2"));
+    }
+
+    /// The branch-only shape says the same thing: an existing `topic` is not joined, and
+    /// the checkout moves to the next free name.
+    #[test]
+    fn a_branch_without_reuse_is_cut_afresh_rather_than_switched_to() {
+        let repository = repository();
+        let request = || GitCheckout::NewBranch {
+            branch: "topic".to_owned(),
+            base: "main".to_owned(),
+        };
+        let first = cutting_checkout_in(repository.path().to_owned(), request()).unwrap();
+        assert_eq!(first.branch.as_deref(), Some("topic"));
+        let second = cutting_checkout_in(repository.path().to_owned(), request()).unwrap();
+        assert_eq!(second.branch.as_deref(), Some("topic-2"));
+        assert_eq!(branch_of(repository.path()).as_deref(), Some("topic-2"));
+    }
+
+    /// A branch with a `/` in it is laid out as folders, and the folder it asks for is the
+    /// one `launch::worktree_path_in` planned and the confirmation promised - not a level
+    /// deeper. The suffix a collision cuts goes on the branch and on that folder's last
+    /// component together.
+    #[test]
+    fn a_branch_with_a_slash_keeps_the_worktree_path_it_was_planned_with() {
+        let repository = repository();
+        let request = || GitCheckout::NewWorktree {
+            branch: "feature/foo".to_owned(),
+            base: "main".to_owned(),
+            path: PathBuf::from(".worktrees/feature/foo"),
+        };
+        let first = cutting_checkout_in(repository.path().to_owned(), request()).unwrap();
+        assert_eq!(first.branch.as_deref(), Some("feature/foo"));
+        assert_eq!(
+            resolved(&first.path),
+            resolved(&repository.path().join(".worktrees/feature/foo"))
+        );
+
+        let second = cutting_checkout_in(repository.path().to_owned(), request()).unwrap();
+        assert_eq!(second.branch.as_deref(), Some("feature/foo-2"));
+        assert_eq!(
+            resolved(&second.path),
+            resolved(&repository.path().join(".worktrees/feature/foo-2"))
+        );
+    }
+
+    /// The guard is asked *before* the git work, not of the folder it produced: a refusal
+    /// that had already switched the user's checkout onto a new branch would leave them
+    /// worse off than the spawn they asked for.
+    #[test]
+    fn a_refused_branch_leaves_the_checkout_where_it_was() {
+        let repository = repository();
+        let error = prepare_git_checkout_in(
+            repository.path().to_owned(),
+            GitCheckout::NewBranch {
+                branch: "topic".to_owned(),
+                base: "main".to_owned(),
+            },
+            false,
+            WorktreeGuard::Required,
+        )
+        .unwrap_err();
+        assert!(error.contains("is not a linked git worktree"), "{error}");
+        assert_eq!(branch_of(repository.path()).as_deref(), Some("main"));
+        assert!(!branch_exists(repository.path(), "topic"));
+    }
+
+    /// The guard is about the destination rather than the spec: the same request from
+    /// inside a linked worktree moves that worktree, and is allowed.
+    #[test]
+    fn a_branch_cut_inside_a_linked_worktree_passes_the_guard() {
+        let repository = repository();
+        let linked = worktree(repository.path(), "other", "other");
+        let prepared = prepare_git_checkout_in(
+            linked.clone(),
+            GitCheckout::NewBranch {
+                branch: "topic".to_owned(),
+                base: "main".to_owned(),
+            },
+            false,
+            WorktreeGuard::Required,
+        )
+        .unwrap();
+        assert_eq!(prepared.branch.as_deref(), Some("topic"));
+        assert_eq!(resolved(&prepared.path), resolved(&linked));
+        assert_eq!(branch_of(&linked).as_deref(), Some("topic"));
+        // The primary checkout was not touched.
+        assert_eq!(branch_of(repository.path()).as_deref(), Some("main"));
+    }
+
+    /// The no-git-work shapes are guarded too - a spawn with no branch is the case the
+    /// guard was written for - and `agent_folder` owns that check for the folder it is
+    /// handed as much as for the repository root.
+    #[test]
+    fn a_folder_that_is_no_linked_worktree_is_refused_without_git_work() {
+        let repository = repository();
+        let error = agent_folder(
+            GitCheckout::Current,
+            None,
+            repository.path().to_owned(),
+            false,
+            WorktreeGuard::Required,
+        )
+        .unwrap_err();
+        assert!(error.contains("is not a linked git worktree"), "{error}");
+        let outside = tempfile::tempdir().unwrap();
+        let error = agent_folder(
+            GitCheckout::Current,
+            Some(outside.path().to_owned()),
+            repository.path().to_owned(),
+            false,
+            WorktreeGuard::Required,
+        )
+        .unwrap_err();
+        assert!(error.contains("is not a linked git worktree"), "{error}");
+        // And a linked worktree is what it asks for.
+        let linked = worktree(repository.path(), "topic", "topic");
+        let prepared = agent_folder(
+            GitCheckout::Current,
+            Some(linked.clone()),
+            repository.path().to_owned(),
+            false,
+            WorktreeGuard::Required,
+        )
+        .unwrap();
+        assert_eq!(prepared.path, linked);
+    }
+
+    /// What the guard in `spawn_agent` asks of a folder before an agent is left in it.
+    #[test]
+    fn only_a_linked_checkout_is_a_linked_worktree() {
+        let repository = repository();
+        assert!(!linked_worktree(repository.path()).unwrap());
+        let linked = worktree(repository.path(), "topic", "topic");
+        assert!(linked_worktree(&linked).unwrap());
+        // A subfolder of one is inside it, and answers for it.
+        let nested = linked.join("src");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert!(linked_worktree(&nested).unwrap());
+        // A folder that is no repository at all is not a worktree either, and saying so
+        // is the answer rather than an error: that spawn is one the caller must own.
+        let outside = tempfile::tempdir().unwrap();
+        assert!(!linked_worktree(outside.path()).unwrap());
     }
 
     #[test]

@@ -509,6 +509,8 @@ local pane = zellij.agent.spawn {
   kind = "claude",                       -- or codex, cursor; `command = "sh"` for anything else
   prompt = "make the tests pass",        -- the opening prompt, last on the command line
   branch = "fix-42", base = "main",      -- a worktree of its own at .worktrees/fix-42 (default)
+  worktree_dir = ".worktrees",           -- where that worktree is placed; it is named for the branch
+  reuse = false,                         -- a taken name is cut afresh as fix-42-2 rather than joined
   permission_mode = "acceptEdits",       -- in the agent's own terms; "skip" turns prompts off
   model = "opus", resume = "last",       -- `--model`, and `--continue` / `--resume <id>`
   hooks = true,                          -- a claude reports its state through inline hooks
@@ -519,7 +521,11 @@ local pane = zellij.agent.spawn {
 The argv, the permission-mode flags, the resume spelling and the inline hooks are decided by the
 same planner hocus's `agent_spawn` and the New agent modal use, so `agent = "cursor"` runs
 `cursor-agent` everywhere. `branch` cuts the branch (worktree by default, `worktree = false` for
-this checkout); an existing branch or worktree is reused. `source_directory` is the repository
+this checkout). The worktree is always named after its branch — `worktree_dir` says where it is
+*placed*, never what it is called — and a name already taken is cut afresh as `<branch>-2` unless
+`reuse = true` says the existing branch or worktree is the work meant. An agent that would start
+anywhere but a linked worktree — the primary checkout, or a folder that is no repository — is
+refused unless `allow_outside_worktree = true`, which is how a spawn with no branch at all runs. `source_directory` is the repository
 that happens in, as a plugin path, `/host` by default. `firecracker` names a session-scoped VM to
 run in (`firecracker_image` its image); with `automatic_firecracker_vm = true` the host names the
 VM after the folder the pane runs in and mirrors that folder into it instead, so agents on one

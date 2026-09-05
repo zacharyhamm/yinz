@@ -3777,9 +3777,12 @@ pub struct AgentSpawnSpec {
     /// *true* once a branch is named, which is the safer of the two: a worktree leaves the
     /// checkout the caller is looking at alone.
     pub worktree: Option<bool>,
-    /// Where that worktree goes, relative to the repository's primary checkout. Defaults to
-    /// `agent::launch::worktree_path_for` the branch.
-    pub worktree_path: Option<String>,
+    /// The *directory the worktree is placed in*, relative to the repository's primary
+    /// checkout (an absolute path is taken as it stands). Defaults to
+    /// `agent::launch::WORKTREE_PREFIX`. Never the worktree itself: a worktree is always
+    /// named after the branch it holds, so `<worktree_dir>/<branch>` is the whole of it and
+    /// a caller has no way to ask for a worktree whose name and branch disagree.
+    pub worktree_dir: Option<String>,
     /// Environment the agent starts with, on top of the pane's own. Carried by an `env(1)`
     /// wrapper in the command - `env K=V claude ...` - because a command pane has no
     /// environment of its own to set; `env` execs the agent, so the pane still runs it.
@@ -3797,21 +3800,50 @@ pub struct AgentSpawnSpec {
     pub firecracker: Option<String>,
     /// Immutable project image selected for the Firecracker VM.
     pub firecracker_image: Option<String>,
+    /// Whether an existing branch, or an existing worktree at the name this spec asks for, is
+    /// the work the caller means. Defaults to *false*: a taken name is a collision, and the
+    /// host cuts the next free one (`<branch>-2`, `<branch>-3`, …) for the branch and its
+    /// worktree together, so an agent never silently joins somebody else's work.
+    pub reuse: Option<bool>,
+    /// Whether this agent may start somewhere that is not a linked worktree - the repository's
+    /// primary checkout, or a folder that is no repository at all. Defaults to *false*: an
+    /// agent left loose in the checkout the user is working in is a thing to ask for
+    /// deliberately, not the shape a spec falls into by leaving `branch` out.
+    pub allow_outside_worktree: Option<bool>,
+}
+
+/// A started agent, as the host answers for it.
+///
+/// The pane is what the caller asked for; `branch` and `cwd` are what it *got*, which is not
+/// always what it asked for - a name already taken is cut afresh with a suffix, and a branch
+/// held by another worktree sends the agent there. Both travel back rather than being
+/// re-derived from the request, because the request no longer knows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnedAgent {
+    pub pane_id: PaneId,
+    /// The branch the agent is on, when git work was done. `None` for a spawn that made no
+    /// checkout.
+    pub branch: Option<String>,
+    /// The folder the pane runs in, when git work was done.
+    pub cwd: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GitCheckout {
     Current,
-    /// The branch, in the checkout the request came from. Reuse means switching
-    /// to it, or - when another worktree holds it, which git allows only one of
-    /// - running in that worktree instead.
+    /// The branch, in the checkout the request came from. Whether an existing
+    /// branch is reused - switched to, or run in whichever worktree holds it,
+    /// which git allows only one of - is the *caller's* to say; without that,
+    /// the host cuts the next free name instead.
     NewBranch {
         branch: String,
         base: String,
     },
-    /// The branch, in a worktree of its own at `path`. A worktree already at
-    /// `path` is used as it stands; failing that, the worktree already holding
-    /// `branch` is.
+    /// The branch, in a worktree of its own at `path`. Reuse is again the
+    /// caller's to ask for: with it, a worktree already at `path` is used as it
+    /// stands and failing that the one already holding `branch` is; without it,
+    /// a taken name means the next free one, for the branch and the worktree
+    /// together.
     NewWorktree {
         branch: String,
         base: String,
@@ -5335,7 +5367,7 @@ pub type OpenCommandPaneOverlayResponse = Option<PaneId>;
 pub type OpenCommandPaneInPlaceResponse = Option<PaneId>;
 pub type OpenCommandPaneNearPluginResponse = Option<PaneId>;
 pub type OpenCommandPaneInGitCheckoutResponse = Result<PaneId, String>;
-pub type SpawnAgentResponse = Result<PaneId, String>;
+pub type SpawnAgentResponse = Result<SpawnedAgent, String>;
 pub type OpenCommandPaneFloatingNearPluginResponse = Option<PaneId>;
 pub type OpenCommandPaneInPlaceOfPluginResponse = Option<PaneId>;
 pub type OpenCommandPaneBackgroundResponse = Option<PaneId>;
