@@ -283,23 +283,34 @@ pub fn kind_from_program_and_args(program_path: &Path, args: &[String]) -> Optio
         return Some(kind);
     }
     if INTERPRETERS.contains(&name.to_lowercase().as_str()) {
-        return interpreted_script(args).and_then(kind_of);
+        return interpreted_script(&name.to_lowercase(), args).and_then(kind_of);
     }
     None
 }
 
-/// The script an interpreter's arguments run: the first word that is neither an option nor a
-/// runner's `run` subcommand (`uv run pi`, `bun run claude`, `deno run --allow-all x`).
+/// The script following supported interpreter options and an optional runner `run` subcommand.
 ///
-/// `args` is the whole argument list, which may still hold `env`'s assignments and the
-/// interpreter itself ahead of the script; both are skipped along with the options, since
-/// neither an assignment nor an interpreter is a script.
-fn interpreted_script(args: &[String]) -> Option<&str> {
-    args.iter()
-        .map(String::as_str)
-        .filter(|arg| !arg.starts_with('-') && !arg.contains('='))
-        .filter(|arg| !INTERPRETERS.contains(&program(arg).to_lowercase().as_str()))
-        .find(|arg| *arg != "run")
+/// `args` starts after the interpreter; any `env` wrapper has already been removed.
+fn interpreted_script<'a>(interpreter: &str, args: &'a [String]) -> Option<&'a str> {
+    let mut words = args.iter().map(String::as_str).peekable();
+    if matches!(interpreter, "uv" | "bun" | "deno") && words.peek() == Some(&"run") {
+        words.next();
+    }
+    for arg in words {
+        let supported_option = match interpreter {
+            "python" | "python3" => arg == "-u",
+            "node" => arg.starts_with("--max-old-space-size="),
+            "deno" => arg == "--allow-all",
+            _ => false,
+        };
+        if supported_option {
+            continue;
+        }
+        // ponytail: unknown options may consume values or execute inline code; add explicit
+        // support with regression tests when another launch form needs automatic placement.
+        return (!arg.starts_with('-')).then_some(arg);
+    }
+    None
 }
 
 /// The event name that ends a session, and so ends the pane's record.
@@ -1165,6 +1176,8 @@ mod tests {
             ),
             ("uvx", &["pi"]),
             ("uv", &["run", "pi"]),
+            ("bun", &["run", "claude"]),
+            ("deno", &["run", "--allow-all", "/opt/bin/claude.js"]),
         ] {
             assert!(
                 kind_from_program_and_args(Path::new(program_path), &args(list)).is_some(),
@@ -1176,6 +1189,20 @@ mod tests {
             ("python3", &["gemini_test.py", "--api", "gemini"][..]),
             ("node", &["build.js", "--preset", "claude-3"]),
             ("uv", &["run", "x", "--with", "pi"]),
+            ("uv", &["--directory", "/work/claude", "run", "pytest"]),
+            ("uv", &["--directory", "/work/project", "run", "claude"]),
+            ("uv", &["run", "--with", "claude", "pytest"]),
+            ("uv", &["--directory"]),
+            ("uv", &["run", "run", "claude"]),
+            ("node", &["--require", "/work/claude", "build.js"]),
+            ("node", &["--unknown=value", "claude"]),
+            ("node", &["-e", "claude"]),
+            ("python3", &["-c", "claude"]),
+            ("python3", &["-m", "claude"]),
+            ("python3", &["run", "claude"]),
+            ("node", &["python3", "claude"]),
+            ("node", &["FOO=1", "claude"]),
+            ("node", &[]),
             ("/bin/zsh", &["-c", "claude"]),
             ("env", &["FOO=1"]),
         ] {
