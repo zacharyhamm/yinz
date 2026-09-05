@@ -142,6 +142,8 @@ y / n         run the pending tool call, or decline it and stop
 n             keep refining a plan hocus has written
 /plan <text>  plan before acting: read-only tools until
               you /execute the plan hocus writes
+/plan off     leave planning mode without carrying the plan
+              out; the plan stays in the transcript
 /execute      carry out that plan; trailing text amends it
 /<skill> <text>  send a skill's prompt with <text> as its
               arguments; /skills lists them, /skills reload

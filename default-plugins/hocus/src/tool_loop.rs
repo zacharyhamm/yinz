@@ -438,12 +438,17 @@ impl State {
         // running, and the prompt itself queues like any other typed message.
         if line == "/plan" || line.starts_with("/plan ") {
             let prompt = line["/plan".len()..].trim();
-            // `on` and `off` were the old toggle. Left to the rule above they
-            // would be sent to the model as a one-word planning question, which
-            // is what typing them out of habit would silently do.
-            if prompt.is_empty() || prompt == "on" || prompt == "off" {
-                let error = "/plan needs a prompt — /plan <what to plan>. `/plan on` and `/plan \
-                             off` are gone: /execute carries a plan out.";
+            // The way out of the mode, and the only half of the old toggle that
+            // is back: leaving needs no prompt, while entering does.
+            if prompt == "off" {
+                return self.stop_plan();
+            }
+            // `on` was the other half. Left to the rule above it would be sent
+            // to the model as a one-word planning question, which is what
+            // typing it out of habit would silently do.
+            if prompt.is_empty() || prompt == "on" {
+                let error = "/plan needs a prompt — /plan <what to plan>. /plan off leaves \
+                             planning mode; /execute carries a plan out.";
                 self.messages.push(Message::error(error));
                 self.log("error", serde_json::json!({"error": error}));
                 return true;
@@ -3299,7 +3304,49 @@ impl State {
         self.plan = Plan::Planning;
         self.pin_to_bottom();
         self.log("plan_decision", serde_json::json!({"decision": "decline"}));
-        let notice = "still planning — say what to change, or /execute to carry it out";
+        let notice = "still planning — say what to change, /execute to carry it out, or /plan off \
+                      to leave planning mode";
+        self.messages.push(Message::notice(notice));
+        self.log("notice", serde_json::json!({"content": notice}));
+        true
+    }
+
+    /// `/plan off`: leave planning mode without carrying the plan out.
+    ///
+    /// The third answer to a plan, beside `/execute` and `n`. Nothing is sent and
+    /// nothing is thrown away: the plan stays in the transcript as the assistant
+    /// message it already is, and the next thing typed goes out as an ordinary
+    /// question with the full tool set behind it. Until this existed the only way
+    /// out of the mode that did not carry the plan out was `Ctrl-l`, which parks
+    /// the whole conversation and leaves an empty one.
+    ///
+    /// No `plan_cache` to clear and no user turn to push: the cache is keyed on
+    /// what it rendered, so a stale entry is never reused, and a request that is
+    /// not being made needs nothing said to the model. The box comes down because
+    /// `confirmation_prompt` stops offering it.
+    pub(crate) fn stop_plan(&mut self) -> bool {
+        if !self.plan_mode_on() {
+            // The same wording `approve_plan` gives for "was never planning".
+            let error = "not planning — /plan <prompt> starts a plan";
+            self.messages.push(Message::error(error));
+            self.log("error", serde_json::json!({"error": error}));
+            return true;
+        }
+        let had_plan = self.awaiting_plan();
+        self.plan = Plan::Off;
+        self.pin_to_bottom();
+        self.log(
+            "plan_decision",
+            serde_json::json!({"decision": "stop", "had_plan": had_plan}),
+        );
+        self.log("plan_mode", serde_json::json!({"on": false}));
+        // A plan that was waiting is the thing the person is answering, so say
+        // what became of it; without one there is only the mode to report.
+        let notice = if had_plan {
+            "planning mode off — the plan was not carried out; it is still above"
+        } else {
+            "planning mode off — the full tool set is back"
+        };
         self.messages.push(Message::notice(notice));
         self.log("notice", serde_json::json!({"content": notice}));
         true

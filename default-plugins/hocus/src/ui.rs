@@ -1704,7 +1704,9 @@ fn help_line(state: &State) -> &'static str {
         Status::Idle if state.is_streaming() => {
             "streaming…  <Ctrl c> cancel  <Esc> hide  <↑↓> scroll"
         },
-        Status::Idle if state.is_planning() => "planning  read-only tools  <Esc> hide",
+        Status::Idle if state.is_planning() => {
+            "planning  read-only tools  </plan off> exit  <Esc> hide"
+        },
         Status::Idle => "<Ctrl l> new chat  <Ctrl o> move  <Esc> hide",
     }
 }

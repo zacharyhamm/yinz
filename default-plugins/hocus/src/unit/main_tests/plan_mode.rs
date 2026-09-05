@@ -73,22 +73,19 @@ fn slash_plan_enters_the_mode_and_sends_the_prompt() {
     assert_eq!(last_user.content, "summarise the render path");
 }
 
-/// `/plan on` and `/plan off` were the old toggle. They must not fall through to
-/// `parse_command` and be answered "no such tool: plan" — and now that the rest
-/// of the line is a prompt, they must not be sent to the model as one-word
-/// planning questions either.
+/// `/plan on` is the half of the old toggle that stays gone: entering the mode
+/// needs a prompt, because entering it without one has nothing to send. It must
+/// not fall through to `parse_command` and be answered "no such tool: plan", and
+/// now that the rest of the line is a prompt it must not be sent to the model as
+/// a one-word planning question either. (`off` is the other half, and it is back
+/// — see `plan_off_leaves_the_mode_and_keeps_the_transcript`.)
 #[test]
-fn on_and_off_are_errors_not_prompts() {
+fn on_is_an_error_not_a_prompt() {
     let mut state = idle_state();
-    for line in ["/plan on", "/plan off"] {
-        state.input.set_text(line.to_owned());
-        state.submit();
-        assert_eq!(
-            state.messages.last().unwrap().role,
-            Role::Error,
-            "{line} was refused",
-        );
-    }
+    state.input.set_text("/plan on".to_owned());
+    state.submit();
+
+    assert_eq!(state.messages.last().unwrap().role, Role::Error);
     assert!(matches!(state.plan, Plan::Off));
     assert!(
         state.messages.iter().all(|m| m.tool_calls.is_empty()),
@@ -96,7 +93,7 @@ fn on_and_off_are_errors_not_prompts() {
     );
     assert!(
         !state.messages.iter().any(|m| m.role == Role::User),
-        "neither word reached the model",
+        "the word never reached the model",
     );
 }
 
@@ -603,6 +600,112 @@ fn ctrl_c_declines_the_plan_and_aborts_nothing() {
         !state.messages.iter().any(|m| m.content == "tools aborted"),
         "there was nothing to abort",
     );
+}
+
+// -- /plan off ----------------------------------------------------------
+
+/// The way out that carries nothing out. Before it existed the only way to stop
+/// planning without executing was `Ctrl-l`, which parks the whole conversation.
+#[test]
+fn plan_off_leaves_the_mode_and_keeps_the_transcript() {
+    let mut state = State {
+        plan: Plan::Planning,
+        ..idle_state()
+    };
+    state.messages.push(Message::user("plan something"));
+    let before = state.messages.clone();
+    state.input.set_text("/plan off".to_owned());
+    state.submit();
+
+    assert!(matches!(state.plan, Plan::Off), "the mode is off");
+    assert_eq!(
+        state.messages[..before.len()],
+        before[..],
+        "what was said is still said",
+    );
+    assert_eq!(
+        state.messages.len(),
+        before.len() + 1,
+        "only a notice was added",
+    );
+    assert_eq!(state.messages.last().unwrap().role, Role::Notice);
+    assert!(!state.is_receiving(), "nothing was sent");
+    assert!(
+        !state
+            .messages
+            .iter()
+            .any(|m| m.content.starts_with("Approved")),
+        "nothing was approved",
+    );
+}
+
+/// From a waiting plan: the box comes down, the plan itself does not. It stays
+/// an ordinary assistant message, which is what makes "not this, but keep the
+/// chat" possible at all.
+#[test]
+fn plan_off_at_a_waiting_plan_takes_the_box_down() {
+    let mut state = planning_state();
+    reply_and_settle(&mut state, "The plan.");
+    assert!(state.awaiting_plan(), "the box is up to begin with");
+
+    state.input.set_text("/plan off".to_owned());
+    state.submit();
+
+    assert!(matches!(state.plan, Plan::Off));
+    assert!(state.confirmation_prompt().is_none(), "the box came down");
+    let at = state
+        .plan_index()
+        .expect("the plan is still in the transcript");
+    assert_eq!(state.messages[at].content, "The plan.");
+    assert!(!state.is_receiving(), "nothing was sent");
+}
+
+/// The point of leaving: the next turn is an ordinary one, so a call the mode
+/// was refusing goes through.
+#[test]
+fn plan_off_restores_the_full_tool_set() {
+    let mut state = planning_state();
+    state.input.set_text("/plan off".to_owned());
+    state.submit();
+    assert!(!state.is_planning());
+
+    let frame = tool_call_frame("call_1", "close_pane", r#"{"pane_id":1,"is_plugin":false}"#);
+    state.on_chunk("hocus-1", &frame, false, None);
+    state.on_chunk("hocus-1", b"", true, None);
+
+    assert!(
+        !tool_results(&state)
+            .iter()
+            .any(|result| result.content.starts_with("refused: planning mode is on")),
+        "the mode is no longer withholding it",
+    );
+}
+
+/// Leaving a mode that was never entered is a typo, not a silent no-op.
+#[test]
+fn plan_off_when_not_planning_is_an_error() {
+    let mut state = idle_state();
+    state.input.set_text("/plan off".to_owned());
+    state.submit();
+
+    assert_eq!(state.messages.last().unwrap().role, Role::Error);
+    assert!(matches!(state.plan, Plan::Off));
+}
+
+/// `/plan off` is legal while the planning reply is still arriving — it sits
+/// above the `tools_busy` guard, like `/plan` itself. The reply then lands as an
+/// ordinary assistant turn: `on_chunk` only promotes one to a plan while the
+/// mode is still on.
+#[test]
+fn a_planning_reply_landing_after_plan_off_is_not_a_plan() {
+    let mut state = planning_state();
+    state.input.set_text("/plan off".to_owned());
+    state.submit();
+    reply_and_settle(&mut state, "Here is what I found.");
+
+    assert!(matches!(state.plan, Plan::Off), "it did not come back on");
+    assert!(!state.awaiting_plan());
+    assert!(state.confirmation_prompt().is_none(), "no box went up");
 }
 
 /// A job coming due while a plan waits must start its own turn rather than be

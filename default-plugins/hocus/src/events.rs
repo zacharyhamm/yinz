@@ -1697,7 +1697,7 @@ impl State {
                             // y/n rather than trusting the pane to be on screen.
                             notify(
                                 "hocus has a plan — /execute to carry it out, /execute --clear \
-                                 to carry it out in a fresh chat",
+                                 to carry it out in a fresh chat, /plan off to drop it",
                             );
                         }
                     }
