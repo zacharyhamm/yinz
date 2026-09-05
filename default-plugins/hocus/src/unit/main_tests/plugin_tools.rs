@@ -638,3 +638,99 @@ fn folder_search_reports_caps_failed_reads_and_oversize_files() {
     );
     test_seams::reset();
 }
+
+#[test]
+fn folder_search_skips_invalid_names_but_named_search_rejects_them() {
+    use crate::tools::test_seams;
+    test_seams::reset();
+    let invalid = [
+        "has spaces.lua".to_owned(),
+        "café.lua".to_owned(),
+        format!("{}.lua", "a".repeat(65)),
+    ];
+    test_seams::PLUGIN_ENTRIES.with_borrow_mut(|entries| {
+        *entries = Some(
+            invalid
+                .iter()
+                .map(String::as_str)
+                .chain(["keys.lua"])
+                .map(|name| FsEntry {
+                    path: format!("/plugins/{name}"),
+                    metadata: None,
+                })
+                .collect(),
+        );
+    });
+    test_seams::set_plugin_source("needle\n");
+    let mut state = plugin_state();
+    assert!(run_file_tool(
+        &mut state,
+        "plugin_search",
+        r#"{"query":"needle"}"#
+    ));
+    let results = tool_results(&state);
+    assert!(results[0]
+        .content
+        .starts_with("Warning: incomplete search; 3 files skipped"));
+    assert!(results[0].content.contains("keys.lua:1:needle"));
+    for name in invalid {
+        let mut state = plugin_state();
+        assert!(run_file_tool(
+            &mut state,
+            "plugin_search",
+            &serde_json::json!({"name": name, "query": "needle"}).to_string()
+        ));
+        let expected = crate::tools::plugin_fs_path(Some(&name)).unwrap_err();
+        assert_eq!(tool_results(&state)[0].content, expected);
+    }
+    test_seams::reset();
+}
+
+#[test]
+fn edit_diagnostics_are_byte_bounded_before_confirmation_and_during_execution() {
+    use crate::tools::test_seams;
+    for unit in ["x", "界"] {
+        for batch in [false, true] {
+            for preflight in [false, true] {
+                test_seams::reset();
+                let source = format!("before\nanchor  {}\n", unit.repeat(MAX_TOOL_OUTPUT));
+                test_seams::set_plugin_source(&source);
+                let failed_edit =
+                    serde_json::json!({"old_string": "anchor   ", "new_string": "replacement"});
+                let arguments = if batch {
+                    serde_json::json!({"name": "keys", "edits": [
+                        {"old_string": "before", "new_string": "after"},
+                        failed_edit
+                    ]})
+                } else {
+                    serde_json::json!({"name": "keys", "old_string": "anchor   ", "new_string": "replacement"})
+                };
+                let mut state = plugin_state();
+                let call = ToolCall {
+                    id: "edit".into(),
+                    name: "plugin_edit".into(),
+                    arguments: arguments.to_string(),
+                };
+                state.pending = vec![call.clone()].into();
+                if preflight {
+                    state.pump_tools();
+                } else {
+                    assert!(state.start_plugin_tool(&call));
+                }
+                assert!(state.confirmation_prompt().is_none());
+                let results = tool_results(&state);
+                assert_eq!(results.len(), 1);
+                let error = &results[0].content;
+                assert!(error.len() <= MAX_TOOL_OUTPUT);
+                assert!(error.contains("old_string is not in the file exactly"));
+                assert!(error.ends_with("\n[truncated]"));
+                if batch {
+                    assert!(error.starts_with("edit 2 of 2:"));
+                }
+                assert_eq!(test_seams::PLUGIN_WRITE_CALLS.get(), 0);
+                assert!(test_seams::granted_permissions().is_empty());
+            }
+        }
+    }
+    test_seams::reset();
+}
