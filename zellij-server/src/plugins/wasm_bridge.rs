@@ -447,9 +447,12 @@ impl WasmBridge {
                                 .map(ToString::to_string)
                                 .collect();
 
-                            match downloader.download(url, Some(&file_name)).await {
-                                Ok(_) => loading_context
-                                    .update_plugin_path(ZELLIJ_CACHE_DIR.join(&file_name)),
+                            let downloaded = downloader
+                                .download(url, Some(&file_name))
+                                .await
+                                .with_context(|| format!("failed to download plugin from {url}"));
+                            match downloaded {
+                                Ok(plugin_path) => loading_context.update_plugin_path(plugin_path),
                                 Err(e) => {
                                     handle_plugin_loading_failure(
                                         &senders,

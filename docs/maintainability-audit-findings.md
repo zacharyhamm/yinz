@@ -6,13 +6,15 @@ Audited revision: `6e84ff04a169b59e6486ac4734986afae10194a9` (`main`). This docu
 
 Checkboxes track findings for review. They do not represent approved fixes or a remediation plan. All findings were unchecked when this report was created.
 
-The A-group findings were revalidated against `4f3245ef4` and remediated on 2026-09-04. The B and C findings were revalidated against `e8376b353` and remediated the same day. The E findings were revalidated against `dd11e2b16` and remediated the same day. Their original evidence below describes the audited code; the remediation notes describe the fixes and regression coverage.
+The A-group findings were revalidated against `4f3245ef4` and remediated on 2026-09-04. The B and C findings were revalidated against `e8376b353` and remediated the same day. The E findings were revalidated against `dd11e2b16` and remediated the same day. The D finding was revalidated against `5170e4628` and remediated the same day. Their original evidence below describes the audited code; the remediation notes describe the fixes and regression coverage.
 
 A-group validation: all 20 focused configuration/recorder tests passed. `cargo x ci check` passed format, lint, all 6,798 selected workspace tests (45 skipped), and doctests. `cargo x integration-test -j 16` passed all 344 whole-app tests with no skips.
 
 B/C-group validation: the five permission-denial tests pass 10/10 in a loop and all fail with `check_command_permission` forced to grant; the seven new layout-manager tests pass. `cargo x ci check` passed format, lint, all 6,841 workspace tests (45 skipped), and doctests. `cargo x integration-test -j 16` passed all 344 whole-app tests with no skips.
 
 E-group validation: `NEXTEST_TEST_THREADS=16 cargo x ci check` passed format, lint, all 6,845 workspace tests (45 skipped), and doctests. An earlier gate also passed at default concurrency; a subsequent default-concurrency run produced empty-observer failures in `dump_session_layout_plugin_command`, `shared_plugin_has_one_instance_serving_all_clients`, `plugin_workers`, and `plugin_workers_persist_state`. All four passed in isolation and in the full gate with 16 test workers. The preset integration snapshots were reviewed and updated to include the restored Agent entry. `cargo x integration-test -j 16` then passed all 344 whole-app tests with no skips.
+
+D-group validation: the 16 focused downloader tests pass 10/10 in a loop, and the 7 `wasm_bridge` tests pass. `NEXTEST_TEST_THREADS=16 cargo x ci check` passed format, lint, all 6,954 workspace tests (45 skipped), and doctests. `cargo x integration-test -j 16` passed all 344 whole-app tests with no skips.
 
 ## 1. Executive Summary (Minto Top)
 
@@ -79,13 +81,15 @@ Governing thought: The layout manager removes an entry from its visible list aft
 
 Governing thought: The downloader's success result does not establish that its destination contains the requested artifact.
 
-- [ ] **Finding D.1: Download success can mean missing, invalid, or incorrectly resumed content** (P1, High)
+- [x] **Finding D.1: Download success can mean missing, invalid, or incorrectly resumed content** (P1, High)
   - Where: `zellij-utils/src/downloader.rs:44`, `zellij-utils/src/downloader.rs:73`, `zellij-utils/src/downloader.rs:90`, `zellij-utils/src/downloader.rs:96`, `zellij-utils/src/downloader.rs:121`, `zellij-utils/src/downloader.rs:138`, `zellij-server/src/plugins/wasm_bridge.rs:450`.
   - Problem: HTTP-client construction errors become `None`, and an absent client produces `Ok(())`. Download responses are streamed without checking HTTP status or validating the requested range; an existing partial file is opened for append, then promoted to the final cache path.
   - Impact: An HTTP error body or full response appended to a partial download can become the cached plugin. Later loads accept the existing path and fail during artifact loading, obscuring the original network failure and making the problem persistent.
   - Trigger: HTTP errors with readable bodies, interrupted downloads followed by servers ignoring `Range`, or HTTP-client initialization failure.
   - Confidence basis: Success branches, append behavior, cache promotion, and the consuming plugin-loading caller are explicit.
   - Dimensions flagged by: Readability/Maintainability.
+  - Remediation: The HTTP client's build result is stored, and a failed build is an error whenever a request is needed; a file already in the cache is still returned without one. `download` measures the partial file, sends `Range` only when it is non-empty, and checks the status before opening anything: a non-2xx response is an error naming the URL and status and leaves both the partial file and the cache untouched; `200` replaces the partial file; `206` appends only when `Content-Range` starts at the partial file's length, otherwise the partial file is discarded. Automatic decompression is off for cached downloads so `Content-Length` and `Content-Range` describe the stored bytes, and a length mismatch after the stream fails the download (a short body keeps the prefix for resume, a long one discards it). Writes are flushed before the partial file is measured, renamed, or left behind. `download` returns the cached path, and the plugin loader wraps a failure with the URL so the pane shows the cause chain. `download_without_cache`, which serves layouts loaded from URLs, applies the same status check.
+  - Regression coverage: A local raw-TCP server in a temporary directory drives a full response, an error status with an existing partial file, a matching resume with the `Range` header asserted, a `200` replacing a partial file, wrong-offset, missing, and unsolicited `206` responses, an interrupted transfer that keeps the prefix and resumes on a second connection, a chunked body longer than its range and a shorter honoured sub-range, a cache hit without a client, a failed client build, the `Content-Range` parser, and `download_without_cache` on `500` and `200`.
 
 ### Theme E: Input behavior drifts across comments, presets, and implementations — Impact: P2 — Confidence: High
 
@@ -142,10 +146,31 @@ Together with the eight findings above, this inventory contains **20 retained fi
 
 ### Runtime and UI contracts
 
-- [ ] **F.2 — Resize success can mean rejected geometry.** Invalid layouts return `Ok(())` without applying spans, while valid but unchanged geometry returns `PaneSizeUnchanged`. Callers distinguish those outcomes and can update viewport/display dimensions after rejection. The trigger is a layout below a stack's minimum height or unchanged geometry after rounding; return semantics are proven, but the resulting screen appearance was not exercised.
-- [ ] **F.3 — Focus dispatch discards the actual operation error.** Mapping the located tab produces an `Option<Result<()>>`; adding context creates an outer result, and `non_fatal()` checks only that outer layer. When the tab operation returns an error, its diagnostic is lost while screen focus dispatch returns success. Confidence is High for this result-handling mechanism; a separate conditional pane-loss concern remains in section 4.
-- [ ] **F.4 — Repeated configuration blocks are silently overlooked.** One named-node lookup handles each top-level block, with an explicit TODO acknowledging repeated blocks and missing informative errors. A document containing two `keybinds` blocks, or another repeated supported block, can parse successfully without incorporating every occurrence. Confidence is High from the lookup paths and explicit comment; this differs from merging separate configurations with `base_config`.
-- [ ] **F.5 — Layout-manager mixes width units.** Truncation interprets terminal-column budgets as character counts, wrapping uses byte lengths, and a separate ANSI helper uses terminal-cell widths. Wide names can exceed their assigned columns, while multibyte Latin text can wrap prematurely. Confidence is High for incorrect calculations; exact clipping depends on the renderer and terminal dimensions.
+- [ ] **F.2 — Resize success can mean rejected geometry.** Invalid layouts
+  return `Ok(())` without applying spans, while valid but unchanged geometry
+  returns `PaneSizeUnchanged`. Callers distinguish those outcomes and can
+  update viewport/display dimensions after rejection. The trigger is a layout
+  below a stack's minimum height or unchanged geometry after rounding; return
+  semantics are proven, but the resulting screen appearance was not exercised.
+- [ ] **F.3 — Focus dispatch discards the actual operation error.** Mapping the
+  located tab produces an `Option<Result<()>>`; adding context creates an outer
+  result, and `non_fatal()` checks only that outer layer. When the tab
+  operation returns an error, its diagnostic is lost while screen focus
+  dispatch returns success. Confidence is High for this result-handling
+  mechanism; a separate conditional pane-loss concern remains in section 4.
+- [ ] **F.4 — Repeated configuration blocks are silently overlooked.** One
+  named-node lookup handles each top-level block, with an explicit TODO
+  acknowledging repeated blocks and missing informative errors. A document
+  containing two `keybinds` blocks, or another repeated supported block, can
+  parse successfully without incorporating every occurrence. Confidence is High
+  from the lookup paths and explicit comment; this differs from merging
+  separate configurations with `base_config`.
+- [ ] **F.5 — Layout-manager mixes width units.** Truncation interprets
+  terminal-column budgets as character counts, wrapping uses byte lengths, and
+  a separate ANSI helper uses terminal-cell widths. Wide names can exceed their
+  assigned columns, while multibyte Latin text can wrap prematurely. Confidence
+  is High for incorrect calculations; exact clipping depends on the renderer
+  and terminal dimensions.
 
 ### Verification reliability
 
