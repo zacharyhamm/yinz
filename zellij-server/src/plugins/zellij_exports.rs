@@ -4731,6 +4731,10 @@ fn data_apply(env: &mut PluginEnv, namespace: Option<String>, mutations: Vec<Mut
             notify_watchers(env, &namespace, &outcome.touched_entities);
             DataApplyResponse::Ok(outcome.report)
         },
+        // A conflict is its own answer, not an error: the caller asked for a compare-and-set and
+        // is being told the comparison failed, which is a race to retry rather than a request to
+        // fix.
+        Err(DataError::Conflict(message)) => DataApplyResponse::Conflict(message),
         Err(e) => DataApplyResponse::Err(e.to_string()),
     };
     write_data_response(

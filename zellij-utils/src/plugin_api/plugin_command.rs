@@ -5779,6 +5779,9 @@ impl From<DataApplyResponse> for ProtobufDataApplyResponse {
         ProtobufDataApplyResponse {
             result: Some(match response {
                 DataApplyResponse::Ok(report) => data_apply_response::Result::Report(report.into()),
+                DataApplyResponse::Conflict(message) => {
+                    data_apply_response::Result::Conflict(message)
+                },
                 DataApplyResponse::Err(error) => data_apply_response::Result::Error(error),
             }),
         }
@@ -5791,6 +5794,9 @@ impl TryFrom<ProtobufDataApplyResponse> for DataApplyResponse {
         match protobuf.result {
             Some(data_apply_response::Result::Report(report)) => {
                 Ok(DataApplyResponse::Ok(report.into()))
+            },
+            Some(data_apply_response::Result::Conflict(message)) => {
+                Ok(DataApplyResponse::Conflict(message))
             },
             Some(data_apply_response::Result::Error(error)) => Ok(DataApplyResponse::Err(error)),
             None => Err("DataApplyResponse without a result"),

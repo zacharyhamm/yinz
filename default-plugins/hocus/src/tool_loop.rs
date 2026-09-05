@@ -1780,7 +1780,25 @@ impl State {
                 let id = args.id.ok_or("id is required")?;
                 let text = args.text.as_deref().ok_or("text is required")?;
                 let (mutations, text) = todos::plan_edit(&list, id, text)?;
-                backend.apply(mutations)?;
+                if let Err(error) = backend.apply(mutations) {
+                    if !error.is_conflict() {
+                        return Err(error.into());
+                    }
+                    // Deliberately not retried. The guard refused because somebody edited this
+                    // item between the read and the write, and the text on offer was composed
+                    // from the older wording — writing it anyway is the loss the guard exists
+                    // to prevent. So the model is told what the item says now and decides.
+                    let now = todos::fetch_list(&backend, &root)
+                        .ok()
+                        .and_then(|list| todos::text_of(&list, id));
+                    return Err(match now {
+                        Some(current) => format!(
+                            "todo item {id} was edited by somebody else and now reads {current:?}; \
+                             call todo_edit again if the change is still wanted"
+                        ),
+                        None => format!("todo item {id} was removed by somebody else"),
+                    });
+                }
                 Ok(serde_json::json!({
                     "project": name,
                     "id": id,
@@ -1947,7 +1965,21 @@ impl State {
                 if mutations.is_empty() {
                     return Err("give a title, a body, tags, or some of each".to_owned());
                 }
-                backend.apply(mutations)?;
+                if let Err(error) = backend.apply(mutations) {
+                    if !error.is_conflict() {
+                        return Err(error.into());
+                    }
+                    // Not retried, for the reason `todo_edit` is not: the title and body on
+                    // offer were composed from the version that has since been replaced.
+                    return Err(match existing_note(&backend, id) {
+                        Ok(now) => format!(
+                            "note {id} was edited by somebody else and now reads {:?}; call \
+                             note_read and then note_edit again if the change is still wanted",
+                            now.title
+                        ),
+                        Err(_) => format!("note {id} was removed by somebody else"),
+                    });
+                }
                 Ok(self.note_reply(&existing_note(&backend, id)?).to_string())
             },
             "note_archive" => {

@@ -646,7 +646,12 @@ impl State {
     /// hocus writes the store itself now. There is no reply to wait for and no
     /// tool call to park: an apply is one transaction that has either happened
     /// or returned an error by the time this returns.
-    pub(crate) fn write_store(&mut self, mutations: Vec<Mutation>) -> Result<ApplyReport, String> {
+    /// The error is typed: a conflict means somebody wrote a guarded row first and the batch
+    /// was rolled back, which a caller can answer by reading again rather than by giving up.
+    pub(crate) fn write_store(
+        &mut self,
+        mutations: Vec<Mutation>,
+    ) -> Result<ApplyReport, WriteError> {
         self.store().apply(mutations)
     }
 
@@ -659,7 +664,7 @@ impl State {
         if let Err(error) = self.write_store(mutations) {
             self.log_global(
                 "store_error",
-                serde_json::json!({"what": what, "error": log::truncate(&error)}),
+                serde_json::json!({"what": what, "error": log::truncate(error.message())}),
             );
         }
     }

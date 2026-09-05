@@ -44,8 +44,17 @@ pub struct Item {
     /// open. That is the safe direction: a load never crosses an item off.
     #[serde(default, skip_serializing_if = "is_false")]
     pub done: bool,
+    /// The store's revision of this row when it was read, and what a write guards on so that it
+    /// cannot silently replace an edit somebody else made in between. Zero on an item that came
+    /// from the legacy file rather than the store, which has no row to guard.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rev: i64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Item>,
+}
+
+fn is_zero(n: &i64) -> bool {
+    *n == 0
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,6 +218,8 @@ fn clean(
             id,
             text,
             done: item.done,
+            // Cleaning a list from the legacy file, which has no store rows behind it.
+            rev: item.rev,
             children,
         });
     }
@@ -446,6 +457,8 @@ pub fn add(
         id,
         text,
         done: false,
+        // Not from a store row: this is the legacy file being read in.
+        rev: 0,
         children: Vec::new(),
     };
     match parent_id {
@@ -524,12 +537,22 @@ pub fn set_done(store: &mut Store, root: &str, id: u64, done: bool) -> Result<Ch
     })
 }
 
+/// One item's text, by id, wherever it sits in the tree. For reporting what an item says now
+/// after a guarded edit was refused.
+pub fn text_of(list: &List, id: u64) -> Option<String> {
+    find_text(&list.items, id)
+}
+
 fn find_text(items: &[Item], id: u64) -> Option<String> {
+    find_item(items, id).map(|item| item.text.clone())
+}
+
+fn find_item(items: &[Item], id: u64) -> Option<&Item> {
     for item in items {
         if item.id == id {
-            return Some(item.text.clone());
+            return Some(item);
         }
-        if let Some(found) = find_text(&item.children, id) {
+        if let Some(found) = find_item(&item.children, id) {
             return Some(found);
         }
     }
@@ -648,6 +671,7 @@ pub fn items_from_rows(rows: &DataRows) -> Vec<(String, Item)> {
                     id,
                     text,
                     done: bool_at(rows, row, "done"),
+                    rev: int_at(rows, row, "rev").unwrap_or(0) as i64,
                     children: Vec::new(),
                 },
             ))
@@ -690,6 +714,7 @@ pub fn from_rows(rows: &DataRows) -> Store {
                 id,
                 text,
                 done: bool_at(rows, row, "done"),
+                rev: int_at(rows, row, "rev").unwrap_or(0) as i64,
                 children: Vec::new(),
             },
         );
@@ -941,13 +966,25 @@ pub fn plan_set_done(
 /// root scoping is needed beyond confirming the item is in this list at all.
 pub fn plan_edit(list: &List, id: u64, text: &str) -> Result<(Vec<Mutation>, String), String> {
     let text = clean_text(text)?;
-    if find_text(&list.items, id).is_none() {
+    let Some(item) = find_item(&list.items, id) else {
         return Err(format!("no todo item {id} in this project; call todo_list"));
+    };
+    // Guarded on the revision the list was read at. An edit replaces the whole of an item's
+    // text with something composed from what the caller saw, so a write that lands on a row
+    // somebody else has since edited destroys their wording outright — and the store is shared
+    // by every session, and with Postgres by every machine, pointed at it.
+    //
+    // Only here, and not on crossing an item off: `done` is a flag, two writers setting it
+    // agree, and guarding it would refuse a write that had nothing to disagree about. This is
+    // the write where a conflict is real.
+    //
+    // A `rev` of 0 means the item did not come from a store row — the legacy file — so there is
+    // nothing to guard against and an unguarded write is the only one that can work.
+    let mut update = Mutation::update("todo", Pred::eq("id", id)).set("text", text.clone());
+    if item.rev > 0 {
+        update = update.expect_rev(item.rev);
     }
-    let mutation = Mutation::update("todo", Pred::eq("id", id))
-        .set("text", text.clone())
-        .build();
-    Ok((vec![mutation], text))
+    Ok((vec![update.build()], text))
 }
 
 /// Plan moving a project's list to a new root.
@@ -1042,6 +1079,7 @@ mod tests {
             id,
             text: text.to_owned(),
             done: false,
+            rev: 0,
             children,
         }
     }
@@ -1384,6 +1422,87 @@ mod tests {
                 .set("text", "new text")
                 .build()]
         );
+    }
+
+    /// Two writers editing one item. The second write was composed from wording the first has
+    /// already replaced, so it is refused rather than landing on top.
+    #[test]
+    fn an_edit_planned_from_a_stale_read_is_refused() {
+        use crate::store::{self, Backend};
+
+        let local = store::Local::shared("hocus");
+        local.define_all(&store::shared_defs()).unwrap();
+        local
+            .apply(
+                plan_add(&List::default(), "/work", "ship it", None)
+                    .unwrap()
+                    .0,
+            )
+            .unwrap();
+
+        // Both read the same list.
+        let mine = fetch_list(&local, "/work").unwrap();
+        let theirs = mine.clone();
+        let id = mine.items[0].id;
+
+        // They write first.
+        local
+            .apply(plan_edit(&theirs, id, "ship it on Friday").unwrap().0)
+            .unwrap();
+
+        // My edit was composed from what the item said before, so it is refused whole.
+        let error = local
+            .apply(plan_edit(&mine, id, "ship it on Monday").unwrap().0)
+            .unwrap_err();
+        assert!(error.is_conflict(), "{error:?}");
+        assert_eq!(
+            text_of(&fetch_list(&local, "/work").unwrap(), id).as_deref(),
+            Some("ship it on Friday"),
+            "the refused write should have changed nothing"
+        );
+
+        // Reading again is all it takes.
+        let fresh = fetch_list(&local, "/work").unwrap();
+        local
+            .apply(plan_edit(&fresh, id, "ship it on Monday").unwrap().0)
+            .unwrap();
+        assert_eq!(
+            text_of(&fetch_list(&local, "/work").unwrap(), id).as_deref(),
+            Some("ship it on Monday")
+        );
+    }
+
+    /// Crossing an item off is deliberately not guarded: two writers setting a flag the same way
+    /// are not disagreeing, and refusing the second would be a conflict about nothing.
+    #[test]
+    fn crossing_an_item_off_is_not_guarded() {
+        use crate::store::{self, Backend};
+
+        let local = store::Local::shared("hocus");
+        local.define_all(&store::shared_defs()).unwrap();
+        local
+            .apply(
+                plan_add(&List::default(), "/work", "ship it", None)
+                    .unwrap()
+                    .0,
+            )
+            .unwrap();
+        let stale = fetch_list(&local, "/work").unwrap();
+        let id = stale.items[0].id;
+
+        // Somebody edits the text, moving the row's revision on.
+        let fresh = fetch_list(&local, "/work").unwrap();
+        local
+            .apply(plan_edit(&fresh, id, "ship it soon").unwrap().0)
+            .unwrap();
+
+        // Crossing off from the older read still lands.
+        local
+            .apply(plan_set_done(&stale, "/work", id, true).unwrap().0)
+            .unwrap();
+        let after = fetch_list(&local, "/work").unwrap();
+        assert!(after.items[0].done);
+        assert_eq!(after.items[0].text, "ship it soon");
     }
 
     #[test]

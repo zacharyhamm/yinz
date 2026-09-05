@@ -343,7 +343,11 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
                     .map_err(|e| anyhow!("{}", e))?
                 {
                     DataApplyResponse::Ok(report) => value(lua, report),
-                    DataApplyResponse::Err(e) => Err(anyhow!("{}", e)),
+                    // Both are Lua errors, which `pcall` catches. The conflict says so in its
+                    // message, which is the only channel a Lua error has.
+                    DataApplyResponse::Conflict(e) | DataApplyResponse::Err(e) => {
+                        Err(anyhow!("{}", e))
+                    },
                 },
             )
         },

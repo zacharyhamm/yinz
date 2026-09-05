@@ -814,7 +814,7 @@ mod tests {
         fn count(&self, request: &FetchRequest) -> Result<u64, String> {
             self.0.count(request)
         }
-        fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, String> {
+        fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, WriteError> {
             self.0.apply(mutations)
         }
         fn watch(

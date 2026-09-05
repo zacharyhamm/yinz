@@ -1139,6 +1139,46 @@ pub struct ApplyReport {
     pub per_mutation: Vec<u64>,
 }
 
+/// Why a batch of mutations did not happen.
+///
+/// Two kinds, because the answer differs in kind. A conflict is a race — somebody wrote the row
+/// between the read and the write — and the response is to read it again and decide; everything
+/// else is a request that will not work however often it is sent. Collapsing them into one
+/// string would leave every caller matching on prose.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WriteError {
+    /// A write guarded with `expect_rev` found the row at another revision, or gone. The batch
+    /// was rolled back whole.
+    Conflict(String),
+    /// Anything else: a malformed request, a missing entity, a database that cannot be reached.
+    Failed(String),
+}
+
+impl WriteError {
+    pub fn is_conflict(&self) -> bool {
+        matches!(self, WriteError::Conflict(_))
+    }
+
+    pub fn message(&self) -> &str {
+        match self {
+            WriteError::Conflict(message) | WriteError::Failed(message) => message,
+        }
+    }
+}
+
+impl fmt::Display for WriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message())
+    }
+}
+
+/// So that a caller which does not care why can still `?` into a `Result<_, String>`.
+impl From<WriteError> for String {
+    fn from(error: WriteError) -> String {
+        error.message().to_owned()
+    }
+}
+
 /// What the store did in response to a schema declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct DataSchemaInfo {

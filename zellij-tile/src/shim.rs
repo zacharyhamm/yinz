@@ -2226,9 +2226,11 @@ pub fn data_define_entity(
 pub fn data_apply(
     namespace: Option<&str>,
     mutations: Vec<Mutation>,
-) -> Result<ApplyReport, String> {
+) -> Result<ApplyReport, WriteError> {
     for mutation in &mutations {
-        mutation.validate().map_err(|e| e.to_string())?;
+        mutation
+            .validate()
+            .map_err(|e| WriteError::Failed(e.to_string()))?;
     }
     let response: DataApplyResponse = data_request::<_, ProtobufDataApplyResponse>(
         PluginCommand::DataApply {
@@ -2236,10 +2238,12 @@ pub fn data_apply(
             mutations,
         },
         "apply",
-    )?;
+    )
+    .map_err(WriteError::Failed)?;
     match response {
         DataApplyResponse::Ok(report) => Ok(report),
-        DataApplyResponse::Err(error) => Err(error),
+        DataApplyResponse::Conflict(message) => Err(WriteError::Conflict(message)),
+        DataApplyResponse::Err(error) => Err(WriteError::Failed(error)),
     }
 }
 

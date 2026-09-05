@@ -420,7 +420,12 @@ pub trait Backend {
     fn define(&self, def: &EntityDef) -> Result<DataSchemaInfo, String>;
     fn fetch(&self, request: &FetchRequest) -> Result<DataRows, String>;
     fn count(&self, request: &FetchRequest) -> Result<u64, String>;
-    fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, String>;
+    /// Apply a batch, all or nothing.
+    ///
+    /// The error is typed rather than a string so a caller can tell a conflict — somebody wrote
+    /// a guarded row first, so read it again — from a request that will not work however often
+    /// it is sent. `?` still converts it to a `String` for the callers that do not care.
+    fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, WriteError>;
 
     /// Watch a query, and take its current results while registering.
     ///
@@ -457,7 +462,7 @@ impl<T: Backend + ?Sized> Backend for &T {
         (**self).count(request)
     }
 
-    fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, String> {
+    fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, WriteError> {
         (**self).apply(mutations)
     }
 
@@ -515,7 +520,7 @@ mod host {
             data_count(&stamped(self.namespace.as_deref(), request))
         }
 
-        fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, String> {
+        fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, WriteError> {
             data_apply(self.namespace.as_deref(), mutations)
         }
 
@@ -558,8 +563,10 @@ mod host_stub {
         }
     }
 
+    const UNAVAILABLE: &str = "the plugin data store is only reachable from inside zellij";
+
     fn unavailable<T>() -> Result<T, String> {
-        Err("the plugin data store is only reachable from inside zellij".to_owned())
+        Err(UNAVAILABLE.to_owned())
     }
 
     impl Backend for Host {
@@ -576,8 +583,8 @@ mod host_stub {
             unavailable()
         }
 
-        fn apply(&self, _mutations: Vec<Mutation>) -> Result<ApplyReport, String> {
-            unavailable()
+        fn apply(&self, _mutations: Vec<Mutation>) -> Result<ApplyReport, WriteError> {
+            Err(WriteError::Failed(UNAVAILABLE.to_owned()))
         }
 
         fn watch(
@@ -693,11 +700,16 @@ mod local {
                         .map_err(|e| e.to_string())
                 }
 
-                fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, String> {
+                fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, WriteError> {
                     self.store
                         .apply(&self.namespace, &mutations)
                         .map(|outcome| outcome.report)
-                        .map_err(|e| e.to_string())
+                        // The same split the host makes on the way back to a wasm plugin, so a
+                        // test sees the error a session would.
+                        .map_err(|e| match e {
+                            DataError::Conflict(message) => WriteError::Conflict(message),
+                            other => WriteError::Failed(other.to_string()),
+                        })
                 }
 
                 /// Takes the rows, but never notifies.

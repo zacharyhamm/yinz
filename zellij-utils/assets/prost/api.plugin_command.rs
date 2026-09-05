@@ -920,7 +920,7 @@ pub mod data_define_response {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DataApplyResponse {
-    #[prost(oneof="data_apply_response::Result", tags="1, 2")]
+    #[prost(oneof="data_apply_response::Result", tags="1, 2, 3")]
     pub result: ::core::option::Option<data_apply_response::Result>,
 }
 /// Nested message and enum types in `DataApplyResponse`.
@@ -932,6 +932,12 @@ pub mod data_apply_response {
         Report(super::super::plugin_data::ApplyReport),
         #[prost(string, tag="2")]
         Error(::prost::alloc::string::String),
+        /// A write guarded with `expect_rev` found the row at another revision, or gone. Its own
+        /// branch rather than a flag on `error`, so a caller can tell "re-read and try again" from
+        /// "this will not work" without reading the message. Only a plugin that sends a guard can
+        /// ever be answered with one, so an older plugin never sees this branch.
+        #[prost(string, tag="3")]
+        Conflict(::prost::alloc::string::String),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
