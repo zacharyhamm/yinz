@@ -38,6 +38,22 @@ type the wasm shim would build, and hands back raw bytes for anything it does no
 lists every reply-returning command and fails when a new one is not decoded.
 `zellij-tile/src/shim.rs` is the reference for what each response means.
 
+The prelude also carries a scheduler. `zellij.task` is a coroutine; `zellij.await` yields an
+*awaitable* - `{ done, value, events, match, on_settle }`, registered in `waiters[event name]`
+at creation, eager - and `__update` runs `deliver(event)` **before** the `zellij.on` handlers:
+every waiter for the event gets `match`, the settled ones' tasks are queued, `drain()` resumes
+them FIFO, and the event then reaches the handlers and `update` untouched. A task or listener
+that raises does not strand the rest of its batch: `each_guarded` runs them all and re-raises
+the first error afterwards. `__pipe` does the same through `deliver_pipe`, which also serves
+the `zellij.rpc` wire and hocus's extension messages without showing them to the plugin.
+Timers are one host `SetTimeout` in flight for the nearest deadline in a sorted list, swept on
+every `timer` event; the sweep arms the next deadline *before* settling the due ones, so a
+raising callback cannot stop the clock. `os.time` is the only clock, so deadlines are whole
+seconds, and no extra second is added when arming. `coroutine.resume` is the prelude's
+rethrowing wrapper, which is what makes a host cancel unwind a task. `zellij.null` (mlua's
+null, installed in `loader.rs`) is how a tuple command's optional middle element is left absent
+from a Lua table.
+
 hocus is the main consumer of all this: its `plugin_*` tools write, edit, reload, read back the
 pane, and grep the log, and `docs/LUA_PLUGINS.md` plus `example-plugins/` plus `prelude.lua` are
 served to its model verbatim by `hocus/src/lua_docs.rs`, cut into sections that each stay under
@@ -48,7 +64,8 @@ A new `##` heading in the guide needs a section name there, or a test fails.
 `zellij_utils::plugin_authoring` is the other half of that: the naming rules, the backup name, the
 lexical permission parser, and `lint`, which reads a source for the traps a compile cannot see -
 a permission spelled wrong (granted to nobody, silently), a data namespace that is not
-`shared:`-prefixed, a reserved column declared as an attribute, a gated call made from `load`.
+`shared:`-prefixed, a reserved column declared as an attribute, an extension registering without
+the permission its registration needs.
 `zellij plugins check`, `plugin_check` and `plugin_write` all report it, and none of them refuse
 a write over it: the compiler is the only thing that says no. When hocus's
 confirmation of a `plugin_write` is approved, the permissions the source asks for are granted

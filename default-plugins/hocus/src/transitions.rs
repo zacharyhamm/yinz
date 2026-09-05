@@ -108,6 +108,7 @@ impl State {
             retry: self.retry.take(),
             plan: std::mem::take(&mut self.plan),
             plugin_load: self.plugin_load.take(),
+            extension_call_started_ms: self.extension_call_started_ms.take(),
             draft: (String::new(), 0),
             jobs: std::mem::take(&mut self.jobs),
             asks: std::mem::take(&mut self.asks),
@@ -139,6 +140,7 @@ impl State {
         self.plan = chat.plan;
         self.usage = chat.usage;
         self.plugin_load = chat.plugin_load;
+        self.extension_call_started_ms = chat.extension_call_started_ms;
         self.jobs = chat.jobs;
         self.asks = chat.asks;
     }
@@ -1032,6 +1034,7 @@ impl State {
             self.show_panel();
         }
         let fired = self.poll_plugin_loads() || fired;
+        let fired = self.poll_extension_calls() || fired;
         let fired = self.poll_extension_scan() || fired;
         let frames = self.wants_frames();
         if frames {
@@ -1041,7 +1044,9 @@ impl State {
         let fired = asked || retried || fired;
         // A parked chat's plugin load keeps the chain running at frame rate even when nothing on
         // screen wants frames: nothing else will wake us, and the report is due in 750ms.
-        let loads = self.plugin_load_pending();
+        // A parked chat's extension call likewise: its timeout is the only thing that will
+        // answer a call nobody else does.
+        let loads = self.plugin_load_pending() || self.extension_call_pending();
         let extension_scan = self.extension_scan_due_ms.is_some();
         // A retry wants frames, not job-rate ticks: the countdown beside the spinner is drawn
         // every frame, and a parked chat's retry has nothing else to wake it.
@@ -1214,6 +1219,33 @@ impl State {
                 .any(|chat| matches!(chat.status, Status::AwaitingPluginLoad))
     }
 
+    /// Whether any chat, foreground or parked, is waiting on an extension call.
+    fn extension_call_pending(&self) -> bool {
+        matches!(self.status, Status::AwaitingExtension)
+            || self
+                .parked
+                .iter()
+                .any(|chat| matches!(chat.status, Status::AwaitingExtension))
+    }
+
+    /// Poll every chat waiting on an extension call, the foreground one and any parked, each
+    /// against its own clock. Returns whether any was given up on. The swap is
+    /// `poll_plugin_loads`'s, for the same reason.
+    fn poll_extension_calls(&mut self) -> bool {
+        let mut fired = self.poll_extension_call();
+        let parked: Vec<usize> = self
+            .parked
+            .iter()
+            .enumerate()
+            .filter(|(_, chat)| matches!(chat.status, Status::AwaitingExtension))
+            .map(|(index, _)| index)
+            .collect();
+        for index in parked {
+            fired = self.with_parked(index, |state| state.poll_extension_call()) || fired;
+        }
+        fired
+    }
+
     /// Poll every chat waiting on a `plugin_reload`, the foreground one and any parked with
     /// `/history` still owed their report. Returns whether any transcript changed.
     ///
@@ -1233,6 +1265,33 @@ impl State {
             fired = self.with_parked(index, |state| state.poll_plugin_load()) || fired;
         }
         fired
+    }
+
+    /// Give up on an extension call that has gone unanswered for `CALL_TIMEOUT_MS`: the head is
+    /// answered with the reason and the model carries on. Returns whether it was.
+    fn poll_extension_call(&mut self) -> bool {
+        if !matches!(self.status, Status::AwaitingExtension) {
+            return false;
+        }
+        let Some(started) = self.extension_call_started_ms else {
+            return false;
+        };
+        if self.mono_ms.saturating_sub(started) < extensions::CALL_TIMEOUT_MS {
+            return false;
+        }
+        let name = self
+            .pending
+            .front()
+            .map(|head| head.name.clone())
+            .unwrap_or_default();
+        self.status = Status::Idle;
+        self.extension_call_started_ms = None;
+        self.finish_head(format!(
+            "extension tool {name} did not answer in {}s; plugin_log its plugin for the error",
+            extensions::CALL_TIMEOUT_MS / 1000
+        ));
+        self.pump_tools();
+        true
     }
 
     /// Look at the pane a `plugin_reload` opened, once it has had time to load. Returns whether
@@ -1263,6 +1322,12 @@ impl State {
             format!(
                 "loaded {}, but it did not register Hocus tools; call plugin_log for its error",
                 watch.target
+            )
+        } else if watch.headless {
+            tools::plugin_headless_report(
+                &watch.name,
+                &watch.target,
+                tools::plugin_log_tail(&watch.name, 40),
             )
         } else {
             tools::plugin_load_report(&watch.target, tools::observe_plugin(&watch.target))

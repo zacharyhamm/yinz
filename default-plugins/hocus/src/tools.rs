@@ -1893,11 +1893,16 @@ pub fn specs() -> Value {
             "plugin_reload",
             "Load or reload one of the user's Lua plugins, opening it in a pane if it is not \
              running. Answers with the pane id and what it shows - the first render, or the \
-             load error. plugin_log has what it logged.",
+             load error. plugin_log has what it logged. With `headless` the plugin runs \
+             without a pane, as one shared instance for the session - for a plugin that \
+             watches and drives rather than draws, such as an agent harness - and the answer \
+             is the tail of its log instead of a render; write it with `zellij.trace(true)` \
+             or the configuration `trace \"true\"` to see what it did.",
             json!({
                 "type": "object",
                 "properties": {
                     "name": { "type": "string" },
+                    "headless": { "type": "boolean" },
                 },
                 "required": ["name"],
             }),
@@ -2752,6 +2757,8 @@ pub struct Args {
     // `start_line` and `line_count`, which are `read_file`'s.
     pub source: Option<String>,
     pub overwrite: bool,
+    /// `plugin_reload`: load without a pane, as one shared instance for the session.
+    pub headless: bool,
     pub section: Option<String>,
     // Skill tier. Separate from `source`, which is the complete file text.
     pub scope: Option<String>,
@@ -4694,6 +4701,21 @@ mod host {
         start_or_reload_plugin(&format!("file:{path}"));
     }
 
+    /// Load the plugin at `path` without a pane, as one shared instance for the session - or,
+    /// when an instance is already running (`running` is its id, from the session's plugin
+    /// list), reload that one in place, so a second call never starts a second copy.
+    pub fn reload_plugin_headless(path: &str, running: Option<u32>) {
+        match running {
+            Some(id) => reload_plugin_with_id(id),
+            None => load_new_plugin(
+                format!("file:{path}"),
+                BTreeMap::from([("shared".to_owned(), "true".to_owned())]),
+                true,
+                true,
+            ),
+        }
+    }
+
     /// Grant the plugin at `path` the permissions its source asked for, as the user's approval
     /// of the write. The host keys the grant by the same location a reload names.
     pub fn grant_permissions(path: &str, permissions: &[PermissionType]) {
@@ -4724,29 +4746,36 @@ mod host {
         })
     }
 
-    /// Cut the branch or worktree, then open the agent's pane in it.
+    /// Start the agent: the host plans the argv, cuts the branch or worktree `spec` names,
+    /// opens the pane and records it as an agent's - `PluginCommand::SpawnAgent`, which is
+    /// also what the New agent modal's button and a Lua plugin's `zellij.agent.spawn` call, the
+    /// point being that there is one answer to "what does starting an agent do".
     ///
-    /// The whole of it is `launch::open`, which is also what the New agent modal's
-    /// button calls — the point being that there is one answer to "what does
-    /// starting an agent do", not two. All this adds is the reporting: the same
-    /// JSON `report_opened_pane` emits, so `present` and `register_spawned`
-    /// cannot tell the two `agent_spawn` paths apart, plus the branch and the
-    /// folder, which the caller has no other way to learn.
-    pub fn spawn_in_checkout(args: &Args, source: Option<String>) -> String {
-        // The git work resolves the repository from this folder, so unlike
-        // `new_pane` it cannot be left unset. The focused pane's cwd is the one the
-        // user would mean, which is the same fallback `new_pane` uses.
+    /// `source` is the repository a checkout is made in; `cwd` is where the pane runs when
+    /// there is no checkout to make. All this adds is the reporting: the same JSON
+    /// `report_opened_pane` emits, so `present` and `register_spawned` read one shape, plus
+    /// the branch and the folder, which the caller has no other way to learn.
+    pub fn spawn_agent(
+        args: &Args,
+        spec: &launch::Spec,
+        source: Option<String>,
+        cwd: Option<String>,
+    ) -> String {
+        // The git work resolves the repository from this folder, so it cannot be left
+        // unset. The focused pane's cwd is the one the user would mean.
         let source = source.map_or_else(focused_cwd, PathBuf::from);
-        let spec = args.launch_spec();
-        let checkout = match launch::plan(&spec) {
+        let checkout = match launch::plan(spec) {
             Ok((_, checkout)) => checkout,
             Err(error) => return error,
         };
-        match launch::open(&spec, source) {
+        match zellij_tile::shim::spawn_agent(
+            spec.clone(),
+            Some(source),
+            cwd.map(PathBuf::from),
+            args.name.clone(),
+            BTreeMap::new(),
+        ) {
             Ok(pane) => {
-                if let Some(name) = &args.name {
-                    rename_pane_with_id(pane, name);
-                }
                 let (id, is_plugin) = split_pane_id(pane);
                 let mut opened = json!({
                     "opened": true, "pane_id": id, "is_plugin": is_plugin,
@@ -5019,7 +5048,7 @@ mod host {
 pub use host::{
     current_session_info, dispatch, grant_permissions, new_pane_with_context, observe_plugin,
     plugin_fs_exists, plugin_fs_list, plugin_fs_read, plugin_fs_read_capped, plugin_fs_write,
-    plugin_log_tail, reload_plugin, report_pane_agent, spawn_in_checkout,
+    plugin_log_tail, reload_plugin, reload_plugin_headless, report_pane_agent, spawn_agent,
 };
 
 /// What a `plugin_reload` found when it went to look: the plugin's pane, and its text.
@@ -5047,6 +5076,27 @@ const PLUGIN_RENDER_CHARS: usize = 1_500;
 /// model can act on, and a Lua traceback through a few `require`d modules is not short, so it
 /// keeps most of the old allowance.
 const PLUGIN_ERROR_CHARS: usize = 8_000;
+
+/// What a headless `plugin_reload` answers: there is no pane to read, so the plugin's own log
+/// is the evidence - what it traced, logged, or failed on.
+pub fn plugin_headless_report(name: &str, path: &str, log: Result<String, String>) -> String {
+    match log {
+        Ok(lines) if lines.trim().is_empty() => format!(
+            "loaded {path} headless (no pane; one shared instance). It has logged nothing yet - \
+             a load error is in the log too, so nothing is a good sign, but only plugin_log \
+             later, or what it does to the session, proves it runs. Write it with \
+             zellij.trace(true) to see every command it dispatches."
+        ),
+        Ok(lines) => format!(
+            "loaded {path} headless (no pane; one shared instance). The last lines it logged \
+             (plugin_log name={name} for more):\n{}",
+            truncate_str(lines.trim_end(), PLUGIN_ERROR_CHARS)
+        ),
+        Err(error) => {
+            format!("loaded {path} headless (no pane), but its log could not be read: {error}")
+        },
+    }
+}
 
 pub fn plugin_load_report(path: &str, observed: Option<PluginObservation>) -> String {
     let Some(observed) = observed else {
@@ -5077,9 +5127,9 @@ pub fn plugin_load_report(path: &str, observed: Option<PluginObservation>) -> St
     let next = match failed {
         true => "",
         false => {
-            " A first render only proves it loads: press the keys it binds with send_keys, \
-                  call the tools it registers, read plugin_log, and say which of those you did \
-                  not check."
+            " A first render only proves it loads: press the keys it binds with send_input \
+                  (is_plugin=true), call the tools it registers, read plugin_log, and say which \
+                  of those you did not check."
         },
     };
     let cut = match contents.len() < whole.len() {
@@ -5100,7 +5150,12 @@ pub fn dispatch(_call: &ToolCall) -> String {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn spawn_in_checkout(_args: &Args, _source: Option<String>) -> String {
+pub fn spawn_agent(
+    _args: &Args,
+    _spec: &launch::Spec,
+    _source: Option<String>,
+    _cwd: Option<String>,
+) -> String {
     "tools are unavailable outside zellij".to_owned()
 }
 
@@ -5131,6 +5186,8 @@ pub mod test_seams {
         pub static PLUGIN_WRITE_CALLS: Cell<usize> = const { Cell::new(0) };
         pub static PLUGIN_ENTRIES: RefCell<Option<Vec<zellij_tile::prelude::FsEntry>>> = const { RefCell::new(None) };
         pub static PLUGIN_READS: RefCell<super::BTreeMap<String, Result<String, String>>> = const { RefCell::new(super::BTreeMap::new()) };
+        /// The `running` each `reload_plugin_headless` was given, in order.
+        pub static HEADLESS_RELOADS: RefCell<Vec<Option<u32>>> = const { RefCell::new(Vec::new()) };
         pub static PLUGIN_SOURCE: RefCell<Option<String>> = const { RefCell::new(None) };
         pub static GRANTED_PERMISSIONS: RefCell<Vec<PermissionType>> = const { RefCell::new(Vec::new()) };
     }
@@ -5147,6 +5204,7 @@ pub mod test_seams {
         PLUGIN_READS.with_borrow_mut(super::BTreeMap::clear);
         RELOAD_CALLS.set(0);
         PLUGIN_WRITE_CALLS.set(0);
+        HEADLESS_RELOADS.with_borrow_mut(Vec::clear);
         PLUGIN_SOURCE.with_borrow_mut(|source| *source = None);
         GRANTED_PERMISSIONS.with_borrow_mut(Vec::clear);
     }
@@ -5158,6 +5216,13 @@ pub mod test_seams {
     pub fn granted_permissions() -> Vec<PermissionType> {
         GRANTED_PERMISSIONS.with_borrow(Clone::clone)
     }
+}
+
+/// Off wasm the ask is recorded - which instance, if any, was named - for the tests to read.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn reload_plugin_headless(path: &str, running: Option<u32>) {
+    test_seams::HEADLESS_RELOADS.with_borrow_mut(|asked| asked.push(running));
+    reload_plugin(path);
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -1,10 +1,12 @@
 pub use super::generated_api::api::{
     action::{Action as ProtobufAction, Position as ProtobufPosition},
     event::{
-        event::Payload as ProtobufEventPayload,
+        event::Payload as ProtobufEventPayload, hook_payload,
         layout_parsing_error::ErrorType as ProtobufLayoutParsingErrorType,
         pane_scrollback_response, ActionCompletePayload as ProtobufActionCompletePayload,
-        ActivePaneScrollPayload as ProtobufActivePaneScrollPayload, AgentInfo as ProtobufAgentInfo,
+        ActivePaneScrollPayload as ProtobufActivePaneScrollPayload,
+        AgentEventPayload as ProtobufAgentEventPayload,
+        AgentHookPayload as ProtobufAgentHookPayload, AgentInfo as ProtobufAgentInfo,
         AgentSource as ProtobufAgentSource, AgentState as ProtobufAgentState,
         AvailableLayoutInfoPayload as ProtobufAvailableLayoutInfoPayload,
         ClientInfo as ProtobufClientInfo, ClientPaneHistory as ProtobufClientPaneHistory,
@@ -27,6 +29,7 @@ pub use super::generated_api::api::{
         LayoutParsingError as ProtobufLayoutParsingError,
         LayoutWithError as ProtobufLayoutWithError, ModeUpdatePayload as ProtobufModeUpdatePayload,
         PaneContents as ProtobufPaneContents, PaneContentsEntry as ProtobufPaneContentsEntry,
+        PaneExitHookPayload as ProtobufPaneExitHookPayload,
         PaneFrameStyle as ProtobufPaneFrameStyle, PaneId as ProtobufPaneId,
         PaneInfo as ProtobufPaneInfo, PaneManifest as ProtobufPaneManifest,
         PaneMetadata as ProtobufPaneMetadata,
@@ -40,10 +43,11 @@ pub use super::generated_api::api::{
         QueueJobStartedPayload as ProtobufQueueJobStartedPayload,
         QueueJobState as ProtobufQueueJobState, QueueSnapshot as ProtobufQueueSnapshot,
         ResurrectableSession as ProtobufResurrectableSession, SelectedText as ProtobufSelectedText,
-        SessionManifest as ProtobufSessionManifest, StyledText as ProtobufStyledText,
-        StyledTextIndices as ProtobufStyledTextIndices, SyntaxError as ProtobufSyntaxError,
-        TabInfo as ProtobufTabInfo, TabMetadata as ProtobufTabMetadata,
-        UserActionPayload as ProtobufUserActionPayload, *,
+        SessionManifest as ProtobufSessionManifest,
+        SessionStartHookPayload as ProtobufSessionStartHookPayload,
+        StyledText as ProtobufStyledText, StyledTextIndices as ProtobufStyledTextIndices,
+        SyntaxError as ProtobufSyntaxError, TabInfo as ProtobufTabInfo,
+        TabMetadata as ProtobufTabMetadata, UserActionPayload as ProtobufUserActionPayload, *,
     },
     input_mode::InputMode as ProtobufInputMode,
     key::Key as ProtobufKey,
@@ -667,12 +671,75 @@ impl TryFrom<ProtobufEvent> for Event {
                 _ => Err("Malformed payload for QueueJobStarted Event"),
             },
             Ok(ProtobufEventType::Hook) => match protobuf_event.payload {
-                Some(ProtobufEventPayload::HookPayload(p)) => Ok(Event::Hook {
-                    point: HookPoint::from_str(&p.point)
-                        .map_err(|_| "Malformed hook point for Hook Event")?,
-                    payload: context_from_items(p.payload),
-                }),
+                Some(ProtobufEventPayload::HookPayload(p)) => {
+                    let point = HookPoint::from_str(&p.point)
+                        .map_err(|_| "Malformed hook point for Hook Event")?;
+                    let payload = match p.payload {
+                        Some(hook_payload::Payload::Agent(agent)) => {
+                            crate::data::HookPayload::Agent {
+                                pane_id: agent.pane_id,
+                                agent: agent
+                                    .agent
+                                    .ok_or("Malformed agent for Hook Event")?
+                                    .try_into()?,
+                                previous_state: agent
+                                    .previous_state
+                                    .as_deref()
+                                    .map(|state| {
+                                        state
+                                            .parse::<AgentState>()
+                                            .map_err(|_| "Malformed previous state for Hook Event")
+                                    })
+                                    .transpose()?,
+                                command: agent.command,
+                            }
+                        },
+                        Some(hook_payload::Payload::PaneExit(exit)) => {
+                            crate::data::HookPayload::PaneExit {
+                                pane_id: exit.pane_id,
+                                exit_code: exit.exit_code,
+                                cwd: exit.cwd.map(PathBuf::from),
+                                command: exit.command,
+                                held: exit.held,
+                            }
+                        },
+                        Some(hook_payload::Payload::SessionStart(start)) => {
+                            crate::data::HookPayload::SessionStart {
+                                session_name: start.session_name,
+                                client_id: start.client_id as u16,
+                            }
+                        },
+                        None => return Err("Malformed payload for Hook Event"),
+                    };
+                    Ok(Event::Hook { point, payload })
+                },
                 _ => Err("Malformed payload for Hook Event"),
+            },
+            Ok(ProtobufEventType::AgentEvent) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::AgentEventPayload(p)) => {
+                    Ok(Event::AgentEvent(crate::agent::AgentEvent {
+                        pane_id: p.pane_id,
+                        kind: p.kind,
+                        hook: p.hook,
+                        session_id: p.session_id,
+                        state: p
+                            .state
+                            .as_deref()
+                            .map(|state| {
+                                state
+                                    .parse::<AgentState>()
+                                    .map_err(|_| "Malformed agent state for AgentEvent")
+                            })
+                            .transpose()?,
+                        detail: p.detail,
+                        prompt: p.prompt,
+                        last_message: p.last_message,
+                        tool_name: p.tool_name,
+                        cwd: p.cwd,
+                        raw: p.raw,
+                    }))
+                },
+                _ => Err("Malformed payload for AgentEvent Event"),
             },
             Ok(ProtobufEventType::QueueJobFinished) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::QueueJobFinishedPayload(p)) => {
@@ -1329,12 +1396,65 @@ impl TryFrom<Event> for ProtobufEvent {
                     },
                 )),
             }),
-            Event::Hook { point, payload } => Ok(ProtobufEvent {
-                name: ProtobufEventType::Hook as i32,
-                payload: Some(event::Payload::HookPayload(ProtobufHookPayload {
-                    point: point.as_str().to_owned(),
-                    payload: context_to_items(payload),
-                })),
+            Event::Hook { point, payload } => {
+                let payload = match payload {
+                    crate::data::HookPayload::Agent {
+                        pane_id,
+                        agent,
+                        previous_state,
+                        command,
+                    } => hook_payload::Payload::Agent(ProtobufAgentHookPayload {
+                        pane_id,
+                        agent: Some(agent.try_into()?),
+                        previous_state: previous_state.map(|state| state.to_string()),
+                        command,
+                    }),
+                    crate::data::HookPayload::PaneExit {
+                        pane_id,
+                        exit_code,
+                        cwd,
+                        command,
+                        held,
+                    } => hook_payload::Payload::PaneExit(ProtobufPaneExitHookPayload {
+                        pane_id,
+                        exit_code,
+                        cwd: cwd.map(|cwd| cwd.display().to_string()),
+                        command,
+                        held,
+                    }),
+                    crate::data::HookPayload::SessionStart {
+                        session_name,
+                        client_id,
+                    } => hook_payload::Payload::SessionStart(ProtobufSessionStartHookPayload {
+                        session_name,
+                        client_id: client_id as u32,
+                    }),
+                };
+                Ok(ProtobufEvent {
+                    name: ProtobufEventType::Hook as i32,
+                    payload: Some(event::Payload::HookPayload(ProtobufHookPayload {
+                        point: point.as_str().to_owned(),
+                        payload: Some(payload),
+                    })),
+                })
+            },
+            Event::AgentEvent(agent_event) => Ok(ProtobufEvent {
+                name: ProtobufEventType::AgentEvent as i32,
+                payload: Some(event::Payload::AgentEventPayload(
+                    ProtobufAgentEventPayload {
+                        pane_id: agent_event.pane_id,
+                        kind: agent_event.kind,
+                        hook: agent_event.hook,
+                        session_id: agent_event.session_id,
+                        state: agent_event.state.map(|state| state.to_string()),
+                        detail: agent_event.detail,
+                        prompt: agent_event.prompt,
+                        last_message: agent_event.last_message,
+                        tool_name: agent_event.tool_name,
+                        cwd: agent_event.cwd,
+                        raw: agent_event.raw,
+                    },
+                )),
             }),
             Event::QueueJobFinished {
                 queue,
@@ -2454,6 +2574,7 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::QueueJobFinished => EventType::QueueJobFinished,
             ProtobufEventType::QueueChanged => EventType::QueueChanged,
             ProtobufEventType::Hook => EventType::Hook,
+            ProtobufEventType::AgentEvent => EventType::AgentEvent,
         })
     }
 }
@@ -2515,6 +2636,7 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::QueueJobFinished => ProtobufEventType::QueueJobFinished,
             EventType::QueueChanged => ProtobufEventType::QueueChanged,
             EventType::Hook => ProtobufEventType::Hook,
+            EventType::AgentEvent => ProtobufEventType::AgentEvent,
         })
     }
 }
@@ -2634,13 +2756,39 @@ fn serialize_mode_update_event() {
 #[test]
 fn serialize_hook_event() {
     use prost::Message;
-    for point in HookPoint::ALL {
+    let payloads = [
+        crate::data::HookPayload::Agent {
+            pane_id: 7,
+            agent: AgentInfo {
+                kind: "claude".to_owned(),
+                state: AgentState::Waiting,
+                source: AgentSource::Reported,
+                detail: Some("y/n".to_owned()),
+                waiting_on: None,
+                wait_needs_a_person: true,
+                cwd: Some("/work".to_owned()),
+                session_id: Some("s1".to_owned()),
+                run_id: None,
+            },
+            previous_state: Some(AgentState::Busy),
+            command: Some("claude".to_owned()),
+        },
+        crate::data::HookPayload::PaneExit {
+            pane_id: 7,
+            exit_code: Some(1),
+            cwd: Some(PathBuf::from("/work")),
+            command: Some("cargo test".to_owned()),
+            held: true,
+        },
+        crate::data::HookPayload::SessionStart {
+            session_name: "s".to_owned(),
+            client_id: 1,
+        },
+    ];
+    for (point, payload) in HookPoint::ALL.iter().zip(payloads.iter().cycle()) {
         let hook_event = Event::Hook {
             point: *point,
-            payload: BTreeMap::from([
-                ("agent_pane_id".to_owned(), "7".to_owned()),
-                ("agent_state".to_owned(), "waiting".to_owned()),
-            ]),
+            payload: payload.clone(),
         };
         let protobuf_event: ProtobufEvent = hook_event.clone().try_into().unwrap();
         let serialized_protobuf_event = protobuf_event.encode_to_vec();
@@ -3809,10 +3957,55 @@ mod tests {
 
         #[hegel::composite]
         fn any_event(tc: &hegel::TestCase) -> Event {
-            match tc.draw(generators::integers::<u8>().max_value(36)) {
+            match tc.draw(generators::integers::<u8>().max_value(37)) {
+                37 => Event::AgentEvent(crate::agent::AgentEvent {
+                    pane_id: tc.draw(generators::integers::<u32>()),
+                    kind: strings(tc),
+                    hook: strings(tc),
+                    session_id: tc.draw(generators::optional(generators::text().max_size(8))),
+                    state: tc.draw(generators::optional(generators::sampled_from(vec![
+                        AgentState::Busy,
+                        AgentState::Waiting,
+                        AgentState::Idle,
+                        AgentState::Exited,
+                    ]))),
+                    detail: tc.draw(generators::optional(generators::text().max_size(8))),
+                    prompt: tc.draw(generators::optional(generators::text().max_size(8))),
+                    last_message: tc.draw(generators::optional(generators::text().max_size(8))),
+                    tool_name: tc.draw(generators::optional(generators::text().max_size(8))),
+                    cwd: tc.draw(generators::optional(generators::text().max_size(8))),
+                    raw: strings(tc),
+                }),
                 36 => Event::Hook {
                     point: tc.draw(generators::sampled_from(HookPoint::ALL.to_vec())),
-                    payload: context(tc),
+                    payload: match tc.draw(generators::integers::<u8>().max_value(2)) {
+                        0 => crate::data::HookPayload::Agent {
+                            pane_id: tc.draw(generators::integers::<u32>()),
+                            agent: crate::plugin_api::test_generators::agent_infos(tc),
+                            previous_state: tc.draw(generators::optional(
+                                generators::sampled_from(vec![
+                                    AgentState::Busy,
+                                    AgentState::Waiting,
+                                    AgentState::Idle,
+                                    AgentState::Exited,
+                                ]),
+                            )),
+                            command: tc.draw(generators::optional(generators::text().max_size(8))),
+                        },
+                        1 => crate::data::HookPayload::PaneExit {
+                            pane_id: tc.draw(generators::integers::<u32>()),
+                            exit_code: tc.draw(generators::optional(generators::integers::<i32>())),
+                            cwd: tc
+                                .draw(generators::optional(generators::text().max_size(8)))
+                                .map(PathBuf::from),
+                            command: tc.draw(generators::optional(generators::text().max_size(8))),
+                            held: tc.draw(generators::booleans()),
+                        },
+                        _ => crate::data::HookPayload::SessionStart {
+                            session_name: strings(tc),
+                            client_id: tc.draw(generators::integers::<u16>()),
+                        },
+                    },
                 },
                 34 => Event::ContextMenuRequested(Box::new(any_context_menu_context(tc))),
                 35 => Event::ContextMenuItemSelected {

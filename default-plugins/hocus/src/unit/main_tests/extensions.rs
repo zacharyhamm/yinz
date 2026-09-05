@@ -64,6 +64,188 @@ fn an_extension_call_waits_for_its_registered_owner_and_finishes_normally() {
     assert_eq!(tool_results(&state)[0].content, "sunny");
 }
 
+/// The reply is the rpc wire's: a `result` from a handler that returned, an `error` from one
+/// that raised or from a name nothing handles - and either way the model is answered.
+#[test]
+fn an_extension_error_reaches_the_model_named_as_a_failure() {
+    let mut state = extension_state("automatic", None);
+    let call = call("call_1", "weather_forecast", "{}");
+    state.pending.push_back(call.clone());
+    assert!(!state.run_head(&call));
+    let payload = serde_json::json!({
+        "version": crate::extensions::VERSION,
+        "call_id": "call_1",
+        "error": "no forecast today",
+    })
+    .to_string();
+    assert!(state.on_extension_result(7, Some(&payload)));
+    assert_eq!(tool_results(&state)[0].content, "failed: no forecast today");
+}
+
+/// A call nobody answers is given up on after `CALL_TIMEOUT_MS`, and the model told why,
+/// rather than hocus waiting for a Ctrl-c.
+#[test]
+fn an_unanswered_extension_call_times_out() {
+    let mut state = extension_state("automatic", None);
+    let call = call("call_1", "weather_forecast", "{}");
+    state.pending.push_back(call.clone());
+    assert!(!state.run_head(&call));
+    assert!(matches!(state.status, Status::AwaitingExtension));
+
+    state.timer_armed = false;
+    state.on_timer(1.0);
+    assert!(tool_results(&state).is_empty(), "a second is not a timeout");
+
+    state.timer_armed = false;
+    state.on_timer((crate::extensions::CALL_TIMEOUT_MS as f64) / 1000.0);
+    let results = tool_results(&state);
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].content.contains("did not answer"),
+        "{:?}",
+        results[0].content
+    );
+    assert!(matches!(state.status, Status::Idle));
+}
+
+/// The results of a parked chat's tools, which `tool_results` only reads off the foreground.
+fn parked_tool_results(state: &State, index: usize) -> Vec<&Message> {
+    state.parked[index]
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::Tool)
+        .collect()
+}
+
+/// The clock travels with the chat: a call sent by a chat that was then parked is given up on
+/// where it waits, and the chat on screen - which sent nothing - hears nothing of it.
+#[test]
+fn an_extension_call_awaited_by_a_parked_chat_still_times_out() {
+    let mut state = extension_state("automatic", None);
+    let call = call("call_1", "weather_forecast", "{}");
+    state.pending.push_back(call.clone());
+    assert!(!state.run_head(&call));
+    assert!(matches!(state.status, Status::AwaitingExtension));
+
+    // `/history` moving to another conversation, which leaves an idle chat in front.
+    let waiting = state.take_chat();
+    state.parked.push(waiting);
+    assert!(matches!(state.status, Status::Idle));
+    assert!(
+        state.extension_call_started_ms.is_none(),
+        "the clock went with the chat that sent the call"
+    );
+
+    state.timer_armed = false;
+    state.on_timer(1.0);
+    assert!(
+        parked_tool_results(&state, 0).is_empty(),
+        "a second is not a timeout"
+    );
+    assert!(
+        state.timer_armed,
+        "the chain keeps running for the parked chat's call"
+    );
+
+    state.timer_armed = false;
+    state.on_timer((crate::extensions::CALL_TIMEOUT_MS as f64) / 1000.0);
+    assert!(tool_results(&state).is_empty(), "not this chat's call");
+    let results = parked_tool_results(&state, 0);
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].content.contains("did not answer"),
+        "{:?}",
+        results[0].content
+    );
+    assert!(matches!(state.parked[0].status, Status::Idle));
+}
+
+/// Two chats mid-call each keep their own clock: the older call times out on its own
+/// schedule, and the younger one is left waiting until its own time is up.
+#[test]
+fn two_chats_extension_calls_keep_their_own_clocks() {
+    let mut state = extension_state("automatic", None);
+    let first = call("call_1", "weather_forecast", "{}");
+    state.pending.push_back(first.clone());
+    assert!(!state.run_head(&first));
+    let waiting = state.take_chat();
+    state.parked.push(waiting);
+
+    // Half the timeout later, the foreground chat sends its own call.
+    state.timer_armed = false;
+    state.on_timer((crate::extensions::CALL_TIMEOUT_MS as f64) / 2000.0);
+    let second = call("call_2", "weather_forecast", "{}");
+    state.pending.push_back(second.clone());
+    assert!(!state.run_head(&second));
+    assert!(matches!(state.status, Status::AwaitingExtension));
+
+    // The rest of the first call's timeout: only the first call is given up on.
+    state.timer_armed = false;
+    state.on_timer((crate::extensions::CALL_TIMEOUT_MS as f64) / 2000.0);
+    assert_eq!(parked_tool_results(&state, 0).len(), 1);
+    assert!(
+        tool_results(&state).is_empty(),
+        "the second call has time left"
+    );
+    assert!(matches!(state.status, Status::AwaitingExtension));
+
+    // And the rest of the second's.
+    state.timer_armed = false;
+    state.on_timer((crate::extensions::CALL_TIMEOUT_MS as f64) / 2000.0);
+    assert_eq!(tool_results(&state).len(), 1);
+    assert!(matches!(state.status, Status::Idle));
+}
+
+/// The owner leaving answers a parked chat's call as it does the foreground's.
+#[test]
+fn an_extension_going_away_answers_a_parked_chats_call_too() {
+    let mut state = extension_state("automatic", None);
+    let call = call("call_1", "weather_forecast", "{}");
+    state.pending.push_back(call.clone());
+    assert!(!state.run_head(&call));
+    let waiting = state.take_chat();
+    state.parked.push(waiting);
+
+    state.on_sessions(vec![SessionInfo {
+        is_current_session: true,
+        plugins: BTreeMap::new(),
+        ..SessionInfo::default()
+    }]);
+    assert!(tool_results(&state).is_empty(), "not this chat's call");
+    let results = parked_tool_results(&state, 0);
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].content.contains("went away"),
+        "{:?}",
+        results[0].content
+    );
+    assert!(matches!(state.parked[0].status, Status::Idle));
+}
+
+/// An extension that unloads mid-call will never answer: the session's next plugin list says
+/// its owner is gone, and the call is answered with that.
+#[test]
+fn an_extension_going_away_answers_the_call_it_was_asked() {
+    let mut state = extension_state("automatic", None);
+    let call = call("call_1", "weather_forecast", "{}");
+    state.pending.push_back(call.clone());
+    assert!(!state.run_head(&call));
+
+    state.on_sessions(vec![SessionInfo {
+        is_current_session: true,
+        plugins: BTreeMap::new(),
+        ..SessionInfo::default()
+    }]);
+    let results = tool_results(&state);
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].content.contains("went away"),
+        "{:?}",
+        results[0].content
+    );
+    assert!(matches!(state.status, Status::Idle));
+}
+
 #[test]
 fn extension_registration_is_bound_to_the_running_plugin_instance() {
     let path = "/plugins/hocus/weather.lua";
@@ -222,6 +404,8 @@ fn a_registration_report_names_the_tools_and_asks_for_them_to_be_called() {
         target: path.to_owned(),
         started_ms: 0,
         extension: true,
+        headless: false,
+        name: "hocus/weather".to_owned(),
     });
 
     let payload = serde_json::json!({

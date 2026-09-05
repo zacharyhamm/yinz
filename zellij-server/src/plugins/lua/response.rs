@@ -41,21 +41,22 @@ use zellij_utils::plugin_api::plugin_command::{
     get_pane_git_probe_response, get_pane_pid_response, get_pane_running_command_response,
     hide_floating_panes_response, new_tab_response, open_command_pane_in_git_checkout_response,
     parse_layout_response, read_plugin_log_response, rename_layout_response, save_layout_response,
-    save_session_response, show_floating_panes_response, ProtobufBreakPanesToNewTabResponse,
-    ProtobufBreakPanesToTabWithIdResponse, ProtobufBreakPanesToTabWithIndexResponse,
-    ProtobufCheckLuaPluginResponse, ProtobufCurrentSessionLastSavedTimeResponse,
-    ProtobufDataApplyResponse, ProtobufDataCatalogResponse, ProtobufDataCountResponse,
-    ProtobufDataDefineResponse, ProtobufDataFetchResponse, ProtobufDataUnwatchResponse,
-    ProtobufDataWatchResponse, ProtobufDeleteAllDeadSessionsResponse,
-    ProtobufDeleteDeadSessionResponse, ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse,
-    ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse,
-    ProtobufFocusOrCreateTabResponse, ProtobufFsListResponse, ProtobufFsMetadataResponse,
-    ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
-    ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse,
-    ProtobufGetLocalUtcOffsetResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
-    ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
-    ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
-    ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
+    save_session_response, show_floating_panes_response, spawn_agent_response,
+    ProtobufBreakPanesToNewTabResponse, ProtobufBreakPanesToTabWithIdResponse,
+    ProtobufBreakPanesToTabWithIndexResponse, ProtobufCheckLuaPluginResponse,
+    ProtobufCurrentSessionLastSavedTimeResponse, ProtobufDataApplyResponse,
+    ProtobufDataCatalogResponse, ProtobufDataCountResponse, ProtobufDataDefineResponse,
+    ProtobufDataFetchResponse, ProtobufDataUnwatchResponse, ProtobufDataWatchResponse,
+    ProtobufDeleteAllDeadSessionsResponse, ProtobufDeleteDeadSessionResponse,
+    ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
+    ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse, ProtobufFocusOrCreateTabResponse,
+    ProtobufFsListResponse, ProtobufFsMetadataResponse, ProtobufFsMutateResponse,
+    ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse, ProtobufGetFocusedPaneInfoResponse,
+    ProtobufGetLayoutDirResponse, ProtobufGetLocalUtcOffsetResponse, ProtobufGetPaneCwdResponse,
+    ProtobufGetPaneGitProbeResponse, ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
+    ProtobufGetPaneRunningCommandResponse, ProtobufGetPluginAliasConfigurationResponse,
+    ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
+    ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
     ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
     ProtobufListNotificationsResponse, ProtobufListOrphanedPanesResponse,
     ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabsResponse,
@@ -71,7 +72,8 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse, ProtobufOpenTerminalResponse, ProtobufPaneId,
     ProtobufParseLayoutResponse, ProtobufQueueStatusResponse, ProtobufReadPluginLogResponse,
     ProtobufRenameLayoutResponse, ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse,
-    ProtobufSearchRecordingsResponse, ProtobufShowFloatingPanesResponse, ProtobufWarpPaneResponse,
+    ProtobufSearchRecordingsResponse, ProtobufShowFloatingPanesResponse,
+    ProtobufSpawnAgentResponse, ProtobufWarpPaneResponse,
 };
 use zellij_utils::plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion};
 
@@ -518,6 +520,13 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
                     },
                     None => Err(anyhow!("zellij answered with nothing")),
                 }
+            })
+        },
+        CommandType::SpawnAgent => {
+            decode(bytes).and_then(|r: ProtobufSpawnAgentResponse| match r.result {
+                Some(spawn_agent_response::Result::PaneId(id)) => pane_id(lua, Some(id)),
+                Some(spawn_agent_response::Result::Error(e)) => Err(anyhow!("{}", e)),
+                None => Err(anyhow!("zellij answered with nothing")),
             })
         },
         CommandType::OpenCommandPaneInNewTab

@@ -71,9 +71,10 @@ use crate::route::NotificationEnd;
 use log::{debug, warn};
 use zellij_utils::data::{
     AgentInfo, AgentState, ContextMenuContext, ContextMenuItem, Direction, EventType,
-    FloatingPaneCoordinates, HostTerminalThemeMode, KeyWithModifier, LayoutInfo, LayoutWithError,
-    NotificationInfo, OverlayPlacement, PaneInfo, PluginTag, RemotePaneHandoff, ResizeStrategy,
-    SessionInfo, Styling, TabInfo, ThemeHue, WarpedPane, WarpedTab, HOCUS_AGENT_PANE_CONTEXT,
+    FloatingPaneCoordinates, HookPayload, HostTerminalThemeMode, KeyWithModifier, LayoutInfo,
+    LayoutWithError, NotificationInfo, OverlayPlacement, PaneInfo, PluginTag, RemotePaneHandoff,
+    ResizeStrategy, SessionInfo, Styling, TabInfo, ThemeHue, WarpedPane, WarpedTab,
+    HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
@@ -107,7 +108,7 @@ use crate::{
     panes::kitty_graphics::KittyImageStore,
     panes::sixel::SixelImageStore,
     panes::{OverlayCarry, PaneId},
-    plugins::{PluginId, PluginInstruction, PluginRenderAsset},
+    plugins::{HookFiring, PluginId, PluginInstruction, PluginRenderAsset},
     pty::{get_default_shell, ClientTabIndexOrPaneId, PtyInstruction},
     pty_writer::PtyWriteInstruction,
     tab::{Pane, Tab},
@@ -2911,7 +2912,7 @@ impl Screen {
         &self,
         point: HookPoint,
         pane_id: Option<PaneId>,
-        payload: BTreeMap<String, String>,
+        payload: HookFiring,
         client_id: ClientId,
     ) {
         self.bus
@@ -3019,7 +3020,12 @@ impl Screen {
                 );
             }
         }
-        self.fire_hook(HookPoint::AgentExit, Some(pane_id), payload, client_id);
+        self.fire_hook(
+            HookPoint::AgentExit,
+            Some(pane_id),
+            HookFiring::ReplacePane(payload),
+            client_id,
+        );
     }
     /// Hand any command pane's exit to the `pane_exit` hook, held or not.
     ///
@@ -3039,23 +3045,20 @@ impl Screen {
         let PaneId::Terminal(terminal_pane_id) = pane_id else {
             return;
         };
-        let mut payload = BTreeMap::new();
-        payload.insert("exit_pane_id".to_owned(), terminal_pane_id.to_string());
-        if let Some(exit_status) = exit_status {
-            payload.insert("exit_code".to_owned(), exit_status.to_string());
-        }
-        payload.insert(
-            "exit_cwd".to_owned(),
-            run_command
-                .cwd
-                .as_ref()
-                .map(|cwd| cwd.display().to_string())
-                .unwrap_or_default(),
+        let payload = HookPayload::PaneExit {
+            pane_id: terminal_pane_id,
+            exit_code: exit_status,
+            cwd: run_command.cwd.clone(),
+            command: Some(run_command.to_string()),
+            // Whether the pane is still there to be re-run, or is closing with its command.
+            held,
+        };
+        self.fire_hook(
+            HookPoint::PaneExit,
+            Some(pane_id),
+            HookFiring::Headless(payload),
+            client_id,
         );
-        payload.insert("exit_command".to_owned(), run_command.to_string());
-        // Whether the pane is still there to be re-run, or is closing with its command.
-        payload.insert("exit_held".to_owned(), held.to_string());
-        self.fire_hook(HookPoint::PaneExit, Some(pane_id), payload, client_id);
     }
     /// Fire the hooks an agent record's change calls for: `agent_start` and `agent_waiting`,
     /// as [`agent_hook_edges`] reads them off the record before and after.
@@ -3081,41 +3084,30 @@ impl Screen {
         let Some(client_id) = self.hook_client_id(run_command.as_ref()) else {
             return;
         };
-        let mut payload = BTreeMap::new();
-        payload.insert("agent_pane_id".to_owned(), terminal_pane_id.to_string());
-        payload.insert("agent_kind".to_owned(), current.kind.clone());
-        payload.insert(
-            "agent_state".to_owned(),
-            current.state.to_string().to_lowercase(),
-        );
-        if let Some(previous) = previous {
-            payload.insert(
-                "agent_previous_state".to_owned(),
-                previous.state.to_string().to_lowercase(),
-            );
-        }
-        payload.insert(
-            "agent_source".to_owned(),
-            current.source.to_string().to_lowercase(),
-        );
-        if let Some(detail) = current.detail.as_ref() {
-            payload.insert("agent_detail".to_owned(), detail.clone());
-        }
-        let cwd = current.cwd.clone().or_else(|| {
-            run_command
+        // The record as it stands, with the pane's folder filled in where the agent has not
+        // said where it works.
+        let mut agent = current.clone();
+        if agent.cwd.is_none() {
+            agent.cwd = run_command
                 .as_ref()
                 .and_then(|run_command| run_command.cwd.as_ref())
-                .map(|cwd| cwd.display().to_string())
-        });
-        payload.insert("agent_cwd".to_owned(), cwd.unwrap_or_default());
-        if let Some(session_id) = current.session_id.as_ref() {
-            payload.insert("agent_session_id".to_owned(), session_id.clone());
+                .map(|cwd| cwd.display().to_string());
         }
-        if let Some(run_command) = run_command.as_ref() {
-            payload.insert("agent_command".to_owned(), run_command.to_string());
-        }
+        let payload = HookPayload::Agent {
+            pane_id: terminal_pane_id,
+            agent,
+            previous_state: previous.map(|previous| previous.state),
+            command: run_command
+                .as_ref()
+                .map(|run_command| run_command.to_string()),
+        };
         for point in edges {
-            self.fire_hook(point, Some(pane_id), payload.clone(), client_id);
+            self.fire_hook(
+                point,
+                Some(pane_id),
+                HookFiring::Headless(payload.clone()),
+                client_id,
+            );
         }
     }
     /// A pane that was born with an agent record - the spawn path wrote it - has started.
@@ -4574,6 +4566,17 @@ pub(crate) fn agent_hook_edges(
         && previous.map(|previous| previous.state) != Some(AgentState::Waiting)
     {
         edges.push(HookPoint::AgentWaiting);
+    }
+    // The turn ended: from working, or from a wait that was answered. Not from nothing - a
+    // record that appears idle is `agent_start`'s - and not from `exited`, which is a
+    // restart and `agent_start`'s too.
+    if current.state == AgentState::Idle
+        && matches!(
+            previous.map(|previous| previous.state),
+            Some(AgentState::Busy) | Some(AgentState::Waiting)
+        )
+    {
+        edges.push(HookPoint::AgentIdle);
     }
     edges
 }

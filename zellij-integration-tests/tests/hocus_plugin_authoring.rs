@@ -266,9 +266,12 @@ local zellij = require("zellij")
 local M = {}
 
 local function log_firing(point, payload)
-  local pane = payload.agent_pane_id or payload.exit_pane_id or "?"
-  local detail = payload.agent_state or payload.exit_code or payload.agent_exit_code or ""
-  zellij.log("fired " .. point .. " pane=" .. pane .. " " .. detail)
+  -- A headless point's payload is typed (`pane_id`, `agent.state`, `exit_code`); `agent_exit`
+  -- arrives as the plugin's configuration, a string map with `agent_` keys.
+  local pane = payload.pane_id or payload.agent_pane_id or "?"
+  local detail = (payload.agent and string.lower(payload.agent.state))
+    or payload.exit_code or payload.agent_exit_code or ""
+  zellij.log("fired " .. point .. " pane=" .. tostring(pane) .. " " .. tostring(detail))
 end
 
 function M.load(config)

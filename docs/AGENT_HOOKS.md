@@ -144,21 +144,24 @@ are the whole of what makes a warped agent's exit fire the hook. Whichever of th
 writes lands second, the history survives: the guard matches nothing once the row has moved,
 and adoption keeps every entry, the summary and the original start time.
 
-**The same command also broadcasts the event itself**, whole, on the `agent_hook` pipe. A
-record is deliberately smaller than an event: the agent's own final message on a `Stop`, the
-prompt behind it on a `UserPromptSubmit`, the permission mode on every one of them — none of
-those belong on a manifest that every plugin is handed on every pane update, and all three are
-what a run's history and a well-judged interruption are made of. So one process spawn does
-both, and a plugin that wants more than a record holds subscribes to the pipe. It is a
-broadcast without a pipe id, so nothing waits to be unblocked and a hook cannot stall the turn
-it fired in. The `--args` name the pane it fired in and the agent it came from: the payload is
-the agent's own JSON and never says which agent wrote it, and the daemon writes a record of its
-own from what arrives there.
+**The same command also sends the event itself**, typed, as `Event::AgentEvent` to every plugin
+subscribed to it - and to `zellij events --type agent_event`. A record is deliberately smaller
+than an event: the agent's own final message on a `Stop`, the prompt behind it on a
+`UserPromptSubmit`, the permission mode on every one of them — none of those belong on a
+manifest that every plugin is handed on every pane update, and all three are what a run's
+history and a well-judged interruption are made of. So one process spawn does both. The event
+is read once, in the session (`agent::AgentEvent::from_hook`): `pane_id`, `kind`, `hook`, the
+`state` the record moved to, `detail`, `prompt`, `last_message`, `tool_name`, `cwd`,
+`session_id` - and `raw`, the agent's own JSON, for the one reader that keeps a run's history
+and needs the rest. It goes only to subscribers, gated on `read_application_state` like the
+manifest, and nothing waits on it, so a hook cannot stall the turn it fired in. A Lua plugin
+reads it with `zellij.agent.on`, or awaits it with `zellij.async.turn` (`docs/LUA_PLUGINS.md`,
+"Agents").
 
-"Whole" has one bound on it, `agent::HOOK_BROADCAST_MAX_BYTES` (64 KiB). Two of the fields
+`raw` has one bound on it, `agent::HOOK_BROADCAST_MAX_BYTES` (64 KiB). Two of the fields
 Claude Code sends have no size limit in its own schema — `tool_input`, so a `Write` of a
 two-megabyte file, and `tool_response`, so a `Read` of anything — and this payload is copied
-into every running plugin's memory, twice per tool call, inside a hook with five seconds to
+into every subscribed plugin's memory, twice per tool call, inside a hook with five seconds to
 live. An event over the cap goes out through `HookEvent::pruned` instead: every field it
 models survives, with each string in `tool_input` cut to 256 characters and a budget spent
 across the rest of it, which leaves everything any reader actually takes from it — the `Bash`
@@ -290,8 +293,8 @@ hooks inside a VM - they belong to the guest, not to the launch.
 
 ## What the feed changes
 
-hocus-agentd reads a feed two ways, and prefers the first. A pane whose events it hears on
-`agent_hook` is read from those, because the event stream carries what a record cannot — see
+hocus-agentd reads a feed two ways, and prefers the first. A pane whose events it hears as
+`agent_event` is read from those, because the event stream carries what a record cannot — see
 `event_fed`. Every other pane is read off the manifest: a record the agent reported itself
 (`AgentSource::Reported`, not `Exited`) is a feed too, which is what gives a pane hocus
 spawned, an `agent-report --state` script, or a plugin speaking for an agent the same row.
@@ -682,10 +685,9 @@ A `session_id` that changes in the same pane is a session replaced rather than e
 `/clear` — and drops the live summary, in-flight request and held prompt. The previous run is
 closed as `replaced` and remains in the archive.
 
-A script from before v4 of the installer pipes the event to hocus-agentd and nothing else
-(`zellij pipe --name agent_hook`); the daemon writes the same record through
-`set_pane_agent`, so an old install lands in the same place, minus the nine events v4
-added. `zellij hocus hooks status` says when the installed script is old.
+A script from before v4 of the installer piped the event to hocus-agentd on a pipe that no
+longer exists; it sets no record and feeds nothing. `zellij hocus hooks status` says when the
+installed script is old, and `zellij hocus hooks install` rewrites it.
 
 ## Where it lives
 
@@ -695,6 +697,7 @@ added. `zellij hocus hooks status` says when the installed script is old.
 | Event → record, and every rule for reading one | `zellij-utils/src/agent.rs` (`HookEvent`, `hook_state`, `hook_detail`, `waiting_detail`, `waiting_needs_a_person`, `hook_outcome`, `WAITING_TOOLS`, `CLAUDE_HOOK_EVENTS`, `CODEX_HOOK_EVENTS`, `AGENT_HOOK_PIPE`) |
 | The action, the fan-out, and the installer | `zellij-utils/src/cli.rs` (`AgentReport`), `zellij-utils/src/input/actions.rs`, `src/hocus_hooks.rs` |
 | Carrying it on the pane | `zellij-server/src/panes/terminal_pane.rs` (`agent`, `agent_from_run`), `screen/thread_main.rs` (`SetPaneAgent`), `screen/mod.rs` (`fire_agent_exit_hook`, `fire_agent_state_hooks`, `agent_hook_edges`) |
+| The event, typed, and its route to plugins | `zellij-utils/src/agent.rs` (`AgentEvent`, `from_hook`), `zellij-utils/src/input/actions.rs` (`hook_report_actions`, `Action::AgentEvent`), `zellij-server/src/route.rs` (to the plugin thread as `Event::AgentEvent`), `zellij-server/src/pty.rs` (`handle_remote_agent_report`, the broker's road to the same event) |
 | The blinking bell in the pane's corner | `zellij-server/src/panes/terminal_pane.rs` (`agent_attention_since`, `acknowledge_agent_attention`), `ui/pane_boundaries_frame.rs` (`render_agent_attention`), `screen/mod.rs` (`blinking_agent_panes`, `animation_clock_period`, `advance_agent_attention_blinks`), `zellij-utils/src/animation.rs` (`blink_is_lit`, `BLINK_PERIOD`) |
 | What a row draws | `default-plugins/hocus-proto/src/agents.rs` (`HookFeed::from_agent`, `status_cell`, `waiting_marker`, `kind_cell`, `HOOK_MARKER`) |
 | What a wait says, and the summary | same (`waiting_toast`, `run_summary_request_body`, `local_summary`) |

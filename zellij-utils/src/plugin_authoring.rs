@@ -602,61 +602,12 @@ fn attribute_name(lexed: &Lexed, entry: Range<usize>) -> Option<(usize, &str)> {
     literal_value(lexed, entry.clone(), "name").or_else(|| lexed.strings_in(entry).next())
 }
 
-// Blocks, and what runs while a plugin loads -------------------------------------------------
+// Definitions ------------------------------------------------------------------------------
 
-/// A `function ... end` in the source: where its keyword is, where its `end` finishes, and
-/// whether it is the plugin's `load`.
-struct FunctionBlock {
-    at: usize,
-    end: usize,
-    is_load: bool,
-}
-
-/// Every `function ... end` in `code`, found by pairing block keywords: `function`, `if` and
-/// `do` open a block, `end` closes one, and `repeat`/`until` pair on their own. That covers
-/// Lua's block grammar for this purpose - `for x = 1, 2 do` and `while c do` are closed by the
-/// `do` they carry, and `then`, `else` and `elseif` open nothing.
-fn function_blocks(code: &str) -> Vec<FunctionBlock> {
-    let mut open: Vec<(usize, bool, bool)> = Vec::new();
-    let mut blocks = Vec::new();
-    for (at, word) in words(code) {
-        match word {
-            "function" => open.push((at, true, is_load_function(code, at))),
-            "if" | "do" | "repeat" => open.push((at, false, false)),
-            "until" => {
-                open.pop();
-            },
-            "end" => {
-                if let Some((start, is_function, is_load)) = open.pop() {
-                    if is_function {
-                        blocks.push(FunctionBlock {
-                            at: start,
-                            end: at + "end".len(),
-                            is_load,
-                        });
-                    }
-                }
-            },
-            _ => {},
-        }
-    }
-    blocks
-}
-
-/// Whether the `function` keyword at `at` opens the plugin's `load`, in either spelling a
-/// plugin uses: `function M.load(config)` or `M.load = function(config)`.
-fn is_load_function(code: &str, at: usize) -> bool {
-    definition(code, at).is_some_and(|definition| {
-        let name = definition.name.as_str();
-        name == "load" || name.ends_with(".load") || name.ends_with(":load")
-    })
-}
-
-/// A named function's opening: where its statement starts (`local` included), the name it is
-/// given, and its signature cut after the parameter list.
+/// A named function's opening: where its statement starts (`local` included) and its signature
+/// cut after the parameter list.
 struct Definition {
     start: usize,
-    name: String,
     text: String,
 }
 
@@ -681,10 +632,9 @@ fn definition(code: &str, at: usize) -> Option<Definition> {
         .bytes()
         .take_while(|byte| is_name_byte(*byte))
         .count();
-    let (start, name) = if name_len > 0 {
+    let start = if name_len > 0 {
         // `function M.load(config)`, `local function tick()`.
-        let name = code[name_start..name_start + name_len].to_owned();
-        (leading_local(code, at).unwrap_or(at), name)
+        leading_local(code, at).unwrap_or(at)
     } else {
         // `M.render = function(rows, cols)`, `local tick = function()`.
         let before = code[..at].trim_end().strip_suffix('=')?;
@@ -693,15 +643,14 @@ fn definition(code: &str, at: usize) -> Option<Definition> {
             return None;
         }
         let before = before.trim_end();
-        let name_start = before
+        let name_at = before
             .bytes()
             .rposition(|byte| !is_name_byte(byte))
             .map_or(0, |i| i + 1);
-        if name_start == before.len() {
+        if name_at == before.len() {
             return None;
         }
-        let name = before[name_start..].to_owned();
-        (leading_local(code, name_start).unwrap_or(name_start), name)
+        leading_local(code, name_at).unwrap_or(name_at)
     };
     // The parameter list, which every function has, is where the signature ends.
     let params = name_start + name_len;
@@ -714,22 +663,7 @@ fn definition(code: &str, at: usize) -> Option<Definition> {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    Some(Definition { start, name, text })
-}
-
-/// Whether the call at `at` runs while the plugin is loading: in the chunk's own body, or in
-/// `load` itself.
-///
-/// This is the whole of the permission timing trap. A grant arrives as an event, and no event
-/// has arrived yet at either of those moments, so a gated call made there is refused however
-/// long ago the permission was granted. The same call from an `on(...)` handler, from `pipe`
-/// or from `update` is made after the answer and is fine.
-fn runs_at_load(blocks: &[FunctionBlock], at: usize) -> bool {
-    blocks
-        .iter()
-        .filter(|block| (block.at..block.end).contains(&at))
-        .max_by_key(|block| block.at)
-        .is_none_or(|block| block.is_load)
+    Some(Definition { start, text })
 }
 
 /// The 1-based line a byte offset falls on. Counted in line breaks rather than with `lines()`,
@@ -829,16 +763,23 @@ pub fn outline(source: &str) -> Vec<OutlineEntry> {
         };
         found.push((at, OutlineKind::Define, text));
     }
-    let registration = lexed
+    // `zellij.hocus.tools` is how an extension registers, and its tools are the keys of the
+    // table it is passed. The message name is what an older, hand-wired one sent, and its
+    // tools are the `name = "..."` of a `tools = { ... }` list.
+    if let Some(at) = find_word(code, REGISTER_CALL, 0) {
+        found.push((at, OutlineKind::Registration, REGISTER_CALL.to_owned()));
+        let tools = call_argument_table(code, at, REGISTER_CALL.len())
+            .map(|table| keyed_tables(code, table))
+            .unwrap_or_default();
+        for (at, name) in tools {
+            found.push((at, OutlineKind::Tool, format!("tool \"{name}\"")));
+        }
+    } else if let Some((at, _)) = lexed
         .strings
         .iter()
-        .find(|(_, value)| value == "hocus_extension_register");
-    if let Some((at, _)) = registration {
-        found.push((
-            *at,
-            OutlineKind::Registration,
-            "hocus_extension_register".to_owned(),
-        ));
+        .find(|(_, value)| value == REGISTER_MESSAGE)
+    {
+        found.push((*at, OutlineKind::Registration, REGISTER_MESSAGE.to_owned()));
         for (at, name) in registered_tools(&lexed) {
             found.push((at, OutlineKind::Tool, format!("tool \"{name}\"")));
         }
@@ -883,14 +824,23 @@ fn assigned_table(code: &str, name_at: usize, follow_alias: bool) -> Option<Rang
     if !follow_alias {
         return None;
     }
-    let alias_len = code[value..]
+    table_at(code, value)
+}
+
+/// The table `at` stands for: the `{ ... }` itself, or - `at` being an identifier - the table
+/// assigned to that name elsewhere in the source. One hop, never a chain of them.
+fn table_at(code: &str, at: usize) -> Option<Range<usize>> {
+    if code.as_bytes().get(at) == Some(&b'{') {
+        return matching_bracket(code, at).map(|close| at..close + 1);
+    }
+    let alias_len = code[at..]
         .bytes()
         .take_while(|byte| is_word_byte(*byte))
         .count();
     if alias_len == 0 {
         return None;
     }
-    let alias = &code[value..value + alias_len];
+    let alias = &code[at..at + alias_len];
     let mut from = 0;
     while let Some(hit) = find_word(code, alias, from) {
         from = hit + alias_len;
@@ -900,6 +850,54 @@ fn assigned_table(code: &str, name_at: usize, follow_alias: bool) -> Option<Rang
     }
     None
 }
+
+/// The table the call to the name at `name_at` is passed, in every spelling a registration
+/// uses: `zellij.hocus.tools { ... }`, `zellij.hocus.tools({ ... })`, or
+/// `zellij.hocus.tools(TOOLS)` with the table assigned to `TOOLS` elsewhere.
+fn call_argument_table(code: &str, name_at: usize, name_len: usize) -> Option<Range<usize>> {
+    let mut at = skip_whitespace(code, name_at + name_len);
+    if code.as_bytes().get(at) == Some(&b'(') {
+        at = skip_whitespace(code, at + 1);
+    }
+    table_at(code, at)
+}
+
+/// The names a table keys its entries by, as (offset of the key, the name): the `add` of
+/// `add = { ... }`. Top level only - a nested `parameters = { ... }` is part of an entry, not
+/// another entry.
+fn keyed_tables(code: &str, table: Range<usize>) -> Vec<(usize, String)> {
+    let bytes = code.as_bytes();
+    let mut names = Vec::new();
+    let mut at = table.start + 1;
+    while at + 1 < table.end {
+        match bytes[at] {
+            b'{' | b'(' | b'[' => match matching_bracket(code, at) {
+                Some(close) => at = close + 1,
+                None => break,
+            },
+            byte if is_word_byte(byte) && !is_name_byte(bytes[at - 1]) => {
+                let len = code[at..]
+                    .bytes()
+                    .take_while(|byte| is_word_byte(*byte))
+                    .count();
+                if assigned_value(code, at).is_some_and(|value| bytes.get(value) == Some(&b'{')) {
+                    names.push((at, code[at..at + len].to_owned()));
+                }
+                at += len;
+            },
+            _ => at += 1,
+        }
+    }
+    names
+}
+
+/// How a plugin registers its tools with hocus. The prelude sends the message for it, and the
+/// tools are the keys of the table this call is passed.
+const REGISTER_CALL: &str = "zellij.hocus.tools";
+
+/// What a hand-wired registration sent before `zellij.hocus.tools` existed - still recognised,
+/// because a plugin written that way still registers.
+const REGISTER_MESSAGE: &str = "hocus_extension_register";
 
 /// The tools a registration offers, as (offset of the entry, its `name`): the entries of the
 /// table `tools = ...` names. The worked example keeps them in a `local TOOLS = { ... }` and
@@ -963,10 +961,8 @@ pub fn lint(name: &str, source: &str) -> Vec<String> {
         ));
     }
 
-    let blocks = function_blocks(&lexed.code);
     let mut uses_data = false;
     let mut said_shared = false;
-    let mut said_load = false;
     for (at, arguments) in data_calls(&lexed) {
         uses_data = true;
         let named = literal_value(&lexed, arguments.clone(), "namespace");
@@ -992,16 +988,6 @@ pub fn lint(name: &str, source: &str) -> Vec<String> {
                         .to_owned(),
                 ));
             }
-        }
-        if !said_load && runs_at_load(&blocks, at) {
-            said_load = true;
-            out.push(say(
-                at,
-                "a permission is not in force while `load` runs - it is granted a moment later - \
-                 so this data call is refused. Define and fetch from a \
-                 `zellij.on(\"permission_request_result\", ...)` handler instead."
-                    .to_owned(),
-            ));
         }
         if !lexed.code[at..].starts_with("data.define") {
             continue;
@@ -1048,17 +1034,20 @@ pub fn lint(name: &str, source: &str) -> Vec<String> {
              which this source does not ask for."
         ));
     }
-    let registers = lexed
-        .strings
-        .iter()
-        .any(|(_, value)| value == "hocus_extension_register");
+    // `zellij.hocus.tools { ... }` is how an extension registers; the message name is what an
+    // older, hand-wired one sent.
+    let registers = find_word(&lexed.code, REGISTER_CALL, 0).is_some()
+        || lexed
+            .strings
+            .iter()
+            .any(|(_, value)| value == REGISTER_MESSAGE);
     if name.trim().starts_with("hocus/")
         && registers
         && !asked(PermissionType::MessageAndLaunchOtherPlugins)
     {
         out.push(format!(
-            "{file}.lua: registering with hocus is a plugin message, so it needs \
-             `zellij.request_permission {{ \"message_and_launch_other_plugins\" }}`."
+            "{file}.lua: registering with hocus (`zellij.hocus.tools`) is a plugin message, so \
+             it needs `zellij.request_permission {{ \"message_and_launch_other_plugins\" }}`."
         ));
     }
     out
@@ -1172,18 +1161,6 @@ end
     }
 
     #[test]
-    fn a_data_call_from_load_is_named_as_the_denial_it_will_be() {
-        let source = r#"
-function M.load()
-  zellij.request_permission { "plugin_data" }
-  zellij.data.define { name = "note", version = 1, attrs = { { "title", "text" } } }
-end
-"#;
-        let found = lint("note", source).join("\n");
-        assert!(found.contains("permission_request_result"), "{found}");
-    }
-
-    #[test]
     fn a_permission_zellij_does_not_know_grants_nothing_and_says_so() {
         let source = r#"zellij.request_permission { "plugin_dat", "read_files" }"#;
         let found = lint("keys", source).join("\n");
@@ -1213,9 +1190,9 @@ end
     fn an_extension_needs_the_permission_its_registration_is_sent_with() {
         let source = r#"
 zellij.request_permission { "plugin_data" }
-local function register()
-  zellij.message_to_plugin { message_name = "hocus_extension_register" }
-end
+zellij.on("permission_request_result", function()
+  zellij.hocus.tools { forecast = { handler = function() return "sunny" end } }
+end)
 "#;
         let found = lint("hocus/todo", source).join("\n");
         assert!(
@@ -1384,52 +1361,6 @@ end)
         assert!(reserved[0].starts_with("note.lua:9:"), "{reserved:?}");
     }
 
-    /// The rule is "this runs before the answer arrives", not "this file has no handler": a
-    /// plugin that does all its store work from a key handler is doing it right.
-    #[test]
-    fn a_data_call_that_does_not_run_at_load_is_not_a_finding() {
-        let source = r#"
-local M = {}
-function M.load()
-  zellij.request_permission { "plugin_data" }
-end
-zellij.on("key", function(event)
-  M.notes = zellij.data.fetch { entity = "note" }
-  return true
-end)
-return M
-"#;
-        assert_eq!(lint("note", source), Vec::<String>::new());
-        // And a define left in `load` is still named, handler in the file or not.
-        let still_wrong = source.replace(
-            "  zellij.request_permission { \"plugin_data\" }",
-            "  zellij.request_permission { \"plugin_data\" }\n  zellij.data.define { name = \"note\", version = 1 }",
-        );
-        assert!(
-            lint("note", &still_wrong)
-                .iter()
-                .any(|found| found.contains("permission_request_result")),
-            "{:?}",
-            lint("note", &still_wrong)
-        );
-    }
-
-    /// A call in the chunk's own body runs at load time too, and is refused for the same reason.
-    #[test]
-    fn a_data_call_in_the_chunk_body_runs_at_load_time() {
-        let source = r#"
-zellij.request_permission { "plugin_data" }
-local notes = zellij.data.fetch { entity = "note" }
-"#;
-        assert!(
-            lint("note", source)
-                .iter()
-                .any(|found| found.contains("permission_request_result")),
-            "{:?}",
-            lint("note", source)
-        );
-    }
-
     /// The outline is the map a reader gets before a range read, so it has to name what the
     /// worked example is made of - its require, its load, its permission request, its handler,
     /// its define, its registration and every tool - each on the line it is on, in order.
@@ -1443,11 +1374,12 @@ local notes = zellij.data.fetch { entity = "note" }
         let texts: Vec<&str> = entries.iter().map(|entry| entry.text.as_str()).collect();
         for expected in [
             "require \"zellij\"",
-            "local function register()",
+            "local function describe(todo)",
+            "local function define()",
             "function M.load(config)",
             "on \"permission_request_result\"",
             "data.define \"todo\"",
-            "hocus_extension_register",
+            "zellij.hocus.tools",
             "tool \"add\"",
             "tool \"list\"",
             "tool \"complete\"",
@@ -1471,18 +1403,60 @@ local notes = zellij.data.fetch { entity = "note" }
         for entry in &entries {
             let line = source.lines().nth(entry.line - 1).unwrap_or_default();
             let word = match entry.kind {
-                OutlineKind::Require => "require",
-                OutlineKind::Permission => "request_permission",
-                OutlineKind::Function => "function",
-                OutlineKind::Handler => "zellij.on(",
-                OutlineKind::Define => "data.define",
-                OutlineKind::Registration => "hocus_extension_register",
-                OutlineKind::Tool => "name = ",
+                OutlineKind::Require => "require".to_owned(),
+                OutlineKind::Permission => "request_permission".to_owned(),
+                OutlineKind::Function => "function".to_owned(),
+                OutlineKind::Handler => "zellij.on(".to_owned(),
+                OutlineKind::Define => "data.define".to_owned(),
+                OutlineKind::Registration => REGISTER_CALL.to_owned(),
+                // A tool is the key its entry is written under: `add = {`.
+                OutlineKind::Tool => format!(
+                    "{} =",
+                    entry
+                        .text
+                        .trim_start_matches("tool \"")
+                        .trim_end_matches('"')
+                ),
             };
             assert!(
-                line.contains(word),
+                line.contains(&word),
                 "line {} is {line:?}, not a {word}",
                 entry.line
+            );
+        }
+    }
+
+    /// A registration is written both ways - `zellij.hocus.tools { ... }` inline, or through a
+    /// `local TOOLS = { ... }` the call is handed - and its tools are the keys of that table,
+    /// so a nested `parameters = { ... }` is part of a tool rather than another one.
+    #[test]
+    fn an_outline_reads_a_registration_in_either_spelling() {
+        let inline = r#"
+zellij.hocus.tools {
+  add = { parameters = { properties = { title = {} } }, handler = function() end },
+  list = { handler = function() end },
+}
+"#;
+        let aliased = r#"
+local TOOLS = {
+  add = { parameters = { properties = { title = {} } }, handler = function() end },
+  list = { handler = function() end },
+}
+zellij.hocus.tools(TOOLS)
+"#;
+        for source in [inline, aliased] {
+            // Sorted by position, so the aliased spelling lists its tools before the call
+            // that registers them.
+            let mut texts: Vec<String> = outline(source)
+                .into_iter()
+                .filter(|entry| matches!(entry.kind, OutlineKind::Registration | OutlineKind::Tool))
+                .map(|entry| entry.text)
+                .collect();
+            texts.sort();
+            assert_eq!(
+                texts,
+                vec!["tool \"add\"", "tool \"list\"", "zellij.hocus.tools"],
+                "{source}"
             );
         }
     }
@@ -1546,33 +1520,6 @@ function M.real() end
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(entries[0].text, "function M.real()");
         assert_eq!(entries[0].line, 6);
-    }
-
-    /// The lint's `load` rule reads the same definition the outline does, so both spellings of
-    /// a load still count as one - the refactor must not have narrowed it.
-    #[test]
-    fn both_spellings_of_load_still_run_at_load_time() {
-        for load in [
-            "function M.load()",
-            "M.load = function()",
-            "local load = function()",
-        ] {
-            let source = format!(
-                "{load}
-  zellij.request_permission {{ \"plugin_data\" }}
-  \
-                 zellij.data.define {{ name = \"note\", version = 1 }}
-end
-"
-            );
-            assert!(
-                lint("note", &source)
-                    .iter()
-                    .any(|found| found.contains("permission_request_result")),
-                "{load}: {:?}",
-                lint("note", &source)
-            );
-        }
     }
 
     /// A finding at the very start of a line used to be reported one line early: `lines()` does

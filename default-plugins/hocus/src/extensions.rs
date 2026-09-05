@@ -9,9 +9,18 @@ use zellij_tile::prelude::MessageToPlugin;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub const DISCOVER: &str = "hocus_extension_discover";
 pub const REGISTER: &str = "hocus_extension_register";
+/// A tool call travels as a `zellij.rpc` call, which the prelude answers for the extension: the
+/// extension's `zellij.hocus.tools { name = { ..., handler = fn } }` registers a handler named
+/// `hocus_tool:<name>`, and the reply comes back on the rpc reply message, addressed to this
+/// plugin's id.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub const CALL: &str = "hocus_extension_call";
-pub const RESULT: &str = "hocus_extension_result";
+pub const CALL: &str = "zellij_rpc_call";
+pub const RESULT: &str = "zellij_rpc_reply";
+/// The rpc handler prefix hocus calls a tool under.
+pub const TOOL_HANDLER_PREFIX: &str = "hocus_tool:";
+/// How long a call may go unanswered before hocus gives up on it: an extension that raised
+/// before replying, unloaded mid-call, or never had a handler for the name.
+pub const CALL_TIMEOUT_MS: u64 = 30_000;
 pub const SCAN_CONTEXT: &str = "hocus_extension_scan";
 pub const VERSION: u32 = 1;
 
@@ -241,16 +250,34 @@ impl Registry {
 pub struct Call<'a> {
     pub version: u32,
     pub call_id: &'a str,
-    pub tool: &'a str,
-    pub arguments: Value,
-    pub reply_to: u32,
+    /// `hocus_tool:<local name>`.
+    pub name: String,
+    /// The tool's arguments, as the model sent them.
+    pub payload: Value,
 }
 
+/// The rpc reply: `result` from a handler that returned, `error` from one that raised or from
+/// the prelude when nothing handles the name.
 #[derive(Debug, Deserialize)]
 pub struct ToolResult {
     pub version: u32,
     pub call_id: String,
-    pub result: String,
+    #[serde(default)]
+    pub result: Option<Value>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+impl ToolResult {
+    /// What the model is told: the result as text, or the failure named as one.
+    pub fn text(&self) -> String {
+        match (&self.result, &self.error) {
+            (_, Some(error)) => format!("failed: {error}"),
+            (Some(Value::String(text)), None) => text.clone(),
+            (Some(value), None) => value.to_string(),
+            (None, None) => String::new(),
+        }
+    }
 }
 
 pub fn extension_files(dir: &str, listing: &str) -> BTreeMap<String, String> {

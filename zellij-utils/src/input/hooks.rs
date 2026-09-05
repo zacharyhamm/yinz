@@ -49,6 +49,10 @@ pub enum HookPoint {
     AgentStart,
     /// An agent's record moved to `waiting`: it is blocked on a permission prompt or a question.
     AgentWaiting,
+    /// An agent's record moved to `idle` from `busy` or `waiting`: its turn ended, and it is at
+    /// its prompt with nothing asked of it. Where "read what it said and decide what is next"
+    /// policies live.
+    AgentIdle,
     /// Any command pane's command exited, held or not. `agent_exit` is the agent-only, pane-
     /// replacing counterpart; this one fires first, for every command pane, to a headless plugin.
     PaneExit,
@@ -78,6 +82,7 @@ impl HookPoint {
         HookPoint::AgentExit,
         HookPoint::AgentStart,
         HookPoint::AgentWaiting,
+        HookPoint::AgentIdle,
         HookPoint::PaneExit,
         HookPoint::SessionStart,
         HookPoint::ContextMenu,
@@ -88,6 +93,7 @@ impl HookPoint {
             HookPoint::AgentExit => "agent_exit",
             HookPoint::AgentStart => "agent_start",
             HookPoint::AgentWaiting => "agent_waiting",
+            HookPoint::AgentIdle => "agent_idle",
             HookPoint::PaneExit => "pane_exit",
             HookPoint::SessionStart => "session_start",
             HookPoint::ContextMenu => "context_menu",
@@ -102,6 +108,7 @@ impl HookPoint {
             HookPoint::AgentExit => HookShape::ReplacePane,
             HookPoint::AgentStart
             | HookPoint::AgentWaiting
+            | HookPoint::AgentIdle
             | HookPoint::PaneExit
             | HookPoint::SessionStart
             | HookPoint::ContextMenu => HookShape::Headless,
@@ -122,6 +129,7 @@ impl FromStr for HookPoint {
             "agent_exit" | "agent-exit" => Ok(HookPoint::AgentExit),
             "agent_start" | "agent-start" => Ok(HookPoint::AgentStart),
             "agent_waiting" | "agent-waiting" => Ok(HookPoint::AgentWaiting),
+            "agent_idle" | "agent-idle" => Ok(HookPoint::AgentIdle),
             "pane_exit" | "pane-exit" => Ok(HookPoint::PaneExit),
             "session_start" | "session-start" => Ok(HookPoint::SessionStart),
             "context_menu" | "context-menu" => Ok(HookPoint::ContextMenu),

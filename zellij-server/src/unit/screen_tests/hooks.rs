@@ -7,15 +7,59 @@
 //! record. These check each moment fires what it should, and nothing else.
 
 use super::*;
+use crate::plugins::HookFiring;
 use crate::screen::{agent_hook_edges, apply_pane_agent_report};
 use std::collections::BTreeMap;
 use std::path::Path;
 use zellij_utils::data::OriginatingPlugin;
 use zellij_utils::data::HOCUS_AGENT_PANE_CONTEXT;
-use zellij_utils::data::{AgentInfo, AgentSource, AgentState, BareKey, KeyWithModifier};
+use zellij_utils::data::{
+    AgentInfo, AgentSource, AgentState, BareKey, HookPayload, KeyWithModifier,
+};
 use zellij_utils::input::hooks::HookPoint;
 
-type Fired = (HookPoint, Option<PaneId>, BTreeMap<String, String>);
+type Fired = (HookPoint, Option<PaneId>, HookFiring);
+
+/// The configuration a `ReplacePane` firing hands its plugin.
+fn config(firing: &HookFiring) -> &BTreeMap<String, String> {
+    match firing {
+        HookFiring::ReplacePane(configuration) => configuration,
+        other => panic!("expected a pane-replacing firing, got {other:?}"),
+    }
+}
+
+/// The typed payload of an agent point's firing.
+fn agent(firing: &HookFiring) -> (u32, &AgentInfo, Option<AgentState>, Option<&str>) {
+    match firing {
+        HookFiring::Headless(HookPayload::Agent {
+            pane_id,
+            agent,
+            previous_state,
+            command,
+        }) => (*pane_id, agent, *previous_state, command.as_deref()),
+        other => panic!("expected an agent firing, got {other:?}"),
+    }
+}
+
+/// The typed payload of a `pane_exit` firing.
+fn exit(firing: &HookFiring) -> (u32, Option<i32>, Option<&Path>, Option<&str>, bool) {
+    match firing {
+        HookFiring::Headless(HookPayload::PaneExit {
+            pane_id,
+            exit_code,
+            cwd,
+            command,
+            held,
+        }) => (
+            *pane_id,
+            *exit_code,
+            cwd.as_deref(),
+            command.as_deref(),
+            *held,
+        ),
+        other => panic!("expected a pane_exit firing, got {other:?}"),
+    }
+}
 
 fn agent_command(cwd: &str) -> RunCommand {
     RunCommand {
@@ -354,6 +398,7 @@ fn an_exiting_agent_pane_fires_the_agent_exit_hook() {
         .unwrap_or_else(|| panic!("expected an agent_exit hook, got: {fired:?}"));
     assert_eq!(*point, HookPoint::AgentExit);
     assert_eq!(*pane_id, Some(PaneId::Terminal(2)));
+    let payload = config(payload);
     assert_eq!(payload.get("agent_pane_id").map(String::as_str), Some("2"));
     assert_eq!(
         payload.get("agent_cwd").map(String::as_str),
@@ -381,11 +426,13 @@ fn a_firecracker_worktree_agent_exit_identifies_the_vm_to_the_hook() {
         Some(PathBuf::from("/config/config.kdl")),
         Some(PathBuf::from("/config")),
     );
-    let payload = &fired
-        .iter()
-        .find(|(point, _, _)| *point == HookPoint::AgentExit)
-        .unwrap()
-        .2;
+    let payload = config(
+        &fired
+            .iter()
+            .find(|(point, _, _)| *point == HookPoint::AgentExit)
+            .unwrap()
+            .2,
+    );
 
     assert_eq!(payload.get("agent_cwd").unwrap(), "");
     assert_eq!(payload.get("agent_firecracker_vm").unwrap(), "review");
@@ -582,18 +629,13 @@ fn an_exiting_command_pane_fires_pane_exit() {
     let fired = hooks_fired_by_holding(2, echo_command());
     let (_, pane_id, payload) = &fired[0];
     assert_eq!(*pane_id, Some(PaneId::Terminal(2)));
-    assert_eq!(payload.get("exit_pane_id").map(String::as_str), Some("2"));
-    assert_eq!(payload.get("exit_code").map(String::as_str), Some("0"));
-    assert_eq!(payload.get("exit_cwd").map(String::as_str), Some("/work"));
-    assert_eq!(
-        payload.get("exit_held").map(String::as_str),
-        Some("true"),
-        "a held pane is still there to be re-run"
-    );
+    let (exited_pane, exit_code, cwd, command, held) = exit(payload);
+    assert_eq!(exited_pane, 2);
+    assert_eq!(exit_code, Some(0));
+    assert_eq!(cwd, Some(Path::new("/work")));
+    assert!(held, "a held pane is still there to be re-run");
     assert!(
-        payload
-            .get("exit_command")
-            .is_some_and(|c| c.contains("echo")),
+        command.is_some_and(|c| c.contains("echo")),
         "got: {payload:?}"
     );
 }
@@ -609,9 +651,9 @@ fn a_command_pane_closed_by_its_own_exit_fires_pane_exit_without_hold() {
         ScreenInstruction::ClosePane(PaneId::Terminal(2), None, None, Some(1)),
     ]);
     assert_eq!(points(&fired), vec![HookPoint::PaneExit], "got: {fired:?}");
-    let payload = &fired[0].2;
-    assert_eq!(payload.get("exit_code").map(String::as_str), Some("1"));
-    assert_eq!(payload.get("exit_held").map(String::as_str), Some("false"));
+    let (_, exit_code, _, _, held) = exit(&fired[0].2);
+    assert_eq!(exit_code, Some(1));
+    assert!(!held);
 }
 
 #[test]
@@ -648,19 +690,15 @@ fn a_pane_born_as_an_agent_fires_agent_start() {
         "got: {fired:?}"
     );
     let payload = &fired[0].2;
-    assert_eq!(payload.get("agent_pane_id").map(String::as_str), Some("2"));
-    assert_eq!(payload.get("agent_kind").map(String::as_str), Some("codex"));
-    assert_eq!(payload.get("agent_state").map(String::as_str), Some("busy"));
-    assert_eq!(
-        payload.get("agent_source").map(String::as_str),
-        Some("spawned")
-    );
-    assert_eq!(payload.get("agent_cwd").map(String::as_str), Some("/work"));
-    assert!(payload.get("agent_previous_state").is_none());
+    let (pane, record, previous, command) = agent(payload);
+    assert_eq!(pane, 2);
+    assert_eq!(record.kind, "codex");
+    assert_eq!(record.state, AgentState::Busy);
+    assert_eq!(record.source, AgentSource::Spawned);
+    assert_eq!(record.cwd.as_deref(), Some("/work"));
+    assert!(previous.is_none());
     assert!(
-        payload
-            .get("agent_command")
-            .is_some_and(|c| c.contains("codex")),
+        command.is_some_and(|c| c.contains("codex")),
         "got: {payload:?}"
     );
 }
@@ -676,19 +714,10 @@ fn an_agent_reporting_for_itself_fires_agent_start() {
         vec![HookPoint::AgentStart],
         "got: {fired:?}"
     );
-    let payload = &fired[0].2;
-    assert_eq!(
-        payload.get("agent_kind").map(String::as_str),
-        Some("claude")
-    );
-    assert_eq!(
-        payload.get("agent_source").map(String::as_str),
-        Some("reported")
-    );
-    assert_eq!(
-        payload.get("agent_session_id").map(String::as_str),
-        Some("s1")
-    );
+    let (_, record, _, _) = agent(&fired[0].2);
+    assert_eq!(record.kind, "claude");
+    assert_eq!(record.source, AgentSource::Reported);
+    assert_eq!(record.session_id.as_deref(), Some("s1"));
 }
 
 #[test]
@@ -709,15 +738,9 @@ fn an_agent_going_to_waiting_fires_agent_waiting_once() {
         vec![HookPoint::AgentStart, HookPoint::AgentWaiting],
         "got: {fired:?}"
     );
-    let payload = &fired[1].2;
-    assert_eq!(
-        payload.get("agent_state").map(String::as_str),
-        Some("waiting")
-    );
-    assert_eq!(
-        payload.get("agent_previous_state").map(String::as_str),
-        Some("busy")
-    );
+    let (_, record, previous, _) = agent(&fired[1].2);
+    assert_eq!(record.state, AgentState::Waiting);
+    assert_eq!(previous, Some(AgentState::Busy));
 }
 
 #[test]
@@ -743,7 +766,11 @@ fn a_new_session_id_in_the_same_pane_is_a_new_start() {
     ]);
     assert_eq!(
         points(&fired),
-        vec![HookPoint::AgentStart, HookPoint::AgentStart],
+        vec![
+            HookPoint::AgentStart,
+            HookPoint::AgentIdle,
+            HookPoint::AgentStart
+        ],
         "got: {fired:?}"
     );
 }
@@ -782,10 +809,7 @@ fn rerunning_an_exited_agent_pane_fires_agent_start() {
         ],
         "got: {fired:?}"
     );
-    assert_eq!(
-        fired[3].2.get("agent_previous_state").map(String::as_str),
-        Some("exited")
-    );
+    assert_eq!(agent(&fired[3].2).2, Some(AgentState::Exited));
 }
 
 #[test]
@@ -858,10 +882,7 @@ fn enter_in_a_held_agent_pane_fires_agent_start() {
         ],
         "got: {fired:?}"
     );
-    assert_eq!(
-        fired[3].2.get("agent_previous_state").map(String::as_str),
-        Some("exited")
-    );
+    assert_eq!(agent(&fired[3].2).2, Some(AgentState::Exited));
     assert_eq!(reruns, 1, "the command is restarted once, by the screen");
 }
 
@@ -884,7 +905,12 @@ fn the_edges_of_an_agent_record() {
         (Some(&busy), Some(&waiting), vec![HookPoint::AgentWaiting]),
         (Some(&waiting), Some(&waiting), vec![]),
         (Some(&waiting), Some(&busy), vec![]),
-        (Some(&busy), Some(&idle), vec![]),
+        // The turn ended: from working, or from a wait that was answered.
+        (Some(&busy), Some(&idle), vec![HookPoint::AgentIdle]),
+        (Some(&waiting), Some(&idle), vec![HookPoint::AgentIdle]),
+        (Some(&idle), Some(&idle), vec![]),
+        (Some(&exited), Some(&idle), vec![HookPoint::AgentStart]),
+        (None, Some(&idle), vec![HookPoint::AgentStart]),
         (Some(&busy), Some(&exited), vec![]),
         (Some(&exited), Some(&busy), vec![HookPoint::AgentStart]),
         (Some(&busy), Some(&restarted), vec![HookPoint::AgentStart]),
@@ -1002,8 +1028,5 @@ fn an_env_wrapped_agent_is_named_for_the_agent() {
         vec![HookPoint::AgentStart],
         "got: {fired:?}"
     );
-    assert_eq!(
-        fired[0].2.get("agent_kind").map(String::as_str),
-        Some("codex")
-    );
+    assert_eq!(agent(&fired[0].2).1.kind, "codex");
 }

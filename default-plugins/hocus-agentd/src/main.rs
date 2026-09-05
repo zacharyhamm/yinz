@@ -86,10 +86,8 @@ const SUMMARY_RUN: &str = "summary_run";
 /// a long one. Capped at all only because a prompt can carry a pasted file.
 const PROMPT_CHARS: usize = 600;
 
-/// The kind a hook event proves its pane is running.
-///
-/// Claude Code is the only agent that reports for itself, so this is a constant
-/// rather than something read off the event: nothing else sends `agent_hook`.
+/// The kind the tests report as; the event itself names its kind now.
+#[cfg(test)]
 const CLAUDE: &str = "claude";
 
 #[derive(Default)]
@@ -363,6 +361,7 @@ register_plugin!(State);
 impl ZellijPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
         subscribe(&[
+            EventType::AgentEvent,
             EventType::PaneUpdate,
             EventType::TabUpdate,
             EventType::CommandChanged,
@@ -423,6 +422,16 @@ impl ZellijPlugin for State {
                 self.refresh_remote_repositories();
                 self.publish();
             },
+            Event::AgentEvent(agent_event) => {
+                // The session read the event once for the record and the typed fields; the
+                // run's history wants the rest - `tool_input`, the permission mode, the
+                // subagent - which `raw` still carries. A Claude Code that grows a field we
+                // have never seen must cost us nothing, so a `raw` that does not parse is
+                // dropped in silence.
+                if let Ok(event) = serde_json::from_str::<wire::HookEvent>(&agent_event.raw) {
+                    self.on_hook_of(agent_event.pane_id, &agent_event.kind, &event);
+                }
+            },
             Event::SessionUpdate(sessions, _) => {
                 if let Some(name) = sessions
                     .into_iter()
@@ -480,41 +489,6 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
-        if pipe_message.name == wire::AGENT_HOOK {
-            // The one message here a shell sends. Both halves are dropped in
-            // silence when they do not parse: this arrives from outside the
-            // session, on a `PipeSource::Cli` there is nothing to answer, and a
-            // Claude Code that grows a field we have never seen must cost us
-            // nothing.
-            // The session says which pane the pipe came from; the `pane_id=` argument is
-            // what a hook script from before it could say instead.
-            let pane_id = match pipe_message.pane_id {
-                Some(PaneId::Terminal(id)) => Some(id),
-                _ => pipe_message
-                    .args
-                    .get(wire::HOOK_PANE_ID)
-                    .and_then(|id| id.parse::<u32>().ok()),
-            };
-            // Which agent it came from. The payload is the agent's own JSON and never says,
-            // and this daemon writes a record of its own from it - so without this every
-            // pane that reports for itself would be a `claude`. Normalised the way
-            // `agent-report` normalises its `--kind`; absent, it is what every script old
-            // enough to omit it was installed for.
-            let kind = pipe_message
-                .args
-                .get(wire::HOOK_KIND)
-                .map(|kind| kind.trim().to_lowercase())
-                .filter(|kind| !kind.is_empty())
-                .unwrap_or_else(|| CLAUDE.to_owned());
-            let event = pipe_message
-                .payload
-                .as_deref()
-                .and_then(|json| serde_json::from_str::<wire::HookEvent>(json).ok());
-            if let (Some(pane_id), Some(event)) = (pane_id, event) {
-                self.on_hook_of(pane_id, &kind, &event);
-            }
-            return false;
-        }
         if pipe_message.name == wire::AGENT_SUMMARIZE {
             // A person asked for this, so it skips the timing guards the automatic paths
             // keep. Nothing is answered back: the summary arrives the way every other change
@@ -6378,43 +6352,30 @@ mod tests {
         );
     }
 
-    /// Neither half of a malformed message may reach the state. This arrives from
-    /// outside the session, on a pipe with nobody to answer.
+    /// An event whose `raw` does not parse changes nothing: the session already read it for
+    /// the record, and this daemon keeps the history from the agent's own JSON.
     #[test]
-    fn a_hook_message_that_does_not_parse_changes_nothing() {
+    fn an_agent_event_whose_raw_does_not_parse_changes_nothing() {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
             ..State::default()
         };
-        let message = |args: BTreeMap<String, String>, payload: Option<&str>| PipeMessage {
-            source: PipeSource::Cli("pipe-1".to_owned()),
-            name: wire::AGENT_HOOK.to_owned(),
-            payload: payload.map(str::to_owned),
-            args,
-            is_private: false,
-            pane_id: None,
+        let event = |raw: &str| {
+            Event::AgentEvent(wire::AgentEvent {
+                pane_id: 7,
+                kind: CLAUDE.to_owned(),
+                hook: "Stop".to_owned(),
+                raw: raw.to_owned(),
+                ..Default::default()
+            })
         };
-        let good_args = BTreeMap::from([(wire::HOOK_PANE_ID.to_owned(), "7".to_owned())]);
-
-        // No pane id, a pane id that is not a number, no payload, and a payload that is
-        // not one of ours.
-        state.pipe(message(
-            BTreeMap::new(),
-            Some(r#"{"hook_event_name":"Stop"}"#),
-        ));
-        state.pipe(message(
-            BTreeMap::from([(wire::HOOK_PANE_ID.to_owned(), "terminal_7".to_owned())]),
-            Some(r#"{"hook_event_name":"Stop"}"#),
-        ));
-        state.pipe(message(good_args.clone(), None));
-        state.pipe(message(good_args.clone(), Some("not json at all")));
+        state.update(event("not json at all"));
         assert!(state.hooks.is_empty());
 
         // A field we have never heard of is not a reason to drop the event: Claude Code
         // grows them between versions.
-        state.pipe(message(
-            good_args,
-            Some(r#"{"hook_event_name":"Stop","some_future_field":{"a":1}}"#),
+        state.update(event(
+            r#"{"hook_event_name":"Stop","some_future_field":{"a":1}}"#,
         ));
         assert!(state.hooks.contains_key(&7));
     }

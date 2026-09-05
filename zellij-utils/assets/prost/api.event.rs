@@ -10,7 +10,7 @@ pub struct EventNameList {
 pub struct Event {
     #[prost(enumeration="EventType", tag="1")]
     pub name: i32,
-    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51")]
+    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52")]
     pub payload: ::core::option::Option<event::Payload>,
 }
 /// Nested message and enum types in `Event`.
@@ -110,6 +110,8 @@ pub mod event {
         ContextMenuItemSelectedPayload(super::ContextMenuItemSelectedPayload),
         #[prost(message, tag="51")]
         HookPayload(super::HookPayload),
+        #[prost(message, tag="52")]
+        AgentEventPayload(super::AgentEventPayload),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -118,8 +120,84 @@ pub struct HookPayload {
     /// The point's snake_case name, as `hooks { }` spells it
     #[prost(string, tag="1")]
     pub point: ::prost::alloc::string::String,
-    #[prost(message, repeated, tag="2")]
-    pub payload: ::prost::alloc::vec::Vec<ContextItem>,
+    #[prost(oneof="hook_payload::Payload", tags="3, 4, 5")]
+    pub payload: ::core::option::Option<hook_payload::Payload>,
+}
+/// Nested message and enum types in `HookPayload`.
+pub mod hook_payload {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Payload {
+        #[prost(message, tag="3")]
+        Agent(super::AgentHookPayload),
+        #[prost(message, tag="4")]
+        PaneExit(super::PaneExitHookPayload),
+        #[prost(message, tag="5")]
+        SessionStart(super::SessionStartHookPayload),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AgentHookPayload {
+    #[prost(uint32, tag="1")]
+    pub pane_id: u32,
+    #[prost(message, optional, tag="2")]
+    pub agent: ::core::option::Option<AgentInfo>,
+    /// `AgentState`'s own spelling; absent for a record that just appeared.
+    #[prost(string, optional, tag="3")]
+    pub previous_state: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="4")]
+    pub command: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PaneExitHookPayload {
+    #[prost(uint32, tag="1")]
+    pub pane_id: u32,
+    #[prost(int32, optional, tag="2")]
+    pub exit_code: ::core::option::Option<i32>,
+    #[prost(string, optional, tag="3")]
+    pub cwd: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="4")]
+    pub command: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag="5")]
+    pub held: bool,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SessionStartHookPayload {
+    #[prost(string, tag="1")]
+    pub session_name: ::prost::alloc::string::String,
+    #[prost(uint32, tag="2")]
+    pub client_id: u32,
+}
+/// Mirrors `zellij_utils::agent::AgentEvent`.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AgentEventPayload {
+    #[prost(uint32, tag="1")]
+    pub pane_id: u32,
+    #[prost(string, tag="2")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(string, tag="3")]
+    pub hook: ::prost::alloc::string::String,
+    #[prost(string, optional, tag="4")]
+    pub session_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// `AgentState`'s own spelling: Busy, Waiting, Idle, Exited. Absent when the event says nothing.
+    #[prost(string, optional, tag="5")]
+    pub state: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="6")]
+    pub detail: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="7")]
+    pub prompt: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="8")]
+    pub last_message: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="9")]
+    pub tool_name: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="10")]
+    pub cwd: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, tag="11")]
+    pub raw: ::prost::alloc::string::String,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1114,6 +1192,7 @@ pub enum EventType {
     ContextMenuItemSelected = 56,
     /// / A headless hook point was reached; sent to the plugin bound to it
     Hook = 57,
+    AgentEvent = 58,
 }
 impl EventType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1175,6 +1254,7 @@ impl EventType {
             EventType::ContextMenuRequested => "ContextMenuRequested",
             EventType::ContextMenuItemSelected => "ContextMenuItemSelected",
             EventType::Hook => "Hook",
+            EventType::AgentEvent => "AgentEvent",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1233,6 +1313,7 @@ impl EventType {
             "ContextMenuRequested" => Some(Self::ContextMenuRequested),
             "ContextMenuItemSelected" => Some(Self::ContextMenuItemSelected),
             "Hook" => Some(Self::Hook),
+            "AgentEvent" => Some(Self::AgentEvent),
             _ => None,
         }
     }

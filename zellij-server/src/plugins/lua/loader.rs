@@ -124,6 +124,12 @@ pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result
         .map_err(|e| anyhow!("failed to load zellij's Lua prelude: {}", e))?;
 
     install_json(&lua, &zellij)?;
+    // `zellij.null`: the one value a Lua table cannot hold that a tuple command may need in the
+    // middle - serde counts a tuple variant's elements, a Lua table cannot hold `nil`, and mlua
+    // deserializes this as `None`. A constant, not a capability.
+    zellij
+        .set("null", mlua::LuaSerdeExt::null(&lua))
+        .map_err(|e| anyhow!("failed to define zellij.null: {}", e))?;
     install_log(&lua, &zellij, chunk_name)?;
     install_text_width(&lua, &zellij)?;
 

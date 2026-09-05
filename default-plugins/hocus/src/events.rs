@@ -409,11 +409,42 @@ impl State {
     }
 
     pub(crate) fn on_sessions(&mut self, sessions: Vec<SessionInfo>) -> bool {
-        let instances = sessions
+        let current = sessions
             .into_iter()
-            .find(|session| session.is_current_session)
+            .find(|session| session.is_current_session);
+        // A plugin pane's id is the plugin's id, so the manifest says which instances have a
+        // pane; the plugin list alone cannot tell a headless instance from a pane's copy.
+        let pane_ids: BTreeSet<u32> = current
+            .as_ref()
+            .map(|session| {
+                session
+                    .panes
+                    .panes
+                    .values()
+                    .flatten()
+                    .filter(|pane| pane.is_plugin)
+                    .map(|pane| pane.id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let plugins: Vec<_> = current
             .into_iter()
             .flat_map(|session| session.plugins)
+            .collect();
+        // Every running plugin by location, for a headless reload to find the instance it
+        // replaces rather than start a second one.
+        self.plugin_instances = plugins
+            .iter()
+            .map(|(id, plugin)| {
+                let instance = PluginInstance {
+                    location: plugin.location.clone(),
+                    has_pane: pane_ids.contains(id),
+                };
+                (*id, instance)
+            })
+            .collect();
+        let instances = plugins
+            .into_iter()
             .filter_map(|(id, plugin)| {
                 let namespace = plugin.configuration.get("hocus_extension_name")?;
                 let path = plugin.configuration.get("hocus_extension_path")?;
@@ -431,13 +462,47 @@ impl State {
             .map(|(owner, _)| *owner)
             .collect::<Vec<_>>()
         {
+            // A call waiting on this owner, in whichever chat sent it, will never be
+            // answered: say so now rather than after the timeout. Decided before the owner's
+            // tools go, since the head is matched to the owner through them.
+            let waiting_on = |status: &Status, pending: &VecDeque<ToolCall>| {
+                matches!(status, Status::AwaitingExtension)
+                    && pending
+                        .front()
+                        .and_then(|head| self.extensions.tool(&head.name))
+                        .map(|tool| tool.owner)
+                        == Some(owner)
+            };
+            let foreground = waiting_on(&self.status, &self.pending);
+            let parked: Vec<usize> = self
+                .parked
+                .iter()
+                .enumerate()
+                .filter(|(_, chat)| waiting_on(&chat.status, &chat.pending))
+                .map(|(index, _)| index)
+                .collect();
             self.extensions.remove_owner(owner);
+            if foreground {
+                self.abandon_extension_call();
+            }
+            for index in parked {
+                self.with_parked(index, |state| state.abandon_extension_call());
+            }
         }
         self.extension_instances = instances;
         if !self.extension_files.is_empty() {
             extensions::discover();
         }
         false
+    }
+
+    /// Answer the head with the extension's departure and move on: the owner it was waiting
+    /// on is gone from the session.
+    fn abandon_extension_call(&mut self) {
+        self.status = Status::Idle;
+        self.extension_call_started_ms = None;
+        self.finish_head("the extension went away before it answered; plugin_log it");
+        self.pump_tools();
     }
 
     pub(crate) fn on_extension_registration(&mut self, owner: u32, payload: Option<&str>) -> bool {
@@ -552,7 +617,8 @@ impl State {
             return false;
         }
         self.status = Status::Idle;
-        self.finish_head(log::truncate_str(&result.result, MAX_TOOL_OUTPUT));
+        self.extension_call_started_ms = None;
+        self.finish_head(log::truncate_str(&result.text(), MAX_TOOL_OUTPUT));
         self.pump_tools();
         true
     }
@@ -1915,7 +1981,13 @@ impl State {
         let Some(head) = self.pending.front() else {
             return false;
         };
-        let target = tools::Args::parse(&head.arguments).ok().and_then(|args| {
+        let args = tools::Args::parse(&head.arguments).ok();
+        let headless = args.as_ref().is_some_and(|args| args.headless);
+        let name = args
+            .as_ref()
+            .and_then(|args| args.name.clone())
+            .unwrap_or_default();
+        let target = args.and_then(|args| {
             tools::resolve_plugin_file(&self.user_plugin_dir, args.name.as_deref()).ok()
         });
         let Some(target) = target else {
@@ -1934,6 +2006,16 @@ impl State {
             } else {
                 extensions::load(&target, namespace);
             }
+        } else if headless {
+            // The instance without a pane, and only that one: reloading a pane's copy in place
+            // would leave no headless instance running while the report said there was one.
+            let location = format!("file:{target}");
+            let running = self
+                .plugin_instances
+                .iter()
+                .find(|(_, instance)| instance.location == location && !instance.has_pane)
+                .map(|(id, _)| *id);
+            tools::reload_plugin_headless(&target, running);
         } else {
             tools::reload_plugin(&target);
         }
@@ -1941,6 +2023,8 @@ impl State {
             target,
             started_ms: self.mono_ms,
             extension: extension.is_some(),
+            headless: headless && extension.is_none(),
+            name,
         });
         self.status = Status::AwaitingPluginLoad;
         self.arm_timer(FRAME_SECONDS);

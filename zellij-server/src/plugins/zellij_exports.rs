@@ -39,7 +39,7 @@ use zellij_utils::data::{
     DataDefineResponse, DataEntityInfo, DataError, DataFetchResponse, DataUnwatchResponse,
     DataWatchResponse, EntityDef, FetchRequest, Mutation, WatchMode, SHARED_NAMESPACE_PREFIX,
 };
-use zellij_utils::data::{AgentInfo, PaneTarget};
+use zellij_utils::data::{AgentInfo, AgentSpawnSpec, PaneTarget};
 use zellij_utils::data::{
     BreakPanesToNewTabResponse, BreakPanesToTabWithIdResponse, BreakPanesToTabWithIndexResponse,
     CommandType, ConnectToSession, DeleteAllDeadSessionsResponse, DeleteDeadSessionResponse,
@@ -62,7 +62,8 @@ use zellij_utils::data::{
     OpenTerminalNearPluginResponse, OpenTerminalPaneInPlaceOfPaneIdResponse, OpenTerminalResponse,
     OriginatingPlugin, OrphanedPane, OverlayPlacement, PaneFrameStyle, PaneScrollbackResponse,
     PermissionStatus, PermissionType, PluginPermission, RegexHighlight, RenameLayoutResponse,
-    SaveLayoutResponse, TabMetadata, WarpPaneResponse, WarpPlacement, HOCUS_AGENT_PANE_CONTEXT,
+    SaveLayoutResponse, SpawnAgentResponse, TabMetadata, WarpPaneResponse, WarpPlacement,
+    HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::home::{absolute_lexical, default_layout_dir, default_user_plugin_dir};
 use zellij_utils::input::permission::PermissionCache;
@@ -140,7 +141,7 @@ use zellij_utils::{
             ProtobufParseLayoutResponse, ProtobufPluginCommand, ProtobufReadPluginLogResponse,
             ProtobufRenameLayoutResponse, ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse,
             ProtobufSearchRecordingsResponse, ProtobufShowFloatingPanesResponse,
-            ProtobufWarpPaneResponse,
+            ProtobufSpawnAgentResponse, ProtobufWarpPaneResponse,
         },
         plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion},
     },
@@ -300,6 +301,13 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::SetPaneAgentRun { pane_id, run_id } => {
                 set_pane_agent_run(env, pane_id, run_id)
             },
+            PluginCommand::SpawnAgent {
+                spec,
+                source_directory,
+                cwd,
+                name,
+                context,
+            } => spawn_agent(env, spec, source_directory, cwd, name, context),
             PluginCommand::SetQuitNotice { notice, guard } => set_quit_notice(env, notice, guard),
             PluginCommand::ReloadPluginByUrl(url) => reload_plugin_by_url(env, url)?,
             PluginCommand::ReadPluginLog { name, lines } => read_plugin_log(env, name, lines),
@@ -1099,6 +1107,14 @@ fn request_permission(env: &PluginEnv, permissions: Vec<PermissionType>) -> Resu
     if PermissionCache::from_path_or_default(None)
         .check_permissions(env.plugin.location.to_string(), &permissions)
     {
+        // In force from this call on, not from the event's arrival: a grant the user gave long
+        // ago - or one hocus made when it approved the plugin's source - has nothing left to
+        // ask, and a plugin asking in `load` may act in `load`. The event still follows, for
+        // the handler that waits on it and for the cache the bridge keeps in step.
+        env.permissions
+            .lock()
+            .unwrap()
+            .replace(HashSet::from_iter(permissions.iter().copied()));
         return env
             .senders
             .send_to_plugin(PluginInstruction::PermissionRequestResult(
@@ -2467,7 +2483,7 @@ fn open_command_pane_near_plugin(
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) {
-    let pane_id = spawn_command_pane_near_plugin(env, command_to_run, context);
+    let pane_id = spawn_command_pane_near_plugin(env, command_to_run, context, None);
     let response = ProtobufOpenCommandPaneNearPluginResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_near_plugin response".to_string())
@@ -2478,8 +2494,8 @@ fn spawn_command_pane_near_plugin(
     env: &PluginEnv,
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
+    name: Option<String>,
 ) -> OpenCommandPaneNearPluginResponse {
-    let name: Option<String> = None;
     let run_command_action = run_command_action(env, command_to_run, false, context);
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
@@ -2522,6 +2538,7 @@ fn open_command_pane_in_git_checkout_near_plugin(
                 env,
                 command_to_run,
                 BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), kind)]),
+                None,
             )
             .ok_or_else(|| "Zellij did not open the agent pane".to_owned())
         });
@@ -2529,6 +2546,60 @@ fn open_command_pane_in_git_checkout_near_plugin(
     wasi_write_object(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_in_git_checkout response".to_string())
         .non_fatal();
+}
+
+/// Start a coding agent near this plugin: the launch planner every hocus launcher uses, the
+/// checkout the spec asks for, the pane, and the agent record - one road for hocus's
+/// `agent_spawn`, the `hocus-new-agent` modal and a Lua plugin's `zellij.agent.spawn`.
+fn spawn_agent(
+    env: &mut PluginEnv,
+    spec: AgentSpawnSpec,
+    source_directory: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+    name: Option<String>,
+    mut context: BTreeMap<String, String>,
+) {
+    let result: SpawnAgentResponse = (|| {
+        let (mut command, checkout) = zellij_utils::agent::launch::plan(&spec)?;
+        // The marker's value is the agent's kind - the program - which is what the pane's
+        // agent record starts from. See `agent_from_run` in `panes::terminal_pane`.
+        let kind = zellij_utils::agent::agent_kind_of(&command.path, &command.args)
+            .unwrap_or_else(|| "true".to_owned());
+        let source = source_directory
+            .map(|path| translate_plugin_path(env, path))
+            .unwrap_or_else(|| env.plugin_cwd.clone());
+        let cwd = cwd.map(|path| translate_plugin_path(env, path));
+        let folder = agent_folder(checkout, cwd, source)?;
+        // A Firecracker pane mirrors the folder into the guest and names its VM from it, as
+        // the checkout command does when asked to; a local pane simply runs there.
+        let automatic_vm = command.target.is_firecracker();
+        apply_git_checkout_to_command(&mut command, folder, automatic_vm)?;
+        context.insert(HOCUS_AGENT_PANE_CONTEXT.to_owned(), kind);
+        spawn_command_pane_near_plugin(env, command, context, name)
+            .ok_or_else(|| "Zellij did not open the agent pane".to_owned())
+    })();
+    let response = ProtobufSpawnAgentResponse::from(result);
+    wasi_write_object(env, &response.encode_to_vec())
+        .with_context(|| "failed to write spawn_agent response".to_string())
+        .non_fatal();
+}
+
+/// Where a spawned agent's pane runs. A branch means git work in `source`, the repository, and
+/// the pane lands in the checkout that makes. Without one there is no git work at all: the
+/// pane runs in `cwd` when the caller named one, and otherwise in `source` as it stands -
+/// hocus sends the focused pane's folder, a Lua plugin's default is its own - never the
+/// repository root, which `command=zsh` in a subfolder of a checkout does not want and which
+/// costs a `git rev-parse` to find.
+fn agent_folder(
+    checkout: GitCheckout,
+    cwd: Option<PathBuf>,
+    source: PathBuf,
+) -> Result<PathBuf, String> {
+    match (checkout, cwd) {
+        (GitCheckout::Current, Some(cwd)) => Ok(cwd),
+        (GitCheckout::Current, None) => Ok(source),
+        (checkout, _) => prepare_git_checkout_in(source, checkout),
+    }
 }
 
 fn apply_git_checkout_to_command(
@@ -7172,6 +7243,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::OpenCommandPaneInPlaceOfPaneId
         | CommandType::RunCommand
         | CommandType::RunCommandInPane
+        | CommandType::SpawnAgent
         | CommandType::ExecCmd => PermissionType::RunCommands,
         CommandType::WebRequest | CommandType::CancelWebRequest => PermissionType::WebAccess,
         CommandType::Write
@@ -7627,6 +7699,40 @@ mod permission_tests {
             },
             ..Default::default()
         }
+    }
+
+    /// With no branch there is no git work: the pane runs in the folder the caller named,
+    /// else in the source as given - a subfolder of a checkout stays that subfolder, and is
+    /// not swapped for the repository root the way a checkout request resolves it.
+    #[test]
+    fn an_agent_with_no_branch_runs_where_it_was_asked_and_never_at_the_repository_root() {
+        let repository = repository();
+        let subdirectory = repository.path().join("src/nested");
+        std::fs::create_dir_all(&subdirectory).unwrap();
+        let elsewhere = repository.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+
+        assert_eq!(
+            agent_folder(GitCheckout::Current, None, subdirectory.clone()).unwrap(),
+            subdirectory
+        );
+        assert_eq!(
+            agent_folder(
+                GitCheckout::Current,
+                Some(elsewhere.clone()),
+                subdirectory.clone()
+            )
+            .unwrap(),
+            elsewhere
+        );
+        // A branch is git work in the repository, resolved from the subfolder to its root,
+        // and the pane lands in what it makes - `cwd` says nothing there.
+        let checkout = GitCheckout::NewBranch {
+            branch: "topic".to_owned(),
+            base: "main".to_owned(),
+        };
+        let switched = agent_folder(checkout, Some(elsewhere), subdirectory).unwrap();
+        assert_eq!(resolved(&switched), resolved(repository.path()));
     }
 
     #[test]

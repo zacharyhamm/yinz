@@ -7,12 +7,12 @@
 //! specification, not a way past a failing case.
 
 use crate::data::{
-    AgentInfo, AgentSource, AgentState, BareKey, CommandOrPlugin, CommandToRun, CommandType,
-    ConnectToSession, ContextMenuItem, Direction, EntityDef, EventType, FetchRequest, FileMetadata,
-    FileToOpen, FloatingPaneCoordinates, GitCheckout, HighlightLayer, HighlightStyle, HttpVerb,
-    InputMode, KeyModifier, KeyWithModifier, LayoutInfo, LayoutMetadata, MessageToPlugin, Mutation,
-    NewPanePlacement, NewPluginArgs, OriginatingPlugin, OverlayKind, OverlayPlacement, PaneId,
-    PaneMetadata, PaneTarget, PermissionType, PluginCommand, PluginMessage, PluginTag,
+    AgentInfo, AgentSource, AgentSpawnSpec, AgentState, BareKey, CommandOrPlugin, CommandToRun,
+    CommandType, ConnectToSession, ContextMenuItem, Direction, EntityDef, EventType, FetchRequest,
+    FileMetadata, FileToOpen, FloatingPaneCoordinates, GitCheckout, HighlightLayer, HighlightStyle,
+    HttpVerb, InputMode, KeyModifier, KeyWithModifier, LayoutInfo, LayoutMetadata, MessageToPlugin,
+    Mutation, NewPanePlacement, NewPluginArgs, OriginatingPlugin, OverlayKind, OverlayPlacement,
+    PaneId, PaneMetadata, PaneTarget, PermissionType, PluginCommand, PluginMessage, PluginTag,
     RegexHighlight, RemotePaneHandoff, Resize, ResizeStrategy, TabMetadata, UnblockCondition,
     WarpPlacement, WarpedPane, WarpedTab, WatchMode,
 };
@@ -45,6 +45,47 @@ pub(crate) fn booleans(tc: &hegel::TestCase) -> bool {
 
 pub(crate) fn optional_booleans(tc: &hegel::TestCase) -> Option<bool> {
     tc.draw(generators::optional(generators::booleans()))
+}
+
+pub(crate) fn agent_events(tc: &hegel::TestCase) -> crate::agent::AgentEvent {
+    crate::agent::AgentEvent {
+        pane_id: tc.draw(generators::integers::<u32>()),
+        kind: strings(tc),
+        hook: strings(tc),
+        session_id: optional_strings(tc),
+        state: tc.draw(generators::optional(generators::sampled_from(vec![
+            AgentState::Busy,
+            AgentState::Waiting,
+            AgentState::Idle,
+            AgentState::Exited,
+        ]))),
+        detail: optional_strings(tc),
+        prompt: optional_strings(tc),
+        last_message: optional_strings(tc),
+        tool_name: optional_strings(tc),
+        cwd: optional_strings(tc),
+        raw: strings(tc),
+    }
+}
+
+pub(crate) fn agent_spawn_specs(tc: &hegel::TestCase) -> AgentSpawnSpec {
+    AgentSpawnSpec {
+        kind: optional_strings(tc),
+        command: optional_strings(tc),
+        args: up_to(tc, 3, strings),
+        model: optional_strings(tc),
+        prompt: optional_strings(tc),
+        branch: optional_strings(tc),
+        base: optional_strings(tc),
+        worktree: optional_booleans(tc),
+        worktree_path: optional_strings(tc),
+        env: context(tc),
+        permission_mode: optional_strings(tc),
+        resume: optional_strings(tc),
+        hooks: optional_booleans(tc),
+        firecracker: optional_strings(tc),
+        firecracker_image: optional_strings(tc),
+    }
 }
 
 pub(crate) fn context(tc: &hegel::TestCase) -> BTreeMap<String, String> {
@@ -882,6 +923,7 @@ pub(crate) fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             pane_id: pane_id(tc),
             agent: optional_agent_infos(tc),
         },
+        ActionKind::AgentEvent => Action::AgentEvent(agent_events(tc)),
         ActionKind::Reconfigure => Action::Reconfigure {
             config: strings(tc),
             write_to_disk: booleans(tc),
@@ -1206,7 +1248,7 @@ pub(crate) fn u32s(tc: &hegel::TestCase) -> u32 {
     tc.draw(generators::integers::<u32>())
 }
 
-fn agent_infos(tc: &hegel::TestCase) -> AgentInfo {
+pub(crate) fn agent_infos(tc: &hegel::TestCase) -> AgentInfo {
     AgentInfo {
         kind: strings(tc),
         state: tc.draw(generators::sampled_from(vec![
@@ -1493,6 +1535,13 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::SetPaneAgentRun => PluginCommand::SetPaneAgentRun {
             pane_id: pane_id(tc),
             run_id: optional_strings(tc),
+        },
+        CommandType::SpawnAgent => PluginCommand::SpawnAgent {
+            spec: agent_spawn_specs(tc),
+            source_directory: optional_paths(tc),
+            cwd: optional_paths(tc),
+            name: optional_strings(tc),
+            context: context(tc),
         },
         CommandType::SetQuitNotice => PluginCommand::SetQuitNotice {
             notice: optional_strings(tc),

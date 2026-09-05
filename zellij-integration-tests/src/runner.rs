@@ -592,6 +592,25 @@ impl TestSession {
         (exit_code, reported)
     }
 
+    /// Run actions already built - what a CLI action turns into after it has read its own
+    /// inputs, for the one CLI action a test cannot drive through `CliAction`: `agent-report
+    /// --hook-json` reads the event off stdin, which an in-process client has no way to fake.
+    pub fn run_actions_reporting(&self, actions: Vec<Action>) -> (i32, String) {
+        let (handle, client_screen) = self.spawn_cli_client_with_actions(actions);
+        let exit_code = handle.join().expect("cli client thread panicked");
+        let reported = client_screen
+            .server_messages()
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|message| message.split_once(": "))
+            .filter(|(name, _)| *name == "Log" || *name == "LogError")
+            .map(|(_, lines)| lines.to_owned())
+            .collect::<Vec<_>>()
+            .join("\n");
+        (exit_code, reported)
+    }
+
     fn spawn_cli_client(&self, cli_action: CliAction) -> (JoinHandle<i32>, ClientScreen) {
         let actions = Action::actions_from_cli(
             cli_action,
@@ -599,6 +618,13 @@ impl TestSession {
             Some(self.config.clone()),
         )
         .expect("failed to build cli actions");
+        self.spawn_cli_client_with_actions(actions)
+    }
+
+    fn spawn_cli_client_with_actions(
+        &self,
+        actions: Vec<Action>,
+    ) -> (JoinHandle<i32>, ClientScreen) {
         let (fake_client_os_api, fake_client_handle) = FakeClientOsApi::new(self.size, None);
         let client_screen = fake_client_handle.client_screen.clone();
         let session_name = self.session_name.clone();

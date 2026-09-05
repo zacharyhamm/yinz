@@ -397,6 +397,10 @@ pub enum Action {
         pane_id: PaneId,
         agent: Option<AgentInfo>,
     },
+    /// One event from a coding agent's own hooks, on its way to the plugins that subscribed to
+    /// `agent_event` and to `zellij events`. Sent beside `SetPaneAgent` by `agent-report
+    /// --hook-json`, and alone when the event says nothing about the state.
+    AgentEvent(crate::agent::AgentEvent),
     /// Detach session and exit
     Detach,
     /// Switch the host-terminal theme mode to dark (uses configured `theme_dark`).
@@ -821,7 +825,10 @@ fn kdl_string(text: &str) -> String {
 /// every plugin on every pane update — so the event goes out beside it, whole up to
 /// `agent::HOOK_BROADCAST_MAX_BYTES` and pruned above that, and whoever wants more than a
 /// record holds reads it there.
-fn hook_report_actions(
+/// What `zellij action agent-report --hook-json` does with one event: set the pane's record
+/// where the event says something about the state, and send the event itself, typed, to the
+/// plugins that subscribed to it. `json` is the event exactly as it arrived.
+pub fn hook_report_actions(
     kind: &str,
     pane_id: PaneId,
     event: &crate::agent::HookEvent,
@@ -841,43 +848,21 @@ fn hook_report_actions(
         // because "says nothing about the state" is not "says nothing".
         crate::agent::HookOutcome::Nothing => {},
     }
-    // Whole, unless whole is unreasonable. `tool_input` and `tool_response` have no bound in
-    // Claude Code's schema, and this payload is copied into every running plugin's memory —
-    // see `agent::HOOK_BROADCAST_MAX_BYTES`. A pruned event is still an event; a two-megabyte
-    // one is a stalled turn. `broadcast_json` owns the whole rule, cap included, because a
-    // single prune cannot promise a size on its own.
-    let payload = event.broadcast_json(json);
-    // A `KeybindPipe` rather than a `CliPipe`: it broadcasts to every running plugin without a
-    // pipe id, so nothing waits to be unblocked and a hook cannot stall the turn it fired in.
-    // The pane travels as an argument because only a `CliPipe` carries `PipeMessage::pane_id`,
-    // and the kind because the payload is the agent's own JSON, which never says which agent
-    // wrote it - a reader that writes a record of its own has nothing else to name it with.
-    let mut args = BTreeMap::from([(
-        crate::agent::AGENT_HOOK_KIND_ARG.to_owned(),
-        kind.to_owned(),
-    )]);
-    // The bare number, which is what a reader parses; a hook never fires in a plugin pane, so
-    // there is nothing to say for one.
-    if let PaneId::Terminal(id) = pane_id {
-        args.insert(
-            crate::agent::AGENT_HOOK_PANE_ID_ARG.to_owned(),
-            id.to_string(),
-        );
-    }
-    actions.push(Action::KeybindPipe {
-        name: Some(crate::agent::AGENT_HOOK_PIPE.to_owned()),
-        payload: Some(payload),
-        args: Some(args),
-        plugin: None,
-        plugin_id: None,
-        configuration: None,
-        launch_new: false,
-        skip_cache: false,
-        floating: None,
-        in_place: None,
-        cwd: None,
-        pane_title: None,
-    });
+    // Whole, unless whole is unreasonable: `tool_input` and `tool_response` have no bound in
+    // Claude Code's schema, and this event is copied to every plugin subscribed to it. The cap
+    // is `agent::HOOK_BROADCAST_MAX_BYTES`, kept by `AgentEvent::from_hook`. A typed event
+    // rather than a pipe: it reaches subscribers only, is gated like the rest of the session's
+    // state, and says which agent wrote it - the payload alone never does.
+    let PaneId::Terminal(terminal_id) = pane_id else {
+        // A hook never fires in a plugin pane, so there is nothing to say for one.
+        return actions;
+    };
+    actions.push(Action::AgentEvent(crate::agent::AgentEvent::from_hook(
+        kind,
+        terminal_id,
+        event,
+        json,
+    )));
     actions
 }
 
@@ -4143,7 +4128,7 @@ mod tests {
     }
 
     /// A hook event does two things from the one process a hook may spend: it sets the pane's
-    /// record, and it goes out whole on `agent_hook` for whoever wants more than a record
+    /// record, and it goes out whole as an `AgentEvent` for whoever wants more than a record
     /// holds. An event that says nothing about the state still goes out — the summary hangs
     /// off text a state says nothing about.
     #[test]
@@ -4153,44 +4138,16 @@ mod tests {
             let event: crate::agent::HookEvent = serde_json::from_str(json).expect("parsed");
             hook_report_actions("claude", pane_id, &event, json.to_owned())
         };
-        let arg = |actions: &[Action], key: &str| match actions.last() {
-            Some(Action::KeybindPipe { args, .. }) => args
-                .as_ref()
-                .and_then(|args| args.get(key))
-                .cloned()
-                .unwrap_or_default(),
-            other => panic!("{other:?}"),
-        };
         let broadcast = |actions: &[Action], json: &str| match actions.last() {
-            Some(Action::KeybindPipe {
-                name,
-                payload,
-                args,
-                plugin,
-                plugin_id,
-                launch_new,
-                ..
-            }) => {
-                assert_eq!(name.as_deref(), Some(crate::agent::AGENT_HOOK_PIPE));
-                assert_eq!(payload.as_deref(), Some(json), "the event goes out whole");
+            Some(Action::AgentEvent(event)) => {
+                assert_eq!(event.raw, json, "the event goes out whole");
                 assert_eq!(
-                    args.as_ref().and_then(|args| args
-                        .get(crate::agent::AGENT_HOOK_PANE_ID_ARG)
-                        .map(String::as_str)),
-                    Some("7"),
-                    "the bare number, which is what a reader parses"
+                    event.pane_id, 7,
+                    "the bare number, which is what a reader keys by"
                 );
                 // The payload is the agent's own JSON and never says which agent wrote it, so
                 // a reader that writes a record of its own is told here.
-                assert_eq!(
-                    args.as_ref().and_then(|args| args
-                        .get(crate::agent::AGENT_HOOK_KIND_ARG)
-                        .map(String::as_str)),
-                    Some("claude")
-                );
-                // No plugin named and nothing new launched: a broadcast reaches whatever is
-                // already running, and addressing one by url would start a second copy.
-                assert!(plugin.is_none() && plugin_id.is_none() && !launch_new);
+                assert_eq!(event.kind, "claude");
             },
             other => panic!("{other:?}"),
         };
@@ -4212,6 +4169,16 @@ mod tests {
             other => panic!("{other:?}"),
         }
         broadcast(&actions, json);
+        // The event is read once, the way the record is: the same state, the same tool.
+        match &actions[1] {
+            Action::AgentEvent(event) => {
+                assert_eq!(event.hook, "PermissionRequest");
+                assert_eq!(event.state, Some(AgentState::Waiting));
+                assert_eq!(event.session_id.as_deref(), Some("s1"));
+                assert_eq!(event.tool_name.as_deref(), Some("Bash"));
+            },
+            other => panic!("{other:?}"),
+        }
 
         // `SessionEnd` ends the record rather than moving it.
         let json = r#"{"hook_event_name":"SessionEnd","session_id":"s1"}"#;
@@ -4246,7 +4213,10 @@ mod tests {
             },
             other => panic!("{other:?}"),
         }
-        assert_eq!(arg(&actions, crate::agent::AGENT_HOOK_KIND_ARG), "codex");
+        match actions.last() {
+            Some(Action::AgentEvent(event)) => assert_eq!(event.kind, "codex"),
+            other => panic!("{other:?}"),
+        }
     }
 
     /// …but not at any size. This payload is copied into every running plugin's memory,
@@ -4271,10 +4241,8 @@ mod tests {
 
         let event: crate::agent::HookEvent = serde_json::from_str(&json).expect("parsed");
         let actions = hook_report_actions("claude", PaneId::Terminal(7), &event, json);
-        let Some(Action::KeybindPipe {
-            payload: Some(payload),
-            ..
-        }) = actions.last()
+        let Some(Action::AgentEvent(crate::agent::AgentEvent { raw: payload, .. })) =
+            actions.last()
         else {
             panic!("{actions:?}");
         };

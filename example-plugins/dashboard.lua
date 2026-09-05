@@ -26,9 +26,11 @@ M.selected = 1
 function M.load(config)
   M.command = config.command
   M.every = tonumber(config.every) or 5
-  zellij.subscribe { "tab_update", "pane_update", "key", "mouse", "timer", "run_command_result" }
+  zellij.subscribe { "tab_update", "pane_update", "key", "mouse", "run_command_result" }
   zellij.request_permission { "read_application_state", "run_commands" }
-  zellij.set_timeout(0)
+  -- Now, and then every `M.every` seconds.
+  zellij.after(0, M.refresh)
+  zellij.every(M.every, M.refresh)
 end
 
 -- Events ------------------------------------------------------------------------------------
@@ -50,7 +52,7 @@ zellij.on("pane_update", function(event)
   return true
 end)
 
-zellij.on("timer", function()
+function M.refresh()
   -- Commands raise when they are refused; a dashboard should keep drawing regardless.
   pcall(zellij.run_command, {
     command = { "sh", "-c", M.command },
@@ -59,8 +61,7 @@ zellij.on("timer", function()
     context = {},
     max_bytes_returned = 4096,
   })
-  zellij.set_timeout(M.every)
-end)
+end
 
 zellij.on("run_command_result", function(event)
   -- Named fields, and the output is already a string.

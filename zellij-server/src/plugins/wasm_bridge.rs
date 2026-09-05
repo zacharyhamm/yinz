@@ -3092,6 +3092,9 @@ fn check_event_permission(
         | EventType::ActivePaneScroll
         | EventType::InputReceived => PermissionType::ReadApplicationState,
         EventType::PluginDataChanged => PermissionType::PluginData,
+        // What an agent said and was asked is session state, and more of it than the manifest
+        // carries: a plugin that may read the panes may read this.
+        EventType::AgentEvent => PermissionType::ReadApplicationState,
         // Other plugins' jobs are session state. A plugin's own jobs' Started/Finished events
         // need nothing more than the permission it enqueued with.
         EventType::QueueChanged => PermissionType::ReadApplicationState,
