@@ -898,22 +898,22 @@ pub fn assert_same_rendered_grid(actual: &GridSnapshot, expected: &GridSnapshot,
 /// around it. The trailing whitespace it leaves behind is taken off by
 /// [`strip_trailing_whitespace`], which runs after this.
 ///
-/// The status bar's clock, which is the real wall clock and so different on every run.
+/// What tells the clock apart from a pane line that merely ends in `12:34` is that the bar
+/// draws it *flush right*: `render_secondary_info` fits the block into `max_len - 1`, so
+/// exactly one background column follows it, and then the edge of whatever the bar is drawn
+/// in. That edge is the end of the line for a session's own bar, and the pane border for a
+/// nested session's, which is drawn inside a pane and so partway up the grid - the border is
+/// put back, along with the rest of the host's row beyond it. Rows reach here padded to the
+/// full terminal width (`render_bytes` writes every cell, and [`strip_trailing_whitespace`]
+/// runs after this), so a run of padding between a clock shape and the end of a line is what
+/// says it is a pane's own text and not the bar's clock.
 ///
-/// Stripped rather than pinned because the alternative is a fake clock reaching all the way
-/// into a wasm plugin's `SystemTime::now()`, and what these snapshots are about is the layout
-/// around it. The trailing whitespace it leaves behind is taken off by
-/// [`strip_trailing_whitespace`], which runs after this.
-///
-/// Kept tight rather than scoped to one line, because a nested session draws a second status
-/// bar *inside* a pane and so partway up the grid: the clock has to sit at the end of the line
-/// with nothing after it but the pane border, which is put back. What comes *before* it is not
-/// constrained to a space - on a tight line the block abuts the arrow separator - only to a
-/// non-digit, so a longer number ending in a clock shape is left alone. The date half is
-/// optional because a narrow terminal sheds it and keeps the time.
+/// What comes *before* it is not constrained to a space - on a tight line the block abuts the
+/// arrow separator - only to a non-digit, so a longer number ending in a clock shape is left
+/// alone. The date half is optional because a narrow terminal sheds it and keeps the time.
 fn strip_status_bar_clock(text: &str) -> String {
     regex::Regex::new(
-        r"(?m)(^|[^0-9])\d{2}:\d{2}(?:  (?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) \d{1,2} [A-Z][a-z]{2})?( *[│┃|]? *)$",
+        r"(?m)(^|[^0-9])\d{2}:\d{2}(?:  (?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) \d{1,2} [A-Z][a-z]{2})?( ?(?:[│┃|] *)?)$",
     )
     .unwrap()
     .replace_all(text, "$1$2")
@@ -963,4 +963,54 @@ fn strip_trailing_whitespace(text: &str) -> String {
         .unwrap()
         .replace_all(text, "\n")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Rows arrive here padded to the terminal width, so a clock shape in the middle of a
+    /// pane's line is followed by the rest of that row. Only the bar's own clock is flush
+    /// against the right edge, and only that one is the wall clock a snapshot cannot pin.
+    #[test]
+    fn only_a_flush_right_clock_is_stripped() {
+        let width = 40;
+        let pane_line = format!("{:width$}", "$ make -j 12:34");
+        let bar_line = format!("{:>width$}", "<q> QUIT      14:32 ");
+        let grid = format!("{pane_line}\n{bar_line}\n");
+
+        let stripped = strip_status_bar_clock(&grid);
+        assert!(
+            stripped.contains("$ make -j 12:34"),
+            "a pane's own line was rewritten: {stripped:?}"
+        );
+        assert!(
+            !stripped.contains("14:32"),
+            "the bar's clock survived: {stripped:?}"
+        );
+    }
+
+    /// A nested session draws a second bar inside a pane, so its clock ends against the pane
+    /// border and the host's own row runs on past it. The border and what follows are put back.
+    #[test]
+    fn a_nested_bars_clock_is_stripped_and_the_border_kept() {
+        let stripped = strip_status_bar_clock(" <q> QUIT      14:32 │        \n");
+        assert!(!stripped.contains("14:32"), "{stripped:?}");
+        assert!(stripped.contains('│'), "{stripped:?}");
+    }
+
+    /// The date half is what a narrow terminal sheds first, so both shapes have to go.
+    #[test]
+    fn the_date_half_goes_with_the_time() {
+        let stripped = strip_status_bar_clock(" <q> QUIT   14:32  Fri 5 Sep \n");
+        assert_eq!(stripped, " <q> QUIT    \n");
+    }
+
+    /// A longer number that happens to end in a clock shape - a byte count, a duration - is
+    /// not a clock.
+    #[test]
+    fn a_longer_number_ending_in_a_clock_shape_is_left_alone() {
+        let line = " downloaded 112:34 \n";
+        assert_eq!(strip_status_bar_clock(line), line);
+    }
 }

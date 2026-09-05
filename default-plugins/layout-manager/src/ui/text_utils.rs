@@ -35,10 +35,15 @@ fn take_columns_from_end(text: &str, budget: usize) -> String {
 /// `text` cut to `max_width` columns, with `...` standing in for what was dropped.
 ///
 /// Unchanged when it already fits - and zero-width text fits every budget, a budget of zero
-/// included. Below four columns there is no room for the ellipsis, so the text is simply cut.
+/// included. Below four columns there is no room for the ellipsis, so the text is simply cut;
+/// at zero columns there is no room for anything, and taking a prefix of a budget that small
+/// would hand back a column the caller does not have.
 pub fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
     if text.width() <= max_width {
         return text.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
     }
     if max_width <= ELLIPSIS.len() {
         return take_columns(text.chars(), max_width);
@@ -51,6 +56,9 @@ pub fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
 pub fn truncate_with_ellipsis_start(text: &str, max_width: usize) -> String {
     if text.width() <= max_width {
         return text.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
     }
     if max_width <= ELLIPSIS.len() {
         return take_columns_from_end(text, max_width);

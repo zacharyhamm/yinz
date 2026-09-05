@@ -29,10 +29,10 @@ type LineWithButtonRanges = (LinePart, Option<(usize, usize)>, Option<(usize, us
 ///
 /// The Alt hint and the clock/agent block are alternatives in the same space: the hint is what
 /// you want while you are reaching for a binding, the block is what you want the rest of the
-/// time. `alt_hint_revealed` is the whole of that decision - the plugin works out whether Alt
-/// is down (or was, just now) and this only obeys.
+/// time. `hint_revealed` is the whole of that decision - the plugin works out whether Alt is
+/// down (or was, just now), or whether the pointer is on the bar, and this only obeys.
 pub struct SecondaryInfo {
-    pub alt_hint_revealed: bool,
+    pub hint_revealed: bool,
     pub agent_counts: AgentCounts,
     pub clock: Clock,
 }
@@ -897,7 +897,7 @@ fn render_secondary_info(
     );
     // The two tenants of the right-hand slot. Only the keybinds are clickable, so the status
     // block hands back no hit ranges - the click handling already no-ops on `None`.
-    let (content, new_pane_range, floating_range) = if info.alt_hint_revealed {
+    let (content, new_pane_range, floating_range) = if info.hint_revealed {
         secondary_keybinds(help, tab_info, max_len, new_pane_hovered, floating_hovered)
     } else {
         (

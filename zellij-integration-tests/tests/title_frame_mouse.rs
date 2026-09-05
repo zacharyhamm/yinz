@@ -20,8 +20,13 @@ fn sgr_left_click(column: usize, line: usize) -> Vec<u8> {
     .into_bytes()
 }
 
-/// Hold Alt down, which is what puts the keybind hints (and the clickable New Pane / Floating
-/// ribbons with them) back into the status bar's right-hand slot in place of the clock.
+fn sgr_motion(column: usize, line: usize) -> Vec<u8> {
+    format!("\u{1b}[<35;{};{}M", column, line).into_bytes()
+}
+
+/// Hold Alt down, which is one of the two things that puts the keybind hints (and the
+/// clickable New Pane / Floating ribbons with them) into the status bar's right-hand slot in
+/// place of the clock. The other is [`hover_status_bar`], and one test takes each.
 ///
 /// Sent as the Kitty modifier-key press the client's parser understands, rather than as a
 /// chord: a chord is only ever *inferred* evidence that Alt was down and self-expires after a
@@ -29,6 +34,20 @@ fn sgr_left_click(column: usize, line: usize) -> Vec<u8> {
 /// modifier stays held until it is released, so these tests are not timing tests.
 fn hold_alt(zellij: &TestSession) {
     zellij.send_stdin(b"\x1b[57443;1u");
+}
+
+/// Put the pointer on the status bar, which is how the ribbons are reached under the *default*
+/// config: `report_modifier_keys` is off, so nothing reports Alt going down, and an Alt chord
+/// performs its action rather than revealing anything.
+///
+/// Column 1 on purpose: it is on the bar, so it reveals, but nowhere near the right-hand
+/// ribbons, so it does not also light one up as hovered. The reveal ends when the pointer
+/// leaves the bar rather than on a timer, so this is not a timing test either.
+fn hover_status_bar(zellij: &TestSession) {
+    let grid_snapshot = zellij.wait_until("status bar rendered", |grid_snapshot| {
+        grid_snapshot.status_bar_appears()
+    });
+    zellij.send_stdin(&sgr_motion(1, grid_snapshot.lines().len()));
 }
 
 fn display_column_of(line: &str, needle: &str) -> Option<usize> {
@@ -48,7 +67,7 @@ fn claim_first_terminal_and_wait_for_prompt(zellij: &TestSession) -> FakePtyHand
 }
 
 fn click_new_pane_button_in_status_bar(zellij: &TestSession, pane_output: &[u8]) -> FakePtyHandle {
-    hold_alt(zellij);
+    hover_status_bar(zellij);
     let grid_snapshot =
         zellij.wait_until("status bar shows the new pane button", |grid_snapshot| {
             grid_snapshot
@@ -141,6 +160,32 @@ fn mouse_click_floating_ribbon_in_status_bar_opens_a_floating_pane() {
         grid_snapshot.contains("STAGGERED") && grid_snapshot.contains("┌")
     });
     assert_snapshot!(normalized(&grid_snapshot));
+    zellij.quit();
+}
+
+#[test]
+fn the_status_bar_buttons_go_away_again_when_the_pointer_leaves() {
+    let mut zellij = start_zellij(STATUS_BAR_TEST_COLS);
+    claim_first_terminal_and_wait_for_prompt(&zellij);
+
+    hover_status_bar(&zellij);
+    let grid_snapshot =
+        zellij.wait_until("status bar shows the new pane button", |grid_snapshot| {
+            grid_snapshot
+                .lines()
+                .last()
+                .is_some_and(|status_bar| status_bar.contains("New Pane"))
+        });
+
+    // Off the bar and onto the terminal pane. The server tells the plugin the pointer left it,
+    // so the slot goes back to the clock without anything having to wait out a timer.
+    zellij.send_stdin(&sgr_motion(1, grid_snapshot.lines().len() / 2));
+    zellij.wait_until("status bar went back to the clock", |grid_snapshot| {
+        grid_snapshot
+            .lines()
+            .last()
+            .is_some_and(|status_bar| !status_bar.contains("New Pane"))
+    });
     zellij.quit();
 }
 

@@ -156,6 +156,11 @@ pub(crate) fn stdin_loop(
                         }
                         let (residue, focus_changes) = extract_focus_reports(parse_output.residue);
                         for focused in focus_changes {
+                            // Before the focus news, so a consumer sees the hold end rather than
+                            // outliving the window it was held in.
+                            if let Some(forgotten) = forget_held_modifiers(&mut held_modifiers) {
+                                let _ = send_input_instructions.send(forgotten);
+                            }
                             let _ = send_input_instructions
                                 .send(InputInstruction::HostTerminalFocusChanged(focused));
                         }
@@ -218,13 +223,18 @@ pub(crate) fn stdin_loop(
                         .unwrap_or_default();
                     if elapsed >= PARTIAL_REPLY_FLUSH_GUARD {
                         let drained = stdin_ansi_parser.lock().unwrap().finalize_force();
-                        drain_partial_to_keyboard(
+                        for instruction in drain_partial_to_keyboard(
                             &mut input_parser,
                             &mut termwiz_buffer,
-                            send_input_instructions.clone(),
                             drained,
                             !explicitly_disable_kitty_keyboard_protocol,
-                        );
+                            report_modifier_keys,
+                            &mut held_modifiers,
+                        ) {
+                            if send_input_instructions.send(instruction).is_err() {
+                                break 'stdin;
+                            }
+                        }
                         needs_finalization = false;
                         finalize_at = None;
                         reply_in_progress_since = None;
@@ -236,13 +246,18 @@ pub(crate) fn stdin_loop(
                     }
                 } else {
                     let drained = stdin_ansi_parser.lock().unwrap().finalize_fast_partial();
-                    drain_partial_to_keyboard(
+                    for instruction in drain_partial_to_keyboard(
                         &mut input_parser,
                         &mut termwiz_buffer,
-                        send_input_instructions.clone(),
                         drained,
                         !explicitly_disable_kitty_keyboard_protocol,
-                    );
+                        report_modifier_keys,
+                        &mut held_modifiers,
+                    ) {
+                        if send_input_instructions.send(instruction).is_err() {
+                            break 'stdin;
+                        }
+                    }
                     needs_finalization = false;
                     finalize_at = None;
                     reply_in_progress_since = None;
@@ -465,27 +480,30 @@ fn complete_csi_len(bytes: &[u8]) -> Option<usize> {
     None
 }
 
+/// Parse a flushed partial and return what it produced.
+///
+/// Drained bytes are keyboard bytes like any others, and a modifier key's own CSI can be among
+/// them, so this takes the loop's `held_modifiers` rather than a scratch set. Given a set of its
+/// own, a press recorded here would be lost and its release would find nothing to remove, so no
+/// release event would ever be emitted.
 fn drain_partial_to_keyboard(
     input_parser: &mut InputParser,
     termwiz_buffer: &mut Vec<u8>,
-    send_input_instructions: SenderWithContext<InputInstruction>,
     drained: Vec<u8>,
     kitty_enabled: bool,
-) {
-    // A drain is a flush of bytes already in hand, not a fresh read, so it cannot be the thing
-    // that changes what is held down: give it a scratch set rather than the loop's.
+    report_modifier_keys: bool,
+    held_modifiers: &mut BTreeSet<KeyModifier>,
+) -> Vec<InputInstruction> {
     let (instructions, _) = parse_keyboard_bytes(
         input_parser,
         termwiz_buffer,
         &drained,
         kitty_enabled,
         false,
-        false,
-        &mut BTreeSet::new(),
+        report_modifier_keys,
+        held_modifiers,
     );
-    for instruction in instructions {
-        send_input_instructions.send(instruction).unwrap();
-    }
+    instructions
 }
 
 /// Build the fire-and-forget host-query batch sent at client startup.
@@ -513,6 +531,23 @@ fn build_startup_query_string(support_kitty_graphics_protocol: bool) -> String {
 }
 
 pub(crate) const PIXEL_SIZE_QUERY: &str = "\u{1b}[14t\u{1b}[16t";
+
+/// Drop everything the client believes is held down, announcing the change if there was one.
+///
+/// The host takes the keyboard away without replaying the releases of whatever was down when it
+/// did - alt-tab away on `Alt` and the release lands in the other window. Left standing, the
+/// stale `Alt` makes the next real press a no-op, because it is already in the set, and nothing
+/// downstream ever hears about the hold again.
+///
+/// `None` when there was nothing held, so a client that never sees a modifier key does not put a
+/// message on the wire for every focus flicker.
+fn forget_held_modifiers(held: &mut BTreeSet<KeyModifier>) -> Option<InputInstruction> {
+    if held.is_empty() {
+        return None;
+    }
+    held.clear();
+    Some(InputInstruction::ModifiersHeldChanged(BTreeSet::new()))
+}
 
 /// Strips the host's DECSET 1004 focus reports (`CSI I` / `CSI O`) out of the
 /// keyboard residue and returns them as focus transitions, in order.
@@ -544,8 +579,9 @@ fn extract_focus_reports(residue: Vec<u8>) -> (Vec<u8>, Vec<bool>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_startup_query_string, extract_focus_reports, next_wakeup, parse_keyboard_bytes,
-        LONE_ESC_FLUSH_INTERVAL, PIXEL_SIZE_QUERY,
+        build_startup_query_string, drain_partial_to_keyboard, extract_focus_reports,
+        forget_held_modifiers, next_wakeup, parse_keyboard_bytes, LONE_ESC_FLUSH_INTERVAL,
+        PIXEL_SIZE_QUERY,
     };
     use crate::{stdin_ansi_parser::StdinAnsiParser, InputInstruction};
     use std::time::{Duration, Instant};
@@ -799,6 +835,79 @@ mod tests {
         let (residue, focus_changes) = extract_focus_reports(b"\x1b[A\x1b[B".to_vec());
         assert_eq!(residue, b"\x1b[A\x1b[B".to_vec());
         assert!(focus_changes.is_empty());
+    }
+
+    /// The bug this guards: the drain used to be handed a scratch modifier set, so an `Alt` press
+    /// that landed in a flushed partial was recorded nowhere - and its release then found an
+    /// empty set, changed nothing, and never told anyone the hold was over.
+    #[test]
+    fn a_modifier_press_drained_from_a_partial_is_still_held_afterwards() {
+        use std::collections::BTreeSet;
+        use zellij_utils::data::KeyModifier;
+        let mut input_parser = InputParser::new();
+        let mut termwiz_buffer = vec![];
+        let mut held_modifiers = BTreeSet::new();
+
+        let drained = drain_partial_to_keyboard(
+            &mut input_parser,
+            &mut termwiz_buffer,
+            b"\x1b[57443;1u".to_vec(),
+            true,
+            true,
+            &mut held_modifiers,
+        );
+        assert_eq!(
+            held_modifiers,
+            [KeyModifier::Alt].into_iter().collect::<BTreeSet<_>>()
+        );
+        match drained.as_slice() {
+            [InputInstruction::ModifiersHeldChanged(held)] => {
+                assert_eq!(held, &held_modifiers)
+            },
+            other => panic!("expected the drained press to announce the hold, got {other:?}"),
+        }
+
+        // The release arrives on an ordinary read, and can only be recognised as one because the
+        // press before it went into the same set.
+        let (instructions, _) = parse_keyboard_bytes(
+            &mut input_parser,
+            &mut termwiz_buffer,
+            b"\x1b[57449;1:3u",
+            true,
+            false,
+            true,
+            &mut held_modifiers,
+        );
+        assert!(held_modifiers.is_empty());
+        match instructions.as_slice() {
+            [InputInstruction::ModifiersHeldChanged(held)] => assert!(held.is_empty()),
+            other => panic!("expected the release to announce an empty hold, got {other:?}"),
+        }
+    }
+
+    /// The bug this guards: alt-tab away on `Alt` and the release lands in the other window, so
+    /// the stale `Alt` made the next real press a no-op and the hold was never heard of again.
+    #[test]
+    fn a_focus_change_forgets_what_was_held() {
+        use std::collections::BTreeSet;
+        use zellij_utils::data::KeyModifier;
+        let mut held: BTreeSet<KeyModifier> = [KeyModifier::Alt].into_iter().collect();
+        match forget_held_modifiers(&mut held) {
+            Some(InputInstruction::ModifiersHeldChanged(announced)) => {
+                assert!(announced.is_empty())
+            },
+            other => panic!("expected an empty hold to be announced, got {other:?}"),
+        }
+        assert!(held.is_empty());
+    }
+
+    #[test]
+    fn a_focus_change_with_nothing_held_says_nothing() {
+        use std::collections::BTreeSet;
+        use zellij_utils::data::KeyModifier;
+        let mut held: BTreeSet<KeyModifier> = BTreeSet::new();
+        assert!(forget_held_modifiers(&mut held).is_none());
+        assert!(held.is_empty());
     }
 
     #[test]

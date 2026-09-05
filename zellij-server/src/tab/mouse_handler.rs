@@ -16,12 +16,26 @@ use crate::ClientId;
 use super::{Pane, Tab};
 
 fn clear_hover_for_client(tab: &mut Tab, client_id: ClientId) -> bool {
+    clear_hover_for_client_except(tab, client_id, None)
+}
+
+/// Drop the client's hover, leaving `keep`'s alone.
+///
+/// A plugin is told the pointer left it by a buttonless motion at a column that is not on it,
+/// and that is a claim about where the pointer is - so it must not be made about the very pane
+/// the pointer is clicking. The status bar reads it exactly that way: its hover reveal puts
+/// the clickable ribbons in the slot the clock otherwise has, and a leave sent ahead of the
+/// click took them back down before the click could land on one.
+fn clear_hover_for_client_except(tab: &mut Tab, client_id: ClientId, keep: Option<PaneId>) -> bool {
     let mut cleared = false;
     if let Some(prev_pid) = tab.mouse_hover_pane_id.remove(&client_id) {
         if let Some(pane) = tab.get_pane_with_id_mut(prev_pid) {
             pane.set_hover_position(None);
         }
         cleared = true;
+    }
+    if tab.plugin_hover_pane_id.get(&client_id).copied() == keep {
+        return cleared;
     }
     if let Some(prev_plugin_pid) = tab.plugin_hover_pane_id.remove(&client_id) {
         if let Some(pane) = tab.get_pane_with_id(prev_plugin_pid) {
@@ -1226,7 +1240,9 @@ impl MouseHandler {
         client_id: ClientId,
     ) -> Result<MouseEffect> {
         let err_context = || "failed to focus pane";
-        clear_hover_for_client(tab, client_id);
+        let clicked_unselectable_pane_id =
+            Self::unselectable_pane_at_position(tab, &position).map(|pane| pane.pid());
+        clear_hover_for_client_except(tab, client_id, clicked_unselectable_pane_id);
         let active_pane_id_before = tab
             .get_active_pane_id(client_id)
             .ok_or_else(|| anyhow!("Failed to find active pane"))?;
@@ -1278,7 +1294,11 @@ impl MouseHandler {
     ) -> Result<MouseEffect> {
         let err_context = || "failed to focus pane and click through";
 
-        clear_hover_for_client(tab, client_id);
+        // The pane about to be clicked keeps its hover: the pointer is on it, and a plugin
+        // told otherwise takes down whatever the hover revealed before the click arrives.
+        let clicked_unselectable_pane_id =
+            Self::unselectable_pane_at_position(tab, &position).map(|pane| pane.pid());
+        clear_hover_for_client_except(tab, client_id, clicked_unselectable_pane_id);
         Self::focus_pane_at(tab, &position, client_id).with_context(err_context)?;
 
         let osc133_command_selection = tab.osc133_command_selection;

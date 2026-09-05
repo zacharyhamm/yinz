@@ -53,13 +53,26 @@ struct State {
     agent_counts: AgentCounts,
     clock: Clock,
     /// Seconds east of UTC. Only the host can say (`get_local_utc_offset`), and it is a
-    /// synchronous round trip, so it is asked for on load and then only when the hour it was
-    /// taken in has passed - which is the granularity a DST change moves at.
+    /// synchronous round trip, so it is asked for on load and then once per whole hour - which
+    /// is the granularity a DST change moves at.
     utc_offset_secs: i32,
-    utc_offset_taken_at_ms: i64,
+    /// The hour boundary this offset stops being trusted at - see [`next_utc_hour`]. A
+    /// deadline rather than an age, so the re-ask lands on the boundary a DST change happens
+    /// on instead of on whatever phase the session was loaded at.
+    utc_offset_valid_until_ms: i64,
     /// While this is in the future, the Alt hint has the right-hand slot instead of the clock.
-    /// Set by `Event::ModifiersHeld`; see `alt_hint_revealed`.
+    /// Set by `Event::ModifiersHeld`; see `hint_revealed`.
     alt_hint_until_ms: i64,
+    /// The same slot, claimed by the pointer being on the bar rather than by Alt. Set by
+    /// `Mouse::Hover`; see `note_pointer`.
+    hover_hint_until_ms: i64,
+    /// The width of the last frame, which is what says whether a hover column is on the bar at
+    /// all - see `pointer_left_the_bar`.
+    last_render_cols: usize,
+    /// When the `set_timeout` believed to be outstanding will fire, if there is one. The host
+    /// has no way to cancel a timer - each `set_timeout` spawns a task that will fire once, no
+    /// matter what happens here - so the plugin has to stop asking for ones it already has.
+    pending_tick_at_ms: Option<i64>,
 }
 
 register_plugin!(State);
@@ -252,7 +265,7 @@ impl ZellijPlugin for State {
             .map(|c| c == "true")
             .unwrap_or(false);
         set_selectable(false);
-        self.refresh_clock();
+        self.tick();
         subscribe(&[
             EventType::Timer,
             EventType::ModifiersHeld,
@@ -303,36 +316,39 @@ impl ZellijPlugin for State {
                 }
             },
             Event::ModifiersHeld { modifiers, is_live } => {
-                let alt_is_down = modifiers.contains(&KeyModifier::Alt);
-                let was_revealed = self.alt_hint_revealed();
-                self.alt_hint_until_ms = match (alt_is_down, is_live) {
-                    // A terminal that reports the key itself will report it coming back up, so
-                    // this only needs a safety net against a release that never arrives - a
-                    // window stolen mid-hold, say. Long enough not to blink out under a hold.
-                    (true, true) => now_ms() + LIVE_ALT_HINT_SAFETY_MS,
-                    // Inferred from a chord: nothing will say when Alt came up, so the window
-                    // is the whole of the reveal, and every further chord pushes it out.
-                    (true, false) => now_ms() + ALT_HINT_WINDOW_MS,
-                    // An empty live set is the release. An empty inferred set never arrives -
-                    // the server only sends a chord that had modifiers on it.
-                    (false, true) => 0,
-                    (false, false) => self.alt_hint_until_ms,
-                };
-                if self.alt_hint_revealed() != was_revealed {
+                let now = now_ms();
+                let was_revealed = self.hint_revealed();
+                self.alt_hint_until_ms = next_alt_hint_until(
+                    self.alt_hint_until_ms,
+                    now,
+                    modifiers.contains(&KeyModifier::Alt),
+                    is_live,
+                );
+                if self.hint_revealed() != was_revealed {
                     // Re-aim the tick: it is what takes an inferred hold back down.
-                    self.refresh_clock();
+                    self.arm_tick(now);
                     should_render = true;
                 }
             },
             Event::Timer(_) => {
                 // The tick does two jobs, and either can want a frame: it advances the clock,
-                // and it is what takes the Alt hint back down. Both are re-armed here because
+                // and it is what takes the hint back down. Both are re-armed here because
                 // `set_timeout` is one-shot.
-                let clock_changed = self.refresh_clock();
-                let hint_expired = self.alt_hint_until_ms != 0 && !self.alt_hint_revealed();
+                let now = now_ms();
+                // Only the tick that was actually waited for clears the record. A timer armed
+                // earlier than one already outstanding leaves a straggler behind it, and
+                // letting the straggler clear the record would have every fire arm a
+                // replacement; this way the count decays back to one.
+                if self.pending_tick_at_ms.is_some_and(|at| now >= at) {
+                    self.pending_tick_at_ms = None;
+                }
+                let clock_changed = self.refresh_clock(now);
+                let hint_expired = self.hint_until_ms() != 0 && now >= self.hint_until_ms();
                 if hint_expired {
                     self.alt_hint_until_ms = 0;
+                    self.hover_hint_until_ms = 0;
                 }
+                self.arm_tick(now);
                 should_render = clock_changed || hint_expired;
             },
             Event::CopyToClipboard(copy_destination) => {
@@ -361,6 +377,9 @@ impl ZellijPlugin for State {
             },
             Event::Mouse(mouse_event) => match mouse_event {
                 Mouse::LeftClick(_, col) => {
+                    // A click is a sample of where the pointer is too, and re-arms the
+                    // safety net under a reveal the pointer has been sitting still in.
+                    should_render = self.note_pointer(col);
                     if col_in_range(self.new_pane_ribbon_range, col) {
                         new_pane();
                     } else if col_in_range(self.floating_ribbon_range, col) {
@@ -368,6 +387,7 @@ impl ZellijPlugin for State {
                     }
                 },
                 Mouse::Hover(_, col) => {
+                    should_render = self.note_pointer(col);
                     let new_pane_hovered = col_in_range(self.new_pane_ribbon_range, col);
                     let floating_hovered =
                         !new_pane_hovered && col_in_range(self.floating_ribbon_range, col);
@@ -387,6 +407,9 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        // Kept so a hover can be told from the leave the server sends when the pointer moves
+        // off the bar, which arrives as a column past the end of it.
+        self.last_render_cols = cols;
         let supports_arrow_fonts = !self.mode_info.capabilities.arrow_fonts;
         let separator = if supports_arrow_fonts {
             ARROW_SEPARATOR
@@ -413,7 +436,7 @@ impl ZellijPlugin for State {
                 self.new_pane_ribbon_hovered,
                 self.floating_ribbon_hovered,
                 &SecondaryInfo {
-                    alt_hint_revealed: self.alt_hint_revealed(),
+                    hint_revealed: self.hint_revealed(),
                     agent_counts: self.agent_counts,
                     clock: self.clock.clone(),
                 },
@@ -479,41 +502,147 @@ const ALT_HINT_WINDOW_MS: i64 = 3000;
 /// dropped release would pin the hint up for the rest of the session.
 const LIVE_ALT_HINT_SAFETY_MS: i64 = 30_000;
 
-/// How often the host is re-asked for the session's UTC offset. Only a daylight-saving change
-/// moves it, and that happens on an hour boundary, so an hour is as often as it can matter.
-const UTC_OFFSET_TTL_MS: i64 = 60 * 60 * 1000;
+/// The safety net under a pointer reveal, for a pointer that leaves without saying so.
+///
+/// A plugin is sent `Mouse::Hover` for motion over its own surface, and the server also sends
+/// it one column `u16::MAX` when the pointer moves off it onto something else - so the reveal
+/// normally ends the moment the pointer leaves, not on a clock. What has no event is the
+/// pointer leaving the *terminal*, and this is what stops that from pinning the hint up for
+/// the rest of the session.
+const HOVER_HINT_SAFETY_MS: i64 = 30_000;
+
+/// The grain the session's UTC offset is re-asked for on. Only a daylight-saving change moves
+/// it, and that happens on an hour boundary, so an hour is as often as it can matter.
+const UTC_OFFSET_HOUR_MS: i64 = 60 * 60 * 1000;
+
+/// The next whole UTC hour strictly after `now`.
+///
+/// The offset is re-asked for *on* the boundary rather than an hour after it was last read,
+/// because the read's phase is whenever the session happened to load: a session loaded at
+/// 14:37 that re-asked every hour would go on drawing the old offset until 15:37, an hour
+/// after the change. Anchored here, the staleness is bounded by the tick interval instead.
+fn next_utc_hour(now: i64) -> i64 {
+    (now.div_euclid(UTC_OFFSET_HOUR_MS) + 1) * UTC_OFFSET_HOUR_MS
+}
+
+/// Where the Alt reveal deadline goes on a `ModifiersHeld`.
+///
+/// Live evidence is authoritative in both directions: a live hold restarts the safety net, a
+/// live release takes the hint down at once. Inferred evidence can only ever extend - a chord
+/// says Alt was down when it was struck and nothing about when the hold ends, so it must not
+/// cut a live hold's window down to its own.
+fn next_alt_hint_until(current: i64, now: i64, alt_is_down: bool, is_live: bool) -> i64 {
+    match (alt_is_down, is_live) {
+        // A terminal that reports the key itself will report it coming back up, so this only
+        // needs a safety net against a release that never arrives - a window stolen mid-hold,
+        // say. Long enough not to blink out under a hold.
+        (true, true) => now + LIVE_ALT_HINT_SAFETY_MS,
+        // Inferred from a chord: nothing will say when Alt came up, so the window is the whole
+        // of the reveal, and every further chord pushes it out.
+        (true, false) => current.max(now + ALT_HINT_WINDOW_MS),
+        // An empty live set is the release. An empty inferred set never arrives - the server
+        // only sends a chord that had modifiers on it.
+        (false, true) => 0,
+        (false, false) => current,
+    }
+}
+
+/// When the next tick wants to land: the next minute boundary, or a nearer hint expiry.
+///
+/// Aimed at the boundary rather than set to a flat 60s so the displayed minute turns over when
+/// the real one does instead of drifting away from it by however long the plugin took to get
+/// scheduled; capped so a hint waiting to expire is not left up until the next minute.
+fn next_tick_at(now: i64, hint_until_ms: i64) -> i64 {
+    let next_minute = now + (60_000 - now.rem_euclid(60_000));
+    match hint_until_ms > now {
+        true => next_minute.min(hint_until_ms),
+        false => next_minute,
+    }
+}
+
+/// Whether a hover column means the pointer has gone somewhere else.
+///
+/// The server tells a plugin the pointer has left it by sending one last buttonless motion at
+/// column `u16::MAX`, which is to say a column that is not on the bar. Read as "not on the
+/// bar" rather than as the sentinel itself: any column past the end of what was drawn is not
+/// somewhere the pointer can be, and a frame we have not drawn yet cannot say either way.
+fn pointer_left_the_bar(last_render_cols: usize, col: usize) -> bool {
+    last_render_cols != 0 && col >= last_render_cols
+}
+
+/// Whether a tick wanted at `at` needs a fresh `set_timeout`, given the one thought to be
+/// outstanding. A timer that already fires at or before `at` will do: it wakes the plugin,
+/// which re-reads the clock and re-arms, so an early wake costs a frame at worst while a
+/// second timer costs one per minute for the rest of the session.
+fn should_arm_tick(pending: Option<i64>, at: i64) -> bool {
+    match pending {
+        Some(pending) => at < pending,
+        None => true,
+    }
+}
 
 impl State {
-    /// Whether the Alt hint currently owns the right-hand slot.
-    fn alt_hint_revealed(&self) -> bool {
-        now_ms() < self.alt_hint_until_ms
+    /// Whether the hint currently owns the right-hand slot, by either claim on it.
+    fn hint_revealed(&self) -> bool {
+        now_ms() < self.hint_until_ms()
+    }
+
+    /// The later of the two reveal deadlines - Alt and the pointer claim the same slot, and
+    /// whichever holds it longest is when it goes back to the clock.
+    fn hint_until_ms(&self) -> i64 {
+        self.alt_hint_until_ms.max(self.hover_hint_until_ms)
+    }
+
+    /// Take in where the pointer is, and say whether that changed hands on the slot.
+    ///
+    /// The pointer reveal is the whole of the mouse's way in: with the clock in the slot the
+    /// ribbons are not drawn and so cannot be clicked, which under the default
+    /// `report_modifier_keys false` would leave them unreachable by mouse entirely - an Alt
+    /// chord performs its action rather than revealing anything.
+    fn note_pointer(&mut self, col: usize) -> bool {
+        let now = now_ms();
+        let was_revealed = self.hint_revealed();
+        self.hover_hint_until_ms = match pointer_left_the_bar(self.last_render_cols, col) {
+            true => 0,
+            false => now + HOVER_HINT_SAFETY_MS,
+        };
+        self.arm_tick(now);
+        self.hint_revealed() != was_revealed
     }
 
     /// Re-read the clock, re-arm the tick, and say whether anything visible moved.
-    ///
-    /// The tick is aimed at the next minute boundary rather than set to a flat 60s, so the
-    /// displayed minute turns over when the real one does instead of drifting away from it by
-    /// however long the plugin took to get scheduled. It is also capped so a hint waiting to
-    /// expire is not left up until the next minute.
-    fn refresh_clock(&mut self) -> bool {
+    fn tick(&mut self) -> bool {
         let now = now_ms();
-        if now.saturating_sub(self.utc_offset_taken_at_ms) >= UTC_OFFSET_TTL_MS {
+        let changed = self.refresh_clock(now);
+        self.arm_tick(now);
+        changed
+    }
+
+    /// Re-read the clock and say whether anything visible moved.
+    fn refresh_clock(&mut self, now: i64) -> bool {
+        if now >= self.utc_offset_valid_until_ms {
             // An offset the host would not give us is `0` - UTC, stated as such, which is a
             // better answer than refusing to draw a clock.
             self.utc_offset_secs = get_local_utc_offset(now).unwrap_or(0);
-            self.utc_offset_taken_at_ms = now;
+            self.utc_offset_valid_until_ms = next_utc_hour(now);
         }
         let clock = Clock::at(now, self.utc_offset_secs);
         let changed = self.clock != clock;
         self.clock = clock;
-
-        let to_next_minute = 60.0 - (now.rem_euclid(60_000) as f64 / 1000.0);
-        let to_hint_expiry = match self.alt_hint_until_ms > now {
-            true => (self.alt_hint_until_ms - now) as f64 / 1000.0,
-            false => f64::MAX,
-        };
-        set_timeout(to_next_minute.min(to_hint_expiry).max(0.1));
         changed
+    }
+
+    /// Ask the host for the next tick, unless one already outstanding will do.
+    ///
+    /// `set_timeout` cannot be cancelled, so every call that is not needed is a timer firing
+    /// for the rest of the session: this runs on every reveal-state change, and arming
+    /// unconditionally meant every Alt chord left one more behind it.
+    fn arm_tick(&mut self, now: i64) {
+        let at = next_tick_at(now, self.hint_until_ms());
+        if should_arm_tick(self.pending_tick_at_ms, at) {
+            set_timeout(((at - now) as f64 / 1000.0).max(0.1));
+            self.pending_tick_at_ms = Some(at);
+        }
     }
 
     fn second_line(&self, cols: usize) -> LinePart {
@@ -1231,5 +1360,105 @@ pub mod tests {
         let ret = unstyle(&ANSIStrings(&ret));
 
         assert_eq!(ret, "Alt + <ENTER|SPACE|TAB>".to_string())
+    }
+
+    /// A minute boundary, so `next_tick_at`'s arithmetic is readable in the tests below.
+    const MINUTE: i64 = 60_000;
+
+    #[test]
+    fn an_inferred_chord_never_shortens_a_live_hold() {
+        let live_hold = next_alt_hint_until(0, MINUTE, true, true);
+        assert_eq!(live_hold, MINUTE + LIVE_ALT_HINT_SAFETY_MS);
+
+        // The chord arrives mid-hold: it is weaker evidence than the hold itself and must not
+        // pull the deadline back to its own, much shorter, window.
+        let after_chord = next_alt_hint_until(live_hold, MINUTE + 100, true, false);
+        assert_eq!(after_chord, live_hold);
+    }
+
+    #[test]
+    fn inferred_chords_extend_each_other() {
+        let first = next_alt_hint_until(0, MINUTE, true, false);
+        assert_eq!(first, MINUTE + ALT_HINT_WINDOW_MS);
+
+        let second = next_alt_hint_until(first, MINUTE + 1000, true, false);
+        assert_eq!(second, MINUTE + 1000 + ALT_HINT_WINDOW_MS);
+    }
+
+    #[test]
+    fn a_live_release_takes_the_hint_down_and_an_inferred_one_is_a_no_op() {
+        let held = next_alt_hint_until(0, MINUTE, true, true);
+        assert_eq!(next_alt_hint_until(held, MINUTE + 100, false, true), 0);
+        assert_eq!(next_alt_hint_until(held, MINUTE + 100, false, false), held);
+    }
+
+    #[test]
+    fn the_tick_lands_on_the_next_minute_unless_a_hint_expires_first() {
+        // No hint: the next boundary, however far into the minute we are.
+        assert_eq!(next_tick_at(MINUTE + 100, 0), 2 * MINUTE);
+        // A hint expiring inside the minute pulls the tick in; one expiring past it does not.
+        assert_eq!(next_tick_at(MINUTE + 100, MINUTE + 3000), MINUTE + 3000);
+        assert_eq!(next_tick_at(MINUTE + 100, 5 * MINUTE), 2 * MINUTE);
+        // An already-expired deadline is not in the future and cannot pull anything in.
+        assert_eq!(next_tick_at(MINUTE + 100, MINUTE), 2 * MINUTE);
+    }
+
+    #[test]
+    fn a_tick_already_outstanding_is_not_armed_again() {
+        // Nothing outstanding, or one that fires too late to serve: arm.
+        assert!(should_arm_tick(None, MINUTE));
+        assert!(should_arm_tick(Some(2 * MINUTE), MINUTE));
+        // One that fires at or before the tick we want will wake us, and waking early only
+        // costs a frame - where a second timer costs one every minute from here on.
+        assert!(!should_arm_tick(Some(MINUTE), MINUTE));
+        assert!(!should_arm_tick(Some(MINUTE), 2 * MINUTE));
+    }
+
+    #[test]
+    fn a_hover_column_past_the_end_of_the_bar_is_the_pointer_leaving() {
+        // What the server actually sends on a leave, and every column that is really on the
+        // bar - the bar being 80 wide here.
+        assert!(pointer_left_the_bar(80, u16::MAX as usize));
+        assert!(pointer_left_the_bar(80, 80));
+        assert!(!pointer_left_the_bar(80, 79));
+        assert!(!pointer_left_the_bar(80, 0));
+        // Before the first frame there is no width to judge against, so nothing is a leave.
+        assert!(!pointer_left_the_bar(0, u16::MAX as usize));
+    }
+
+    #[test]
+    fn a_run_of_alt_chords_arms_no_extra_timers() {
+        // What used to leak: every chord re-aimed the tick, and every re-aim spawned a timer
+        // the host cannot cancel. Each chord pushes the deadline *later*, so after the first
+        // the outstanding tick already covers it.
+        let mut pending = None;
+        let mut hint_until = 0;
+        let mut armed = 0;
+        for chord in 0..100 {
+            let now = MINUTE + chord * 10;
+            hint_until = next_alt_hint_until(hint_until, now, true, false);
+            let at = next_tick_at(now, hint_until);
+            if should_arm_tick(pending, at) {
+                pending = Some(at);
+                armed += 1;
+            }
+        }
+        assert_eq!(armed, 1);
+    }
+
+    #[test]
+    fn the_utc_offset_deadline_is_the_next_whole_hour() {
+        // The point of the deadline: whatever phase of the hour the session loads at, the
+        // re-ask lands on the boundary a DST change happens on.
+        for offset_into_the_hour in [0, 1, 37 * 60 * 1000, UTC_OFFSET_HOUR_MS - 1] {
+            let now = 480_000 * UTC_OFFSET_HOUR_MS + offset_into_the_hour;
+            let next = next_utc_hour(now);
+            assert!(next > now, "{now} -> {next} did not move forward");
+            assert_eq!(next % UTC_OFFSET_HOUR_MS, 0, "{now} -> {next} is off-hour");
+            assert!(
+                next - now <= UTC_OFFSET_HOUR_MS,
+                "{now} -> {next} is more than an hour out"
+            );
+        }
     }
 }

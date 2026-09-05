@@ -3278,14 +3278,21 @@ pub fn apply_events_to_plugin(
                 }
             },
             (PermissionStatus::Denied, permission) => {
-                log::error!(
-                    "PluginId '{}' permission '{}' is not allowed - Event '{:?}' denied",
-                    plugin_id,
-                    permission
-                        .map(|p| p.to_string())
-                        .unwrap_or("UNKNOWN".to_owned()),
-                    EventType::from(event)
-                );
+                // Once per plugin per event type: a plugin subscribed to something it may not
+                // read is a standing misconfiguration, and an event as frequent as
+                // `ModifiersHeld` would otherwise fill the log with the same line.
+                let event_type = EventType::from(event);
+                if running_plugin.note_denied_event(event_type) {
+                    log::error!(
+                        "PluginId '{}' permission '{}' is not allowed - Event '{:?}' denied \
+                         (further denials of this event are not logged)",
+                        plugin_id,
+                        permission
+                            .map(|p| p.to_string())
+                            .unwrap_or("UNKNOWN".to_owned()),
+                        event_type
+                    );
+                }
             },
         }
     }

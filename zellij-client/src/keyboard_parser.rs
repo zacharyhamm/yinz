@@ -370,9 +370,17 @@ impl KittyKeyboardParser {
             // Collected nowhere: which physical key this is says nothing zellij resolves a key
             // from, and the text field only matters to a terminal doing its own composition.
             // They still have to be consumed, or the sequence they are part of fails to parse.
+            //
+            // Only the CSI parameter bytes, though - `0-9 : ; < = > ?`, which is everything
+            // kitty puts in these two fields (a decimal keycode, and decimal codepoints
+            // separated by colons). A catch-all here would swallow the sequence's final byte
+            // as well, leaving these the only two states that can never reach a terminal
+            // outcome: `terminate` reports `Incomplete` for both, so `feed` would go on
+            // waiting for a sequence that already ended. An SGR mouse report is the case that
+            // actually arrives - `\x1b[<0;12;34M` reaches `ParsingText` at the `M`.
             (
                 KittyKeysParsingState::ParsingBaseLayoutKey | KittyKeysParsingState::ParsingText,
-                _,
+                0x30..=0x3f,
             ) => {},
             (_, _) => {
                 return false;
@@ -854,4 +862,40 @@ fn non_kitty_bytes_yield_nomatch_and_reset() {
     // immediately rather than buffering forever.
     let mut p = KittyKeyboardParser::new();
     assert!(matches!(p.feed(b"hello"), KittyParseOutcome::NoMatch));
+}
+
+#[test]
+fn sgr_mouse_reports_yield_nomatch_and_reset() {
+    // A mouse report is a CSI too, and its parameters walk the same states a key's do: the
+    // second `;` puts the parser in `ParsingText`, where the report's `M`/`m` terminator has
+    // to end the parse rather than be eaten as text. Reported as NoMatch and not Incomplete,
+    // because the sequence is complete - it is just not a key.
+    for report in [b"\x1b[<0;12;34M".as_slice(), b"\x1b[<0;12;34m".as_slice()] {
+        let mut p = KittyKeyboardParser::new();
+        let outcome = p.feed(report);
+        assert!(
+            matches!(outcome, KittyParseOutcome::NoMatch),
+            "expected NoMatch for {:?}, got {:?}",
+            String::from_utf8_lossy(report),
+            outcome
+        );
+        // ...and the parser is reusable afterwards, which is what NoMatch promises.
+        assert!(matches!(
+            p.feed(b"\x1b[97u"),
+            KittyParseOutcome::Complete(_, _)
+        ));
+    }
+}
+
+#[test]
+fn a_sequence_carrying_associated_text_still_parses() {
+    // `\x1b[97;1;97u` - `a` with no modifiers, reported with the text it composed to. The
+    // text field is walked and discarded; the `u` still terminates.
+    let mut p = KittyKeyboardParser::new();
+    match p.feed(b"\x1b[97;1;97u") {
+        KittyParseOutcome::Complete(k, _) => {
+            assert_eq!(k, KeyWithModifier::new(BareKey::Char('a')));
+        },
+        other => panic!("expected an `a`, got {:?}", other),
+    }
 }

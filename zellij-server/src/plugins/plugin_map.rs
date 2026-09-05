@@ -536,6 +536,11 @@ pub struct RunningPlugin {
     pub columns: usize,
     next_event_ids: HashMap<AtomicEvent, usize>,
     last_applied_event_ids: HashMap<AtomicEvent, usize>,
+    /// Event types this plugin has already been told it lacks the permission for. A denial is a
+    /// standing misconfiguration, not an incident: subscribing to a high-frequency event without
+    /// its permission would otherwise log once per keystroke and blow the log's 100KB cap in
+    /// seconds. See `note_denied_event`.
+    denied_events_logged: HashSet<EventType>,
 }
 
 impl RunningPlugin {
@@ -546,6 +551,7 @@ impl RunningPlugin {
             columns,
             next_event_ids: HashMap::new(),
             last_applied_event_ids: HashMap::new(),
+            denied_events_logged: HashSet::new(),
         }
     }
     /// The plugin's environment - the per-instance state every host command acts on. Reached
@@ -558,8 +564,15 @@ impl RunningPlugin {
             columns,
             next_event_ids: HashMap::new(),
             last_applied_event_ids: HashMap::new(),
+            denied_events_logged: HashSet::new(),
         }
     }
+    /// Record that an event of this type was denied to this plugin, returning whether it is the
+    /// first of its type - which is the only one worth logging.
+    pub fn note_denied_event(&mut self, event_type: EventType) -> bool {
+        self.denied_events_logged.insert(event_type)
+    }
+
     pub fn env(&self) -> &PluginEnv {
         match &self.backend {
             PluginBackend::Wasm { store, .. } => store.data(),
