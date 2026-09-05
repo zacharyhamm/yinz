@@ -58,3 +58,34 @@ fn a_screen_smaller_than_the_chrome_leaves_the_viewport_inside_it() {
     );
     assert_eq!(*tab.display_area.borrow(), Size { cols: 80, rows: 2 });
 }
+
+/// The insets survive a resize the screen has room for: that is the arithmetic the signed delta
+/// used to do, and the callers that resize to the current display area (`relayout_tiled_panes`,
+/// `LayoutApplier::adjust_viewport`) depend on it being exact rather than merely clamped.
+#[test]
+fn a_resize_the_screen_has_room_for_keeps_the_chrome_insets() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut tab = tab_with_three_rows_of_chrome(size);
+    tab.tiled_panes.set_pane_frames(PaneFrameStyle::Titles);
+
+    tab.tiled_panes.resize(Size { cols: 80, rows: 10 });
+    let expected = Viewport {
+        x: 0,
+        y: 1,
+        cols: 80,
+        rows: 7,
+    };
+    assert_eq!(
+        *tab.viewport.borrow(),
+        expected,
+        "one row of chrome on top and two on the bottom, in a ten-row screen"
+    );
+
+    let display_area = *tab.display_area.borrow();
+    tab.tiled_panes.resize(display_area);
+    assert_eq!(
+        *tab.viewport.borrow(),
+        expected,
+        "resizing to the size the screen already is must not move the viewport"
+    );
+}

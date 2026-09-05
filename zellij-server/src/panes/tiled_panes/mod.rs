@@ -75,6 +75,28 @@ pub(crate) fn pane_content_offset(
     (columns_offset, rows_offset)
 }
 
+/// Carry one axis of the viewport across a screen resize.
+///
+/// The viewport is the screen minus what the ui panes reserve at each end of the axis, so what
+/// survives a resize is those two insets - `start`, and whatever lies past `start + extent` - not
+/// the extent between them. On a screen no smaller than the chrome this is exactly the signed
+/// delta it replaced: `new_total - start - trailing == new_total - old_total + extent`. On one
+/// smaller than the chrome it clamps instead of subtracting past zero, so the result always
+/// satisfies `start + extent <= new_total` - the invariant `is_inside_viewport` and
+/// `pane_content_offset` read the viewport under, and the one the delta broke by wrapping around
+/// `usize`. `FloatingPaneGrid::resize` carries its own viewport the same way.
+fn resized_viewport_axis(
+    start: usize,
+    extent: usize,
+    old_total: usize,
+    new_total: usize,
+) -> (usize, usize) {
+    let trailing = old_total.saturating_sub(start.saturating_add(extent));
+    let start = start.min(new_total);
+    let extent = (new_total - start).saturating_sub(trailing);
+    (start, extent)
+}
+
 /// The tab's display area as a viewport. A tab is laid out over the whole session surface, so its
 /// origin is always `(0, 0)`.
 fn display_area_viewport(display_area: &Rc<RefCell<Size>>) -> Viewport {
@@ -1613,22 +1635,13 @@ impl TiledPanes {
             // where clamping into the new screen is expressible. A screen too small for the
             // chrome leaves an empty viewport instead of one that wrapped around `usize`, which
             // `set_pane_frames` below reads as "every pane is short of the bottom edge" and,
-            // wherever the chrome puts `viewport.y` past zero, overflows on.
-            fn carry_inset(
-                start: usize,
-                extent: usize,
-                old_total: usize,
-                new_total: usize,
-            ) -> (usize, usize) {
-                let trailing = old_total.saturating_sub(start.saturating_add(extent));
-                let start = start.min(new_total);
-                let extent = (new_total - start).saturating_sub(trailing);
-                (start, extent)
-            }
+            // wherever the chrome puts `viewport.y` past zero, overflows on. A bottom-only
+            // chrome leaves `viewport.y` at zero, where `0 + usize::MAX` does not overflow, so
+            // the wrap corrupted silently rather than panicking there.
             (viewport.x, viewport.cols) =
-                carry_inset(viewport.x, viewport.cols, display_area.cols, cols);
+                resized_viewport_axis(viewport.x, viewport.cols, display_area.cols, cols);
             (viewport.y, viewport.rows) =
-                carry_inset(viewport.y, viewport.rows, display_area.rows, rows);
+                resized_viewport_axis(viewport.y, viewport.rows, display_area.rows, rows);
             display_area.rows = rows;
             display_area.cols = cols;
         }
@@ -3361,5 +3374,47 @@ mod content_offset_tests {
         };
         assert_eq!(pane_content_offset(&geom(0, 100, 0, 40), &viewport), (0, 0));
         assert_eq!(pane_content_offset(&geom(0, 50, 0, 20), &viewport), (1, 1));
+    }
+}
+
+#[cfg(test)]
+mod viewport_resize_tests {
+    use super::resized_viewport_axis;
+
+    // the rows of a 20-row screen with a one-row tab bar on top and a two-row status bar below
+    const CHROME: (usize, usize, usize) = (1, 17, 20);
+
+    #[test]
+    fn a_screen_that_fits_the_insets_keeps_them() {
+        let (start, extent, total) = CHROME;
+        assert_eq!(resized_viewport_axis(start, extent, total, 10), (1, 7));
+        assert_eq!(resized_viewport_axis(start, extent, total, 40), (1, 37));
+        // no chrome at all: the viewport is the whole screen, before and after
+        assert_eq!(resized_viewport_axis(0, 20, 20, 2), (0, 2));
+    }
+
+    #[test]
+    fn a_resize_to_the_size_the_screen_already_is_is_the_identity() {
+        // `Tab::relayout_tiled_panes` and `LayoutApplier::adjust_viewport` both resize to the
+        // current display area, expecting only a pass through the constraint system
+        let (start, extent, total) = CHROME;
+        assert_eq!(resized_viewport_axis(start, extent, total, total), (1, 17));
+        assert_eq!(resized_viewport_axis(0, 80, 80, 80), (0, 80));
+    }
+
+    #[test]
+    fn a_screen_smaller_than_the_insets_empties_the_viewport() {
+        let (start, extent, total) = CHROME;
+        // this used to be `17 + (2 - 20)`, which wrapped around `usize`
+        assert_eq!(resized_viewport_axis(start, extent, total, 2), (1, 0));
+        // and here the screen is smaller than the leading inset on its own
+        assert_eq!(resized_viewport_axis(start, extent, total, 0), (0, 0));
+        for new_total in 0..25 {
+            let (new_start, new_extent) = resized_viewport_axis(start, extent, total, new_total);
+            assert!(
+                new_start + new_extent <= new_total,
+                "{new_start} + {new_extent} is outside a screen of {new_total}"
+            );
+        }
     }
 }
