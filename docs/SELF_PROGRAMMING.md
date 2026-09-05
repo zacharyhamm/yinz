@@ -172,11 +172,11 @@ hook change: `cargo x integration-test -- -j 16 -E 'test(a_written_hook)'`.
 
 ## Notes for the next session
 
-**Proto numbers in use** (next free): plugin `CommandName` 280 (`GetLocalUtcOffset`) / payload
-field 221 (next 281 / 222) - this note had gone stale once already, having missed
+**Proto numbers in use** (next free): plugin `CommandName` 281 (`SpawnAgent`) / payload
+field 222 (next 282 / 223) - this note had gone stale once already, having missed
 `DataCatalog` 278 / 219 and `SetQuitNotice` 279 / 220, so read the `.proto` rather than
-trusting it; plugin `EventType` 57 (`Hook`), event payload field 51; IPC `Action`
-oneof 159 (`set_pane_agent`) and 160 (`reconfigure`; `main` holds 155–158; next 161); IPC
+trusting it; plugin `EventType` 58 (`AgentEvent`), event payload field 52; IPC `Action`
+oneof 163 (`agent_event`; 161–162 are `main`'s text-selection actions; next 164); IPC
 `ClientToServerMsg` 28 (`subscribe_to_events`; `main`'s `host_terminal_focus_changed` is 27),
 `ServerToClientMsg` 20 (`event_update`); `PermissionType` 21 (`AuthorPlugins`); `PaneInfo` field
 30 (`agent`); `AgentInfo` field 8 (`run_id`, in *both* `plugin_api/event.proto` and
@@ -222,6 +222,43 @@ lands - asynchronously, so a snapshot taken the moment the tab bar changes can s
 landed-on tab's status bar in the mode the client *left* it in. `tabs::move_tab_to_right` now
 waits for the Normal-mode ribbon too (`status_bar_appears()`); do the same in any test that
 switches tabs and snapshots the status bar.
+
+## Lua plugins as agent harnesses
+
+The next workstream on the same branch: a Lua plugin that itself spawns, watches, prompts and
+checks coding agents in panes, written by hocus or by an agent in a pane. Compatibility with the
+older Lua API was deliberately broken where a second mechanism would otherwise have stood
+beside a first. What landed, all in `docs/LUA_PLUGINS.md`:
+
+- **Tasks** (`zellij.task` / `zellij.await`, `zellij.async.*`): a coroutine per task, resumed
+  from `__update`/`__pipe` when its awaitable settles - a command's result, a pane's exit, an
+  agent's turn, a sleep, a permission answer. Tasks run before handlers and consume nothing.
+  `pane_workflow` is one such task now. Timers are `zellij.after`/`zellij.every` on one host
+  timer; `set_timeout`/`set_interval` are gone from the prelude's contract.
+- **`zellij.agent`**: `spawn` (`PluginCommand::SpawnAgent`, the launch planner moved from
+  hocus-proto to `zellij_utils::agent::launch` so hocus, the modal and Lua run one code path),
+  `info`/`all` off the manifest, `on`/`send`/`prompt` and `zellij.async.turn` over the new
+  typed `Event::AgentEvent`, which replaced the `agent_hook` pipe broadcast.
+- **Typed hook payloads** (`HookPayload::{Agent, PaneExit, SessionStart}`) and the `agent_idle`
+  point. `agent_exit` keeps its string map: that shape is plugin configuration.
+- **`zellij.rpc`** (`zellij_rpc_call` / `zellij_rpc_reply`), and hocus extensions v2 on it:
+  `zellij.hocus.tools { name = { …, handler } }` is the whole of an extension's wiring, with a
+  30 s timeout and an owner-gone answer on hocus's side.
+- **Permissions in force from `load`** when already granted (`request_permission` applies a
+  cached grant synchronously), and `zellij.async.permissions` for the first load.
+- **`zellij.trace`**, `zellij.web_request` callable from Lua (`zellij.null` for a tuple's
+  optional slot), hocus `plugin_reload headless=true` answered from the log,
+  `example-plugins/agent-harness.lua`.
+
+The proof is `zellij-integration-tests/tests/lua_agent_harness.rs`: a written plugin spawns a
+fake `claude` through the planner, awaits its record moving to `waiting` off `zellij events`'
+own source, prompts it, awaits its exit, and on reload finds its permissions in force from
+`load`. Loop it after touching any of the above:
+`cargo x integration-test -- -j 16 -E 'test(/harness/) | test(a_written_hook)'`.
+
+Not done, for later: an offline `zellij plugins test` runner with a scripted host; a
+`zellij.hocus.complete` one-shot completion served by hocus-agentd over the rpc wire; the
+permission cache keyed by resolved path; `zellij plugins run --headless` from the CLI.
 
 ## Not done, by decision
 

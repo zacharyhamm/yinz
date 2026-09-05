@@ -232,54 +232,331 @@ fn update_receives_a_normalized_event_and_reports_whether_to_render() {
     );
 }
 
-/// The host spawns a timer per `set_timeout` and cannot cancel one, so the interval re-arms
-/// itself from the `timer` event. Re-arming on *every* timer forked the chain: a second
-/// `set_interval`, or a `set_timeout` alongside one, left two permanent clocks calling the
-/// plugin back twice as often as it asked.
+/// An agent's hook event reaches a plugin already read: the state the session derived, the
+/// agent's own words, and the pane as a number - flat on the event, as every struct payload is.
 #[test]
-fn overlapping_timers_collapse_back_to_one_interval() {
+fn an_agent_event_arrives_flat_and_typed() {
+    use zellij_utils::agent::AgentEvent;
     let mut plugin = load(
         r#"
         local zellij = require("zellij")
         local M = {}
-        M.ticks = 0
+        function M.load() zellij.subscribe { "agent_event" } end
+        function M.update(event)
+          if event.name == "agent_event" then
+            M.seen = table.concat({
+              tostring(event.pane_id), event.kind, event.hook, tostring(event.state),
+              event.last_message or "-", event.value.hook,
+            }, "|")
+            return true
+          end
+        end
+        function M.render() return M.seen or "nothing" end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let event = Event::AgentEvent(AgentEvent {
+        pane_id: 7,
+        kind: "claude".to_owned(),
+        hook: "Stop".to_owned(),
+        state: Some(zellij_utils::data::AgentState::Idle),
+        last_message: Some("done".to_owned()),
+        raw: "{}".to_owned(),
+        ..Default::default()
+    });
+    assert!(plugin.update(&event).unwrap());
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 80).unwrap()).unwrap(),
+        "7|claude|Stop|Idle|done|Stop"
+    );
+}
+
+/// The agent records are kept off every manifest that flows, not only those after the first
+/// `info()`: a plugin that subscribed to `pane_update` itself is answered on its first ask.
+/// And a pane that closed is gone from the records, not left at the state it last showed.
+#[test]
+fn agent_records_are_current_on_the_first_ask_and_forget_a_closed_pane() {
+    use zellij_utils::data::{AgentInfo, AgentSource, AgentState, PaneInfo, PaneManifest};
+    let mut plugin = load(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        function M.load() zellij.subscribe { "pane_update", "key" } end
+        function M.update(event)
+          if event.name == "key" then
+            local info = zellij.agent.info(3)
+            local all = zellij.agent.all()
+            local count = 0
+            for _ in pairs(all) do count = count + 1 end
+            M.seen = (info and info.state or "nil") .. "|" .. count
+            return true
+          end
+        end
+        function M.render() return M.seen or "nothing" end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let manifest_with = |panes: Vec<PaneInfo>| {
+        let mut manifest = PaneManifest::default();
+        manifest.panes.insert(0, panes);
+        Event::PaneUpdate(manifest)
+    };
+    let agent_pane = PaneInfo {
+        id: 3,
+        agent: Some(AgentInfo {
+            kind: "claude".to_owned(),
+            state: AgentState::Busy,
+            source: AgentSource::Spawned,
+            detail: None,
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: None,
+            session_id: None,
+            run_id: None,
+        }),
+        ..Default::default()
+    };
+    let shell_pane = PaneInfo {
+        id: 4,
+        ..Default::default()
+    };
+    let ask = Event::Key(KeyWithModifier::new(BareKey::Char('a')));
+
+    plugin
+        .update(&manifest_with(vec![agent_pane, shell_pane.clone()]))
+        .unwrap();
+    plugin.update(&ask).unwrap();
+    // One record: the shell pane has no agent, and a nil record is no entry.
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 80).unwrap()).unwrap(),
+        "Busy|1",
+        "the manifest that already flowed answers the first ask"
+    );
+
+    plugin.update(&manifest_with(vec![shell_pane])).unwrap();
+    plugin.update(&ask).unwrap();
+    assert_eq!(
+        String::from_utf8(plugin.render(1, 80).unwrap()).unwrap(),
+        "nil|0",
+        "a closed pane is gone from the records"
+    );
+}
+
+/// One host timer in flight for the nearest deadline, however many sleeps are outstanding: the
+/// host cannot cancel a timer, so a later, nearer deadline arms a second one and the first fires
+/// into an ordinary sweep. `os.time` is the plugin's own here, so the clock is the test's.
+#[test]
+fn several_sleeps_arm_one_host_timer_and_wake_in_deadline_order() {
+    let mut plugin = load(
+        r#"
+        local zellij = require("zellij")
+        local M = { log = {}, now = 100 }
+        os.time = function() return M.now end
+        zellij.set_timeout = function(seconds) table.insert(M.log, "arm:" .. seconds) end
+        local function sleeper(seconds)
+          zellij.task(function()
+            zellij.await(zellij.async.sleep(seconds))
+            table.insert(M.log, "woke:" .. seconds)
+          end)
+        end
         function M.load()
-          zellij.set_interval(1)
-          zellij.set_interval(1)
-          zellij.set_timeout(1)
+          zellij.subscribe { "custom_message" }
+          sleeper(5)
+          sleeper(1)
+          sleeper(3)
         end
         function M.update(event)
-          if event.name == "timer" then M.ticks = M.ticks + 1 end
-          return false
+          -- The test's clock: a custom message names the time now.
+          if event.name == "custom_message" then M.now = tonumber(event.message) end
         end
-        function M.render() return M.ticks .. "/" .. zellij.__timers end
+        function M.render() return table.concat(M.log, " ") end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    // 5 armed first, for exactly 5 seconds - no extra second; 1 is nearer and arms again; 3 is
+    // behind an armed timer and does not.
+    assert_eq!(plugin.render(1, 80).unwrap(), b"arm:5 arm:1");
+
+    plugin.update(&Event::Timer(1.0)).unwrap();
+    assert_eq!(
+        plugin.render(1, 80).unwrap(),
+        b"arm:5 arm:1",
+        "nothing is due yet"
+    );
+
+    // The clock moves and a timer fires: everything due wakes, in deadline order, and the
+    // next deadline is armed afresh.
+    plugin
+        .update(&Event::CustomMessage("103".to_owned(), String::new()))
+        .unwrap();
+    plugin.update(&Event::Timer(1.0)).unwrap();
+    // Armed before the tasks run: the sweep settles what is due and arms the next deadline,
+    // and only then are the woken tasks resumed.
+    assert_eq!(
+        plugin.render(1, 80).unwrap(),
+        b"arm:5 arm:1 arm:2 woke:1 woke:3"
+    );
+    plugin
+        .update(&Event::CustomMessage("106".to_owned(), String::new()))
+        .unwrap();
+    plugin.update(&Event::Timer(1.0)).unwrap();
+    assert_eq!(
+        plugin.render(1, 80).unwrap(),
+        b"arm:5 arm:1 arm:2 woke:1 woke:3 woke:5"
+    );
+}
+
+/// `zellij.every` re-arms from each firing and stops on `cancel`; `zellij.after` fires once.
+#[test]
+fn every_ticks_until_cancelled_and_after_fires_once() {
+    let mut plugin = load(
+        r#"
+        local zellij = require("zellij")
+        local M = { ticks = 0, once = 0, now = 0, armed = {} }
+        os.time = function() return M.now end
+        zellij.set_timeout = function(seconds) table.insert(M.armed, seconds) end
+        function M.load()
+          zellij.subscribe { "custom_message" }
+          M.clock = zellij.every(1, function() M.ticks = M.ticks + 1 return true end)
+          zellij.after(1, function() M.once = M.once + 1 end)
+        end
+        function M.update(event)
+          if event.name == "custom_message" then M.now = tonumber(event.message) end
+        end
+        zellij.on("key", function() M.clock:cancel() end)
+        function M.render()
+          return M.ticks .. "/" .. M.once .. " armed:" .. table.concat(M.armed, ",")
+        end
         return M
         "#,
     )
     .unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
     assert_eq!(
-        String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
-        "0/3",
-        "three timers were asked for"
+        plugin.render(1, 40).unwrap(),
+        b"0/0 armed:1",
+        "every(1) arms one second, not two; after(1) shares the timer"
+    );
+    // The test's clock: one second passes, then the host's timer fires.
+    let tick = |plugin: &mut super::LuaPlugin, now: u32| -> bool {
+        plugin
+            .update(&Event::CustomMessage(now.to_string(), String::new()))
+            .unwrap();
+        plugin.update(&Event::Timer(1.0)).unwrap()
+    };
+    assert!(tick(&mut plugin, 1), "a truthy tick asks for a render");
+    tick(&mut plugin, 2);
+    assert_eq!(
+        plugin.render(1, 40).unwrap(),
+        b"2/1 armed:1,1,1",
+        "re-armed for one second from each firing"
+    );
+    plugin
+        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('c'))))
+        .unwrap();
+    tick(&mut plugin, 3);
+    tick(&mut plugin, 4);
+    assert_eq!(
+        plugin.render(1, 40).unwrap(),
+        b"2/1 armed:1,1,1",
+        "cancelled, and after fired once"
+    );
+}
+
+/// The next deadline is armed before any callback runs, so an `every` whose callback raises
+/// still reports the error, still re-arms, and still ticks again - and a sleep due on the same
+/// timer still wakes on time.
+#[test]
+fn a_raising_every_callback_re_arms_and_keeps_ticking() {
+    let mut plugin = load(
+        r#"
+        local zellij = require("zellij")
+        local M = { log = {}, now = 0 }
+        os.time = function() return M.now end
+        zellij.set_timeout = function(seconds) table.insert(M.log, "arm:" .. seconds) end
+        function M.load()
+          zellij.subscribe { "custom_message" }
+          zellij.every(1, function()
+            table.insert(M.log, "tick")
+            if #M.log < 4 then error("tick broke") end
+          end)
+          zellij.task(function()
+            zellij.await(zellij.async.sleep(3))
+            table.insert(M.log, "woke")
+          end)
+        end
+        function M.update(event)
+          if event.name == "custom_message" then M.now = tonumber(event.message) end
+        end
+        function M.render() return table.concat(M.log, " ") end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    assert_eq!(
+        plugin.render(1, 80).unwrap(),
+        b"arm:1",
+        "the sleep is behind the tick"
     );
 
-    // The first two drain the ones already in the air rather than adding to them.
-    plugin.update(&Event::Timer(1.0)).unwrap();
-    plugin.update(&Event::Timer(1.0)).unwrap();
-    assert_eq!(
-        String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
-        "2/1"
-    );
+    let tick = |plugin: &mut super::LuaPlugin, now: u32| {
+        plugin
+            .update(&Event::CustomMessage(now.to_string(), String::new()))
+            .unwrap();
+        plugin.update(&Event::Timer(1.0))
+    };
+    let error = tick(&mut plugin, 1).expect_err("the callback's error is the entrypoint's");
+    assert!(format!("{error:#}").contains("tick broke"), "{error:#}");
+    // The sleep's deadline (3, two seconds out) was armed before the callback ran, and the
+    // callback's own next tick was scheduled despite the error - nearer, so armed too.
+    assert_eq!(plugin.render(1, 80).unwrap(), b"arm:1 arm:2 tick arm:1");
 
-    // The last one re-arms, and from here it is one clock however long it runs.
-    plugin.update(&Event::Timer(1.0)).unwrap();
-    plugin.update(&Event::Timer(1.0)).unwrap();
+    tick(&mut plugin, 2).unwrap();
+    tick(&mut plugin, 3).unwrap();
     assert_eq!(
-        String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
-        "4/1",
-        "one chain, not one per set_timeout"
+        plugin.render(1, 80).unwrap(),
+        b"arm:1 arm:2 tick arm:1 arm:1 tick tick arm:1 woke",
+        "the clock kept going and the sleeper woke on time"
     );
+}
+
+/// Two deadlines due on the same timer: the first callback raising does not stop the second
+/// from running, and the error is still reported.
+#[test]
+fn a_raising_after_callback_still_settles_the_other_due_deadlines() {
+    let mut plugin = load(
+        r#"
+        local zellij = require("zellij")
+        local M = { log = {}, now = 0 }
+        os.time = function() return M.now end
+        zellij.set_timeout = function() end
+        function M.load()
+          zellij.subscribe { "custom_message" }
+          zellij.after(1, function() error("first broke") end)
+          zellij.after(1, function() table.insert(M.log, "second") end)
+        end
+        function M.update(event)
+          if event.name == "custom_message" then M.now = tonumber(event.message) end
+        end
+        function M.render() return table.concat(M.log, " ") end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    plugin
+        .update(&Event::CustomMessage("1".to_owned(), String::new()))
+        .unwrap();
+    let error = plugin.update(&Event::Timer(1.0)).expect_err("reported");
+    assert!(format!("{error:#}").contains("first broke"), "{error:#}");
+    assert_eq!(plugin.render(1, 80).unwrap(), b"second");
 }
 
 #[test]
@@ -620,6 +897,24 @@ fn the_shipped_example_plugin_loads_and_renders() {
         rendered
     );
     assert!(rendered.contains("the time is"), "got: {}", rendered);
+}
+
+/// `example-plugins/agent-harness.lua` is what the model reads when asked to run agents: its
+/// task must start, ask for its permissions and wait for them, and the pane must render.
+#[test]
+fn the_agent_harness_example_loads_and_waits_for_its_permissions() {
+    let source = example_plugin("agent-harness.lua");
+    let mut plugin = load_lua_plugin(&source, "agent-harness.lua", test_env()).unwrap();
+    plugin
+        .load(&BTreeMap::from([("check".to_owned(), "true".to_owned())]))
+        .unwrap();
+    let rendered = component_text(&String::from_utf8(plugin.render(5, 60).unwrap()).unwrap());
+    assert!(rendered.contains("starting"), "got: {rendered}");
+    let subscriptions = plugin.env().subscriptions.lock().unwrap().clone();
+    assert!(
+        subscriptions.contains(&zellij_utils::data::EventType::PermissionRequestResult),
+        "the task awaits the grant: {subscriptions:?}"
+    );
 }
 
 #[test]
@@ -1042,23 +1337,29 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
                 .collect::<Vec<_>>()
         };
 
-    let payload = |state: &str, detail: Option<&str>| {
-        let mut payload = BTreeMap::from([
-            ("agent_pane_id".to_owned(), "7".to_owned()),
-            ("agent_kind".to_owned(), "claude".to_owned()),
-            ("agent_state".to_owned(), state.to_owned()),
-            ("agent_cwd".to_owned(), "/work".to_owned()),
-        ]);
-        if let Some(detail) = detail {
-            payload.insert("agent_detail".to_owned(), detail.to_owned());
-        }
-        payload
-    };
+    use zellij_utils::data::AgentState;
+    let payload =
+        |state: AgentState, detail: Option<&str>| zellij_utils::data::HookPayload::Agent {
+            pane_id: 7,
+            agent: zellij_utils::data::AgentInfo {
+                kind: "claude".to_owned(),
+                state,
+                source: zellij_utils::data::AgentSource::Reported,
+                detail: detail.map(str::to_owned),
+                waiting_on: None,
+                wait_needs_a_person: state == AgentState::Waiting,
+                cwd: Some("/work".to_owned()),
+                session_id: None,
+                run_id: None,
+            },
+            previous_state: None,
+            command: None,
+        };
 
     plugin
         .update(&Event::Hook {
             point: HookPoint::AgentStart,
-            payload: payload("busy", None),
+            payload: payload(AgentState::Busy, None),
         })
         .unwrap();
     assert!(
@@ -1069,7 +1370,7 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
     plugin
         .update(&Event::Hook {
             point: HookPoint::AgentWaiting,
-            payload: payload("waiting", Some("Allow Bash(cargo test)?")),
+            payload: payload(AgentState::Waiting, Some("Allow Bash(cargo test)?")),
         })
         .unwrap();
     assert_eq!(
@@ -1084,7 +1385,7 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
     plugin
         .update(&Event::Hook {
             point: HookPoint::AgentWaiting,
-            payload: payload("waiting", None),
+            payload: payload(AgentState::Waiting, None),
         })
         .unwrap();
     assert_eq!(
@@ -1737,6 +2038,74 @@ fn a_git_checkout_command_takes_named_arguments() {
             );
         }
     }
+}
+
+/// `SpawnAgent` is a struct variant with a nested struct, so a table with named fields reads
+/// straight through serde - and every spec field is optional, so an empty spec is a spec.
+#[test]
+fn spawn_agent_is_built_from_a_nested_spec_table() {
+    use zellij_utils::data::{AgentSpawnSpec, PluginCommand};
+
+    let build = |expression: &str| {
+        let lua = mlua::Lua::new();
+        let args: mlua::Value = lua.load(expression).eval().expect("the test's own Lua");
+        super::command::plugin_command_from_lua(&lua, "SpawnAgent", "spawn_agent", args)
+    };
+    match build(
+        r#"{ spec = { kind = "claude", prompt = "go", hooks = false, env = { A = "1" } },
+             source_directory = "/host", name = "fixer", context = { step = "1" } }"#,
+    ) {
+        Ok(PluginCommand::SpawnAgent {
+            spec,
+            source_directory,
+            cwd,
+            name,
+            context,
+        }) => {
+            assert_eq!(
+                spec,
+                AgentSpawnSpec {
+                    kind: Some("claude".to_owned()),
+                    prompt: Some("go".to_owned()),
+                    hooks: Some(false),
+                    env: BTreeMap::from([("A".to_owned(), "1".to_owned())]),
+                    ..Default::default()
+                }
+            );
+            assert_eq!(source_directory, Some(PathBuf::from("/host")));
+            assert_eq!(cwd, None);
+            assert_eq!(name, Some("fixer".to_owned()));
+            assert_eq!(context.get("step").map(String::as_str), Some("1"));
+        },
+        Ok(other) => panic!("built the wrong command: {other:?}"),
+        Err(e) => panic!("{e:#}"),
+    }
+    match build("{ spec = {} }") {
+        Ok(PluginCommand::SpawnAgent { spec, .. }) => assert_eq!(spec, AgentSpawnSpec::default()),
+        other => panic!("an empty spec should be all defaults, got: {other:?}"),
+    }
+}
+
+/// The prelude's half: `zellij.agent.spawn` takes one flat table and sorts the spec fields from
+/// the command's own. The host then tries to open a pane, which these senders cannot do - so
+/// what is checked is that serde accepted what the prelude built, not that a pane opened.
+#[test]
+fn zellij_agent_spawn_flattens_the_authors_table() {
+    for source in [
+        r#"zellij.agent.spawn { kind = "claude", prompt = "fix it", cwd = "/host" }"#,
+        r#"zellij.agent.spawn { command = "sh", args = { "-c", "true" }, name = "probe" }"#,
+        r#"zellij.agent.spawn { kind = "codex", branch = "topic", worktree = false, context = { a = "b" } }"#,
+    ] {
+        if let Some(err) = error_from_load(source) {
+            assert!(
+                !err.contains("could not read the arguments"),
+                "the arguments were refused: {err}
+source: {source}"
+            );
+        }
+    }
+    let err = error_from_load(r#"zellij.agent.spawn("claude")"#).expect("a string is refused");
+    assert!(err.contains("takes a table"), "got: {err}");
 }
 
 #[test]
@@ -2694,19 +3063,38 @@ fn describe_event(event: Event, body: &str) -> String {
 }
 
 /// `Event::Hook` is a struct variant, so its fields are merged into the event: `point` is the
-/// name the config spells, and `payload` the map the fire site built.
+/// name the config spells, and `payload` the typed payload the fire site built - untagged, so
+/// a hook reads `payload.pane_id` and `payload.agent.state` rather than a variant name.
 #[test]
 fn a_hook_event_has_its_point_and_payload() {
+    use zellij_utils::data::{AgentInfo, AgentSource, AgentState, HookPayload};
     use zellij_utils::input::hooks::HookPoint;
     let event = Event::Hook {
         point: HookPoint::AgentWaiting,
-        payload: BTreeMap::from([("agent_pane_id".to_owned(), "7".to_owned())]),
+        payload: HookPayload::Agent {
+            pane_id: 7,
+            agent: AgentInfo {
+                kind: "claude".to_owned(),
+                state: AgentState::Waiting,
+                source: AgentSource::Reported,
+                detail: Some("y/n".to_owned()),
+                waiting_on: None,
+                wait_needs_a_person: true,
+                cwd: None,
+                session_id: None,
+                run_id: None,
+            },
+            previous_state: Some(AgentState::Busy),
+            command: None,
+        },
     };
     let out = describe_event(
         event,
-        r#"return event.name .. "|" .. event.point .. "|" .. event.payload.agent_pane_id"#,
+        r#"return event.name .. "|" .. event.point .. "|" .. event.payload.pane_id .. "|"
+              .. event.payload.agent.state .. "|" .. event.payload.previous_state
+              .. "|" .. tostring(event.payload.command)"#,
     );
-    assert_eq!(out, "hook|agent_waiting|7");
+    assert_eq!(out, "hook|agent_waiting|7|Waiting|Busy|nil");
 }
 
 #[test]
@@ -2727,13 +3115,22 @@ fn a_hook_handler_registered_with_on_runs() {
     plugin
         .update(&Event::Hook {
             point: HookPoint::SessionStart,
-            payload: BTreeMap::from([("session_name".to_owned(), "main".to_owned())]),
+            payload: zellij_utils::data::HookPayload::SessionStart {
+                session_name: "main".to_owned(),
+                client_id: 1,
+            },
         })
         .unwrap();
     plugin
         .update(&Event::Hook {
             point: HookPoint::PaneExit,
-            payload: BTreeMap::new(),
+            payload: zellij_utils::data::HookPayload::PaneExit {
+                pane_id: 7,
+                exit_code: None,
+                cwd: None,
+                command: None,
+                held: false,
+            },
         })
         .unwrap();
     assert_eq!(
@@ -3205,6 +3602,7 @@ const REPLYING_COMMANDS: &[CommandType] = &[
     CommandType::OpenCommandPaneInPlaceOfPaneId,
     CommandType::OpenPluginPaneFloating,
     CommandType::OpenCommandPaneInGitCheckoutNearPlugin,
+    CommandType::SpawnAgent,
     CommandType::OpenCommandPaneInNewTab,
     CommandType::OpenPluginPaneInNewTab,
     CommandType::OpenEditorPaneInNewTab,
@@ -4039,30 +4437,6 @@ fn the_catalog_shows_shared_namespaces_only_with_the_permission_and_never_a_priv
     assert!(!with_shared.contains("someone_else"), "{with_shared}");
 }
 
-#[test]
-fn an_interval_re_arms_the_timer_from_the_timer_event() {
-    let mut plugin = load_permitted(
-        r#"
-        local M = {}
-        M.ticks = 0
-        function M.load() zellij.set_interval(0.5) end
-        zellij.on("timer", function() M.ticks = M.ticks + 1 end)
-        function M.render() return tostring(M.ticks) .. "/" .. tostring(zellij.__interval) end
-        return M
-        "#,
-    )
-    .unwrap();
-    plugin.load(&BTreeMap::new()).unwrap();
-    plugin.update(&Event::Timer(0.5)).unwrap();
-    plugin.update(&Event::Timer(0.5)).unwrap();
-    assert_eq!(plugin.render(1, 20).unwrap(), b"2/0.5");
-    let mut plugin = load(
-        "local M = {}\nfunction M.render() zellij.clear_interval() return tostring(zellij.__interval) end\nreturn M",
-    )
-    .unwrap();
-    assert_eq!(plugin.render(1, 20).unwrap(), b"nil");
-}
-
 // Pane workflows ------------------------------------------------------------------------------
 //
 // `zellij.pane_workflow` is pure prelude: it sequences `open_command_pane` /
@@ -4655,4 +5029,815 @@ fn pcall_still_reports_ordinary_errors_as_values() {
     "#;
     let mut plugin = load_lua_plugin(source, "test.lua", test_env()).unwrap();
     assert!(plugin.update(&Event::InputReceived).unwrap());
+}
+
+// Tasks ---------------------------------------------------------------------------------------
+//
+// `zellij.task` / `zellij.await` and the awaitables under `zellij.async` are pure prelude: a
+// coroutine per task, resumed from `__update`/`__pipe` when the event its awaitable was
+// registered for arrives. These drive that with synthetic events, the outward commands stubbed
+// in Lua so what the task *did* is read back from a log.
+
+/// A plugin whose `load` starts `body` as a task, logging to `M.log`; `zellij.run_command` is
+/// stubbed to log the token it was handed, so a test can answer it.
+fn task_plugin(body: &str) -> super::LuaPlugin {
+    let source = format!(
+        r#"
+        local zellij = require("zellij")
+        local M = {{ log = {{}} }}
+        function log(entry) table.insert(M.log, entry) end
+        zellij.run_command = function(args) log("run:" .. args.context.__async) end
+        zellij.set_timeout = function() end
+        function M.load()
+          M.task = zellij.task(function()
+            {body}
+          end)
+        end
+        function M.render() return table.concat(M.log, " ") end
+        return M
+        "#
+    );
+    let mut plugin = load_permitted(&source).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    plugin
+}
+
+fn command_result(token: &str, exit_code: i32, stdout: &str) -> Event {
+    Event::RunCommandResult(
+        Some(exit_code),
+        stdout.as_bytes().to_vec(),
+        vec![],
+        BTreeMap::from([("__async".to_owned(), token.to_owned())]),
+    )
+}
+
+#[test]
+fn a_task_runs_to_its_first_await_and_resumes_on_the_reply_bearing_its_token() {
+    let mut plugin = task_plugin(
+        r#"
+        log("start")
+        local result = zellij.await(zellij.async.run_command { command = { "true" } })
+        log("exit:" .. tostring(result.exit_code) .. " " .. result.stdout)
+        "#,
+    );
+    assert_eq!(
+        logged(&mut plugin),
+        "start run:a1",
+        "synchronous up to the await"
+    );
+
+    // Somebody else's reply is not this task's.
+    plugin.update(&command_result("a9", 0, "other")).unwrap();
+    assert_eq!(logged(&mut plugin), "start run:a1");
+
+    plugin.update(&command_result("a1", 0, "out")).unwrap();
+    assert_eq!(logged(&mut plugin), "start run:a1 exit:0 out");
+}
+
+/// Awaitables are eager: both commands are dispatched before either is awaited, and their
+/// replies are kept in whichever order they arrive.
+#[test]
+fn two_outstanding_commands_resolve_in_whichever_order_they_answer() {
+    let mut plugin = task_plugin(
+        r#"
+        local first = zellij.async.run_command { command = { "a" } }
+        local second = zellij.async.run_command { command = { "b" } }
+        log("first:" .. zellij.await(first).stdout)
+        log("second:" .. zellij.await(second).stdout)
+        "#,
+    );
+    plugin.update(&command_result("a2", 0, "B")).unwrap();
+    plugin.update(&command_result("a1", 0, "A")).unwrap();
+    assert_eq!(logged(&mut plugin), "run:a1 run:a2 first:A second:B");
+}
+
+/// Tasks are resumed before the handlers and `update`, and the event is not consumed.
+#[test]
+fn an_event_a_task_awaited_still_reaches_handlers_and_update() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = { log = {} }
+        local function log(entry) table.insert(M.log, entry) end
+        zellij.run_command = function() end
+        function M.load()
+          zellij.task(function()
+            zellij.await(zellij.async.run_command { command = { "x" } })
+            log("task")
+          end)
+        end
+        zellij.on("run_command_result", function() log("handler") end)
+        function M.update(event)
+          if event.name == "run_command_result" then log("update") end
+        end
+        function M.render() return table.concat(M.log, " ") end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    plugin.update(&command_result("a1", 0, "")).unwrap();
+    assert_eq!(logged(&mut plugin), "task handler update");
+}
+
+#[test]
+fn a_task_that_awaits_the_same_pipe_again_waits_for_the_next_message() {
+    let mut plugin = task_plugin(
+        r#"
+        for i = 1, 2 do
+          local message = zellij.await(zellij.async.pipe("go"))
+          log("got:" .. tostring(message.payload))
+        end
+        "#,
+    );
+    let go = |payload: &str| {
+        zellij_utils::data::PipeMessage::new(
+            zellij_utils::data::PipeSource::Keybind,
+            "go",
+            &Some(payload.to_owned()),
+            &None,
+            false,
+        )
+    };
+    plugin.pipe(&go("one")).unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        "got:one",
+        "the second await waits for the next message"
+    );
+    plugin.pipe(&go("two")).unwrap();
+    assert_eq!(logged(&mut plugin), "got:one got:two");
+}
+
+#[test]
+fn all_resolves_when_every_child_has_and_race_with_the_first() {
+    let mut plugin = task_plugin(
+        r#"
+        local both = zellij.await(zellij.async.all {
+          a = zellij.async.run_command { command = { "a" } },
+          b = zellij.async.run_command { command = { "b" } },
+        })
+        log("all:" .. both.a.stdout .. both.b.stdout)
+        local won = zellij.await(zellij.async.race {
+          slow = zellij.async.run_command { command = { "slow" } },
+          fast = zellij.async.run_command { command = { "fast" } },
+        })
+        log("race:" .. won.key .. "=" .. won.value.stdout)
+        "#,
+    );
+    plugin.update(&command_result("a2", 0, "B")).unwrap();
+    assert_eq!(logged(&mut plugin), "run:a1 run:a2", "all waits for both");
+    plugin.update(&command_result("a1", 0, "A")).unwrap();
+    assert_eq!(logged(&mut plugin), "run:a1 run:a2 all:AB run:a3 run:a4");
+    plugin.update(&command_result("a4", 0, "F")).unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        "run:a1 run:a2 all:AB run:a3 run:a4 race:fast=F"
+    );
+}
+
+#[test]
+fn all_with_an_already_settled_child_waits_for_the_pending_ones() {
+    let mut plugin = task_plugin(
+        r#"
+        local none = zellij.await(zellij.async.all {})
+        log("empty:" .. tostring(next(none)))
+        local aw, resolve = zellij.async.future()
+        resolve("x")
+        -- The settled child first: iterated first, it used to resolve the aggregate on its own.
+        local both = zellij.await(zellij.async.all { aw, zellij.async.run_command { command = { "b" } } })
+        log("all:" .. tostring(both[1]) .. "/" .. tostring(both[2] and both[2].stdout))
+        "#,
+    );
+    assert_eq!(
+        logged(&mut plugin),
+        "empty:nil run:a1",
+        "an empty list resolves at once; a settled child does not stand in for a pending one"
+    );
+    plugin.update(&command_result("a1", 0, "B")).unwrap();
+    assert_eq!(logged(&mut plugin), "empty:nil run:a1 all:x/B");
+}
+
+fn manifest_with_agent(pane_id: u32, state: zellij_utils::data::AgentState) -> Event {
+    use zellij_utils::data::{AgentInfo, AgentSource, PaneInfo, PaneManifest};
+    let mut manifest = PaneManifest::default();
+    manifest.panes.insert(
+        0,
+        vec![PaneInfo {
+            id: pane_id,
+            agent: Some(AgentInfo {
+                kind: "claude".to_owned(),
+                state,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: Some("s1".to_owned()),
+                run_id: None,
+            }),
+            ..Default::default()
+        }],
+    );
+    Event::PaneUpdate(manifest)
+}
+
+#[test]
+fn agent_state_resolves_on_the_state_asked_for_and_after_the_edge_when_told_to() {
+    use zellij_utils::data::AgentState;
+    let mut plugin = task_plugin(
+        r#"
+        local pane = zellij.await(zellij.async.agent_state(7, "waiting"))
+        log("waiting:" .. pane.agent.kind)
+        zellij.await(zellij.async.agent_state(7, "idle", { after = { "busy" } }))
+        log("idle-after-busy")
+        "#,
+    );
+    plugin
+        .update(&manifest_with_agent(7, AgentState::Busy))
+        .unwrap();
+    plugin
+        .update(&manifest_with_agent(8, AgentState::Waiting))
+        .unwrap();
+    assert_eq!(logged(&mut plugin), "", "another pane, and the wrong state");
+    plugin
+        .update(&manifest_with_agent(7, AgentState::Waiting))
+        .unwrap();
+    assert_eq!(logged(&mut plugin), "waiting:claude");
+    // Idle now is not the edge into idle: the pane has to be seen busy first.
+    plugin
+        .update(&manifest_with_agent(7, AgentState::Idle))
+        .unwrap();
+    assert_eq!(logged(&mut plugin), "waiting:claude");
+    plugin
+        .update(&manifest_with_agent(7, AgentState::Busy))
+        .unwrap();
+    plugin
+        .update(&manifest_with_agent(7, AgentState::Idle))
+        .unwrap();
+    assert_eq!(logged(&mut plugin), "waiting:claude idle-after-busy");
+}
+
+#[test]
+fn pane_exit_resolves_on_close_as_well_as_on_exit() {
+    let mut plugin = task_plugin(
+        r#"
+        local exit = zellij.await(zellij.async.pane_exit(7))
+        log("exit:" .. tostring(exit.exit_code))
+        local closed = zellij.await(zellij.async.pane_exit(7))
+        log("closed:" .. tostring(closed.closed))
+        "#,
+    );
+    plugin
+        .update(&Event::CommandPaneExited(8, Some(1), BTreeMap::new()))
+        .unwrap();
+    assert_eq!(logged(&mut plugin), "", "another pane");
+    plugin
+        .update(&Event::CommandPaneExited(7, Some(3), BTreeMap::new()))
+        .unwrap();
+    plugin
+        .update(&Event::PaneClosed(zellij_utils::data::PaneId::Terminal(7)))
+        .unwrap();
+    assert_eq!(logged(&mut plugin), "exit:3 closed:true");
+}
+
+#[test]
+fn an_error_in_a_resumed_task_fails_the_update_that_resumed_it() {
+    let mut plugin = task_plugin(
+        r#"
+        zellij.await(zellij.async.run_command { command = { "x" } })
+        error("the task broke")
+        "#,
+    );
+    let error = plugin
+        .update(&command_result("a1", 0, ""))
+        .expect_err("a task error is the entrypoint's error");
+    assert!(format!("{error:#}").contains("the task broke"), "{error:#}");
+    // Gone: a later reply resumes nothing.
+    plugin.update(&command_result("a1", 0, "")).unwrap();
+}
+
+/// Two tasks woken by one message: the first raising does not strand the second, which has
+/// already been taken off the awaitable. It runs, both are finished, and the error is reported.
+#[test]
+fn a_raising_task_does_not_strand_the_others_in_its_batch() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = { log = {} }
+        local function log(entry) table.insert(M.log, entry) end
+        function M.load()
+          M.first = zellij.task(function()
+            zellij.await(zellij.async.pipe("go"))
+            error("first broke")
+          end)
+          M.second = zellij.task(function()
+            zellij.await(zellij.async.pipe("go"))
+            log("second ran")
+          end)
+        end
+        function M.render()
+          return table.concat(M.log, " ") .. " running:" .. tostring(M.first:is_running())
+            .. "," .. tostring(M.second:is_running())
+        end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    assert_eq!(logged(&mut plugin), " running:true,true");
+    let go = zellij_utils::data::PipeMessage::new(
+        zellij_utils::data::PipeSource::Keybind,
+        "go",
+        &Some("x".to_owned()),
+        &None,
+        false,
+    );
+    let error = plugin
+        .pipe(&go)
+        .expect_err("the first task's error is the entrypoint's");
+    assert!(format!("{error:#}").contains("first broke"), "{error:#}");
+    assert_eq!(logged(&mut plugin), "second ran running:false,false");
+}
+
+#[test]
+fn a_cancelled_task_propagates_the_hosts_cancel() {
+    let error = cancel_mid_update(
+        r#"
+        zellij.task(function()
+          while true do end
+        end)
+        "#,
+    );
+    assert!(
+        format!("{error:?}").contains(crate::plugins::plugin_map::CANCELLED_BY_HOST),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_task_asks_for_a_render_by_returning_truthy_or_calling_request_render() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = {}
+        zellij.run_command = function() end
+        function M.load()
+          zellij.task(function()
+            zellij.await(zellij.async.run_command { command = { "x" } })
+            zellij.request_render()
+          end)
+          zellij.task(function()
+            zellij.await(zellij.async.run_command { command = { "y" } })
+            return true
+          end)
+        end
+        function M.update() return false end
+        function M.render() return "" end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    assert!(plugin.update(&command_result("a1", 0, "")).unwrap());
+    assert!(plugin.update(&command_result("a2", 0, "")).unwrap());
+    assert!(!plugin.update(&command_result("a3", 0, "")).unwrap());
+}
+
+#[test]
+fn await_outside_a_task_is_an_error() {
+    let error =
+        error_from_load(r#"local aw = zellij.async.future() zellij.await(aw)"#).expect("refused");
+    assert!(
+        error.contains("only be called from inside a zellij.task"),
+        "got: {error}"
+    );
+    let error =
+        error_from_load(r#"coroutine.wrap(function() zellij.await(zellij.async.future()) end)()"#)
+            .expect("a plain coroutine is not a task");
+    assert!(
+        error.contains("only be called from inside a zellij.task"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn async_constructors_subscribe_to_the_events_they_need() {
+    let plugin = task_plugin(
+        r#"
+        zellij.async.run_command { command = { "x" } }
+        zellij.async.sleep(1)
+        zellij.async.agent_state(7, "idle")
+        zellij.async.pane_exit(7)
+        zellij.async.permissions { "run_commands" }
+        "#,
+    );
+    let subscriptions = plugin.env().subscriptions.lock().unwrap().clone();
+    for wanted in [
+        zellij_utils::data::EventType::RunCommandResult,
+        zellij_utils::data::EventType::Timer,
+        zellij_utils::data::EventType::PaneUpdate,
+        zellij_utils::data::EventType::CommandPaneExited,
+        zellij_utils::data::EventType::PaneClosed,
+        zellij_utils::data::EventType::PermissionRequestResult,
+    ] {
+        assert!(
+            subscriptions.contains(&wanted),
+            "{wanted:?} in {subscriptions:?}"
+        );
+    }
+}
+
+#[test]
+fn web_request_takes_named_arguments_with_absent_stream_and_proxy() {
+    // Seven tuple elements, two optional in the middle: `zellij.null` is what fills them.
+    let source = r#"zellij.web_request { url = "http://x", verb = "Post", body = "hi" }"#;
+    if let Some(err) = error_from_load(source) {
+        assert!(
+            !err.contains("could not read the arguments"),
+            "the arguments were refused: {err}"
+        );
+    }
+    // And the awaitable fills them itself.
+    let mut plugin = task_plugin(
+        r#"
+        local reply = zellij.await(zellij.async.web_request { url = "http://x", body = "hi" })
+        log("status:" .. reply.status .. " " .. reply.body)
+        "#,
+    );
+    plugin
+        .update(&Event::WebRequestResult(
+            200,
+            BTreeMap::new(),
+            b"ok".to_vec(),
+            BTreeMap::from([("__async".to_owned(), "a1".to_owned())]),
+        ))
+        .unwrap();
+    assert_eq!(logged(&mut plugin), "status:200 ok");
+}
+
+#[test]
+fn permissions_awaitable_resolves_with_the_answer() {
+    let mut plugin = task_plugin(
+        r#"
+        local answer = zellij.await(zellij.async.permissions { "run_commands" })
+        log("answer:" .. answer)
+        "#,
+    );
+    plugin
+        .update(&Event::PermissionRequestResult(
+            zellij_utils::data::PermissionStatus::Granted,
+        ))
+        .unwrap();
+    assert_eq!(logged(&mut plugin), "answer:Granted");
+}
+
+#[test]
+fn agent_send_writes_a_bracketed_paste_then_enter() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = { log = {} }
+        zellij.write_to_pane_id = function(text, pane)
+          table.insert(M.log, (text:gsub("\27", "ESC")) .. "@" .. pane.Terminal)
+        end
+        function M.load()
+          zellij.agent.send(7, "fix it")
+          zellij.agent.send(zellij.terminal_pane(8), "draft", { enter = false })
+        end
+        function M.render() return table.concat(M.log, " ") end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        "ESC[200~fix itESC[201~@7 \r@7 ESC[200~draftESC[201~@8"
+    );
+}
+
+fn agent_event(pane_id: u32, hook: &str, state: Option<zellij_utils::data::AgentState>) -> Event {
+    Event::AgentEvent(zellij_utils::agent::AgentEvent {
+        pane_id,
+        kind: "claude".to_owned(),
+        hook: hook.to_owned(),
+        state,
+        last_message: Some(format!("{hook} said")),
+        session_id: Some("s1".to_owned()),
+        raw: "{}".to_owned(),
+        ..Default::default()
+    })
+}
+
+#[test]
+fn a_prompt_sends_and_resolves_when_the_agents_turn_ends() {
+    use zellij_utils::data::AgentState;
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = { log = {} }
+        zellij.write_to_pane_id = function(text) if text ~= "\r" then table.insert(M.log, "sent") end end
+        function M.load()
+          zellij.agent.on(function(event) table.insert(M.log, "heard:" .. event.hook) end)
+          zellij.task(function()
+            local reply = zellij.await(zellij.agent.prompt(7, "go"))
+            table.insert(M.log, "reply:" .. reply.message .. "/" .. reply.hook)
+          end)
+        end
+        function M.render() return table.concat(M.log, " ") end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    assert_eq!(logged(&mut plugin), "sent");
+    // Working is not the turn ending; another pane's stop is not this pane's.
+    plugin
+        .update(&agent_event(7, "PreToolUse", Some(AgentState::Busy)))
+        .unwrap();
+    plugin
+        .update(&agent_event(8, "Stop", Some(AgentState::Idle)))
+        .unwrap();
+    assert_eq!(logged(&mut plugin), "sent heard:PreToolUse heard:Stop");
+    plugin
+        .update(&agent_event(7, "Stop", Some(AgentState::Idle)))
+        .unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        "sent heard:PreToolUse heard:Stop reply:Stop said/Stop heard:Stop",
+        "the task resumes before the listeners hear the event"
+    );
+}
+
+#[test]
+fn a_turn_ends_on_a_stop_and_not_on_a_session_start() {
+    use zellij_utils::data::AgentState;
+    let mut plugin = task_plugin(
+        r#"
+        for _ = 1, 2 do
+          local reply = zellij.await(zellij.async.turn(7))
+          log("reply:" .. tostring(reply.message) .. "/" .. reply.hook)
+        end
+        "#,
+    );
+    // `SessionStart` reads as idle on the record, but it begins a session rather than ending
+    // a turn: a spawned agent fires it before it has even submitted its opening prompt.
+    plugin
+        .update(&agent_event(7, "SessionStart", Some(AgentState::Idle)))
+        .unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        "",
+        "a session starting is not a turn ending"
+    );
+    plugin
+        .update(&agent_event(7, "Stop", Some(AgentState::Idle)))
+        .unwrap();
+    assert_eq!(logged(&mut plugin), "reply:Stop said/Stop");
+    plugin
+        .update(&agent_event(7, "Interrupt", Some(AgentState::Idle)))
+        .unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        "reply:Stop said/Stop reply:Interrupt said/Interrupt"
+    );
+}
+
+#[test]
+fn a_turn_with_an_idle_fallback_resolves_on_the_records_edge_into_idle() {
+    use zellij_utils::data::AgentState;
+    let mut plugin = task_plugin(
+        r#"
+        local reply = zellij.await(zellij.async.turn(7, { fallback = "idle" }))
+        log("reply:" .. tostring(reply.message) .. "/" .. reply.state)
+        "#,
+    );
+    plugin
+        .update(&manifest_with_agent(7, AgentState::Idle))
+        .unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        "",
+        "idle before working is not a turn ending"
+    );
+    plugin
+        .update(&manifest_with_agent(7, AgentState::Busy))
+        .unwrap();
+    plugin
+        .update(&manifest_with_agent(7, AgentState::Idle))
+        .unwrap();
+    assert_eq!(logged(&mut plugin), "reply:nil/Idle");
+}
+
+#[test]
+fn an_rpc_call_is_answered_by_the_handler_and_the_reply_resumes_the_caller() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = { log = {} }
+        zellij.message_to_plugin = function(args)
+          table.insert(M.log, args.message_name .. ">" .. tostring(args.destination_plugin_id or args.plugin_url) .. ":" .. args.message_payload)
+        end
+        zellij.rpc.handle("double", function(payload) return payload.n * 2 end)
+        zellij.rpc.handle("boom", function() error("no") end)
+        function M.load()
+          zellij.task(function()
+            local reply = zellij.await(zellij.rpc.call { plugin_url = "file:other.lua", name = "double", payload = { n = 2 } })
+            table.insert(M.log, "reply:" .. tostring(reply.result) .. "/" .. tostring(reply.error))
+          end)
+        end
+        function M.pipe(message) table.insert(M.log, "pipe:" .. message.name) end
+        function M.render() return table.concat(M.log, " | ") end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let call = |name: &str, payload: &str| {
+        zellij_utils::data::PipeMessage::new(
+            zellij_utils::data::PipeSource::Plugin(3),
+            name,
+            &Some(payload.to_owned()),
+            &None,
+            false,
+        )
+    };
+    // The callee's side: a call from plugin 3 is answered to plugin 3, and never shown to `pipe`.
+    plugin
+        .pipe(&call(
+            "zellij_rpc_call",
+            r#"{"version":1,"call_id":"c1","name":"double","payload":{"n":21}}"#,
+        ))
+        .unwrap();
+    plugin
+        .pipe(&call(
+            "zellij_rpc_call",
+            r#"{"version":1,"call_id":"c2","name":"boom","payload":{}}"#,
+        ))
+        .unwrap();
+    // The caller's side: the reply to our own call resumes the task.
+    plugin
+        .pipe(&call(
+            "zellij_rpc_reply",
+            r#"{"version":1,"call_id":"rpc1","result":4}"#,
+        ))
+        .unwrap();
+    let log = logged(&mut plugin);
+    let lines: Vec<&str> = log.split(" | ").collect();
+    assert_eq!(
+        lines[0],
+        r#"zellij_rpc_call>file:other.lua:{"call_id":"rpc1","name":"double","payload":{"n":2},"version":1}"#
+    );
+    assert!(
+        lines[1].starts_with("zellij_rpc_reply>3:") && lines[1].contains(r#""result":42"#),
+        "{}",
+        lines[1]
+    );
+    assert!(
+        lines[2].starts_with("zellij_rpc_reply>3:") && lines[2].contains("no"),
+        "{}",
+        lines[2]
+    );
+    assert_eq!(lines[3], "reply:4/nil");
+    assert!(
+        !log.contains("pipe:"),
+        "rpc messages are the layer's own: {log}"
+    );
+}
+
+#[test]
+fn tracing_logs_commands_events_and_tasks() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = { lines = {} }
+        zellij.log = function(...) table.insert(M.lines, table.concat({ ... }, " ")) end
+        zellij.run_command = function() end
+        function M.load()
+          zellij.task(function()
+            zellij.await(zellij.async.run_command { command = { "x" } })
+          end)
+        end
+        function M.render() return table.concat(M.lines, "\n") end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin
+        .load(&BTreeMap::from([("trace".to_owned(), "true".to_owned())]))
+        .unwrap();
+    plugin.update(&command_result("a1", 0, "")).unwrap();
+    let log = logged(&mut plugin);
+    for expected in [
+        "~ task#1 started",
+        "-> subscribe [\"RunCommandResult\"]",
+        "<- run_command_result",
+        "~ task#1 finished",
+    ] {
+        assert!(log.contains(expected), "no {expected:?} in:\n{log}");
+    }
+}
+
+#[test]
+fn post_message_to_is_refused_by_name() {
+    let error =
+        error_from_load(r#"zellij.post_message_to { name = "w", payload = "" }"#).expect("refused");
+    assert!(error.contains("not available from Lua"), "got: {error}");
+}
+
+/// `zellij.hocus.tools` is the whole of an extension's wiring: the registration hocus reads,
+/// the re-registration when hocus asks who is running, and each call answered over the rpc
+/// wire - with the handler's return, or its error.
+#[test]
+fn hocus_tools_registers_once_launched_and_answers_calls_over_rpc() {
+    let source = r#"
+        local zellij = require("zellij")
+        local M = { log = {} }
+        zellij.message_to_plugin = function(args)
+          table.insert(M.log, args.message_name .. ">" .. tostring(args.destination_plugin_id) .. ":" .. args.message_payload)
+        end
+        function M.load()
+          zellij.hocus.tools {
+            forecast = {
+              description = "A forecast.",
+              parameters = { type = "object", properties = { city = { type = "string" } } },
+              safety = "read_only",
+              handler = function(args) return "clear over " .. args.city end,
+            },
+            boom = { description = "Raises.", handler = function() error("no forecast") end },
+            shape = { description = "A table.", handler = function() return { ok = true } end },
+          }
+        end
+        function M.pipe(message) table.insert(M.log, "pipe:" .. message.name) end
+        function M.render() return table.concat(M.log, " | ") end
+        return M
+    "#;
+    let mut plugin = load_permitted(source).unwrap();
+    plugin
+        .load(&BTreeMap::from([
+            ("hocus_extension_name".to_owned(), "weather".to_owned()),
+            (
+                "hocus_extension_path".to_owned(),
+                "/plugins/hocus/weather.lua".to_owned(),
+            ),
+        ]))
+        .unwrap();
+    let pipe = |name: &str, payload: &str| {
+        zellij_utils::data::PipeMessage::new(
+            zellij_utils::data::PipeSource::Plugin(3),
+            name,
+            &Some(payload.to_owned()),
+            &None,
+            true,
+        )
+    };
+    plugin.pipe(&pipe("hocus_extension_discover", "")).unwrap();
+    plugin
+        .pipe(&pipe(
+            "zellij_rpc_call",
+            r#"{"version":1,"call_id":"c1","name":"hocus_tool:forecast","payload":{"city":"Oslo"}}"#,
+        ))
+        .unwrap();
+    plugin
+        .pipe(&pipe(
+            "zellij_rpc_call",
+            r#"{"version":1,"call_id":"c2","name":"hocus_tool:boom","payload":{}}"#,
+        ))
+        .unwrap();
+    plugin
+        .pipe(&pipe(
+            "zellij_rpc_call",
+            r#"{"version":1,"call_id":"c3","name":"hocus_tool:shape","payload":{}}"#,
+        ))
+        .unwrap();
+    let log = logged(&mut plugin);
+    let lines: Vec<&str> = log.split(" | ").collect();
+    // Registered from `load`, and again on discover; the tools sorted by name.
+    let registration = r#"hocus_extension_register>nil:{"namespace":"weather","path":"/plugins/hocus/weather.lua","tools":[{"description":"Raises.","name":"boom","parameters":{"type":"object"},"safety":"read_only"},{"description":"A forecast.","name":"forecast","parameters":{"properties":{"city":{"type":"string"}},"type":"object"},"safety":"read_only"},{"description":"A table.","name":"shape","parameters":{"type":"object"},"safety":"read_only"}],"version":1}"#;
+    assert_eq!(lines[0], registration);
+    assert_eq!(lines[1], registration, "discover re-registers");
+    assert_eq!(
+        lines[2],
+        r#"zellij_rpc_reply>3:{"call_id":"c1","result":"clear over Oslo","version":1}"#
+    );
+    assert!(
+        lines[3].starts_with(r#"zellij_rpc_reply>3:{"call_id":"c2","error":"#)
+            && lines[3].contains("no forecast"),
+        "{}",
+        lines[3]
+    );
+    assert_eq!(
+        lines[4],
+        r#"zellij_rpc_reply>3:{"call_id":"c3","result":"{\"ok\":true}","version":1}"#
+    );
+    assert!(
+        !log.contains("pipe:"),
+        "the wiring never reaches the plugin's pipe: {log}"
+    );
+
+    // Not launched by hocus: nothing to register to, said once in the log rather than sent.
+    let mut unlaunched = load_permitted(source).unwrap();
+    unlaunched.load(&BTreeMap::new()).unwrap();
+    assert_eq!(logged(&mut unlaunched), "");
 }

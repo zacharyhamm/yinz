@@ -4,7 +4,7 @@
 pub struct PluginCommand {
     #[prost(enumeration="CommandName", tag="1")]
     pub name: i32,
-    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 196, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 168, 169, 170, 171, 172, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 188, 189, 190, 191, 192, 193, 194, 195, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221")]
+    #[prost(oneof="plugin_command::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 196, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 168, 169, 170, 171, 172, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 188, 189, 190, 191, 192, 193, 194, 195, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222")]
     pub payload: ::core::option::Option<plugin_command::Payload>,
 }
 /// Nested message and enum types in `PluginCommand`.
@@ -408,6 +408,8 @@ pub mod plugin_command {
         SetQuitNoticePayload(super::SetQuitNoticePayload),
         #[prost(message, tag="221")]
         GetLocalUtcOffsetPayload(super::GetLocalUtcOffsetPayload),
+        #[prost(message, tag="222")]
+        SpawnAgentPayload(super::SpawnAgentPayload),
     }
 }
 // Filesystem access, confined by the server to the plugin's four roots
@@ -708,6 +710,73 @@ pub struct OpenCommandPaneInGitCheckoutResponse {
 }
 /// Nested message and enum types in `OpenCommandPaneInGitCheckoutResponse`.
 pub mod open_command_pane_in_git_checkout_response {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag="1")]
+        PaneId(super::PaneId),
+        #[prost(string, tag="2")]
+        Error(::prost::alloc::string::String),
+    }
+}
+/// Mirrors `zellij_utils::data::AgentSpawnSpec`: every field optional, the defaults decided by
+/// `agent::launch::plan` so every caller gets the same ones.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AgentSpawnSpec {
+    #[prost(string, optional, tag="1")]
+    pub kind: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="2")]
+    pub command: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag="3")]
+    pub args: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="4")]
+    pub model: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="5")]
+    pub prompt: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="6")]
+    pub branch: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="7")]
+    pub base: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, optional, tag="8")]
+    pub worktree: ::core::option::Option<bool>,
+    #[prost(string, optional, tag="9")]
+    pub worktree_path: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag="10")]
+    pub env: ::prost::alloc::vec::Vec<EnvVariable>,
+    #[prost(string, optional, tag="11")]
+    pub permission_mode: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="12")]
+    pub resume: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, optional, tag="13")]
+    pub hooks: ::core::option::Option<bool>,
+    #[prost(string, optional, tag="14")]
+    pub firecracker: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="15")]
+    pub firecracker_image: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SpawnAgentPayload {
+    #[prost(message, optional, tag="1")]
+    pub spec: ::core::option::Option<AgentSpawnSpec>,
+    #[prost(string, optional, tag="2")]
+    pub source_directory: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="3")]
+    pub cwd: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="4")]
+    pub name: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag="5")]
+    pub context: ::prost::alloc::vec::Vec<ContextItem>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SpawnAgentResponse {
+    #[prost(oneof="spawn_agent_response::Result", tags="1, 2")]
+    pub result: ::core::option::Option<spawn_agent_response::Result>,
+}
+/// Nested message and enum types in `SpawnAgentResponse`.
+pub mod spawn_agent_response {
     #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
@@ -3198,6 +3267,7 @@ pub enum CommandName {
     DataCatalog = 278,
     SetQuitNotice = 279,
     GetLocalUtcOffset = 280,
+    SpawnAgent = 281,
 }
 impl CommandName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -3447,6 +3517,7 @@ impl CommandName {
             CommandName::DataCatalog => "DataCatalog",
             CommandName::SetQuitNotice => "SetQuitNotice",
             CommandName::GetLocalUtcOffset => "GetLocalUtcOffset",
+            CommandName::SpawnAgent => "SpawnAgent",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -3693,6 +3764,7 @@ impl CommandName {
             "DataCatalog" => Some(Self::DataCatalog),
             "SetQuitNotice" => Some(Self::SetQuitNotice),
             "GetLocalUtcOffset" => Some(Self::GetLocalUtcOffset),
+            "SpawnAgent" => Some(Self::SpawnAgent),
             _ => None,
         }
     }

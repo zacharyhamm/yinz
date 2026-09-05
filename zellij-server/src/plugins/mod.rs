@@ -47,8 +47,8 @@ use wasm_bridge::WasmBridge;
 use zellij_utils::{
     data::{
         ClientInfo, CommandOrPlugin, ContextMenuContext, Event, EventType, FloatingPaneCoordinates,
-        InputMode, LayoutInfo, LayoutWithError, MessageToPlugin, Mouse, OverlayPlacement,
-        PermissionStatus, PermissionType, PipeMessage, PipeSource,
+        HookPayload, InputMode, LayoutInfo, LayoutWithError, MessageToPlugin, Mouse,
+        OverlayPlacement, PermissionStatus, PermissionType, PipeMessage, PipeSource,
     },
     errors::{prelude::*, ContextType, ErrorContext, PluginContext},
     input::{
@@ -109,9 +109,8 @@ pub enum PluginInstruction {
         /// The pane the hook is about - and for a `ReplacePane` point, the pane it replaces.
         /// `None` for a point that is not about a pane, such as `session_start`.
         pane_id: Option<PaneId>,
-        /// A `ReplacePane` plugin receives this as its configuration, which is what
-        /// `load(config)` receives; a `Headless` one as `Event::Hook { payload }`.
-        payload: BTreeMap<String, String>,
+        /// What the plugin is handed, in the point's shape.
+        payload: HookFiring,
         client_id: ClientId,
     },
     /// A right-click asked for a context menu. The plugin bound to the `context_menu` hook point
@@ -1672,17 +1671,24 @@ fn pipe_to_specific_plugins(
     }
 }
 
+/// What a hook point hands its plugin, in the point's shape: a `ReplacePane` plugin receives
+/// a string map as its configuration, which is what `load(config)` receives; a `Headless` one
+/// receives a typed [`HookPayload`] as `Event::Hook { payload }`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HookFiring {
+    ReplacePane(BTreeMap<String, String>),
+    Headless(HookPayload),
+}
+
 /// What the `session_start` hook is told: enough to address the session from a plugin that was
 /// loaded before any tab existed.
-fn session_start_payload(client_id: ClientId) -> BTreeMap<String, String> {
-    let mut payload = BTreeMap::new();
+fn session_start_payload(client_id: ClientId) -> HookFiring {
     // The name lives in the server's environment; nothing on the bus carries it, and reading
     // it here beats threading it through the thread's signature for one string.
-    if let Ok(session_name) = zellij_utils::envs::get_session_name() {
-        payload.insert("session_name".to_owned(), session_name);
-    }
-    payload.insert("client_id".to_owned(), client_id.to_string());
-    payload
+    HookFiring::Headless(HookPayload::SessionStart {
+        session_name: zellij_utils::envs::get_session_name().unwrap_or_default(),
+        client_id,
+    })
 }
 
 /// Run the plugin bound to `point`, in the point's shape.
@@ -1707,7 +1713,7 @@ fn session_start_payload(client_id: ClientId) -> BTreeMap<String, String> {
 fn run_hook(
     point: HookPoint,
     pane_id: Option<PaneId>,
-    payload: BTreeMap<String, String>,
+    payload: HookFiring,
     client_id: ClientId,
     hooks: &Hooks,
     wasm_bridge: &mut WasmBridge,
@@ -1729,19 +1735,26 @@ fn run_hook(
         "running hook '{point}' for {pane_id:?}: {}",
         run_plugin_or_alias.location_string()
     );
-    if point.shape() == HookShape::Headless {
-        deliver_to_headless_hook(
-            point,
-            run_plugin_or_alias,
-            client_id,
-            Event::Hook { point, payload },
-            wasm_bridge,
-            bus,
-            plugin_aliases,
-            shutdown_send,
-        );
-        return;
-    }
+    let payload = match (point.shape(), payload) {
+        (HookShape::Headless, HookFiring::Headless(payload)) => {
+            deliver_to_headless_hook(
+                point,
+                run_plugin_or_alias,
+                client_id,
+                Event::Hook { point, payload },
+                wasm_bridge,
+                bus,
+                plugin_aliases,
+                shutdown_send,
+            );
+            return;
+        },
+        (HookShape::ReplacePane, HookFiring::ReplacePane(payload)) => payload,
+        (shape, payload) => {
+            log::error!("hook '{point}' has the {shape:?} shape and was fired with {payload:?}");
+            return;
+        },
+    };
     let Some(pane_id) = pane_id else {
         log::error!("hook '{point}' replaces a pane, and was fired without one");
         return;

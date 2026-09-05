@@ -165,6 +165,13 @@ list of numbers.
 
 `zellij.key_name(bare_key)` is the same conversion, if you need it elsewhere.
 
+`agent_event` is one event per hook a coding agent fired in a pane, read once by the session:
+`pane_id` (a number), `kind`, `hook` (`UserPromptSubmit`, `PreToolUse`, `Stop`, …), `state`
+(`Busy`/`Waiting`/`Idle` as the event moved the pane's record, or nil), `detail`, `prompt`,
+`last_message` (what the agent said, on a `Stop`), `tool_name`, `cwd`, `session_id`, and `raw`,
+the agent's own JSON. It needs `read_application_state`, and `zellij events --type agent_event`
+streams the same thing to a shell. See *Agents*.
+
 Instead of one big `if`, you can register handlers:
 
 ```lua
@@ -196,7 +203,7 @@ Arguments follow the shape of the command, and there are four:
 | The command takes | You write |
 |---|---|
 | nothing | `zellij.close_self()` |
-| one value | `zellij.set_timeout(1.0)` |
+| one value | `zellij.close_tab_with_index(0)` |
 | several values | `zellij.rename_tab(0, "logs")` |
 | named fields | `zellij.new_tab { name = "logs", cwd = "/tmp" }` |
 
@@ -249,9 +256,11 @@ Each entry has exactly one of `handler` or `actions`. Handlers receive the keybi
 and can call any normal plugin command. Actions are ordinary Zellij keybinding actions; positional,
 property, and child arguments use the same `zellij.action` forms documented for Lua config.
 
-`zellij.set_timeout(seconds)` sends one `timer` event; `zellij.set_interval(seconds)` keeps
-sending them until `zellij.clear_interval()`. There is one interval per plugin: calling
-`set_interval` again changes the period rather than starting a second clock.
+`zellij.after(seconds, fn)` calls `fn` once; `zellij.every(seconds, fn)` calls it until the
+handle it returns is `:cancel()`ed. A truthy return asks for a render. Any number of either may
+be outstanding: the prelude keeps one host timer in flight for the nearest deadline. Seconds
+are whole - the sandbox has no finer clock - so `every(0.5, …)` ticks once a second.
+`zellij.async.sleep(seconds)` is the same clock inside a task (see *Tasks*).
 
 A few things zellij spells as Rust types have a helper, so you do not have to know that:
 
@@ -279,80 +288,6 @@ want to handle rather than a bug.
 Not every reply is decoded yet - see *Current limits*. And a few commands do not answer at all
 but send an **event** instead: `zellij.list_clients()` returns nothing, and the answer arrives as
 a `list_clients` event, so subscribe to it.
-
-### Agents and git checkouts
-
-`zellij.open_command_pane_in_git_checkout_near_plugin` puts the repository into a state and then
-opens a command pane in it - one call for "start this agent on a new branch, in a worktree of its
-own". It takes three arguments, so it also takes them by name:
-
-```lua
-local pane = zellij.open_command_pane_in_git_checkout_near_plugin {
-  command = { path = "claude", args = { "--model", "opus" } },
-  source_directory = agent_cwd,
-  checkout = { NewWorktree = { branch = "fix-42", base = "main", path = ".worktrees/fix-42" } },
-}
-```
-
-The checkout is a Rust enum, so it travels in that spelling - a bare string for the one that
-takes nothing, a single-key table for the others:
-
-| You write | What happens |
-|---|---|
-| `"Current"` | the repository as it stands |
-| `{ NewBranch = { branch = ..., base = ... } }` | that branch, in this checkout |
-| `{ NewWorktree = { branch = ..., base = ..., path = ... } }` | that branch, in a worktree of its own |
-
-**"New" means the one you named, made if it is not there yet.** A branch or worktree that already
-exists is what you were pointing at, so it is reused rather than refused - and `base` then has
-nothing to say, an existing branch having its own history. A branch checked out somewhere else
-runs in *that* worktree, because git allows one checkout of a branch at a time. Only a `path` that
-exists without being a worktree of this repository is an error. `branch` and `base` are both
-required; a relative `path` is resolved against the repository's **primary** checkout, never the
-caller's, so asking from inside a worktree does not nest one inside another.
-
-`source_directory` says which repository, and is a path in your plugin's own space: `/host` is
-the folder the plugin was started in, a relative path hangs off that, and an absolute path
-anywhere else means itself - which is why a hook can hand over the `agent_cwd` it was given. The
-command's own `cwd` is ignored; the checkout decides where it runs.
-
-It answers with the new pane's id and **raises** on failure - every git error arrives that way -
-so `pcall` it if a failure is an outcome rather than a bug. It needs
-`zellij.request_permission { "run_commands" }`.
-
-One consequence worth knowing: a pane opened this way is an *agent* pane, so when its command
-exits it fires the `agent_exit` hook. A hook that spawns with this command is arranging its own
-next appearance.
-
-What the session knows about an agent pane rides on the pane itself: every `PaneInfo` in a
-`pane_update` has an `agent` field — `nil` for an ordinary pane, otherwise `{ kind, state, source,
-detail, cwd, session_id, run_id }` with `state` one of `Busy`, `Waiting`, `Idle`, `Exited`. The
-spawn path writes it, and so does Claude Code itself through its hooks (`docs/AGENT_HOOKS.md`). A
-plugin speaking for an agent writes it too:
-
-```lua
-zellij.set_pane_agent {
-  pane_id = zellij.terminal_pane(3),
-  agent = { kind = "codex", state = "Waiting", source = "Reported", detail = "y/n" },
-}
-zellij.set_pane_agent { pane_id = zellij.terminal_pane(3) }   -- no agent here any more
-```
-
-`run_id` is the one field to set on its own, because it is the one field the agent never
-reports: it names whatever record a plugin is keeping of the agent's work, so that a pane warped
-into another session can be matched back to it. Setting it wholesale would mean restating a
-record you are not the authority on, so there is an additive command for it:
-
-```lua
-zellij.set_pane_agent_run { pane_id = zellij.terminal_pane(3), run_id = "codex:s1" }
-zellij.set_pane_agent_run { pane_id = zellij.terminal_pane(3) }   -- not keeping one any more
-```
-
-A record written without a `run_id` inherits the pane's rather than clearing it; only clearing
-the whole record clears it. A run id sent for a pane with no record is dropped.
-
-Both need `change_application_state`. A pane with a record fires `agent_exit` when its command
-exits, whoever wrote the record.
 
 ### Pane workflows
 
@@ -455,7 +390,7 @@ These are the names, as a plugin spells them:
 | `read_application_state` | the session's panes, tabs and modes - most `*_update` events |
 | `change_application_state` | moving, closing, renaming and focusing panes and tabs |
 | `open_files` | opening a file in the user's editor |
-| `run_commands` | `zellij.run_command`, and commands in panes |
+| `run_commands` | `zellij.run_command`, commands in panes, and `zellij.agent.spawn` |
 | `open_terminals_or_plugins` | new terminal panes, and starting or reloading plugins |
 | `write_to_stdin` | typing into another pane |
 | `web_access` | `zellij.web_request` |
@@ -479,16 +414,19 @@ of your source lexically to pre-grant it, and a name it does not recognise is si
 so the plugin is denied at run time in a pane nobody is watching. `plugin_check` and `zellij
 plugins check` warn about that, and about the other traps a compile cannot see.
 
-There are seven worked examples in `example-plugins/`, all of them reference sources to read
-rather than a place to keep a plugin of your own - hocus serves each as a `plugin_docs` section.
-`clock.lua` (`section=example_clock`) is the small one, `playground.lua`
-(`section=example_playground`) is a keymap where each key calls a different shape of command and
-shows what came back, `dashboard.lua` (`section=example_dashboard`) is the one to read for how a
-plugin draws, `agent-commit.lua` (`section=example_agent_commit`) is an `agent_exit` hook,
-`workflow.lua` (`section=example_workflow`) runs a multi-step command sequence in one pane, and
+The worked examples in `example-plugins/` are reference sources to read rather than a place to
+keep a plugin of your own - hocus serves each as a `plugin_docs` section. `clock.lua`
+(`section=example_clock`) is the small one, `capabilities.lua` (`section=example_capabilities`)
+puts most of what a plugin can do in one pane, `playground.lua` (`section=example_playground`) is
+a keymap where each key calls a different shape of command and shows what came back,
+`dashboard.lua` (`section=example_dashboard`) is the one to read for how a plugin draws,
+`agent-harness.lua` (`section=example_agent_harness`) is the one to read for running agents: it
+starts one, hands it a job, runs the check and hands failures back until green,
+`agent-commit.lua` (`section=example_agent_commit`) is an `agent_exit` hook, `workflow.lua`
+(`section=example_workflow`) runs a multi-step command sequence in one pane, and
 `todo-extension.lua` (`section=example_todo_extension`) with `todo-pane.lua`
 (`section=example_todo_pane`) are the pair to read for shared data: an extension that owns a
-`shared:` namespace and registers tools over it, and a pane that watches the same rows.
+`shared:` namespace and gives hocus tools over it, and a pane that watches the same rows.
 
 A plugin of your own goes in the plugin folder, written there with `plugin_write`. To run one of
 these from a checkout instead:
@@ -496,6 +434,163 @@ these from a checkout instead:
 ```sh
 zellij plugin --floating -- file:$PWD/example-plugins/clock.lua
 ```
+
+## Tasks
+
+A plugin is driven by events, and everything the host does for it *answers* as a later event: a
+command's output, a pane's exit, an agent going idle, a timer. Written as `if event.name == …`
+arms across `update`, a five-step job is a state machine, and the wiring is where it goes
+wrong. A **task** is that job as straight-line code:
+
+```lua
+function M.load(config)
+  zellij.task(function()
+    zellij.await(zellij.async.permissions { "run_commands", "read_application_state" })
+    local result = zellij.await(zellij.async.run_command { command = { "cargo", "test" } })
+    if result.exit_code ~= 0 then
+      zellij.notify { message = "red: " .. result.stderr }
+    end
+    return true                          -- a truthy return asks for a render
+  end)
+end
+```
+
+`zellij.task(fn)` runs `fn` as a coroutine, synchronously up to its first `zellij.await`, and
+resumes it when what it awaited arrives - in a later entrypoint, with every host command
+available, so nothing a task does is different from what `update` could do. It returns a handle
+with `:cancel()` and `:is_running()`.
+
+An **awaitable** is a thing that will settle. Each is eager - the command is dispatched when
+the awaitable is made, and its reply is kept even while the task waits on something else - and
+each subscribes to the events it needs, so you do not:
+
+| `zellij.async.…` | resolves with | needs |
+|---|---|---|
+| `run_command { command, env_variables, cwd, context, max_bytes_returned }` | the `run_command_result` event (`exit_code`, `stdout`, `stderr`) | `run_commands` |
+| `web_request { url, verb, headers, body, context }` | the `web_request_result` event (`status`, `headers`, `body`) | `web_access` |
+| `pane_exit(pane_id)` | the `command_pane_exited` event, or `{ closed = true }` - for a pane this plugin opened | `read_application_state` |
+| `run_in_pane(pane_id, step)` | as `pane_exit`, for the command `step` runs in an existing pane | `run_commands`, `read_application_state` |
+| `agent_state(pane_id, "idle" \| { … }, { after = { "busy" } })` | the pane's `PaneInfo` when its agent record reaches one of the states - after one of `after`, when given | `read_application_state` |
+| `agent_event(pane_id, "Stop")`, `turn(pane_id)` | see *Agents* | `read_application_state` |
+| `pipe(name)` | the next pipe message named `name` | - |
+| `permissions { … }` | `"Granted"` or `"Denied"` | - |
+| `sleep(seconds)` | `true`, after whole `seconds` | - |
+| `event(name, match)` | the next `name` event for which `match(event)` is truthy | whatever the event needs |
+| `all { a = …, b = … }` | every value, in the same shape | - |
+| `race { a = …, b = … }` | `{ key, value }` of the first; the others settle unheard later, so an awaitable can be raced again | - |
+| `future()` | whatever `resolve(value)` is called with - the primitive: `local aw, resolve = zellij.async.future()` | - |
+
+Three rules. **Tasks run first and consume nothing**: an event that settles an awaitable is
+handed to the task before the `zellij.on` handlers and `update` see it, and they still see it.
+**A task's error is the entrypoint's error**: it is reported against the plugin like any other,
+never dropped - and the other tasks the same event resumed still run first. **A reload ends every task**: the plugin starts over, and a reply still in
+flight arrives with a token nobody holds. `zellij.await` outside a task is an error - an
+entrypoint has no coroutine to suspend - so a task is where anything that waits is written, and
+`load` is the usual place to start one.
+
+`zellij.async.permissions` is how `load` is written now: ask, await, act. A permission the user
+granted before - or one hocus granted when it approved the source - is in force from the
+request on, so the await resolves without a prompt and a gated call made straight after
+`zellij.request_permission` in `load` is not refused either.
+
+## Agents
+
+A plugin can run coding agents in panes and drive them to an outcome: spawn one, hear what it
+says, hand it the next thing, and read its state off the pane. `example-plugins/agent-harness.lua`
+is all of this in ninety lines.
+
+### Spawning
+
+```lua
+local pane = zellij.agent.spawn {
+  kind = "claude",                       -- or codex, cursor; `command = "sh"` for anything else
+  prompt = "make the tests pass",        -- the opening prompt, last on the command line
+  branch = "fix-42", base = "main",      -- a worktree of its own at .worktrees/fix-42 (default)
+  permission_mode = "acceptEdits",       -- in the agent's own terms; "skip" turns prompts off
+  model = "opus", resume = "last",       -- `--model`, and `--continue` / `--resume <id>`
+  hooks = true,                          -- a claude reports its state through inline hooks
+  cwd = "/host", name = "fixer",         -- where it runs with no branch; the pane's title
+}
+```
+
+The argv, the permission-mode flags, the resume spelling and the inline hooks are decided by the
+same planner hocus's `agent_spawn` and the New agent modal use, so `agent = "cursor"` runs
+`cursor-agent` everywhere. `branch` cuts the branch (worktree by default, `worktree = false` for
+this checkout); an existing branch or worktree is reused. `source_directory` is the repository
+that happens in, as a plugin path, `/host` by default. The pane is an agent pane from its first
+moment: its record is on `pane_update`, its exit fires `agent_exit`. Answers with the pane id
+(`{ Terminal = n }`), raises on failure. Needs `run_commands`.
+
+`zellij.open_command_pane_in_git_checkout_near_plugin` is the lower-level command it is built
+on - a `CommandToRun` plus a `GitCheckout` (`"Current"`, `{ NewBranch = { branch, base } }`,
+`{ NewWorktree = { branch, base, path } }`) - for a command that is not an agent.
+
+### What an agent is doing
+
+Every `PaneInfo` in a `pane_update` has an `agent` field: nil, or `{ kind, state, source, detail,
+cwd, session_id, run_id }` with `state` one of `Busy`, `Waiting`, `Idle`, `Exited`. The spawn
+path writes it, and so does the agent itself through its hooks (`docs/AGENT_HOOKS.md`).
+`zellij.agent.info(pane_id)` is the last record seen for a pane; `zellij.agent.all()` is every
+one, by pane id. Both are nil until a `pane_update` has arrived - the first call subscribes if
+the plugin has not - and a pane that closed drops out of them.
+
+The record is a few fields; the *words* are on `agent_event` - what the user asked
+(`prompt`, on `UserPromptSubmit`) and what the agent said (`last_message`, on `Stop`):
+
+```lua
+zellij.agent.on(function(e)          -- every agent_event, typed
+  if e.hook == "Stop" then zellij.log(e.pane_id .. " said: " .. (e.last_message or "")) end
+end)
+```
+
+A plugin speaking *for* an agent writes the record: `zellij.set_pane_agent { pane_id, agent = {
+kind, state, source = "Reported", detail } }`, and `zellij.set_pane_agent_run { pane_id, run_id }`
+sets the one field the agent never reports. Both need `change_application_state`.
+
+### Steering
+
+```lua
+zellij.agent.send(pane, "run the tests")             -- a bracketed paste, then Enter
+local reply = zellij.await(zellij.agent.prompt(pane, "now fix what failed"))
+-- reply.message is what it said when its turn ended; reply.hook is Stop, StopFailure or Interrupt
+```
+
+`zellij.async.turn(pane_id)` resolves on the pane's next `Stop`, `StopFailure` or `Interrupt`
+(`SessionStart` is idle, but it is not a turn ending); `zellij.agent.prompt` is `send` then
+`turn`, the turn registered first so a fast answer is not missed. For an agent with no hooks to speak through, `{ fallback = "idle" }` also resolves on
+the record's edge from `busy` or `waiting` into `idle`, with `message = nil`.
+`zellij.async.agent_state(pane, "waiting")` waits for a state; `zellij.async.agent_event(pane,
+"PermissionRequest")` for a hook. `send` needs `write_to_stdin`; the rest need
+`read_application_state`.
+
+### Between agents
+
+Anything a plugin can do is a step in the loop: `zellij.async.run_command` for the check,
+`zellij.async.run_in_pane` for a step the user should see, `zellij.data` for the record of what
+happened, `zellij.notify` for the person. hocus's own run history (`agent_run`,
+`agent_run_entry` in `shared:hocus`, see *Hocus data*) is readable too, for what an agent
+concluded in a session that has since closed.
+
+## Plugin-to-plugin calls
+
+`zellij.message_to_plugin` is fire and forget. `zellij.rpc` is a call with an answer:
+
+```lua
+-- in the callee
+zellij.rpc.handle("forecast", function(payload) return "clear over " .. payload.city end)
+
+-- in the caller, inside a task
+local reply = zellij.await(zellij.rpc.call {
+  plugin_url = "file:weather.lua",          -- or plugin_id = n; launched if it is not running
+  name = "forecast", payload = { city = "Oslo" }, timeout = 10,
+})
+-- reply.result, or reply.error (a handler that raised, no handler, or the timeout)
+```
+
+The wire is two plugin messages, `zellij_rpc_call` and `zellij_rpc_reply`, correlated by a
+call id and answered to the plugin id the call came from; the prelude handles both, and neither
+reaches a plugin's own `pipe`. Both sides need `message_and_launch_other_plugins`. It is what
+hocus calls an extension's tools over (see *Hocus extensions*).
 
 ## Rendering
 
@@ -900,82 +995,55 @@ since unloaded anything - its events are dropped, and the job runs to completion
 Hocus discovers direct `.lua` files in the `hocus` folder under `user_plugin_dir` and loads them
 headlessly. (The same folder's `skills/` subfolder holds hocus skills — prompts typed as
 `/<name>`, see `docs/SKILLS.md`. Tools, extension tools and skills share one `/` namespace, and a
-name goes to whichever registered first.) A file named `hocus/weather.lua` owns the `weather_` tool namespace. File and local
-tool names are lower snake case, so a local tool named `forecast` is advertised to the model and
-available at the prompt as `weather_forecast` and `/weather_forecast`.
+name goes to whichever registered first.) A file named `hocus/weather.lua` owns the `weather_`
+tool namespace. File and local tool names are lower snake case, so a local tool named `forecast`
+is advertised to the model and available at the prompt as `weather_forecast` and
+`/weather_forecast`.
 
-An extension registers its complete tool set over a plugin message. Register after permissions
-are granted, and again whenever Hocus broadcasts `hocus_extension_discover`: that is how a Hocus
-reload finds extensions that are still running.
+An extension declares its tools once, with their handlers, and the prelude does the rest - the
+registration, the re-registration when hocus reloads and asks who is running, and every call:
 
 ```lua
 local zellij = require("zellij")
 local M = {}
 
-local function register()
-  zellij.message_to_plugin {
-    message_name = "hocus_extension_register",
-    message_payload = zellij.json.encode {
-      version = 1,
-      namespace = M.config.hocus_extension_name,
-      path = M.config.hocus_extension_path,
-      tools = {
-        {
-          name = "forecast",
-          description = "Return a short forecast for a city.",
-          parameters = {
-            type = "object",
-            properties = { city = { type = "string" } },
-            required = { "city" },
-          },
-          safety = "read_only",
-        },
-      },
-    },
-  }
-end
-
-local function reply(call, result)
-  zellij.message_to_plugin {
-    destination_plugin_id = call.reply_to,
-    message_name = "hocus_extension_result",
-    message_payload = zellij.json.encode {
-      version = 1,
-      call_id = call.call_id,
-      result = result,
-    },
-  }
-end
-
 function M.load(config)
-  M.config = config
-  zellij.subscribe { "permission_request_result" }
   zellij.request_permission { "message_and_launch_other_plugins" }
 end
 
-zellij.on("permission_request_result", register)
-
-function M.pipe(message)
-  if message.name == "hocus_extension_discover" then
-    register()
-    return
-  end
-  if message.name ~= "hocus_extension_call" then return end
-
-  local call = zellij.json.decode(message.payload)
-  if call.version ~= 1 or call.tool ~= "forecast" then return end
-  reply(call, "Clear skies over " .. tostring(call.arguments.city))
-end
+zellij.on("permission_request_result", function()
+  zellij.hocus.tools {
+    forecast = {
+      description = "Return a short forecast for a city.",
+      parameters = {
+        type = "object",
+        properties = { city = { type = "string" } },
+        required = { "city" },
+      },
+      safety = "read_only",
+      handler = function(args)
+        return "Clear skies over " .. tostring(args.city)
+      end,
+    },
+  }
+end)
 
 return M
 ```
 
+A handler returns the text the model reads - or a table, which is sent as JSON - or raises, and
+the error reaches the model as `failed: …`. A call is a `zellij.rpc` call named
+`hocus_tool:<name>` (see *Plugin-to-plugin calls*), so a handler that needs to wait for something
+can do so from a task and answer through `zellij.rpc.handle("hocus_tool:<name>", …)` of its own
+instead. Hocus gives up on a call that goes unanswered for thirty seconds, and on one whose
+extension unloaded first, and tells the model so.
+
 `hocus_extension_name` and `hocus_extension_path` are in the configuration only when Hocus was
 the one that launched the file — that is how the registration says which extension it is for.
-Reloaded by hand (`zellij plugins reload hocus/weather`, or from a layout) they are `nil` and the
-registration goes nowhere, so guard `register()` on them and log which of the two happened;
-`example-plugins/todo-extension.lua` does. Hocus's own `plugin_reload` always launches it the way
-that registers.
+Reloaded by hand (`zellij plugins reload hocus/weather`, or from a layout) they are `nil`, and the
+prelude logs that the tools were not registered rather than sending a payload nobody reads;
+`zellij.hocus.launch()` says which of the two happened. Hocus's own `plugin_reload` always
+launches it the way that registers.
 
 Every tool declares one safety mode:
 
@@ -998,10 +1066,8 @@ The order matters, and it is the same order for every extension that keeps data:
 
 1. `load` asks for the permissions - `message_and_launch_other_plugins` at least, plus
    `plugin_data` and `shared_plugin_data` if it stores anything.
-2. The `permission_request_result` handler defines the schema, registers the tools, and takes its
-   first fetch or watch. Nothing above may happen in `load`: permissions are not in force there
-   (see [Permissions](#permissions)), so a `define` from `load` is refused and the extension
-   registers nothing.
+2. The `permission_request_result` handler (or a task awaiting `zellij.async.permissions`)
+   defines the schema, declares the tools, and takes its first fetch or watch.
 3. Tools and UI come after that lifecycle works. `example_todo_extension` is that lifecycle with
    three tools on it, and `example_todo_pane` is a pane reading the same `shared:` namespace.
 
@@ -1036,6 +1102,7 @@ The hook points:
 | `agent_exit` | an agent pane's command exited | opened **in place of** that pane |
 | `agent_start` | a pane gained an agent record: spawned as an agent, or its agent reported for itself | headless, `hook` event |
 | `agent_waiting` | an agent's record moved to `waiting` - a permission prompt, a question | headless, `hook` event |
+| `agent_idle` | an agent's record moved to `idle` from `busy` or `waiting`: its turn ended | headless, `hook` event |
 | `pane_exit` | any command pane's command exited, held or not | headless, `hook` event |
 | `session_start` | the session's first client connected | headless, `hook` event |
 | `context_menu` | a right-click asked for a menu | headless, `context_menu_requested` event |
@@ -1075,9 +1142,9 @@ Enter and Esc remain available while the check or sync runs.
 
 ### Headless hooks
 
-`agent_start`, `agent_waiting`, `pane_exit` and `session_start` share one plugin shape. The plugin
-is loaded the first time its point fires and stays loaded; each firing is a `hook` event carrying
-the point's name and a string-to-string payload. A firing that arrives while that first load is
+`agent_start`, `agent_waiting`, `agent_idle`, `pane_exit` and `session_start` share one plugin
+shape. The plugin is loaded the first time its point fires and stays loaded; each firing is a
+`hook` event carrying the point's name and a payload typed per point. A firing that arrives while that first load is
 still under way is held for the loading instance and delivered once it is up, in order - two
 points firing within a few milliseconds of each other reach one plugin, not two.
 
@@ -1094,7 +1161,7 @@ zellij plugins log agent-policy
 ```
 
 The first `agent_start` loads the plugin and is delivered to it; each line it logs reads
-`[lua:agent-policy] hook agent_start agent_cwd=... agent_kind=claude ...`, and the next
+`[lua:agent-policy] hook agent_start {"agent":{"kind":"claude",...},"pane_id":7,...}`, and the next
 permission prompt in that pane raises a toast that focuses the pane when clicked. To make it
 yours, copy the file into your plugin folder as a plugin of its own - `plugin_write name=my-policy`
 through hocus, or `zellij plugins write my-policy < agent-policy.lua` - add
@@ -1112,12 +1179,13 @@ function M.load(config)
 end
 
 zellij.on("hook", function(e)
-  zellij.log("hook " .. e.point .. " pane=" .. (e.payload.agent_pane_id or e.payload.exit_pane_id or "?"))
+  zellij.log("hook " .. e.point .. " " .. zellij.json.encode(e.payload))
   if e.point == "agent_waiting" then
+    local agent = e.payload.agent
     zellij.notify {
-      message = (e.payload.agent_kind or "agent") .. " in pane " .. e.payload.agent_pane_id
-        .. ": " .. (e.payload.agent_detail or "is waiting for you"),
-      pane_id = zellij.terminal_pane(tonumber(e.payload.agent_pane_id)),
+      message = agent.kind .. " in pane " .. e.payload.pane_id
+        .. ": " .. (agent.detail or "is waiting for you"),
+      pane_id = zellij.terminal_pane(e.payload.pane_id),
     }
   end
 end)
@@ -1129,12 +1197,12 @@ One plugin may be bound to several points; `e.point` tells them apart. The plugi
 so `render` is never asked for and a permission prompt has nowhere to appear: request what you
 need in `load`, and the first grant is remembered.
 
-The payloads, every value a string:
+The payloads, typed - a number is a number and the agent's record is the record:
 
-| Point | Keys |
+| Point | Fields |
 |---|---|
-| `agent_start`, `agent_waiting` | `agent_pane_id`, `agent_kind`, `agent_state` (`busy`/`waiting`/`idle`), `agent_previous_state` (absent for a first record), `agent_source` (`spawned`/`reported`), `agent_detail` (if any), `agent_cwd`, `agent_session_id` (if any), `agent_command` (if the pane is a command pane) |
-| `pane_exit` | `exit_pane_id`, `exit_code` (absent if killed by a signal), `exit_cwd`, `exit_command`, `exit_held` (`true` if the pane holds and can be re-run, `false` if it is closing) |
+| `agent_start`, `agent_waiting`, `agent_idle` | `pane_id`; `agent`, the record as it now stands (`kind`, `state`, `source`, `detail`, `cwd`, `session_id`, `run_id`); `previous_state` (`Busy`/`Waiting`/`Idle`/`Exited`, nil for a record that just appeared); `command`, if the pane is a command pane |
+| `pane_exit` | `pane_id`, `exit_code` (nil if killed by a signal), `cwd`, `command`, `held` (`true` if the pane holds and can be re-run, `false` if it is closing) |
 | `session_start` | `session_name`, `client_id` |
 
 What fires `agent_start`: a pane created with an agent record (a plugin's `agent_spawn`), an
@@ -1142,8 +1210,9 @@ agent record appearing on a pane that had none (`claude` typed at a shell, repor
 its hooks), a record whose last state was `exited` coming back (`RerunCommandPane`, the shipped
 `agent_exit` hook's Enter), and a new `session_id` in the same pane. `agent_waiting` fires on the
 edge into `waiting` only - a second `waiting` report with a new detail is the same wait.
-Clearing a record and moving to `exited` fire nothing; the exit is `agent_exit`'s and
-`pane_exit`'s. Nor does clearing a record stop `agent_exit`: a pane that has ever held one is
+`agent_idle` fires on the edge into `idle` from `busy` or `waiting` - the turn ended - and not for
+a record that appears idle, which is `agent_start`'s. Clearing a record and moving to `exited`
+fire nothing; the exit is `agent_exit`'s and `pane_exit`'s. Nor does clearing a record stop `agent_exit`: a pane that has ever held one is
 an agent pane for as long as it lives, which is what makes a clean exit — where the agent's own
 `SessionEnd` clears the record just before the process goes — fire the hook at all. Only a pane
 re-run with a *different* command forgets it, record and memory alike: `run_command_in_pane` over
@@ -1284,6 +1353,14 @@ Each line lands in `$TMPDIR/zellij-<uid>/zellij-log/zellij.log` tagged `[lua:<yo
 is why `print` is redirected there rather than left writing to the server's stdout. Both take any
 number of values and join them with tabs, as `print` does.
 
+### Tracing
+
+`zellij.trace(true)` - or the configuration key `trace "true"` - logs one line for every command
+the plugin dispatches (`-> open_command_pane {...}`), every event and pipe it is handed (`<-
+pane_update`), and every task it starts and finishes. `zellij plugins log <name>` (or hocus's
+`plugin_log`) then reads as a transcript of what the plugin did, which for a plugin with no pane
+is the whole of the evidence.
+
 ## Files
 
 A plugin can read and write inside the four folders zellij gives it, which are the same four a
@@ -1366,10 +1443,11 @@ Everything below is a gap in the Lua binding, not in the plugin system:
 - **Return values** - every command that answers is decoded into a Lua value, and a test fails
   when a new one is not. Should one slip through, the reply comes back as the raw protobuf
   bytes it arrived as, in a string.
-- **Workers** - wasm plugins can spawn background workers; Lua plugins cannot. A work queue
-  (above) is the Lua answer to the same need, and `zellij.post_message_to` - which addresses a
-  worker - does nothing from Lua. `zellij.post_message_to_plugin` reaches yourself as a
-  `custom_message` event and works.
+- **Workers** - wasm plugins can spawn background workers; Lua plugins cannot. A task (see
+  *Tasks*) is the answer to waiting, and a work queue (above) to running plugin code elsewhere;
+  `zellij.post_message_to`, which addresses a worker, is refused by name.
+  `zellij.post_message_to_plugin` reaches yourself as a `custom_message` event and works.
+- **Timers are whole seconds** - `os.time` is the only clock the sandbox has.
 - **Reload on change** - editing a plugin needs an explicit reload:
   `zellij action start-or-reload-plugin file:keys.lua`, the plugin manager's reload key, or
   `plugin_reload` if you are asking hocus, which also reads the pane back and reports whether

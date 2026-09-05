@@ -94,6 +94,21 @@ pub struct PluginLoadWatch {
     /// Hocus extensions load headlessly and prove success by registering tools; ordinary
     /// plugins open a pane and prove it by rendering there.
     pub extension: bool,
+    /// A plugin loaded headless on request: no pane, no render - its log is the report.
+    pub headless: bool,
+    /// The name the call gave, which is what `read_plugin_log` takes.
+    pub name: String,
+}
+
+/// A plugin running in the session, as the plugin list reports it, plus the one thing the list
+/// does not say: whether a pane shows it. A headless `plugin_reload` reloads the instance
+/// without a pane and leaves the pane copies alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginInstance {
+    /// The `file:` (or other) location the plugin was loaded from.
+    pub location: String,
+    /// Whether some pane in the session is this plugin's.
+    pub has_pane: bool,
 }
 
 /// The shortest interval `schedule` will accept. A model that asks for one
@@ -222,6 +237,10 @@ struct Chat {
     /// *this* conversation, and it is the one owed the report. A watch left on `State` alone
     /// would be overwritten by another chat's reload and stranded when this one is parked.
     pub(crate) plugin_load: Option<PluginLoadWatch>,
+    /// `mono_ms` when this chat's awaited extension call was sent. With the chat for the
+    /// reason `plugin_load` is: two chats mid-call would otherwise share one clock, and a
+    /// parked chat's call would never be given up on.
+    pub(crate) extension_call_started_ms: Option<u64>,
     /// What was typed but not sent, and where the cursor was. The draft rather
     /// than the whole `TextInput`: the box also owns the prompt history, which
     /// is one list for every chat.
@@ -340,6 +359,13 @@ pub struct State {
     extension_files: BTreeMap<String, String>,
     /// Running plugin ids whose resolved file location agrees with their Hocus launch config.
     extension_instances: BTreeMap<u32, (String, String)>,
+    /// Every running plugin by id, from the session's plugin list - what a headless
+    /// `plugin_reload` looks the running instance up in.
+    plugin_instances: BTreeMap<u32, PluginInstance>,
+    /// `mono_ms` when the foreground chat's awaited extension call was sent;
+    /// `poll_extension_call` gives up on it after `extensions::CALL_TIMEOUT_MS`. Parked chats
+    /// carry their own in `Chat::extension_call_started_ms`.
+    extension_call_started_ms: Option<u64>,
     /// When to load scanned files that did not answer the discovery broadcast. The grace period
     /// lets extensions survive a Hocus reload without being duplicated.
     extension_scan_due_ms: Option<u64>,
@@ -897,6 +923,8 @@ impl Default for State {
             extensions: extensions::Registry::default(),
             extension_files: BTreeMap::new(),
             extension_instances: BTreeMap::new(),
+            plugin_instances: BTreeMap::new(),
+            extension_call_started_ms: None,
             extension_scan_due_ms: None,
             skills: skills::Registry::default(),
             skills_project_root: None,

@@ -195,6 +195,35 @@ fn an_agent_report_is_carried_on_the_pane() {
     assert_eq!(reported["agent"]["source"], "Reported", "{reported}");
     assert_eq!(reported["agent"]["detail"], "y/n", "{reported}");
 
+    // A hook event - what `--hook-json` reads off stdin - is sent on to `zellij events` typed:
+    // the state the session derived and the agent's own words, keyed by the pane's number.
+    let agent_events = zellij.stream_events(&["agent_event"]);
+    let json =
+        r#"{"hook_event_name":"Stop","session_id":"cc-1","last_assistant_message":"all green"}"#;
+    let hook: zellij_utils::agent::HookEvent = serde_json::from_str(json).unwrap();
+    let (exit_code, reported) =
+        zellij.run_actions_reporting(zellij_utils::input::actions::hook_report_actions(
+            "claude",
+            zellij_utils::data::PaneId::Terminal(terminal.terminal_id()),
+            &hook,
+            json.to_owned(),
+        ));
+    assert_eq!(exit_code, 0, "{reported}");
+    agent_events.wait_for_event("AgentEvent");
+    let (_, streamed) = agent_events
+        .streamed_events()
+        .into_iter()
+        .find(|(event_type, _)| event_type == "AgentEvent")
+        .unwrap();
+    let event: serde_json::Value = serde_json::from_str(&streamed).unwrap();
+    let event = &event["AgentEvent"];
+    assert_eq!(event["pane_id"], terminal.terminal_id(), "{event}");
+    assert_eq!(event["kind"], "claude", "{event}");
+    assert_eq!(event["hook"], "Stop", "{event}");
+    assert_eq!(event["state"], "Idle", "{event}");
+    assert_eq!(event["last_message"], "all green", "{event}");
+    assert_eq!(event["raw"], json, "{event}");
+
     zellij.run_cli_action(CliAction::AgentReport {
         pane_id: Some(pane_id.clone()),
         kind: None,

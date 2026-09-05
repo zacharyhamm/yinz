@@ -22,8 +22,9 @@ pub use super::generated_api::api::{
         new_tab_response, new_tab_unfocused_response, open_command_pane_in_git_checkout_payload,
         open_command_pane_in_git_checkout_response, parse_layout_response, plugin_command::Payload,
         read_plugin_log_response, rename_layout_response, save_layout_response,
-        save_session_response, show_floating_panes_response, warp_pane_response,
-        AdoptOrphanedPanePayload, BreakPanesToNewTabPayload,
+        save_session_response, show_floating_panes_response, spawn_agent_response,
+        warp_pane_response, AdoptOrphanedPanePayload, AgentSpawnSpec as ProtobufAgentSpawnSpec,
+        BreakPanesToNewTabPayload,
         BreakPanesToNewTabResponse as ProtobufBreakPanesToNewTabResponse,
         BreakPanesToTabWithIdPayload,
         BreakPanesToTabWithIdResponse as ProtobufBreakPanesToTabWithIdResponse,
@@ -173,8 +174,9 @@ pub use super::generated_api::api::{
         SetSelfMouseSelectionSupportPayload, SetTabProjectsPayload, SetTimeoutPayload,
         ShowCursorPayload, ShowFloatingPanesPayload as ProtobufShowFloatingPanesPayload,
         ShowFloatingPanesResponse as ProtobufShowFloatingPanesResponse, ShowPaneWithIdPayload,
-        StackPanesPayload, SubscribePayload, SwitchSessionPayload, SwitchTabToIdPayload,
-        SwitchTabToPayload, TabProject, ToggleFloatingPanesPayload, TogglePaneBorderlessPayload,
+        SpawnAgentPayload, SpawnAgentResponse as ProtobufSpawnAgentResponse, StackPanesPayload,
+        SubscribePayload, SwitchSessionPayload, SwitchTabToIdPayload, SwitchTabToPayload,
+        TabProject, ToggleFloatingPanesPayload, TogglePaneBorderlessPayload,
         TogglePaneEmbedOrEjectForPaneIdPayload, TogglePaneIdFullscreenPayload, UnsubscribePayload,
         WarpPaneFromSessionPayload, WarpPaneResponse as ProtobufWarpPaneResponse,
         WarpPaneToSessionPayload, WarpPlacement as ProtobufWarpPlacement,
@@ -189,10 +191,10 @@ use crate::plugin_api::plugin_data::{watch_mode_from_i32, ProtobufMutation, Prot
 
 use super::generated_api::api::event::AgentInfo as ProtobufAgentInfo;
 use crate::data::{
-    AgentInfo, ConnectToSession, DataApplyResponse, DataCatalogResponse, DataCountResponse,
-    DataDefineResponse, DataEntityInfo, DataFetchResponse, DataUnwatchResponse, DataWatchResponse,
-    DeleteAllDeadSessionsResponse, DeleteDeadSessionResponse, DeleteLayoutResponse,
-    EditLayoutResponse, EnqueueQueueJobResponse, FloatingPaneCoordinates,
+    AgentInfo, AgentSpawnSpec, ConnectToSession, DataApplyResponse, DataCatalogResponse,
+    DataCountResponse, DataDefineResponse, DataEntityInfo, DataFetchResponse, DataUnwatchResponse,
+    DataWatchResponse, DeleteAllDeadSessionsResponse, DeleteDeadSessionResponse,
+    DeleteLayoutResponse, EditLayoutResponse, EnqueueQueueJobResponse, FloatingPaneCoordinates,
     GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPaneGitProbeResponse, GetPanePidResponse,
     GetPaneRunningCommandResponse, GetSessionListResponse, GitCheckout, HighlightLayer,
     HighlightStyle, HttpVerb, InputMode, KeyWithModifier, KillSessionsResponse,
@@ -200,8 +202,8 @@ use crate::data::{
     OpenCommandPaneInGitCheckoutResponse, OpenCommandPaneOverlayResponse, OrphanedPane,
     OverlayPlacement, PaneGitProbe, PaneId, PermissionType, PluginCommand, QueueSnapshot,
     QueueStatusResponse, RecordingSummary, RegexHighlight, RenameLayoutResponse,
-    SaveLayoutResponse, SearchHit, SessionInfo, SessionListSnapshot, WarpPaneResponse,
-    WarpPlacement,
+    SaveLayoutResponse, SearchHit, SessionInfo, SessionListSnapshot, SpawnAgentResponse,
+    WarpPaneResponse, WarpPlacement,
 };
 use crate::input::actions::Action;
 use crate::input::layout::PercentOrFixed;
@@ -2797,6 +2799,20 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for SetPaneAgentRun"),
             },
+            Some(CommandName::SpawnAgent) => match protobuf_plugin_command.payload {
+                Some(Payload::SpawnAgentPayload(payload)) => Ok(PluginCommand::SpawnAgent {
+                    spec: payload.spec.ok_or("SpawnAgent must have a spec")?.into(),
+                    source_directory: payload.source_directory.map(PathBuf::from),
+                    cwd: payload.cwd.map(PathBuf::from),
+                    name: payload.name,
+                    context: payload
+                        .context
+                        .into_iter()
+                        .map(|item| (item.name, item.value))
+                        .collect(),
+                }),
+                _ => Err("Mismatched payload for SpawnAgent"),
+            },
             Some(CommandName::SetQuitNotice) => match protobuf_plugin_command.payload {
                 Some(Payload::SetQuitNoticePayload(payload)) => Ok(PluginCommand::SetQuitNotice {
                     notice: payload.notice,
@@ -5018,6 +5034,25 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     run_id,
                 })),
             }),
+            PluginCommand::SpawnAgent {
+                spec,
+                source_directory,
+                cwd,
+                name,
+                context,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::SpawnAgent as i32,
+                payload: Some(Payload::SpawnAgentPayload(SpawnAgentPayload {
+                    spec: Some(spec.into()),
+                    source_directory: source_directory.map(|path| path.display().to_string()),
+                    cwd: cwd.map(|path| path.display().to_string()),
+                    name,
+                    context: context
+                        .into_iter()
+                        .map(|(name, value)| ContextItem { name, value })
+                        .collect(),
+                })),
+            }),
             PluginCommand::SetQuitNotice { notice, guard } => Ok(ProtobufPluginCommand {
                 name: CommandName::SetQuitNotice as i32,
                 payload: Some(Payload::SetQuitNoticePayload(SetQuitNoticePayload {
@@ -6300,6 +6335,82 @@ impl From<OpenCommandPaneInGitCheckoutResponse> for ProtobufOpenCommandPaneInGit
     }
 }
 
+impl From<AgentSpawnSpec> for ProtobufAgentSpawnSpec {
+    fn from(spec: AgentSpawnSpec) -> Self {
+        ProtobufAgentSpawnSpec {
+            kind: spec.kind,
+            command: spec.command,
+            args: spec.args,
+            model: spec.model,
+            prompt: spec.prompt,
+            branch: spec.branch,
+            base: spec.base,
+            worktree: spec.worktree,
+            worktree_path: spec.worktree_path,
+            env: spec
+                .env
+                .into_iter()
+                .map(|(name, value)| EnvVariable { name, value })
+                .collect(),
+            permission_mode: spec.permission_mode,
+            resume: spec.resume,
+            hooks: spec.hooks,
+            firecracker: spec.firecracker,
+            firecracker_image: spec.firecracker_image,
+        }
+    }
+}
+
+impl From<ProtobufAgentSpawnSpec> for AgentSpawnSpec {
+    fn from(spec: ProtobufAgentSpawnSpec) -> Self {
+        AgentSpawnSpec {
+            kind: spec.kind,
+            command: spec.command,
+            args: spec.args,
+            model: spec.model,
+            prompt: spec.prompt,
+            branch: spec.branch,
+            base: spec.base,
+            worktree: spec.worktree,
+            worktree_path: spec.worktree_path,
+            env: spec
+                .env
+                .into_iter()
+                .map(|variable| (variable.name, variable.value))
+                .collect(),
+            permission_mode: spec.permission_mode,
+            resume: spec.resume,
+            hooks: spec.hooks,
+            firecracker: spec.firecracker,
+            firecracker_image: spec.firecracker_image,
+        }
+    }
+}
+
+impl From<SpawnAgentResponse> for ProtobufSpawnAgentResponse {
+    fn from(response: SpawnAgentResponse) -> Self {
+        let result = match response {
+            Ok(pane_id) => spawn_agent_response::Result::PaneId(pane_id.try_into().unwrap()),
+            Err(error) => spawn_agent_response::Result::Error(error),
+        };
+        Self {
+            result: Some(result),
+        }
+    }
+}
+
+impl TryFrom<ProtobufSpawnAgentResponse> for SpawnAgentResponse {
+    type Error = &'static str;
+
+    fn try_from(response: ProtobufSpawnAgentResponse) -> Result<Self, Self::Error> {
+        match response.result {
+            Some(spawn_agent_response::Result::PaneId(pane_id)) => Ok(Ok(pane_id.try_into()?)),
+            Some(spawn_agent_response::Result::Error(error)) => Ok(Err(error)),
+            None => Err("SpawnAgentResponse without a result"),
+        }
+    }
+}
+
 impl TryFrom<ProtobufOpenCommandPaneInGitCheckoutResponse>
     for OpenCommandPaneInGitCheckoutResponse
 {
@@ -6684,6 +6795,47 @@ mod tests {
                 PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(_, source, GitCheckout::NewWorktree { branch, base, path }, decoded_automatic)
                 if source == *"/work/project" && branch == "topic" && base == "main" && path == *".worktrees/topic" && decoded_automatic == automatic));
         }
+    }
+
+    #[test]
+    fn spawn_agent_survives_the_wire() {
+        let command = PluginCommand::SpawnAgent {
+            spec: AgentSpawnSpec {
+                kind: Some("claude".to_owned()),
+                command: Some("claude".to_owned()),
+                args: vec!["--verbose".to_owned()],
+                model: Some("opus".to_owned()),
+                prompt: Some("fix the parser".to_owned()),
+                branch: Some("fix-parser".to_owned()),
+                base: Some("main".to_owned()),
+                worktree: Some(true),
+                worktree_path: Some(".worktrees/fix-parser".to_owned()),
+                env: BTreeMap::from([("TOKEN".to_owned(), "t".to_owned())]),
+                permission_mode: Some("skip".to_owned()),
+                resume: Some("last".to_owned()),
+                hooks: Some(false),
+                firecracker: Some("vm".to_owned()),
+                firecracker_image: Some("image".to_owned()),
+            },
+            source_directory: Some(PathBuf::from("/host")),
+            cwd: Some(PathBuf::from("/tmp/work")),
+            name: Some("fixer".to_owned()),
+            context: BTreeMap::from([("step".to_owned(), "1".to_owned())]),
+        };
+        let protobuf: ProtobufPluginCommand = command.clone().try_into().unwrap();
+        let decoded: PluginCommand = protobuf.try_into().unwrap();
+        assert_eq!(decoded, command);
+
+        let empty = PluginCommand::SpawnAgent {
+            spec: AgentSpawnSpec::default(),
+            source_directory: None,
+            cwd: None,
+            name: None,
+            context: BTreeMap::new(),
+        };
+        let protobuf: ProtobufPluginCommand = empty.clone().try_into().unwrap();
+        let decoded: PluginCommand = protobuf.try_into().unwrap();
+        assert_eq!(decoded, empty);
     }
 
     #[test]
@@ -7153,6 +7305,7 @@ mod tests {
                 | PluginCommand::CheckLuaPlugin { .. }
                 | PluginCommand::SetPaneAgent { .. }
                 | PluginCommand::SetPaneAgentRun { .. }
+                | PluginCommand::SpawnAgent { .. }
                 | PluginCommand::SetQuitNotice { .. }
                 | PluginCommand::ReloadPluginByUrl(_)
                 | PluginCommand::ReadPluginLog { .. }

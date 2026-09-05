@@ -5,8 +5,10 @@
 //! loaded, subscribed, updated and rendered by exactly the same code.
 
 use super::*;
+use crate::plugins::HookFiring;
 use crate::plugins::PluginId;
 use zellij_test_support::Watched;
+use zellij_utils::data::HookPayload;
 use zellij_utils::input::command::TerminalAction;
 use zellij_utils::input::hooks::HookPoint;
 
@@ -405,6 +407,124 @@ pub fn lua_plugin_is_not_sent_events_it_did_not_subscribe_to() {
     );
 }
 
+/// What `zellij.agent.spawn` hands the pty thread: the planned argv - `claude`, the prompt last,
+/// `--settings <hooks>` first unless hooks are off - the folder the plugin named, and the agent
+/// marker whose value `agent_from_run` turns into the pane's `Spawned` record.
+fn spawned_agent_command(key: char) -> zellij_utils::input::command::RunCommand {
+    use zellij_utils::input::command::RunCommand;
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let cache_path = plugin_host_folder.join("permissions_test.kdl");
+    let (plugin_thread_sender, pty_receiver, screen_receiver, teardown) =
+        create_plugin_thread_with_pty_receiver(Some(plugin_host_folder.clone()), None, None);
+    let client_id = 1;
+    let size = Size { cols: 80, rows: 10 };
+
+    let received_pty_instructions = Watched::new(vec![]);
+    let pty_thread = log_actions_in_thread!(
+        received_pty_instructions,
+        PtyInstruction::SpawnTerminal,
+        pty_receiver,
+        1
+    );
+    let received_screen_instructions = Watched::new(vec![]);
+    let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
+        received_screen_instructions,
+        ScreenInstruction::Exit,
+        screen_receiver,
+        1,
+        &PermissionType::RunCommands,
+        cache_path,
+        plugin_thread_sender,
+        client_id
+    );
+
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::Load(
+        Some(false),
+        false,
+        false,
+        Some("lua_spawn_plugin".to_owned()),
+        lua_run_plugin_at(&LUA_PLUGIN_FIXTURE_SPAWN_AGENT, BTreeMap::new()),
+        Some(1),
+        None,
+        client_id,
+        size,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
+        None,
+        Some(client_id),
+        Event::Key(KeyWithModifier::new(BareKey::Char(key))),
+    )]));
+    pty_thread.join().unwrap();
+    teardown();
+
+    let run: RunCommand = received_pty_instructions
+        .lock()
+        .iter()
+        .find_map(|instruction| match instruction {
+            PtyInstruction::SpawnTerminal(Some(TerminalAction::RunCommand(run)), ..) => {
+                Some(run.clone())
+            },
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `zellij.agent.spawn` to reach the pty thread, got: {:?}",
+                received_pty_instructions.lock()
+            )
+        });
+    // The folder's name rather than its path: a `tempdir()` lives under `/tmp`, which the host
+    // reads as the plugin's shared `/tmp` mount and re-translates on the way to the pty.
+    assert_eq!(
+        run.cwd.as_deref().and_then(|cwd| cwd.file_name()),
+        temp_folder.path().file_name(),
+        "`cwd = \"/host\"` is the plugin's folder: {run:?}"
+    );
+    run
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn a_lua_plugin_spawns_an_agent_pane_with_the_planned_argv_and_an_agent_marker() {
+    use zellij_utils::data::HOCUS_AGENT_PANE_CONTEXT;
+    let run = spawned_agent_command('s');
+    assert_eq!(run.command, PathBuf::from("claude"));
+    assert_eq!(run.args, vec!["fix it".to_owned()]);
+    let context = run
+        .originating_plugin
+        .as_ref()
+        .map(|origin| origin.context.clone())
+        .unwrap_or_default();
+    assert_eq!(
+        context.get(HOCUS_AGENT_PANE_CONTEXT).map(String::as_str),
+        Some("claude"),
+        "the marker carries the kind: {context:?}"
+    );
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn a_spawned_agent_is_handed_its_hooks_inline_unless_told_not_to() {
+    let run = spawned_agent_command('h');
+    assert_eq!(run.command, PathBuf::from("claude"));
+    assert_eq!(run.args.first().map(String::as_str), Some("--settings"));
+    assert!(
+        run.args[1].contains("agent-report"),
+        "the inline settings wire the hooks: {:?}",
+        run.args
+    );
+    assert_eq!(run.args.last().map(String::as_str), Some("fix it"));
+}
+
 #[test]
 #[serial(plugin_tests)]
 pub fn lua_plugin_host_command_reaches_the_pty_thread() {
@@ -753,7 +873,7 @@ pub fn the_agent_exit_hook_opens_a_pane_in_place_of_the_one_that_exited() {
     let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
         point: HookPoint::AgentExit,
         pane_id: Some(PaneId::Terminal(7)),
-        payload: agent_exit_payload(),
+        payload: HookFiring::ReplacePane(agent_exit_payload()),
         client_id,
     });
     screen_thread.join().unwrap();
@@ -798,7 +918,7 @@ pub fn the_agent_exit_hook_opens_again_after_the_first_one_is_closed() {
         let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
             point: HookPoint::AgentExit,
             pane_id: Some(PaneId::Terminal(7)),
-            payload: agent_exit_payload(),
+            payload: HookFiring::ReplacePane(agent_exit_payload()),
             client_id,
         });
     };
@@ -999,7 +1119,7 @@ const HEADLESS_HOOK_LUA: &str = r#"
 local zellij = require("zellij")
 local M = { granted = false, queued = {} }
 local function say(e)
-  local subject = e.payload.exit_pane_id or e.payload.session_name or ""
+  local subject = e.payload.pane_id or e.payload.session_name or ""
   zellij.rename_tab_with_id { 1, e.point .. ":" .. subject }
 end
 function M.load(config)
@@ -1074,12 +1194,14 @@ fn bind_hook(
     });
 }
 
-fn pane_exit_payload(pane_id: u32) -> BTreeMap<String, String> {
-    BTreeMap::from([
-        ("exit_pane_id".to_owned(), pane_id.to_string()),
-        ("exit_code".to_owned(), "0".to_owned()),
-        ("exit_held".to_owned(), "true".to_owned()),
-    ])
+fn pane_exit_payload(pane_id: u32) -> HookFiring {
+    HookFiring::Headless(HookPayload::PaneExit {
+        pane_id,
+        exit_code: Some(0),
+        cwd: None,
+        command: None,
+        held: true,
+    })
 }
 
 #[test]
@@ -1218,7 +1340,7 @@ pub fn a_replace_pane_hook_without_a_pane_opens_nothing() {
     let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
         point: HookPoint::AgentExit,
         pane_id: None,
-        payload: agent_exit_payload(),
+        payload: HookFiring::ReplacePane(agent_exit_payload()),
         client_id,
     });
     // The thread drains its instructions in order and `teardown` joins it, so everything it

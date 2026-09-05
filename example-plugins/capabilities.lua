@@ -38,15 +38,22 @@ function M.load(config)
 
   zellij.subscribe {
     "key",
-    "timer",
     "mode_update",
     "tab_update",
     "pane_update",
     "permission_request_result",
   }
 
-  zellij.set_timeout(M.tick)
+  M.start_clock()
   M.note("loaded with title=%q tick=%s", M.title, M.tick)
+end
+
+--- The tick: `zellij.every` calls back every `M.tick` seconds until the handle is cancelled.
+function M.start_clock()
+  M.clock = zellij.every(M.tick, function()
+    M.ticks = M.ticks + 1
+    return true
+  end)
 end
 
 function M.note(fmt, ...)
@@ -55,13 +62,6 @@ function M.note(fmt, ...)
 end
 
 -- Handlers registered with `zellij.on` run before `update`; either may ask for a re-render.
-zellij.on("timer", function()
-  M.ticks = M.ticks + 1
-  if M.timer_running then
-    zellij.set_timeout(M.tick) -- timers do not repeat
-  end
-  return true
-end)
 
 zellij.on("permission_request_result", function(event)
   M.note("permission result: %s", tostring(event.value))
@@ -103,7 +103,9 @@ function M.on_key(key)
   elseif key == "t" then
     M.timer_running = not M.timer_running
     if M.timer_running then
-      zellij.set_timeout(M.tick)
+      M.start_clock()
+    else
+      M.clock:cancel()
     end
     M.note("timer %s", M.timer_running and "resumed" or "paused")
   elseif key == "u" then

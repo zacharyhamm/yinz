@@ -6,6 +6,10 @@
 //! the common Claude Code/Codex hook shape so the binary and the plugins that draw the result
 //! cannot drift apart.
 
+/// What to run to start a coding agent, and what Git setup to do first. Shared by the
+/// server's `SpawnAgent` handler and every hocus launcher.
+pub mod launch;
+
 use crate::data::{AgentInfo, AgentSource, AgentState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -112,9 +116,59 @@ pub const CLAUDE_HOOK_REPORT_COMMAND: &str = "zellij action agent-report --hook-
 /// and says nothing about which agent wrote it, and the daemon writes a record of its own from
 /// what arrives here. Absent - an old script that only pipes - it is a `claude`, which is what
 /// every such script was installed for.
-pub const AGENT_HOOK_PIPE: &str = "agent_hook";
-pub const AGENT_HOOK_PANE_ID_ARG: &str = "pane_id";
-pub const AGENT_HOOK_KIND_ARG: &str = "kind";
+/// One event from an agent's own hooks, as the session hands it to plugins: `Event::AgentEvent`,
+/// which `zellij action agent-report --hook-json` sends beside the record it sets, and which
+/// `zellij events --type agent_event` streams.
+///
+/// The fields a reader wants are derived here, once - `state` by [`hook_state`], `detail` by
+/// [`hook_detail`] - so a plugin never re-reads Claude Code's schema; `raw` is the agent's own
+/// JSON, bounded by [`HOOK_BROADCAST_MAX_BYTES`], for the one reader that keeps a run's history
+/// and needs more than these say (`tool_input`, the permission mode, the subagent).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentEvent {
+    /// The terminal pane the agent runs in.
+    pub pane_id: u32,
+    /// `claude`, `codex`, … as the report named it.
+    pub kind: String,
+    /// The agent's own name for the event: `SessionStart`, `UserPromptSubmit`, `Stop`, …
+    pub hook: String,
+    /// The agent's own session id, when the event carries one.
+    pub session_id: Option<String>,
+    /// What the event says the agent is now doing, when it says anything.
+    pub state: Option<AgentState>,
+    /// The tool it names, cut to a few words - what a `busy · Bash cargo` row shows.
+    pub detail: Option<String>,
+    /// What the user asked for, on a `UserPromptSubmit`.
+    pub prompt: Option<String>,
+    /// What the agent said last, on a `Stop` or `StopFailure`.
+    pub last_message: Option<String>,
+    /// The tool about to run or just finished.
+    pub tool_name: Option<String>,
+    /// The folder the agent is working in.
+    pub cwd: Option<String>,
+    /// The event as the agent wrote it, pruned over the cap. See [`HookEvent`].
+    pub raw: String,
+}
+
+impl AgentEvent {
+    /// Read `event` the way the record is read - one reading, so a plugin and the pane's
+    /// record cannot disagree about what the event meant - and keep `json` as it arrived.
+    pub fn from_hook(kind: &str, pane_id: u32, event: &HookEvent, json: String) -> Self {
+        AgentEvent {
+            pane_id,
+            kind: kind.to_owned(),
+            hook: event.hook_event_name.clone(),
+            session_id: Some(event.session_id.clone()).filter(|id| !id.is_empty()),
+            state: hook_state(event),
+            detail: hook_detail(event),
+            prompt: event.prompt.clone(),
+            last_message: event.last_assistant_message.clone(),
+            tool_name: event.tool_name.clone(),
+            cwd: event.cwd.clone(),
+            raw: event.broadcast_json(json),
+        }
+    }
+}
 
 /// One command handler entry, as Claude Code and Codex spell it.
 pub fn hook_handler(command: &str, timeout: u64) -> Value {

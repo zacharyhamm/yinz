@@ -1125,11 +1125,17 @@ pub enum Event {
     },
     /// A hook point with a headless shape was reached. Sent only to the plugin bound to `point`
     /// in `hooks { }`, which is loaded (without a pane) the first time it is needed and receives
-    /// every later firing. The payload keys are documented per point in `docs/LUA_PLUGINS.md`.
+    /// every later firing. The payload is typed per point - see [`HookPayload`].
     Hook {
         point: HookPoint,
-        payload: BTreeMap<String, String>,
+        payload: HookPayload,
     },
+    /// One event from a coding agent's own hooks - `zellij action agent-report --hook-json` -
+    /// read once by the session and sent to every plugin subscribed to it, and streamed by
+    /// `zellij events --type agent_event`. The pane's record moves in the same breath, on
+    /// `PaneUpdate`; this carries what the record cannot, the prompt and the agent's last
+    /// message above all. Needs `ReadApplicationState`.
+    AgentEvent(crate::agent::AgentEvent),
 }
 
 impl EventType {
@@ -1157,6 +1163,7 @@ impl EventType {
         EventType::FileSystemDelete,
         EventType::PluginConfigurationChanged,
         EventType::QueueChanged,
+        EventType::AgentEvent,
     ];
 
     pub fn is_cli_streamable(&self) -> bool {
@@ -3678,6 +3685,94 @@ impl<'de> Deserialize<'de> for CommandToRun {
 /// refused, and `base` then has nothing to say - an existing branch has its own
 /// history. See `prepare_git_checkout_in` in the server for the exact order the
 /// two kinds of reuse are tried in.
+/// What a headless hook point hands the plugin bound to it, typed per point.
+///
+/// Untagged on the wire a plugin reads (`zellij events`, a Lua plugin's `event.payload`), so a
+/// hook reads `payload.pane_id` and `payload.agent.state` rather than a variant name; the
+/// variants are told apart by the fields only one of them has. The `agent_exit` point is the
+/// exception to all of this: its plugin is opened *in place of* the pane, and its payload is
+/// the plugin's configuration - a string map, documented with that point.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum HookPayload {
+    /// `agent_start`, `agent_waiting` and `agent_idle`: the record as it now stands, and the
+    /// state it moved from - absent for a record that just appeared.
+    Agent {
+        pane_id: u32,
+        agent: AgentInfo,
+        previous_state: Option<AgentState>,
+        /// The command the pane runs, for display, when it is a command pane.
+        command: Option<String>,
+    },
+    /// `pane_exit`: any command pane's command exited. `held` says whether the pane is still
+    /// there to be re-run, or is closing with its command.
+    PaneExit {
+        pane_id: u32,
+        /// Absent when the command was killed by a signal.
+        exit_code: Option<i32>,
+        cwd: Option<PathBuf>,
+        command: Option<String>,
+        held: bool,
+    },
+    /// `session_start`: the session's first client connected.
+    SessionStart {
+        session_name: String,
+        client_id: u16,
+    },
+}
+
+/// Everything it takes to start a coding agent, in terms every caller has: hocus's
+/// `agent_spawn` tool, the `hocus-new-agent` modal, and a Lua plugin's `zellij.agent.spawn`.
+///
+/// Every field is optional because every caller has partial inputs - a form with blank
+/// fields, a tool call with omitted keys, a Lua table naming two of them - and the defaults
+/// belong in `agent::launch::plan`, where all of them get the same ones.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSpawnSpec {
+    /// The agent to run, by kind: `claude`, `codex`, `cursor`, or any other name the agent
+    /// detection would recognise. Resolved to a program by `agent::launch::binary_for`.
+    pub kind: Option<String>,
+    /// A program to run instead, for whatever no kind names. Ignored when `kind` is set; one
+    /// of the two is required.
+    pub command: Option<String>,
+    /// Arguments before the ones the planner adds.
+    pub args: Vec<String>,
+    /// Passed as `--model <model>`, the one flag every agent spells the same.
+    pub model: Option<String>,
+    /// An opening prompt, passed as the last positional argument - which is how `claude`,
+    /// `codex` and `cursor-agent` all take one.
+    pub prompt: Option<String>,
+    /// The branch to create. Absent means no Git work at all: run where we are.
+    pub branch: Option<String>,
+    /// What `branch` is cut from. Defaults to `agent::launch::DEFAULT_BASE`.
+    pub base: Option<String>,
+    /// Whether `branch` lives in a new worktree rather than in this checkout. Defaults to
+    /// *true* once a branch is named, which is the safer of the two: a worktree leaves the
+    /// checkout the caller is looking at alone.
+    pub worktree: Option<bool>,
+    /// Where that worktree goes, relative to the repository's primary checkout. Defaults to
+    /// `agent::launch::worktree_path_for` the branch.
+    pub worktree_path: Option<String>,
+    /// Environment the agent starts with, on top of the pane's own. Carried by an `env(1)`
+    /// wrapper in the command - `env K=V claude ...` - because a command pane has no
+    /// environment of its own to set; `env` execs the agent, so the pane still runs it.
+    pub env: BTreeMap<String, String>,
+    /// How much the agent may do without asking, in the agent's own terms - see
+    /// `agent::launch::shape_args` for what each kind accepts. `skip` is understood by every
+    /// kind that has a way to turn permissions off.
+    pub permission_mode: Option<String>,
+    /// A session to resume: an id, or `last` for the most recent.
+    pub resume: Option<String>,
+    /// Whether a `claude` pane reports its state through its hooks. Defaults to true; the
+    /// hooks are handed to it inline, so nothing needs installing.
+    pub hooks: Option<bool>,
+    /// Named session-scoped Firecracker VM to run in.
+    pub firecracker: Option<String>,
+    /// Immutable project image selected for the Firecracker VM.
+    pub firecracker_image: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GitCheckout {
     Current,
@@ -5020,6 +5115,29 @@ pub enum PluginCommand {
         pane_id: PaneId,
         run_id: Option<String>,
     },
+    /// Start a coding agent in a command pane near this plugin, the way hocus's `agent_spawn`
+    /// and the `hocus-new-agent` modal do: plan its argv with `agent::launch::plan` (per-kind
+    /// flags, permission mode, resume, the inline Claude Code hooks), make the branch or
+    /// worktree `spec` asks for, open the pane there and record it as an agent pane
+    /// (`AgentSource::Spawned`). Answers with the pane id, or the error text.
+    ///
+    /// `source_directory` is the repository a branch or worktree is made in, as a plugin path
+    /// (`/host`, a relative path, or an absolute one); absent, the plugin's own folder. `cwd`
+    /// is where the pane runs when `spec` names no branch, and is ignored when a checkout is
+    /// made. With neither, a spec with no branch runs at the repository root of
+    /// `source_directory` when it is one, else in that folder. `name` titles the pane;
+    /// `context` round-trips on `command_pane_exited` beside the agent marker the host adds.
+    SpawnAgent {
+        spec: AgentSpawnSpec,
+        #[serde(default)]
+        source_directory: Option<PathBuf>,
+        #[serde(default)]
+        cwd: Option<PathBuf>,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        context: BTreeMap<String, String>,
+    },
     /// What this plugin wants said, and decided, when the session is about to end.
     ///
     /// The `notice` is one line the quit confirmation shows, or `None` to withdraw whatever this
@@ -5165,6 +5283,7 @@ pub type OpenCommandPaneOverlayResponse = Option<PaneId>;
 pub type OpenCommandPaneInPlaceResponse = Option<PaneId>;
 pub type OpenCommandPaneNearPluginResponse = Option<PaneId>;
 pub type OpenCommandPaneInGitCheckoutResponse = Result<PaneId, String>;
+pub type SpawnAgentResponse = Result<PaneId, String>;
 pub type OpenCommandPaneFloatingNearPluginResponse = Option<PaneId>;
 pub type OpenCommandPaneInPlaceOfPluginResponse = Option<PaneId>;
 pub type OpenCommandPaneBackgroundResponse = Option<PaneId>;

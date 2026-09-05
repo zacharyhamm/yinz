@@ -24,7 +24,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
 };
 
@@ -566,28 +566,17 @@ fn handle_remote_agent_report(
         ))?,
         HookOutcome::Nothing => {},
     }
-    let args = BTreeMap::from([
-        (agent::AGENT_HOOK_KIND_ARG.to_owned(), kind.to_owned()),
-        (
-            agent::AGENT_HOOK_PANE_ID_ARG.to_owned(),
-            terminal_id.to_string(),
-        ),
-    ]);
-    senders.send_to_plugin(PluginInstruction::KeybindPipe {
-        name: agent::AGENT_HOOK_PIPE.to_owned(),
-        payload: Some(json),
-        plugin: None,
-        args: Some(args),
-        configuration: None,
-        floating: None,
-        pane_id_to_replace: None,
-        pane_title: None,
-        cwd: None,
-        skip_cache: false,
-        cli_client_id: ClientId::default(),
-        plugin_and_client_id: None,
-        notification_end: None,
-    })
+    // The same event a local `agent-report --hook-json` sends, read the same way.
+    senders.send_to_plugin(PluginInstruction::Update(vec![(
+        None,
+        None,
+        Event::AgentEvent(agent::AgentEvent::from_hook(
+            kind,
+            terminal_id,
+            &event,
+            json,
+        )),
+    )]))
 }
 
 /// A spawn worker could not hand its result back to the pty thread, so the pane it

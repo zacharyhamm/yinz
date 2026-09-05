@@ -174,9 +174,10 @@ What one hook event cost, as measured (each × its own amplification):
    hocus-agents), each of whom parsed and merged it. Now a snapshot identical to the last one
    sent is withheld (`last_published`), except to a subscriber that just arrived.
 
-Still deliberately unfixed: the `agent_hook` `KeybindPipe` broadcast to every plugin (≤64 KiB,
-one encode/decode per plugin per hook, ~1.5 ms per plugin in a debug build) — cheap once the
-above landed.
+Fixed since: the `agent_hook` `KeybindPipe` broadcast to every plugin (≤64 KiB, one
+encode/decode per plugin per hook) is now `Event::AgentEvent`, delivered only to the plugins
+subscribed to it and gated like the manifest. The `pipe:agent_hook` rows in the tables below
+are from before that.
 
 ### Measuring it
 

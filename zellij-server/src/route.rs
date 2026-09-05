@@ -442,6 +442,20 @@ pub(crate) fn route_action(
                 ))
                 .with_context(err_context)?;
         },
+        Action::AgentEvent(event) => {
+            // To the plugin thread as an ordinary event: subscribers get it through the same
+            // permission check as every other piece of session state, and the CLI event
+            // stream sees it there. Nothing waits on it - a hook has seconds to live and
+            // must never stall the turn it fired in.
+            senders
+                .send_to_plugin(PluginInstruction::Update(vec![(
+                    None,
+                    None,
+                    Event::AgentEvent(event),
+                )]))
+                .with_context(err_context)?;
+            drop(completion_tx);
+        },
         Action::SetPaneColor { pane_id, fg, bg } => {
             senders
                 .send_to_screen(ScreenInstruction::SetPaneColor(

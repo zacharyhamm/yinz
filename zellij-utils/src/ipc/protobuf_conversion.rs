@@ -2132,6 +2132,9 @@ impl TryFrom<crate::input::actions::Action>
                     },
                 )
             },
+            crate::input::actions::Action::AgentEvent(event) => {
+                ActionType::AgentEvent(agent_event_to_proto(event))
+            },
             crate::input::actions::Action::ListTabs {
                 show_state,
                 show_dimensions,
@@ -3140,6 +3143,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     .try_into()?,
                 agent: action.agent.map(agent_info_from_proto).transpose()?,
             }),
+            ActionType::AgentEvent(action) => Ok(crate::input::actions::Action::AgentEvent(
+                agent_event_from_proto(action)?,
+            )),
             ActionType::TogglePaneInGroup(_) => {
                 Ok(crate::input::actions::Action::TogglePaneInGroup)
             },
@@ -3709,6 +3715,67 @@ fn overlay_kind_from_proto_i32(kind: i32) -> crate::data::OverlayKind {
         Ok(ProtoOverlayKind::Modal) => crate::data::OverlayKind::Modal,
         _ => crate::data::OverlayKind::Dismissible,
     }
+}
+
+fn agent_state_to_proto(
+    state: crate::data::AgentState,
+) -> crate::client_server_contract::client_server_contract::AgentState {
+    use crate::client_server_contract::client_server_contract::AgentState as ProtoAgentState;
+    use crate::data::AgentState;
+    match state {
+        AgentState::Busy => ProtoAgentState::Busy,
+        AgentState::Waiting => ProtoAgentState::Waiting,
+        AgentState::Idle => ProtoAgentState::Idle,
+        AgentState::Exited => ProtoAgentState::Exited,
+    }
+}
+
+fn agent_state_from_proto(state: i32) -> Result<crate::data::AgentState> {
+    use crate::client_server_contract::client_server_contract::AgentState as ProtoAgentState;
+    use crate::data::AgentState;
+    match ProtoAgentState::try_from(state) {
+        Ok(ProtoAgentState::Busy) => Ok(AgentState::Busy),
+        Ok(ProtoAgentState::Waiting) => Ok(AgentState::Waiting),
+        Ok(ProtoAgentState::Idle) => Ok(AgentState::Idle),
+        Ok(ProtoAgentState::Exited) => Ok(AgentState::Exited),
+        _ => Err(anyhow!("Unknown agent state {state}")),
+    }
+}
+
+fn agent_event_to_proto(
+    event: crate::agent::AgentEvent,
+) -> crate::client_server_contract::client_server_contract::AgentEventAction {
+    crate::client_server_contract::client_server_contract::AgentEventAction {
+        pane_id: event.pane_id,
+        kind: event.kind,
+        hook: event.hook,
+        session_id: event.session_id,
+        state: event.state.map(|state| agent_state_to_proto(state) as i32),
+        detail: event.detail,
+        prompt: event.prompt,
+        last_message: event.last_message,
+        tool_name: event.tool_name,
+        cwd: event.cwd,
+        raw: event.raw,
+    }
+}
+
+fn agent_event_from_proto(
+    action: crate::client_server_contract::client_server_contract::AgentEventAction,
+) -> Result<crate::agent::AgentEvent> {
+    Ok(crate::agent::AgentEvent {
+        pane_id: action.pane_id,
+        kind: action.kind,
+        hook: action.hook,
+        session_id: action.session_id,
+        state: action.state.map(agent_state_from_proto).transpose()?,
+        detail: action.detail,
+        prompt: action.prompt,
+        last_message: action.last_message,
+        tool_name: action.tool_name,
+        cwd: action.cwd,
+        raw: action.raw,
+    })
 }
 
 fn agent_info_to_proto(

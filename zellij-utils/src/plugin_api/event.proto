@@ -86,6 +86,7 @@ enum EventType {
     ContextMenuItemSelected = 56;
     /// A headless hook point was reached; sent to the plugin bound to it
     Hook = 57;
+    AgentEvent = 58;
 }
 
 message EventNameList {
@@ -142,13 +143,55 @@ message Event {
     ContextMenuRequestedPayload context_menu_requested_payload = 49;
     ContextMenuItemSelectedPayload context_menu_item_selected_payload = 50;
     HookPayload hook_payload = 51;
+    AgentEventPayload agent_event_payload = 52;
   }
 }
 
 message HookPayload {
   // The point's snake_case name, as `hooks { }` spells it
   string point = 1;
-  repeated ContextItem payload = 2;
+  oneof payload {
+    AgentHookPayload agent = 3;
+    PaneExitHookPayload pane_exit = 4;
+    SessionStartHookPayload session_start = 5;
+  }
+}
+
+message AgentHookPayload {
+  uint32 pane_id = 1;
+  AgentInfo agent = 2;
+  // `AgentState`'s own spelling; absent for a record that just appeared.
+  optional string previous_state = 3;
+  optional string command = 4;
+}
+
+message PaneExitHookPayload {
+  uint32 pane_id = 1;
+  optional int32 exit_code = 2;
+  optional string cwd = 3;
+  optional string command = 4;
+  bool held = 5;
+}
+
+message SessionStartHookPayload {
+  string session_name = 1;
+  uint32 client_id = 2;
+}
+
+// Mirrors `zellij_utils::agent::AgentEvent`.
+message AgentEventPayload {
+  uint32 pane_id = 1;
+  string kind = 2;
+  string hook = 3;
+  optional string session_id = 4;
+  // `AgentState`'s own spelling: Busy, Waiting, Idle, Exited. Absent when the event says nothing.
+  optional string state = 5;
+  optional string detail = 6;
+  optional string prompt = 7;
+  optional string last_message = 8;
+  optional string tool_name = 9;
+  optional string cwd = 10;
+  string raw = 11;
 }
 
 enum QueueJobOutcome {

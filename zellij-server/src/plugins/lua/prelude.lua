@@ -72,9 +72,43 @@ end
 --- place: the host hands the name straight to serde, which uses the variant's own spelling.
 --- The third argument is the spelling the plugin used, which the host only puts in error
 --- messages - so a typo is reported back as it was written rather than pascal-cased.
+local tracing = false
+
+--- Log what this plugin does: every command it dispatches, every event and pipe it is handed,
+--- every task it starts and finishes - one line each, through `zellij.log`, so `zellij plugins
+--- log` (or hocus's `plugin_log`) reads as a transcript. Off by default; the plugin
+--- configuration key `trace "true"` turns it on without a code change.
+function zellij.trace(on)
+  tracing = on ~= false
+end
+
+local function trace(line)
+  if tracing and zellij.log then
+    zellij.log(line)
+  end
+end
+
+--- A value as one short line, for a trace.
+local function compact(value)
+  if value == nil then
+    return ""
+  end
+  local ok, text = pcall(zellij.json.encode, value)
+  if not ok then
+    text = tostring(value)
+  end
+  if #text > 200 then
+    text = text:sub(1, 197) .. "..."
+  end
+  return text
+end
+
 local function dispatch(name, args)
   if not zellij.__dispatch then
     error("zellij commands can only be called from inside a plugin entrypoint", 2)
+  end
+  if tracing then
+    trace("-> " .. name .. " " .. compact(args))
   end
   return zellij.__dispatch(zellij.pascal_case(name), args, name)
 end
@@ -286,35 +320,6 @@ function zellij.open_terminal(cwd)
     cwd = cwd.cwd or cwd.path
   end
   return dispatch("open_terminal", { path = cwd })
-end
-
---- Ask for a timer, counting it as outstanding.
----
---- The host spawns an independent timer per `set_timeout` and has no way to cancel one, and a
---- `timer` event says nothing about which of them fired. Counting is what lets the interval below
---- re-arm exactly once however many timers are in the air: see `__update`.
-local function arm(seconds)
-  zellij.__timers = (zellij.__timers or 0) + 1
-  return dispatch("set_timeout", seconds)
-end
-
---- Ask to be sent a `timer` event in `seconds`. Timers do not repeat; set another one from the
---- handler if you want a ticking clock, or use `set_interval`.
-function zellij.set_timeout(seconds)
-  return arm(seconds)
-end
-
---- A `timer` event every `seconds`, until `clear_interval`. One interval per plugin: the interval
---- is this one timer being re-armed from the `timer` event, so calling it again changes the
---- period rather than starting a second clock — and a `set_timeout` outstanding alongside it does
---- not fork the chain either, because only the timer that drains the count re-arms.
-function zellij.set_interval(seconds)
-  zellij.__interval = seconds
-  return arm(seconds)
-end
-
-function zellij.clear_interval()
-  zellij.__interval = nil
 end
 
 --- Close this plugin's own pane.
@@ -551,6 +556,1073 @@ local function to_positional(name, args)
     positional[index] = nil
   end
   return positional
+end
+
+-- Tasks ---------------------------------------------------------------------------------------
+---
+--- Straight-line code over an event-driven host. A *task* is a coroutine started with
+--- `zellij.task(fn)`. Inside it, `zellij.await(aw)` suspends until an *awaitable* settles - a
+--- command's result, a pane's exit, an agent's turn, a sleep - and resumes with its value in a
+--- later entrypoint, with the host's `__dispatch` installed, so every host command works from a
+--- task exactly as it does from `update`:
+---
+---     zellij.task(function()
+---       zellij.await(zellij.async.permissions { "run_commands" })
+---       local result = zellij.await(zellij.async.run_command { command = { "cargo", "test" } })
+---       if result.exit_code ~= 0 then zellij.notify { message = "red" } end
+---     end)
+---
+--- Awaitables are eager: `zellij.async.run_command` dispatches at once, and the reply is
+--- captured even while the task waits on something else. Matching runs before the `zellij.on`
+--- handlers and `update`, and consumes nothing - an event a task awaited still reaches both.
+--- A task that raises fails the entrypoint that resumed it, as any error does; one that returns
+--- a truthy value asks for a render. A reload ends every task: the replies still in flight
+--- arrive with tokens nobody holds and are ignored here, though handlers still see them.
+
+local tasks = {} -- coroutine -> task
+local task_count = 0
+local ready = {} -- { task, value } pairs, resumed FIFO by `drain`
+local waiters = {} -- event name -> awaitables registered for it
+local pipe_waiters = {} -- pipe name -> awaitables registered for it
+local deadlines = {} -- awaitables with a `deadline`, ascending
+local armed_until = nil -- the earliest deadline a host timer is known to be in flight for
+local async_subscribed = {} -- event name -> true once this layer subscribed to it
+local token_count = 0
+
+local Task = {}
+Task.__index = Task
+
+zellij.async = {}
+
+local function remove_from(list, item)
+  for i = #list, 1, -1 do
+    if list[i] == item then
+      table.remove(list, i)
+    end
+  end
+end
+
+local function unregister(aw)
+  for _, name in ipairs(aw.events or {}) do
+    if waiters[name] then
+      remove_from(waiters[name], aw)
+    end
+  end
+  if aw.pipe and pipe_waiters[aw.pipe] then
+    remove_from(pipe_waiters[aw.pipe], aw)
+  end
+  if aw.deadline then
+    remove_from(deadlines, aw)
+  end
+end
+
+--- Call `fn` on every item even when one raises: the rest still run, the first error is raised
+--- again afterwards and any later one is logged. `pcall` is the rethrowing wrapper installed at
+--- the top of this file, so a host cancel is not held back and still unwinds at once.
+local function each_guarded(items, fn)
+  local failed, first = false, nil
+  for _, item in ipairs(items) do
+    local ok, err = pcall(fn, item)
+    if not ok then
+      if failed then
+        if zellij.log then
+          zellij.log("error: " .. tostring(err))
+        end
+      else
+        failed, first = true, err
+      end
+    end
+  end
+  if failed then
+    error(first, 0)
+  end
+end
+
+--- Settle `aw` with `value`: once, then every listener in the order it was attached. A listener
+--- that raises does not stop the ones after it; its error is raised again once all have run.
+local function settle(aw, value)
+  if aw.done then
+    return
+  end
+  aw.done, aw.value = true, value
+  unregister(aw)
+  local listeners = aw.on_settle
+  aw.on_settle = {}
+  each_guarded(listeners, function(listener)
+    listener(value)
+  end)
+end
+
+local function subscribe_once(name)
+  if not async_subscribed[name] then
+    async_subscribed[name] = true
+    zellij.subscribe { name }
+  end
+end
+
+--- A new awaitable, registered at once. `spec.events` names the events it matches and
+--- `spec.match(aw, event)` says whether one settles it and with what; `spec.pipe` names a pipe
+--- message instead. Neither means it is settled by hand, through `settle`.
+local function awaitable(spec)
+  local aw = {
+    done = false,
+    value = nil,
+    on_settle = {},
+    events = spec.events,
+    pipe = spec.pipe,
+    match = spec.match,
+  }
+  for _, name in ipairs(aw.events or {}) do
+    subscribe_once(name)
+    waiters[name] = waiters[name] or {}
+    table.insert(waiters[name], aw)
+  end
+  if aw.pipe then
+    pipe_waiters[aw.pipe] = pipe_waiters[aw.pipe] or {}
+    table.insert(pipe_waiters[aw.pipe], aw)
+  end
+  return aw
+end
+
+--- The primitive: an awaitable settled by hand.
+---
+---     local aw, resolve = zellij.async.future()
+---     wf.on_done = function(result) resolve(result) end
+---     local result = zellij.await(aw)
+function zellij.async.future()
+  local aw = awaitable {}
+  return aw, function(value)
+    settle(aw, value)
+  end
+end
+
+--- Resume `task` once. `coroutine.resume` is the rethrowing wrapper installed at the top of
+--- this file, so a host cancel raised inside the task unwinds the entrypoint; any other error
+--- is re-raised too, so a task cannot fail silently - from `drain`, once the rest of the batch
+--- has run.
+local function step(task, ...)
+  local ok, yielded = coroutine.resume(task.co, ...)
+  if not ok then
+    tasks[task.co] = nil
+    error(yielded, 0)
+  end
+  if coroutine.status(task.co) == "dead" then
+    tasks[task.co] = nil
+    trace("~ task#" .. task.id .. " finished")
+    if yielded then
+      zellij.__should_render = true
+    end
+    return
+  end
+  task.awaiting = yielded
+  task.listener = function(value)
+    task.awaiting, task.listener = nil, nil
+    table.insert(ready, { task, value })
+  end
+  table.insert(yielded.on_settle, task.listener)
+end
+
+--- Resume every task whose awaitable settled, in the order they became ready, until none is.
+--- A task that raises does not strand the others in its batch: they are already off their
+--- awaitables, so they are resumed first and the error is raised again after the last.
+local function drain()
+  while #ready > 0 do
+    local batch = ready
+    ready = {}
+    each_guarded(batch, function(entry)
+      step(entry[1], entry[2])
+    end)
+  end
+end
+
+--- Start a task. It runs synchronously up to its first `await`, so an error before that
+--- raises from here.
+function zellij.task(fn)
+  if type(fn) ~= "function" then
+    error("zellij.task takes a function", 2)
+  end
+  task_count = task_count + 1
+  local task = setmetatable({ co = coroutine.create(fn), id = task_count }, Task)
+  tasks[task.co] = task
+  trace("~ task#" .. task.id .. " started")
+  step(task)
+  return task
+end
+
+--- Stop a task where it stands: it is never resumed again, and forgets what it awaited.
+function Task:cancel()
+  if self.awaiting and self.listener then
+    remove_from(self.awaiting.on_settle, self.listener)
+  end
+  self.awaiting, self.listener = nil, nil
+  tasks[self.co] = nil
+  if coroutine.status(self.co) == "suspended" then
+    coroutine.close(self.co)
+  end
+end
+
+function Task:is_running()
+  return tasks[self.co] ~= nil
+end
+
+--- Suspend the calling task until `aw` settles, and return its value; at once if it already
+--- has. Only a task can await: an entrypoint has no coroutine to suspend.
+function zellij.await(aw)
+  local co, is_main = coroutine.running()
+  if is_main or not tasks[co] then
+    error("zellij.await can only be called from inside a zellij.task", 2)
+  end
+  if type(aw) ~= "table" or type(aw.on_settle) ~= "table" then
+    error("zellij.await needs an awaitable from zellij.async", 2)
+  end
+  if aw.done then
+    return aw.value
+  end
+  return coroutine.yield(aw)
+end
+
+-- Timers. One host timer in flight for the nearest deadline; the host cannot cancel a timer, so a
+-- nearer deadline arriving mid-flight arms a second and the first fires later into an ordinary
+-- sweep. `os.time` counts whole seconds - the sandbox has no finer clock - so a deadline is rounded
+-- up to a whole second. No extra second is added when arming: `os.time` truncates and the host
+-- sleeps at least what it was asked, so a deadline `floor(T) + n` armed for `n` seconds is due by
+-- the time its timer fires. An extra second would make `every(n)` tick every `n + 1`.
+
+local function arm_nearest()
+  local head = deadlines[1]
+  if not head then
+    armed_until = nil
+    return
+  end
+  if armed_until == nil or head.deadline < armed_until then
+    armed_until = head.deadline
+    -- Through the field rather than `dispatch`, so a test can stand in for the host.
+    zellij.set_timeout(math.max(head.deadline - os.time(), 0))
+  end
+end
+
+--- Settle every deadline that is due. The next one is armed *before* any listener runs, so a
+--- listener that raises - an `after` or `every` callback - cannot stop the clock, and every due
+--- deadline is settled before the error is raised again.
+local function sweep_deadlines()
+  local now = os.time()
+  if armed_until and armed_until <= now then
+    armed_until = nil
+  end
+  local due = {}
+  while deadlines[1] and deadlines[1].deadline <= now do
+    table.insert(due, table.remove(deadlines, 1))
+  end
+  arm_nearest()
+  each_guarded(due, function(aw)
+    settle(aw, true)
+  end)
+end
+
+--- An awaitable that settles in `seconds`, whole seconds, rounded up.
+local function at(seconds)
+  local aw = awaitable {}
+  aw.deadline = os.time() + math.ceil(math.max(tonumber(seconds) or 0, 0))
+  local index = #deadlines + 1
+  for i, other in ipairs(deadlines) do
+    if other.deadline > aw.deadline then
+      index = i
+      break
+    end
+  end
+  table.insert(deadlines, index, aw)
+  subscribe_once("timer")
+  arm_nearest()
+  return aw
+end
+
+--- Resolve in `seconds`: `zellij.await(zellij.async.sleep(2))`.
+function zellij.async.sleep(seconds)
+  return at(seconds)
+end
+
+--- Call `fn` once, in `seconds`; a truthy return asks for a render. The handle's `:cancel()`
+--- calls it off.
+function zellij.after(seconds, fn)
+  local handle = { aw = at(seconds) }
+  table.insert(handle.aw.on_settle, function()
+    if fn() then
+      zellij.__should_render = true
+    end
+  end)
+  function handle:cancel()
+    if self.aw and not self.aw.done then
+      unregister(self.aw)
+      self.aw.done = true
+    end
+  end
+  return handle
+end
+
+--- Call `fn` every `seconds` until the handle's `:cancel()`; a truthy return asks for a render.
+--- Each call is scheduled after the last one ran, so a slow `fn` never stacks up - and a call
+--- that raises is still followed by the next, its error raised again once that is scheduled.
+function zellij.every(seconds, fn)
+  local handle = { active = true }
+  local function schedule()
+    handle.aw = at(seconds)
+    table.insert(handle.aw.on_settle, function()
+      if not handle.active then
+        return
+      end
+      local ok, wants_render = pcall(fn)
+      if ok and wants_render then
+        zellij.__should_render = true
+      end
+      if handle.active then
+        schedule()
+      end
+      if not ok then
+        error(wants_render, 0)
+      end
+    end)
+  end
+  function handle:cancel()
+    self.active = false
+    if self.aw and not self.aw.done then
+      unregister(self.aw)
+      self.aw.done = true
+    end
+  end
+  schedule()
+  return handle
+end
+
+-- The awaitables. Each is a command already dispatched, matched to its reply by a token the
+-- reply's `context` carries back, or an event matched by the pane it names.
+
+local function next_token()
+  token_count = token_count + 1
+  return "a" .. token_count
+end
+
+--- `context` with a fresh token in it, and the token.
+local function with_token(context)
+  local copy = {}
+  for key, value in pairs(context or {}) do
+    copy[key] = value
+  end
+  local token = next_token()
+  copy.__async = token
+  return copy, token
+end
+
+local function matches_token(token)
+  return function(_, event)
+    return event.context ~= nil and event.context.__async == token, event
+  end
+end
+
+--- The terminal pane id as a number, from a number or a `{ Terminal = n }` table.
+local function pane_number(pane_id)
+  if type(pane_id) == "table" then
+    local _, id = next(pane_id)
+    return id
+  end
+  return pane_id
+end
+
+--- Matches the exit of the command run in terminal pane `id` under `token`, or the pane
+--- closing: settles with the `command_pane_exited` event, or `{ pane_id, closed = true }`.
+local function exit_matcher(id, token)
+  return function(_, event)
+    if event.name == "command_pane_exited" then
+      return event.pane_id == id
+          and (token == nil or (event.context ~= nil and event.context.__async == token)),
+        event
+    end
+    local kind, closed = next(event.value or {})
+    return kind == "Terminal" and closed == id, { pane_id = id, closed = true }
+  end
+end
+
+--- The next `name` event for which `match(event)` is truthy - every one, when `match` is nil.
+--- Resolves with the event.
+function zellij.async.event(name, match)
+  return awaitable {
+    events = { zellij.snake_case(name) },
+    match = function(_, event)
+      if match == nil or match(event) then
+        return true, event
+      end
+      return false
+    end,
+  }
+end
+
+--- `zellij.run_command`, awaited: resolves with the `run_command_result` event (`exit_code`,
+--- `stdout`, `stderr`, `context`). Takes the same table: `command` (the argv list),
+--- `env_variables`, `cwd` (default `/host`), `context`, `max_bytes_returned`. Needs
+--- `run_commands`.
+function zellij.async.run_command(args)
+  local context, token = with_token(args.context)
+  local aw = awaitable { events = { "run_command_result" }, match = matches_token(token) }
+  zellij.run_command {
+    command = args.command,
+    env_variables = args.env_variables or {},
+    cwd = args.cwd or "/host",
+    context = context,
+    max_bytes_returned = args.max_bytes_returned or zellij.null,
+  }
+  return aw
+end
+
+--- An HTTP request: `{ url, verb = "Get", headers, body, context, stream_id, proxy }`, the
+--- reply arriving as a `web_request_result` event (or, with a `stream_id`, as
+--- `web_request_stream_chunk` events). `body` is a string. `WebRequest` is a seven-element
+--- tuple with the two optional ones in the middle, so this wrapper is what makes the absent
+--- ones absent. Needs `web_access`.
+function zellij.web_request(args)
+  if type(args) ~= "table" then
+    error("zellij.web_request takes a table: { url = ..., verb = \"Post\", body = ... }", 2)
+  end
+  if args[1] ~= nil then
+    -- Positional, as the tuple is spelled: leave it to the author.
+    return dispatch("web_request", args)
+  end
+  return dispatch("web_request", {
+    args.url,
+    args.verb or "Get",
+    args.headers or {},
+    bytes(args.body or ""),
+    args.context or {},
+    args.stream_id == nil and zellij.null or args.stream_id,
+    args.proxy == nil and zellij.null or args.proxy,
+  })
+end
+
+--- `zellij.web_request`, awaited: resolves with the `web_request_result` event (`status`,
+--- `headers`, `body`, `context`). Takes `url`, `verb` (default `Get`), `headers`, `body`,
+--- `context`. Needs `web_access`.
+function zellij.async.web_request(args)
+  local context, token = with_token(args.context)
+  local aw = awaitable { events = { "web_request_result" }, match = matches_token(token) }
+  zellij.web_request {
+    url = args.url,
+    verb = args.verb,
+    headers = args.headers,
+    body = args.body,
+    context = context,
+  }
+  return aw
+end
+
+--- A pane's command exiting, or the pane closing: resolves with the `command_pane_exited` event
+--- (`pane_id`, `exit_code`, `context`), or `{ pane_id, closed = true }`. Only for a pane this
+--- plugin opened - that is who the host tells - and it needs `read_application_state`.
+function zellij.async.pane_exit(pane_id)
+  local id = pane_number(pane_id)
+  return awaitable {
+    events = { "command_pane_exited", "pane_closed" },
+    match = exit_matcher(id, nil),
+  }
+end
+
+--- Run a command in an existing command pane and await its exit, `run_command_in_pane` and
+--- `pane_exit` in one: `step` is a CommandToRun (`path`, `args`, `cwd`, ...) plus
+--- `keep_scrollback` and `context`. Resolves as `pane_exit` does, for this run only.
+function zellij.async.run_in_pane(pane_id, step)
+  local id = pane_number(pane_id)
+  local context, token = with_token(step.context)
+  local aw = awaitable {
+    events = { "command_pane_exited", "pane_closed" },
+    match = exit_matcher(id, token),
+  }
+  aw.token = token
+  zellij.run_command_in_pane {
+    pane_id = id,
+    command = {
+      path = step.path,
+      args = step.args,
+      cwd = step.cwd,
+      remote_host = step.remote_host,
+      remote_default_shell = step.remote_default_shell,
+    },
+    context = context,
+    keep_scrollback = step.keep_scrollback ~= false,
+  }
+  return aw
+end
+
+--- A pane's agent record reaching one of `states` (`"idle"`, or a list), read off
+--- `pane_update`; resolves with the `PaneInfo`. `opts.after` names the states the pane must be
+--- seen in first - `{ after = { "busy", "waiting" } }` waits for the *edge* into idle rather
+--- than a pane that is idle already. Needs `read_application_state`.
+function zellij.async.agent_state(pane_id, states, opts)
+  local id = pane_number(pane_id)
+  if type(states) == "string" then
+    states = { states }
+  end
+  local wanted, after = {}, nil
+  for _, state in ipairs(states) do
+    wanted[string.lower(state)] = true
+  end
+  if opts and opts.after then
+    after = {}
+    for _, state in ipairs(opts.after) do
+      after[string.lower(state)] = true
+    end
+  end
+  local seen_after = after == nil
+  return awaitable {
+    events = { "pane_update" },
+    match = function(_, event)
+      for _, panes in pairs(event.panes or {}) do
+        for _, pane in ipairs(panes) do
+          if not pane.is_plugin and pane.id == id and pane.agent then
+            local state = string.lower(tostring(pane.agent.state))
+            if seen_after and wanted[state] then
+              return true, pane
+            end
+            if after and after[state] then
+              seen_after = true
+            end
+          end
+        end
+      end
+      return false
+    end,
+  }
+end
+
+--- The next pipe message named `name`; resolves with the message.
+function zellij.async.pipe(name)
+  return awaitable { pipe = name }
+end
+
+--- Ask for permissions and await the answer: resolves with `"Granted"` or `"Denied"`. The
+--- way to write `load`:
+---
+---     function M.load()
+---       zellij.task(function()
+---         zellij.await(zellij.async.permissions { "run_commands" })
+---         -- act
+---       end)
+---     end
+---
+--- A permission granted before - by the user, or by hocus when it approved the source - is in
+--- force from the request on, and the answer arrives on the next event.
+function zellij.async.permissions(permissions)
+  local aw = awaitable {
+    events = { "permission_request_result" },
+    match = function(_, event)
+      return true, event.value
+    end,
+  }
+  zellij.request_permission(permissions)
+  return aw
+end
+
+--- Every awaitable in `list` (a list or a map): resolves with their values in the same shape.
+function zellij.async.all(list)
+  local aw, resolve = zellij.async.future()
+  local pending, results, waiting = 0, {}, {}
+  -- Count first, listen second: a child that is already settled must not be able to resolve
+  -- the aggregate before the ones after it in `pairs` order have been counted.
+  for key, child in pairs(list) do
+    if child.done then
+      results[key] = child.value
+    else
+      pending = pending + 1
+      waiting[key] = child
+    end
+  end
+  for key, child in pairs(waiting) do
+    table.insert(child.on_settle, function(value)
+      results[key] = value
+      pending = pending - 1
+      if pending == 0 then
+        resolve(results)
+      end
+    end)
+  end
+  if pending == 0 then
+    resolve(results)
+  end
+  return aw
+end
+
+--- The first of `list` to settle: resolves with `{ key = k, value = v }`. The others stay
+--- registered and settle on their own later, unheard - so an awaitable can be raced again,
+--- which is how a timeout is retried.
+function zellij.async.race(list)
+  local aw, resolve = zellij.async.future()
+  for key, child in pairs(list) do
+    local function won(value)
+      resolve { key = key, value = value }
+    end
+    if child.done then
+      won(child.value)
+    else
+      table.insert(child.on_settle, won)
+    end
+  end
+  return aw
+end
+
+--- Readers of every event. `event_intercepts` run before the waiters, for the sections below
+--- that keep a table current off the event stream; `event_followers` run after the tasks, for
+--- listeners a plugin registered, which hear the event the way a `zellij.on` handler does.
+local event_intercepts = {}
+local event_followers = {}
+
+--- Called from `__update` before the handlers: settle what the event settles, then resume.
+local function deliver(event)
+  for _, intercept in ipairs(event_intercepts) do
+    intercept(event)
+  end
+  local list = waiters[event.name]
+  if list then
+    for _, aw in ipairs { table.unpack(list) } do
+      if not aw.done then
+        local matched, value = aw.match(aw, event)
+        if matched then
+          settle(aw, value)
+        end
+      end
+    end
+  end
+  if event.name == "timer" then
+    sweep_deadlines()
+  end
+  drain()
+  for _, follower in ipairs(event_followers) do
+    follower(event)
+  end
+  drain()
+end
+
+--- Called from `__pipe`, the same way. Returns true when the message was one of this layer's
+--- own (an rpc call or reply), which the plugin's `pipe` is then not shown.
+local pipe_intercepts = {}
+
+local function deliver_pipe(message)
+  local intercepted = false
+  for _, intercept in ipairs(pipe_intercepts) do
+    if intercept(message) then
+      intercepted = true
+    end
+  end
+  for _, aw in ipairs { table.unpack(pipe_waiters[message.name] or {}) } do
+    settle(aw, message)
+  end
+  drain()
+  return intercepted
+end
+
+-- Agents -------------------------------------------------------------------------------------
+---
+--- A real table rather than a manufactured dispatcher, so `zellij.agent.spawn` and its siblings
+--- can take the flat, author-shaped table the guide shows and reshape it for the host.
+zellij.agent = {}
+
+--- The fields of `AgentSpawnSpec`, in `zellij.agent.spawn`'s flat table. Everything else the
+--- author writes (`source_directory`, `cwd`, `name`, `context`) is the command's own.
+local SPAWN_SPEC_FIELDS = {
+  "kind", "command", "args", "model", "prompt", "branch", "base", "worktree", "worktree_path",
+  "env", "permission_mode", "resume", "hooks", "firecracker", "firecracker_image",
+}
+
+--- Start a coding agent in a command pane near this plugin:
+---
+---   local pane = zellij.agent.spawn { kind = "claude", prompt = "fix the parser", branch = "fix-42" }
+---
+--- The launch is planned the way hocus plans its own - per-kind flags, `permission_mode`,
+--- `resume`, the inline Claude Code hooks (`hooks = false` to leave them out) - and the pane is
+--- recorded as an agent pane, so its state rides on `pane_update` and its exit fires
+--- `agent_exit`. `branch` (with `base`, default `main`) makes a worktree at `worktree_path`
+--- (default `.worktrees/<branch>`), or the branch in place with `worktree = false`;
+--- `source_directory` is the repository that happens in, as a plugin path (`/host` by default);
+--- `cwd` is where the pane runs when no branch is named. `name` titles the pane and `context`
+--- comes back on `command_pane_exited`. Answers with the pane id and raises on failure. Needs
+--- `run_commands`.
+function zellij.agent.spawn(opts)
+  if type(opts) ~= "table" then
+    error("zellij.agent.spawn takes a table: { kind = \"claude\", prompt = ... }", 2)
+  end
+  local spec = {}
+  for _, field in ipairs(SPAWN_SPEC_FIELDS) do
+    spec[field] = opts[field]
+  end
+  return dispatch("spawn_agent", {
+    spec = spec,
+    source_directory = opts.source_directory,
+    cwd = opts.cwd,
+    name = opts.name,
+    context = opts.context or {},
+  })
+end
+
+-- The rest of `zellij.agent`: observing and steering an agent that is running in a pane.
+--
+-- State comes off `pane_update` (the pane's `agent` record: `kind`, `state`, `detail`, ...)
+-- and words come off `agent_event` (one event per hook the agent fired, read by the session:
+-- `pane_id`, `kind`, `hook`, `state`, `detail`, `prompt`, `last_message`, `tool_name`, `cwd`,
+-- `session_id`). Both need `read_application_state`.
+
+local agent_records = {} -- terminal pane id -> the pane's agent record, or nil
+local agent_records_watched = false
+local agent_listeners = {}
+
+local function watch_agent_records()
+  if not agent_records_watched then
+    agent_records_watched = true
+    subscribe_once("pane_update")
+  end
+end
+
+--- Keep `agent_records` current; called from `deliver` for every `pane_update`, whether the
+--- plugin subscribed to it itself or `watch_agent_records` did: a manifest that has already
+--- flowed is the answer to the first `info()`, not something to wait for again. Rebuilt in
+--- place from the whole manifest, so a pane that closed is gone from it - and so a table a
+--- caller took from `all()` stays the one that is kept current.
+local function record_agents(event)
+  for id in pairs(agent_records) do
+    agent_records[id] = nil
+  end
+  for _, panes in pairs(event.panes or {}) do
+    for _, pane in ipairs(panes) do
+      if not pane.is_plugin then
+        agent_records[pane.id] = pane.agent
+      end
+    end
+  end
+end
+
+--- The agent record the manifest last showed for `pane_id`, or nil: `{ kind, state, source,
+--- detail, cwd, session_id, run_id }` with `state` one of `Busy`, `Waiting`, `Idle`, `Exited`.
+--- Nil until a `pane_update` has arrived - the plugin's own subscription counts, and the first
+--- call subscribes otherwise - and nil again once the pane has closed.
+function zellij.agent.info(pane_id)
+  watch_agent_records()
+  return agent_records[pane_number(pane_id)]
+end
+
+--- Every agent record the manifest last showed, keyed by terminal pane id.
+function zellij.agent.all()
+  watch_agent_records()
+  return agent_records
+end
+
+--- Hear every `agent_event`, already typed: `fn(event)` with `event.pane_id`, `event.kind`,
+--- `event.hook` (`UserPromptSubmit`, `Stop`, ...), `event.state`, `event.prompt`,
+--- `event.last_message`, `event.tool_name`, `event.detail`, `event.cwd`, `event.session_id`.
+function zellij.agent.on(fn)
+  subscribe_once("agent_event")
+  table.insert(agent_listeners, fn)
+end
+
+--- Type `text` into the agent's pane as one paste - bracketed, so a multi-line prompt is one
+--- prompt - followed by Enter unless `opts.enter == false`. Needs `write_to_stdin`.
+function zellij.agent.send(pane_id, text, opts)
+  local target = zellij.terminal_pane(pane_number(pane_id))
+  zellij.write_to_pane_id("\27[200~" .. tostring(text) .. "\27[201~", target)
+  if not (opts and opts.enter == false) then
+    zellij.write_to_pane_id("\r", target)
+  end
+end
+
+--- The next `agent_event` for `pane_id` whose `hook` is `hooks` (a name, or a list; nil for
+--- any); resolves with the event.
+function zellij.async.agent_event(pane_id, hooks)
+  local id = pane_number(pane_id)
+  local wanted = nil
+  if type(hooks) == "string" then
+    hooks = { hooks }
+  end
+  if hooks then
+    wanted = {}
+    for _, hook in ipairs(hooks) do
+      wanted[hook] = true
+    end
+  end
+  return awaitable {
+    events = { "agent_event" },
+    match = function(_, event)
+      return event.pane_id == id and (wanted == nil or wanted[event.hook] == true), event
+    end,
+  }
+end
+
+--- The hooks that end a turn. `SessionStart` reads as idle on the record too, but it begins a
+--- session rather than ending a turn: a spawned agent fires it before it has submitted its
+--- opening prompt, so a turn that settled on it would answer before the agent had spoken.
+local TURN_ENDING_HOOKS = { Stop = true, StopFailure = true, Interrupt = true }
+
+--- The agent's current turn ending: resolves with `{ message, hook, state, session_id }` on the
+--- next `Stop`, `StopFailure` or `Interrupt` for `pane_id`, with `message` the agent's last
+--- words, when it left any. For an agent with no hooks to speak through,
+--- `opts.fallback = "idle"` also resolves on the pane's record moving from `busy` or `waiting`
+--- to `idle`, with `message = nil`.
+function zellij.async.turn(pane_id, opts)
+  local aw, resolve = zellij.async.future()
+  local ended = zellij.async.agent_event(pane_id)
+  ended.match = function(_, event)
+    return event.pane_id == pane_number(pane_id) and TURN_ENDING_HOOKS[event.hook] == true, event
+  end
+  table.insert(ended.on_settle, function(event)
+    resolve {
+      message = event.last_message,
+      hook = event.hook,
+      state = event.state,
+      session_id = event.session_id,
+    }
+  end)
+  if opts and opts.fallback == "idle" then
+    local idle = zellij.async.agent_state(pane_id, "idle", { after = { "busy", "waiting" } })
+    table.insert(idle.on_settle, function(pane)
+      resolve { message = nil, hook = nil, state = "Idle", session_id = pane.agent.session_id }
+    end)
+  end
+  return aw
+end
+
+--- Send a prompt and await the turn it starts: `zellij.agent.send` then `zellij.async.turn`,
+--- the turn registered first so a fast answer is not missed.
+---
+---     local reply = zellij.await(zellij.agent.prompt(pane, "run the tests and fix what fails"))
+---     zellij.log(reply.message)
+function zellij.agent.prompt(pane_id, text, opts)
+  local turn = zellij.async.turn(pane_id, opts)
+  zellij.agent.send(pane_id, text, opts)
+  return turn
+end
+
+--- Called from `deliver`: the listeners `zellij.agent.on` registered.
+local function deliver_agent_event(event)
+  for _, listener in ipairs(agent_listeners) do
+    if listener(event) then
+      zellij.__should_render = true
+    end
+  end
+end
+
+table.insert(event_intercepts, function(event)
+  if event.name == "pane_update" then
+    record_agents(event)
+  end
+end)
+
+table.insert(event_followers, function(event)
+  if event.name == "agent_event" then
+    deliver_agent_event(event)
+  end
+end)
+
+-- Plugin-to-plugin calls ---------------------------------------------------------------------
+---
+--- A request with an answer, over `message_to_plugin`: the caller sends `zellij_rpc_call` with
+--- a call id and the callee sends `zellij_rpc_reply` back to the plugin id the message came
+--- from. Both sides need `message_and_launch_other_plugins`. The messages never reach either
+--- plugin's own `pipe`.
+---
+---     zellij.rpc.handle("forecast", function(payload) return "clear over " .. payload.city end)
+---
+---     local reply = zellij.await(zellij.rpc.call {
+---       plugin_url = "file:weather.lua", name = "forecast", payload = { city = "Oslo" },
+---       timeout = 10,
+---     })
+---     -- reply.result, or reply.error
+
+zellij.rpc = {}
+
+local RPC_CALL, RPC_REPLY = "zellij_rpc_call", "zellij_rpc_reply"
+local rpc_handlers = {}
+local rpc_calls = {} -- call id -> resolve
+local rpc_count = 0
+
+--- Answer calls named `name`: `fn(payload, call)` returns the result, or raises - the error
+--- text travels back as `reply.error`.
+function zellij.rpc.handle(name, fn)
+  rpc_handlers[name] = fn
+end
+
+--- Call `name` on another plugin - by `plugin_url` (launched if it is not running, with
+--- `plugin_config`) or by `plugin_id` - with a JSON-encodable `payload`. Resolves with
+--- `{ result = ... }` or `{ error = "..." }`; `timeout` (seconds) is the latter too.
+function zellij.rpc.call(opts)
+  rpc_count = rpc_count + 1
+  local call_id = "rpc" .. rpc_count
+  local aw, resolve = zellij.async.future()
+  rpc_calls[call_id] = resolve
+  zellij.message_to_plugin {
+    plugin_url = opts.plugin_url,
+    destination_plugin_id = opts.plugin_id,
+    plugin_config = opts.plugin_config,
+    message_name = RPC_CALL,
+    message_payload = zellij.json.encode {
+      version = 1,
+      call_id = call_id,
+      name = opts.name,
+      payload = opts.payload,
+    },
+  }
+  if opts.timeout then
+    table.insert(at(opts.timeout).on_settle, function()
+      if rpc_calls[call_id] then
+        rpc_calls[call_id] = nil
+        resolve { error = "no answer to " .. tostring(opts.name) .. " in " .. opts.timeout .. "s" }
+      end
+    end)
+  end
+  return aw
+end
+
+table.insert(pipe_intercepts, function(message)
+  if message.name == RPC_CALL then
+    local ok, call = pcall(zellij.json.decode, message.payload or "")
+    if not ok or type(call) ~= "table" or call.version ~= 1 then
+      return true
+    end
+    local reply = { version = 1, call_id = call.call_id }
+    local handler = rpc_handlers[call.name]
+    if handler == nil then
+      reply.error = "no rpc handler named " .. tostring(call.name)
+    else
+      local handled, result = pcall(handler, call.payload, call)
+      if handled then
+        reply.result = result
+      else
+        reply.error = tostring(result)
+      end
+    end
+    local from = type(message.source) == "table" and message.source.Plugin or call.reply_to
+    if from ~= nil then
+      zellij.message_to_plugin {
+        destination_plugin_id = from,
+        message_name = RPC_REPLY,
+        message_payload = zellij.json.encode(reply),
+      }
+    end
+    return true
+  elseif message.name == RPC_REPLY then
+    local ok, reply = pcall(zellij.json.decode, message.payload or "")
+    if ok and type(reply) == "table" and rpc_calls[reply.call_id] then
+      local resolve = rpc_calls[reply.call_id]
+      rpc_calls[reply.call_id] = nil
+      resolve(reply)
+    end
+    return true
+  end
+  return false
+end)
+
+-- Hocus extensions ---------------------------------------------------------------------------
+---
+--- A plugin in the `hocus/` folder of the plugin folder can give the in-session model tools.
+--- Declare them once, with their handlers, and the prelude does the rest: the registration
+--- hocus reads, the re-registration when hocus asks who is running, and each call - a
+--- `zellij.rpc` call named `hocus_tool:<name>` - answered with what the handler returns (a
+--- string, or anything `zellij.json` can encode) or the error it raised.
+---
+---     zellij.on("permission_request_result", function()
+---       zellij.hocus.tools {
+---         forecast = {
+---           description = "A short forecast for a city.",
+---           parameters = { type = "object", properties = { city = { type = "string" } },
+---                          required = { "city" } },
+---           safety = "read_only",           -- or "automatic", or "confirm" with a `consequence`
+---           handler = function(args) return "Clear skies over " .. args.city end,
+---         },
+---       }
+---     end)
+---
+--- The file name is the tool namespace: `hocus/weather.lua` makes `weather_forecast`. Needs
+--- `message_and_launch_other_plugins`. Registered only when hocus launched the file - it names
+--- the extension in the configuration - so a copy reloaded by hand logs that and offers nothing.
+
+zellij.hocus = {}
+
+local hocus_tools = nil
+local hocus_launch = nil -- { namespace, path } from the configuration, when hocus launched us
+local hocus_said_unlaunched = false
+
+local function hocus_register()
+  if not hocus_tools then
+    return
+  end
+  if not hocus_launch then
+    if not hocus_said_unlaunched then
+      hocus_said_unlaunched = true
+      zellij.log("hocus extension: not launched by hocus, so its tools are not registered - "
+        .. "ask hocus to reload it (plugin_reload) to pick them up")
+    end
+    return
+  end
+  local names = {}
+  for name in pairs(hocus_tools) do
+    names[#names + 1] = name
+  end
+  table.sort(names)
+  local list = {}
+  for _, name in ipairs(names) do
+    local tool = hocus_tools[name]
+    list[#list + 1] = {
+      name = name,
+      description = tool.description or name,
+      parameters = tool.parameters or { type = "object" },
+      safety = tool.safety or "read_only",
+      consequence = tool.consequence,
+    }
+  end
+  zellij.message_to_plugin {
+    message_name = "hocus_extension_register",
+    message_payload = zellij.json.encode {
+      version = 1,
+      namespace = hocus_launch.namespace,
+      path = hocus_launch.path,
+      tools = list,
+    },
+  }
+end
+
+--- Declare this extension's tools, `{ name = { description, parameters, safety, consequence,
+--- handler } }`, and register them with hocus. Calling it again replaces the set.
+function zellij.hocus.tools(tools)
+  if type(tools) ~= "table" then
+    error("zellij.hocus.tools takes a table of tools keyed by name", 2)
+  end
+  for name, tool in pairs(tools) do
+    if type(tool) ~= "table" or type(tool.handler) ~= "function" then
+      error("hocus tool '" .. tostring(name) .. "' needs a `handler` function", 2)
+    end
+    zellij.rpc.handle("hocus_tool:" .. name, function(payload, call)
+      local result = tool.handler(payload or {}, call)
+      if type(result) ~= "string" then
+        result = zellij.json.encode(result)
+      end
+      return result
+    end)
+  end
+  hocus_tools = tools
+  hocus_register()
+end
+
+--- Whether hocus launched this plugin as an extension: the namespace and file it registers as.
+function zellij.hocus.launch()
+  return hocus_launch
+end
+
+table.insert(pipe_intercepts, function(message)
+  if message.name == "hocus_extension_discover" then
+    -- Hocus reloaded and is asking who is running: say so again.
+    hocus_register()
+    return true
+  end
+  return false
+end)
+
+--- Called from `__load`: the two configuration keys hocus sets on an extension it launched.
+local function note_hocus_launch(config)
+  local namespace, path = config and config.hocus_extension_name, config and config.hocus_extension_path
+  if namespace and path then
+    hocus_launch = { namespace = namespace, path = path }
+  end
 end
 
 -- Data ---------------------------------------------------------------------------------------
@@ -1163,16 +2235,12 @@ function zellij.__update(plugin, raw_event)
   local event = normalize_event(raw_event)
   zellij.__should_render = false
   local should_render = false
-  -- Re-armed before the handlers run, so a handler that raises does not stop the clock. Only the
-  -- timer that leaves none outstanding re-arms: an overlapping `set_timeout`, or a second
-  -- `set_interval`, would otherwise leave one permanent chain per call, each firing the
-  -- callbacks again.
-  if event.name == "timer" then
-    zellij.__timers = math.max((zellij.__timers or 0) - 1, 0)
-    if zellij.__interval and zellij.__timers == 0 then
-      arm(zellij.__interval)
-    end
+  if tracing then
+    trace("<- " .. event.name)
   end
+  -- Tasks first: an awaitable is settled and its task resumed before any handler sees the
+  -- event, and the event is not consumed - handlers and `update` still see it.
+  deliver(event)
   for _, handler in ipairs(handlers[event.name] or {}) do
     if handler(event) then
       should_render = true
@@ -1181,6 +2249,7 @@ function zellij.__update(plugin, raw_event)
   if plugin.update and plugin.update(event) then
     should_render = true
   end
+  drain()
   return should_render or zellij.__should_render
 end
 
@@ -1188,6 +2257,14 @@ end
 function zellij.__pipe(plugin, message)
   zellij.__should_render = false
   local should_render = false
+  if tracing then
+    trace("<- pipe " .. tostring(message.name))
+  end
+  -- An rpc call or reply is this layer's own and is answered here, never shown to the plugin.
+  if deliver_pipe(message) then
+    drain()
+    return zellij.__should_render
+  end
   local keybinding_handler = default_keybinding_handlers[message.name]
   if keybinding_handler and keybinding_handler(message) then
     should_render = true
@@ -1195,6 +2272,7 @@ function zellij.__pipe(plugin, message)
   if plugin.pipe and plugin.pipe(message) then
     should_render = true
   end
+  drain()
   return should_render or zellij.__should_render
 end
 
@@ -1223,9 +2301,14 @@ function zellij.__load(plugin, config)
     end
     config = merged
   end
+  if config and (config.trace == "true" or config.trace == true) then
+    zellij.trace(true)
+  end
+  note_hocus_launch(config)
   if plugin.load then
     plugin.load(config)
   end
+  drain()
 end
 
 -- Pane workflows -----------------------------------------------------------------------------
@@ -1288,9 +2371,8 @@ function zellij.run_command_in_pane(args)
   })
 end
 
-local workflows = {} -- terminal pane id (number) -> workflow
+local workflows = {} -- terminal pane id (number) -> workflow, for the cwd tracking
 local workflow_count = 0
-local workflow_handlers_installed = false
 local pane_update_watched = false
 
 local Workflow = {}
@@ -1335,11 +2417,8 @@ local function watch_pane_cwds()
 end
 
 local function finish(wf, status)
-  if wf.pane_id then
-    workflows[wf.pane_id] = nil
-  end
+  workflows[wf.pane_id] = nil
   wf.status = status
-  wf.deadline = nil
   if
     (status == "success" and wf.opts.close_on_success)
     or (status == "cancelled" and wf.opts.on_cancel == "close")
@@ -1356,153 +2435,122 @@ local function finish(wf, status)
   end
 end
 
-local function start_step(wf)
-  local step = wf.steps[wf.idx]
-  wf.phase = "running"
-  wf.deadline = nil
-  local context = { __wf = wf.id, __step = tostring(wf.idx) }
-  if wf.idx == 1 then
-    local opened
-    if wf.opts.floating then
-      local coords = type(wf.opts.floating) == "table" and wf.opts.floating or {}
-      opened = zellij.open_command_pane_floating { step_command(wf, step), coords, context }
-    else
-      opened = zellij.open_command_pane { step_command(wf, step), context }
+--- The context a step's command carries, which its `command_pane_opened`/`_re_run`/`_exited`
+--- events bring back: the workflow and the step, so a stale exit - the user re-running a
+--- finished step from the held pane - names an earlier step and is not the workflow advancing.
+local function step_context(wf, idx)
+  return { __wf = wf.id, __step = tostring(idx) }
+end
+
+local function step_matcher(wf, idx, events)
+  local step = tostring(idx)
+  return function(_, event)
+    if event.name == "pane_closed" then
+      local kind, closed = next(event.value or {})
+      return kind == "Terminal" and closed == wf.pane_id, { pane_id = wf.pane_id, closed = true }
     end
-    local _, id = next(opened or {})
-    if not id then
-      error("pane_workflow: zellij did not answer with a pane id")
+    return event.pane_id == wf.pane_id
+        and event.context ~= nil
+        and event.context.__wf == wf.id
+        and event.context.__step == step,
+      event
+  end
+end
+
+--- The step's process starting: the pane opening for the first step, the command being
+--- replaced for a later one.
+local function step_started(wf, idx)
+  return awaitable {
+    events = { "command_pane_opened", "command_pane_re_run" },
+    match = step_matcher(wf, idx),
+  }
+end
+
+--- The step's command exiting, or the pane closing under it.
+local function step_exit(wf, idx)
+  return awaitable {
+    events = { "command_pane_exited", "pane_closed" },
+    match = step_matcher(wf, idx),
+  }
+end
+
+--- Await `exit` within `timeout`: past it, SIGINT, then SIGKILL after `kill_grace` seconds, then
+--- giving up after another. Returns the exit event (nil when nothing exited) and whether the
+--- step timed out. `wf.abort` settling means a cancel ran out of patience.
+local function await_exit(wf, exit, timeout)
+  local contenders = { exit = exit, abort = wf.abort }
+  if timeout then
+    contenders.timeout = zellij.async.sleep(timeout)
+  end
+  local won = zellij.await(zellij.async.race(contenders))
+  if won.key == "exit" then
+    return won.value, false
+  elseif won.key == "abort" then
+    return nil, false
+  end
+  local target = zellij.terminal_pane(wf.pane_id)
+  local grace = math.ceil(wf.opts.kill_grace or 5)
+  for _, signal in ipairs { "send_sigint_to_pane_id", "send_sigkill_to_pane_id" } do
+    zellij[signal](target)
+    local next_won = zellij.await(zellij.async.race {
+      exit = exit,
+      abort = wf.abort,
+      timeout = zellij.async.sleep(grace),
+    })
+    if next_won.key == "exit" then
+      return next_won.value, true
+    elseif next_won.key == "abort" then
+      return nil, true
     end
-    wf.pane_id = id
-    workflows[id] = wf
-    if wf.opts.name then
-      pcall(zellij.rename_terminal_pane, { pane_id = id, name = wf.opts.name })
+  end
+  return nil, true
+end
+
+--- The workflow's whole life, as one task: each step awaited in turn, the next started in the
+--- same pane when one ends.
+local function run_steps(wf, exit, started)
+  while true do
+    local idx = wf.idx
+    local step = wf.steps[idx]
+    if step.stdin or step.timeout then
+      -- Wait for the step's process to start: its stdin goes to that process, and its timeout
+      -- counts from then rather than from the moment the previous step ended.
+      local first = zellij.await(zellij.async.race { started = started, exit = exit, abort = wf.abort })
+      if first.key == "started" and step.stdin then
+        zellij.write_chars_to_pane_id(step.stdin, zellij.terminal_pane(wf.pane_id))
+      end
     end
-  else
+    local event, timed_out = await_exit(wf, exit, step.timeout)
+    if event and event.closed then
+      -- The pane went, and the step with it: nothing exited, so there is no step to report.
+      return finish(wf, "pane_closed")
+    end
+    wf.exit_codes[idx] = event and event.exit_code or false
+    if wf.opts.on_step then
+      pcall(wf.opts.on_step, idx, step, event and event.exit_code)
+    end
+    if wf.status == "cancelling" or event == nil and not timed_out then
+      return finish(wf, "cancelled")
+    elseif timed_out then
+      wf.failed_step = idx
+      return finish(wf, "failed")
+    elseif wf.stop_on_failure and event.exit_code ~= 0 then
+      wf.failed_step = idx
+      return finish(wf, "failed")
+    elseif idx >= #wf.steps then
+      return finish(wf, "success")
+    end
+    wf.idx = idx + 1
+    local next_step = wf.steps[wf.idx]
+    exit = step_exit(wf, wf.idx)
+    started = step_started(wf, wf.idx)
     zellij.run_command_in_pane {
       pane_id = wf.pane_id,
-      command = step_command(wf, step),
-      context = context,
+      command = step_command(wf, next_step),
+      context = step_context(wf, wf.idx),
       keep_scrollback = wf.opts.keep_scrollback,
     }
   end
-end
-
-local function on_step_exit(wf, event)
-  local step = wf.steps[wf.idx]
-  local timed_out = wf.phase ~= "running"
-  wf.exit_codes[wf.idx] = event.exit_code or false
-  wf.deadline = nil
-  wf.phase = "running"
-  if wf.opts.on_step then
-    pcall(wf.opts.on_step, wf.idx, step, event.exit_code)
-  end
-  if wf.status == "cancelling" then
-    finish(wf, "cancelled")
-  elseif timed_out then
-    wf.failed_step = wf.idx
-    finish(wf, "failed")
-  elseif wf.stop_on_failure and event.exit_code ~= 0 then
-    wf.failed_step = wf.idx
-    finish(wf, "failed")
-  elseif wf.idx >= #wf.steps then
-    finish(wf, "success")
-  else
-    wf.idx = wf.idx + 1
-    start_step(wf)
-  end
-end
-
---- The workflow a pane event belongs to, or nil for anyone else's pane.
-local function workflow_for(event)
-  local wf = event.context and event.context.__wf and workflows[event.pane_id]
-  if wf and wf.id == event.context.__wf then
-    return wf
-  end
-  return nil
-end
-
-local function on_step_started(event)
-  local wf = workflow_for(event)
-  local step_index = tonumber(event.context and event.context.__step) or 0
-  if not wf or step_index ~= wf.idx then
-    return
-  end
-  local step = wf.steps[step_index]
-  if step and step.stdin then
-    zellij.write_chars_to_pane_id(step.stdin, zellij.terminal_pane(event.pane_id))
-  end
-  if step and step.timeout then
-    -- `os.time` counts whole seconds, so the deadline is rounded up and the timer armed a
-    -- second past it: when the timer fires, the deadline is reliably due.
-    wf.deadline = os.time() + math.ceil(step.timeout)
-    arm(math.ceil(step.timeout) + 1)
-  end
-end
-
---- SIGINT, then SIGKILL, then giving up: one escalation ladder serves both a step `timeout`
---- and `cancel`. Reaching the end without an exit event means there was no child to kill.
-local function escalate(wf)
-  local target = zellij.terminal_pane(wf.pane_id)
-  if wf.phase == "running" then
-    zellij.send_sigint_to_pane_id(target)
-    wf.phase = "int_sent"
-  elseif wf.phase == "int_sent" then
-    zellij.send_sigkill_to_pane_id(target)
-    wf.phase = "kill_sent"
-  else
-    if wf.status ~= "cancelling" then
-      wf.failed_step = wf.idx
-    end
-    finish(wf, wf.status == "cancelling" and "cancelled" or "failed")
-    return
-  end
-  local grace = math.ceil(wf.opts.kill_grace or 5)
-  wf.deadline = os.time() + grace
-  arm(grace + 1)
-end
-
-local function install_workflow_handlers()
-  if workflow_handlers_installed then
-    return
-  end
-  workflow_handlers_installed = true
-  zellij.subscribe {
-    "command_pane_opened",
-    "command_pane_exited",
-    "command_pane_re_run",
-    "pane_closed",
-    "timer",
-  }
-  zellij.on("command_pane_exited", function(event)
-    local wf = workflow_for(event)
-    -- A stale exit - the user re-running a finished step from the held pane - names an
-    -- earlier step and is not the workflow advancing.
-    if wf and tonumber(event.context.__step) == wf.idx then
-      on_step_exit(wf, event)
-    end
-  end)
-  zellij.on("command_pane_opened", on_step_started)
-  zellij.on("command_pane_re_run", on_step_started)
-  zellij.on("pane_closed", function(event)
-    if type(event.value) ~= "table" then
-      return
-    end
-    local kind, id = next(event.value)
-    local wf = kind == "Terminal" and workflows[id]
-    if wf then
-      finish(wf, "pane_closed")
-    end
-  end)
-  zellij.on("timer", function()
-    local now = os.time()
-    for _, wf in pairs(workflows) do
-      if wf.deadline and now >= wf.deadline then
-        wf.deadline = nil
-        escalate(wf)
-      end
-    end
-  end)
 end
 
 function Workflow:push(step)
@@ -1515,12 +2563,28 @@ function Workflow:push(step)
   end
 end
 
+--- SIGINT now, SIGKILL after `kill_grace`, and after another `kill_grace` the workflow ends
+--- as cancelled whether or not anything exited; `on_done` says "cancelled".
 function Workflow:cancel()
   if self.status ~= "running" then
     return
   end
-  escalate(self)
+  local target = zellij.terminal_pane(self.pane_id)
+  local grace = math.ceil(self.opts.kill_grace or 5)
+  -- The signal first: a refusal (no `change_application_state`) leaves the workflow running.
+  zellij.send_sigint_to_pane_id(target)
   self.status = "cancelling"
+  zellij.after(grace, function()
+    if self.status ~= "cancelling" then
+      return
+    end
+    zellij.send_sigkill_to_pane_id(target)
+    zellij.after(grace, function()
+      if self.status == "cancelling" then
+        self.resolve_abort(true)
+      end
+    end)
+  end)
 end
 
 --- Start a workflow. Returns its handle immediately; `handle.pane_id` is already the pane.
@@ -1533,7 +2597,6 @@ function zellij.pane_workflow(opts)
       error("pane_workflow: step " .. index .. " needs a `path`")
     end
   end
-  install_workflow_handlers()
   workflow_count = workflow_count + 1
   local wf = setmetatable({
     id = "wf" .. workflow_count,
@@ -1543,7 +2606,6 @@ function zellij.pane_workflow(opts)
     idx = 1,
     exit_codes = {},
     status = "running",
-    phase = "running",
   }, Workflow)
   wf.opts.keep_scrollback = opts.keep_scrollback ~= false
   for _, step in ipairs(wf.steps) do
@@ -1551,7 +2613,32 @@ function zellij.pane_workflow(opts)
       watch_pane_cwds()
     end
   end
-  start_step(wf)
+  wf.abort, wf.resolve_abort = zellij.async.future()
+
+  -- The first step opens the pane, synchronously, so the pane id is known before this returns.
+  local step = wf.steps[1]
+  local context = step_context(wf, 1)
+  local opened
+  if opts.floating then
+    local coords = type(opts.floating) == "table" and opts.floating or {}
+    opened = zellij.open_command_pane_floating { step_command(wf, step), coords, context }
+  else
+    opened = zellij.open_command_pane { step_command(wf, step), context }
+  end
+  local _, id = next(opened or {})
+  if not id then
+    error("pane_workflow: zellij did not answer with a pane id")
+  end
+  wf.pane_id = id
+  workflows[id] = wf
+  if opts.name then
+    pcall(zellij.rename_terminal_pane, { pane_id = id, name = opts.name })
+  end
+  local exit = step_exit(wf, 1)
+  local started = step_started(wf, 1)
+  wf.task = zellij.task(function()
+    run_steps(wf, exit, started)
+  end)
   return wf
 end
 
@@ -1564,10 +2651,21 @@ end
 ---
 --- Names beginning with an underscore are excluded: `__dispatch` and friends are the host's own,
 --- and a manufactured function in their place would be indistinguishable from the real one.
+--- Commands a Lua plugin has no use for, and the reason each is refused by name rather than
+--- reaching the host to do nothing.
+local not_from_lua = {
+  post_message_to = "Lua plugins have no workers; a zellij.task or a work queue is the answer",
+}
+
 setmetatable(zellij, {
   __index = function(_, name)
     if type(name) ~= "string" or name:sub(1, 1) == "_" then
       return nil
+    end
+    if not_from_lua[name] then
+      return function()
+        error("zellij." .. name .. " is not available from Lua: " .. not_from_lua[name], 2)
+      end
     end
     return function(...)
       local count = select("#", ...)

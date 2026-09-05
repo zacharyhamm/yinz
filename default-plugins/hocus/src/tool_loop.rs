@@ -346,13 +346,13 @@ impl State {
         let payload = serde_json::to_string(&extensions::Call {
             version: extensions::VERSION,
             call_id: &call.id,
-            tool: &tool.local_name,
-            arguments: arguments.into(),
-            reply_to: self.own_plugin_id,
+            name: format!("{}{}", extensions::TOOL_HANDLER_PREFIX, tool.local_name),
+            payload: arguments.into(),
         })
         .expect("serializing an extension call cannot fail");
         extensions::call(tool.owner, payload);
         self.status = Status::AwaitingExtension;
+        self.extension_call_started_ms = Some(self.mono_ms);
         self.pin_to_bottom();
         self.arm_timer(FRAME_SECONDS);
         false
@@ -2704,17 +2704,13 @@ impl State {
 
     /// Start an agent, and register the kind the caller gave against the pane id.
     ///
-    /// Two routes to a pane, one decision about what goes in it. `launch::plan` says
-    /// what to run for both — so `agent=cursor model=x prompt=y` means the same
-    /// argv here as it does behind the New agent modal's button — and the routes
-    /// differ only in where the pane lands:
-    ///
-    /// - a checkout to make means git work first, which is `launch::open`: the
-    ///   modal's own call, with the same worktree defaults and the same errors;
-    /// - nothing to make keeps this on `new_pane`, which is what it always did. Going
-    ///   through `launch::open` for those too would look tidier and be worse: it
-    ///   resolves the repository root, so `command=zsh cwd=/tmp` would start
-    ///   failing, and `floating`/`in_new_tab` would quietly stop working.
+    /// One route: `tools::spawn_agent`, the host command the New agent modal's button and a
+    /// Lua plugin's `zellij.agent.spawn` also call, so `agent=cursor model=x prompt=y` means
+    /// the same argv and the same worktree defaults everywhere. `launch::plan` is run here
+    /// first only to say what the host will refuse before anything is opened - and to know
+    /// whether a checkout is being made, which decides what `cwd` means: with one, the
+    /// folder is the repository to cut it in; without, it is where the pane runs, with no
+    /// git work at all (`command=zsh cwd=/tmp` keeps working).
     pub(crate) fn agent_spawn(&mut self, args: &tools::Args) -> String {
         let mut spec = args.launch_spec();
         let selected_project = args.project.as_deref().or(self.active_project.as_deref());
@@ -2756,43 +2752,22 @@ impl State {
         };
         let project_firecracker =
             firecracker && (args.project.is_some() || self.active_project.is_some());
-        let result = if matches!(checkout, GitCheckout::Current) && !project_firecracker {
-            // With no project, `cwd` can only be the caller's: a path on this machine.
-            // `new_pane` would hand it to the guest as its working directory, where it
-            // does not exist, and the agent would start wherever the broker happens to
-            // be. The git route never has this problem - there `cwd` is the host
-            // checkout to mirror, and the provider supplies the guest directory.
-            if command.target.is_firecracker() && cwd.is_some() {
-                return "cwd is a path on this machine, and a Firecracker agent starts in the \
-                        VM's workspace; leave cwd unset or name a project"
-                    .to_owned();
-            }
-            // From the plan, not from `args`: `agent`, `model` and `prompt` are all in
-            // `command`, and none of them is a key `new_pane` knows. Nothing else of `args`
-            // comes along - that was true of the `new_pane` call this replaces, and carrying
-            // more now would be a behaviour change wearing a refactor's clothes.
-            let pane = tools::Args {
-                command: Some(serde_json::Value::String(
-                    command.path.display().to_string(),
-                )),
-                args: command.args,
-                cwd,
-                firecracker_vm: command.target.firecracker_vm().map(str::to_owned),
-                firecracker_image: command.target.firecracker_image().map(str::to_owned),
-                ..tools::Args::default()
-            };
-            // The one thing this route did not do. `spawn_in_checkout` goes through a host
-            // call that marks the pane as an agent's itself; an agent with no branch to cut
-            // opens an ordinary command pane, so it has to say so here or the `agent_exit`
-            // hook will never fire for it. The marker also opens the pane near the plugin,
-            // as that host call does, so the server places both routes the same way.
-            tools::new_pane_with_context(&pane, launch::agent_pane_context())
+        let no_checkout = matches!(checkout, GitCheckout::Current);
+        // With no project, `cwd` can only be the caller's: a path on this machine. Handed to
+        // the guest as its working directory it would not exist there, and the agent would
+        // start wherever the broker happens to be. A project's root is mirrored instead - the
+        // host treats it as the checkout to mirror and the provider supplies the guest folder.
+        if no_checkout && !project_firecracker && command.target.is_firecracker() && cwd.is_some() {
+            return "cwd is a path on this machine, and a Firecracker agent starts in the \
+                    VM's workspace; leave cwd unset or name a project"
+                .to_owned();
+        }
+        let run_in = if no_checkout && !project_firecracker {
+            cwd.clone()
         } else {
-            let mut configured = args.clone();
-            configured.firecracker_vm = spec.firecracker;
-            configured.firecracker_image = spec.firecracker_image;
-            tools::spawn_in_checkout(&configured, cwd)
+            None
         };
+        let result = tools::spawn_agent(args, &spec, cwd, run_in);
         self.register_spawned(args.kind.as_deref(), &result)
     }
 

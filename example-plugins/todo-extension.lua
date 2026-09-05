@@ -19,12 +19,16 @@ local M = {}
 -- refused, and reaching it needs `shared_plugin_data` as well as `plugin_data` - in the pane too.
 local NAMESPACE = "shared:todo"
 
--- What the model is told this extension can do. `read_only` is available in planning mode and
--- never confirms; `automatic` is withheld from planning and never confirms; `confirm` asks
--- every time and must say what it is about to do in `consequence`.
+-- What the model is told this extension can do, and what each tool does when called. `read_only`
+-- is available in planning mode and never confirms; `automatic` is withheld from planning and
+-- never confirms; `confirm` asks every time and must say what it is about to do in `consequence`.
+-- A handler returns the text the model reads, or raises - the error reaches the model too.
+local function describe(todo)
+  return ("#%d [%s] %s"):format(todo.id, todo.done and "x" or " ", todo.title)
+end
+
 local TOOLS = {
-  {
-    name = "add",
+  add = {
     description = "Add a todo to the shared list.",
     parameters = {
       type = "object",
@@ -32,18 +36,45 @@ local TOOLS = {
       required = { "title" },
     },
     safety = "automatic",
+    handler = function(arguments)
+      local title = tostring(arguments.title or ""):gsub("^%s+", ""):gsub("%s+$", "")
+      if title == "" then
+        return "a todo needs a title"
+      end
+      zellij.data.apply(zellij.data.put("todo", { title = title, done = false }), NAMESPACE)
+      return "added: " .. title
+    end,
   },
-  {
-    name = "list",
+  list = {
     description = "List the todos. `done` filters by state; omit it for everything.",
     parameters = {
       type = "object",
       properties = { done = { type = "boolean" } },
     },
     safety = "read_only",
+    handler = function(arguments)
+      local filter = nil
+      if arguments.done ~= nil then
+        filter = zellij.data.eq("done", arguments.done and true or false)
+      end
+      local todos = zellij.data.fetch {
+        entity = "todo",
+        namespace = NAMESPACE,
+        filter = filter,
+        sort = { "done", "id" },
+        limit = 100,
+      }
+      if #todos == 0 then
+        return "no todos"
+      end
+      local lines = {}
+      for i, todo in ipairs(todos) do
+        lines[i] = describe(todo)
+      end
+      return table.concat(lines, "\n")
+    end,
   },
-  {
-    name = "complete",
+  complete = {
     description = "Mark the todo with this id done.",
     parameters = {
       type = "object",
@@ -51,6 +82,20 @@ local TOOLS = {
       required = { "id" },
     },
     safety = "automatic",
+    handler = function(arguments)
+      local id = math.tointeger(arguments.id)
+      if not id then
+        return "complete needs the id of a todo"
+      end
+      local done = zellij.data.apply(
+        zellij.data.update("todo", zellij.data.eq("id", id), { done = true }),
+        NAMESPACE
+      )
+      if (done.rows_written or 0) == 0 then
+        return "no todo has id " .. id
+      end
+      return "completed #" .. id
+    end,
   },
 }
 
@@ -72,94 +117,6 @@ local function define()
   }
 end
 
--- Hocus names the extension it launched in the plugin's configuration, and the registration is
--- addressed with those two values. They are only there when hocus did the launching: reloaded
--- by hand (`zellij plugins reload hocus/todo`, or from a layout) this plugin runs perfectly
--- well and registers nothing, so say which of the two happened rather than sending a payload
--- hocus will drop.
-local function register()
-  local config = M.config or {}
-  local namespace, path = config.hocus_extension_name, config.hocus_extension_path
-  if not (namespace and path) then
-    zellij.log("todo: not launched by hocus, so its tools are not registered - ask hocus to "
-      .. "reload it (plugin_reload name=hocus/todo) to pick them up")
-    return
-  end
-  zellij.message_to_plugin {
-    message_name = "hocus_extension_register",
-    message_payload = zellij.json.encode {
-      version = 1,
-      namespace = namespace,
-      path = path,
-      tools = TOOLS,
-    },
-  }
-end
-
-local function reply(call, result)
-  zellij.message_to_plugin {
-    destination_plugin_id = call.reply_to,
-    message_name = "hocus_extension_result",
-    message_payload = zellij.json.encode {
-      version = 1,
-      call_id = call.call_id,
-      result = result,
-    },
-  }
-end
-
-local function describe(todo)
-  return ("#%d [%s] %s"):format(todo.id, todo.done and "x" or " ", todo.title)
-end
-
-local function run(call)
-  local arguments = call.arguments or {}
-  if call.tool == "add" then
-    local title = tostring(arguments.title or ""):gsub("^%s+", ""):gsub("%s+$", "")
-    if title == "" then
-      return "a todo needs a title"
-    end
-    zellij.data.apply(zellij.data.put("todo", { title = title, done = false }), NAMESPACE)
-    return "added: " .. title
-  end
-  if call.tool == "list" then
-    local filter = nil
-    if arguments.done ~= nil then
-      filter = zellij.data.eq("done", arguments.done and true or false)
-    end
-    local todos = zellij.data.fetch {
-      entity = "todo",
-      namespace = NAMESPACE,
-      filter = filter,
-      sort = { "done", "id" },
-      limit = 100,
-    }
-    if #todos == 0 then
-      return "no todos"
-    end
-    local lines = {}
-    for i, todo in ipairs(todos) do
-      lines[i] = describe(todo)
-    end
-    return table.concat(lines, "\n")
-  end
-  if call.tool == "complete" then
-    local id = math.tointeger(arguments.id)
-    if not id then
-      return "complete needs the id of a todo"
-    end
-    local done = zellij.data.apply(
-      zellij.data.update("todo", zellij.data.eq("id", id), { done = true }),
-      NAMESPACE
-    )
-    if (done.rows_written or 0) == 0 then
-      return "no todo has id " .. id
-    end
-    return "completed #" .. id
-  end
-  return "no such tool: " .. tostring(call.tool)
-end
-
 function M.load(config)
   M.config = config
   -- Registration is a plugin message; the store is the other two. All of them are asked for
@@ -178,26 +135,9 @@ zellij.on("permission_request_result", function()
   if not ok then
     zellij.log("todo: the schema could not be defined: " .. tostring(err))
   end
-  register()
+  -- Registration, re-registration when hocus reloads, and every call are the prelude's job
+  -- from here: `zellij.hocus.tools` is the whole of the wiring.
+  zellij.hocus.tools(TOOLS)
 end)
-
-function M.pipe(message)
-  -- Hocus broadcasts this when it reloads, so a running extension re-announces itself.
-  if message.name == "hocus_extension_discover" then
-    register()
-    return
-  end
-  if message.name ~= "hocus_extension_call" then
-    return
-  end
-  local call = zellij.json.decode(message.payload)
-  if call.version ~= 1 then
-    return
-  end
-  -- A tool that raises answers with the error rather than going quiet: the model can act on
-  -- "no such entity", and cannot act on silence.
-  local ok, result = pcall(run, call)
-  reply(call, ok and result or ("failed: " .. tostring(result)))
-end
 
 return M

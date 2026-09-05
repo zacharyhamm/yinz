@@ -299,6 +299,7 @@ message Action {
     ReconfigureAction reconfigure = 160;
     MoveTextSelectionAction move_text_selection = 161;
     SwapTextSelectionEndsAction swap_text_selection_ends = 162;
+    AgentEventAction agent_event = 163;
   }
 }
 
@@ -790,6 +791,21 @@ message ReconfigureAction {
 message SetPaneAgentAction {
   PaneId pane_id = 1;
   optional AgentInfo agent = 2;
+}
+
+// Mirrors `zellij_utils::agent::AgentEvent`.
+message AgentEventAction {
+  uint32 pane_id = 1;
+  string kind = 2;
+  string hook = 3;
+  optional string session_id = 4;
+  optional AgentState state = 5;
+  optional string detail = 6;
+  optional string prompt = 7;
+  optional string last_message = 8;
+  optional string tool_name = 9;
+  optional string cwd = 10;
+  string raw = 11;
 }
 
 message AgentInfo {

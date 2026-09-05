@@ -51,7 +51,7 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufOpenTerminalResponse, ProtobufParseLayoutResponse, ProtobufPluginCommand,
     ProtobufQueueStatusResponse, ProtobufReadPluginLogResponse, ProtobufRenameLayoutResponse,
     ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse, ProtobufSearchRecordingsResponse,
-    ProtobufShowFloatingPanesResponse, ProtobufWarpPaneResponse,
+    ProtobufShowFloatingPanesResponse, ProtobufSpawnAgentResponse, ProtobufWarpPaneResponse,
 };
 use zellij_utils::plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion};
 
@@ -719,6 +719,36 @@ pub fn open_command_pane_in_git_checkout_near_plugin_with_automatic_firecracker_
     )
     .map_err(|error| format!("Failed to decode response: {error}"))?;
     OpenCommandPaneInGitCheckoutResponse::try_from(response).map_err(|error| error.to_owned())?
+}
+
+/// Start a coding agent in a command pane near this plugin: the launch planner
+/// (`zellij_utils::agent::launch::plan`) decides the argv, the host makes the branch or
+/// worktree `spec` names, opens the pane there and records it as an agent pane. Answers with
+/// the pane id or the error text. See `PluginCommand::SpawnAgent` for the arguments.
+pub fn spawn_agent(
+    spec: AgentSpawnSpec,
+    source_directory: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+    name: Option<String>,
+    context: BTreeMap<String, String>,
+) -> Result<PaneId, String> {
+    let plugin_command = PluginCommand::SpawnAgent {
+        spec,
+        source_directory,
+        cwd,
+        name,
+        context,
+    };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+    let response = ProtobufSpawnAgentResponse::decode(
+        bytes_from_stdin()
+            .map_err(|error| format!("Failed to read response: {error}"))?
+            .as_slice(),
+    )
+    .map_err(|error| format!("Failed to decode response: {error}"))?;
+    SpawnAgentResponse::try_from(response).map_err(|error| error.to_owned())?
 }
 
 /// Open a new floating command pane with the specified command and args (this sort of pane allows the user to control the command, re-run it and see its exit status through the Zellij UI).

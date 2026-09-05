@@ -15,7 +15,8 @@
 //! it, and the assertion is read off hocus's own `agent_list` on the grid.
 
 use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE};
-use zellij_utils::cli::CliAction;
+use zellij_utils::data::PaneId;
+use zellij_utils::input::actions::hook_report_actions;
 
 /// hocus and the daemon, both shared, with the daemon loaded in the background as the
 /// real config has it. `zellij:` rather than `file:` for the reason `hocus_store.rs`
@@ -66,32 +67,22 @@ fn submit(zellij: &TestSession, line: &str) {
     zellij.send_stdin(&keys::ENTER);
 }
 
-/// One Claude Code hook event, sent the way the generated script sends it.
+/// One Claude Code hook event, sent the way the generated script sends it: `zellij action
+/// agent-report --hook-json`, which sets the pane's record and sends the event, typed, to
+/// every plugin subscribed to `agent_event` - the daemon among them.
 ///
-/// Deliberately no `plugin` argument: a bare `zellij:hocus-agentd` url carries none of
-/// the alias' `shared true`, so it would miss the running daemon and launch a second
-/// one. A broadcast reaches whatever is already running, and `agent_hook` is handled in
-/// exactly one place.
+/// The actions are built here rather than through `CliAction::AgentReport { hook_json: true }`
+/// because that reads the event off stdin, which an in-process client cannot be handed.
 fn send_hook(zellij: &mut TestSession, pane_id: u32, payload: &str) {
-    zellij.run_cli_action(CliAction::Pipe {
-        name: Some("agent_hook".to_owned()),
-        payload: Some(payload.to_owned()),
-        args: Some(
-            format!("pane_id={pane_id}")
-                .parse()
-                .expect("a k=v pair parses"),
-        ),
-        plugin: None,
-        plugin_configuration: None,
-        // Every one of these only matters when the pipe *launches* a plugin, which
-        // this must never do — see above.
-        force_launch_plugin: false,
-        skip_plugin_cache: false,
-        floating_plugin: None,
-        in_place_plugin: None,
-        plugin_cwd: None,
-        plugin_title: None,
-    });
+    let event = serde_json::from_str(payload).expect("the test's own hook event parses");
+    let actions = hook_report_actions(
+        "claude",
+        PaneId::Terminal(pane_id),
+        &event,
+        payload.to_owned(),
+    );
+    let (exit_code, reported) = zellij.run_actions_reporting(actions);
+    assert_eq!(exit_code, 0, "{reported}");
 }
 
 /// Clear hocus's transcript, so the next answer is the only thing that can put a word

@@ -23,15 +23,12 @@ function M.load(config)
   -- `close_self` is privileged; without this, Esc would be silently refused. Reading the clock
   -- is not: `os.date` needs no permission, the same way a wasm plugin reads it through WASI.
   zellij.request_permission { "change_application_state" }
-  zellij.subscribe { "timer", "key" }
-  zellij.set_timeout(1.0)
+  zellij.subscribe { "key" }
+  -- Once a second, ask for a redraw: the time changed even though no state of ours did.
+  zellij.every(1.0, function()
+    return true
+  end)
 end
-
-zellij.on("timer", function()
-  zellij.set_timeout(1.0)
-  -- Ask for a redraw: the time changed even though no state of ours did.
-  return true
-end)
 
 zellij.on("key", function(event)
   if event.key == "Esc" then

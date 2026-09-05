@@ -125,7 +125,12 @@ impl State {
         let Some(panes) = reply.panes.as_deref() else {
             return;
         };
-        let registry = discover_from(backend, &reply, panes);
+        // A store that could not be read names nothing: publishing against an empty
+        // registry would strip every project's name off its tabs, and the next snapshot
+        // would put them back, for one transient error.
+        let Some(registry) = discover_from(backend, &reply, panes) else {
+            return;
+        };
         self.publish_tab_names(&registry, &reply, panes);
         self.latest_snapshot = Some(reply);
     }
@@ -242,7 +247,7 @@ fn discover_from(
     backend: &impl Backend,
     reply: &PollReply,
     panes: &[agents::AgentPane],
-) -> projects::Registry {
+) -> Option<projects::Registry> {
     // Only an agent counts. A shell sitting at a prompt is not a reason to
     // remember a folder for good, and every pane would otherwise become a
     // project the first time someone cd'd somewhere.
@@ -266,15 +271,15 @@ fn discover_from(
         .filter(|repository| repository.host.is_none())
         .collect();
 
-    let Ok(rows) = backend.fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))
-    else {
-        return projects::Registry::new();
-    };
+    // `None`, not an empty registry: the projects are still there, they could not be read.
+    let rows = backend
+        .fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))
+        .ok()?;
     let before = projects::from_rows(&rows);
     let mut after = before.clone();
     let discovery = projects::discover(&mut after, &repositories);
     if !discovery.changed() {
-        return after;
+        return Some(after);
     }
     let mut mutations = projects::diff_mutations(&before, &after);
     // A folder's todo list and its notes move with it, in the same batch as
@@ -289,7 +294,7 @@ fn discover_from(
         }
     }
     let _ = backend.apply(mutations);
-    after
+    Some(after)
 }
 
 /// Read the two JSON files in, once, if this is the first launch that has the
@@ -521,6 +526,62 @@ mod tests {
         assert_eq!(
             state.published_tab_names[&1], "hocus + pocus",
             "sorted, so the name does not shuffle when the panes come back in another order",
+        );
+    }
+
+    /// A store that answers nothing: every call fails, as a backend does across
+    /// a transient error.
+    struct Unreachable;
+
+    impl Backend for Unreachable {
+        fn define(&self, _def: &EntityDef) -> Result<DataSchemaInfo, String> {
+            Err("unreachable".to_owned())
+        }
+        fn fetch(&self, _request: &FetchRequest) -> Result<DataRows, String> {
+            Err("unreachable".to_owned())
+        }
+        fn count(&self, _request: &FetchRequest) -> Result<u64, String> {
+            Err("unreachable".to_owned())
+        }
+        fn apply(
+            &self,
+            _mutations: Vec<zellij_tile::prelude::Mutation>,
+        ) -> Result<ApplyReport, String> {
+            Err("unreachable".to_owned())
+        }
+        fn watch(
+            &self,
+            _request: &FetchRequest,
+            _mode: WatchMode,
+        ) -> Result<DataWatchHandle, String> {
+            Err("unreachable".to_owned())
+        }
+    }
+
+    /// A snapshot that arrives while the store cannot be read publishes nothing:
+    /// the projects are still there, and naming the tabs from an empty registry
+    /// would flip every one of them to its folder's name until the next snapshot.
+    #[test]
+    fn a_store_that_cannot_be_read_renames_no_tab() {
+        let backend = backend();
+        backend
+            .apply(vec![projects::to_mutation(
+                &projects::validate("the-workspace", "/work/hocus").expect("valid"),
+            )])
+            .expect("registered");
+        let snapshot = snapshot_of_panes(
+            vec![pane_on_tab(3, "zsh", "/work/hocus", 1)],
+            BTreeMap::new(),
+        );
+        let mut state = State::default();
+        state.on_snapshot(&backend, &snapshot);
+        assert_eq!(state.published_tab_names[&1], "the-workspace");
+
+        state.on_snapshot(&Unreachable, &snapshot);
+
+        assert_eq!(
+            state.published_tab_names[&1], "the-workspace",
+            "a failed fetch is not an empty registry"
         );
     }
 

@@ -358,6 +358,86 @@ fn a_cleared_reload_waits_to_look_at_the_pane_before_answering() {
     assert!(state.plugin_load.is_none());
 }
 
+/// The session's plugin list, with the plugin at `path` running as `id` - in a pane when
+/// `pane` says so, headless otherwise.
+fn session_running(path: &str, id: u32, pane: bool) -> SessionInfo {
+    let mut panes = PaneManifest::default();
+    if pane {
+        panes.panes.insert(
+            0,
+            vec![PaneInfo {
+                id,
+                is_plugin: true,
+                ..PaneInfo::default()
+            }],
+        );
+    }
+    SessionInfo {
+        is_current_session: true,
+        panes,
+        plugins: BTreeMap::from([(
+            id,
+            PluginInfo {
+                location: format!("file:{path}"),
+                configuration: BTreeMap::new(),
+            },
+        )]),
+        ..SessionInfo::default()
+    }
+}
+
+/// A headless reload replaces the instance without a pane, and only that one: a pane showing
+/// the same file is somebody's copy, and reloading it in place would leave no headless
+/// instance running while the report said there was one.
+#[test]
+fn a_headless_reload_names_the_headless_instance_and_never_a_panes() {
+    crate::tools::test_seams::reset();
+    let path = "/home/someone/.config/zellij/plugins/harness.lua";
+
+    let mut state = plugin_state();
+    state.on_sessions(vec![session_running(path, 9, true)]);
+    cleared_reload(&mut state, r#"{"name":"harness","headless":true}"#);
+    assert_eq!(
+        crate::tools::test_seams::HEADLESS_RELOADS.with_borrow(Clone::clone),
+        vec![None],
+        "a pane's copy is not the instance to reload"
+    );
+
+    crate::tools::test_seams::reset();
+    let mut state = plugin_state();
+    state.on_sessions(vec![session_running(path, 9, false)]);
+    cleared_reload(&mut state, r#"{"name":"harness","headless":true}"#);
+    assert_eq!(
+        crate::tools::test_seams::HEADLESS_RELOADS.with_borrow(Clone::clone),
+        vec![Some(9)],
+        "the headless instance is reloaded in place"
+    );
+}
+
+/// `headless` loads without a pane and answers from the log rather than a render: off wasm
+/// the log cannot be read, and that is what the answer says.
+#[test]
+fn a_headless_reload_answers_from_the_plugins_log() {
+    let mut state = plugin_state();
+    cleared_reload(&mut state, r#"{"name":"harness","headless":true}"#);
+    let watch = state.plugin_load.clone().expect("a watch");
+    assert!(watch.headless, "{watch:?}");
+    assert_eq!(watch.name, "harness");
+    assert!(matches!(state.status, Status::AwaitingPluginLoad));
+
+    state.timer_armed = false;
+    state.on_timer((PLUGIN_LOAD_MS as f64) / 1000.0);
+    let results = tool_results(&state);
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].content.contains("headless")
+            && results[0].content.contains("log could not be read"),
+        "{:?}",
+        results[0].content
+    );
+    assert!(matches!(state.status, Status::Idle));
+}
+
 /// The watch belongs to the chat that asked for the reload, not to whatever is on screen:
 /// `/history` mid-wait must not strand the reload, and a second chat's reload must not take the
 /// first one's watch away.

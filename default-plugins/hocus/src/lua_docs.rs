@@ -36,12 +36,17 @@ const EXAMPLE_TODO_EXTENSION: &str = include_str!("../../../example-plugins/todo
 const EXAMPLE_TODO_PANE: &str = include_str!("../../../example-plugins/todo-pane.lua");
 const EXAMPLE_HOCUS_TODOS: &str = include_str!("../../../example-plugins/hocus-todos.lua");
 const EXAMPLE_HOCUS_NOTES: &str = include_str!("../../../example-plugins/hocus-notes.lua");
+const EXAMPLE_CAPABILITIES: &str = include_str!("../../../example-plugins/capabilities.lua");
+const EXAMPLE_AGENT_HARNESS: &str = include_str!("../../../example-plugins/agent-harness.lua");
 /// The Lua half of the API, verbatim: the argument sugar and the named wrappers live here, so
-/// a model that has read it does not have to guess how a command is spelled. Served in five
+/// a model that has read it does not have to guess how a command is spelled. Served in eight
 /// parts, cut at its own section markers, so that none is more than a tool call should cost.
 const PRELUDE: &str = include_str!("../../../zellij-server/src/plugins/lua/prelude.lua");
-const PRELUDE_CUTS: [&str; 4] = [
+const PRELUDE_CUTS: [&str; 7] = [
     "\n-- Host commands ",
+    "\n-- Tasks ",
+    "\n-- The awaitables.",
+    "\n-- Agents ",
     "\n-- Data ",
     "\n-- Rendering ",
     "\n-- Pane workflows ",
@@ -65,15 +70,17 @@ fn prelude_part(index: usize) -> &'static str {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 35] = [
+pub const SECTIONS: [&str; 42] = [
     "index",
     "quickstart",
     "contract",
     "events",
     "commands",
-    "commands_agents",
     "commands_workflows",
     "permissions",
+    "tasks",
+    "agents",
+    "plugin_calls",
     "rendering",
     "modules",
     "data",
@@ -88,6 +95,8 @@ pub const SECTIONS: [&str; 35] = [
     "restrictions",
     "limits",
     "example_clock",
+    "example_capabilities",
+    "example_agent_harness",
     "example_playground",
     "example_agent_commit",
     "example_dashboard",
@@ -98,6 +107,9 @@ pub const SECTIONS: [&str; 35] = [
     "example_hocus_notes",
     "prelude",
     "prelude_commands",
+    "prelude_tasks",
+    "prelude_awaitables",
+    "prelude_agents",
     "prelude_data",
     "prelude_ui",
     "prelude_workflows",
@@ -109,7 +121,10 @@ fn heading(section: &str) -> Option<&'static str> {
         "quickstart" => "A plugin",
         "contract" => "The contract",
         "events" => "Events",
-        "commands" | "commands_agents" | "commands_workflows" | "permissions" => "Commands",
+        "commands" | "commands_workflows" | "permissions" => "Commands",
+        "tasks" => "Tasks",
+        "agents" => "Agents",
+        "plugin_calls" => "Plugin-to-plugin calls",
         "rendering" => "Rendering",
         "modules" => "Modules",
         "data" => "Data",
@@ -145,9 +160,8 @@ enum Cut {
 fn cut(section: &str) -> Cut {
     match section {
         // The preamble, the keybinding rules and the short "commands that answer" - what a
-        // plugin that runs a command needs, and nothing about agents, workflows or permissions.
-        "commands" => Cut::Until("Agents and git checkouts"),
-        "commands_agents" => Cut::Only("Agents and git checkouts"),
+        // plugin that runs a command needs, and nothing about workflows or permissions.
+        "commands" => Cut::Until("Pane workflows"),
         "commands_workflows" => Cut::Only("Pane workflows"),
         "permissions" => Cut::Only("Permissions"),
         "hooks" => Cut::Until("Headless hooks"),
@@ -236,6 +250,8 @@ fn index() -> String {
             "index" => continue,
             "quickstart" => "a complete minimal plugin (below)".to_owned(),
             "example_clock" => "example: the small one".to_owned(),
+            "example_capabilities" => "example: most of what a plugin can do, in one pane".to_owned(),
+            "example_agent_harness" => "example: an agent harness - spawn, prompt, check, hand failures back until green".to_owned(),
             "example_playground" => "example: every shape of command in use".to_owned(),
             "example_agent_commit" => "example: an agent_exit hook".to_owned(),
             "example_dashboard" => "example: a themed dashboard - zellij.ui, a timer, a command, keys and the mouse".to_owned(),
@@ -246,11 +262,16 @@ fn index() -> String {
             "example_hocus_notes" => "example: hocus's notes, tags and todo links".to_owned(),
             "prelude" => "the Lua side of the API itself: events, commands, files, and every named wrapper".to_owned(),
             "prelude_commands" => "its host-command wrappers and keybinding helpers".to_owned(),
+            "prelude_tasks" => "zellij.task/await and the timers".to_owned(),
+            "prelude_awaitables" => "the zellij.async awaitables".to_owned(),
+            "prelude_agents" => "zellij.agent and zellij.rpc".to_owned(),
             "prelude_data" => "its zellij.data part: the persistent store, with every helper".to_owned(),
             "prelude_ui" => "its zellij.text (widths) and zellij.ui (themed text, ribbons, tables, lists) parts".to_owned(),
             "prelude_workflows" => "the rest of it: pane_workflow and run_command_in_pane - command sequences in one pane".to_owned(),
-            "commands" => "the guide's \"Commands\", less the four parts below".to_owned(),
-            "commands_agents" => "running an agent, and cutting it a git worktree".to_owned(),
+            "commands" => "the guide's \"Commands\", less the two parts below".to_owned(),
+            "tasks" => "zellij.task/await: straight-line code over commands, panes, agents and timers".to_owned(),
+            "agents" => "spawning, observing and steering coding agents in panes".to_owned(),
+            "plugin_calls" => "zellij.rpc: a call with an answer, between plugins".to_owned(),
             "commands_workflows" => "pane_workflow: a command sequence in one pane".to_owned(),
             "permissions" => "every permission a plugin can request, and what each allows"
                 .to_owned(),
@@ -280,6 +301,8 @@ pub fn section(name: &str) -> Option<String> {
     match name {
         "index" => Some(index()),
         "example_clock" => Some(fenced(EXAMPLE_CLOCK)),
+        "example_capabilities" => Some(fenced(EXAMPLE_CAPABILITIES)),
+        "example_agent_harness" => Some(fenced(EXAMPLE_AGENT_HARNESS)),
         "example_playground" => Some(fenced(EXAMPLE_PLAYGROUND)),
         "example_agent_commit" => Some(fenced(EXAMPLE_AGENT_COMMIT)),
         "example_dashboard" => Some(fenced(EXAMPLE_DASHBOARD)),
@@ -290,9 +313,12 @@ pub fn section(name: &str) -> Option<String> {
         "example_hocus_notes" => Some(fenced(EXAMPLE_HOCUS_NOTES)),
         "prelude" => Some(fenced(prelude_part(0))),
         "prelude_commands" => Some(fenced(prelude_part(1))),
-        "prelude_data" => Some(fenced(prelude_part(2))),
-        "prelude_ui" => Some(fenced(prelude_part(3))),
-        "prelude_workflows" => Some(fenced(prelude_part(4))),
+        "prelude_tasks" => Some(fenced(prelude_part(2))),
+        "prelude_awaitables" => Some(fenced(prelude_part(3))),
+        "prelude_agents" => Some(fenced(prelude_part(4))),
+        "prelude_data" => Some(fenced(prelude_part(5))),
+        "prelude_ui" => Some(fenced(prelude_part(6))),
+        "prelude_workflows" => Some(fenced(prelude_part(7))),
         other => heading(other).and_then(|heading| guide_section(heading, cut(other))),
     }
 }
@@ -470,7 +496,7 @@ mod tests {
     #[test]
     fn a_split_section_names_the_parts_it_no_longer_carries() {
         let commands = section("commands").unwrap();
-        for name in ["commands_agents", "commands_workflows", "permissions"] {
+        for name in ["commands_workflows", "permissions"] {
             assert!(commands.contains(name), "{commands}");
         }
         let hooks = section("hooks").unwrap();
@@ -488,8 +514,10 @@ mod tests {
         let index = docs(None);
         assert!(!index.contains("## A plugin"), "{index}");
         assert!(index.contains("quickstart"), "but it still points at it");
+        // The budget grew with the tasks, agents and rpc parts of the prelude and the guide
+        // sections that go with them; it is still one short listing.
         assert!(
-            index.len() < 3_300,
+            index.len() < 4_000,
             "the index is {} bytes and is paid for on every later turn",
             index.len()
         );

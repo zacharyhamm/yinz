@@ -166,37 +166,6 @@ pub const AGENT_RESUME_RESULT: &str = "agent_resume_result";
 pub const STORE_MUTATE: &str = "store_mutate";
 /// hocus/CLI → store: read something without a subscription.
 pub const STORE_QUERY: &str = "store_query";
-/// The `--args` key naming the agent a hook fired in.
-///
-/// The payload is the agent's own JSON and says nothing about which agent wrote it, so a
-/// reader that writes a record of its own has nothing else to name it with. Absent - a hook
-/// script old enough to only pipe - it is a `claude`, which is what every such script was
-/// installed for.
-pub use zellij_tile::agent::AGENT_HOOK_KIND_ARG as HOOK_KIND;
-/// The `--args` key naming the pane a hook fired in.
-///
-/// A `zellij pipe` carries the pane it was run in on the message itself
-/// (`PipeMessage::pane_id`, from the same `ZELLIJ_PANE_ID`) and the daemon reads that first,
-/// but a broadcast has no pane of its own - only a `CliPipe` does - so `agent-report` names it
-/// here, and so does a hook script from before either.
-pub use zellij_tile::agent::AGENT_HOOK_PANE_ID_ARG as HOOK_PANE_ID;
-/// An agent hook → agentd: one lifecycle event from a pane running an agent.
-///
-/// The one message here a *shell* sends rather than a plugin. It is broadcast —
-/// no `--plugin` — for the same reason the store's two pipes are: a bare
-/// `zellij:hocus-agentd` url carries none of the alias' `shared true`, so it
-/// would miss the running daemon and launch a second one. A broadcast only ever
-/// reaches plugins that are already running, and this name is handled here and
-/// nowhere else.
-///
-/// Re-exported from `zellij_utils::agent` rather than spelled again, because
-/// `zellij action agent-report --hook-json` is what broadcasts it now and a name that
-/// does not match is silent - the host delivers it and nothing answers.
-///
-/// ```sh
-/// zellij pipe --name agent_hook --args "pane_id=$ZELLIJ_PANE_ID" -- '{...}'
-/// ```
-pub use zellij_tile::agent::AGENT_HOOK_PIPE as AGENT_HOOK;
 
 /// → hocus: a question put to the running hocus, from a plugin or from
 /// `zellij pipe`.
@@ -285,7 +254,7 @@ pub struct PollReply {
     pub summaries: agents::Summaries,
     /// What each Claude Code pane has said about itself, over its own hooks.
     ///
-    /// Only the daemon can answer this either: it is what receives [`AGENT_HOOK`].
+    /// Only the daemon can answer this either: it is what receives every `agent_event`.
     /// Where a pane has one of these, it is the truth about that pane's state and
     /// the screen-diff heuristic beside it is not — see [`agents::HookFeed`].
     #[serde(default)]
@@ -295,6 +264,9 @@ pub struct PollReply {
     pub runs: Vec<agents::AgentRunHeader>,
 }
 
+/// One hook event as the session hands it to plugins: `Event::AgentEvent`. The daemon reads
+/// `raw` back into a [`HookEvent`] for the fields the typed event does not carry.
+pub use zellij_tile::agent::AgentEvent;
 /// A Claude Code hook event, as its JSON arrives - the session's own reading of one, so the
 /// daemon and `zellij action agent-report` cannot disagree about what an event means.
 pub use zellij_tile::agent::HookEvent;
