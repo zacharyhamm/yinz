@@ -198,6 +198,12 @@ struct State {
     /// confirmation that starts nothing looks exactly like one that was declined.
     #[cfg(test)]
     resume_requests: Vec<String>,
+    /// Every agent pane this pane has asked the host to focus, in order.
+    ///
+    /// Test-only, for `ring_yields`' reason: `focus_terminal_pane` is a no-op off wasm, so
+    /// nothing else can tell a click that only moved the cursor from one that navigated.
+    #[cfg(test)]
+    activations: Vec<u32>,
     /// Index into `rows`. Always on an `Agent` row when one exists.
     selected: usize,
     /// The last pane hocus reported focused, agent or not.
@@ -850,10 +856,11 @@ impl State {
                 if !matches!(self.rows.get(self.selected), Some(StripRow::Agent { .. })) {
                     return false;
                 }
-                // Exactly what a click on the row does, and for the same reason it
-                // leaves the panel up: the history half under the list is about the
-                // agent you just walked into, so putting the panel away is the one
-                // thing Enter must not do. Esc is the dismissal.
+                // The only gesture in the pane that navigates: a click moves the cursor
+                // and no more, so walking the list with the pointer reads an agent's
+                // history without leaving for it. The panel stays up either way - the
+                // history half under the list is about the agent you just walked into, so
+                // putting it away is the one thing Enter must not do. Esc is the dismissal.
                 self.activate();
                 false
             },
@@ -893,9 +900,10 @@ impl State {
     /// A click on screen line `line`.
     ///
     /// The half it lands in takes the keys - the pointer saying where the user is looking is
-    /// the whole reason for having two halves rather than one. In the list it also selects the
-    /// row it lands on and focuses it the way `Enter` does: clicking an agent row is meant to
-    /// feel like navigating to it and pressing Enter, whether or not it was already selected.
+    /// the whole reason for having two halves rather than one. In the list it also moves the
+    /// cursor onto the row it lands on, and that is the whole of it: a click is an arrow key
+    /// with a destination, so the history half fills with the agent it points at and nothing
+    /// is navigated to. `Enter` is what walks into the agent.
     fn on_click(&mut self, line: usize) -> bool {
         if self.last_history_rows > 0 && line >= self.last_list_rows {
             // The divider and everything under it. Nothing down there is selectable, so the
@@ -917,7 +925,6 @@ impl State {
         };
         let moved = index != self.selected;
         self.selected = index;
-        self.activate();
         moved || focus_moved
     }
 
@@ -929,10 +936,6 @@ impl State {
         moved
     }
 
-    /// The whole of what `Enter` and a click on a list row do: focus the selected
-    /// agent's pane, if there is one. Neither of them puts the panel away - the
-    /// pointer is already where the next click would go, and the keys are already
-    /// where the next Tab into the history would want them.
     /// Ask the daemon to describe the selected row now, and say whether the divider changed.
     ///
     /// Both kinds of row are worth asking about, and the daemon answers them differently: a
@@ -1038,12 +1041,20 @@ impl State {
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_RESUME).with_payload(payload));
     }
 
-    fn activate(&self) {
-        if let Some(StripRow::Agent { pane_id, .. }) = self.rows.get(self.selected) {
-            // the host resolves which tab holds the pane, so this works across
-            // tabs
-            focus_terminal_pane(*pane_id, false, false);
-        }
+    /// The whole of what `Enter` on a list row does: focus the selected agent's pane, if
+    /// there is one. It does not put the panel away - the keys are already where the next
+    /// Tab into the history would want them, and the pointer is already where the next
+    /// click would go.
+    fn activate(&mut self) {
+        let Some(StripRow::Agent { pane_id, .. }) = self.rows.get(self.selected) else {
+            return;
+        };
+        let pane_id = *pane_id;
+        #[cfg(test)]
+        self.activations.push(pane_id);
+        // the host resolves which tab holds the pane, so this works across
+        // tabs
+        focus_terminal_pane(pane_id, false, false);
     }
 
     /// Take a fresh strip, staying on the agent the selection was on. The
@@ -3622,7 +3633,7 @@ mod tests {
         );
     }
 
-    /// A click lands in the half it points at. In the list that still selects and activates;
+    /// A click lands in the half it points at. In the list it moves the cursor and no more;
     /// below the divider the focus is all it does, because nothing down there is a row.
     #[test]
     fn a_click_lands_in_the_half_it_points_at() {
@@ -3641,6 +3652,10 @@ mod tests {
         assert!(state.on_click(3), "the list takes it back");
         assert_eq!(state.focus, Focus::List);
         assert_eq!(state.selected, 3, "pane 7, the row that was pointed at");
+        assert!(
+            state.activations.is_empty(),
+            "and pointed at it is all: a click does not walk into the agent"
+        );
 
         // and a click on a header inside the list still hits no row, but the half is the
         // half the pointer is in
@@ -3648,6 +3663,39 @@ mod tests {
         assert!(state.on_click(0), "the Project header");
         assert_eq!(state.focus, Focus::List);
         assert_eq!(state.selected, 3, "still pane 7");
+    }
+
+    /// A click is an arrow key with a destination: it moves the cursor, the history half
+    /// follows it there, and `Enter` is what actually walks into the agent. Clicking used to
+    /// do both, which meant looking at an agent's events cost you the pane you were in.
+    #[test]
+    fn a_click_selects_and_enter_is_what_focuses() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(20, 40);
+        assert_eq!(state.selected, 2, "the first agent, pane 3");
+
+        // wound into the history of the row the cursor starts on, so the reset that
+        // belongs to leaving a row has something to undo
+        state.history_scroll = 4;
+        let was = state.selection_key();
+
+        assert!(state.on_click(3), "the row under the pointer");
+        assert_eq!(state.selected, 3, "pane 7");
+        assert!(
+            state.activations.is_empty(),
+            "a click moved the cursor and nothing else"
+        );
+        // what `update` does after every event, and the whole of how the history half
+        // learns which agent it is now about
+        assert!(
+            state.follow_selection(was),
+            "the cursor left the row it was on"
+        );
+        assert_eq!(state.history_scroll, 0, "the half is about pane 7 now");
+
+        state.on_key(KeyWithModifier::new(BareKey::Enter));
+        assert_eq!(state.activations, [7], "and Enter walks into it");
     }
 
     /// The list windows above the divider, so a click maps to the row under the pointer
