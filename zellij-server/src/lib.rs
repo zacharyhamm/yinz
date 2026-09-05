@@ -2322,6 +2322,10 @@ fn init_session(
 
     // Determine and initialize the data directory
     let data_dir = cli_assets.data_dir.unwrap_or_else(get_default_data_dir);
+    // Before anything can write to the plugin data store: this is the one place that holds both
+    // the data dir and the options the id is resolved from, and every later reader takes what is
+    // cached here. See `zellij_utils::host_identity`.
+    zellij_utils::host_identity::init_host_id(&data_dir, config.options.host_id.as_deref());
     let data_access = Arc::new(DataAccess::from_options(&config.options, &data_dir));
 
     let recording_enabled = config.options.session_recording.unwrap_or(false);

@@ -3033,6 +3033,21 @@ impl Options {
                 },
                 None => None,
             };
+        let host_id = match kdl_property_first_arg_as_string_or_error!(kdl_options, "host_id") {
+            Some((value, entry)) => {
+                if !crate::host_identity::is_valid_host_id(value) {
+                    return Err(kdl_parsing_error!(
+                        format!(
+                            "host_id must be 1-{} characters of letters, digits, `_` or `-`",
+                            crate::host_identity::MAX_HOST_ID_LEN
+                        ),
+                        entry
+                    ));
+                }
+                Some(value.to_owned())
+            },
+            None => None,
+        };
         let session_recording_input =
             kdl_property_first_arg_as_bool_or_error!(kdl_options, "session_recording_input")
                 .map(|(v, _)| v);
@@ -3193,6 +3208,7 @@ impl Options {
             session_recording_input,
             plugin_data_url,
             plugin_data_schema,
+            host_id,
             serialize_pane_viewport,
             scrollback_lines_to_serialize,
             styled_underlines,
@@ -4256,6 +4272,13 @@ impl Options {
             node
         })
     }
+    fn host_id_to_kdl(&self) -> Option<KdlNode> {
+        self.host_id.as_ref().map(|host_id| {
+            let mut node = KdlNode::new("host_id");
+            node.push(host_id.clone());
+            node
+        })
+    }
     fn serialize_pane_viewport_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
         let comment_text = format!(
             "{}\n{}\n{}\n{}\n{}\n{}",
@@ -5090,6 +5113,9 @@ impl Options {
         }
         if let Some(plugin_data_schema) = self.plugin_data_schema_to_kdl() {
             nodes.push(plugin_data_schema);
+        }
+        if let Some(host_id) = self.host_id_to_kdl() {
+            nodes.push(host_id);
         }
         if let Some(serialize_pane_viewport) = self.serialize_pane_viewport_to_kdl(add_comments) {
             nodes.push(serialize_pane_viewport);

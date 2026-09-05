@@ -395,6 +395,21 @@ pub struct Options {
     #[serde(default)]
     pub plugin_data_schema: Option<String>,
 
+    /// Pins this installation's host id, which is otherwise generated once and kept in
+    /// `<data dir>/host-id`. It says which machine wrote a row in the plugin data store, so
+    /// several servers sharing one Postgres database can tell their rows apart.
+    ///
+    /// Only worth setting when the generated one would move: a data dir that gets wiped, a
+    /// container built fresh each time, or a test that must not depend on the machine running
+    /// it. `ZELLIJ_HOST_ID` overrides this in turn. Alphanumerics, `_` and `-`, up to 64
+    /// characters.
+    ///
+    /// Config-file only, like `plugin_data_url`: changing it mid-session would orphan every row
+    /// the session had already written.
+    #[clap(skip)]
+    #[serde(default)]
+    pub host_id: Option<String>,
+
     /// Whether pane viewports are serialized along with the session, default is false
     #[clap(long, value_parser)]
     #[serde(default)]
@@ -635,6 +650,7 @@ impl Options {
             .plugin_data_schema
             .clone()
             .or_else(|| self.plugin_data_schema.clone());
+        let host_id = other.host_id.clone().or_else(|| self.host_id.clone());
         let serialize_pane_viewport = other
             .serialize_pane_viewport
             .or(self.serialize_pane_viewport);
@@ -724,6 +740,7 @@ impl Options {
             session_recording_input,
             plugin_data_url,
             plugin_data_schema,
+            host_id,
             serialize_pane_viewport,
             scrollback_lines_to_serialize,
             styled_underlines,
@@ -797,6 +814,7 @@ impl Options {
             .plugin_data_schema
             .clone()
             .or_else(|| self.plugin_data_schema.clone());
+        let host_id = other.host_id.clone().or_else(|| self.host_id.clone());
         let serialize_pane_viewport =
             merge_bool(other.serialize_pane_viewport, self.serialize_pane_viewport);
 
@@ -914,6 +932,7 @@ impl Options {
             session_recording_input,
             plugin_data_url,
             plugin_data_schema,
+            host_id,
             serialize_pane_viewport,
             scrollback_lines_to_serialize,
             styled_underlines,

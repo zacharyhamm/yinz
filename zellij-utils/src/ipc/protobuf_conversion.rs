@@ -920,6 +920,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             // Likewise, and the URL may carry a database password.
             plugin_data_url: None,
             plugin_data_schema: None,
+            // Likewise. The server resolves its host id once at startup from its own data dir,
+            // and a client has no business naming which machine the server it is talking to is.
+            host_id: None,
             pane_frames: options.pane_frames,
             pane_frame_style: options.pane_frame_style.as_deref().and_then(|s| match s {
                 "full" => Some(crate::input::options::PaneFrameStyle::Full),

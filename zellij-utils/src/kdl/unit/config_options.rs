@@ -393,6 +393,48 @@ fn plugin_data_options_kdl_roundtrip() {
 }
 
 #[test]
+fn host_id_kdl_roundtrip() {
+    let document: KdlDocument = "host_id \"build-box-1\"".parse().unwrap();
+    let options = Options::from_kdl(&document).unwrap();
+    assert_eq!(options.host_id.as_deref(), Some("build-box-1"));
+
+    let serialized = Options::to_kdl(&options, false);
+    let mut fake_document = KdlDocument::new();
+    let mut serialized_clone = serialized.clone();
+    fake_document.nodes_mut().append(&mut serialized_clone);
+    let reparsed =
+        Options::from_kdl(&fake_document.to_string().parse::<KdlDocument>().unwrap()).unwrap();
+    assert_eq!(reparsed.host_id, options.host_id);
+
+    // Unset, nothing is written out: the generated id in the data dir is the normal case, and a
+    // commented template would invite pinning one by hand for no reason.
+    let unset = Options::to_kdl(&Options::default(), true);
+    let mut doc = KdlDocument::new();
+    let mut unset_clone = unset.clone();
+    doc.nodes_mut().append(&mut unset_clone);
+    assert!(!doc.to_string().contains("host_id"));
+}
+
+/// A host id is carried in uids that join their parts with `:`, and lands in an indexed column,
+/// so the shapes that would make a uid ambiguous are refused where they are written rather than
+/// where they break.
+#[test]
+fn host_id_rejects_shapes_that_would_break_a_uid() {
+    for bad in [
+        "host_id \"has:colon\"",
+        "host_id \"has space\"",
+        "host_id \"has/slash\"",
+        "host_id \"\"",
+    ] {
+        let document: KdlDocument = bad.parse().unwrap();
+        assert!(
+            Options::from_kdl(&document).is_err(),
+            "{bad} should have been rejected"
+        );
+    }
+}
+
+#[test]
 fn plugin_data_options_reject_other_databases_and_bad_schema_names() {
     for bad in [
         "plugin_data_url \"sqlite:///tmp/x.db\"",

@@ -3315,6 +3315,15 @@ pub struct PluginIds {
     pub client_id: ClientId,
     /// Short hostname of the machine running this session's server, empty if unavailable
     pub hostname: String,
+    /// A stable, opaque id for the installation running this session's server.
+    ///
+    /// Unlike `hostname` this is meant to be *stored*, not shown: it is what lets a plugin
+    /// writing to a data store shared between machines say which machine a row came from, and
+    /// tell its own rows from another server's. Two servers sharing a data dir share this id,
+    /// because they also share the pane ids and session names it qualifies.
+    ///
+    /// See `zellij_utils::host_identity`.
+    pub host_id: String,
 }
 
 /// Tag used to identify the plugin in layout and config kdl files

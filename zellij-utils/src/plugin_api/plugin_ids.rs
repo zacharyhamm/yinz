@@ -15,6 +15,7 @@ impl TryFrom<ProtobufPluginIds> for PluginIds {
             initial_cwd: PathBuf::from(protobuf_plugin_ids.initial_cwd),
             client_id: protobuf_plugin_ids.client_id as u16,
             hostname: protobuf_plugin_ids.hostname,
+            host_id: protobuf_plugin_ids.host_id,
         })
     }
 }
@@ -28,6 +29,7 @@ impl TryFrom<PluginIds> for ProtobufPluginIds {
             initial_cwd: plugin_ids.initial_cwd.display().to_string(),
             client_id: plugin_ids.client_id as u32,
             hostname: plugin_ids.hostname,
+            host_id: plugin_ids.host_id,
         })
     }
 }
