@@ -1607,10 +1607,28 @@ impl TiledPanes {
             // and display area describe the screen, not the solver's outcome. Updating them only
             // on success used to leave the viewport one resize behind the display area after a
             // refused layout, so the next successful resize moved it by the wrong delta.
-            let column_difference = cols as isize - display_area.cols as isize;
-            let row_difference = rows as isize - display_area.rows as isize;
-            viewport.cols = (viewport.cols as isize + column_difference) as usize;
-            viewport.rows = (viewport.rows as isize + row_difference) as usize;
+            //
+            // The viewport is the screen minus what the ui panes reserve on each edge, so carry
+            // those insets across rather than the raw delta - the same arithmetic, in the form
+            // where clamping into the new screen is expressible. A screen too small for the
+            // chrome leaves an empty viewport instead of one that wrapped around `usize`, which
+            // `set_pane_frames` below reads as "every pane is short of the bottom edge" and,
+            // wherever the chrome puts `viewport.y` past zero, overflows on.
+            fn carry_inset(
+                start: usize,
+                extent: usize,
+                old_total: usize,
+                new_total: usize,
+            ) -> (usize, usize) {
+                let trailing = old_total.saturating_sub(start.saturating_add(extent));
+                let start = start.min(new_total);
+                let extent = (new_total - start).saturating_sub(trailing);
+                (start, extent)
+            }
+            (viewport.x, viewport.cols) =
+                carry_inset(viewport.x, viewport.cols, display_area.cols, cols);
+            (viewport.y, viewport.rows) =
+                carry_inset(viewport.y, viewport.rows, display_area.rows, rows);
             display_area.rows = rows;
             display_area.cols = cols;
         }
