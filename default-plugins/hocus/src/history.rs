@@ -526,7 +526,7 @@ fn import_legacy_prompts(_backend: &impl Backend) {}
 /// itself. Oldest first within what is imported, so the new dense ids keep the
 /// order the old ones had.
 #[cfg(target_family = "wasm")]
-pub fn import_legacy(backend: &impl Backend) {
+pub fn import_legacy(backend: &impl Backend, host_id: &str) {
     let mut ids = legacy_ids();
     ids.sort_unstable();
     // Newest kept, oldest written first: take the tail, then walk it forwards.
@@ -537,7 +537,7 @@ pub fn import_legacy(backend: &impl Backend) {
             continue;
         };
         let mut id = None;
-        if save(backend, &mut id, &messages, 0, None, None).is_err() {
+        if save(backend, host_id, &mut id, &messages, 0, None, None).is_err() {
             continue;
         }
         if let Some(id) = id {
@@ -588,7 +588,7 @@ fn legacy_transcript(id: u64) -> Option<Vec<Message>> {
 
 /// Native builds run the tests, where there is no `/cache` to read.
 #[cfg(not(target_family = "wasm"))]
-pub fn import_legacy(_backend: &impl Backend) {}
+pub fn import_legacy(_backend: &impl Backend, _host_id: &str) {}
 
 /// Declare the private entities and import the old files once.
 ///
@@ -600,7 +600,7 @@ pub fn import_legacy(_backend: &impl Backend) {}
 pub fn open(backend: &impl Backend, host_id: &str) -> Result<(), String> {
     backend.define_all(&store::private_defs())?;
     if !imported(backend, host_id, "chats") {
-        import_legacy(backend);
+        import_legacy(backend, host_id);
         backend.apply(vec![marker(host_id, "chats")])?;
     }
     if !imported(backend, host_id, "prompts") {
