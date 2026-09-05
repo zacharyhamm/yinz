@@ -730,3 +730,67 @@ the wait falls back to "a question" rather than mistaking another field for the 
 Note: `zellij hocus hooks` is unrelated to the `hooks { … }` block in zellij's own
 config, which binds a plugin to a moment in the session's life
 (`zellij-utils/src/input/hooks.rs`).
+
+## Local report acceptance and timing
+
+A local `agent-report` returns when the session accepts the complete report into its
+in-memory screen queue. This applies to hook JSON and manual state reports. The report
+contains its target pane, state update, optional bounded event, and a unique report ID.
+The router acknowledges that ID after enqueue. It does not wait for the screen or plugins.
+
+Acceptance transfers ownership to the queue. It does not guarantee processing before a
+session crash. Reports keep their queue arrival order. The screen applies each state update
+before it publishes that report's event. Reports for panes still being created wait for
+creation. Repeated hook events are retained. There are no retries or persistent delivery.
+
+An implicit local target follows `ZELLIJ_PANE_REF` through its supervisor after a pane moves.
+Explicit session and pane targets take precedence. If the session is known, the reporter
+connects directly without probing other sessions.
+
+The local reporter has a one-second total failure bound, measured from entry into the
+process. It covers argument parsing, stdin, pane resolution, connection, writing, and the
+matching acknowledgement. A process watchdog also bounds filesystem and supervisor calls.
+The final 10 milliseconds are reserved for best-effort timeout diagnostics. EOF, malformed
+replies, rejection, and acknowledgements for another report all fail. An ordinary action
+acknowledgement does not count. The installed scripts retain their outer timeouts and always
+exit zero. Claude receives empty stdout. Codex receives `{}`.
+
+### Diagnose a slow hook
+
+The reporter appends compact `hook report=...` lines to the usual Zellij log:
+`$TMPDIR/zellij-<UID>/zellij-log/zellij.log` on Linux. It does not initialize the rolling
+logger or read ordinary configuration. Logging is best effort. A failed or blocked log write
+cannot keep the local reporter alive beyond its deadline.
+
+Failures and operations above 100 milliseconds produce diagnostics by default.
+Set `ZELLIJ_HOOK_TRACE=1` in the agent's environment to record every stage entry and completion.
+Each line includes the report ID, emitting PID, reporter PID, agent kind, event name, target session and
+pane, bounded payload byte count, stage, monotonic duration in microseconds, and outcome.
+Labels are escaped and limited to 128 characters. Prompts, tool payloads, working directories,
+and remote pane tokens are excluded.
+
+Local client stages are `startup`, `pane_owner`, `stdin_parse`, `session_selection`, `connect`,
+`write`, `acknowledgement`, and `total`. Server stages use the same report ID:
+`acceptance`, `screen_queue`, `state`, and `event_enqueue`. Compare `total` with `screen_queue`
+to distinguish a slow hook command from a delayed pane update.
+
+Remote SSH and VM reporters retain their existing wire format and delivery contract.
+Their diagnostics cover startup, stdin, connect, handshake write and reply, report write,
+and report reply. Broker diagnostics include relay lock and write durations. The remote
+protocol does not carry a report ID or trace flag, so broker IDs are local to the broker.
+Enable `ZELLIJ_HOOK_TRACE=1` for the broker separately when full relay traces are needed.
+
+These timings start inside the reporter. They cannot measure a delay before Claude or Codex
+launches the command. Obtain agent-side timing evidence for that interval. Healthy warm
+local reports should complete below 100 milliseconds at p99 on the development machine.
+Measure command latency separately from downstream queue delay.
+
+### Upgrade
+
+1. Build and install matching client and server binaries.
+2. Restart the affected sessions with the new binary.
+3. Run `zellij hocus hooks install` to refresh the installed commands.
+4. Review and trust the installed Codex hooks with `/hooks` if required.
+
+An older server cannot acknowledge the new request. The reporter fails within its deadline
+without falling back to the blocking action path.

@@ -177,8 +177,8 @@ field 222 (next 282 / 223); `SpawnAgentPayload` field 6 (`automatic_firecracker_
 `DataCatalog` 278 / 219 and `SetQuitNotice` 279 / 220, so read the `.proto` rather than
 trusting it; plugin `EventType` 58 (`AgentEvent`), event payload field 52; IPC `Action`
 oneof 163 (`agent_event`; 161–162 are `main`'s text-selection actions; next 164); IPC
-`ClientToServerMsg` 28 (`subscribe_to_events`; `main`'s `host_terminal_focus_changed` is 27),
-`ServerToClientMsg` 20 (`event_update`); `PermissionType` 21 (`AuthorPlugins`); `PaneInfo` field
+`ClientToServerMsg` 29 (`agent_report`, next 30; `subscribe_to_events` is 28),
+`ServerToClientMsg` 21 (`agent_report_accepted`, next 22; `event_update` is 20); `PermissionType` 21 (`AuthorPlugins`); `PaneInfo` field
 30 (`agent`); `AgentInfo` field 8 (`run_id`, in *both* `plugin_api/event.proto` and
 `client_server_contract/common_types.proto`); `PipeMessage` field 8 (`pane_id`); `AgentSource` 2
 / IPC `AGENT_SOURCE_REGISTERED` 3.

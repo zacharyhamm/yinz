@@ -2507,6 +2507,55 @@ macro_rules! send_to_screen_or_retry_queue {
     }};
 }
 
+fn enqueue_agent_report(
+    senders: Option<&ThreadSenders>,
+    report: zellij_utils::agent::report::AgentReport,
+    accepted_at: std::time::Instant,
+) -> Result<()> {
+    report.validate()?;
+    // Use the actual unbounded sender: even test senders must not turn a closed queue into
+    // a successful acceptance via `should_silently_fail`.
+    senders
+        .context("no session for report")?
+        .to_screen
+        .as_ref()
+        .context("no screen queue for report")?
+        .send(ScreenInstruction::AgentReport(report, accepted_at))
+        .map_err(|_| anyhow!("screen report queue closed"))
+}
+
+fn accept_agent_report(
+    senders: Option<&ThreadSenders>,
+    report: zellij_utils::agent::report::AgentReport,
+    reply: impl FnOnce(ServerToClientMsg) -> Result<()>,
+) -> Result<()> {
+    let accepted_at = std::time::Instant::now();
+    let trace = report.diagnostics();
+    if trace.enabled {
+        trace.record("acceptance", Duration::ZERO, "enter");
+    }
+    let report_id = report.report_id.clone();
+    let result = enqueue_agent_report(senders, report, accepted_at);
+    let message = if result.is_ok() {
+        ServerToClientMsg::AgentReportAccepted { report_id }
+    } else {
+        ServerToClientMsg::LogError {
+            lines: vec!["report queue unavailable".into()],
+        }
+    };
+    let reply_result = reply(message).context("reply to agent report");
+    trace.record(
+        "acceptance",
+        accepted_at.elapsed(),
+        if result.is_ok() && reply_result.is_ok() {
+            "ok"
+        } else {
+            "error"
+        },
+    );
+    reply_result
+}
+
 pub(crate) fn route_thread_main(
     session_data: Arc<RwLock<Option<SessionMetaData>>>,
     session_state: Arc<RwLock<SessionState>>,
@@ -2555,6 +2604,16 @@ pub(crate) fn route_thread_main(
                         .to_anyhow()
                         .ok()
                         .and_then(|r| r.as_ref().map(|r| r.senders.clone()));
+
+                    if let ClientToServerMsg::AgentReport(report) = instruction {
+                        accept_agent_report(senders.as_ref(), report, |reply| {
+                            os_input.send_to_client(client_id, reply)
+                        })
+                        .non_fatal();
+                        // The route-loop cleanup removes this connection exactly once.
+                        // A second queued removal could close a newer connection reusing its ID.
+                        return Ok(true);
+                    }
 
                     // Check if this is a watcher client and ignore input messages
                     let is_watcher = session_state.read().unwrap().is_watcher(&client_id);
@@ -2605,6 +2664,7 @@ pub(crate) fn route_thread_main(
                     }
 
                     match instruction {
+                        ClientToServerMsg::AgentReport(_) => unreachable!("handled before action dispatch"),
                         ClientToServerMsg::Key {
                             key,
                             raw_bytes,
@@ -2939,10 +2999,7 @@ pub(crate) fn route_thread_main(
                                 .send(attach_watcher_instruction)
                                 .with_context(err_context)?;
                         },
-                        ClientToServerMsg::ClientExited => {
-                            let _ = to_server.send(ServerInstruction::RemoveClient(client_id));
-                            return Ok(true);
-                        },
+                        ClientToServerMsg::ClientExited => return Ok(true),
                         ClientToServerMsg::KillSession => {
                             to_server
                                 .send(ServerInstruction::KillSession)
@@ -3198,7 +3255,6 @@ pub(crate) fn route_thread_main(
                             ),
                         },
                     );
-                    let _ = to_server.send(ServerInstruction::RemoveClient(client_id));
                     break 'route_loop;
                 }
                 // Don't fall through to the unblock below: nothing was
@@ -3225,7 +3281,8 @@ pub(crate) fn route_thread_main(
         // connected user)
         let _ = os_input.send_to_client(client_id, ServerToClientMsg::UnblockInputThread);
     }
-    // route thread exited, make sure we clean up
+    // One removal per route. Duplicate removals can close a newer connection after the
+    // listener reuses this client ID, including an unrelated agent report.
     let _ = to_server.send(ServerInstruction::RemoveClient(client_id));
     Ok(())
 }
@@ -3680,6 +3737,55 @@ fn send_output_to_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reports_are_accepted_while_consumers_are_paused_and_rejected_for_closed_queues() {
+        use zellij_utils::agent::report::{AgentReport, AgentReportState};
+        let (tx, rx) = zellij_utils::channels::unbounded();
+        let senders = ThreadSenders {
+            to_screen: Some(SenderWithContext::new(tx)),
+            ..Default::default()
+        };
+        let report = AgentReport {
+            report_id: "00000000-0000-4000-8000-000000000001".into(),
+            pane_id: zellij_utils::data::PaneId::Terminal(1),
+            state: AgentReportState::Clear,
+            event: None,
+            trace: false,
+            process_id: 42,
+            kind: "claude".into(),
+        };
+        let (release, gate) = std::sync::mpsc::channel();
+        let (accepted, acknowledgement) = std::sync::mpsc::channel();
+        let consumer = std::thread::spawn(move || {
+            gate.recv().unwrap();
+            rx.recv().unwrap().0
+        });
+        accept_agent_report(Some(&senders), report.clone(), |reply| {
+            accepted.send(reply).unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            acknowledgement
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+            ServerToClientMsg::AgentReportAccepted {
+                report_id: report.report_id.clone()
+            }
+        );
+        release.send(()).unwrap();
+        assert!(
+            matches!(consumer.join().unwrap(), ScreenInstruction::AgentReport(received, _) if received == report)
+        );
+        for sender in [None, Some(&senders)] {
+            accept_agent_report(sender, report.clone(), |reply| {
+                assert!(matches!(reply, ServerToClientMsg::LogError { .. }));
+                Ok(())
+            })
+            .unwrap();
+        }
+    }
 
     /// The bug this guards: bound keys become their own screen instructions and never reach
     /// `WriteCharacter`, so without a dismissal here a tab switch leaves a stale menu on screen,

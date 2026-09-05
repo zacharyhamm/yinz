@@ -1038,13 +1038,25 @@ fn relay_agent_report(
     kind: String,
     json: String,
 ) -> bool {
-    let Some(session) = registry.get(pane_token) else {
-        return false;
-    };
-    let Some(wire) = session.wire() else {
-        return false;
-    };
-    send(&wire, &BrokerToServerMsg::AgentReport { kind, json }).is_ok()
+    let mut trace = zellij_utils::agent::report::ReportTrace::new(std::time::Instant::now());
+    trace.kind = kind.clone();
+    trace.payload_bytes = json.len();
+    if let Ok(event) = serde_json::from_str::<zellij_utils::agent::HookEvent>(&json) {
+        trace.event = event.hook_event_name;
+    }
+    trace.enter("relay_resolve");
+    let result = (|| {
+        let session = registry
+            .get(pane_token)
+            .context("no pane for remote report")?;
+        let wire = session.wire().context("no owner for remote report")?;
+        trace.enter("relay_lock");
+        let mut socket = wire.lock().map_err(|_| anyhow!("remote wire poisoned"))?;
+        trace.enter("relay_write");
+        protocol::write_control(&mut *socket, &BrokerToServerMsg::AgentReport { kind, json })
+    })();
+    trace.finish(result.is_ok());
+    result.is_ok()
 }
 
 fn valid_agent_kind(kind: &str) -> bool {
@@ -1060,29 +1072,38 @@ fn valid_agent_kind(kind: &str) -> bool {
 /// machine's broker, which relays it to the pane's server on the pane's own
 /// channel, where it is trusted because it came over the transport rather
 /// than out of the pane's bytes.
-pub fn report_agent_hook() -> Result<()> {
-    use std::io::Read;
+pub fn report_agent_hook(started: std::time::Instant) -> Result<()> {
+    let mut trace = zellij_utils::agent::report::ReportTrace::new(started);
+    let result = (|| {
+        use std::io::Read;
 
-    let kind = std::env::args()
-        .nth(3)
-        .unwrap_or_else(|| "claude".to_owned());
-    if !valid_agent_kind(&kind) {
-        return Err(anyhow!("invalid remote agent kind"));
-    }
-    let pane_token = std::env::var(PANE_TOKEN_ENV).with_context(|| {
-        format!("{PANE_TOKEN_ENV} is not set; this is not a pane of a Zellij remote broker")
-    })?;
-    let mut json = Vec::new();
-    std::io::stdin()
-        .take(zellij_utils::agent::HOOK_BROADCAST_MAX_BYTES as u64 + 1)
-        .read_to_end(&mut json)?;
-    if json.len() > zellij_utils::agent::HOOK_BROADCAST_MAX_BYTES {
-        return Err(anyhow!("agent hook event exceeds the 64 KiB limit"));
-    }
-    serde_json::from_slice::<zellij_utils::agent::HookEvent>(&json)
-        .context("invalid agent hook JSON")?;
-    let json = String::from_utf8(json).context("agent hook JSON is not UTF-8")?;
-    report_agent_hook_to(&broker_socket_path(), &pane_token, &kind, &json)
+        let kind = std::env::args()
+            .nth(3)
+            .unwrap_or_else(|| "claude".to_owned());
+        if !valid_agent_kind(&kind) {
+            return Err(anyhow!("invalid remote agent kind"));
+        }
+        trace.kind = kind.clone();
+        trace.enter("stdin_parse");
+        let pane_token = std::env::var(PANE_TOKEN_ENV).with_context(|| {
+            format!("{PANE_TOKEN_ENV} is not set; this is not a pane of a Zellij remote broker")
+        })?;
+        let mut json = Vec::new();
+        std::io::stdin()
+            .take(zellij_utils::agent::HOOK_BROADCAST_MAX_BYTES as u64 + 1)
+            .read_to_end(&mut json)?;
+        if json.len() > zellij_utils::agent::HOOK_BROADCAST_MAX_BYTES {
+            return Err(anyhow!("agent hook event exceeds the 64 KiB limit"));
+        }
+        let event = serde_json::from_slice::<zellij_utils::agent::HookEvent>(&json)
+            .context("invalid agent hook JSON")?;
+        trace.event = event.hook_event_name.clone();
+        trace.payload_bytes = json.len();
+        let json = String::from_utf8(json).context("agent hook JSON is not UTF-8")?;
+        report_agent_hook_to_traced(&broker_socket_path(), &pane_token, &kind, &json, &mut trace)
+    })();
+    trace.finish(result.is_ok());
+    result
 }
 
 /// The report itself, against a given broker socket: a fresh connection, the
@@ -1097,6 +1118,22 @@ pub fn report_agent_hook_to(
     kind: &str,
     json: &str,
 ) -> Result<()> {
+    let mut trace = zellij_utils::agent::report::ReportTrace::new(std::time::Instant::now());
+    trace.kind = kind.to_owned();
+    trace.payload_bytes = json.len();
+    let result = report_agent_hook_to_traced(socket, pane_token, kind, json, &mut trace);
+    trace.finish(result.is_ok());
+    result
+}
+
+fn report_agent_hook_to_traced(
+    socket: &std::path::Path,
+    pane_token: &str,
+    kind: &str,
+    json: &str,
+    trace: &mut zellij_utils::agent::report::ReportTrace,
+) -> Result<()> {
+    trace.enter("connect");
     let mut stream = UnixStream::connect(socket)
         .with_context(|| format!("no remote pane broker at {}", socket.display()))?;
     // Set before the clone below, which shares this socket and so inherits both.
@@ -1106,6 +1143,7 @@ pub fn report_agent_hook_to(
     stream
         .set_write_timeout(Some(AGENT_REPORT_TIMEOUT))
         .context("failed to bound an agent report")?;
+    trace.enter("handshake_write");
     protocol::write_control(
         &mut stream,
         &ServerToBrokerMsg::Hello {
@@ -1116,12 +1154,14 @@ pub fn report_agent_hook_to(
     let mut reader = stream
         .try_clone()
         .context("failed to clone the broker connection")?;
+    trace.enter("handshake_reply");
     match read_broker_control(&mut reader)? {
         Some(BrokerToServerMsg::HelloAck {
             protocol_version, ..
         }) if protocol_version == REMOTE_PROTOCOL_VERSION => {},
         other => return Err(anyhow!("unexpected broker handshake: {other:?}")),
     }
+    trace.enter("write");
     protocol::write_control(
         &mut stream,
         &ServerToBrokerMsg::AgentReport {
@@ -1130,6 +1170,7 @@ pub fn report_agent_hook_to(
             json: json.to_owned(),
         },
     )?;
+    trace.enter("reply");
     match read_broker_control(&mut reader)? {
         Some(BrokerToServerMsg::AgentReported { delivered: true }) => Ok(()),
         Some(BrokerToServerMsg::AgentReported { delivered: false }) => Err(anyhow!(

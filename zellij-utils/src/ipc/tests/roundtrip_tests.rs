@@ -142,6 +142,45 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
 }
 
 fn test_client_messages() {
+    use crate::agent::report::{AgentReport, AgentReportState};
+    for state in [
+        AgentReportState::Unchanged,
+        AgentReportState::Clear,
+        AgentReportState::Set(AgentInfo {
+            kind: "codex".into(),
+            state: AgentState::Busy,
+            source: AgentSource::Reported,
+            detail: None,
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: None,
+            session_id: None,
+            run_id: None,
+        }),
+    ] {
+        let hook: crate::agent::HookEvent =
+            serde_json::from_str(r#"{"hook_event_name":"PreToolUse"}"#).unwrap();
+        for event in [
+            None,
+            Some(crate::agent::AgentEvent::from_hook(
+                "codex",
+                7,
+                &hook,
+                "{}".into(),
+            )),
+        ] {
+            test_client_roundtrip!(ClientToServerMsg::AgentReport(AgentReport {
+                report_id: "00000000-0000-4000-8000-000000000001".into(),
+                pane_id: PaneId::Terminal(7),
+                state: state.clone(),
+                event,
+                trace: true,
+                process_id: 42,
+                kind: "claude".into(),
+            }));
+        }
+    }
+
     let empty_context = BTreeMap::new();
     let mut demo_context = BTreeMap::new();
     demo_context.insert("demo_key1".to_owned(), "demo_value1".to_owned());
@@ -4268,6 +4307,9 @@ fn test_client_messages() {
 }
 
 fn test_server_messages() {
+    test_server_roundtrip!(ServerToClientMsg::AgentReportAccepted {
+        report_id: "00000000-0000-4000-8000-000000000001".into(),
+    });
     test_server_roundtrip!(ServerToClientMsg::Render {
         content: "Hello, World!".to_string(),
     });

@@ -563,7 +563,7 @@ pub(crate) fn send_action_to_session(
 /// A warped process keeps the session name and terminal id it was born with in its environment,
 /// while its supervisor is re-keyed to the adopting session and id. Explicit CLI targets still
 /// win; this only replaces the implicit environment-based route used by agent hooks.
-fn retarget_implicit_agent_report(
+pub(crate) fn retarget_implicit_agent_report(
     cli_action: &mut zellij_utils::cli::CliAction,
     requested_session_name: &mut Option<String>,
     pane_ref: Option<String>,

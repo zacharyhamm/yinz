@@ -4735,6 +4735,9 @@ fn replay_pending_plugin_events(
 ) -> Result<()> {
     for event in pending_events {
         match event {
+            event @ ScreenInstruction::AgentReport(..) => {
+                thread_main::replay_pending_pane_event(screen, event)?;
+            },
             ScreenInstruction::PluginBytes(plugin_render_assets) => {
                 // pipes were already unblocked when these bytes first arrived
                 for unhandled in screen.handle_plugin_render_assets(plugin_render_assets, false)? {

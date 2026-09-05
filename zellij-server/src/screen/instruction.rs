@@ -799,6 +799,7 @@ pub enum ScreenInstruction {
         pane_id: zellij_utils::data::PaneId,
     },
     SetCliEventSubscribersPresent(bool),
+    AgentReport(zellij_utils::agent::report::AgentReport, std::time::Instant),
     SetPaneAgent(PaneId, Option<AgentInfo>, Option<NotificationEnd>),
     /// Set (or clear) the run id on a pane's existing agent record, leaving every field the
     /// agent itself reports alone. See `AgentInfo::run_id`.

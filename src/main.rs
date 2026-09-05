@@ -1,3 +1,4 @@
+mod agent_report;
 mod commands;
 mod hocus_hooks;
 #[cfg(test)]
@@ -18,6 +19,7 @@ use zellij_utils::{
 };
 
 fn main() {
+    let process_started = std::time::Instant::now();
     // A pty-host supervisor is spawned once per pane, so it branches before the
     // logger, the cache-folder setup and the clap builder — none of which it
     // needs, and all of which it would otherwise pay for on every pane. It must
@@ -37,7 +39,7 @@ fn main() {
         let result = match mode.as_str() {
             "ensure" => zellij_server::pty_host::remote::broker::ensure(),
             "serve" => zellij_server::pty_host::remote::broker::serve_forever(),
-            "report" => zellij_server::pty_host::remote::broker::report_agent_hook(),
+            "report" => zellij_server::pty_host::remote::broker::report_agent_hook(process_started),
             other => Err(zellij_utils::errors::prelude::anyhow!(
                 "unknown --pty-broker mode {other:?}, expected 'ensure', 'serve' or 'report'"
             )),
@@ -51,9 +53,16 @@ fn main() {
         }
     }
 
+    let opts = CliArgs::parse();
+    if let Some(Command::Action(action)) = &opts.command {
+        if matches!(action.as_ref(), CliAction::AgentReport { .. }) {
+            let result = agent_report::run(*action.clone(), opts.session.clone(), process_started);
+            // Errors are recorded without echoing hook input or other sensitive arguments.
+            std::process::exit(if result.is_ok() { 0 } else { 1 });
+        }
+    }
     configure_logger();
     create_config_and_cache_folders();
-    let opts = CliArgs::parse();
 
     // Talks only to supervisor sockets, so like `recordings` it runs without any
     // client or server — the whole point is that it works when the session is
