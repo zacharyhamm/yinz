@@ -64,10 +64,8 @@ pub fn parse(source: &str) -> Result<ProjectConfig, String> {
                         return Err(format!("agent kind {kind:?}: use codex, claude, or cursor"));
                     }
                     crate::agent::launch::plan(&spec)?;
-                } else if spec.effort.is_some() && !crate::agent::launch::OFFERED.iter().any(|kind| {
-                    crate::agent::launch::plan(&crate::data::AgentSpawnSpec { kind: Some((*kind).into()), ..spec.clone() }).is_ok()
-                }) {
-                    return Err("agent effort is unsupported; specify a supported kind, model, and effort".into());
+                } else if spec.effort.is_some() {
+                    return Err("agent effort requires kind".into());
                 }
                 config.agent = Some(spec);
             },
@@ -172,26 +170,46 @@ pub fn access_root(
             return Err(".zellij.kdl exceeds 64 KiB".into());
         }
         parse(source)?;
-        let lock_path = root.join(".zellij.kdl.lock");
-        let mut lock = fs::OpenOptions::new()
+        use std::io::Write;
+        let git = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["rev-parse", "--absolute-git-dir"])
+            .output()
+            .map_err(|e| format!("Cannot resolve Git metadata: {e}"))?;
+        if !git.status.success() {
+            return Err(format!(
+                "Cannot resolve Git metadata: {}",
+                String::from_utf8_lossy(&git.stderr)
+            ));
+        }
+        let gitdir = std::path::PathBuf::from(
+            String::from_utf8(git.stdout)
+                .map_err(|e| e.to_string())?
+                .strip_suffix('\n')
+                .ok_or("Git returned no path terminator")?,
+        );
+        // Keep this inode: unlinking it would let concurrent writers lock different files.
+        // The OS releases the lock even when a writer is killed.
+        let lock = fs::OpenOptions::new()
             .write(true)
-            .create_new(true)
-            .open(&lock_path)
+            .create(true)
+            .truncate(false)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(gitdir.join(".zellij.kdl.lock"))
             .map_err(|e| format!("Cannot lock .zellij.kdl for writing: {e}"))?;
-        let result = (|| {
-            use std::io::Write;
-            if read()?.as_deref() != expected {
-                return Err(
-                    ".zellij.kdl changed; read it again before approving a new write".into(),
-                );
-            }
-            lock.write_all(source.as_bytes())
-                .map_err(|e| e.to_string())?;
-            lock.sync_all().map_err(|e| e.to_string())?;
-            fs::rename(&lock_path, &path).map_err(|e| e.to_string())
-        })();
-        let _ = fs::remove_file(&lock_path);
-        result?;
+        lock.try_lock()
+            .map_err(|e| format!("Cannot lock .zellij.kdl for writing: {e}"))?;
+        if read()?.as_deref() != expected {
+            return Err(".zellij.kdl changed; read it again before approving a new write".into());
+        }
+        let mut temp = tempfile::NamedTempFile::new_in(gitdir).map_err(|e| e.to_string())?;
+        temp.write_all(source.as_bytes())
+            .map_err(|e| e.to_string())?;
+        temp.as_file().sync_all().map_err(|e| e.to_string())?;
+        temp.persist(&path).map_err(|e| format!(
+            "Cannot atomically replace .zellij.kdl (Git metadata and checkout must be on the same filesystem): {e}"
+        ))?;
     }
     let source = read()?;
     let config = parse(source.as_deref().unwrap_or(""))?;
@@ -211,10 +229,26 @@ mod tests {
         assert_eq!(config.ci.unwrap(), ["cargo", "x", "ci", "check"]);
         assert_eq!(config.default_branch.as_deref(), Some("trunk"));
         for source in [
+            "agent_exit { agent effort=\"none\"; }",
+            "agent_exit { agent effort=\"medium\"; }",
+        ] {
+            assert_eq!(parse(source).unwrap_err(), "agent effort requires kind");
+        }
+        for source in [
+            "agent_exit { agent model=\"example\"; }",
+            "agent_exit { agent kind=\"codex\" effort=\"none\"; }",
+            "agent_exit { agent kind=\"claude\" effort=\"high\"; }",
+            "agent_exit { agent kind=\"cursor\" model=\"example\" effort=\"high\"; }",
+        ] {
+            parse(source).unwrap();
+        }
+        for source in [
             "hooks {}",
             "agent_exit { ci; }",
             "agent_exit { ci 1; }",
             "agent_exit { agent effort=\"unsupported\"; }",
+            "agent_exit { agent kind=\"claude\" effort=\"none\"; }",
+            "agent_exit { agent kind=\"cursor\" effort=\"high\"; }",
             "agent_exit { default_branch \"HEAD\"; }",
             "agent_exit { default_branch \"--bad\"; }",
             "agent_exit { agent kind=\"unknown\"; }",
@@ -244,5 +278,111 @@ mod tests {
         std::fs::remove_file(dir.path().join(".zellij.kdl")).unwrap();
         std::os::unix::fs::symlink("missing", dir.path().join(".zellij.kdl")).unwrap();
         assert!(access(dir.path(), None).is_err());
+        assert!(access(dir.path(), Some((source, None))).is_err());
+    }
+
+    #[test]
+    fn config_writes_recover_after_process_exit_without_worktree_artifacts() {
+        use std::io::{BufRead, Write};
+        use std::process::{Command, Stdio};
+        // Run this test in a child so SIGKILL proves recovery without Rust destructors.
+        if let Some(path) = std::env::var_os("ZELLIJ_TEST_CONFIG_LOCK") {
+            let lock = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+            lock.try_lock().unwrap();
+            println!("config lock acquired");
+            std::io::stdout().flush().unwrap();
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line).unwrap();
+            panic!("parent must kill the lock holder");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let git = |cwd: &std::path::Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let primary = dir.path().join("primary");
+        std::fs::create_dir(&primary).unwrap();
+        git(&primary, &["init", "-b", "main"]);
+        git(
+            &primary,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        );
+        let linked = dir.path().join("linked checkout");
+        git(
+            &primary,
+            &["worktree", "add", "-b", "topic", linked.to_str().unwrap()],
+        );
+        for root in [primary.as_path(), linked.as_path()] {
+            access(root, Some(("", None))).unwrap();
+            let gitdir = std::path::PathBuf::from(
+                git(root, &["rev-parse", "--absolute-git-dir"]).trim_end_matches('\n'),
+            );
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "project_config::tests::config_writes_recover_after_process_exit_without_worktree_artifacts", "--nocapture"])
+                .env("ZELLIJ_TEST_CONFIG_LOCK", gitdir.join(".zellij.kdl.lock"))
+                .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+            let ready = std::io::BufReader::new(child.stdout.take().unwrap())
+                .lines()
+                .any(|line| line.unwrap().contains("config lock acquired"));
+            assert!(ready, "child did not acquire lock");
+            let refused = access(root, Some(("agent_exit {}", Some("")))).unwrap_err();
+            child.kill().unwrap();
+            child.wait().unwrap();
+            assert!(refused.contains("Cannot lock"), "{refused}");
+            // A temporary file abandoned by a dead writer neither blocks nor gets staged.
+            std::fs::write(gitdir.join(".tmp-abandoned"), "partial").unwrap();
+            access(root, Some(("agent_exit {}", Some("")))).unwrap();
+            let candidates = git(root, &["ls-files", "--others", "--exclude-standard"]);
+            assert_eq!(candidates, ".zellij.kdl\n");
+
+            let barrier = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                let writers: Vec<_> = ["", "agent_exit { ci \"true\"; }"]
+                    .into_iter()
+                    .map(|source| {
+                        let barrier = &barrier;
+                        scope.spawn(move || {
+                            barrier.wait();
+                            access(root, Some((source, Some("agent_exit {}"))))
+                        })
+                    })
+                    .collect();
+                assert_eq!(
+                    writers
+                        .into_iter()
+                        .map(|writer| writer.join().unwrap())
+                        .filter(Result::is_ok)
+                        .count(),
+                    1
+                );
+            });
+            std::fs::write(root.join(".zellij.kdl.lock"), "legacy lock").unwrap();
+            let previous = access(root, None).unwrap().source;
+            access(root, Some(("", previous.as_deref()))).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(root.join(".zellij.kdl.lock")).unwrap(),
+                "legacy lock"
+            );
+            std::fs::remove_file(root.join(".zellij.kdl.lock")).unwrap();
+        }
     }
 }

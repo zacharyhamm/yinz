@@ -1195,10 +1195,16 @@ Unknown kinds require an explicit supported kind: `codex`, `claude`, or `cursor`
 `zellij.project_config.read(host_directory)` returns `{ root, source, config }` and needs `ReadFiles`.
 `zellij.project_config.write(host_directory, source, expected)` validates before writing and needs `WriteFiles`.
 Pass the exact previous source as `expected`, or nil for an absent file. Stale writes fail.
+Writes use an OS lock and a temporary file in the worktree’s Git metadata directory, so an
+interrupted writer does not block later writes or leave new files to stage. Atomic replacement
+requires the Git metadata and checkout to be on the same filesystem. Otherwise, the write fails
+and preserves the original file. Legacy `.zellij.kdl.lock` files in the checkout are ignored
+and left for manual inspection.
 These directories are host paths. Access outside the plugin directory also needs `FullHdAccess`.
 Use Hocus `/project-setup` to propose and confirm settings. Missing CI configuration blocks CI and merge.
 
-`zellij.agent.spawn` accepts optional `effort`. Codex uses `model_reasoning_effort`, Claude uses
+`zellij.agent.spawn` accepts optional `effort`. In `.zellij.kdl`, setting `effort` requires an
+explicit agent `kind`. Codex uses `model_reasoning_effort`, Claude uses
 `--effort`, and Cursor uses a model bracket override. Cursor requires an explicit model without
 existing bracket overrides. Unsupported effort values fail before the pane opens.
 Workflow helpers carry `agent_workflow_run` and `agent_workflow_role` (`message` or `repair`) in
@@ -1384,11 +1390,26 @@ which leaves the pane simply holding, as any other command pane does.
 The shipped `agent_exit` hook is itself a Lua plugin - `zellij-utils/assets/plugins/agent-exit.lua`
 in the source tree. `example-plugins/agent-commit.lua` is a small commit-only example
 (`plugin_docs section=example_agent_commit`). Read them; do not copy them. Your own hook is a
-plugin you write: `plugin_write name=my-agent-exit`, then bind it. Add
-`zellij.request_permission { "change_application_state" }` to its `load` - the shipped one is a
-builtin and so is granted privileged commands unconditionally, and yours will not be. Written
-through hocus, that request is granted when the write is approved, so the hook never stops on a
-permission prompt.
+plugin you write: `plugin_write name=my-agent-exit`, then bind it. A file-loaded copy needs
+permissions for commands, project config reads outside its directory, pane state and changes,
+and messages to its workflow owner. Insert this wrapper just before `return M`:
+
+```lua
+local load = M.load
+function M.load(config)
+  zellij.task(function()
+    local result = zellij.await(zellij.async.permissions {
+      "change_application_state", "read_application_state", "run_commands",
+      "read_files", "full_hd_access", "message_and_launch_other_plugins",
+    })
+    if result == "Granted" then load(config) end
+  end)
+end
+```
+
+The wrapper waits for approval before initialization and does not initialize after denial.
+The shipped builtin has these permissions automatically. When hocus writes your hook, its
+approved permission request is cached. The wrapper also handles that cached grant.
 
 Zellij does not rewrite your own config file, so the `hooks { ... }` block above is yours to add -
 or, from a shell, `zellij action set-hook agent_exit file:my-agent-exit.lua --write` binds the

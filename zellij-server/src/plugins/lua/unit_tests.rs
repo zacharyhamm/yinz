@@ -14,6 +14,136 @@ use crate::plugins::plugin_limits::PluginResourceLimits;
 use crate::plugins::plugin_map::{PluginEnv, ResponseSink};
 use crate::thread_bus::ThreadSenders;
 
+#[test]
+fn agent_exit_queries_skip_operation_logs_and_preserve_failures() {
+    use mlua::LuaSerdeExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("checkout ' $;");
+    std::fs::create_dir(&root).unwrap();
+    assert!(std::process::Command::new("git")
+        .arg("init")
+        .arg(&root)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let logs = dir.path().join("logs");
+    let lock = root.join(".git/agent-exit.lock");
+    std::fs::create_dir(&logs).unwrap();
+    std::fs::create_dir(&lock).unwrap();
+    let source = zellij_utils::consts::builtin_lua_plugin("agent-exit").unwrap().replace(
+        "\nfunction M.load(config)",
+        "M.test_queries = { state=W, query=must_git, git=git, rebase=rebase_in_progress }\nfunction M.load(config)",
+    );
+    let plugin = load(&source).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set(
+            "T",
+            plugin.plugin.get::<mlua::Table>("test_queries").unwrap(),
+        )
+        .unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("root", root.to_str().unwrap())
+        .unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("logs", logs.to_str().unwrap())
+        .unwrap();
+    plugin.lua.globals().set("__run", plugin.lua.create_function(|lua, value: mlua::Value| {
+        let argv: Vec<String> = lua.from_value(value)?;
+        let out = std::process::Command::new(&argv[0]).args(&argv[1..]).output().map_err(mlua::Error::external)?;
+        lua.to_value(&serde_json::json!({"exit_code":out.status.code(), "stdout":String::from_utf8_lossy(&out.stdout), "stderr":String::from_utf8_lossy(&out.stderr)}))
+    }).unwrap()).unwrap();
+    plugin.lua.load(r#"
+local z = require('zellij')
+local calls = {}
+z.async.run_command = function(opts)
+  table.insert(calls, opts.command)
+  return {done=true, value=__run(opts.command), on_settle={}}
+end
+z.task(function()
+T.state.root, T.state.tmp = root, logs
+T.state.gitdir, T.state.lock = root .. '/.git', root .. '/.git/agent-exit.lock'
+assert(T.git('not-a-git-command') ~= 0)
+local diagnostic, log = T.state.diagnostic, T.state.log
+calls = {}
+assert(T.query('status', '--porcelain=v1') == '')
+assert(#calls == 1 and calls[1][1] == 'git' and calls[1][2] == '--no-optional-locks')
+local ok, err = pcall(T.query, 'rev-parse', '--verify', 'refs/heads/missing')
+assert(not ok and err:find('fatal:', 1, true))
+assert(T.state.diagnostic == diagnostic and T.state.log == log and T.state.sequence == 1)
+for _, name in ipairs({'absent', 'rebase-merge', 'rebase-apply'}) do
+  if name ~= 'absent' then assert(__run({'mkdir', '--', T.state.gitdir .. '/' .. name}).exit_code == 0) end
+  calls = {}
+  assert(T.rebase() == (name ~= 'absent'))
+  assert(#calls == 1 and calls[1][1] == 'sh')
+  if name ~= 'absent' then assert(__run({'rmdir', '--', T.state.gitdir .. '/' .. name}).exit_code == 0) end
+end
+assert(T.state.diagnostic == diagnostic and T.state.sequence == 1)
+end)
+"#).exec().unwrap();
+    assert!(!lock.join("operation").exists());
+    assert_eq!(std::fs::read_dir(logs).unwrap().count(), 1);
+}
+
+#[test]
+fn agent_exit_documented_fork_waits_for_permissions() {
+    use zellij_utils::data::PermissionStatus;
+    let docs = include_str!("../../../../docs/LUA_PLUGINS.md");
+    let wrapper = docs
+        .split("```lua\nlocal load = M.load\n")
+        .nth(1)
+        .unwrap()
+        .split("\n```")
+        .next()
+        .unwrap();
+    let wrapper = format!("local load = M.load\n{wrapper}");
+    let builtin = zellij_utils::consts::builtin_lua_plugin("agent-exit").unwrap();
+    for line in wrapper.lines() {
+        assert!(
+            builtin.contains(&format!("-- {line}")),
+            "hook instructions differ: {line}"
+        );
+    }
+    for (cached, answer) in [
+        (false, PermissionStatus::Granted),
+        (true, PermissionStatus::Granted),
+        (false, PermissionStatus::Denied),
+    ] {
+        let mut env = test_env();
+        if cached {
+            env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+        }
+        let source = format!("local zellij = require('zellij')\nlocal M = {{}}\nfunction M.load(config) M.initialized = config end\n{wrapper}\nreturn M");
+        let mut plugin = load_lua_plugin(&source, "fork.lua", env).unwrap();
+        plugin
+            .load(&BTreeMap::from([("marker".into(), "loaded".into())]))
+            .unwrap();
+        assert!(plugin
+            .plugin
+            .get::<Option<mlua::Table>>("initialized")
+            .unwrap()
+            .is_none());
+        let granted = answer == PermissionStatus::Granted;
+        plugin
+            .update(&Event::PermissionRequestResult(answer))
+            .unwrap();
+        let initialized = plugin
+            .plugin
+            .get::<Option<mlua::Table>>("initialized")
+            .unwrap();
+        assert_eq!(initialized.is_some(), granted);
+        if let Some(config) = initialized {
+            assert_eq!(config.get::<String>("marker").unwrap(), "loaded");
+        }
+    }
+}
+
 /// Real Git operations, with pane exits delivered while helper-ID writes await their results.
 #[test]
 fn agent_exit_workflow_merges_and_cleans_real_worktrees() {
@@ -34,6 +164,9 @@ fn agent_exit_workflow_merges_and_cleans_real_worktrees() {
         ("commit_failed", "k"),
         ("missing_ci", "k"),
         ("recovery", "k"),
+        ("inferred_default", "k"),
+        ("missing_local_default", "k"),
+        ("cancel_default", "k"),
         ("duplicate", "k"),
         ("outstanding", "k"),
         ("config_changed", "k"),
@@ -72,12 +205,37 @@ fn agent_exit_workflow_merges_and_cleans_real_worktrees() {
             )
             .unwrap();
         }
+        if matches!(
+            scenario,
+            "inferred_default" | "missing_local_default" | "cancel_default"
+        ) {
+            std::fs::write(
+                primary.join(".zellij.kdl"),
+                "agent_exit { ci \"sh\" \"-c\" \"test -f 'new $; file'\"; }\n",
+            )
+            .unwrap();
+        }
         if scenario == "config_changed" {
             std::fs::write(primary.join(".gitignore"), ".zellij.kdl\n").unwrap();
         }
         std::fs::write(primary.join("shared"), "base\n").unwrap();
         git(&primary, &["add", "."]);
         git(&primary, &["commit", "-m", "initial"]);
+        if matches!(
+            scenario,
+            "inferred_default" | "missing_local_default" | "cancel_default"
+        ) {
+            let remote = if scenario == "inferred_default" {
+                "refs/remotes/origin/trunk"
+            } else {
+                "refs/remotes/origin/main"
+            };
+            git(&primary, &["update-ref", remote, "HEAD"]);
+            git(
+                &primary,
+                &["symbolic-ref", "refs/remotes/origin/HEAD", remote],
+            );
+        }
         git(
             &primary,
             &["worktree", "add", "-b", "topic", linked.to_str().unwrap()],
@@ -101,7 +259,7 @@ fn agent_exit_workflow_merges_and_cleans_real_worktrees() {
         let source = zellij_utils::consts::builtin_lua_plugin("agent-exit")
             .unwrap()
             .replace(
-                "function M.load(config)",
+                "\nfunction M.load(config)",
                 "M.test_workflow = { state = W, run = workflow }\nfunction M.load(config)",
             );
         let plugin = load(&source).unwrap();
@@ -135,7 +293,8 @@ fn agent_exit_workflow_merges_and_cleans_real_worktrees() {
             .globals()
             .set("test_pid", std::process::id())
             .unwrap();
-        plugin.lua.globals().set("__run", plugin.lua.create_function(|lua, argv: Vec<String>| {
+        plugin.lua.globals().set("__run", plugin.lua.create_function(|lua, value: mlua::Value| {
+            let argv: Vec<String> = lua.from_value(value)?;
             let out = Command::new(&argv[0]).args(&argv[1..])
                 .env("GIT_EDITOR", "true").env("GIT_TERMINAL_PROMPT", "0").output()
                 .map_err(mlua::Error::external)?;
@@ -182,6 +341,8 @@ local keys = {'r', 'Enter', 'c', 'f', 'i', 'x', 'Enter', 'y', 'y', 'y', cleanup}
 local expected_merge = true
 local expected_error
 if scenario == 'generated' then keys = {'g', 'Enter', 'c', 'Enter', 'y', 'y', 'y', cleanup}
+elseif scenario == 'missing_local_default' then keys = {'r', 'Enter', 'c', 'f', 'Enter', 'y', 't', 'r', 'u', 'n', 'k', 'Enter', 'y', 'y', cleanup}
+elseif scenario == 'cancel_default' then keys = {'r', 'Enter', 'n', 'Esc'}; expected_merge = false
 elseif scenario == 'spawn_failed' then keys = {'g', 'q'}; expected_merge = false
 elseif scenario == 'ci_repair' then keys = {'c', 'f', 'Enter', 'y', 'y', 's', 'c', 'r', 'Enter', 'y', 'y', 'y', cleanup}
 elseif scenario == 'ci_closed' then keys = {'c', 'f', 'Enter', 'y', 'y', 'q'}; expected_merge = false
@@ -208,6 +369,13 @@ z.async.event = function(name)
   assert(name == 'key')
   local key = table.remove(keys, 1)
   assert(key, scenario .. ': unexpected prompt: ' .. tostring(T.state.title) .. '\n' .. tostring(T.state.detail))
+  if scenario == 'missing_local_default' or scenario == 'cancel_default' then
+    if key == 'Enter' and T.state.title:find('Review diff', 1, true) then
+      assert(T.state.detail:find('Default branch unresolved', 1, true))
+    elseif key == 't' or key == 'Esc' then
+      assert(T.state.title == 'Local default branch (no fetch)')
+    end
+  end
   if scenario == 'spawn_failed' and key == 'q' then
     assert(T.state.title == 'Operation failed' and T.state.detail == 'helper spawn failed')
     assert(__run({'test', '!', '-e', T.state.lock .. '/helper'}).exit_code == 0)
@@ -281,6 +449,8 @@ end
             "generated",
             "ci_repair",
             "recovery",
+            "inferred_default",
+            "missing_local_default",
             "conflict_repair",
         ]
         .contains(&scenario)
@@ -1529,11 +1699,54 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
 }
 
 #[test]
+fn agent_exit_zero_guest_changes_start_the_workflow() {
+    let source = zellij_utils::consts::builtin_lua_plugin("agent-exit")
+        .unwrap()
+        .replace(
+            "\nfunction M.load(config)",
+            "M.test_state = W\nfunction M.load(config)",
+        );
+    let plugin = load(&source).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z = require('zellij')
+local starts, commands = 0, {}
+M.test_state.start = function() starts = starts + 1 end
+z.subscribe = function() end
+z.run_command = function(opts) table.insert(commands, opts) end
+M.load { agent_firecracker_vm='vm', agent_firecracker_worktree='/host/topic', agent_session='work' }
+assert(#commands == 1 and commands[1].context.step == 'check')
+for _, step in ipairs({'check', 'recheck'}) do
+  for _, case in ipairs({{0, '0\n', true}, {0, '2\n', false}, {0, 'bad', false}, {1, '0\n', false}}) do
+    for _, warnings in ipairs({false, true}) do
+      starts, commands = 0, {}
+      M.sync_warnings = warnings and 'kept guest copy' or nil
+      M.syncing = step == 'recheck'
+      z.__update(M, {RunCommandResult={case[1], {case[2]:byte(1, -1)}, {}, {step=step}}})
+      assert(starts == (case[3] and not warnings and 1 or 0))
+      assert(not M.syncing)
+      if case[3] then
+        assert(not M.render(20, 120):find('<S> sync', 1, true))
+        z.__update(M, {Key={bare_key='s', key_modifiers={}}})
+        assert(#commands == 0)
+        if warnings then assert(M.status:find('Sync conflicts require resolution', 1, true)) end
+      end
+    end
+  end
+end
+"#).exec().unwrap();
+}
+
+#[test]
 fn agent_exit_dialog_keys_do_not_reach_restart_or_close() {
     let source = zellij_utils::consts::builtin_lua_plugin("agent-exit")
         .unwrap()
         .replace(
-            "function M.load(config)",
+            "\nfunction M.load(config)",
             "M.test_dialogs = { state = W, choose = choose, edit = edit }\nfunction M.load(config)",
         );
     let plugin = load(&source).unwrap();
