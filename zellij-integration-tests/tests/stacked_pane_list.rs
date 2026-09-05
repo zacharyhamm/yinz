@@ -68,6 +68,38 @@ fn has_selected_entry(grid_snapshot: &GridSnapshot, title: &str) -> bool {
         .any(|line| is_selected_entry(line, title))
 }
 
+/// Whether the tab bar has caught up with the member the stack is now showing.
+///
+/// A tab down to one content pane wears that pane's id (`Tab::lone_pane_id_marker`), and a
+/// stack is one content pane, so the bar names whichever member is on screen. The bar is a
+/// plugin and renders a frame or two behind the grid, so a test that only waits for the
+/// selected entry can snapshot the bar still naming the member before it.
+fn tab_bar_names_the_selected_member(grid_snapshot: &GridSnapshot, title: &str) -> bool {
+    let lines = grid_snapshot.lines();
+    let Some(entry) = lines.iter().find(|line| is_selected_entry(line, title)) else {
+        return false;
+    };
+    // The entry reads "> │ [1] Pane #2 │", and the bar leads the tab's name with the same
+    // "[1] " when it has caught up.
+    let Some(marker) = entry
+        .split_once('[')
+        .and_then(|(_, rest)| rest.split_once(']').map(|(id, _)| format!("[{}] ", id)))
+    else {
+        return false;
+    };
+    // A stack sharing its tab with another pane is not the tab's only content pane, so the bar
+    // carries no marker at all - settled either way, as long as it is not still naming the
+    // member the stack was showing before.
+    lines.first().is_some_and(|tab_bar| {
+        tab_bar.contains(&marker)
+            || !tab_bar
+                .chars()
+                .collect::<Vec<char>>()
+                .windows(2)
+                .any(|window| window[0] == '[' && window[1].is_ascii_digit())
+    })
+}
+
 fn add_stacked_pane_and_wait_for_selected_entry(
     zellij: &TestSession,
     selected_entry_title: &str,
@@ -79,6 +111,7 @@ fn add_stacked_pane_and_wait_for_selected_entry(
     zellij.wait_until("stacked pane added and selected", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
             && has_selected_entry(grid_snapshot, selected_entry_title)
+            && tab_bar_names_the_selected_member(grid_snapshot, selected_entry_title)
     });
     terminal
 }
@@ -399,6 +432,7 @@ fn clicking_a_hidden_entry_swaps_it_in() {
         grid_snapshot.contains("<g> LOCK")
             && has_selected_entry(grid_snapshot, "Pane #1")
             && grid_snapshot.contains("first-member")
+            && tab_bar_names_the_selected_member(grid_snapshot, "Pane #1")
     });
     assert_snapshot!(normalized(&swapped_in));
     zellij.quit();

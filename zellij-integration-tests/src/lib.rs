@@ -17,7 +17,8 @@ pub use client_screen::{
 pub use fake_pty::{FakePtyHandle, WarpFailure};
 pub use harness::{
     claim_first_terminal_and_wait_for_prompt, split_down_and_wait_for_prompt,
-    split_right_and_wait_for_prompt, start_zellij, PROMPT, TERMINAL_SIZE,
+    split_right_and_wait_for_prompt, start_zellij, tab_bar_shows_no_lone_pane_id, PROMPT,
+    TERMINAL_SIZE,
 };
 pub use nested::{
     composite_contains_settled_guest_grid, guest_ascended_bar_settled, host_descended_bar_settled,

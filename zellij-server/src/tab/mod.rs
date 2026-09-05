@@ -27,7 +27,6 @@ use std::env::temp_dir;
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
-use zellij_tile_utils::ellipsize;
 use zellij_utils::data::AgentInfo;
 use zellij_utils::data::PaneContents;
 use zellij_utils::data::{
@@ -2490,14 +2489,27 @@ impl Tab {
         self.get_selectable_tiled_panes()
             .filter(|(_, p)| !p.borderless())
     }
-    /// How wide a name a lone pane may lend its tab, marker included. Matches `MAX_TAB_NAME_WIDTH`
-    /// in the tab bars, which cap every tab name whatever its source; staying inside the same
-    /// figure here means the bars have nothing left to cut, and the exit marker survives.
+    /// How wide a tab name may be, decorations included, whichever of the three names won.
+    /// Matches `MAX_TAB_NAME_WIDTH` in the tab bars, which cap every tab name whatever its
+    /// source; staying inside the same figure here means the bars have nothing left to cut, and
+    /// the decorations - the pane id in front, the exit marker behind - survive.
     ///
     /// The bars charge their own "(FULLSCREEN)" and "[!]" markers to that same budget, so a tab
     /// wearing one of those *and* an exit marker can still lose the tail of the latter. That is a
     /// corner it is not worth threading the bars' markers back through the server for.
-    const MAX_LENT_PANE_TITLE_WIDTH: usize = 40;
+    const MAX_TAB_NAME_WIDTH: usize = 40;
+
+    /// How many columns are left for the name itself, once this tab's decorations are charged.
+    ///
+    /// The decorations are what a reader cannot reconstruct - `[5] ` says which pane
+    /// `--pane-id` reaches, `[ EXIT CODE: 2 ]` how it ended - so they are taken off the top and
+    /// the name is cut to what remains. See [`Screen::plugin_tab_names`], which does the cutting
+    /// for all three names in one place.
+    pub fn tab_name_budget(&self) -> usize {
+        Self::MAX_TAB_NAME_WIDTH
+            .saturating_sub(self.lone_pane_id_marker().width())
+            .saturating_sub(self.exit_marker().width())
+    }
 
     pub fn single_pane_titles(&self) -> bool {
         self.pane_frame_style.draws_titles()
@@ -2526,15 +2538,33 @@ impl Tab {
         if !pane.has_explicit_title() {
             return None;
         }
-        // Cut the title here rather than leaving the whole string to the bar. A pane title runs
-        // long - hostname, checkout prefix, then whatever the program set - and the marker is
-        // appended after it, so a bar cutting the finished string to its own cap would take away
-        // exactly the part the reader cannot reconstruct. Charging the marker to the budget first
-        // is what keeps it.
-        Some(ellipsize(
-            &pane.display_title(),
-            Self::MAX_LENT_PANE_TITLE_WIDTH.saturating_sub(self.exit_marker().width()),
-        ))
+        // Whole, however long it runs. The cut happens once in `Screen::plugin_tab_names`,
+        // against `tab_name_budget`, where this title and the other two names meet the same
+        // decorations - doing it here as well would charge the markers twice to the one name
+        // that already runs long enough to feel it.
+        Some(pane.display_title())
+    }
+
+    /// The `[5] ` a lone pane's tab leads its name with - the same label the pane's own frame
+    /// carries (`TerminalPane::framed_title`), for the same reason: the id is how the pane is
+    /// addressed from outside, and a tab down to one pane is read off the tab bar more often
+    /// than off the frame.
+    ///
+    /// Like [`Tab::exit_marker`] it is not a name and does not compete with the three that are:
+    /// it goes on whichever of them won. Empty for a tab holding more than one pane, and for a
+    /// lone *plugin* pane, which its frame does not label either.
+    ///
+    /// A stack is one content pane, so a tab holding one wears the id of the member on screen -
+    /// which is the member `--pane-id` would have to name to reach what the tab is showing, and
+    /// changes as the stack is stepped through.
+    pub fn lone_pane_id_marker(&self) -> String {
+        if !self.single_pane_titles() {
+            return String::new();
+        }
+        match self.get_selectable_tiled_content_panes().next() {
+            Some((PaneId::Terminal(id), _)) => format!("[{}] ", id),
+            _ => String::new(),
+        }
     }
 
     /// The " [ EXITED ] " a lone pane that has stopped adds to its tab's name.

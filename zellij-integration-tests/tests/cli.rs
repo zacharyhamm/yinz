@@ -3,7 +3,8 @@
 use insta::assert_snapshot;
 use zellij_integration_tests::{
     claim_first_terminal_and_wait_for_prompt, col, keys, normalized,
-    split_right_and_wait_for_prompt, start_zellij, Size, TestRunner, PROMPT, TERMINAL_SIZE,
+    split_right_and_wait_for_prompt, start_zellij, tab_bar_shows_no_lone_pane_id, Size, TestRunner,
+    PROMPT, TERMINAL_SIZE,
 };
 use zellij_utils::cli::CliAction;
 
@@ -384,6 +385,7 @@ fn watcher_client_functionality() {
                 && grid_snapshot.contains("WATCHER_DONE")
                 && grid_snapshot.contains("│")
                 && !grid_snapshot.contains("Tab #2")
+                && tab_bar_shows_no_lone_pane_id(grid_snapshot)
         });
     assert_snapshot!(normalized(&watcher_snapshot));
 

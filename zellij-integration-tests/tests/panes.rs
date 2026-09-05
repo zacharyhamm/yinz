@@ -3,8 +3,8 @@
 use insta::assert_snapshot;
 use zellij_integration_tests::{
     assert_same_rendered_grid, claim_first_terminal_and_wait_for_prompt, col, keys, normalized,
-    split_down_and_wait_for_prompt, split_right_and_wait_for_prompt, start_zellij, Coord, Size,
-    TestRunner, TestSession, PROMPT, TERMINAL_SIZE,
+    split_down_and_wait_for_prompt, split_right_and_wait_for_prompt, start_zellij,
+    tab_bar_shows_no_lone_pane_id, Coord, Size, TestRunner, TestSession, PROMPT, TERMINAL_SIZE,
 };
 
 #[test]
@@ -243,6 +243,31 @@ fn undo_rename_pane() {
     zellij.quit();
 }
 
+/// The stacked spelling of [`spawn_second_pane_and_wait_for_grid`].
+///
+/// A stack is one content pane, so the tab keeps wearing a pane id - that of the member on
+/// screen, here the new one. Waiting for the bar to name it is what keeps a snapshot off the
+/// frame where the bar still names the member the stack was showing before.
+fn spawn_second_stacked_pane_and_wait_for_grid(
+    zellij: &TestSession,
+    prompt: Coord,
+) -> zellij_integration_tests::GridSnapshot {
+    let terminal = zellij.expect_pty_spawn();
+    terminal.output(PROMPT);
+    zellij.wait_until(
+        "second stacked pane spawned and prompt rendered",
+        move |grid_snapshot| {
+            grid_snapshot.status_bar_appears()
+                && grid_snapshot.contains("Pane #2")
+                && grid_snapshot.cursor_is_at(prompt)
+                && grid_snapshot
+                    .lines()
+                    .first()
+                    .is_some_and(|tab_bar| tab_bar.contains("[1] "))
+        },
+    )
+}
+
 fn spawn_second_pane_and_wait_for_grid(
     zellij: &TestSession,
     prompt: Coord,
@@ -255,6 +280,7 @@ fn spawn_second_pane_and_wait_for_grid(
             grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("Pane #2")
                 && grid_snapshot.cursor_is_at(prompt)
+                && tab_bar_shows_no_lone_pane_id(grid_snapshot)
         },
     )
 }
@@ -532,7 +558,7 @@ fn new_stacked_pane() {
 
     zellij.send_stdin(&keys::ctrl('p'));
     zellij.send_stdin(&keys::key('s'));
-    let grid_snapshot = spawn_second_pane_and_wait_for_grid(&zellij, col(2).row(4));
+    let grid_snapshot = spawn_second_stacked_pane_and_wait_for_grid(&zellij, col(2).row(4));
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
 }
@@ -632,6 +658,7 @@ fn toggle_pane_frames() {
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("Pane #2")
             && !grid_snapshot.contains("┌")
+            && tab_bar_shows_no_lone_pane_id(grid_snapshot)
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
@@ -664,6 +691,8 @@ fn toggle_frames_with_single_pane() {
             grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("┌")
                 && grid_snapshot.contains("Pane #1")
+                // A full frame carries the id itself, so the bar drops it.
+                && tab_bar_shows_no_lone_pane_id(grid_snapshot)
         });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
@@ -695,6 +724,8 @@ fn toggle_frames_with_floating_pane() {
             grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("┌")
                 && grid_snapshot.contains("Pane #1")
+                // A full frame carries the id itself, so the bar drops it.
+                && tab_bar_shows_no_lone_pane_id(grid_snapshot)
         },
     );
     assert_snapshot!(normalized(&grid_snapshot));
@@ -708,7 +739,7 @@ fn toggle_frames_with_stacked_panes() {
 
     zellij.send_stdin(&keys::ctrl('p'));
     zellij.send_stdin(&keys::key('s'));
-    spawn_second_pane_and_wait_for_grid(&zellij, col(2).row(4));
+    spawn_second_stacked_pane_and_wait_for_grid(&zellij, col(2).row(4));
 
     zellij.wait_until("stacked panes show their titles", |grid_snapshot| {
         grid_snapshot.contains("Pane #1")
@@ -727,6 +758,7 @@ fn toggle_frames_with_stacked_panes() {
             && grid_snapshot.contains("┌")
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("Pane #2")
+            && tab_bar_shows_no_lone_pane_id(grid_snapshot)
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();
