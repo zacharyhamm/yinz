@@ -67,67 +67,7 @@ pub struct RemoteEndpoint {
     pub ssh_options: SshOptions,
 }
 
-fn find_executable(candidate: &std::path::Path) -> Option<PathBuf> {
-    if candidate.exists() && candidate.is_file() {
-        return Some(candidate.to_path_buf());
-    }
-    None
-}
-
-/// Resolve a command to its absolute path, searching the working directory,
-/// then this process's PATH.
-pub(crate) fn resolve_command(cmd: &RunCommand) -> Option<PathBuf> {
-    resolve_command_with_path(cmd, None)
-}
-
-/// As `resolve_command`, but against the `PATH` the child will actually get.
-///
-/// A remote pane's child is given a `PATH` composed from the far machine's passwd
-/// entry rather than the supervisor's own, and `Command` execs against the
-/// environment it was handed. Searching this process's `PATH` would answer a
-/// question about the wrong one - rejecting a command that would have exec'd, or
-/// admitting one that will not.
-///
-/// `None` means the child inherits this process's `PATH`, which is every local
-/// pane.
-pub(crate) fn resolve_command_with_path(
-    cmd: &RunCommand,
-    search_path: Option<&std::ffi::OsStr>,
-) -> Option<PathBuf> {
-    let command = &cmd.command;
-    let inherited;
-    let search_path = match search_path {
-        Some(search_path) => Some(search_path),
-        None => {
-            inherited = env::var_os("PATH");
-            inherited.as_deref()
-        },
-    };
-    match cmd.cwd.as_ref() {
-        Some(cwd) => {
-            if let Some(resolved) = find_executable(&cwd.join(command)) {
-                return Some(resolved);
-            }
-        },
-        None => {
-            if let Some(resolved) = find_executable(command) {
-                return Some(resolved);
-            }
-        },
-    }
-    if let Some(paths) = search_path {
-        for path in env::split_paths(paths) {
-            if let Some(resolved) = find_executable(&path.join(command)) {
-                return Some(resolved);
-            }
-        }
-    }
-    None
-}
-
-pub(crate) fn command_exists(cmd: &RunCommand) -> bool {
-    resolve_command(cmd).is_some()
-}
+pub(crate) use zellij_process::command::command_exists;
 
 // this is a utility method to separate the arguments from a pathbuf before we turn it into a
 // Command. eg. "/usr/bin/vim -e" ==> "/usr/bin/vim" + "-e" (the latter will be pushed to args)
@@ -998,12 +938,7 @@ fn pane_start_failed(terminal_id: u32, host: &str, err: anyhow::Error) -> anyhow
 /// A null `AsyncReader` for held panes (produces EOF immediately).
 pub(crate) struct NullAsyncReader;
 
-// async fn in traits is not supported by rust, so dtolnay's excellent async_trait macro is being
-// used. See https://smallcultfollowing.com/babysteps/blog/2019/10/26/async-fn-in-traits-are-hard/
-#[async_trait]
-pub trait AsyncReader: Send + Sync {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error>;
-}
+pub use zellij_process::AsyncReader;
 
 #[async_trait]
 impl AsyncReader for NullAsyncReader {

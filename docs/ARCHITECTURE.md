@@ -104,19 +104,29 @@ It is in charge of actions such as:
   * Creating new panes
   * Closing existing panes (and filling up their space by other panes)
 
+## Terminal emulation (zellij-terminal/)
+
+`zellij-terminal` owns the grid and rows, terminal characters, selection and search, hyperlinks, ANSI helpers, Sixel, and Kitty graphics.
+It also owns output serialization, host-query types, component parsing, and damage geometry.
+`PaneId` and `ClientId` live here. The server re-exports them and the existing public terminal module paths.
+Neither `zellij-terminal` nor `zellij-process` depends on the server or on the other extracted crate.
+
+`TerminalPane`, `PluginPane`, pane managers, frames, tabs, screen coordination, and plugin hosting remain in `zellij-server`.
+The terminal crate parses and renders terminal state. The server coordinates panes, clients, plugins, and threads.
+
 ## Terminal Pane (zellij-server/src/panes/terminal_pane.rs)
 The TerminalPane represents a pane on screen that connects to a single pty (pseudo terminal) and (presumably) has one shell or other program running inside it.
 The TerminalPane has two main roles:
   * Keeping track of the Scroll, which represents the buffer of lines in this terminal
   * Interpreting the ANSI/VT instructions coming from the pty in order to adjust the styling of characters, change the cursor position, etc.
 
-### Scroll (zellij-server/src/panes/terminal_pane.rs and zellij-server/src/panes/grid.rs)
+### Scroll (zellij-server/src/panes/terminal_pane.rs and zellij-terminal/src/panes/grid.rs)
 The Scroll holds the terminal buffer and is in charge of:
   * Keeping track of the viewport (which part of it we see) this can change when we scroll up/down
   * Keeping track of the cursor position
   * Controlling line-wrapping
 
-### Terminal Character (zellij-server/src/panes/terminal_character.rs)
+### Terminal Character (zellij-terminal/src/panes/terminal_character.rs)
 The `TerminalCharacter` represents a single character in the pane. It holds the char itself on the one hand, and an internal `CharacterStyles` struct representing the styling of this character.
 This struct derives the `Copy` trait for performance reasons, because it is moved around quite a bit (eg. when line wrapping).
 
@@ -134,7 +144,7 @@ The Boundaries refer to those lines that are drawn between terminal panes. A few
   * The Rect trait is here so that different panes can implement it, giving boundaries a generic way to calculate the size of the pane and draw boundaries around it.
   * Here we use the [unicode box drawing characters](https://en.wikipedia.org/wiki/Box-drawing_character) in order to draw the borders. There's some logic here about combining them together for all possible combinations of pane locations.
 
-## Animation (zellij-utils/src/animation.rs, zellij-server/src/ui/damage.rs)
+## Animation (zellij-utils/src/animation.rs, zellij-terminal/src/ui/damage.rs)
 Anything on screen that moves over time — toast notifications sliding in and out, the bell flash easing off a pane frame, the plugin loading dots — is built from the same two pieces.
 
 `zellij-utils/src/animation.rs` holds the pure part: an `Easing` curve, a `Tween` carrying one scalar from where it is to where it is going, and `blend` for interpolating a `PaletteColor`. The rule that makes it work is that **nothing in it reads the clock** — `now` is always a parameter. One frame therefore samples every live animation at a single instant, and a test drives an animation by handing in fabricated `Instant`s rather than by sleeping.
@@ -145,14 +155,22 @@ The frames themselves come from one shared clock: `BackgroundJob::StartAnimation
 
 Every tick asks for a frame, *including* the one that finds everything settled. That last frame is the one that actually paints the settled state: renders are debounced by `REPAINT_DELAY_MS`, so the frame a still-animating tick asks for is composited up to that long before the deadline it was aiming at. Without one more tick past the deadline, a dismissing toast would be left painted a sliver short of gone — and never reaped, since `reap_settled_notifications` only runs inside a frame — until unrelated output happened to repaint.
 
-Anything drawn *over* a pane — currently just toasts — needs one more thing. A pane only emits cells its own grid thinks are dirty, so the moment a moving overlay stops covering a cell, that cell keeps whatever the overlay last drew there. `ui/damage.rs` diffs what the overlay painted last frame against what it is painting now, and `render_to_clients` repairs the difference *before* the panes render, narrowed to the panes actually overlapping it. An overlay that is only growing produces no damage at all, so arriving is free and only leaving costs repaints.
+Anything drawn *over* a pane — currently just toasts — needs one more thing. A pane only emits cells its own grid thinks are dirty, so the moment a moving overlay stops covering a cell, that cell keeps whatever the overlay last drew there. `zellij-terminal/src/ui/damage.rs` diffs what the overlay painted last frame against what it is painting now, and `render_to_clients` repairs the difference *before* the panes render, narrowed to the panes actually overlapping it. An overlay that is only growing produces no damage at all, so arriving is free and only leaving costs repaints.
+
+## Process ownership (zellij-process/)
+
+`zellij-process` owns pane supervisors, local and remote protocols, SSH transport, the broker, and the Firecracker provider.
+It also defines `AsyncReader` and the command-resolution helpers. It depends on shared utilities, not on the server.
+Supervisor exit callbacks carry a terminal ID (`u32`). The server converts it to `PaneId::Terminal` before calling its existing callback.
+The server retains OS implementations, PTY scheduling, session coordination, and its existing public module paths through re-exports.
+The `zellij-firecracker` binary calls the process crate directly.
 
 ## PTY Bus (zellij-server/src/pty.rs)
 The PtyBus keeps track of several asynchronous streams that read from pty sockets (eg. /dev/pts/999), parse those bytes into ANSI/VT events and send them on to the Screen so that they can be received in the relevant TerminalPane.
 
 A pane on another machine is spawned off the pty thread. Its `RunCommand` carries a `PaneTarget` (`Local`, `Ssh { host }` or `Firecracker { vm, image, worktree }`), and any spawn, layout, layout override or re-run whose command `defers_spawn()` — a remote target that is not held on start — goes to a worker thread as one `SpawnJob`. The worker asks the OS layer to `resolve_spawn` (an ssh host is used as is; a Firecracker VM is booted, or found, by the provider and its ssh endpoint returned as a `RemoteEndpoint`, separate from the target the pane shows) and then `spawn_resolved` (open the pane on the broker and register its transport), and sends one `PtyInstruction::SpawnResolved` back with the readers. The pty thread finishes the job exactly as it would a local spawn, so a VM that takes a minute to boot or a host that is slow to answer never stalls another pane's input. A layout's results keep one slot per run instruction so they line up with the layout when it is applied; a layout that cannot be applied past some slot closes the remote panes already started for the slots after it. Re-runs of one pane are serialised through a per-pane `RerunState`: a rerun asked for while one is off-thread queues behind it, whatever its target, so two commands never stream into one pane, and a result landing on a pane closed meanwhile is torn down through `clear_terminal_id`.
 
-## Pane supervisors (zellij-server/src/pty_host/)
+## Pane supervisors (zellij-process/src/pty_host/)
 Each pane's process is owned by a small supervisor process ("pty-host") rather than by zellij-server. The supervisor calls `openpty`, forks the pane's command, and hands the server a dup of the pty *master* over `SCM_RIGHTS`. Everything downstream of that descriptor — the async reader, window-size ioctls, backpressure on writes — works exactly as it did when the server owned the pty.
 
 What the split buys is lifetime. The child belongs to the supervisor, so a server that exits or is killed does not take its panes with it. The supervisor reads a closed control channel as "detached" rather than "shut down" and starts draining the pty into a bounded ring buffer, so the child never blocks on a full buffer. Only an explicit `Terminate` ends a supervisor.

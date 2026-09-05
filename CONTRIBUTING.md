@@ -490,3 +490,16 @@ conditions are met:
 - Your new code **adheres to the code style** through running `cargo fmt`.
 - Your new code **passes all existing and new tests** through running `cargo
   test`.
+
+## Subsystem regression tests
+
+Run `cargo x test -p zellij-process` for process supervision, transport, command resolution, and Firecracker provider tests.
+Run `cargo x test -p zellij-terminal` for terminal parsing, Unicode/reflow, search/selection, graphics, output, host queries, and component rendering.
+Grid-only replay fixtures live in `zellij-terminal/fixtures`. Replays shared with server tests remain in `src/tests/fixtures`.
+Snapshots live beside their owning tests. Server tests retain the `TerminalPane` interceptor case and other orchestration coverage.
+Server OS and session tests remain in `zellij-server`. Real SSH and VM tests retain their server targets.
+Run `cargo x remote-test --build`, then `cargo x remote-test --test`, for real SSH coverage.
+Run `cargo x firecracker-test --build`, then `cargo x firecracker-test --test`, on Linux with accessible `/dev/kvm`.
+Before handoff, run `cargo x ci check` with local socket access. The integration phase uses 16 workers.
+
+See [crate extraction validation](docs/CRATE_EXTRACTION_VALIDATION.md) for the migration inventory and platform results.

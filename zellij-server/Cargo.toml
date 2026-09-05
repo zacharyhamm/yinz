@@ -13,16 +13,15 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }
+zellij-process = { path = "../zellij-process", version = "0.45.0" }
 ansi_term = { workspace = true }
 anyhow = { workspace = true }
-arrayvec = { version = "0.7.2", default-features = false, features = ["std"] }
 async-trait = { version = "0.1.50", default-features = false }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
-byteorder = { version = "1.4.3", default-features = false, features = ["std"] }
 bytes = { version = "1.6.0", default-features = false, features = ["std"] }
 chrono = { workspace = true }
 crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-channel", "std"] }
-flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
 futures-lite = { workspace = true }
 highway = { version = "=1.2.0", default-features = false, features = ["std"] }
 interprocess = { workspace = true }
@@ -33,13 +32,10 @@ lazy_static = { workspace = true }
 log = { workspace = true }
 mlua = { workspace = true }
 notify-debouncer-full = { workspace = true }
-png = { version = "0.17.16", default-features = false }
 prost = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sixel-image = { version = "0.2.1", default-features = false }
-sixel-tokenizer = { version = "0.1.0", default-features = false }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 sysinfo = { version = "0.39.5", default-features = false, features = ["system"] }
@@ -76,6 +72,7 @@ nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "sign
 signal-hook = { workspace = true }
 
 [dev-dependencies]
+png = { version = "0.17.16", default-features = false }
 # Test-only, and deliberately: the plugin-pane image tests drive the real helpers a plugin calls
 # rather than a second hand-written copy of the escape sequences, which is the only way the two
 # halves can be shown to agree. `zellij-tile` depends on `zellij-utils` alone, so this is acyclic.

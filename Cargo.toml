@@ -18,6 +18,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+zellij-process = { path = "zellij-process", version = "0.45.0" }
 zellij-client = { path = "zellij-client/", version = "0.45.0" }
 zellij-server = { path = "zellij-server/", version = "0.45.0" }
 zellij-utils = { workspace = true }
@@ -76,6 +77,8 @@ members = [
     "default-plugins/hocus-store",
     "zellij-client",
     "zellij-integration-tests",
+    "zellij-process",
+    "zellij-terminal",
     "zellij-server",
     "zellij-utils",
     "zellij-tile",

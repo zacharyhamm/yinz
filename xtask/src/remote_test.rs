@@ -1,6 +1,6 @@
 //! The remote-pane tests: a real sshd, in a container, over a cuttable link.
 //!
-//! Everything under `zellij-server/src/pty_host/remote/` that needs another
+//! Everything under `zellij-process/src/pty_host/remote/` that needs another
 //! machine is verified here and nowhere else. The unit tests stop at a
 //! `UnixStream::pair()`; this is where an actual `ssh` runs, an actual broker
 //! daemonises on the far side, and an actual pty is allocated over there.

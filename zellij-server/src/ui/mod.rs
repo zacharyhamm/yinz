@@ -1,7 +1,6 @@
 pub mod boundaries;
-pub mod components;
 pub mod context_menu;
-pub mod damage;
+pub use zellij_terminal::ui::damage;
 pub mod hint_text;
 pub mod loading_indication;
 pub mod notification;

@@ -8,10 +8,10 @@ mod os_input_output_unix;
 #[cfg(target_os = "windows")]
 compile_error!("Zellij does not support Windows");
 
-pub mod firecracker;
-pub mod host_query;
+pub use zellij_process::firecracker;
+pub use zellij_terminal::host_query;
 pub mod os_input_output;
-pub mod output;
+pub use zellij_terminal::output;
 pub mod panes;
 pub mod tab;
 
@@ -27,7 +27,7 @@ mod locked_escape;
 pub mod plugin_authoring;
 mod pty;
 #[cfg(unix)]
-pub mod pty_host;
+pub use zellij_process::pty_host;
 mod pty_writer;
 mod route;
 mod screen;
@@ -167,7 +167,7 @@ use zellij_utils::{
     shared::default_palette,
 };
 
-pub type ClientId = u16;
+pub use zellij_terminal::ClientId;
 
 /// Instructions related to server-side application
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
