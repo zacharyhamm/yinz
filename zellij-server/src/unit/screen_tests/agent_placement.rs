@@ -397,18 +397,19 @@ fn a_plain_shell_is_never_moved() {
 fn an_agent_name_among_an_interpreters_arguments_does_not_move_the_pane() {
     let mut screen = screen_with_floor();
     tab_with_panes(&mut screen, 0, 1, 4);
-    let invoked_with = Run::Command(RunCommand {
-        command: PathBuf::from("python3"),
-        args: vec![
-            "gemini_test.py".to_owned(),
-            "--api".to_owned(),
-            "gemini".to_owned(),
-        ],
-        ..Default::default()
-    });
-    let target = ClientTabIndexOrPaneId::ClientId(CLIENT);
-    let (placed, _, _) = target_of(&mut screen, Some(invoked_with), tiled(), target);
-    assert_eq!(placed, target);
+    for (command, args) in [
+        ("python3", &["gemini_test.py", "--api", "gemini"][..]),
+        ("uv", &["--directory", "/work/claude", "run", "pytest"]),
+    ] {
+        let invoked_with = Run::Command(RunCommand {
+            command: PathBuf::from(command),
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            ..Default::default()
+        });
+        let target = ClientTabIndexOrPaneId::ClientId(CLIENT);
+        let (placed, _, _) = target_of(&mut screen, Some(invoked_with), tiled(), target);
+        assert_eq!(placed, target, "{command} {args:?}");
+    }
     assert_eq!(screen.tabs.len(), 1);
 }
 
