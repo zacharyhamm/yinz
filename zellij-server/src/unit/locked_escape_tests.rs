@@ -1,5 +1,6 @@
 use super::*;
 use crate::thread_bus::ThreadSenders;
+use crate::TerminalId;
 use std::collections::HashMap;
 use std::str::FromStr;
 use zellij_utils::{channels, input::config::Config};
@@ -18,7 +19,10 @@ fn session() -> SessionMetaData {
             ..Default::default()
         },
         default_shell: None,
-        current_input_modes: HashMap::from([(1, InputMode::Locked), (2, InputMode::Locked)]),
+        current_input_modes: HashMap::from([
+            (ClientId(1), InputMode::Locked),
+            (ClientId(2), InputMode::Locked),
+        ]),
         session_configuration: Default::default(),
         key_passthrough_clients: HashMap::new(),
         locked_escapes: HashMap::new(),
@@ -89,7 +93,7 @@ fn locked_escape_routing_respects_custom_bindings_and_explicit_passthrough() {
         if passthrough {
             session
                 .key_passthrough_clients
-                .insert(1, crate::panes::PaneId::Terminal(1));
+                .insert(ClientId(1), crate::panes::PaneId::Terminal(TerminalId(1)));
         }
         let session_data = Arc::new(RwLock::new(Some(session)));
         let (tx, _rx) = channels::unbounded();
@@ -101,7 +105,7 @@ fn locked_escape_routing_respects_custom_bindings_and_explicit_passthrough() {
             },
             &session_data,
             &SenderWithContext::new(tx),
-            1,
+            ClientId(1),
         )
         .unwrap();
         assert_eq!(result.is_none(), should_hold);
@@ -112,7 +116,7 @@ fn locked_escape_routing_respects_custom_bindings_and_explicit_passthrough() {
                 .as_ref()
                 .unwrap()
                 .locked_escapes
-                .contains_key(&1),
+                .contains_key(&ClientId(1)),
             should_hold
         );
     }
@@ -146,7 +150,7 @@ fn locked_escape_window_follows_the_configured_timeout() {
             },
             &session_data,
             &SenderWithContext::new(tx),
-            1,
+            ClientId(1),
         )
         .unwrap();
         let guard = session_data.read().unwrap();
@@ -154,7 +158,7 @@ fn locked_escape_window_follows_the_configured_timeout() {
         match expected {
             Some(timeout) => {
                 assert!(result.is_none(), "{kdl:?} should hold the key");
-                let deadline = session.locked_escapes[&1].deadline;
+                let deadline = session.locked_escapes[&ClientId(1)].deadline;
                 assert!(
                     deadline >= before + timeout && deadline <= Instant::now() + timeout,
                     "{kdl:?} deadline is not {timeout:?} out"
@@ -166,7 +170,7 @@ fn locked_escape_window_follows_the_configured_timeout() {
                     "{kdl:?} should pass the key straight through"
                 );
                 assert!(session.locked_escapes.is_empty());
-                assert_eq!(session.current_input_modes[&1], InputMode::Locked);
+                assert_eq!(session.current_input_modes[&ClientId(1)], InputMode::Locked);
             },
         }
     }
@@ -192,54 +196,64 @@ fn locked_escape_resolution_is_per_client_and_stale_tokens_are_harmless() {
     session.senders.to_screen = Some(SenderWithContext::new(screen_tx));
     let old = LockedEscape::new(Instant::now(), DEFAULT_TIMEOUT);
     let new = LockedEscape::new(Instant::now(), DEFAULT_TIMEOUT);
-    session.locked_escapes.insert(1, new);
-    session.locked_escapes.insert(2, old);
-    session.resolve_locked_escape(1, old.token).unwrap();
-    assert!(screen_rx.try_recv().is_err());
-    assert_eq!(session.current_input_modes[&1], InputMode::Locked);
-    assert_eq!(session.locked_escapes[&1].token, new.token);
-    session.resolve_locked_escape(1, new.token).unwrap();
-    assert!(matches!(
-        screen_rx.try_recv().unwrap().0,
-        ScreenInstruction::CloseContextMenu(1)
-    ));
-    assert!(matches!(
-        screen_rx.try_recv().unwrap().0,
-        ScreenInstruction::ChangeMode(InputMode::Normal, _, 1, _)
-    ));
-    assert!(screen_rx.try_recv().is_err());
-    assert_eq!(session.current_input_modes[&1], InputMode::Normal);
-    assert_eq!(session.current_input_modes[&2], InputMode::Locked);
-    assert!(!session.locked_escapes.contains_key(&1));
+    session.locked_escapes.insert(ClientId(1), new);
+    session.locked_escapes.insert(ClientId(2), old);
     session
-        .change_input_mode(1, InputMode::Locked, None)
+        .resolve_locked_escape(ClientId(1), old.token)
+        .unwrap();
+    assert!(screen_rx.try_recv().is_err());
+    assert_eq!(session.current_input_modes[&ClientId(1)], InputMode::Locked);
+    assert_eq!(session.locked_escapes[&ClientId(1)].token, new.token);
+    session
+        .resolve_locked_escape(ClientId(1), new.token)
         .unwrap();
     assert!(matches!(
         screen_rx.try_recv().unwrap().0,
-        ScreenInstruction::ChangeMode(InputMode::Locked, _, 1, _)
+        ScreenInstruction::CloseContextMenu(ClientId(1))
     ));
-    session.resolve_locked_escape(1, new.token).unwrap();
+    assert!(matches!(
+        screen_rx.try_recv().unwrap().0,
+        ScreenInstruction::ChangeMode(InputMode::Normal, _, ClientId(1), _)
+    ));
     assert!(screen_rx.try_recv().is_err());
-    assert_eq!(session.current_input_modes[&1], InputMode::Locked);
+    assert_eq!(session.current_input_modes[&ClientId(1)], InputMode::Normal);
+    assert_eq!(session.current_input_modes[&ClientId(2)], InputMode::Locked);
+    assert!(!session.locked_escapes.contains_key(&ClientId(1)));
+    session
+        .change_input_mode(ClientId(1), InputMode::Locked, None)
+        .unwrap();
+    assert!(matches!(
+        screen_rx.try_recv().unwrap().0,
+        ScreenInstruction::ChangeMode(InputMode::Locked, _, ClientId(1), _)
+    ));
+    session
+        .resolve_locked_escape(ClientId(1), new.token)
+        .unwrap();
+    assert!(screen_rx.try_recv().is_err());
+    assert_eq!(session.current_input_modes[&ClientId(1)], InputMode::Locked);
 }
 
 #[test]
 fn locked_escape_is_cancelled_by_mode_configuration_and_disconnect_changes() {
     let mut session = session();
     let pending = LockedEscape::new(Instant::now(), DEFAULT_TIMEOUT);
-    session.locked_escapes.insert(1, pending);
-    session.change_input_mode(1, InputMode::Pane, None).unwrap();
-    assert!(!session.locked_escapes.contains_key(&1));
-    session.locked_escapes.insert(1, pending);
+    session.locked_escapes.insert(ClientId(1), pending);
+    session
+        .change_input_mode(ClientId(1), InputMode::Pane, None)
+        .unwrap();
+    assert!(!session.locked_escapes.contains_key(&ClientId(1)));
+    session.locked_escapes.insert(ClientId(1), pending);
     session.change_mode_for_all_clients(InputMode::Locked);
     assert!(session.locked_escapes.is_empty());
-    session.locked_escapes.insert(1, pending);
-    session.propagate_configuration_changes(vec![(1, Config::default())], false);
-    assert!(!session.locked_escapes.contains_key(&1));
-    session.locked_escapes.insert(1, pending);
-    session.remove_key_passthrough_client(1);
-    session.resolve_locked_escape(1, pending.token).unwrap();
-    assert_eq!(session.current_input_modes[&1], InputMode::Locked);
+    session.locked_escapes.insert(ClientId(1), pending);
+    session.propagate_configuration_changes(vec![(ClientId(1), Config::default())], false);
+    assert!(!session.locked_escapes.contains_key(&ClientId(1)));
+    session.locked_escapes.insert(ClientId(1), pending);
+    session.remove_key_passthrough_client(ClientId(1));
+    session
+        .resolve_locked_escape(ClientId(1), pending.token)
+        .unwrap();
+    assert_eq!(session.current_input_modes[&ClientId(1)], InputMode::Locked);
 }
 
 #[test]
@@ -248,7 +262,7 @@ fn locked_escape_completion_writes_raw_ctrl_g_for_both_encodings() {
         let mut session = session();
         // The subject is byte routing, not the real clock or scheduler.
         session.locked_escapes.insert(
-            1,
+            ClientId(1),
             LockedEscape::new(Instant::now(), Duration::from_secs(60)),
         );
         let session_data = Arc::new(RwLock::new(Some(session)));
@@ -265,7 +279,7 @@ fn locked_escape_completion_writes_raw_ctrl_g_for_both_encodings() {
             },
             &session_data,
             &SenderWithContext::new(tx),
-            1,
+            ClientId(1),
         )
         .unwrap();
         assert!(matches!(result, Some(ClientToServerMsg::Action {
@@ -273,7 +287,7 @@ fn locked_escape_completion_writes_raw_ctrl_g_for_both_encodings() {
         }) if bytes == [7]));
         let guard = session_data.read().unwrap();
         let session = guard.as_ref().unwrap();
-        assert_eq!(session.current_input_modes[&1], InputMode::Locked);
+        assert_eq!(session.current_input_modes[&ClientId(1)], InputMode::Locked);
         assert!(session.locked_escapes.is_empty());
     }
 }
@@ -299,34 +313,37 @@ fn locked_escape_fallback_updates_mode_and_queues_unlock_before_returning_input(
     ] {
         let mut session = session();
         session.locked_escapes.insert(
-            1,
+            ClientId(1),
             LockedEscape::new(Instant::now(), Duration::from_secs(60)),
         );
         let (screen_tx, screen_rx) = channels::unbounded();
         session.senders.to_screen = Some(SenderWithContext::new(screen_tx));
         let session_data = Arc::new(RwLock::new(Some(session)));
         let (tx, _rx) = channels::unbounded();
-        assert!(
-            prepare_input(instruction, &session_data, &SenderWithContext::new(tx), 1)
-                .unwrap()
-                .is_some()
-        );
+        assert!(prepare_input(
+            instruction,
+            &session_data,
+            &SenderWithContext::new(tx),
+            ClientId(1)
+        )
+        .unwrap()
+        .is_some());
         assert_eq!(
             session_data
                 .read()
                 .unwrap()
                 .as_ref()
                 .unwrap()
-                .current_input_modes[&1],
+                .current_input_modes[&ClientId(1)],
             InputMode::Normal
         );
         assert!(matches!(
             screen_rx.try_recv().unwrap().0,
-            ScreenInstruction::CloseContextMenu(1)
+            ScreenInstruction::CloseContextMenu(ClientId(1))
         ));
         assert!(matches!(
             screen_rx.try_recv().unwrap().0,
-            ScreenInstruction::ChangeMode(InputMode::Normal, _, 1, _)
+            ScreenInstruction::ChangeMode(InputMode::Normal, _, ClientId(1), _)
         ));
     }
 }
@@ -335,7 +352,7 @@ fn locked_escape_fallback_updates_mode_and_queues_unlock_before_returning_input(
 fn locked_escape_resize_does_not_resolve_or_extend_the_prefix() {
     let mut session = session();
     let pending = LockedEscape::new(Instant::now(), DEFAULT_TIMEOUT);
-    session.locked_escapes.insert(1, pending);
+    session.locked_escapes.insert(ClientId(1), pending);
     let session_data = Arc::new(RwLock::new(Some(session)));
     let (tx, _rx) = channels::unbounded();
     assert!(matches!(
@@ -345,13 +362,16 @@ fn locked_escape_resize_does_not_resolve_or_extend_the_prefix() {
             },
             &session_data,
             &SenderWithContext::new(tx),
-            1
+            ClientId(1)
         )
         .unwrap(),
         Some(ClientToServerMsg::TerminalResize { .. })
     ));
     let guard = session_data.read().unwrap();
     let session = guard.as_ref().unwrap();
-    assert_eq!(session.locked_escapes[&1].deadline, pending.deadline);
-    assert_eq!(session.current_input_modes[&1], InputMode::Locked);
+    assert_eq!(
+        session.locked_escapes[&ClientId(1)].deadline,
+        pending.deadline
+    );
+    assert_eq!(session.current_input_modes[&ClientId(1)], InputMode::Locked);
 }

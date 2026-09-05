@@ -7,8 +7,8 @@
 #![allow(clippy::borrowed_box)]
 #![allow(clippy::redundant_closure)]
 #![allow(clippy::option_as_ref_deref)]
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use crate::{PluginId, TerminalId};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 
