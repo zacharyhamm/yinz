@@ -7,7 +7,7 @@
 #![allow(clippy::borrowed_box)]
 #![allow(clippy::redundant_closure)]
 #![allow(clippy::option_as_ref_deref)]
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 
@@ -22,7 +22,7 @@ use crate::{
     ServerInstruction, SessionMetaData, SessionState,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 use zellij_utils::{
     channels::SenderWithContext,
@@ -2556,6 +2556,40 @@ fn accept_agent_report(
     reply_result
 }
 
+/// How long the same chord-inferred modifier set is allowed to stand before it is restated.
+///
+/// A chord says only "these were down when this was struck", so a consumer has to time the hold
+/// out itself and needs the fact restated to keep it alive - but restating it once per keystroke
+/// puts a plugin `Update` on the bus for every `Ctrl` chord in a burst of editing, which is
+/// exactly the queue pressure `docs/PLUGIN_RENDER_PIPELINE.md` blames for plugin input lag. This
+/// has to stay comfortably under the shortest consumer window, which is the status bar's
+/// `ALT_HINT_WINDOW_MS` (3s).
+const INFERRED_MODIFIERS_REPEAT_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Whether this chord's modifiers are worth telling the plugins about, recording the report in
+/// `last` when they are.
+///
+/// A change is always news. An unchanged set is news again only once the interval has run out -
+/// and a suppressed chord deliberately does not move the recorded instant, so the interval is
+/// measured from the last report actually sent rather than sliding forward with every keystroke.
+fn should_report_inferred_modifiers(
+    last: &mut Option<(BTreeSet<KeyModifier>, Instant)>,
+    modifiers: &BTreeSet<KeyModifier>,
+    now: Instant,
+) -> bool {
+    let is_news = match last {
+        Some((previous, sent_at)) => {
+            previous != modifiers
+                || now.duration_since(*sent_at) >= INFERRED_MODIFIERS_REPEAT_INTERVAL
+        },
+        None => true,
+    };
+    if is_news {
+        *last = Some((modifiers.clone(), now));
+    }
+    is_news
+}
+
 pub(crate) fn route_thread_main(
     session_data: Arc<RwLock<Option<SessionMetaData>>>,
     session_state: Arc<RwLock<SessionState>>,
@@ -2566,6 +2600,10 @@ pub(crate) fn route_thread_main(
     first_message_timeout: Duration,
 ) -> Result<()> {
     let mut retry_queue = VecDeque::new();
+    // The last chord-inferred modifier set reported to the plugins for this connection, and when.
+    // Per connection rather than per message, which is what lets the rate limit hold across a
+    // burst of chords - see `should_report_inferred_modifiers`.
+    let mut last_inferred_modifiers: Option<(BTreeSet<KeyModifier>, Instant)> = None;
     let err_context = || format!("failed to handle instruction for client {client_id}");
     let mut seen_cli_pipes = HashSet::new();
     let mut consecutive_malformed_messages_received = 0;
@@ -2688,7 +2726,18 @@ pub(crate) fn route_thread_main(
                             // caveat, and it is why the receiving plugin has to time the hold
                             // out itself. The precise signal, where the terminal reports the
                             // modifier key itself, arrives as its own message with `true`.
-                            if !key.key_modifiers.is_empty() {
+                            //
+                            // Rate limited, because a broadcast is not free: it crosses the bus
+                            // and takes a lock per plugin instance before anything is filtered,
+                            // and an unchanged set restated on every keystroke buys a consumer
+                            // nothing. See `should_report_inferred_modifiers`.
+                            if !key.key_modifiers.is_empty()
+                                && should_report_inferred_modifiers(
+                                    &mut last_inferred_modifiers,
+                                    &key.key_modifiers,
+                                    Instant::now(),
+                                )
+                            {
                                 let _ = senders.as_ref().map(|senders| {
                                     senders.send_to_plugin(PluginInstruction::Update(vec![(
                                         None,
@@ -3840,6 +3889,80 @@ mod tests {
             actions_dismiss_context_menu(&[write, Action::GoToNextTab]),
             "one non-writing action in the sequence is enough"
         );
+    }
+
+    fn modifiers(of: &[KeyModifier]) -> BTreeSet<KeyModifier> {
+        of.iter().cloned().collect()
+    }
+
+    /// The bug this guards: every `Ctrl` chord in a burst of editing broadcast its own
+    /// `ModifiersHeld` to every plugin, restating a fact none of them had stopped believing.
+    #[test]
+    fn an_unchanged_inferred_modifier_set_is_restated_only_once_an_interval() {
+        let start = Instant::now();
+        let mut last = None;
+        let ctrl = modifiers(&[KeyModifier::Ctrl]);
+        assert!(
+            should_report_inferred_modifiers(&mut last, &ctrl, start),
+            "the first chord has nothing to be redundant with"
+        );
+        assert!(
+            !should_report_inferred_modifiers(&mut last, &ctrl, start + Duration::from_millis(900)),
+            "the same set inside the interval says nothing new"
+        );
+        assert!(
+            should_report_inferred_modifiers(&mut last, &ctrl, start + Duration::from_secs(1)),
+            "once the interval is up the hold has to be restated or a consumer times it out"
+        );
+    }
+
+    #[test]
+    fn a_changed_inferred_modifier_set_is_reported_at_once() {
+        let start = Instant::now();
+        let mut last = None;
+        assert!(should_report_inferred_modifiers(
+            &mut last,
+            &modifiers(&[KeyModifier::Ctrl]),
+            start
+        ));
+        assert!(
+            should_report_inferred_modifiers(
+                &mut last,
+                &modifiers(&[KeyModifier::Alt]),
+                start + Duration::from_millis(10)
+            ),
+            "a different set is news no matter how soon it arrives"
+        );
+        assert!(
+            should_report_inferred_modifiers(
+                &mut last,
+                &modifiers(&[KeyModifier::Alt, KeyModifier::Ctrl]),
+                start + Duration::from_millis(20)
+            ),
+            "so is the same modifier joined by another"
+        );
+    }
+
+    /// A suppressed chord must not push the deadline out, or a fast enough typist would keep the
+    /// hold from ever being restated and a consumer would time it out mid-hold.
+    #[test]
+    fn suppressing_a_chord_does_not_slide_the_interval() {
+        let start = Instant::now();
+        let mut last = None;
+        let alt = modifiers(&[KeyModifier::Alt]);
+        assert!(should_report_inferred_modifiers(&mut last, &alt, start));
+        for elapsed_ms in [400, 800] {
+            assert!(!should_report_inferred_modifiers(
+                &mut last,
+                &alt,
+                start + Duration::from_millis(elapsed_ms)
+            ));
+        }
+        assert!(should_report_inferred_modifiers(
+            &mut last,
+            &alt,
+            start + Duration::from_millis(1200)
+        ));
     }
 
     #[test]
