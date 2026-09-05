@@ -1,19 +1,6 @@
 use super::*;
 use std::collections::BTreeSet;
 
-fn loaded(names: &[&'static str]) -> BTreeSet<&'static str> {
-    names.iter().copied().collect()
-}
-
-fn advertised(specs: &Value) -> Vec<String> {
-    specs
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|spec| spec["function"]["name"].as_str().unwrap().to_owned())
-        .collect()
-}
-
 /// The test the whole design rests on. A tool in no family is advertised to
 /// everyone, which is merely wasteful; a tool in two would be filed under
 /// whichever `family_of` reached first, which is the kind of thing that is
@@ -128,8 +115,7 @@ fn loading_a_family_adds_exactly_its_tools() {
 
 #[test]
 fn loading_every_family_advertises_the_whole_set() {
-    let every: BTreeSet<&str> = deferred_families().into_iter().collect();
-    assert_eq!(advertised(&specs_for(&every)), names());
+    assert_eq!(advertised(&specs_for(&every_family())), names());
 }
 
 // ---------------------------------------------------------------------------
@@ -290,7 +276,9 @@ fn a_load_with_no_family_names_the_ones_that_exist() {
 #[test]
 fn the_loader_is_read_only() {
     assert!(READ_ONLY.contains(&LOAD_TOOL));
-    assert!(advertised(&read_only_specs())
+    // Before any family is loaded: the state every plan starts in, and the one
+    // the loader has to be reachable from.
+    assert!(advertised(&read_only_specs_for(&BTreeSet::new()))
         .iter()
         .any(|n| n == LOAD_TOOL));
 }
@@ -346,15 +334,17 @@ fn planning_mode_and_disclosure_are_both_required() {
     assert!(!with_plugin.iter().any(|name| name == "plugin_write"));
 }
 
-/// Planning mode is the smaller of the two sets whatever is loaded, so a chat
-/// that has loaded everything still cannot act from within a plan.
+/// A chat that has loaded everything still cannot act from within a plan: what
+/// it is offered is the allowlist itself, no more and no less. Both directions
+/// matter — a tool that acts must not appear, and a read-only tool must not be
+/// stranded behind a family that has already been loaded.
 #[test]
 fn a_fully_loaded_plan_is_still_only_the_read_only_tools() {
-    let every: BTreeSet<&str> = deferred_families().into_iter().collect();
-    assert_eq!(
-        advertised(&read_only_specs_for(&every)),
-        advertised(&read_only_specs()),
-    );
+    let offered: BTreeSet<String> = advertised(&read_only_specs_for(&every_family()))
+        .into_iter()
+        .collect();
+    let allowed: BTreeSet<String> = READ_ONLY.iter().map(|tool| (*tool).to_owned()).collect();
+    assert_eq!(offered, allowed);
 }
 
 /// The half of the plugin family that reads is exactly the half planning mode keeps: the

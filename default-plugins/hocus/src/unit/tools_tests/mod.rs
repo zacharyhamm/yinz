@@ -56,6 +56,28 @@ fn diverged_session() -> SessionTabs {
     }
 }
 
+/// The families a conversation has asked for.
+fn loaded(names: &[&'static str]) -> BTreeSet<&'static str> {
+    names.iter().copied().collect()
+}
+
+/// Every deferred family loaded — the widest any advertisement gets, and the
+/// only state in which a spec array and a hand-written list of tool names can be
+/// compared name for name.
+fn every_family() -> BTreeSet<&'static str> {
+    deferred_families().into_iter().collect()
+}
+
+/// The tool names a spec array offers, in the order it offers them.
+fn advertised(specs: &Value) -> Vec<String> {
+    specs
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|spec| spec["function"]["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
 mod args;
 mod confirmation;
 mod families;

@@ -2058,16 +2058,6 @@ pub const READ_ONLY: &[&str] = &[
     "tools_load",
 ];
 
-/// The `tools` array as planning mode sends it: [`specs`] minus everything that
-/// acts.
-///
-/// Filtered out of the real thing rather than built from a second list, so a
-/// tool cannot become readable by being forgotten — it has to be named in
-/// [`READ_ONLY`] to survive this.
-pub fn read_only_specs() -> Value {
-    filter_specs(|name| READ_ONLY.contains(&name))
-}
-
 // ---------------------------------------------------------------------------
 // Tool families
 // ---------------------------------------------------------------------------
@@ -2410,17 +2400,22 @@ fn is_disclosed(name: &str, loaded: &BTreeSet<&str>) -> bool {
 /// The `tools` array for a conversation that has loaded `loaded`.
 ///
 /// Filtered out of [`specs`] rather than assembled from the families, for the
-/// reason [`read_only_specs`] is: one list of tools, and a tool that is not in
-/// a family fails a test rather than quietly going missing here.
+/// reason [`read_only_specs_for`] is: one list of tools, and a tool that is not
+/// in a family fails a test rather than quietly going missing here.
 pub fn specs_for(loaded: &BTreeSet<&str>) -> Value {
     filter_specs(|name| is_disclosed(name, loaded))
 }
 
-/// [`specs_for`] narrowed again to what planning mode allows.
+/// [`specs_for`] narrowed again to what planning mode allows: [`specs`] minus
+/// everything that acts.
 ///
 /// The two conditions are independent and a tool has to pass both: `plugin_docs`
 /// is read-only but withheld until the `plugin` family is loaded, and
 /// `plugin_write` stays withheld after it is.
+///
+/// Filtered out of the real thing rather than built from a second list, so a
+/// tool cannot become readable by being forgotten — it has to be named in
+/// [`READ_ONLY`] to survive this.
 pub fn read_only_specs_for(loaded: &BTreeSet<&str>) -> Value {
     filter_specs(|name| READ_ONLY.contains(&name) && is_disclosed(name, loaded))
 }
