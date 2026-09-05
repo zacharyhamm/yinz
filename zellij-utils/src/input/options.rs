@@ -441,6 +441,14 @@ pub struct Options {
     #[serde(default)]
     pub support_kitty_keyboard_protocol: Option<bool>,
 
+    /// Whether to ask the host terminal to report the modifier keys themselves, so the UI can
+    /// know that eg. Alt is being held rather than only that it was part of a chord. Defaults
+    /// to false: it needs Kitty keyboard flags that also make every printable key arrive as an
+    /// escape code, which US-ASCII survives but AltGr glyphs, dead keys and IME commits do not.
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub report_modifier_keys: Option<bool>,
+
     /// Whether to enable support for the Kitty graphics (image) protocol (must also be supported
     /// by the host terminal), defaults to true if the terminal supports it
     #[clap(long, value_parser)]
@@ -665,6 +673,7 @@ impl Options {
         let support_kitty_keyboard_protocol = other
             .support_kitty_keyboard_protocol
             .or(self.support_kitty_keyboard_protocol);
+        let report_modifier_keys = other.report_modifier_keys.or(self.report_modifier_keys);
         let support_kitty_graphics_protocol = other
             .support_kitty_graphics_protocol
             .or(self.support_kitty_graphics_protocol);
@@ -747,6 +756,7 @@ impl Options {
             serialization_interval,
             disable_session_metadata,
             support_kitty_keyboard_protocol,
+            report_modifier_keys,
             support_kitty_graphics_protocol,
             stacked_resize,
             agent_pane_min_columns,
@@ -856,6 +866,7 @@ impl Options {
         let support_kitty_keyboard_protocol = other
             .support_kitty_keyboard_protocol
             .or(self.support_kitty_keyboard_protocol);
+        let report_modifier_keys = other.report_modifier_keys.or(self.report_modifier_keys);
         let support_kitty_graphics_protocol = other
             .support_kitty_graphics_protocol
             .or(self.support_kitty_graphics_protocol);
@@ -939,6 +950,7 @@ impl Options {
             serialization_interval,
             disable_session_metadata,
             support_kitty_keyboard_protocol,
+            report_modifier_keys,
             support_kitty_graphics_protocol,
             stacked_resize,
             agent_pane_min_columns,

@@ -20,6 +20,17 @@ fn sgr_left_click(column: usize, line: usize) -> Vec<u8> {
     .into_bytes()
 }
 
+/// Hold Alt down, which is what puts the keybind hints (and the clickable New Pane / Floating
+/// ribbons with them) back into the status bar's right-hand slot in place of the clock.
+///
+/// Sent as the Kitty modifier-key press the client's parser understands, rather than as a
+/// chord: a chord is only ever *inferred* evidence that Alt was down and self-expires after a
+/// few seconds, which would make every assertion below a race against a wall clock. A held
+/// modifier stays held until it is released, so these tests are not timing tests.
+fn hold_alt(zellij: &TestSession) {
+    zellij.send_stdin(b"\x1b[57443;1u");
+}
+
 fn display_column_of(line: &str, needle: &str) -> Option<usize> {
     line.find(needle)
         .map(|byte_offset| line[..byte_offset].chars().count())
@@ -37,6 +48,7 @@ fn claim_first_terminal_and_wait_for_prompt(zellij: &TestSession) -> FakePtyHand
 }
 
 fn click_new_pane_button_in_status_bar(zellij: &TestSession, pane_output: &[u8]) -> FakePtyHandle {
+    hold_alt(zellij);
     let grid_snapshot =
         zellij.wait_until("status bar shows the new pane button", |grid_snapshot| {
             grid_snapshot
@@ -99,6 +111,7 @@ fn mouse_click_new_pane_in_status_bar_twice_opens_two_panes() {
 }
 
 fn click_floating_ribbon_in_status_bar(zellij: &TestSession) {
+    hold_alt(zellij);
     let grid_snapshot =
         zellij.wait_until("status bar shows the floating ribbon", |grid_snapshot| {
             grid_snapshot

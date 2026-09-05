@@ -878,6 +878,7 @@ pub fn normalized(grid_snapshot: &GridSnapshot) -> String {
     let text = replace_unique_session_name(&grid_snapshot.text);
     let text = strip_swap_layout_indication(&text);
     let text = strip_tip_indication(&text);
+    let text = strip_status_bar_clock(&text);
     strip_trailing_whitespace(&text)
 }
 
@@ -888,6 +889,35 @@ pub fn assert_same_rendered_grid(actual: &GridSnapshot, expected: &GridSnapshot,
         actual == expected,
         "{what}\n--- expected grid ---\n{expected}\n--- actual grid ---\n{actual}"
     );
+}
+
+/// The status bar's clock, which is the real wall clock and so different on every run.
+///
+/// Stripped rather than pinned because the alternative is a fake clock reaching all the way
+/// into a wasm plugin's `SystemTime::now()`, and what these snapshots are about is the layout
+/// around it. The trailing whitespace it leaves behind is taken off by
+/// [`strip_trailing_whitespace`], which runs after this.
+///
+/// The status bar's clock, which is the real wall clock and so different on every run.
+///
+/// Stripped rather than pinned because the alternative is a fake clock reaching all the way
+/// into a wasm plugin's `SystemTime::now()`, and what these snapshots are about is the layout
+/// around it. The trailing whitespace it leaves behind is taken off by
+/// [`strip_trailing_whitespace`], which runs after this.
+///
+/// Kept tight rather than scoped to one line, because a nested session draws a second status
+/// bar *inside* a pane and so partway up the grid: the clock has to sit at the end of the line
+/// with nothing after it but the pane border, which is put back. What comes *before* it is not
+/// constrained to a space - on a tight line the block abuts the arrow separator - only to a
+/// non-digit, so a longer number ending in a clock shape is left alone. The date half is
+/// optional because a narrow terminal sheds it and keeps the time.
+fn strip_status_bar_clock(text: &str) -> String {
+    regex::Regex::new(
+        r"(?m)(^|[^0-9])\d{2}:\d{2}(?:  (?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) \d{1,2} [A-Z][a-z]{2})?( *[│┃|]? *)$",
+    )
+    .unwrap()
+    .replace_all(text, "$1$2")
+    .to_string()
 }
 
 fn strip_tip_indication(text: &str) -> String {

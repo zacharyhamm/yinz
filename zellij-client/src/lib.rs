@@ -21,6 +21,7 @@ mod stdin_handler;
 mod terminal_escapes;
 
 use log::info;
+use std::collections::BTreeSet;
 use std::env::current_exe;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -44,7 +45,7 @@ use zellij_utils::cli::CliArgs;
 use zellij_utils::{
     channels::{self, ChannelWithContext, SenderWithContext},
     consts::{set_permissions, ZELLIJ_SOCK_DIR},
-    data::{ClientId, ConnectToSession, KeyWithModifier, LayoutInfo},
+    data::{ClientId, ConnectToSession, KeyModifier, KeyWithModifier, LayoutInfo},
     envs,
     errors::{ClientContext, ErrorInstruction},
     input::{config::Config, options::Options},
@@ -330,6 +331,11 @@ pub(crate) enum InputInstruction {
     NestedSessionFrameFromHost(Vec<u8>),
     /// The host terminal gained (`true`) or lost (`false`) keyboard focus.
     HostTerminalFocusChanged(bool),
+    /// Which modifier keys the host says are physically down, sent when the set changes.
+    ///
+    /// Only ever non-empty on a terminal asked for `REPORT_ALL_KEYS_AS_ESCAPE_CODES`, which is
+    /// the only way a modifier key on its own is ever reported at all.
+    ModifiersHeldChanged(BTreeSet<KeyModifier>),
     Exit,
 }
 
@@ -364,6 +370,11 @@ pub fn start_client(
         .support_kitty_keyboard_protocol
         .map(|e| !e)
         .unwrap_or(false);
+    // Opt-in, and only meaningful with the protocol on at all: the flags that report a modifier
+    // key on its own also stop the terminal sending composed text. See
+    // `ENTER_KITTY_KEYBOARD_MODE_WITH_MODIFIERS`.
+    let report_modifier_keys = config_options.report_modifier_keys.unwrap_or(false)
+        && !explicitly_disable_kitty_keyboard_protocol;
     // An explicit setting is the user's call either way - among other things it is the escape
     // hatch for a mosh fork that does pass graphics through. Unset, the default is "yes, unless
     // we can see we are behind something that would only mangle it".
@@ -389,6 +400,7 @@ pub fn start_client(
     claim_terminal(
         &mut *os_input,
         !explicitly_disable_kitty_keyboard_protocol,
+        report_modifier_keys,
         is_a_reconnect,
     );
     if tracing_attach {
@@ -513,6 +525,7 @@ pub fn start_client(
                     stdin_ansi_parser,
                     explicitly_disable_kitty_keyboard_protocol,
                     support_kitty_graphics_protocol,
+                    report_modifier_keys,
                 )
             }
         });

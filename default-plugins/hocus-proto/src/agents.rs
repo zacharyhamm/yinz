@@ -2504,18 +2504,12 @@ fn age_gutter(now_ms: i64, then_ms: Option<i64>) -> String {
 /// every label starts in the same column. That is what caps the day count: past `99d` the
 /// answer is "older than this column can say", and a run three months gone is history, where
 /// the exact day is not what the column is being read for.
-/// Now, as an epoch millisecond.
+/// Now, as an epoch millisecond — the unit every timestamp in this module is in: a run's
+/// `started_at_ms`, an entry's `created_at_ms`, [`short_age`]'s two arguments.
 ///
-/// Here rather than in each plugin because three of them wanted it and each had written its
-/// own identical copy. It is the unit every timestamp in this module is in — a run's
-/// `started_at_ms`, an entry's `created_at_ms`, [`short_age`]'s two arguments — so the clock
-/// that produces it belongs beside them.
-pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or_default()
-}
+/// Re-exported rather than written here: it lives in `zellij-tile` next to
+/// `get_local_utc_offset`, which is the host command that makes any of this drawable at all.
+pub use zellij_tile::prelude::now_ms;
 
 pub fn short_age(now_ms: i64, then_ms: i64) -> String {
     let seconds = now_ms.saturating_sub(then_ms).max(0) / 1000;
@@ -2533,66 +2527,15 @@ const MAX_AGE_DAYS: i64 = 99;
 /// An epoch millisecond as the wall clock read where the session runs:
 /// `"2026-09-04 14:32:07 -04:00"`.
 ///
-/// `utc_offset_secs` is seconds east of UTC, which a plugin can only get by asking the host
-/// (`zellij_tile::shim::get_local_utc_offset`) - wasm has no timezone, and this is the only
-/// absolute time anything in this crate draws. An offset of `0` renders as `+00:00` and is
-/// honest rather than wrong: it says UTC, which is what a caller that could not ask has.
-///
 /// Everything a relative [`short_age`] cannot answer: which day, and which minute of it. The
 /// two are not alternatives - a run's start is drawn absolutely because it is asked about long
 /// after the fact, and every entry under it is drawn as an age because what is being read there
 /// is the spacing.
-pub fn wall_clock(epoch_ms: i64, utc_offset_secs: i32) -> String {
-    let local_ms = epoch_ms.saturating_add(i64::from(utc_offset_secs).saturating_mul(1000));
-    // Euclidean throughout: a pre-epoch instant, or one an offset pushes before it, has to
-    // floor rather than truncate towards zero, or the day comes out one too late and the
-    // time of day negative.
-    let days = local_ms.div_euclid(86_400_000);
-    let ms_of_day = local_ms.rem_euclid(86_400_000);
-    let (year, month, day) = civil_from_days(days);
-    let (hour, minute, second) = (
-        ms_of_day / 3_600_000,
-        ms_of_day / 60_000 % 60,
-        ms_of_day / 1000 % 60,
-    );
-    let (sign, offset) = match utc_offset_secs < 0 {
-        true => ('-', -i64::from(utc_offset_secs)),
-        false => ('+', i64::from(utc_offset_secs)),
-    };
-    format!(
-        "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} {sign}{:02}:{:02}",
-        offset / 3600,
-        offset / 60 % 60,
-    )
-}
-
-/// Days since 1970-01-01 as a civil `(year, month, day)`.
 ///
-/// Howard Hinnant's `civil_from_days` - the shifted-era algorithm the C++ committee adopted -
-/// transcribed rather than invented, because it is exact for every day in the proleptic
-/// Gregorian calendar and needs no table. Nothing in this workspace carries civil-date
-/// arithmetic (`hocus::tools` says so where it refuses to parse a calendar date), and nothing
-/// that does can be linked into a wasm plugin, so here it is.
-///
-/// The era shift moves the epoch to 0000-03-01, which puts February - the month whose length
-/// moves - at the end of a year rather than in the middle of one, and that is the whole trick:
-/// the leap day is then the last day of the last era-year and needs no special case.
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let day_of_era = z.rem_euclid(146_097);
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let mp = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * mp + 2) / 5 + 1;
-    let month = match mp < 10 {
-        true => mp + 3,
-        false => mp - 9,
-    };
-    (year + i64::from(month <= 2), month, day)
-}
+/// Re-exported from `zellij-tile`, which is where the civil-calendar arithmetic and the
+/// `get_local_utc_offset` host command that feeds it now live, so every plugin that draws a
+/// timestamp shares one copy. See `zellij_tile::clock`.
+pub use zellij_tile::prelude::wall_clock;
 
 /// How a `summary: ` label is painted instead: bold and undimmed. The summary used to be told
 /// apart by standing above the timeline; it is a row of the timeline now, so its label is what

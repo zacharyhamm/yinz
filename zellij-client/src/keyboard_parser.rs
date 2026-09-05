@@ -1,12 +1,24 @@
 // for more info, please see: https://sw.kovidgoyal.net/kitty/keyboard-protocol
-use zellij_utils::data::KeyWithModifier;
+use zellij_utils::data::{KeyModifier, KeyWithModifier};
 
 #[derive(Debug)]
 enum KittyKeysParsingState {
     Ground,
     ReceivedEscapeCharacter,
     ParsingNumber,
+    /// After a `:` in the first field: the shifted and base-layout keys the terminal offers
+    /// under `REPORT_ALTERNATE_KEYS`. Zellij resolves keys from the primary code, so these are
+    /// consumed and dropped - but they have to be *recognised*, or the `:` lands in
+    /// `number_bytes` and the whole sequence stops parsing.
+    ParsingAlternateKeys,
     ParsingModifiers,
+    /// After a `:` in the second field: the press/repeat/release discriminator the terminal
+    /// sends under `REPORT_EVENT_TYPES`. Without this state a release would parse as an
+    /// unmodified press of the same key, i.e. every keystroke firing twice.
+    ParsingEventType,
+    /// After the second `;`: the associated text under `REPORT_ASSOCIATED_TEXT`. Consumed and
+    /// dropped for the same reason as the alternate keys.
+    ParsingText,
     DoneParsingWithU,
     DoneParsingWithTilde,
 }
@@ -18,7 +30,16 @@ enum KittyKeysParsingState {
 #[derive(Debug)]
 pub enum KittyParseOutcome {
     /// Complete sequence parsed; parser resets to Ground.
-    Complete(KeyWithModifier),
+    Complete(KeyWithModifier, KeyEventKind),
+    /// A modifier key pressed or released *on its own*, which a terminal only reports under
+    /// `REPORT_ALL_KEYS_AS_ESCAPE_CODES`. Deliberately not a [`KeyWithModifier`]: nothing
+    /// downstream should ever be able to type a bare modifier into a pane, and keeping it out
+    /// of `BareKey` - which is plugin-API surface mirrored in a proto - makes that structural
+    /// rather than a rule someone has to remember.
+    ModifierKey {
+        modifier: KeyModifier,
+        event: KeyEventKind,
+    },
     /// Bytes are a valid prefix; parser keeps state. The caller retains
     /// ownership until a later call completes the sequence or it replays the
     /// whole prefix through its fallback parser.
@@ -27,11 +48,51 @@ pub enum KittyParseOutcome {
     NoMatch,
 }
 
+/// What happened to the key, as reported under `REPORT_EVENT_TYPES`.
+///
+/// A terminal that was not asked for event types sends no discriminator at all, and every
+/// sequence is a [`KeyEventKind::Press`] - which is why that is what an absent field means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyEventKind {
+    Press,
+    Repeat,
+    Release,
+}
+
+impl KeyEventKind {
+    fn from_bytes(bytes: &[u8]) -> KeyEventKind {
+        match bytes {
+            b"3" => KeyEventKind::Release,
+            b"2" => KeyEventKind::Repeat,
+            // Includes the absent field: no discriminator means the terminal was never asked
+            // for one, and everything it sends is a press.
+            _ => KeyEventKind::Press,
+        }
+    }
+}
+
+/// The keycodes kitty gives the modifier keys themselves, under
+/// `REPORT_ALL_KEYS_AS_ESCAPE_CODES`. Left and right halves of the same modifier are the same
+/// answer to "is it down", so both map to one [`KeyModifier`].
+///
+/// Iso Level 3/5 Shift (57453, 57454) are deliberately absent: they are AltGr, which is a
+/// layout mechanism rather than a chord modifier, and zellij has no `KeyModifier` for them.
+fn modifier_from_keycode(bytes: &[u8]) -> Option<KeyModifier> {
+    match bytes {
+        b"57441" | b"57447" => Some(KeyModifier::Shift),
+        b"57442" | b"57448" => Some(KeyModifier::Ctrl),
+        b"57443" | b"57449" => Some(KeyModifier::Alt),
+        b"57444" | b"57450" => Some(KeyModifier::Super),
+        _ => None,
+    }
+}
+
 #[derive(Debug)]
 pub struct KittyKeyboardParser {
     state: KittyKeysParsingState,
     number_bytes: Vec<u8>,
     modifier_bytes: Vec<u8>,
+    event_type_bytes: Vec<u8>,
 }
 
 /// CSI final-byte range (0x40..=0x7E), minus `u` and `~` which trigger
@@ -49,6 +110,7 @@ impl KittyKeyboardParser {
             state: KittyKeysParsingState::Ground,
             number_bytes: vec![],
             modifier_bytes: vec![],
+            event_type_bytes: vec![],
         }
     }
 
@@ -56,6 +118,11 @@ impl KittyKeyboardParser {
         self.state = KittyKeysParsingState::Ground;
         self.number_bytes.clear();
         self.modifier_bytes.clear();
+        self.event_type_bytes.clear();
+    }
+
+    fn event_kind(&self) -> KeyEventKind {
+        KeyEventKind::from_bytes(&self.event_type_bytes)
     }
 
     /// Stateful, cross-chunk-aware entry point. Drives the same
@@ -76,22 +143,32 @@ impl KittyKeyboardParser {
         }
         match self.state {
             KittyKeysParsingState::DoneParsingWithU => {
+                // The modifier keys are checked before the general decode, because
+                // `BareKey::from_bytes_with_u` would otherwise turn 57443 into a private-use
+                // `Char` and it would be typed into whatever pane has focus.
+                if let Some(modifier) = modifier_from_keycode(&self.number_bytes) {
+                    let event = self.event_kind();
+                    self.reset();
+                    return KittyParseOutcome::ModifierKey { modifier, event };
+                }
+                let event = self.event_kind();
                 let result =
                     KeyWithModifier::from_bytes_with_u(&self.number_bytes, &self.modifier_bytes);
                 self.reset();
                 match result {
-                    Some(k) => KittyParseOutcome::Complete(k),
+                    Some(k) => KittyParseOutcome::Complete(k, event),
                     None => KittyParseOutcome::NoMatch,
                 }
             },
             KittyKeysParsingState::DoneParsingWithTilde => {
+                let event = self.event_kind();
                 let result = KeyWithModifier::from_bytes_with_tilde(
                     &self.number_bytes,
                     &self.modifier_bytes,
                 );
                 self.reset();
                 match result {
-                    Some(k) => KittyParseOutcome::Complete(k),
+                    Some(k) => KittyParseOutcome::Complete(k, event),
                     None => KittyParseOutcome::NoMatch,
                 }
             },
@@ -101,13 +178,14 @@ impl KittyKeyboardParser {
                 // itself the terminator — `\x1b[A` etc. (Complete).
                 match self.number_bytes.last().copied() {
                     Some(last) if is_csi_final_letter(last) => {
+                        let event = self.event_kind();
                         let result = KeyWithModifier::from_bytes_with_no_ending_byte(
                             &self.number_bytes,
                             &self.modifier_bytes,
                         );
                         self.reset();
                         match result {
-                            Some(k) => KittyParseOutcome::Complete(k),
+                            Some(k) => KittyParseOutcome::Complete(k, event),
                             None => KittyParseOutcome::NoMatch,
                         }
                     },
@@ -121,6 +199,7 @@ impl KittyKeyboardParser {
                 // — `\x1b[1;2A` etc. (Complete).
                 match self.modifier_bytes.last().copied() {
                     Some(last) if is_csi_final_letter(last) => {
+                        let event = self.event_kind();
                         let last_modifier = self.modifier_bytes.pop().unwrap();
                         let result = KeyWithModifier::from_bytes_with_no_ending_byte(
                             &[last_modifier],
@@ -128,12 +207,36 @@ impl KittyKeyboardParser {
                         );
                         self.reset();
                         match result {
-                            Some(k) => KittyParseOutcome::Complete(k),
+                            Some(k) => KittyParseOutcome::Complete(k, event),
                             None => KittyParseOutcome::NoMatch,
                         }
                     },
                     _ => KittyParseOutcome::Incomplete,
                 }
+            },
+            // The same letter-terminated shape as `ParsingModifiers` above, reached when an
+            // event type was reported: `\x1b[1;2:3A`. The letter is the last byte of the
+            // event-type buffer rather than of the modifier one.
+            KittyKeysParsingState::ParsingEventType => {
+                match self.event_type_bytes.last().copied() {
+                    Some(last) if is_csi_final_letter(last) => {
+                        self.event_type_bytes.pop();
+                        let event = self.event_kind();
+                        let result = KeyWithModifier::from_bytes_with_no_ending_byte(
+                            &[last],
+                            &self.modifier_bytes,
+                        );
+                        self.reset();
+                        match result {
+                            Some(k) => KittyParseOutcome::Complete(k, event),
+                            None => KittyParseOutcome::NoMatch,
+                        }
+                    },
+                    _ => KittyParseOutcome::Incomplete,
+                }
+            },
+            KittyKeysParsingState::ParsingAlternateKeys | KittyKeysParsingState::ParsingText => {
+                KittyParseOutcome::Incomplete
             },
             KittyKeysParsingState::ReceivedEscapeCharacter => KittyParseOutcome::Incomplete,
             KittyKeysParsingState::Ground => KittyParseOutcome::NoMatch,
@@ -149,7 +252,21 @@ impl KittyKeyboardParser {
             (KittyKeysParsingState::ReceivedEscapeCharacter, 91) => {
                 self.state = KittyKeysParsingState::ParsingNumber;
             },
-            (KittyKeysParsingState::ParsingNumber, 59) => {
+            // A `:` opens a sub-parameter. The arms for them come first, because the catch-alls
+            // at the bottom would otherwise push the colon into a number buffer and the whole
+            // sequence would stop parsing.
+            (KittyKeysParsingState::ParsingNumber, 58) => {
+                // colon: the alternate keys (shifted, base layout) follow
+                self.state = KittyKeysParsingState::ParsingAlternateKeys;
+            },
+            (KittyKeysParsingState::ParsingModifiers, 58) => {
+                // colon: the press/repeat/release discriminator follows
+                self.state = KittyKeysParsingState::ParsingEventType;
+            },
+            (
+                KittyKeysParsingState::ParsingNumber | KittyKeysParsingState::ParsingAlternateKeys,
+                59,
+            ) => {
                 // semicolon
                 if self.number_bytes == [49] {
                     self.number_bytes.clear();
@@ -157,14 +274,29 @@ impl KittyKeyboardParser {
                 self.state = KittyKeysParsingState::ParsingModifiers;
             },
             (
-                KittyKeysParsingState::ParsingNumber | KittyKeysParsingState::ParsingModifiers,
+                KittyKeysParsingState::ParsingModifiers | KittyKeysParsingState::ParsingEventType,
+                59,
+            ) => {
+                // semicolon: the associated text follows, which zellij resolves keys without
+                self.state = KittyKeysParsingState::ParsingText;
+            },
+            (
+                KittyKeysParsingState::ParsingNumber
+                | KittyKeysParsingState::ParsingAlternateKeys
+                | KittyKeysParsingState::ParsingModifiers
+                | KittyKeysParsingState::ParsingEventType
+                | KittyKeysParsingState::ParsingText,
                 117,
             ) => {
                 // u
                 self.state = KittyKeysParsingState::DoneParsingWithU;
             },
             (
-                KittyKeysParsingState::ParsingNumber | KittyKeysParsingState::ParsingModifiers,
+                KittyKeysParsingState::ParsingNumber
+                | KittyKeysParsingState::ParsingAlternateKeys
+                | KittyKeysParsingState::ParsingModifiers
+                | KittyKeysParsingState::ParsingEventType
+                | KittyKeysParsingState::ParsingText,
                 126,
             ) => {
                 // ~
@@ -176,6 +308,16 @@ impl KittyKeyboardParser {
             (KittyKeysParsingState::ParsingModifiers, _) => {
                 self.modifier_bytes.push(byte);
             },
+            (KittyKeysParsingState::ParsingEventType, _) => {
+                self.event_type_bytes.push(byte);
+            },
+            // Collected nowhere: zellij resolves a key from its primary code, and the text
+            // field only matters to a terminal doing its own composition. They still have to be
+            // consumed, or the sequence they are part of fails to parse.
+            (
+                KittyKeysParsingState::ParsingAlternateKeys | KittyKeysParsingState::ParsingText,
+                _,
+            ) => {},
             (_, _) => {
                 return false;
             },
@@ -266,7 +408,7 @@ mod props {
             return;
         }
         match KittyKeyboardParser::new().feed(serialized.as_bytes()) {
-            KittyParseOutcome::Complete(parsed) => {
+            KittyParseOutcome::Complete(parsed, _) => {
                 assert_eq!(
                     parsed.bare_key, key.bare_key,
                     "{:?} serialized to {:?} and parsed back as {:?}",
@@ -296,7 +438,7 @@ mod props {
         };
         let bytes = serialized.as_bytes();
         let whole = match KittyKeyboardParser::new().feed(bytes) {
-            KittyParseOutcome::Complete(k) => k,
+            KittyParseOutcome::Complete(k, _) => k,
             // Only sequences that parse whole can be expected to parse split.
             _ => return,
         };
@@ -312,7 +454,11 @@ mod props {
         let mut outcome = None;
         for split in splits.iter().copied().chain(std::iter::once(bytes.len())) {
             match parser.feed(&bytes[prev..split]) {
-                KittyParseOutcome::Complete(k) => outcome = Some(k),
+                KittyParseOutcome::Complete(k, _) => outcome = Some(k),
+                // The generator only draws real keys, never the modifier keycodes.
+                KittyParseOutcome::ModifierKey { modifier, .. } => {
+                    panic!("{serialized:?} parsed as a bare {modifier:?}")
+                },
                 KittyParseOutcome::Incomplete => {},
                 KittyParseOutcome::NoMatch => {
                     // An empty chunk lands in Ground and reports NoMatch;
@@ -344,13 +490,14 @@ mod props {
     fn arbitrary_bytes_never_panic_and_always_leave_a_reusable_parser(tc: hegel::TestCase) {
         let bytes = tc.draw(generators::binary());
         let mut parser = KittyKeyboardParser::new();
-        if let KittyParseOutcome::Complete(_) | KittyParseOutcome::NoMatch = parser.feed(&bytes) {
+        if let KittyParseOutcome::Complete(_, _) | KittyParseOutcome::NoMatch = parser.feed(&bytes)
+        {
             // Both terminal outcomes reset to Ground, so a known-good
             // sequence must still parse on the very next feed.
             assert!(
                 matches!(
                     parser.feed("\u{1b}[97u".as_bytes()),
-                    KittyParseOutcome::Complete(_)
+                    KittyParseOutcome::Complete(_, _)
                 ),
                 "parser did not reset after feeding {:?}",
                 bytes
@@ -375,7 +522,7 @@ fn fragmented_kitty_csi_u_emits_one_event() {
     let r1 = p.feed(b"\x1b[97;");
     assert!(matches!(r1, KittyParseOutcome::Incomplete));
     match p.feed(b"2u") {
-        KittyParseOutcome::Complete(k) => {
+        KittyParseOutcome::Complete(k, _) => {
             assert_eq!(
                 k,
                 KeyWithModifier::new(BareKey::Char('a')).with_shift_modifier()
@@ -398,13 +545,124 @@ fn fragmented_kitty_byte_by_byte() {
         );
     }
     match p.feed(&[full[full.len() - 1]]) {
-        KittyParseOutcome::Complete(k) => {
+        KittyParseOutcome::Complete(k, _) => {
             assert_eq!(
                 k,
                 KeyWithModifier::new(BareKey::Char('a')).with_ctrl_modifier()
             );
         },
         other => panic!("expected Complete, got {:?}", other),
+    }
+}
+
+// =====================================================================
+// Sub-parameter handling. A terminal asked for REPORT_EVENT_TYPES,
+// REPORT_ALTERNATE_KEYS or REPORT_ASSOCIATED_TEXT puts extra fields into
+// the same CSI-u sequence; before these were understood, the `:` fell
+// into a number buffer and the sequence stopped parsing - which for a
+// release meant an unmodified press of the same key, i.e. every
+// keystroke firing twice.
+// =====================================================================
+
+#[test]
+fn an_event_type_is_read_off_the_modifier_field() {
+    use zellij_utils::data::BareKey;
+    let mut p = KittyKeyboardParser::new();
+    match p.feed(b"\x1b[97;5:3u") {
+        KittyParseOutcome::Complete(k, KeyEventKind::Release) => {
+            assert_eq!(
+                k,
+                KeyWithModifier::new(BareKey::Char('a')).with_ctrl_modifier()
+            );
+        },
+        other => panic!("expected a Release, got {:?}", other),
+    }
+    match p.feed(b"\x1b[97;5:2u") {
+        KittyParseOutcome::Complete(_, KeyEventKind::Repeat) => {},
+        other => panic!("expected a Repeat, got {:?}", other),
+    }
+}
+
+#[test]
+fn a_sequence_with_no_event_type_is_a_press() {
+    let mut p = KittyKeyboardParser::new();
+    match p.feed(b"\x1b[97;5u") {
+        KittyParseOutcome::Complete(_, KeyEventKind::Press) => {},
+        other => panic!("expected a Press, got {:?}", other),
+    }
+}
+
+#[test]
+fn alternate_keys_and_associated_text_are_consumed_and_dropped() {
+    use zellij_utils::data::BareKey;
+    // `CSI key:shifted:base ; mods:event ; text u` - the widest shape kitty sends.
+    let mut p = KittyKeyboardParser::new();
+    match p.feed(b"\x1b[97:65:97;2:1;65u") {
+        KittyParseOutcome::Complete(k, KeyEventKind::Press) => {
+            assert_eq!(
+                k,
+                KeyWithModifier::new(BareKey::Char('a')).with_shift_modifier()
+            );
+        },
+        other => panic!("expected the primary key, got {:?}", other),
+    }
+}
+
+#[test]
+fn a_bare_modifier_is_never_a_key() {
+    use zellij_utils::data::KeyModifier;
+    let mut p = KittyKeyboardParser::new();
+    // Left alt down, then up. Both halves of a modifier map to the same answer.
+    for (bytes, expected, event) in [
+        (&b"\x1b[57443;1u"[..], KeyModifier::Alt, KeyEventKind::Press),
+        (
+            &b"\x1b[57449;1:3u"[..],
+            KeyModifier::Alt,
+            KeyEventKind::Release,
+        ),
+        (
+            &b"\x1b[57442;1u"[..],
+            KeyModifier::Ctrl,
+            KeyEventKind::Press,
+        ),
+    ] {
+        match p.feed(bytes) {
+            KittyParseOutcome::ModifierKey { modifier, event: e } => {
+                assert_eq!(modifier, expected);
+                assert_eq!(e, event);
+            },
+            other => panic!("expected a bare {expected:?}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn an_event_type_survives_being_split_across_chunks() {
+    let mut p = KittyKeyboardParser::new();
+    let full = b"\x1b[97;5:3u";
+    for &b in &full[..full.len() - 1] {
+        assert!(
+            matches!(p.feed(&[b]), KittyParseOutcome::Incomplete),
+            "byte 0x{:02x} should be Incomplete",
+            b
+        );
+    }
+    match p.feed(&[full[full.len() - 1]]) {
+        KittyParseOutcome::Complete(_, KeyEventKind::Release) => {},
+        other => panic!("expected a Release, got {:?}", other),
+    }
+}
+
+#[test]
+fn a_letter_terminated_sequence_can_carry_an_event_type() {
+    use zellij_utils::data::BareKey;
+    // `\x1b[1;2:3A` - shift+up, released.
+    let mut p = KittyKeyboardParser::new();
+    match p.feed(b"\x1b[1;2:3A") {
+        KittyParseOutcome::Complete(k, KeyEventKind::Release) => {
+            assert_eq!(k, KeyWithModifier::new(BareKey::Up).with_shift_modifier());
+        },
+        other => panic!("expected a released Up, got {:?}", other),
     }
 }
 

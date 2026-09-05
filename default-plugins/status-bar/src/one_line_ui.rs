@@ -14,6 +14,7 @@ use crate::second_line::{
     ascended_to_host_session_hint, descended_into_nested_session_hint, system_clipboard_error,
     text_copied_hint,
 };
+use crate::status_block::{status_block, AgentCounts, Clock};
 use crate::{action_key, color_elements};
 use crate::{ColoredElements, LinePart};
 use unicode_width::UnicodeWidthStr;
@@ -24,6 +25,18 @@ type LineWithButtonRanges = (LinePart, Option<(usize, usize)>, Option<(usize, us
 
 // the render inputs of the whole status line
 #[allow(clippy::too_many_arguments)]
+/// What the right-hand slot draws, and which of its two tenants has it.
+///
+/// The Alt hint and the clock/agent block are alternatives in the same space: the hint is what
+/// you want while you are reaching for a binding, the block is what you want the rest of the
+/// time. `alt_hint_revealed` is the whole of that decision - the plugin works out whether Alt
+/// is down (or was, just now) and this only obeys.
+pub struct SecondaryInfo {
+    pub alt_hint_revealed: bool,
+    pub agent_counts: AgentCounts,
+    pub clock: Clock,
+}
+
 pub fn one_line_ui(
     help: &ModeInfo,
     tab_info: Option<&TabInfo>,
@@ -34,6 +47,7 @@ pub fn one_line_ui(
     clipboard_failure: bool,
     new_pane_hovered: bool,
     floating_hovered: bool,
+    secondary_info: &SecondaryInfo,
 ) -> LineWithButtonRanges {
     if help.session_dimmed.unwrap_or(false) {
         return (
@@ -72,6 +86,7 @@ pub fn one_line_ui(
                     max_len,
                     new_pane_hovered,
                     floating_hovered,
+                    secondary_info,
                 ) {
                     new_pane_range = new_pane
                         .map(|(start, end)| (secondary_offset + start, secondary_offset + end));
@@ -871,6 +886,7 @@ fn render_secondary_info(
     max_len: usize,
     new_pane_hovered: bool,
     floating_hovered: bool,
+    info: &SecondaryInfo,
 ) -> Option<LineWithButtonRanges> {
     let mut secondary_info = LinePart::default();
     let supports_arrow_fonts = !help.capabilities.arrow_fonts;
@@ -879,9 +895,18 @@ fn render_secondary_info(
         !supports_arrow_fonts,
         help.session_dimmed.unwrap_or(false),
     );
-    let (secondary_keybinds, new_pane_range, floating_range) =
-        secondary_keybinds(help, tab_info, max_len, new_pane_hovered, floating_hovered);
-    secondary_info.append(&secondary_keybinds);
+    // The two tenants of the right-hand slot. Only the keybinds are clickable, so the status
+    // block hands back no hit ranges - the click handling already no-ops on `None`.
+    let (content, new_pane_range, floating_range) = if info.alt_hint_revealed {
+        secondary_keybinds(help, tab_info, max_len, new_pane_hovered, floating_hovered)
+    } else {
+        (
+            status_block(help, &info.agent_counts, &info.clock, max_len),
+            None,
+            None,
+        )
+    };
+    secondary_info.append(&content);
     let remaining_space = max_len.saturating_sub(secondary_info.len).saturating_sub(1); // 1 for the end padding of the line
     let mut padding = String::new();
     let mut padding_len = 0;

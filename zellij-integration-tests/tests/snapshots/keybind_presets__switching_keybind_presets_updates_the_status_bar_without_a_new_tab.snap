@@ -4,4 +4,4 @@ expression: normalized(&grid_snapshot)
 ---
  Zellij (test)  [0] Tab #1  + 
 $ █
- Ctrl g  UNLOCK  p  PANE  t  TAB  r  SIZE  m  MOVE  s  SEARCH  o  SESS  e  AGENT  Ctrl q  QUIT     ...
+ Ctrl g  UNLOCK  p  PANE  t  TAB  r  SIZE  m  MOVE  s  SEARCH  o  SESS  e  AGENT  Ctrl q  QUIT 

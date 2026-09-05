@@ -152,7 +152,7 @@ mod claiming_the_terminal {
     #[test]
     fn raw_mode_is_on_before_anything_is_written() {
         let mut terminal = RecordingTerminal::default();
-        claim_terminal(&mut terminal, true, false);
+        claim_terminal(&mut terminal, true, false, false);
         let events = terminal.events();
         let first_write = events
             .iter()
@@ -173,7 +173,7 @@ mod claiming_the_terminal {
     #[test]
     fn the_host_is_never_asked_anything_while_it_can_echo() {
         let mut terminal = RecordingTerminal::default();
-        claim_terminal(&mut terminal, true, false);
+        claim_terminal(&mut terminal, true, false, false);
         let events = terminal.events();
         let raw_mode_on = events
             .iter()
@@ -191,7 +191,7 @@ mod claiming_the_terminal {
     #[test]
     fn the_signal_keys_keep_working_while_the_client_connects() {
         let mut terminal = RecordingTerminal::default();
-        claim_terminal(&mut terminal, true, false);
+        claim_terminal(&mut terminal, true, false, false);
         let events = terminal.events();
         assert!(
             events.contains(&Event::RawModeOnKeepingSignals) && !events.contains(&Event::RawModeOn),
@@ -205,7 +205,7 @@ mod claiming_the_terminal {
     #[test]
     fn a_reconnect_still_takes_raw_mode_even_though_it_writes_nothing() {
         let mut terminal = RecordingTerminal::default();
-        claim_terminal(&mut terminal, true, true);
+        claim_terminal(&mut terminal, true, false, true);
         let events = terminal.events();
         assert!(
             events.contains(&Event::RawModeOnKeepingSignals),

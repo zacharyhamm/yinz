@@ -2290,6 +2290,8 @@ pub struct Options {
     pub disable_session_metadata: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="27")]
     pub support_kitty_keyboard_protocol: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag="74")]
+    pub report_modifier_keys: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="30")]
     pub stacked_resize: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="31")]
@@ -3447,7 +3449,7 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
-    #[prost(oneof="client_to_server_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29")]
+    #[prost(oneof="client_to_server_msg::Message", tags="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
 /// Nested message and enum types in `ClientToServerMsg`.
@@ -3505,6 +3507,8 @@ pub mod client_to_server_msg {
         HostTerminalFocusChanged(super::HostTerminalFocusChangedMsg),
         #[prost(message, tag="29")]
         AgentReport(super::AgentReportMsg),
+        #[prost(message, tag="30")]
+        ModifiersHeld(super::ModifiersHeldMsg),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -3688,6 +3692,14 @@ pub struct AgentReportMsg {
     pub process_id: u32,
     #[prost(string, tag="8")]
     pub kind: ::prost::alloc::string::String,
+}
+/// Which modifier keys the host terminal says are physically down. Only sent by a client whose
+/// terminal was asked to report the modifier keys themselves; the set is complete each time.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ModifiersHeldMsg {
+    #[prost(enumeration="KeyModifier", repeated, tag="1")]
+    pub modifiers: ::prost::alloc::vec::Vec<i32>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

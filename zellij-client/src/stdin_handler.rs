@@ -1,7 +1,8 @@
-use crate::keyboard_parser::{KittyKeyboardParser, KittyParseOutcome};
+use crate::keyboard_parser::{KeyEventKind, KittyKeyboardParser, KittyParseOutcome};
 use crate::os_input_output::ClientOsApi;
 use crate::stdin_ansi_parser::{HostReply, PendingPartial, StdinAnsiParser};
 use crate::InputInstruction;
+use std::collections::BTreeSet;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -11,6 +12,7 @@ const STARTUP_KITTY_PROBE_TIMEOUT: Duration =
     Duration::from_millis(crate::stdin_ansi_parser::CLIENT_KITTY_PROBE_TIMEOUT_MS);
 use zellij_utils::{
     channels::SenderWithContext,
+    data::KeyModifier,
     vendored::termwiz::input::{InputEvent, InputParser},
 };
 
@@ -20,6 +22,7 @@ pub(crate) fn stdin_loop(
     stdin_ansi_parser: Arc<Mutex<StdinAnsiParser>>,
     explicitly_disable_kitty_keyboard_protocol: bool,
     support_kitty_graphics_protocol: bool,
+    report_modifier_keys: bool,
 ) {
     // Send the startup host query string so the host terminal replies
     // with its live pixel dimensions, fg/bg, sync-output support, and
@@ -57,6 +60,10 @@ pub(crate) fn stdin_loop(
     // Byte reader + termwiz/kitty parser path.
     let mut input_parser = InputParser::new();
     let mut termwiz_buffer = vec![];
+    // Which modifier keys the host says are physically down. Only ever non-empty on a terminal
+    // asked for `REPORT_ALL_KEYS_AS_ESCAPE_CODES`; everywhere else no modifier key is ever
+    // reported on its own and this stays empty for the life of the client.
+    let mut held_modifiers: BTreeSet<KeyModifier> = BTreeSet::new();
     let (stdin_tx, stdin_rx) = mpsc::sync_channel(32);
     let _stdin_pump = std::thread::Builder::new()
         .name("stdin_pump".to_string())
@@ -168,6 +175,8 @@ pub(crate) fn stdin_loop(
                             &residue,
                             !explicitly_disable_kitty_keyboard_protocol,
                             true,
+                            report_modifier_keys,
+                            &mut held_modifiers,
                         );
                         for instruction in instructions {
                             if send_input_instructions.send(instruction).is_err() {
@@ -296,6 +305,8 @@ fn parse_keyboard_bytes(
     bytes: &[u8],
     kitty_enabled: bool,
     maybe_more: bool,
+    report_modifier_keys: bool,
+    held_modifiers: &mut BTreeSet<KeyModifier>,
 ) -> (Vec<InputInstruction>, bool) {
     let mut instructions = vec![];
     let mut fed_termwiz = false;
@@ -320,19 +331,55 @@ fn parse_keyboard_bytes(
             // A previous ambiguous key or an open bracketed paste owns all
             // bytes until termwiz produces its event. In particular, do not
             // finalize a parked ESC before its following legacy CSI.
-            let kitty_key = termwiz_buffer
+            let outcome = termwiz_buffer
                 .is_empty()
-                .then(|| KittyKeyboardParser::new().feed(candidate))
-                .and_then(|outcome| match outcome {
-                    KittyParseOutcome::Complete(key) => Some(key),
-                    KittyParseOutcome::Incomplete | KittyParseOutcome::NoMatch => None,
-                });
+                .then(|| KittyKeyboardParser::new().feed(candidate));
+            let kitty_key = match outcome {
+                // A modifier key on its own is never forwarded anywhere: it is state about the
+                // keyboard, not something to type. Only a change is announced, so a key held
+                // down through its auto-repeat does not produce a message per repeat.
+                Some(KittyParseOutcome::ModifierKey { modifier, event }) => {
+                    let changed = match event {
+                        KeyEventKind::Release => held_modifiers.remove(&modifier),
+                        KeyEventKind::Press | KeyEventKind::Repeat => {
+                            held_modifiers.insert(modifier)
+                        },
+                    };
+                    if changed {
+                        instructions.push(InputInstruction::ModifiersHeldChanged(
+                            held_modifiers.clone(),
+                        ));
+                    }
+                    cursor = end;
+                    continue;
+                },
+                // A release is the other half of a press we already acted on. Forwarding it
+                // would type the key a second time.
+                Some(KittyParseOutcome::Complete(_, KeyEventKind::Release)) => {
+                    cursor = end;
+                    continue;
+                },
+                Some(KittyParseOutcome::Complete(key, _)) => Some(key),
+                Some(KittyParseOutcome::Incomplete) | Some(KittyParseOutcome::NoMatch) | None => {
+                    None
+                },
+            };
             if let Some(key) = kitty_key {
-                instructions.push(InputInstruction::KeyWithModifierEvent(
-                    key,
-                    candidate.to_vec(),
-                    true,
-                ));
+                // The raw bytes ride along so a pane that asked for kitty mode itself can be
+                // written the host's own sequence. Panes only ever get flag 1
+                // (`KeyWithModifier::serialize_kitty`), so under the extended flags the host's
+                // bytes are the wrong shape for them - they would carry event types and
+                // alternate keys nothing downstream asked for. Re-serialise instead.
+                // A key `serialize_kitty` cannot spell keeps the host's bytes: they are still
+                // a better guess than nothing, and this is only the passthrough copy.
+                let raw_bytes = match report_modifier_keys {
+                    true => key
+                        .serialize_kitty()
+                        .map(String::into_bytes)
+                        .unwrap_or_else(|| candidate.to_vec()),
+                    false => candidate.to_vec(),
+                };
+                instructions.push(InputInstruction::KeyWithModifierEvent(key, raw_bytes, true));
             } else {
                 feed_termwiz(
                     input_parser,
@@ -425,8 +472,17 @@ fn drain_partial_to_keyboard(
     drained: Vec<u8>,
     kitty_enabled: bool,
 ) {
-    let (instructions, _) =
-        parse_keyboard_bytes(input_parser, termwiz_buffer, &drained, kitty_enabled, false);
+    // A drain is a flush of bytes already in hand, not a fresh read, so it cannot be the thing
+    // that changes what is held down: give it a scratch set rather than the loop's.
+    let (instructions, _) = parse_keyboard_bytes(
+        input_parser,
+        termwiz_buffer,
+        &drained,
+        kitty_enabled,
+        false,
+        false,
+        &mut BTreeSet::new(),
+    );
     for instruction in instructions {
         send_input_instructions.send(instruction).unwrap();
     }
@@ -499,9 +555,11 @@ mod tests {
     };
 
     fn parse_stdin_chunks(chunks: &[&[u8]]) -> Vec<InputInstruction> {
+        use std::collections::BTreeSet;
         let mut ansi_parser = StdinAnsiParser::new();
         let mut input_parser = InputParser::new();
         let mut termwiz_buffer = vec![];
+        let mut held_modifiers = BTreeSet::new();
         let mut instructions = vec![];
         for chunk in chunks {
             let output = ansi_parser.feed(chunk);
@@ -512,11 +570,20 @@ mod tests {
                 &output.residue,
                 true,
                 true,
+                false,
+                &mut held_modifiers,
             );
             instructions.append(&mut parsed);
         }
-        let (mut flushed, _) =
-            parse_keyboard_bytes(&mut input_parser, &mut termwiz_buffer, &[], true, false);
+        let (mut flushed, _) = parse_keyboard_bytes(
+            &mut input_parser,
+            &mut termwiz_buffer,
+            &[],
+            true,
+            false,
+            false,
+            &mut held_modifiers,
+        );
         instructions.append(&mut flushed);
         instructions
     }

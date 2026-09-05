@@ -2682,6 +2682,25 @@ pub(crate) fn route_thread_main(
                             // use further down for why only that case needs it.
                             let key_for_menu_check = key.clone();
 
+                            // A chord is the only evidence of a held modifier most terminals
+                            // ever give us: `Alt+n` says Alt was down when it was pressed, and
+                            // nothing will say when it came back up. `is_live: false` is that
+                            // caveat, and it is why the receiving plugin has to time the hold
+                            // out itself. The precise signal, where the terminal reports the
+                            // modifier key itself, arrives as its own message with `true`.
+                            if !key.key_modifiers.is_empty() {
+                                let _ = senders.as_ref().map(|senders| {
+                                    senders.send_to_plugin(PluginInstruction::Update(vec![(
+                                        None,
+                                        Some(client_id),
+                                        Event::ModifiersHeld {
+                                            modifiers: key.key_modifiers.clone(),
+                                            is_live: false,
+                                        },
+                                    )]))
+                                });
+                            }
+
                             // The read guard ends as a temporary in this expression so
                             // `route_action` runs without holding `session_data.read()` —
                             // see the doc comment on `route_action` for why this matters.
@@ -3191,6 +3210,21 @@ pub(crate) fn route_thread_main(
                                     );
                                 }
                             }
+                        },
+                        ClientToServerMsg::ModifiersHeld { modifiers } => {
+                            // Straight to the plugins, with no `ScreenInstruction` hop: unlike
+                            // the focus and theme signals this changes nothing about any pane,
+                            // and the screen thread has no use for it.
+                            let _ = senders.as_ref().map(|senders| {
+                                senders.send_to_plugin(PluginInstruction::Update(vec![(
+                                    None,
+                                    Some(client_id),
+                                    Event::ModifiersHeld {
+                                        modifiers,
+                                        is_live: true,
+                                    },
+                                )]))
+                            });
                         },
                         ClientToServerMsg::HostTerminalFocusChanged { focused } => {
                             let _ = send_to_screen_or_retry_queue!(

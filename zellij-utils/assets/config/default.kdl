@@ -811,6 +811,13 @@ load_plugins {
 //
 // support_kitty_keyboard_protocol false
 
+// Ask the host terminal to report the modifier keys themselves, so the UI can show
+// something for as long as eg. Alt is held. Needs Kitty Keyboard flags that also make
+// every printable key arrive as an escape code: AltGr glyphs, dead keys and IME input
+// will stop working. (Requires restart) Default: false
+//
+// report_modifier_keys true
+
 // Enable or disable support for the Kitty Graphics Protocol, used to display images (the host terminal must also support it)
 // (Requires restart)
 // Default: true (if the host terminal supports it)

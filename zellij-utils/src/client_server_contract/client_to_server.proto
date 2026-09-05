@@ -31,6 +31,7 @@ message ClientToServerMsg {
     RequestSessionListMsg request_session_list = 25;
     HostTerminalFocusChangedMsg host_terminal_focus_changed = 27;
     AgentReportMsg agent_report = 29;
+    ModifiersHeldMsg modifiers_held = 30;
   }
 }
 
@@ -159,4 +160,10 @@ message AgentReportMsg {
   bool trace = 6;
   uint32 process_id = 7;
   string kind = 8;
+}
+
+// Which modifier keys the host terminal says are physically down. Only sent by a client whose
+// terminal was asked to report the modifier keys themselves; the set is complete each time.
+message ModifiersHeldMsg {
+  repeated KeyModifier modifiers = 1;
 }

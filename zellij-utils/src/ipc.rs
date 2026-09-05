@@ -1,6 +1,9 @@
 //! IPC stuff for starting to split things into a client and server model.
 use crate::{
-    data::{ClientId, ConnectToSession, HostTerminalThemeMode, KeyWithModifier, PaneId, Style},
+    data::{
+        ClientId, ConnectToSession, HostTerminalThemeMode, KeyModifier, KeyWithModifier, PaneId,
+        Style,
+    },
     errors::{prelude::*, ErrorContext},
     input::{actions::Action, cli_assets::CliAssets},
     pane_size::{Size, SizeInPixels},
@@ -9,6 +12,7 @@ use interprocess::local_socket::Stream as LocalSocketStream;
 use log::warn;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeSet,
     fmt::{Display, Error, Formatter},
     io::{self, Read, Write},
     marker::PhantomData,
@@ -195,6 +199,11 @@ pub enum ClientToServerMsg {
     /// The host terminal gained or lost keyboard focus (DECSET 1004 report).
     HostTerminalFocusChanged {
         focused: bool,
+    },
+    /// Which modifier keys the host terminal says are physically down, sent when the set
+    /// changes. The set is complete each time, so an empty one means everything came back up.
+    ModifiersHeld {
+        modifiers: BTreeSet<KeyModifier>,
     },
 }
 

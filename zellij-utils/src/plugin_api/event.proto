@@ -87,6 +87,8 @@ enum EventType {
     /// A headless hook point was reached; sent to the plugin bound to it
     Hook = 57;
     AgentEvent = 58;
+    /// Which modifier keys the client believes are held right now
+    ModifiersHeld = 59;
 }
 
 message EventNameList {
@@ -144,7 +146,15 @@ message Event {
     ContextMenuItemSelectedPayload context_menu_item_selected_payload = 50;
     HookPayload hook_payload = 51;
     AgentEventPayload agent_event_payload = 52;
+    ModifiersHeldPayload modifiers_held_payload = 53;
   }
+}
+
+message ModifiersHeldPayload {
+  repeated api.key.Key.KeyModifier modifiers = 1;
+  // Whether the terminal reported the modifier key itself going down (and will report it
+  // coming back up), or this was inferred from a chorded keystroke and no release will follow.
+  bool is_live = 2;
 }
 
 message HookPayload {

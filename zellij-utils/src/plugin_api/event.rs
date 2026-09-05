@@ -50,17 +50,18 @@ pub use super::generated_api::api::{
         TabMetadata as ProtobufTabMetadata, UserActionPayload as ProtobufUserActionPayload, *,
     },
     input_mode::InputMode as ProtobufInputMode,
-    key::Key as ProtobufKey,
+    key::{key::KeyModifier as ProtobufKeyModifier, Key as ProtobufKey},
     style::Style as ProtobufStyle,
 };
 #[allow(hidden_glob_reexports)]
 use crate::data::{
     AgentInfo, AgentSource, AgentState, ClientId, ClientInfo, ContextMenuContext, ContextMenuItem,
     ContextMenuLink, CopyDestination, DataRows, Event, EventType, FileMetadata,
-    HostTerminalThemeMode, InputMode, KeyWithModifier, LayoutInfo, LayoutMetadata, ModeInfo, Mouse,
-    PaneContents, PaneId, PaneInfo, PaneManifest, PaneMetadata, PaneScrollbackResponse, PaneTarget,
-    PermissionStatus, PluginCapabilities, PluginInfo, QueueJobInfo, QueueJobOutcome, QueueJobState,
-    QueueSnapshot, SelectedText, SessionInfo, Style, StyledText, TabInfo, TabMetadata,
+    HostTerminalThemeMode, InputMode, KeyModifier, KeyWithModifier, LayoutInfo, LayoutMetadata,
+    ModeInfo, Mouse, PaneContents, PaneId, PaneInfo, PaneManifest, PaneMetadata,
+    PaneScrollbackResponse, PaneTarget, PermissionStatus, PluginCapabilities, PluginInfo,
+    QueueJobInfo, QueueJobOutcome, QueueJobState, QueueSnapshot, SelectedText, SessionInfo, Style,
+    StyledText, TabInfo, TabMetadata,
 };
 use crate::plugin_api::plugin_data::ProtobufRows as ProtobufDataRows;
 
@@ -69,7 +70,7 @@ use crate::input::actions::Action;
 use crate::input::hooks::HookPoint;
 
 use crate::plugin_api::command::ProtobufPaneTarget;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -740,6 +741,24 @@ impl TryFrom<ProtobufEvent> for Event {
                     }))
                 },
                 _ => Err("Malformed payload for AgentEvent Event"),
+            },
+            Ok(ProtobufEventType::ModifiersHeld) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::ModifiersHeldPayload(p)) => {
+                    let modifiers = p
+                        .modifiers
+                        .into_iter()
+                        .map(|modifier| {
+                            ProtobufKeyModifier::try_from(modifier)
+                                .map_err(|_| "Malformed modifier for ModifiersHeld")
+                                .and_then(KeyModifier::try_from)
+                        })
+                        .collect::<Result<BTreeSet<_>, _>>()?;
+                    Ok(Event::ModifiersHeld {
+                        modifiers,
+                        is_live: p.is_live,
+                    })
+                },
+                _ => Err("Malformed payload for ModifiersHeld Event"),
             },
             Ok(ProtobufEventType::QueueJobFinished) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::QueueJobFinishedPayload(p)) => {
@@ -1435,6 +1454,21 @@ impl TryFrom<Event> for ProtobufEvent {
                     payload: Some(event::Payload::HookPayload(ProtobufHookPayload {
                         point: point.as_str().to_owned(),
                         payload: Some(payload),
+                    })),
+                })
+            },
+            Event::ModifiersHeld { modifiers, is_live } => {
+                let modifiers = modifiers
+                    .into_iter()
+                    .map(|modifier| {
+                        ProtobufKeyModifier::try_from(modifier).map(|modifier| modifier as i32)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(ProtobufEvent {
+                    name: ProtobufEventType::ModifiersHeld as i32,
+                    payload: Some(event::Payload::ModifiersHeldPayload(ModifiersHeldPayload {
+                        modifiers,
+                        is_live,
                     })),
                 })
             },
@@ -2575,6 +2609,7 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::QueueChanged => EventType::QueueChanged,
             ProtobufEventType::Hook => EventType::Hook,
             ProtobufEventType::AgentEvent => EventType::AgentEvent,
+            ProtobufEventType::ModifiersHeld => EventType::ModifiersHeld,
         })
     }
 }
@@ -2637,6 +2672,7 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::QueueChanged => ProtobufEventType::QueueChanged,
             EventType::Hook => ProtobufEventType::Hook,
             EventType::AgentEvent => ProtobufEventType::AgentEvent,
+            EventType::ModifiersHeld => ProtobufEventType::ModifiersHeld,
         })
     }
 }

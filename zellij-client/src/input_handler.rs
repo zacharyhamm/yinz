@@ -292,6 +292,10 @@ impl InputHandler {
                     self.os_input
                         .send_to_server(ClientToServerMsg::HostTerminalFocusChanged { focused });
                 },
+                Ok((InputInstruction::ModifiersHeldChanged(modifiers), _error_context)) => {
+                    self.os_input
+                        .send_to_server(ClientToServerMsg::ModifiersHeld { modifiers });
+                },
                 Ok((InputInstruction::Exit, _error_context)) => {
                     self.should_exit = true;
                 },

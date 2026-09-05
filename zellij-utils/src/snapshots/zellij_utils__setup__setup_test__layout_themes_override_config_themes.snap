@@ -7435,6 +7435,7 @@ Config {
         serialization_interval: None,
         disable_session_metadata: None,
         support_kitty_keyboard_protocol: None,
+        report_modifier_keys: None,
         support_kitty_graphics_protocol: None,
         stacked_resize: None,
         agent_pane_min_columns: None,

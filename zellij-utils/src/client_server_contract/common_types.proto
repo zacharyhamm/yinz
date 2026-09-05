@@ -1409,6 +1409,7 @@ message Options {
   optional uint64 serialization_interval = 25;
   optional bool disable_session_metadata = 26;
   optional bool support_kitty_keyboard_protocol = 27;
+  optional bool report_modifier_keys = 74;
   optional bool stacked_resize = 30;
   optional bool show_startup_tips = 31;
   optional bool show_release_notes = 32;

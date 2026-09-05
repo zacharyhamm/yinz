@@ -3071,6 +3071,9 @@ impl Options {
             "support_kitty_keyboard_protocol"
         )
         .map(|(v, _)| v);
+        let report_modifier_keys =
+            kdl_property_first_arg_as_bool_or_error!(kdl_options, "report_modifier_keys")
+                .map(|(v, _)| v);
         let support_kitty_graphics_protocol = kdl_property_first_arg_as_bool_or_error!(
             kdl_options,
             "support_kitty_graphics_protocol"
@@ -3215,6 +3218,7 @@ impl Options {
             serialization_interval,
             disable_session_metadata,
             support_kitty_keyboard_protocol,
+            report_modifier_keys,
             support_kitty_graphics_protocol,
             stacked_resize,
             agent_pane_min_columns,
@@ -4449,6 +4453,35 @@ impl Options {
             None
         }
     }
+    fn report_modifier_keys_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
+        let comment_text = format!("{}\n{}\n{}\n{}\n{}\n{}",
+            " ",
+            "// Ask the host terminal to report the modifier keys themselves, so the UI can show",
+            "// something for as long as eg. Alt is held. Needs Kitty Keyboard flags that also make",
+            "// every printable key arrive as an escape code: AltGr glyphs, dead keys and IME input",
+            "// will stop working. (Requires restart) Default: false",
+            "// ",
+        );
+
+        let create_node = |node_value: bool| -> KdlNode {
+            let mut node = KdlNode::new("report_modifier_keys");
+            node.push(KdlValue::Bool(node_value));
+            node
+        };
+        if let Some(report_modifier_keys) = self.report_modifier_keys {
+            let mut node = create_node(report_modifier_keys);
+            if add_comments {
+                node.set_leading(format!("{}\n", comment_text));
+            }
+            Some(node)
+        } else if add_comments {
+            let mut node = create_node(false);
+            node.set_leading(format!("{}\n// ", comment_text));
+            Some(node)
+        } else {
+            None
+        }
+    }
     fn support_kitty_graphics_protocol_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
         let comment_text = format!("{}\n{}\n{}\n{}\n{}",
             " ",
@@ -5138,6 +5171,9 @@ impl Options {
             self.support_kitty_keyboard_protocol_to_kdl(add_comments)
         {
             nodes.push(support_kitty_keyboard_protocol);
+        }
+        if let Some(report_modifier_keys) = self.report_modifier_keys_to_kdl(add_comments) {
+            nodes.push(report_modifier_keys);
         }
         if let Some(support_kitty_graphics_protocol) =
             self.support_kitty_graphics_protocol_to_kdl(add_comments)
