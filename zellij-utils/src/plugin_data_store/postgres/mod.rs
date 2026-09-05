@@ -8,11 +8,15 @@
 pub(super) mod dialect;
 mod value;
 
+use std::cell::Cell;
+use std::future::Future;
 use std::str::FromStr;
 use std::sync::Mutex;
+use std::time::Duration;
 
-use postgres::types::ToSql;
-use postgres::{Client, Config, GenericClient, NoTls};
+use tokio_postgres::types::ToSql;
+use tokio_postgres::{Client, Config, NoTls};
+use tokio_stream::StreamExt;
 
 use crate::data_access::PluginDataBackend;
 use crate::plugin_data::{
@@ -53,7 +57,73 @@ const MIGRATIONS: &[&str] = &[
 pub struct PostgresPluginDataBackend {
     url: String,
     schema: String,
-    client: Mutex<Option<Client>>,
+    client: Mutex<Option<Connection>>,
+}
+
+const NETWORK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// DNS may use a blocking task; shutdown must not wait for it after a timeout.
+struct Driver(Option<tokio::runtime::Runtime>);
+
+impl Driver {
+    fn run<T>(
+        &self,
+        what: &str,
+        future: impl Future<Output = Result<T, DataError>>,
+    ) -> Result<T, DataError> {
+        self.0
+            .as_ref()
+            .expect("runtime exists until drop")
+            .block_on(async {
+                tokio::time::timeout(NETWORK_TIMEOUT, future)
+                    .await
+                    .map_err(|_| {
+                        DataError::Storage(format!("{what}: timed out after five seconds"))
+                    })?
+            })
+    }
+}
+
+impl Drop for Driver {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
+        }
+    }
+}
+
+struct Connection {
+    client: Client,
+    driver: Driver,
+    task: tokio::task::JoinHandle<()>,
+    unusable: Cell<bool>,
+}
+
+impl Connection {
+    fn run<T>(
+        &self,
+        what: &str,
+        future: impl Future<Output = Result<T, DataError>>,
+    ) -> Result<T, DataError> {
+        let result = self.driver.run(what, future);
+        // Discard storage errors too: a failed transaction must not leak into the next call.
+        // Never replay an operation, especially a write whose outcome may be unknown.
+        if matches!(result, Err(DataError::Storage(_))) {
+            self.unusable.set(true);
+            self.task.abort();
+        }
+        result
+    }
+
+    fn is_closed(&self) -> bool {
+        self.unusable.get() || self.client.is_closed()
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 impl std::fmt::Debug for PostgresPluginDataBackend {
@@ -111,7 +181,7 @@ pub fn redact_url(url: &str) -> String {
 impl PostgresPluginDataBackend {
     /// Point the store at a database and a schema within it. Connects to nothing.
     ///
-    /// `url` is anything `postgres::Config` parses: a `postgres://user:pass@host/db` URL or a
+    /// `url` is anything `tokio_postgres::Config` parses: a `postgres://user:pass@host/db` URL or a
     /// `key=value` string. `schema` must satisfy the same rule as any store name
     /// (`^[a-z][a-z0-9_]{0,62}$`), which is also inside Postgres's identifier limit.
     pub fn new(url: &str, schema: &str) -> Self {
@@ -126,11 +196,11 @@ impl PostgresPluginDataBackend {
     ///
     /// One connection behind one mutex, as for SQLite: handlers run on the calling plugin's
     /// pinned executor thread where blocking is expected. That thread must not be a tokio worker,
-    /// because the sync `postgres` client drives its own runtime with `block_on`, which panics
+    /// because the backend drives its own runtime with `block_on`, which panics
     /// inside another — so this checks, and answers with an error rather than a panic.
     fn with_client<T>(
         &self,
-        f: impl FnOnce(&mut Client) -> Result<T, DataError>,
+        f: impl FnOnce(&mut Connection) -> Result<T, DataError>,
     ) -> Result<T, DataError> {
         if tokio::runtime::Handle::try_current().is_ok() {
             return Err(DataError::Storage(
@@ -143,7 +213,7 @@ impl PostgresPluginDataBackend {
             .client
             .lock()
             .map_err(|_| DataError::Storage("the plugin data store lock is poisoned".to_owned()))?;
-        if guard.as_ref().is_some_and(Client::is_closed) {
+        if guard.as_ref().is_some_and(Connection::is_closed) {
             *guard = None;
         }
         if guard.is_none() {
@@ -160,7 +230,7 @@ impl PostgresPluginDataBackend {
         result
     }
 
-    fn connect(&self) -> Result<Client, DataError> {
+    fn connect(&self) -> Result<Connection, DataError> {
         validate_name(&self.schema, NameKind::Namespace).map_err(|e| {
             DataError::Storage(format!(
                 "`{}` is not a usable Postgres schema name for the plugin data store: {}",
@@ -177,11 +247,35 @@ impl PostgresPluginDataBackend {
         if config.get_application_name().is_none() {
             config.application_name("zellij");
         }
-        let mut client = config
-            .connect(NoTls)
-            .with_ctx(|| format!("failed to connect to {}", redact_url(&self.url)))?;
-        bootstrap(&mut client, &self.schema)?;
-        Ok(client)
+        let driver = Driver(Some(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| {
+                    DataError::Storage(format!("failed to create Postgres runtime: {e}"))
+                })?,
+        ));
+        let what = format!("failed to connect to {}", redact_url(&self.url));
+        let (client, connection) =
+            driver.run(&what, async { config.connect(NoTls).await.ctx(&what) })?;
+        let task = driver
+            .0
+            .as_ref()
+            .expect("runtime exists")
+            .spawn(async move {
+                let _ = connection.await;
+            });
+        let mut connection = Connection {
+            client,
+            driver,
+            task,
+            unusable: Cell::new(false),
+        };
+        connection.driver.run(
+            "failed to bootstrap the plugin data store",
+            bootstrap(&mut connection.client, &self.schema),
+        )?;
+        Ok(connection)
     }
 
     /// Run `f` inside a transaction, committing on success.
@@ -191,13 +285,25 @@ impl PostgresPluginDataBackend {
         f: impl FnOnce(&mut dyn Executor) -> Result<T, DataError>,
     ) -> Result<T, DataError> {
         self.with_client(|client| {
-            let mut tx = client
-                .transaction()
-                .with_ctx(|| format!("failed to begin a {} transaction", what))?;
-            let result = f(&mut PgExec(&mut tx))?;
-            tx.commit()
-                .with_ctx(|| format!("failed to commit the {}", what))?;
-            Ok(result)
+            client.run("failed to begin transaction", async {
+                client
+                    .client
+                    .batch_execute("BEGIN")
+                    .await
+                    .with_ctx(|| format!("failed to begin a {what} transaction"))
+            })?;
+            let result = f(&mut PgExec(client));
+            if result.is_ok() || !client.is_closed() {
+                let command = if result.is_ok() { "COMMIT" } else { "ROLLBACK" };
+                client.run(command, async {
+                    client
+                        .client
+                        .batch_execute(command)
+                        .await
+                        .with_ctx(|| format!("failed to {command} the {what}"))
+                })?;
+            }
+            result
         })
     }
 }
@@ -243,10 +349,11 @@ impl PluginDataBackend for PostgresPluginDataBackend {
 /// Runs under the advisory lock from start to finish. `CREATE SCHEMA IF NOT EXISTS` races with
 /// itself across two connections — both see nothing, one of them fails — and so does anything
 /// that follows it.
-fn bootstrap(client: &mut Client, schema: &str) -> Result<(), DataError> {
+async fn bootstrap(client: &mut Client, schema: &str) -> Result<(), DataError> {
     let schema_q = quote_ident(schema);
-    let mut tx = client
+    let tx = client
         .transaction()
+        .await
         .ctx("failed to begin the bootstrap transaction")?;
     tx.batch_execute(&format!(
         "SELECT pg_advisory_xact_lock({SCHEMA_LOCK_KEY});
@@ -254,12 +361,14 @@ fn bootstrap(client: &mut Client, schema: &str) -> Result<(), DataError> {
          SET LOCAL search_path TO {schema_q};
          CREATE TABLE IF NOT EXISTS store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
     ))
+    .await
     .ctx("failed to prepare the plugin data store's schema")?;
     let version: i64 = tx
         .query_opt(
             "SELECT value FROM store_meta WHERE key = 'schema_version'",
             &[],
         )
+        .await
         .ctx("failed to read the store's schema version")?
         .map(|row| row.get::<_, String>(0))
         .map(|value| value.parse::<i64>().unwrap_or(0))
@@ -273,6 +382,7 @@ fn bootstrap(client: &mut Client, schema: &str) -> Result<(), DataError> {
     }
     for (index, migration) in MIGRATIONS.iter().enumerate().skip(version as usize) {
         tx.batch_execute(migration)
+            .await
             .with_ctx(|| format!("failed to apply store migration {}", index + 1))?;
     }
     if version < current {
@@ -281,43 +391,62 @@ fn bootstrap(client: &mut Client, schema: &str) -> Result<(), DataError> {
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             &[&current.to_string()],
         )
+        .await
         .ctx("failed to record the store's schema version")?;
     }
-    tx.commit().ctx("failed to commit the bootstrap")?;
+    tx.commit().await.ctx("failed to commit the bootstrap")?;
     client
         .batch_execute(&format!("SET search_path TO {schema_q};"))
+        .await
         .ctx("failed to select the store's schema")?;
     Ok(())
 }
 
-/// The engine's view of a `postgres` client or transaction.
-struct PgExec<'a, C: GenericClient>(&'a mut C);
+/// The synchronous engine's view of the connection and its current transaction.
+struct PgExec<'a>(&'a Connection);
 
-impl<C: GenericClient> Executor for PgExec<'_, C> {
+impl Executor for PgExec<'_> {
     fn dialect(&self) -> &'static dyn Dialect {
         &POSTGRES
     }
 
     fn lock_schema(&mut self) -> Result<(), DataError> {
-        self.0
-            .batch_execute(&format!("SELECT pg_advisory_xact_lock({SCHEMA_LOCK_KEY});"))
-            .ctx("failed to lock the store's schema")
+        self.execute_batch(&format!("SELECT pg_advisory_xact_lock({SCHEMA_LOCK_KEY});"))
     }
 
     fn execute_batch(&mut self, sql: &str) -> Result<(), DataError> {
-        self.0.batch_execute(sql).ctx("statement failed")
+        self.0.run("statement failed", async {
+            self.0
+                .client
+                .batch_execute(sql)
+                .await
+                .ctx("statement failed")
+        })
     }
 
     fn execute(&mut self, sql: &str, params: &[DataValue]) -> Result<u64, DataError> {
         let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p as _).collect();
-        self.0.execute(sql, &refs).ctx("statement failed")
+        self.0.run("statement failed", async {
+            self.0
+                .client
+                .execute(sql, &refs)
+                .await
+                .ctx("statement failed")
+        })
     }
 
     fn query_i64(&mut self, sql: &str, params: &[DataValue]) -> Result<i64, DataError> {
         let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p as _).collect();
-        let row = self.0.query_one(sql, &refs).ctx("query failed")?;
-        row.try_get::<_, i64>(0)
-            .ctx("failed to read the query's integer")
+        self.0.run("query failed", async {
+            let row = self
+                .0
+                .client
+                .query_one(sql, &refs)
+                .await
+                .ctx("query failed")?;
+            row.try_get::<_, i64>(0)
+                .ctx("failed to read the query's integer")
+        })
     }
 
     fn query_rows(
@@ -327,20 +456,29 @@ impl<C: GenericClient> Executor for PgExec<'_, C> {
         kinds: &[AttrKind],
         sink: &mut dyn FnMut(Vec<DataValue>) -> Result<bool, DataError>,
     ) -> Result<(), DataError> {
-        use postgres::fallible_iterator::FallibleIterator;
-        let mut rows = self
-            .0
-            .query_raw(sql, params.iter())
-            .ctx("failed to run the query")?;
-        while let Some(row) = rows.next().ctx("failed to read a row")? {
-            let mut values = Vec::with_capacity(kinds.len());
-            for index in 0..kinds.len() {
-                values.push(read_value(&row, index)?);
+        self.0.run("query failed", async {
+            let rows = self
+                .0
+                .client
+                .query_raw(sql, params.iter())
+                .await
+                .ctx("failed to run the query")?;
+            tokio::pin!(rows);
+            while let Some(row) = rows.next().await {
+                let row = row.ctx("failed to read a row")?;
+                let mut values = Vec::with_capacity(kinds.len());
+                for index in 0..kinds.len() {
+                    values.push(read_value(&row, index)?);
+                }
+                if !sink(values)? {
+                    break;
+                }
             }
-            if !sink(values)? {
-                break;
-            }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 }
+
+#[cfg(all(test, feature = "postgres-tests"))]
+#[path = "unit/deadlines.rs"]
+mod deadline_tests;

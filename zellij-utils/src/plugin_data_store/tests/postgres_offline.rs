@@ -97,3 +97,46 @@ fn the_debug_form_and_the_log_form_hide_the_password() {
         "<postgres connection string>"
     );
 }
+
+/// The peer accepts TCP and reads startup, but never sends an authentication response.
+#[test]
+fn authentication_has_a_deadline_and_drops_the_socket() {
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (accepted, socket) = mpsc::sync_channel(1);
+    let (finished, result) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let backend = PostgresPluginDataBackend::new(
+            &format!("postgres://nobody:secret@{address}/nothing?sslmode=disable"),
+            "zellij_plugin_data",
+        );
+        let started = Instant::now();
+        let error = backend.catalog(None).unwrap_err();
+        finished
+            .send((error, started.elapsed(), format!("{backend:?}")))
+            .unwrap();
+    });
+    std::thread::spawn(move || accepted.send(listener.accept().unwrap().0).unwrap());
+    let mut socket = socket.recv_timeout(Duration::from_secs(10)).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let (error, elapsed, debug) = result.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(
+        error.to_string().contains("timed out after five seconds"),
+        "{error}"
+    );
+    assert!(!error.to_string().contains("secret"));
+    assert!(
+        elapsed >= Duration::from_secs(5) && elapsed < Duration::from_secs(10),
+        "{elapsed:?}"
+    );
+    assert!(debug.contains("connected: false"), "{debug}");
+    // EOF proves the timed-out connection was disposed, not merely forgotten in a live task.
+    socket.read_to_end(&mut Vec::new()).unwrap();
+}

@@ -58,7 +58,7 @@ humantime = { workspace = true }
 suggest = { workspace = true }
 names = { workspace = true }
 rusqlite = { version = "0.30", default-features = false, features = ["bundled"] }
-postgres = { version = "0.19", default-features = false }
+tokio-postgres = { version = "0.7", default-features = false, features = ["runtime"] }
 bytes = { version = "1", default-features = false }
 notify = { workspace = true }
 mlua = { workspace = true }
@@ -68,6 +68,7 @@ vte = { workspace = true }
 nix = { workspace = true, features = ["user"] }
 
 [dev-dependencies]
+postgres = { version = "0.19", default-features = false }
 insta = "1.48"
 expect-test = "1.4.1"
 hegeltest = "0.29.3"
