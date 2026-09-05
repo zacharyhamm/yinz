@@ -34,8 +34,9 @@ use super::dropdown::{Dropdown, HasDropdown};
 use super::text_input::{InputAction, TextInput};
 use super::viewport::{take_columns, viewport};
 use super::Rect;
+use super::RenderBuffer;
 use crate::prelude::*;
-use crate::ui_components::{print_text_with_coordinates, Text};
+use crate::ui_components::Text;
 use unicode_width::UnicodeWidthStr;
 
 /// Drawn at the right of a combo that has suggestions to offer, so a row with a
@@ -337,6 +338,7 @@ impl Combo {
     /// calls after everything else so it lands on top.
     pub(super) fn render_row(
         &mut self,
+        buffer: &mut RenderBuffer,
         prompt: &str,
         x: usize,
         y: usize,
@@ -363,12 +365,12 @@ impl Combo {
             }
             text = text.selected();
         }
-        print_text_with_coordinates(text, x, y, Some(width), None);
+        buffer.text(text, x, y, Some(width), None);
         self.last_rendered = Some(Rect::new(x, y, width, 1));
     }
 
     /// Draw the list, if it is open, over whatever is already there.
-    pub(super) fn render_overlay(&mut self, max_rows: usize) {
+    pub(super) fn render_overlay(&mut self, buffer: &mut RenderBuffer, max_rows: usize) {
         if !self.open {
             self.dropdown.clear_rendered();
             return;
@@ -377,7 +379,8 @@ impl Combo {
             self.dropdown.clear_rendered();
             return;
         };
-        self.dropdown.render(&self.suggestions, row, max_rows);
+        self.dropdown
+            .render(buffer, &self.suggestions, row, max_rows);
     }
 
     pub(super) fn clear_rendered(&mut self) {
@@ -442,8 +445,8 @@ impl HasDropdown for Combo {
         Combo::overlay_rect(self)
     }
 
-    fn render_overlay(&mut self, max_rows: usize) {
-        Combo::render_overlay(self, max_rows)
+    fn render_overlay(&mut self, buffer: &mut RenderBuffer, max_rows: usize) {
+        Combo::render_overlay(self, buffer, max_rows)
     }
 }
 

@@ -7020,3 +7020,33 @@ fn hocus_tools_registers_once_launched_and_answers_calls_over_rpc() {
     unlaunched.load(&BTreeMap::new()).unwrap();
     assert_eq!(logged(&mut unlaunched), "");
 }
+
+#[test]
+fn the_forms_example_routes_events_and_cursor_commands_and_reloads_cleanly() {
+    let source = example_plugin("forms.lua");
+    let mut plugin = load(&source).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let initial = plugin.render(24, 60).unwrap();
+    assert!(!initial.is_empty());
+    plugin.update(&Event::PastedText("日本語".into())).unwrap();
+    assert_ne!(plugin.render(24, 60).unwrap(), initial);
+    // Enter submits and opens the confirmation; the next Enter chooses Save.
+    for key in [
+        BareKey::Enter,
+        BareKey::Enter,
+        BareKey::PageDown,
+        BareKey::PageUp,
+    ] {
+        plugin
+            .update(&Event::Key(KeyWithModifier::new(key)))
+            .unwrap();
+        plugin.render(24, 60).unwrap();
+    }
+    for (rows, cols) in [(0, 0), (1, 1), (2, 8), (24, 60)] {
+        plugin.render(rows, cols).unwrap();
+    }
+    drop(plugin);
+    let mut reloaded = load(&source).unwrap();
+    reloaded.load(&BTreeMap::new()).unwrap();
+    assert_eq!(reloaded.render(24, 60).unwrap(), initial);
+}

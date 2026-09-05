@@ -71,7 +71,7 @@ fn prelude_part(index: usize) -> &'static str {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 44] = [
+pub const SECTIONS: [&str; 46] = [
     "index",
     "quickstart",
     "contract",
@@ -96,6 +96,8 @@ pub const SECTIONS: [&str; 44] = [
     "errors",
     "restrictions",
     "limits",
+    "example_forms",
+    "prelude_widgets",
     "example_clock",
     "example_capabilities",
     "example_agent_harness",
@@ -255,6 +257,8 @@ fn index() -> String {
             "quickstart" => "a complete minimal plugin (below)".to_owned(),
             "example_clock" => "example: the small one".to_owned(),
             "example_capabilities" => "example: most of what a plugin can do, in one pane".to_owned(),
+            "example_forms" => "example: shared forms, confirmation and scrollable Markdown".to_owned(),
+            "prelude_widgets" => "shared widget constructors and event wrappers".to_owned(),
             "example_agent_harness" => "example: an agent harness - spawn, prompt, check, hand failures back until green".to_owned(),
             "example_playground" => "example: every shape of command in use".to_owned(),
             "example_agent_commit" => "example: an agent_exit hook".to_owned(),
@@ -308,6 +312,10 @@ pub fn section(name: &str) -> Option<String> {
         "index" => Some(index()),
         "example_clock" => Some(fenced(EXAMPLE_CLOCK)),
         "example_capabilities" => Some(fenced(EXAMPLE_CAPABILITIES)),
+        "example_forms" => Some(fenced(include_str!("../../../example-plugins/forms.lua"))),
+        "prelude_widgets" => Some(fenced(include_str!(
+            "../../../zellij-server/src/plugins/lua/ui.lua"
+        ))),
         "example_agent_harness" => Some(fenced(EXAMPLE_AGENT_HARNESS)),
         "example_playground" => Some(fenced(EXAMPLE_PLAYGROUND)),
         "example_agent_commit" => Some(fenced(EXAMPLE_AGENT_COMMIT)),

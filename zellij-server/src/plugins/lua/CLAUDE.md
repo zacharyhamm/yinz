@@ -11,8 +11,10 @@ methods on `RunningPlugin`.
 
 Two things to know before changing this:
 
-- **Ergonomics belong in `lua/prelude.lua`, not in Rust.** Rust exposes exactly one function to
-  Lua (`__dispatch`), mirroring the single `host_run_plugin_command` wasm import. `zellij.on`,
+- **Ergonomics belong in Lua, not in Rust.** `prelude.lua` holds command wrappers and
+  `ui.lua` holds shared-widget constructors and event normalization. `ui.rs` binds interpreter-local
+  Rust widget state and pure rendering; it never calls shims or writes stdout. The only door
+  to host authority is `__dispatch`, mirroring the single `host_run_plugin_command` wasm import. `zellij.on`,
   event normalization and config merging are all Lua. Widening the Rust boundary should be a last
   resort.
 - **Lua plugins are not sandboxed by their runtime the way wasm plugins are**, so `lua/loader.rs`

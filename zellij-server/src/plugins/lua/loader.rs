@@ -139,6 +139,7 @@ pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result
         .map_err(|e| anyhow!("failed to define zellij.null: {}", e))?;
     install_log(&lua, &zellij, chunk_name)?;
     install_text_width(&lua, &zellij)?;
+    super::ui::install(&lua, &zellij).map_err(|e| anyhow!("failed to install shared UI: {}", e))?;
 
     // `require("zellij")` is the module itself; anything else is a file next to the plugin.
     let require = {

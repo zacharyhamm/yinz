@@ -33,8 +33,9 @@ use super::dropdown::{Dropdown, HasDropdown};
 use super::text_input::{InputAction, TextInput};
 use super::viewport::{take_columns, viewport};
 use super::Rect;
+use super::RenderBuffer;
 use crate::prelude::*;
-use crate::ui_components::{print_text_with_coordinates, Text};
+use crate::ui_components::Text;
 use unicode_width::UnicodeWidthStr;
 
 /// Drawn at the right of a collapsed select, so a row that is a list and a row
@@ -326,6 +327,7 @@ impl Select {
     /// a form calls after everything else so the list lands on top.
     pub(super) fn render_row(
         &mut self,
+        buffer: &mut RenderBuffer,
         prompt: &str,
         x: usize,
         y: usize,
@@ -353,12 +355,12 @@ impl Select {
         if focused {
             text = text.selected();
         }
-        print_text_with_coordinates(text, x, y, Some(width), None);
+        buffer.text(text, x, y, Some(width), None);
         self.last_rendered = Some(Rect::new(x, y, width, 1));
     }
 
     /// Draw the dropdown, if it is open, over whatever is already there.
-    pub(super) fn render_overlay(&mut self, max_rows: usize) {
+    pub(super) fn render_overlay(&mut self, buffer: &mut RenderBuffer, max_rows: usize) {
         if !self.open {
             self.dropdown.clear_rendered();
             return;
@@ -367,7 +369,7 @@ impl Select {
             self.dropdown.clear_rendered();
             return;
         };
-        self.dropdown.render(&self.options, row, max_rows);
+        self.dropdown.render(buffer, &self.options, row, max_rows);
     }
 
     pub(super) fn clear_rendered(&mut self) {
@@ -443,8 +445,8 @@ impl HasDropdown for Select {
         Select::overlay_rect(self)
     }
 
-    fn render_overlay(&mut self, max_rows: usize) {
-        Select::render_overlay(self, max_rows)
+    fn render_overlay(&mut self, buffer: &mut RenderBuffer, max_rows: usize) {
+        Select::render_overlay(self, buffer, max_rows)
     }
 }
 

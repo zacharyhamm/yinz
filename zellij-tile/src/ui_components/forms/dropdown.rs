@@ -21,7 +21,8 @@ use super::fuzzy::{fuzzy_filter, Match};
 use super::list::list_window;
 use super::viewport::take_columns;
 use super::Rect;
-use crate::ui_components::{print_text_with_coordinates, Text};
+use super::RenderBuffer;
+use crate::ui_components::Text;
 use unicode_width::UnicodeWidthStr;
 
 /// Option rows a dropdown shows before it starts scrolling.
@@ -47,7 +48,7 @@ pub(super) trait HasDropdown {
     /// Take the option a click landed on and close.
     fn commit_option(&mut self, index: usize) -> bool;
     fn overlay_rect(&self) -> Option<Rect>;
-    fn render_overlay(&mut self, max_rows: usize);
+    fn render_overlay(&mut self, buffer: &mut RenderBuffer, max_rows: usize);
 }
 
 #[derive(Debug, Clone)]
@@ -186,7 +187,13 @@ impl Dropdown {
 
     /// Draw the list under `row`, in at most `max_rows` rows, over whatever is
     /// already there.
-    pub(super) fn render(&mut self, options: &[String], row: Rect, max_rows: usize) {
+    pub(super) fn render(
+        &mut self,
+        buffer: &mut RenderBuffer,
+        options: &[String],
+        row: Rect,
+        max_rows: usize,
+    ) {
         self.last_option_rects.clear();
         if max_rows == 0 {
             return;
@@ -220,7 +227,7 @@ impl Dropdown {
             if Some(position) == self.highlighted {
                 text = text.selected();
             }
-            print_text_with_coordinates(text, row.x, y, Some(row.columns), None);
+            buffer.text(text, row.x, y, Some(row.columns), None);
             self.last_option_rects
                 .push((matched.index, Rect::new(row.x, y, row.columns, 1)));
         }

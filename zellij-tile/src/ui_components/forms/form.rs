@@ -39,8 +39,9 @@ use super::label::Label;
 use super::select::{Select, SelectAction};
 use super::text_input::{InputAction, TextInput};
 use super::viewport::{column_to_cursor, viewport};
+use super::RenderBuffer;
 use crate::prelude::*;
-use crate::ui_components::{print_text_with_coordinates, Text};
+use crate::ui_components::Text;
 
 /// Identifies a field or button within its form.
 pub type FieldId = String;
@@ -1221,7 +1222,7 @@ impl Form {
     /// host reads the cursor position out of the render, so a `show_cursor`
     /// after a `print_*` lands a frame late.
     pub fn render(&mut self, x: usize, y: usize, width: usize) {
-        self.render_rows(x, y, width, self.height(), None);
+        self.render_buffer(x, y, width).print();
     }
 
     /// Draw the form inside a bounded-height viewport.
@@ -1231,7 +1232,7 @@ impl Form {
     /// to reach every field and the button row without a second set of scroll
     /// controls.
     pub fn render_in_viewport(&mut self, x: usize, y: usize, width: usize, rows: usize) {
-        self.render_rows(x, y, width, rows, Some(y.saturating_add(rows)));
+        self.render_buffer_in_viewport(x, y, width, rows).print();
     }
 
     /// Draw in a `rows`-tall viewport, letting an open dropdown overlay down to
@@ -1250,13 +1251,42 @@ impl Form {
         rows: usize,
         overlay_bottom: usize,
     ) {
+        self.render_buffer_with_overlay(x, y, width, rows, overlay_bottom)
+            .print();
+    }
+
+    /// As [`Self::render`], without printing or calling host shims.
+    pub fn render_buffer(&mut self, x: usize, y: usize, width: usize) -> RenderBuffer {
+        self.render_rows(x, y, width, self.height(), None)
+    }
+
+    /// As [`Self::render_in_viewport`], returning output and the cursor update.
+    pub fn render_buffer_in_viewport(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        rows: usize,
+    ) -> RenderBuffer {
+        self.render_rows(x, y, width, rows, Some(y.saturating_add(rows)))
+    }
+
+    /// As [`Self::render_in_viewport_with_overlay`], without output delivery.
+    pub fn render_buffer_with_overlay(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        rows: usize,
+        overlay_bottom: usize,
+    ) -> RenderBuffer {
         self.render_rows(
             x,
             y,
             width,
             rows,
             Some(overlay_bottom.max(y.saturating_add(rows))),
-        );
+        )
     }
 
     fn render_rows(
@@ -1266,7 +1296,8 @@ impl Form {
         width: usize,
         rows: usize,
         overlay_bottom: Option<usize>,
-    ) {
+    ) -> RenderBuffer {
+        let mut buffer = RenderBuffer::default();
         // `render` asks for every row it has, so this is 0 there: the scroll and
         // the overlay's bottom edge are separate questions.
         let start = self.viewport_start(rows);
@@ -1324,7 +1355,11 @@ impl Form {
             // somewhere it is not.
             _ => None,
         };
-        show_cursor(cursor);
+        buffer.cursor = Some(cursor);
+        if width == 0 || rows == 0 {
+            buffer.cursor = Some(None);
+            return buffer;
+        }
 
         // 2. Now draw.
         for (i, field) in self
@@ -1359,14 +1394,20 @@ impl Form {
                         }
                         text = text.selected();
                     }
-                    print_text_with_coordinates(text, x, row_y, Some(width), None);
+                    buffer.text(text, x, row_y, Some(width), None);
                 },
-                Widget::Select(select) => select.render_row(&prompt, x, row_y, width, focused),
-                Widget::Combo(combo) => combo.render_row(&prompt, x, row_y, width, focused, typing),
+                Widget::Select(select) => {
+                    select.render_row(&mut buffer, &prompt, x, row_y, width, focused)
+                },
+                Widget::Combo(combo) => {
+                    combo.render_row(&mut buffer, &prompt, x, row_y, width, focused, typing)
+                },
                 Widget::Checkbox(checkbox) => {
-                    checkbox.render_row(&prompt, x, row_y, width, focused)
+                    checkbox.render_row(&mut buffer, &prompt, x, row_y, width, focused)
                 },
-                Widget::Radio(radio) => radio.render_row(&prompt, x, row_y, width, focused),
+                Widget::Radio(radio) => {
+                    radio.render_row(&mut buffer, &prompt, x, row_y, width, focused)
+                },
             }
             field.last_rendered = Some(Rect::new(x, row_y, width, 1));
         }
@@ -1386,7 +1427,10 @@ impl Form {
                 if room == 0 {
                     break;
                 }
-                button_x += button.render(button_x, button_y, Some(room));
+                buffer
+                    .output
+                    .push_str(&button.serialize(button_x, button_y, Some(room)));
+                button_x += button.width().min(room);
                 button_x += 1; // one column between buttons
             }
         }
@@ -1402,9 +1446,10 @@ impl Form {
                             .unwrap_or(usize::MAX)
                     })
                     .unwrap_or(0);
-                dropdown.render_overlay(max_rows);
+                dropdown.render_overlay(&mut buffer, max_rows);
             }
         }
+        buffer
     }
 
     /// The first row of the form the viewport shows: the least scroll that keeps

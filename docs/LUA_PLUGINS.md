@@ -638,6 +638,103 @@ Text is measured in columns, which is neither bytes nor code points: `zellij.tex
 the answer, and `zellij.text.pad(s, width)`, `pad_left`, `center` and `truncate(s, width,
 ellipsis)` are built on it, so a box a plugin draws itself lines up whatever is in it.
 
+### Interactive widgets and Markdown
+
+`zellij.ui` shares the Rust toolkit used by Hocus and its New agent dialog.
+Create widgets once, then forward events and return their rendered strings.
+The plugin controls subscriptions, validation, submission, and side effects.
+A confirmation dialog reports intent. It does not grant permissions or run an action.
+
+```lua
+local form = zellij.ui.form {
+  { kind = "text_input", id = "name", label = "Name", value = "" },
+  { kind = "select", id = "layout", label = "Layout", options = { "default", "compact" } },
+  { kind = "combo", id = "branch", label = "Branch", options = { "main", "develop" } },
+  { kind = "checkbox", id = "frames", label = "Frames", value = true },
+  { kind = "radio_group", id = "mode", label = "Mode", options = { "Normal", "Locked" } },
+  { kind = "button", id = "save", label = "Save" },
+}
+function M.load() zellij.subscribe { "Key", "Mouse", "PastedText" } end
+function M.update(e)
+  local action
+  if e.name == "key" then action = form:handle_key(e)
+  elseif e.name == "mouse" then action = form:handle_mouse(e)
+  elseif e.name == "pasted_text" then action = form:insert_pasted_text(e.value)
+  else return false end
+  if action.kind == "submit" or (action.kind == "button_pressed" and action.id == "save") then
+    local values = form:values() -- name/branch: strings; layout/mode: indices; frames: boolean
+    -- Validate values here, then perform the plugin's action.
+  end
+  return action.should_render
+end
+function M.render(rows, cols)
+  return form:render { x = 0, y = 0, width = cols, height = rows }
+end
+```
+
+Each field and button needs a unique, nonempty string `id`. Fields appear before the button row.
+Descriptors accept these fields:
+
+| Field | Meaning and default |
+|---|---|
+| `kind` | `text_input`, `checkbox`, `radio_group`, `select`, `combo`, or `button` |
+| `id`, `label` | Stable ID and displayed label. The label defaults to `""`. |
+| `value` | Text/combo: string, default `""`. Checkbox: boolean, default `false`. Radio/select: one-based option index. |
+| `options` | Array of strings, default `{}`. Radio/select initially choose the first option, if present. |
+| `placeholder` | Select/combo placeholder, default `""` |
+| `max_visible_options` | Maximum dropdown rows, default `6`, minimum effective value `1` |
+| `disabled`, `style` | Button options: `false` and `"ribbon"`. Use `"text"` for a plain button. |
+
+Use `ui.text_input{...}`, `ui.checkbox{...}`, `ui.radio_group{...}`, `ui.select{...}`,
+`ui.combo{...}`, or `ui.button{...}` for a standalone widget.
+These constructors supply `kind` and default the ID to `"value"`.
+
+| Method | Result or effect |
+|---|---|
+| `:value(id)`, `:values()` | One field value, or a table keyed by field ID. Empty choices return `nil`. |
+| `:set_value(id, value)` | Replace a value. Choice indices start at one and must exist. |
+| `:set_options(id, strings)` | Replace select, combo, or radio options. Preserve the selected text when possible. |
+| `:focus(id)`, `:focused_id()` | Set or read focus. Unknown IDs raise an error. |
+| `:move_focus(forward)` | Move focus, default forward. Returns an action. |
+| `:handle_key(event)` | Handle a normalized key event. Also accepts `"Enter"`, `"Tab"`, or one character. |
+| `:insert_pasted_text(text)` | Insert paste into the focused editable field. Returns an action. |
+| `:handle_mouse(event)` | Handle a normalized mouse event. Forward every mouse variant, including release. |
+| `:render(coords)` | Return a component string and send the cursor update through the existing dispatcher. |
+
+Standalone widgets omit `id` from `:value()`, `:set_value(value)`, `:set_options(strings)`, and `:focus()`.
+Coordinates use `x`, `y`, `width`, and `height`. Width and height are required nonnegative integers.
+Pane coordinates start at zero. A zero width or height produces no form output and hides the cursor.
+Forms scroll to keep the focused field visible. Dropdowns cover later rows within the supplied area.
+
+Actions contain `kind`, `should_render`, and an optional `id`.
+Kinds are `field_changed`, `complete`, `button_pressed`, `focus_moved`, `submit`, `cancel`, and `ignored`.
+Only `ignored` sets `should_render=false`. Tab and Shift-Tab move focus.
+Enter submits from a field by default. Pass `{enter_submits=false}` as the second argument to `ui.form`
+to make Enter interact with fields and require a button for submission.
+
+`ui.dialog{title="Confirm", message="Continue?", fields={...}, help="Esc: cancel"}` accepts the same field descriptions.
+It centers the content within the supplied area and bounds the form height.
+Use `:set_status(text)` for a status row or `:set_status(nil)` to clear it.
+State belongs to one interpreter and disappears on plugin reload.
+
+```lua
+local markdown = zellij.ui.markdown("# Notes\n\n**Bold**, ~~removed~~, and 日本語", {compact=false})
+-- scroll counts visual rows to skip, starting at zero. The second result is the total row count.
+local frame, total_rows = markdown:render {x=0, y=0, width=40, height=10, scroll=0}
+local lines = zellij.text.wrap("plain text", 40)
+local safe_text = zellij.text.sanitize("text with control characters")
+```
+
+Markdown objects retain parsed blocks and cache wrapped lines until the width changes.
+They use Hocus's CommonMark dialect with tables, strikethrough, and task lists.
+Wrapping measures terminal columns. Sanitization removes control characters and expands tabs.
+Markdown does not change the cursor. Render the active form to place or hide it.
+
+Run `example-plugins/forms.lua` for a form, searchable choices, a confirmation dialog, and scrollable Markdown.
+Hocus authors can read it with `plugin_docs(section="example_forms")` and inspect the wrappers with
+`plugin_docs(section="prelude_widgets")`.
+
+
 ## Modules
 
 A plugin can be more than one file. `require("name")` loads `name.lua` from the plugin's own
