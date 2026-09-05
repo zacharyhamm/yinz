@@ -2792,8 +2792,14 @@ impl Args {
             (Some(edits), false) if edits.is_empty() => Err(plugin_source::EMPTY_BATCH.to_owned()),
             (Some(edits), false) => Ok(edits.clone()),
             (None, _) => Ok(vec![EditPair {
-                old_string: self.old_string.clone().unwrap_or_default(),
-                new_string: self.new_string.clone().unwrap_or_default(),
+                old_string: self
+                    .old_string
+                    .clone()
+                    .ok_or("old_string is required: the exact text to replace")?,
+                new_string: self
+                    .new_string
+                    .clone()
+                    .ok_or("new_string is required: use an empty string for deletion")?,
                 replace_all: self.replace_all,
             }]),
         }
@@ -5104,6 +5110,8 @@ pub mod test_seams {
         pub static CURRENT_SESSION: RefCell<Option<super::SessionInfo>> = const { RefCell::new(None) };
         pub static PLUGIN_FS_EXISTS: Cell<Option<bool>> = const { Cell::new(None) };
         pub static RELOAD_CALLS: Cell<usize> = const { Cell::new(0) };
+        pub static PLUGIN_ENTRIES: RefCell<Option<Vec<zellij_tile::prelude::FsEntry>>> = const { RefCell::new(None) };
+        pub static PLUGIN_READS: RefCell<super::BTreeMap<String, Result<String, String>>> = const { RefCell::new(super::BTreeMap::new()) };
         pub static PLUGIN_SOURCE: RefCell<Option<String>> = const { RefCell::new(None) };
         pub static GRANTED_PERMISSIONS: RefCell<Vec<PermissionType>> = const { RefCell::new(Vec::new()) };
     }
@@ -5116,6 +5124,8 @@ pub mod test_seams {
     pub fn reset() {
         CURRENT_SESSION.with_borrow_mut(|session| *session = None);
         PLUGIN_FS_EXISTS.set(None);
+        PLUGIN_ENTRIES.with_borrow_mut(|entries| *entries = None);
+        PLUGIN_READS.with_borrow_mut(super::BTreeMap::clear);
         RELOAD_CALLS.set(0);
         PLUGIN_SOURCE.with_borrow_mut(|source| *source = None);
         GRANTED_PERMISSIONS.with_borrow_mut(Vec::clear);
@@ -5159,20 +5169,29 @@ pub fn plugin_fs_write(_path: &str, _source: &str, _overwrite: bool) -> Result<b
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn plugin_fs_read(_path: &str) -> Result<String, String> {
+pub fn plugin_fs_read(path: &str) -> Result<String, String> {
+    if let Some(result) = test_seams::PLUGIN_READS.with_borrow(|reads| reads.get(path).cloned()) {
+        return result;
+    }
     test_seams::PLUGIN_SOURCE
         .with_borrow(Clone::clone)
         .ok_or_else(|| PLUGIN_FOLDER_UNREACHABLE.to_owned())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn plugin_fs_read_capped(path: &str, _max_bytes: usize) -> Result<String, String> {
-    plugin_fs_read(path)
+pub fn plugin_fs_read_capped(path: &str, max_bytes: usize) -> Result<String, String> {
+    let source = plugin_fs_read(path)?;
+    if source.len() > max_bytes {
+        return Err(format!("file exceeds {max_bytes} bytes"));
+    }
+    Ok(source)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn plugin_fs_list(_root: &str) -> Result<Vec<zellij_tile::prelude::FsEntry>, String> {
-    Err(PLUGIN_FOLDER_UNREACHABLE.to_owned())
+    test_seams::PLUGIN_ENTRIES
+        .with_borrow(Clone::clone)
+        .ok_or_else(|| PLUGIN_FOLDER_UNREACHABLE.to_owned())
 }
 
 #[cfg(not(target_arch = "wasm32"))]

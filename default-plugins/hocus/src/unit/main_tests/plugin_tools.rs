@@ -570,3 +570,71 @@ fn a_docs_query_and_a_docs_page_need_no_plugin_folder() {
         "{page}"
     );
 }
+
+#[test]
+fn folder_search_reports_caps_failed_reads_and_oversize_files() {
+    use crate::tools::{test_seams, FOLDER_FILES_CAP, FOLDER_READ_BYTES};
+    test_seams::reset();
+    test_seams::PLUGIN_ENTRIES.with_borrow_mut(|entries| {
+        *entries = Some(
+            (0..FOLDER_FILES_CAP + 2)
+                .map(|n| FsEntry {
+                    path: format!("/plugins/p{n:03}.lua"),
+                    metadata: None,
+                })
+                .collect(),
+        );
+    });
+    test_seams::set_plugin_source("needle\n");
+    test_seams::PLUGIN_READS.with_borrow_mut(|reads| {
+        reads.insert("/plugins/p000.lua".into(), Err("permission denied".into()));
+        reads.insert(
+            "/plugins/p001.lua".into(),
+            Ok("x".repeat(FOLDER_READ_BYTES + 1)),
+        );
+        // These files are beyond the cap: their hits must not appear.
+        reads.insert("/plugins/p064.lua".into(), Ok("outside".into()));
+        reads.insert("/plugins/p065.lua".into(), Ok("outside".into()));
+    });
+    let warning = "Warning: incomplete search; 4 files skipped (file cap or failed reads).\n\n";
+    for query in ["needle", "outside"] {
+        let mut state = plugin_state();
+        assert!(run_file_tool(
+            &mut state,
+            "plugin_search",
+            &serde_json::json!({"query": query, "max_results": 200}).to_string()
+        ));
+        let results = tool_results(&state);
+        let answer = &results[0].content;
+        assert!(answer.starts_with(warning), "{answer}");
+        if query == "needle" {
+            assert_eq!(answer.matches(":1:needle").count(), FOLDER_FILES_CAP - 2);
+        } else {
+            assert!(answer.contains("no matches"), "{answer}");
+        }
+    }
+    for (name, error) in [("p000", "permission denied"), ("p001", "file exceeds")] {
+        let mut state = plugin_state();
+        assert!(run_file_tool(
+            &mut state,
+            "plugin_search",
+            &serde_json::json!({"name": name, "query": "needle"}).to_string()
+        ));
+        assert!(tool_results(&state)[0].content.starts_with(error));
+    }
+    test_seams::set_plugin_source(&"needle".repeat(MAX_TOOL_OUTPUT));
+    let mut state = plugin_state();
+    assert!(run_file_tool(
+        &mut state,
+        "plugin_search",
+        r#"{"query":"needle"}"#
+    ));
+    let results = tool_results(&state);
+    assert!(results[0].content.starts_with(warning));
+    assert!(
+        results[0].content.contains("[truncated"),
+        "{}",
+        results[0].content
+    );
+    test_seams::reset();
+}

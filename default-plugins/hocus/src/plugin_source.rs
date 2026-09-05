@@ -184,10 +184,10 @@ pub fn listing(entries: &[Listed]) -> String {
 /// One replacement of a `plugin_edit`: the single form's `old_string`/`new_string`, or one
 /// element of its `edits`.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
-#[serde(default)]
 pub struct EditPair {
     pub old_string: String,
     pub new_string: String,
+    #[serde(default)]
     pub replace_all: bool,
 }
 
@@ -282,21 +282,18 @@ fn moved(offset: usize, k: usize, old_len: usize, new_len: usize) -> usize {
 /// `new_len` at each of `matches`: earlier replacements move it by their difference, and one
 /// that overlaps it is folded in.
 fn remap(span: Range<usize>, matches: &[usize], old_len: usize, new_len: usize) -> Range<usize> {
-    let before_start = matches
-        .iter()
-        .filter(|&&m| m + old_len <= span.start)
-        .count();
-    let before_end = matches.iter().filter(|&&m| m + old_len <= span.end).count();
-    let mut start = moved(span.start, before_start, old_len, new_len);
-    let mut end = moved(span.end, before_end, old_len, new_len);
-    for (k, &m) in matches.iter().enumerate() {
-        if m < span.end && m + old_len > span.start {
-            let replaced = moved(m, k, old_len, new_len);
-            start = start.min(replaced);
-            end = end.max(replaced + new_len);
+    let endpoint = |offset, is_end| {
+        for (k, &at) in matches.iter().enumerate() {
+            if offset <= at {
+                return moved(offset, k, old_len, new_len);
+            }
+            if offset < at + old_len {
+                return moved(at, k, old_len, new_len) + if is_end { new_len } else { 0 };
+            }
         }
-    }
-    start..end.max(start)
+        moved(offset, matches.len(), old_len, new_len)
+    };
+    endpoint(span.start, false)..endpoint(span.end, true)
 }
 
 /// The 1-based line a byte offset of `text` falls on.

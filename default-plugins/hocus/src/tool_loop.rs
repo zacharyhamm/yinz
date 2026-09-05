@@ -1059,7 +1059,7 @@ impl State {
     /// leaves them out), as `(name.lua, contents)`. Reads answer inline on the plugin thread, so
     /// a folder is read up to `FOLDER_FILES_CAP` files and each up to `FOLDER_READ_BYTES`; one
     /// of many that cannot be read is skipped, since a search is about the ones that can.
-    fn plugin_corpus(&self, only: Option<&str>) -> Result<Vec<(String, String)>, String> {
+    fn plugin_corpus(&self, only: Option<&str>) -> Result<(Vec<(String, String)>, usize), String> {
         let names = match only {
             Some(name) => {
                 tools::resolve_plugin_file(&self.user_plugin_dir, Some(name))?;
@@ -1070,16 +1070,17 @@ impl State {
                 &tools::plugin_fs_list(tools::PLUGINS_ROOT)?,
             ),
         };
+        let mut skipped = names.len().saturating_sub(tools::FOLDER_FILES_CAP);
         let mut files = Vec::new();
         for name in names.into_iter().take(tools::FOLDER_FILES_CAP) {
             let path = tools::plugin_fs_path(Some(&name))?;
             match tools::plugin_fs_read_capped(&path, tools::FOLDER_READ_BYTES) {
                 Ok(contents) => files.push((name, contents)),
                 Err(error) if only.is_some() => return Err(error),
-                Err(_) => {},
+                Err(_) => skipped += 1,
             }
         }
-        Ok(files)
+        Ok((files, skipped))
     }
 
     /// Run one of the plugin-authoring tools.
@@ -1153,14 +1154,23 @@ impl State {
                 Err(error) => error,
                 Ok(options) => match self.plugin_corpus(args.name.as_deref()) {
                     Err(error) => error,
-                    Ok(files) => {
+                    Ok((files, skipped)) => {
                         let refs: Vec<(&str, &str)> = files
                             .iter()
                             .map(|(name, contents)| (name.as_str(), contents.as_str()))
                             .collect();
                         match plugin_source::search(&refs, &options) {
-                            Ok(Some(hits)) => log::truncate_str(&hits, MAX_TOOL_OUTPUT),
-                            Ok(None) => tools::no_matches(args.name.as_deref(), files.len()),
+                            Ok(hits) => {
+                                let answer = hits.unwrap_or_else(|| {
+                                    tools::no_matches(args.name.as_deref(), files.len())
+                                });
+                                let answer = if skipped > 0 {
+                                    format!("Warning: incomplete search; {skipped} files skipped (file cap or failed reads).\n\n{answer}")
+                                } else {
+                                    answer
+                                };
+                                log::truncate_str(&answer, MAX_TOOL_OUTPUT)
+                            },
                             Err(error) => error,
                         }
                     },

@@ -954,3 +954,30 @@ fn a_batch_edit_is_the_newest_statement_about_a_file() {
     assert!(!arguments[0].contains(DRAFT), "{}", arguments[0]);
     assert!(arguments[1].contains("setmetatable"), "{}", arguments[1]);
 }
+
+#[test]
+fn docs_search_elision_distinguishes_case_modes_and_defaults_to_sensitive() {
+    let cfg = test_config();
+    let mut transcript = Vec::new();
+    for (id, case_mode) in [
+        ("c1", None),
+        ("c2", Some(true)),
+        ("c3", Some(false)),
+        ("c4", Some(true)),
+    ] {
+        let mut arguments = serde_json::json!({"query": "Render"});
+        if let Some(mode) = case_mode {
+            arguments["case_insensitive"] = mode.into();
+        }
+        transcript.push(plugin_call(id, "plugin_docs", arguments));
+        transcript.push(result(id, &bulky(id)));
+    }
+    let distinct = wire_tool_results(&body_value(&cfg, &transcript[..4]));
+    assert!(distinct[0].contains("c1"));
+    assert!(distinct[1].contains("c2"));
+    let repeated = wire_tool_results(&body_value(&cfg, &transcript));
+    assert!(repeated[0].starts_with("[elided:"));
+    assert!(repeated[1].starts_with("[elided:"));
+    assert!(repeated[2].contains("c3"));
+    assert!(repeated[3].contains("c4"));
+}
