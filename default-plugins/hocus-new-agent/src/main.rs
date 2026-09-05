@@ -34,7 +34,12 @@ const GIT_PROBE_ID: &str = "git_probe_id";
 const BRANCHES_PROBE: &str = "branches";
 const WORKTREES_PROBE: &str = "worktrees";
 const DUPLICATE_FOCUSED: &str = "duplicate_focused";
+const FORK_FOCUSED: &str = "fork_focused";
 const CALLER_TERMINAL_PANE_ID: &str = "caller_terminal_pane_id";
+
+/// The one refusal a fork makes on its own: nothing else can be forked from a pane whose
+/// agent the session does not know.
+const NOT_AN_AGENT: &str = "the focused pane is not an agent";
 
 /// The project option that stands for "wherever the caller was", which is where
 /// this modal created agents before it knew about projects at all.
@@ -54,6 +59,40 @@ const CURRENT_DIRECTORY: &str = "(current directory)";
 /// is not given rows for.
 const FRAME_ROWS: usize = 2;
 
+/// What this modal was opened to do.
+///
+/// Both jobs about the focused pane need the daemon's snapshot before they can do
+/// anything - the pane's kind and its location are in it and nowhere else this plugin
+/// can reach. Only `Fork` stays up once it has one, to ask its question.
+enum Job {
+    /// Fill the form in and create an agent. What the modal is without a caller pane.
+    New,
+    /// Start the focused pane's own agent again beside it, no questions asked.
+    Duplicate { pane_id: u32 },
+    /// The focused pane's context, a different agent: ask which, then start it.
+    Fork { pane_id: u32, source: ForkSource },
+}
+
+/// What the snapshot said about the pane being forked.
+enum ForkSource {
+    /// No snapshot yet. `hocus-agentd` may not have started; its `AGENT_HELLO` is what
+    /// gets this subscribed when it does.
+    Waiting,
+    /// Boxed because it is much the largest thing a `Job` can hold and only one job at a
+    /// time has it.
+    Ready(Box<ForkContext>),
+    /// A pane the snapshot has no agent for. There is nothing to fork, and the modal says
+    /// so rather than starting an agent somewhere the user did not ask for.
+    NotAnAgent,
+}
+
+/// Where the fork will run, and what is running there now.
+struct ForkContext {
+    pane: AgentPane,
+    /// The kind `classify` gave the pane: what the picker defaults *away* from.
+    kind: String,
+}
+
 struct State {
     dialog: Dialog,
     /// The caller's cwd: the fallback source directory, and what the default
@@ -61,10 +100,13 @@ struct State {
     source_directory: PathBuf,
     projects: Registry,
     plugin_id: u32,
-    duplicate_pane_id: Option<u32>,
+    job: Job,
     path_edited: bool,
     firecracker_image_edited: bool,
     error: Option<String>,
+    /// What the fork modal is forking, for its status row. Outlived by the error, which
+    /// takes the same row when there is one.
+    note: Option<String>,
     /// The `(width, height)` `resize` last asked the host for, so it can decline to ask again.
     ///
     /// `TabUpdate` arrives for reasons that have nothing to do with this modal's size - including
@@ -146,10 +188,11 @@ impl Default for State {
             source_directory: PathBuf::from("."),
             projects: Registry::new(),
             plugin_id: 0,
-            duplicate_pane_id: None,
+            job: Job::New,
             path_edited: false,
             firecracker_image_edited: false,
             error: None,
+            note: None,
             requested_size: None,
             git_probe: 0,
         }
@@ -167,13 +210,26 @@ impl ZellijPlugin for State {
         self.load_projects();
         self.fill_projects();
         self.plugin_id = get_plugin_ids().plugin_id;
-        if configuration.get(DUPLICATE_FOCUSED).map(String::as_str) == Some("true") {
-            self.duplicate_pane_id = configuration
-                .get(CALLER_TERMINAL_PANE_ID)
-                .and_then(|pane_id| pane_id.parse().ok());
-            if self.duplicate_pane_id.is_some() {
-                pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE));
+        let asked_for = |key: &str| configuration.get(key).map(String::as_str) == Some("true");
+        // Without a caller pane there is nothing to duplicate or fork, whatever the alias
+        // asked for, so the modal stays the New agent one.
+        let caller_pane_id = configuration
+            .get(CALLER_TERMINAL_PANE_ID)
+            .and_then(|pane_id| pane_id.parse().ok());
+        if let Some(pane_id) = caller_pane_id {
+            if asked_for(DUPLICATE_FOCUSED) {
+                self.job = Job::Duplicate { pane_id };
+            } else if asked_for(FORK_FOCUSED) {
+                self.job = Job::Fork {
+                    pane_id,
+                    source: ForkSource::Waiting,
+                };
+                // Before `resize`, which sizes the overlay to whichever dialog is up.
+                self.dialog = fork_dialog();
             }
+        }
+        if !matches!(self.job, Job::New) {
+            pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE));
         }
         subscribe(&[
             EventType::Key,
@@ -183,9 +239,15 @@ impl ZellijPlugin for State {
             EventType::RunCommandResult,
             EventType::Visible,
         ]);
-        self.refresh_git_suggestions();
+        // The fork dialog has no Git fields to suggest into, and its fallback when the
+        // pane turns out not to be an agent is a refusal rather than the form - so there
+        // is nothing for two `git` processes to fill in. Duplicate still probes: its
+        // fallback *is* the New agent form.
+        if !matches!(self.job, Job::Fork { .. }) {
+            self.refresh_git_suggestions();
+        }
         set_selectable(true);
-        rename_plugin_pane(self.plugin_id, "new agent");
+        rename_plugin_pane(self.plugin_id, self.pane_title());
         self.resize(None);
     }
 
@@ -226,17 +288,21 @@ impl ZellijPlugin for State {
     fn render(&mut self, rows: usize, cols: usize) {
         let help = help_for(self.dialog.form());
         self.dialog.set_help(Some(Text::new(help)));
-        self.dialog.set_status(
-            self.error
-                .as_ref()
-                .map(|error| Text::new(error).color_all(3)),
-        );
+        // The error wins the row: it is the thing the user has to act on. The note only
+        // says what is being forked, and can wait for the error to be cleared.
+        self.dialog.set_status(match (&self.error, &self.note) {
+            (Some(error), _) => Some(Text::new(error).color_all(3)),
+            (None, Some(note)) => Some(Text::new(note)),
+            (None, None) => None,
+        });
         self.dialog.render(Rect::new(0, 0, cols, rows));
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
-        if pipe_message.name == wire::AGENT_HELLO && self.duplicate_pane_id.is_some() {
-            pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE));
+        if pipe_message.name == wire::AGENT_HELLO {
+            if !matches!(self.job, Job::New) {
+                pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE));
+            }
             return false;
         }
         if pipe_message.name != wire::AGENT_SNAPSHOT {
@@ -249,24 +315,50 @@ impl ZellijPlugin for State {
         else {
             return false;
         };
-        let Some(pane_id) = self.duplicate_pane_id.take() else {
-            return false;
+        let pane_of = |pane_id: u32| {
+            reply
+                .panes
+                .iter()
+                .flatten()
+                .find(move |pane| pane.pane_id == pane_id)
         };
-        let command = reply
-            .panes
-            .iter()
-            .flatten()
-            .find(|pane| pane.pane_id == pane_id)
-            .and_then(|pane| duplicate_command(pane, &reply.manual_kinds));
-        if let Some(new_pane_id) = command.and_then(|command| {
-            open_command_pane_near_plugin(
-                command,
-                BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
-            )
-        }) {
-            hand_over_focus(new_pane_id);
+        // Taken, so a second snapshot cannot open a second pane or move a picker the user
+        // is already looking at.
+        match std::mem::replace(&mut self.job, Job::New) {
+            Job::New => false,
+            Job::Duplicate { pane_id } => {
+                let command =
+                    pane_of(pane_id).and_then(|pane| duplicate_command(pane, &reply.manual_kinds));
+                // A pane that is not an agent leaves the New agent form up, which is what
+                // this modal is underneath.
+                if let Some(new_pane_id) = command.and_then(start) {
+                    hand_over_focus(new_pane_id);
+                }
+                false
+            },
+            Job::Fork {
+                pane_id,
+                source: ForkSource::Waiting,
+            } => {
+                let source = match pane_of(pane_id).and_then(|pane| {
+                    agents::classify(pane, &reply.manual_kinds).map(|(kind, _)| (pane, kind))
+                }) {
+                    Some((pane, kind)) => ForkSource::Ready(Box::new(ForkContext {
+                        pane: pane.clone(),
+                        kind: kind.to_owned(),
+                    })),
+                    None => ForkSource::NotAnAgent,
+                };
+                self.describe_fork(&source);
+                self.job = Job::Fork { pane_id, source };
+                true
+            },
+            // A fork that already has its answer; the picker is the user's now.
+            answered => {
+                self.job = answered;
+                false
+            },
         }
-        false
     }
 }
 
@@ -308,6 +400,64 @@ fn help_for(form: &Form) -> &'static str {
         "<Enter> done  <Tab> next  <Esc> back"
     } else {
         "<Enter> edit  <Tab> next  <Esc> cancel"
+    }
+}
+
+/// The Fork agent modal: one question, and the button that answers it.
+///
+/// Deliberately not the New agent form with most of it hidden. A fork takes its project,
+/// its branch and its folder from the pane it forks - there is nothing to fill in but the
+/// agent, and a form showing the rest would be offering to change what this action does
+/// not change.
+fn fork_dialog() -> Dialog {
+    let form = Form::new()
+        // The same shared list the New agent modal offers, so the two cannot come to
+        // disagree about which agents you may ask for.
+        .select(
+            AGENT,
+            "Agent",
+            Select::new(launch::OFFERED.iter().copied().map(capitalized)),
+        )
+        .button("fork", Button::new("Fork agent"))
+        // For the reason the New agent form does it: an Enter pressed out of habit should
+        // open the list, never start an agent.
+        .enter_never_submits();
+    let help = help_for(&form);
+    Dialog::new(Text::new("Fork agent").color_all(2), form)
+        .help(Text::new(help))
+        .status_row()
+}
+
+/// The agent a fork opens on: the first offered kind that is not the one already running,
+/// or nothing when there is no other to offer.
+///
+/// `OFFERED` is `codex, claude, cursor`, so the two agents a person is likeliest to be
+/// swapping between default to each other, and anything else - the third offered agent, or
+/// a kind `classify` knows and the picker does not - opens on the first.
+fn default_fork_kind(current: &str) -> Option<&'static str> {
+    launch::OFFERED
+        .iter()
+        .copied()
+        .find(|kind| *kind != current)
+}
+
+/// The status line under the picker: what is being forked, and where the fork will land.
+///
+/// The folder's name rather than its path, and for the reason the row is clipped from the
+/// right (`Dialog::render`): a modal is at most 60 columns, most cwds are longer than that,
+/// and the half that would survive the clip is the half that says nothing. A host is named
+/// because a fork onto another machine is the case worth being sure about.
+fn fork_note(pane: &AgentPane, kind: &str) -> String {
+    let cwd = pane.cwd.as_deref().unwrap_or_default();
+    let folder = Path::new(cwd)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| cwd.to_owned());
+    match (pane.host.as_deref(), folder.is_empty()) {
+        (Some(host), false) => format!("forking {kind} in {folder} on {host}"),
+        (Some(host), true) => format!("forking {kind} on {host}"),
+        (None, false) => format!("forking {kind} in {folder}"),
+        (None, true) => format!("forking {kind}"),
     }
 }
 
@@ -586,6 +736,13 @@ fn duplicate_command(
     manual_kinds: &BTreeMap<u32, String>,
 ) -> Option<CommandToRun> {
     let (kind, _) = agents::classify(pane, manual_kinds)?;
+    Some(command_in_context(pane, kind))
+}
+
+/// The command that starts `kind` where `pane` is running: same machine, same VM, same
+/// folder, and nothing of the old argv - a duplicate and a fork both start a fresh
+/// conversation, they only differ over which agent has it.
+fn command_in_context(pane: &AgentPane, kind: &str) -> CommandToRun {
     // A pane on another machine, ssh or Firecracker, already reports a cwd on
     // that machine, and the server hands a remote cwd over untranslated. Only a
     // local pane gets `/host`, which the server maps to the caller's cwd.
@@ -602,12 +759,23 @@ fn duplicate_command(
     } else {
         pane.cwd.clone()
     };
-    Some(CommandToRun {
+    CommandToRun {
         path: launch::binary_for(kind).into(),
         cwd: cwd.map(Into::into),
         target,
         ..Default::default()
-    })
+    }
+}
+
+/// Open the pane the modal was asked for, marked as an agent's.
+///
+/// The duplicate and the fork both end here: the command differs, the marker and the
+/// placement do not.
+fn start(command: CommandToRun) -> Option<PaneId> {
+    open_command_pane_near_plugin(
+        command,
+        BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
+    )
 }
 
 impl State {
@@ -616,7 +784,13 @@ impl State {
             // Only the button. `FormEvent::Submit` cannot reach here - the form
             // is built with `enter_never_submits` - and saying so in the match
             // is what keeps a stray Enter from ever creating an agent again.
-            FormEvent::ButtonPressed(_) => self.submit(),
+            FormEvent::ButtonPressed(_) => {
+                if matches!(self.job, Job::Fork { .. }) {
+                    self.fork()
+                } else {
+                    self.submit()
+                }
+            },
             FormEvent::Cancel => {
                 close_self();
                 false
@@ -631,6 +805,18 @@ impl State {
 
     fn changed(&mut self, id: &str) {
         self.error = None;
+        // A fork with nothing to fork stays refused. The message is about the pane the
+        // modal was opened from, not about anything the user has just done to the picker,
+        // so clearing it here would hide a standing refusal until the button was pressed.
+        if matches!(
+            self.job,
+            Job::Fork {
+                source: ForkSource::NotAnAgent,
+                ..
+            }
+        ) {
+            self.error = Some(NOT_AN_AGENT.to_owned());
+        }
         // The branches and worktrees on offer are the selected project's, so a
         // different project means a different list.
         if id == PROJECT {
@@ -686,6 +872,66 @@ impl State {
             .and_then(|project| project.firecracker_image.clone())
             .unwrap_or_default();
         self.set_text(FIRECRACKER_IMAGE, &image);
+    }
+
+    fn pane_title(&self) -> &'static str {
+        match self.job {
+            Job::Fork { .. } => "fork agent",
+            _ => "new agent",
+        }
+    }
+
+    /// Point the picker at an agent other than the one running, and say what is being
+    /// forked - or say that there is nothing to fork.
+    fn describe_fork(&mut self, source: &ForkSource) {
+        match source {
+            // The snapshot has not answered yet; the picker keeps its opening option and
+            // the row stays empty.
+            ForkSource::Waiting => {},
+            ForkSource::Ready(context) => {
+                if let Some(kind) = default_fork_kind(&context.kind) {
+                    let option = capitalized(kind);
+                    if let Some(select) = self.dialog.form_mut().select_by_id_mut(AGENT) {
+                        select.select_option(&option);
+                    }
+                }
+                self.note = Some(fork_note(&context.pane, &context.kind));
+            },
+            ForkSource::NotAnAgent => self.error = Some(NOT_AN_AGENT.to_owned()),
+        }
+    }
+
+    /// Start the chosen agent where the forked pane is running.
+    fn fork(&mut self) -> bool {
+        // Read before the job is borrowed. The select's labels are the shared kinds,
+        // capitalised; `binary_for` wants them as they are written in `OFFERED`.
+        let kind = self.dialog.form().text(AGENT).to_lowercase();
+        let Job::Fork { source, .. } = &self.job else {
+            return false;
+        };
+        let context = match source {
+            // The daemon has not answered. Saying so beats starting an agent in whatever
+            // folder this modal happens to have been opened from.
+            ForkSource::Waiting => {
+                self.error = Some("still reading the focused pane".to_owned());
+                return true;
+            },
+            ForkSource::NotAnAgent => {
+                self.error = Some(NOT_AN_AGENT.to_owned());
+                return true;
+            },
+            ForkSource::Ready(context) => context,
+        };
+        match start(command_in_context(&context.pane, &kind)) {
+            Some(pane_id) => {
+                hand_over_focus(pane_id);
+                false
+            },
+            None => {
+                self.error = Some("could not open a pane".to_owned());
+                true
+            },
+        }
     }
 
     fn submit(&mut self) -> bool {
@@ -812,6 +1058,38 @@ mod tests {
                 discovered: false,
             },
         )
+    }
+
+    /// A local agent pane, as the daemon reports one.
+    fn agent_pane(kind: &str) -> AgentPane {
+        AgentPane {
+            pane_id: 7,
+            title: format!("{kind} agent"),
+            command: Some(kind.to_owned()),
+            cwd: Some("/work/zellij".to_owned()),
+            host: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
+            status: agents::AgentStatus::Running,
+            tab: Some((1, "work".to_owned())),
+            detected: Some(kind.to_owned()),
+            agent: None,
+        }
+    }
+
+    /// A fork modal whose snapshot has already answered.
+    fn forking(kind: &str) -> State {
+        let source = ForkSource::Ready(Box::new(ForkContext {
+            pane: agent_pane(kind),
+            kind: kind.to_owned(),
+        }));
+        let mut state = State {
+            dialog: fork_dialog(),
+            ..Default::default()
+        };
+        state.describe_fork(&source);
+        state.job = Job::Fork { pane_id: 7, source };
+        state
     }
 
     fn registry() -> Registry {
@@ -1317,6 +1595,183 @@ mod tests {
             .unwrap()
             .suggestions()
             .is_empty());
+    }
+
+    #[test]
+    fn the_fork_default_is_an_agent_other_than_the_one_running() {
+        // The two agents a person swaps between default to each other.
+        assert_eq!(default_fork_kind("codex"), Some("claude"));
+        assert_eq!(default_fork_kind("claude"), Some("codex"));
+        // Anything else - the third offered agent, or a kind `classify` knows and the
+        // picker does not - opens on the first offered one.
+        assert_eq!(default_fork_kind("cursor"), Some("codex"));
+        assert_eq!(default_fork_kind("gemini"), Some("codex"));
+    }
+
+    #[test]
+    fn the_picker_opens_on_the_other_agent_and_still_offers_this_one() {
+        let state = forking("codex");
+
+        let select = state.dialog.form().select_by_id(AGENT).unwrap();
+        assert_eq!(select.selected_option(), Some("Claude"));
+        // Forking onto the same agent is a duplicate, and stays one keypress away.
+        assert!(select.options().iter().any(|option| option == "Codex"));
+        assert_eq!(state.note.as_deref(), Some("forking codex in zellij"));
+        assert!(state.error.is_none());
+
+        assert_eq!(
+            forking("claude").dialog.form().text(AGENT),
+            "Codex",
+            "the default swaps both ways"
+        );
+    }
+
+    /// A fork is a duplicate that changed its mind about which agent: everything that says
+    /// *where* the pane runs is carried over untouched.
+    #[test]
+    fn forking_keeps_the_context_and_changes_only_the_binary() {
+        let pane = AgentPane {
+            host: Some("builder".to_owned()),
+            cwd: Some("/tmp/repo".to_owned()),
+            ..agent_pane("codex")
+        };
+        let command = command_in_context(&pane, "claude");
+        assert_eq!(command.path, PathBuf::from("claude"));
+        // A fork starts a fresh conversation, like a duplicate.
+        assert!(command.args.is_empty());
+        // The cwd of an ssh pane is a path on `builder`, so it is sent as-is.
+        assert_eq!(command.cwd, Some("/tmp/repo".into()));
+        assert_eq!(command.target.ssh_host(), Some("builder"));
+
+        // The one offered kind whose program is not its name.
+        assert_eq!(
+            command_in_context(&pane, "cursor").path,
+            PathBuf::from("cursor-agent")
+        );
+
+        let local = AgentPane {
+            host: None,
+            ..pane.clone()
+        };
+        assert_eq!(
+            command_in_context(&local, "claude").cwd,
+            Some("/host".into())
+        );
+
+        let vm = AgentPane {
+            host: Some("firecracker:review".to_owned()),
+            firecracker_image: Some("rust-dev".to_owned()),
+            firecracker_worktree: Some("/host/repo".to_owned()),
+            ..pane
+        };
+        assert_eq!(
+            command_in_context(&vm, "claude").target,
+            PaneTarget::Firecracker {
+                vm: "review".to_owned(),
+                image: Some("rust-dev".to_owned()),
+                worktree: Some("/host/repo".into()),
+            }
+        );
+    }
+
+    /// The alternative would be starting an agent in whatever folder the modal was opened
+    /// from, which is not what "fork this pane" asked for.
+    #[test]
+    fn a_pane_that_is_not_an_agent_is_refused_rather_than_forked() {
+        let mut state = State {
+            dialog: fork_dialog(),
+            job: Job::Fork {
+                pane_id: 7,
+                source: ForkSource::NotAnAgent,
+            },
+            ..Default::default()
+        };
+        state.describe_fork(&ForkSource::NotAnAgent);
+        assert_eq!(state.error.as_deref(), Some(NOT_AN_AGENT));
+        // And it stays said: moving the picker is not an answer to it.
+        state.changed(AGENT);
+        assert_eq!(state.error.as_deref(), Some(NOT_AN_AGENT));
+        // Refused before any host call, which is what makes this testable at all.
+        assert!(state.fork());
+        assert_eq!(state.error.as_deref(), Some(NOT_AN_AGENT));
+
+        // And the same before the daemon has answered, for the same reason.
+        let mut waiting = State {
+            dialog: fork_dialog(),
+            job: Job::Fork {
+                pane_id: 7,
+                source: ForkSource::Waiting,
+            },
+            ..Default::default()
+        };
+        assert!(waiting.fork());
+        assert_eq!(
+            waiting.error.as_deref(),
+            Some("still reading the focused pane")
+        );
+    }
+
+    #[test]
+    fn the_fork_modal_is_only_as_tall_as_its_one_question() {
+        let dialog = fork_dialog();
+        assert_eq!(
+            modal_height(&dialog),
+            (dialog.height() + FRAME_ROWS).to_string()
+        );
+        // Much shorter than the New agent form, which is the point of a second dialog.
+        assert!(dialog.height() < State::default().dialog.height());
+    }
+
+    #[test]
+    fn the_fork_help_line_fits_the_narrowest_modal() {
+        let narrowest: usize = modal_width(Some(80)).parse().unwrap();
+        let mut state = State {
+            dialog: fork_dialog(),
+            ..Default::default()
+        };
+        let mut lines = vec![];
+        for id in [AGENT, "fork"] {
+            state.dialog.form_mut().focus_on(id);
+            lines.push(help_for(state.dialog.form()));
+        }
+        state.dialog.form_mut().focus_on(AGENT);
+        state
+            .dialog
+            .form_mut()
+            .select_by_id_mut(AGENT)
+            .unwrap()
+            .open();
+        lines.push(help_for(state.dialog.form()));
+
+        for line in lines {
+            assert!(
+                line.chars().count() <= narrowest,
+                "{line:?} does not fit {narrowest} columns"
+            );
+        }
+    }
+
+    /// The row is clipped from the right, so a note built from a whole path would say
+    /// nothing by the time it was drawn.
+    #[test]
+    fn the_fork_note_names_the_folder_and_the_machine() {
+        let pane = agent_pane("codex");
+        assert_eq!(fork_note(&pane, "codex"), "forking codex in zellij");
+        assert_eq!(
+            fork_note(
+                &AgentPane {
+                    host: Some("builder".to_owned()),
+                    ..pane.clone()
+                },
+                "codex"
+            ),
+            "forking codex in zellij on builder"
+        );
+        // A pane the daemon has no cwd for still says what it is forking.
+        assert_eq!(
+            fork_note(&AgentPane { cwd: None, ..pane }, "codex"),
+            "forking codex"
+        );
     }
 
     #[test]

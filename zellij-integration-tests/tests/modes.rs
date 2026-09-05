@@ -106,13 +106,20 @@ fn switch_to_agent_mode() {
     });
     // Each label preceded by its own key, in order — ribbon separators between them are arrow
     // glyphs rather than spaces, so match on the sequence rather than on exact spacing.
+    //
+    // The short label of each hint: five of them no longer fit this 120-column terminal in
+    // full, and the ribbon shortens all of a mode's hints together or none of them. The test
+    // is about which keys carry which actions, in what order, so the shorter spelling of each
+    // is the same assertion.
     let hints = grid_snapshot.lines().last().cloned().unwrap();
     let mut rest = hints.as_str();
     for expected in [
         " n ",
-        " New agent ",
+        " New ",
         " d ",
-        " Duplicate agent ",
+        " Duplicate ",
+        " f ",
+        " Fork ",
         " a ",
         " Agents ",
         " c ",

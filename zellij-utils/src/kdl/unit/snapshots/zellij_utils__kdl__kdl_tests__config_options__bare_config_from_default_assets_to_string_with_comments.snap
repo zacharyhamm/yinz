@@ -1,6 +1,5 @@
 ---
 source: zellij-utils/src/kdl/./unit/config_options.rs
-assertion_line: 280
 expression: fake_config_stringified
 ---
 keybinds clear-defaults=true {
@@ -174,6 +173,15 @@ keybinds clear-defaults=true {
             SwitchToMode "normal"
         }
         bind "Ctrl e" { SwitchToMode "normal"; }
+        bind "f" {
+            LaunchOrFocusPlugin "hocus-fork-agent" {
+                floating true
+                move_to_focused_tab true
+                modal true
+                overlay true
+            }
+            SwitchToMode "normal"
+        }
         bind "n" {
             LaunchOrFocusPlugin "hocus-new-agent" {
                 floating true
@@ -341,6 +349,9 @@ plugins {
     }
     hocus-duplicate-agent location="zellij:hocus-new-agent" {
         duplicate_focused true
+    }
+    hocus-fork-agent location="zellij:hocus-new-agent" {
+        fork_focused true
     }
     hocus-new-agent location="zellij:hocus-new-agent"
     hocus-store location="zellij:hocus-store" {

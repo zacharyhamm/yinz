@@ -179,6 +179,15 @@ keybinds {
             };
             SwitchToMode "Normal"
         }
+        bind "f" {
+            LaunchOrFocusPlugin "hocus-fork-agent" {
+                floating true
+                overlay true
+                modal true
+                move_to_focused_tab true
+            };
+            SwitchToMode "Normal"
+        }
         // Bring the panel up with the keyboard on the agent list, rather than
         // in the conversation. The list is its own pane, the left half of the
         // panel: this reveals it if it was hidden and opens one if there is
@@ -401,6 +410,12 @@ plugins {
     hocus-new-agent location="zellij:hocus-new-agent"
     hocus-duplicate-agent location="zellij:hocus-new-agent" {
         duplicate_focused true
+    }
+    // The same modal again, asking one question first: which agent to start in the
+    // focused pane's place. It opens on an agent *other* than the one running, which is
+    // the whole reason to fork rather than duplicate.
+    hocus-fork-agent location="zellij:hocus-new-agent" {
+        fork_focused true
     }
 }
 

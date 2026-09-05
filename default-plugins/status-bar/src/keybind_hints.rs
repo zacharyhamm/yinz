@@ -308,6 +308,7 @@ pub fn hints_for_mode(mi: &ModeInfo) -> Vec<Hint> {
     ]} else if mi.mode == IM::Agent { vec![
         hint("New agent", "New", plugin_launch_key(&km, "hocus-new-agent")),
         hint("Duplicate agent", "Duplicate", plugin_launch_key(&km, "hocus-duplicate-agent")),
+        hint("Fork agent", "Fork", plugin_launch_key(&km, "hocus-fork-agent")),
         hint("Agents", "Agents", plugin_launch_key(&km, "hocus-agents")),
         hint("Chat", "Chat", plugin_launch_key(&km, "hocus")),
         hint("Select pane", "Select", to_base_mode),
