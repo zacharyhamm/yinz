@@ -2308,7 +2308,7 @@ fn init_session(
 
     // Determine and initialize the data directory
     let data_dir = cli_assets.data_dir.unwrap_or_else(get_default_data_dir);
-    let data_access = Arc::new(DataAccess::sqlite(&data_dir));
+    let data_access = Arc::new(DataAccess::from_options(&config.options, &data_dir));
 
     let recording_enabled = config.options.session_recording.unwrap_or(false);
     let input_enabled = config.options.session_recording_input.unwrap_or(false);

@@ -16,6 +16,7 @@ cargo x integration-test # whole-app tests (needs cargo-nextest)
 cargo x bench            # render throughput benchmarks (criterion); not part of the gate
 cargo x remote-test --build && cargo x remote-test --test  # remote panes, real ssh in docker
 cargo x firecracker-test --build && cargo x firecracker-test --test  # real VM through /dev/kvm
+cargo x postgres-test --build && cargo x postgres-test --test  # plugin-data store against a real Postgres in docker
 ```
 
 `cargo x` is an alias for `cargo xtask`. `cargo x --help` lists everything.
@@ -68,6 +69,9 @@ work directly**:
   `#[ignore]`d and need `--build` first (docker); see CONTRIBUTING.md.
 - **Firecracker tests:** `cargo x firecracker-test --test`. They are `#[ignore]`d and need
   `--build` first; see `docs/FIRECRACKER.md`.
+- **Postgres plugin-data tests:** `cargo x postgres-test --test -- -E 'test(/postgres::oracle/)'`.
+  The store's test files run once per engine; the Postgres half is behind the `postgres-tests`
+  feature and needs `--build` first (docker). See CONTRIBUTING.md.
 
 `x test`'s separate doctest pass follows the narrowing: a `-p`-selected run runs only that
 package's doctests, and a run narrowed by a test name or filterset skips them (`cargo test --doc`
@@ -92,6 +96,8 @@ past one crate:
 
 - `zellij-utils/` — IPC contracts, config/KDL parsing, errors, plugin API; nearly everything
   depends on it
+- `zellij-utils/src/plugin_data_store/` — also run `cargo x postgres-test`: the same test files
+  run against SQLite and Postgres, and only the Postgres half needs a server
 - `zellij-tile/`, `zellij-tile-utils/`, or anything under `zellij-utils/assets/` (protobufs,
   embedded plugins — also regenerate with `cargo x proto`)
 - the render path in `zellij-server/` (grid, panes, output), which the `insta` snapshots and
@@ -217,6 +223,7 @@ Benchmarks: see `.claude/skills/bench/SKILL.md` (`cargo x bench`).
 | `src/tests/e2e/` | dockerized black-box e2e (`docker compose up -d`, `cargo x ci e2e`) |
 | `zellij-server/tests/` | remote panes against a real sshd (`cargo x remote-test`) |
 | `docker/` | the containers those two suites run against |
+| `docker-compose.postgres.yml` | the Postgres the plugin-data store suite runs against (`cargo x postgres-test`) |
 | `xtask/` | the build system |
 
 Read `docs/ARCHITECTURE.md` before changing server internals, and

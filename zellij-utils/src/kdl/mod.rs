@@ -2974,6 +2974,38 @@ impl Options {
         let session_recording =
             kdl_property_first_arg_as_bool_or_error!(kdl_options, "session_recording")
                 .map(|(v, _)| v);
+        let plugin_data_url =
+            match kdl_property_first_arg_as_string_or_error!(kdl_options, "plugin_data_url") {
+                Some((value, entry)) => {
+                    // The scheme is all that can be checked here: `kdl` is compiled for plugins
+                    // too, and the Postgres client that parses the rest is host-only.
+                    if !(value.starts_with("postgres://") || value.starts_with("postgresql://")) {
+                        return Err(kdl_parsing_error!(
+                            format!(
+                                "plugin_data_url must be a postgres:// or postgresql:// URL, \
+                                 got {value:?}; leave it unset for the SQLite file in the data dir"
+                            ),
+                            entry
+                        ));
+                    }
+                    Some(value.to_owned())
+                },
+                None => None,
+            };
+        let plugin_data_schema =
+            match kdl_property_first_arg_as_string_or_error!(kdl_options, "plugin_data_schema") {
+                Some((value, entry)) => {
+                    crate::plugin_data::validate_name(
+                        value,
+                        crate::plugin_data::NameKind::Namespace,
+                    )
+                    .map_err(|error| {
+                        kdl_parsing_error!(format!("plugin_data_schema: {error}"), entry)
+                    })?;
+                    Some(value.to_owned())
+                },
+                None => None,
+            };
         let session_recording_input =
             kdl_property_first_arg_as_bool_or_error!(kdl_options, "session_recording_input")
                 .map(|(v, _)| v);
@@ -3110,6 +3142,8 @@ impl Options {
             session_serialization,
             session_recording,
             session_recording_input,
+            plugin_data_url,
+            plugin_data_schema,
             serialize_pane_viewport,
             scrollback_lines_to_serialize,
             styled_underlines,
@@ -4155,6 +4189,22 @@ impl Options {
             None
         }
     }
+    /// Emitted only when set. The commented-out template lives in `default.kdl`, next to the
+    /// other options, and a URL with a password in it is not something to write out unasked.
+    fn plugin_data_url_to_kdl(&self) -> Option<KdlNode> {
+        self.plugin_data_url.as_ref().map(|url| {
+            let mut node = KdlNode::new("plugin_data_url");
+            node.push(url.clone());
+            node
+        })
+    }
+    fn plugin_data_schema_to_kdl(&self) -> Option<KdlNode> {
+        self.plugin_data_schema.as_ref().map(|schema| {
+            let mut node = KdlNode::new("plugin_data_schema");
+            node.push(schema.clone());
+            node
+        })
+    }
     fn serialize_pane_viewport_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
         let comment_text = format!(
             "{}\n{}\n{}\n{}\n{}\n{}",
@@ -4938,6 +4988,12 @@ impl Options {
         }
         if let Some(session_recording_input) = self.session_recording_input_to_kdl(add_comments) {
             nodes.push(session_recording_input);
+        }
+        if let Some(plugin_data_url) = self.plugin_data_url_to_kdl() {
+            nodes.push(plugin_data_url);
+        }
+        if let Some(plugin_data_schema) = self.plugin_data_schema_to_kdl() {
+            nodes.push(plugin_data_schema);
         }
         if let Some(serialize_pane_viewport) = self.serialize_pane_viewport_to_kdl(add_comments) {
             nodes.push(serialize_pane_viewport);

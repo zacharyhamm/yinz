@@ -15,6 +15,47 @@ fn defining_an_entity_reports_that_it_was_created() {
 }
 
 #[test]
+fn long_attribute_indexes_enforce_uniqueness_independently_and_can_be_removed() {
+    let (store, _dir) = store();
+    let prefix = "a".repeat(62);
+    let first = format!("{prefix}b");
+    let second = format!("{prefix}c");
+    let mut def = EntityDef::new("agent", 1)
+        .attr(AttrDef::text(&first).indexed().unique())
+        .attr(AttrDef::text(&second).indexed().unique());
+    store.define_entity(NS, OWNER, &def, false).unwrap();
+    let put = |a: &str, b: &str| {
+        store.apply(
+            NS,
+            &[Mutation::put("agent")
+                .set(&first, a)
+                .set(&second, b)
+                .build()],
+        )
+    };
+    put("one", "one").unwrap();
+    assert_err!(put("one", "two").unwrap_err(), DataError::Storage(_));
+    assert_err!(put("two", "one").unwrap_err(), DataError::Storage(_));
+
+    def.attrs[0].indexed = false;
+    def.attrs[0].unique = false;
+    store.define_entity(NS, OWNER, &def, false).unwrap();
+    put("one", "two").unwrap();
+    assert_err!(put("three", "one").unwrap_err(), DataError::Storage(_));
+
+    def.attrs[1].indexed = false;
+    def.attrs[1].unique = false;
+    store.define_entity(NS, OWNER, &def, false).unwrap();
+    put("one", "one").unwrap();
+    assert_eq!(store.count(NS, &FetchRequest::entity("agent")).unwrap(), 3);
+
+    // SQLite refuses to drop a column if its regular index was left behind.
+    def.version = 2;
+    def.attrs = vec![AttrDef::text("remaining")];
+    store.define_entity(NS, OWNER, &def, true).unwrap();
+}
+
+#[test]
 fn redeclaring_an_identical_definition_changes_nothing() {
     let (store, _dir) = defined();
     put(&store, "zellij", "hello", 1);

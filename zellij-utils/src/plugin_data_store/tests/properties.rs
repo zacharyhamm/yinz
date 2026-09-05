@@ -118,11 +118,15 @@ fn paging_by_cursor_yields_every_row_exactly_once(tc: hegel::TestCase) {
 }
 
 /// What comes out of a put is what went in, whatever the mix of kinds.
+///
+/// NUL is left out of the text because the store refuses it in a value — Postgres cannot hold
+/// one in `TEXT`, and a plugin's data should mean the same on every engine. The refusal has a
+/// test of its own.
 #[hegel::test(test_cases = 25)]
 fn a_put_round_trips_through_a_fetch(tc: hegel::TestCase) {
     let written: Vec<(String, i64, bool, Vec<u8>)> = tc.draw(
         generators::vecs(hegel::tuples!(
-            generators::text().max_size(20),
+            generators::text().max_size(20).exclude_characters("\0"),
             generators::integers::<i64>(),
             generators::booleans(),
             generators::binary().max_size(10),

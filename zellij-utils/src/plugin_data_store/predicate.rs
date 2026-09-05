@@ -2,8 +2,9 @@
 
 use crate::plugin_data::{AttrKind, DataError, DataValue, Pred};
 
+use super::dialect::Params;
 use super::schema::EntitySchema;
-use super::sql::{placeholders, qualify};
+use super::sql::qualify;
 
 /// Compile a predicate into a SQL fragment plus its bound parameters.
 pub(super) fn compile_pred(
@@ -11,7 +12,7 @@ pub(super) fn compile_pred(
     schema: &EntitySchema,
     table: &str,
     sql: &mut String,
-    params: &mut Vec<DataValue>,
+    params: &mut Params<'_>,
 ) -> Result<(), DataError> {
     /// `attr op ?`, with the value's kind checked against the column's.
     fn binary(
@@ -21,28 +22,29 @@ pub(super) fn compile_pred(
         op: &str,
         value: &DataValue,
         sql: &mut String,
-        params: &mut Vec<DataValue>,
+        params: &mut Params<'_>,
     ) -> Result<(), DataError> {
         schema.require_column(attr)?;
         check_value_kind(schema, attr, value)?;
-        sql.push_str(&format!("{} {} ?", qualify(table, attr), op));
-        params.push(value.clone());
+        let placeholder = params.bind(value.clone());
+        sql.push_str(&format!("{} {} {}", qualify(table, attr), op, placeholder));
         Ok(())
     }
 
-    /// `LIKE` with the pattern's wildcards escaped, so a literal `%` in the needle stays literal.
+    /// A pattern match with the pattern's wildcards escaped, so a literal `%` in the needle stays
+    /// literal.
     fn like(
         schema: &EntitySchema,
         table: &str,
         attr: &str,
         pattern: String,
         sql: &mut String,
-        params: &mut Vec<DataValue>,
+        params: &mut Params<'_>,
     ) -> Result<(), DataError> {
         schema.require_column(attr)?;
         require_text_column(schema, attr)?;
-        sql.push_str(&format!("{} LIKE ? ESCAPE '\\'", qualify(table, attr)));
-        params.push(DataValue::Text(pattern));
+        let placeholder = params.bind(DataValue::Text(pattern));
+        sql.push_str(&params.dialect().like(&qualify(table, attr), &placeholder));
         Ok(())
     }
 
@@ -58,9 +60,12 @@ pub(super) fn compile_pred(
             for value in values {
                 check_value_kind(schema, a, value)?;
             }
-            let placeholders = placeholders(values.len());
+            let placeholders = values
+                .iter()
+                .map(|value| params.bind(value.clone()))
+                .collect::<Vec<_>>()
+                .join(", ");
             sql.push_str(&format!("{} IN ({})", qualify(table, a), placeholders));
-            params.extend(values.iter().cloned());
         },
         Pred::IsNull(a) => {
             schema.require_column(a)?;
@@ -111,6 +116,9 @@ pub(super) fn compile_pred(
 }
 
 /// Escape the wildcards `LIKE` would otherwise interpret.
+///
+/// Backslash is the escape character on both engines: SQLite says so in the `ESCAPE` clause the
+/// dialect adds, and it is Postgres's default.
 pub(super) fn escape_like(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {

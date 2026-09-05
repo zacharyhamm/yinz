@@ -1,16 +1,15 @@
 //! Bringing a stored entity's table in line with a new definition.
 
-use rusqlite::Connection;
-
 use crate::plugin_data::{AttrDef, DataError, DataSchemaInfo, EntityDef};
 
-use super::index::{create_attr_indexes, drop_attr_indexes, drop_full_text, rebuild_full_text};
-use super::registry::{column_definition, schema_info};
+use super::ddl::{create_attr_indexes, drop_attr_indexes, drop_full_text, rebuild_full_text};
+use super::executor::Executor;
+use super::registry::{column_definition, schema_info, store_definition};
 use super::schema::EntitySchema;
-use super::sql::{quote_ident, storage_err, SqlContext};
+use super::sql::{quote_ident, StoreContext};
 
 pub(super) fn migrate_entity(
-    conn: &Connection,
+    exec: &mut dyn Executor,
     namespace: &str,
     owner_plugin: &str,
     existing: &EntitySchema,
@@ -73,14 +72,15 @@ pub(super) fn migrate_entity(
         .into_iter()
         .map(|a| a.name.as_str())
         .collect();
-    // The FTS table names the columns it indexes, so it has to be rebuilt whenever that set
-    // changes. It also has to come down *before* any column is dropped, because its triggers name
-    // those columns and SQLite revalidates every trigger on the table when one goes away.
+    // The full-text index names the columns it covers, so it has to be rebuilt whenever that set
+    // changes. It also has to come down *before* any column is dropped, because both engines
+    // refuse to drop a column it still names.
     let rebuild_needed = stored_ft != new_ft || !removed.is_empty();
     if rebuild_needed && !stored_ft.is_empty() {
-        drop_full_text(conn, existing)?;
+        drop_full_text(exec, existing)?;
     }
 
+    let dialect = exec.dialect();
     for attr in &def.attrs {
         match existing.attr(&attr.name) {
             Some(stored) if stored.kind != attr.kind => {
@@ -95,8 +95,8 @@ pub(super) fn migrate_entity(
                 // Indexes are cheap to add and drop, and doing so loses nothing, so they follow
                 // the declaration without needing permission.
                 if attr.indexed != stored.indexed || attr.unique != stored.unique {
-                    drop_attr_indexes(conn, existing, &attr.name)?;
-                    if create_attr_indexes(conn, existing, attr)? {
+                    drop_attr_indexes(exec, existing, &attr.name)?;
+                    if create_attr_indexes(exec, existing, attr)? {
                         info.indexes_created.push(attr.name.clone());
                     }
                 }
@@ -105,19 +105,19 @@ pub(super) fn migrate_entity(
                 if attr.required && attr.default.is_none() {
                     return Err(DataError::RefusedMigration(format!(
                         "attribute `{}` is being added to the existing entity `{}` as required, \
-                         but has no default; SQLite cannot add a NOT NULL column without one, and \
-                         the rows already stored would have nothing to put in it",
+                         but has no default; the store cannot add a NOT NULL column without one, \
+                         and the rows already stored would have nothing to put in it",
                         attr.name, def.name
                     )));
                 }
-                conn.execute_batch(&format!(
+                exec.execute_batch(&format!(
                     "ALTER TABLE {} ADD COLUMN {};",
                     quote_ident(&existing.table()),
-                    column_definition(attr)?
+                    column_definition(dialect, attr)?
                 ))
-                .with_ctx(|| format!("failed to add `{}`", attr.name))?;
+                .with_context(|| format!("failed to add `{}`", attr.name))?;
                 info.attrs_added.push(attr.name.clone());
-                if create_attr_indexes(conn, existing, attr)? {
+                if create_attr_indexes(exec, existing, attr)? {
                     info.indexes_created.push(attr.name.clone());
                 }
             },
@@ -125,13 +125,13 @@ pub(super) fn migrate_entity(
     }
 
     for attr in removed {
-        drop_attr_indexes(conn, existing, &attr.name)?;
-        conn.execute_batch(&format!(
+        drop_attr_indexes(exec, existing, &attr.name)?;
+        exec.execute_batch(&format!(
             "ALTER TABLE {} DROP COLUMN {};",
             quote_ident(&existing.table()),
             quote_ident(&attr.name)
         ))
-        .with_ctx(|| format!("failed to drop `{}`", attr.name))?;
+        .with_context(|| format!("failed to drop `{}`", attr.name))?;
     }
 
     let updated = EntitySchema {
@@ -140,15 +140,9 @@ pub(super) fn migrate_entity(
         owner_plugin: existing.owner_plugin.clone(),
     };
     if rebuild_needed {
-        info.full_text_rebuilt = rebuild_full_text(conn, &updated)?;
+        info.full_text_rebuilt = rebuild_full_text(exec, &updated)?;
     }
 
-    let definition = serde_json::to_string(def)
-        .map_err(|e| storage_err("failed to serialize the entity definition", e))?;
-    conn.execute(
-        "UPDATE store_entities SET version = ?1, definition = ?2 WHERE id = ?3",
-        rusqlite::params![def.version, definition, existing.row_id],
-    )
-    .ctx("failed to record the new definition")?;
+    store_definition(exec, existing.row_id, def)?;
     Ok(info)
 }

@@ -300,6 +300,27 @@ Run these commands from the repository root:
 The first build can take several minutes. The test uses `sudo` to create process-specific bridge,
 TAP and firewall resources, and removes them whether the test passes or fails.
 
+## Running the plugin-data store tests against Postgres
+
+The plugin data store (`zellij-utils/src/plugin_data_store/`) composes its SQL once and runs it
+on two engines, SQLite and Postgres. Its test files are included twice, once per engine, so the
+same suite proves both. The SQLite half runs under `cargo x test`; the Postgres half needs a
+server, sits behind the `postgres-tests` cargo feature, and runs here. Docker is the only
+requirement.
+
+Run these commands from the repository root:
+
+1. `cargo x postgres-test --build` starts `postgres:16-alpine` from `docker-compose.postgres.yml`
+   on `127.0.0.1:54329` and waits until it answers.
+2. `cargo x postgres-test --test` runs the suite with the feature on and
+   `ZELLIJ_PLUGIN_DATA_TEST_URL` set. Anything after `--` goes to nextest, so
+   `cargo x postgres-test --test -- -E 'test(/postgres::oracle/)'` runs one group.
+3. `cargo x postgres-test --clean` takes the container down.
+
+Every test creates a schema of its own and drops it afterwards, so the suite runs in parallel
+against the one database. `cargo x ci check` never needs the container: `cargo x lint` compiles
+the suite with `--all-features`, and `cargo x test` leaves the feature off.
+
 ## Debugging / Troubleshooting while developing
 Zellij uses the excellent [`log`](https://crates.io/crates/log) crate to handle its internal logging. The output of these logs will go to `/$temp_dir/zellij-<UID>/zellij-log/zellij.log` which `$temp_dir` refers to [std::env::temp_dir()](https://doc.rust-lang.org/std/env/fn.temp_dir.html). On most of operating systems it points to `/tmp`, but there are exceptions, such as `/var/folders/dr/xxxxxxxxxxxxxx/T/` for Mac.
 

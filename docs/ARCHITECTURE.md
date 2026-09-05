@@ -3,10 +3,23 @@ This document details the different components of the code base in plain English
 ## Data access
 
 The server constructs one host-only `DataAccess` provider and shares it with the plugin runtime
-and session recorder. Plugin data and recordings use backend-neutral synchronous interfaces;
-SQLite is the default and currently only backend. Its files, SQL migrations, transactions, FTS5
-indexes, and connection settings stay inside the concrete SQLite implementations. CLI recording
-commands construct the same default provider at their entrypoint.
+and session recorder. Plugin data and recordings use backend-neutral synchronous interfaces
+(`zellij-utils/src/data_access.rs`), and `DataAccess::from_backends` takes one backend for each.
+
+Plugin data has two real backends. SQLite is the default: one `plugin-data.db` in the data dir.
+Setting `plugin_data_url` to a `postgres://` URL (config file only, never the CLI or the client
+socket — it may carry a password) points the store at that database instead, in the schema
+named by `plugin_data_schema`, so every machine using it sees the same rows. Recordings stay in
+SQLite either way; `DataAccess::postgres` is the pairing.
+
+The two backends share one SQL engine (`zellij-utils/src/plugin_data_store/`): the predicate
+compiler, query builders, migrations and registry are written once against an `Executor`, and a
+`Dialect` names what the engines spell differently — placeholders, column types, `LIKE` versus
+`ILIKE`, and the full-text index (FTS5 with triggers on SQLite, a generated `tsvector` column
+with a GIN index on Postgres). Where the engines' defaults disagree — text collation, null
+ordering, NUL bytes in text — the store picks one behaviour and enforces it on both, and the
+store's test suite runs against both (`cargo x postgres-test`). CLI recording commands construct
+the default SQLite provider at their entrypoint.
 
 ## Screen (zellij-server/src/screen/)
 The Screen is responsible for managing the relationship between the panes currently displayed on screen.

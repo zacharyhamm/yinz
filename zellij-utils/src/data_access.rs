@@ -1,6 +1,9 @@
 //! Process-wide access to host-owned persistent data.
 //!
-//! Callers depend on these synchronous interfaces; SQLite is the default concrete backend.
+//! Callers depend on these synchronous interfaces. SQLite is the default concrete backend for
+//! both plugin data and recordings; plugin data can be pointed at Postgres instead with
+//! `plugin_data_url`, in which case recordings stay in SQLite — which is [`DataAccess::postgres`],
+//! and the reason [`DataAccess::from_backends`] takes two backends rather than one.
 
 use std::io::Write;
 use std::path::Path;
@@ -8,11 +11,14 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
+use crate::input::options::Options;
 use crate::plugin_data::{
     ApplyReport, DataEntityInfo, DataError, DataRows, DataSchemaInfo, EntityDef, FetchRequest,
     Mutation,
 };
-use crate::plugin_data_store::{PluginDataStore, SqlitePluginDataBackend};
+use crate::plugin_data_store::{
+    PluginDataStore, PostgresPluginDataBackend, SqlitePluginDataBackend,
+};
 use crate::session_recording::{
     PaneMetadata, RecordedEvent, RecordingSummary, SearchHit, SqliteRecordingBackend,
 };
@@ -55,6 +61,9 @@ pub trait RecordingBackend: Send + Sync {
     fn export(&self, recording_id: i64, output: &mut dyn Write) -> Result<()>;
 }
 
+/// The Postgres schema the plugin data store uses when `plugin_data_schema` is unset.
+pub const DEFAULT_PLUGIN_DATA_SCHEMA: &str = "zellij_plugin_data";
+
 /// The data backends shared by one server process.
 #[derive(Clone)]
 pub struct DataAccess {
@@ -75,6 +84,41 @@ impl DataAccess {
             Arc::new(SqlitePluginDataBackend::new(data_dir)),
             Arc::new(SqliteRecordingBackend::new(data_dir)),
         )
+    }
+
+    /// Plugin data in Postgres, recordings in the SQLite file under `data_dir`. Lazy: nothing
+    /// connects here, and a URL that does not parse is reported on first use.
+    pub fn postgres(url: &str, schema: &str, data_dir: &Path) -> Self {
+        Self::from_backends(
+            Arc::new(PostgresPluginDataBackend::new(url, schema)),
+            Arc::new(SqliteRecordingBackend::new(data_dir)),
+        )
+    }
+
+    /// The provider `Options::plugin_data_url` asks for: SQLite in the data dir when it is unset,
+    /// Postgres otherwise.
+    ///
+    /// Infallible on purpose. The server has no error path where it builds this, and both
+    /// backends already report a database they cannot open on first use — a bad URL surfaces as
+    /// a `DataError::Storage` exactly as an unwritable data dir does. What it never does is fall
+    /// back to SQLite: a typo in the URL must not quietly split plugin data across two stores.
+    pub fn from_options(options: &Options, data_dir: &Path) -> Self {
+        match options.plugin_data_url.as_deref() {
+            None => Self::sqlite(data_dir),
+            Some(url) => {
+                let schema = options
+                    .plugin_data_schema
+                    .as_deref()
+                    .unwrap_or(DEFAULT_PLUGIN_DATA_SCHEMA);
+                log::info!(
+                    "plugin data store: Postgres at {} schema `{}`; recordings stay in {:?}",
+                    crate::plugin_data_store::redact_url(url),
+                    schema,
+                    data_dir
+                );
+                Self::postgres(url, schema, data_dir)
+            },
+        }
     }
 
     /// Inject backends, primarily for hosts and tests that do not want SQLite.

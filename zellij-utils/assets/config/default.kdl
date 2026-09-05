@@ -611,6 +611,14 @@ load_plugins {
 // This option has an effect only when session_recording is true.
 // session_recording_input false
 
+// Where plugin data is stored. Unset (default): a SQLite file in the data dir.
+// A postgres:// URL stores plugin data in that database instead, so that every
+// machine using it sees the same rows; session recordings stay local either way.
+// The URL may carry a password, so keep this file private. TLS is not yet supported.
+// plugin_data_url "postgres://zellij:secret@127.0.0.1:5432/zellij"
+// The schema the store owns inside that database.
+// plugin_data_schema "zellij_plugin_data"
+
 // Whether pane viewports are serialized along with the session, default is false
 // (Requires restart)
 // Options:

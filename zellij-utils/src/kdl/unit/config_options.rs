@@ -329,6 +329,56 @@ fn session_recording_options_kdl_roundtrip() {
 }
 
 #[test]
+fn plugin_data_options_kdl_roundtrip() {
+    let fake_config = r#"
+        plugin_data_url "postgres://zellij:secret@127.0.0.1:5432/zellij"
+        plugin_data_schema "zellij_test"
+    "#;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    let options = Options::from_kdl(&document).unwrap();
+    assert_eq!(
+        options.plugin_data_url.as_deref(),
+        Some("postgres://zellij:secret@127.0.0.1:5432/zellij")
+    );
+    assert_eq!(options.plugin_data_schema.as_deref(), Some("zellij_test"));
+
+    let serialized = Options::to_kdl(&options, false);
+    let mut fake_document = KdlDocument::new();
+    let mut serialized_clone = serialized.clone();
+    fake_document.nodes_mut().append(&mut serialized_clone);
+    let reparsed =
+        Options::from_kdl(&fake_document.to_string().parse::<KdlDocument>().unwrap()).unwrap();
+    assert_eq!(reparsed.plugin_data_url, options.plugin_data_url);
+    assert_eq!(reparsed.plugin_data_schema, options.plugin_data_schema);
+
+    // Unset, neither is written out - not even as a commented template - so a serialized config
+    // never carries a database URL nobody put there.
+    let unset = Options::to_kdl(&Options::default(), true);
+    let mut doc = KdlDocument::new();
+    let mut unset_clone = unset.clone();
+    doc.nodes_mut().append(&mut unset_clone);
+    assert!(!doc.to_string().contains("plugin_data_url"));
+}
+
+#[test]
+fn plugin_data_options_reject_other_databases_and_bad_schema_names() {
+    for bad in [
+        "plugin_data_url \"sqlite:///tmp/x.db\"",
+        "plugin_data_url \"mysql://x/y\"",
+        "plugin_data_url \"/var/lib/zellij/plugin-data.db\"",
+        "plugin_data_schema \"Public\"",
+        "plugin_data_schema \"_private\"",
+        "plugin_data_schema \"zellij-data\"",
+    ] {
+        let document: KdlDocument = bad.parse().unwrap();
+        assert!(
+            Options::from_kdl(&document).is_err(),
+            "{bad} should have been rejected"
+        );
+    }
+}
+
+#[test]
 fn explicit_theme_hue_from_kdl() {
     let fake_config = r##"
         explicit_theme_hue "light"

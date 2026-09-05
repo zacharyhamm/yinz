@@ -1,9 +1,10 @@
-//! The SQLite engine behind the plugin data store.
+//! The engine behind the plugin data store, and the databases it runs on.
 //!
-//! Host-only: `rusqlite` cannot build for `wasm32-wasip1`, and even if it could, plugins run under
-//! `wasmi` — a pure interpreter with a 16 MiB linear memory configured to trap rather than fail
-//! when it can't grow. SQLite's page cache does not belong there. The types plugins speak in live
-//! in [`crate::plugin_data`], which is compiled for both sides; this module turns them into SQL.
+//! Host-only: neither `rusqlite` nor `postgres` builds for `wasm32-wasip1`, and even if they
+//! could, plugins run under `wasmi` — a pure interpreter with a 16 MiB linear memory configured to
+//! trap rather than fail when it can't grow. A database client does not belong there. The types
+//! plugins speak in live in [`crate::plugin_data`], which is compiled for both sides; this module
+//! turns them into SQL.
 //!
 //! # Layout
 //!
@@ -13,39 +14,58 @@
 //! boundary that keeps a plugin from writing SQL, and why every entry point runs it before
 //! composing anything.
 //!
-//! Full-text search uses an external-content FTS5 table kept in sync by triggers. That differs
-//! deliberately from [`crate::session_recording`], whose watermark table exists only because
-//! indexing terminal output needs a `vte` replay that cannot run inside a trigger. Here the
-//! indexed text is already a column, so triggers keep the index exact for free.
+//! # One engine, two databases
 //!
-//! # Modules
+//! The SQL is composed once. [`dialect`] names what SQLite and Postgres spell differently —
+//! placeholders, column types, the pattern-match operator, the full-text index — and
+//! [`executor`] is the one seam through which composed statements reach a driver. [`engine`]
+//! holds the five operations written against those two traits; [`predicate`], [`query`],
+//! [`write`], [`registry`], [`ddl`] and [`migrate`] are the composers it calls, and [`schema`]
+//! is what one entity looks like once read back and the source of every name derived from it.
+//! [`sqlite`] and [`postgres`] are the backends: each opens its database, wraps its connection in
+//! an executor, and answers the dialect's questions.
 //!
-//! [`registry`] owns the `store_entities` table and the file itself; [`schema`] is what one entity
-//! looks like once read back, and the source of every name derived from it; [`migrate`] brings a
-//! stored table in line with a new definition, with [`index`] maintaining the secondary and
-//! full-text indexes underneath it. [`predicate`] compiles a `Pred` to SQL, [`query`] builds and
-//! runs fetches around it, [`write`] applies mutations, and [`watch`] re-runs standing fetches.
-//! [`sql`] and [`value`] hold the quoting and the value conversions the rest of them share.
+//! [`watch`] re-runs standing fetches and never sees SQL at all.
+//!
+//! # Full text
+//!
+//! SQLite uses an external-content FTS5 table kept exact by triggers, ranked by `bm25`; Postgres
+//! uses a stored generated `tsvector` column with a GIN index, ranked by `ts_rank_cd`. A single
+//! word searches the same on both. The query languages differ past that — FTS5 has `AND`, `OR`,
+//! `NOT`, `NEAR` and `prefix*`; `websearch_to_tsquery` has quoted phrases, `OR` and `-term` —
+//! and a plugin that leans on either is tied to that engine. FTS5 rejects unbalanced quotes,
+//! which the store retries as a literal phrase; Postgres accepts anything.
+//!
+//! # Where the engines are made to agree
+//!
+//! Text is compared and ordered byte-wise on both (Postgres columns carry `COLLATE "C"`), a
+//! prefix or substring match folds ASCII case on both (`LIKE` on SQLite, `ILIKE` on Postgres),
+//! nulls sort first ascending and last descending on both (spelled out, since the engines'
+//! defaults are opposite), and a NUL byte in text is rejected on both before it reaches either,
+//! because Postgres cannot store one.
 
-mod index;
+mod ddl;
+mod dialect;
+mod engine;
+mod executor;
 mod migrate;
+mod postgres;
 mod predicate;
 mod query;
 mod registry;
 mod schema;
 mod sql;
+mod sqlite;
 mod value;
 mod watch;
 mod write;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
-
-use rusqlite::{Connection, TransactionBehavior};
 
 use crate::data::ClientId;
 use crate::data_access::PluginDataBackend;
@@ -54,19 +74,11 @@ use crate::plugin_data::{
     FetchRequest, Mutation, WatchMode,
 };
 
-use self::migrate::migrate_entity;
-use self::query::{build_count_sql, run_fetch_with_search_fallback, with_search_fallback};
-use self::registry::{catalog, create_entity, load_entity, open_db, require_entity};
-use self::schema::EntitySchema;
-use self::sql::SqlContext;
-use self::value::now_ms;
 use self::watch::{apply_watch_mode, WatchRegistry};
-use self::write::apply_one;
 
+pub use self::postgres::{redact_url, PostgresPluginDataBackend};
+pub use self::sqlite::SqlitePluginDataBackend;
 pub use self::watch::WatchChange;
-
-/// Filename under the zellij data dir.
-const DB_FILENAME: &str = "plugin-data.db";
 
 /// What a batch of mutations did, plus which entities it touched.
 ///
@@ -105,188 +117,6 @@ pub fn private_namespace(plugin_url: &str) -> String {
 #[cfg(test)]
 pub(crate) fn is_shared_namespace(namespace: &str) -> bool {
     namespace.starts_with(crate::plugin_data::SHARED_NAMESPACE_PREFIX)
-}
-
-/// The SQLite plugin-data backend. It opens its database lazily on first use.
-pub struct SqlitePluginDataBackend {
-    db_path: PathBuf,
-    connection: Mutex<Option<Connection>>,
-}
-
-impl std::fmt::Debug for SqlitePluginDataBackend {
-    /// Shows the path and whether the file has been opened. Deliberately does not touch the
-    /// connection mutex: this is reached through `LoadingContext`'s derived `Debug`, and a
-    /// formatter that can block on a lock held by a running query is a hazard in a log line.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SqlitePluginDataBackend")
-            .field("db_path", &self.db_path)
-            .field(
-                "open",
-                &self
-                    .connection
-                    .try_lock()
-                    .map(|guard| guard.is_some())
-                    .unwrap_or(true),
-            )
-            .finish()
-    }
-}
-
-impl SqlitePluginDataBackend {
-    /// Point the store at a data dir. Opens nothing.
-    pub fn new(data_dir: &Path) -> Self {
-        Self {
-            db_path: data_dir.join(DB_FILENAME),
-            connection: Mutex::new(None),
-        }
-    }
-
-    /// Run `f` against the connection, opening it on first use.
-    ///
-    /// One connection behind one mutex. Handlers run on the calling plugin's pinned executor
-    /// thread where blocking is expected, and the alternative — a connection per thread — would
-    /// multiply the writers contending for the same file without making any single call faster.
-    fn with_conn<T>(
-        &self,
-        f: impl FnOnce(&mut Connection) -> Result<T, DataError>,
-    ) -> Result<T, DataError> {
-        let mut guard = self
-            .connection
-            .lock()
-            .map_err(|_| DataError::Storage("the plugin data store lock is poisoned".to_owned()))?;
-        if guard.is_none() {
-            *guard = Some(open_db(&self.db_path)?);
-        }
-        let conn = guard
-            .as_mut()
-            .ok_or_else(|| DataError::Storage("the plugin data store is not open".to_owned()))?;
-        f(conn)
-    }
-    // ---------------------------------------------------------------- schema
-
-    /// Declare an entity, creating or migrating its table to match.
-    ///
-    /// Idempotent: re-declaring an identical definition touches nothing. The host diffs the stored
-    /// definition against this one rather than comparing versions, so a plugin that forgets to bump
-    /// `version` still gets its new attributes.
-    pub fn define_entity(
-        &self,
-        namespace: &str,
-        owner_plugin: &str,
-        def: &EntityDef,
-        allow_destructive: bool,
-    ) -> Result<DataSchemaInfo, DataError> {
-        self.with_conn(|conn| {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .ctx("failed to begin a schema transaction")?;
-            let info = match load_entity(&tx, namespace, &def.name)? {
-                Some(existing) => migrate_entity(
-                    &tx,
-                    namespace,
-                    owner_plugin,
-                    &existing,
-                    def,
-                    allow_destructive,
-                )?,
-                None => create_entity(&tx, namespace, owner_plugin, def)?,
-            };
-            tx.commit().ctx("failed to commit the schema change")?;
-            Ok(info)
-        })
-    }
-
-    /// Every entity the store holds, or only those of one namespace.
-    ///
-    /// The seam behind `DataCatalog`. Filtering to what a plugin may see is the caller's job:
-    /// this is the engine, and it has no idea who is asking.
-    pub fn catalog(&self, namespace: Option<&str>) -> Result<Vec<DataEntityInfo>, DataError> {
-        self.with_conn(|conn| catalog(conn, namespace))
-    }
-
-    // ----------------------------------------------------------------- reads
-
-    /// Run a fetch.
-    pub fn fetch(&self, namespace: &str, request: &FetchRequest) -> Result<DataRows, DataError> {
-        self.with_conn(|conn| {
-            let schema = require_entity(conn, namespace, &request.entity)?;
-            run_fetch_with_search_fallback(conn, &schema, request)
-        })
-    }
-
-    /// Count the rows a fetch would match, ignoring its limit, offset and cursor.
-    pub fn count(&self, namespace: &str, request: &FetchRequest) -> Result<u64, DataError> {
-        self.with_conn(|conn| {
-            let schema = require_entity(conn, namespace, &request.entity)?;
-            with_search_fallback(request, |search| {
-                let (sql, params) = build_count_sql(&schema, request, search)?;
-                let count: i64 = conn
-                    .query_row(&sql, rusqlite::params_from_iter(params.iter()), |row| {
-                        row.get(0)
-                    })
-                    .ctx("failed to count rows")?;
-                Ok(count.max(0) as u64)
-            })
-        })
-    }
-
-    // ---------------------------------------------------------------- writes
-
-    /// Apply a batch of mutations in one transaction, all or nothing.
-    pub fn apply(&self, namespace: &str, mutations: &[Mutation]) -> Result<ApplyReport, DataError> {
-        if mutations.is_empty() {
-            return Ok(ApplyReport::default());
-        }
-        self.with_conn(|conn| {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .ctx("failed to begin a write transaction")?;
-            let now = now_ms();
-            let mut report = ApplyReport::default();
-            // Schemas are looked up once per entity per batch. Not cached across calls: another
-            // zellij server sharing this file could have migrated an entity since, and one
-            // indexed lookup is nothing beside the wasm and protobuf hops this call already cost.
-            let mut schemas: BTreeMap<String, EntitySchema> = BTreeMap::new();
-            for mutation in mutations {
-                let entity = mutation.entity();
-                if !schemas.contains_key(entity) {
-                    schemas.insert(entity.to_owned(), require_entity(&tx, namespace, entity)?);
-                }
-                let schema = &schemas[entity];
-                apply_one(&tx, schema, mutation, now, &mut report)?;
-            }
-            tx.commit().ctx("failed to commit the write")?;
-            Ok(report)
-        })
-    }
-}
-
-impl PluginDataBackend for SqlitePluginDataBackend {
-    fn define_entity(
-        &self,
-        namespace: &str,
-        owner_plugin: &str,
-        def: &EntityDef,
-        allow_destructive: bool,
-    ) -> Result<DataSchemaInfo, DataError> {
-        self.define_entity(namespace, owner_plugin, def, allow_destructive)
-    }
-
-    fn catalog(&self, namespace: Option<&str>) -> Result<Vec<DataEntityInfo>, DataError> {
-        self.catalog(namespace)
-    }
-
-    fn fetch(&self, namespace: &str, request: &FetchRequest) -> Result<DataRows, DataError> {
-        self.fetch(namespace, request)
-    }
-
-    fn count(&self, namespace: &str, request: &FetchRequest) -> Result<u64, DataError> {
-        self.count(namespace, request)
-    }
-
-    fn apply(&self, namespace: &str, mutations: &[Mutation]) -> Result<ApplyReport, DataError> {
-        self.apply(namespace, mutations)
-    }
 }
 
 /// Public plugin-data façade. Validation and watches do not depend on the storage backend.

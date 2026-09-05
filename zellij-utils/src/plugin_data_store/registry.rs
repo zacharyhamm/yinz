@@ -1,86 +1,43 @@
-//! The `store_entities` registry: the file it lives in, and the tables it names.
+//! The `store_entities` registry: the rows that name every entity table.
 //!
 //! An entity's table is `e_<row_id>`, named after its row here, so the table can only be created
 //! once the row exists — and so no plugin-supplied string is ever interpolated into a table name.
+//! Each backend creates the registry table itself when it opens its database; what is here is
+//! everything that reads and writes it afterwards, which the engines share.
 
-use std::path::Path;
+use crate::plugin_data::{
+    AttrDef, AttrKind, DataEntityInfo, DataError, DataSchemaInfo, DataValue, EntityDef,
+};
 
-use rusqlite::{Connection, OptionalExtension};
-
-use crate::plugin_data::{AttrDef, DataEntityInfo, DataError, DataSchemaInfo, EntityDef};
-
-use super::index::{create_attr_indexes, rebuild_full_text};
+use super::ddl::{create_attr_indexes, create_table, rebuild_full_text};
+use super::dialect::{Dialect, Params};
+use super::executor::{query_all, query_first, Executor};
 use super::schema::EntitySchema;
-use super::sql::{quote_ident, storage_err, SqlContext};
-use super::value::sql_literal;
-
-/// Open the store's file, set its pragmas, and make sure the registry table exists.
-pub(super) fn open_db(db_path: &Path) -> Result<Connection, DataError> {
-    if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| storage_err(&format!("failed to create {:?}", parent), e))?;
-    }
-    let conn = Connection::open(db_path).with_ctx(|| format!("failed to open {:?}", db_path))?;
-    // The same pragma set as the recording store. WAL and a busy timeout matter more here than
-    // there: this file lives in the data dir rather than a session cache dir, so two zellij
-    // servers running at once share it.
-    conn.pragma_update(None, "journal_mode", "WAL")
-        .ctx("failed to enable WAL")?;
-    conn.pragma_update(None, "busy_timeout", 5000)
-        .ctx("failed to set busy_timeout")?;
-    conn.pragma_update(None, "foreign_keys", "ON")
-        .ctx("failed to enable foreign keys")?;
-    conn.pragma_update(None, "synchronous", "NORMAL")
-        .ctx("failed to set synchronous")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(metadata) = std::fs::metadata(db_path) {
-            let mut perms = metadata.permissions();
-            perms.set_mode(0o600);
-            let _ = std::fs::set_permissions(db_path, perms);
-        }
-    }
-    conn.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS store_entities (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            namespace TEXT NOT NULL,
-            entity TEXT NOT NULL,
-            version INTEGER NOT NULL,
-            definition TEXT NOT NULL,
-            owner_plugin TEXT NOT NULL,
-            UNIQUE(namespace, entity)
-        );
-        "#,
-    )
-    .ctx("failed to create the entity registry")?;
-    Ok(conn)
-}
+use super::sql::{storage_err, StoreContext};
 
 pub(super) fn load_entity(
-    conn: &Connection,
+    exec: &mut dyn Executor,
     namespace: &str,
     entity: &str,
 ) -> Result<Option<EntitySchema>, DataError> {
-    let row = conn
-        .query_row(
-            "SELECT id, definition, owner_plugin FROM store_entities
-             WHERE namespace = ?1 AND entity = ?2",
-            rusqlite::params![namespace, entity],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            },
-        )
-        .optional()
-        .ctx("failed to read the entity registry")?;
-    let Some((row_id, definition, owner_plugin)) = row else {
+    let mut params = Params::new(exec.dialect());
+    let ns = params.bind(DataValue::Text(namespace.to_owned()));
+    let name = params.bind(DataValue::Text(entity.to_owned()));
+    let sql = format!(
+        "SELECT id, definition, owner_plugin FROM store_entities WHERE namespace = {} AND entity = {}",
+        ns, name
+    );
+    let row = query_first(
+        exec,
+        &sql,
+        &params.into_values(),
+        &[AttrKind::Int, AttrKind::Text, AttrKind::Text],
+    )
+    .context("failed to read the entity registry")?;
+    let Some(row) = row else {
         return Ok(None);
     };
+    let (row_id, definition, owner_plugin) = registry_row(row)?;
     let def: EntityDef = serde_json::from_str(&definition).map_err(|e| {
         storage_err(
             &format!("the stored definition of `{}` is unreadable", entity),
@@ -100,30 +57,51 @@ pub(super) fn load_entity(
 /// catalog is what a plugin reaches for when something is already wrong, and one unreadable row
 /// should not hide the rest of them.
 pub(super) fn catalog(
-    conn: &Connection,
+    exec: &mut dyn Executor,
     namespace: Option<&str>,
 ) -> Result<Vec<DataEntityInfo>, DataError> {
-    let mut statement = conn
-        .prepare(
-            "SELECT namespace, entity, definition, owner_plugin FROM store_entities
-             WHERE (?1 IS NULL OR namespace = ?1)
-             ORDER BY namespace, entity",
-        )
-        .ctx("failed to prepare the entity listing")?;
-    let rows = statement
-        .query_map(rusqlite::params![namespace], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })
-        .ctx("failed to list the entity registry")?;
+    let mut params = Params::new(exec.dialect());
+    // Two statements rather than `(?1 IS NULL OR namespace = ?1)`: Postgres cannot infer the type
+    // of a parameter that is only ever compared with NULL.
+    let filter = match namespace {
+        Some(namespace) => format!(
+            "WHERE namespace = {}",
+            params.bind(DataValue::Text(namespace.to_owned()))
+        ),
+        None => String::new(),
+    };
+    let sql = format!(
+        "SELECT namespace, entity, definition, owner_plugin FROM store_entities {} \
+         ORDER BY namespace, entity",
+        filter
+    );
+    let rows = query_all(
+        exec,
+        &sql,
+        &params.into_values(),
+        &[
+            AttrKind::Text,
+            AttrKind::Text,
+            AttrKind::Text,
+            AttrKind::Text,
+        ],
+    )
+    .context("failed to list the entity registry")?;
     let mut entities = Vec::new();
     for row in rows {
-        let (namespace, entity, definition, owner_plugin) =
-            row.ctx("failed to read an entity registry row")?;
+        let mut texts = row.into_iter().map(|value| match value {
+            DataValue::Text(s) => Ok(s),
+            other => Err(DataError::Storage(format!(
+                "the entity registry holds {:?} where text was expected",
+                other
+            ))),
+        });
+        let (namespace, entity, definition, owner_plugin) = (
+            texts.next().transpose()?.unwrap_or_default(),
+            texts.next().transpose()?.unwrap_or_default(),
+            texts.next().transpose()?.unwrap_or_default(),
+            texts.next().transpose()?.unwrap_or_default(),
+        );
         match serde_json::from_str::<EntityDef>(&definition) {
             Ok(def) => entities.push(DataEntityInfo {
                 namespace,
@@ -142,11 +120,11 @@ pub(super) fn catalog(
 }
 
 pub(super) fn require_entity(
-    conn: &Connection,
+    exec: &mut dyn Executor,
     namespace: &str,
     entity: &str,
 ) -> Result<EntitySchema, DataError> {
-    load_entity(conn, namespace, entity)?.ok_or_else(|| {
+    load_entity(exec, namespace, entity)?.ok_or_else(|| {
         DataError::UnknownEntity(format!(
             "`{}` has not been declared in namespace `{}`; call define_entity first",
             entity, namespace
@@ -155,58 +133,70 @@ pub(super) fn require_entity(
 }
 
 pub(super) fn create_entity(
-    conn: &Connection,
+    exec: &mut dyn Executor,
     namespace: &str,
     owner_plugin: &str,
     def: &EntityDef,
 ) -> Result<DataSchemaInfo, DataError> {
     let definition = serde_json::to_string(def)
         .map_err(|e| storage_err("failed to serialize the entity definition", e))?;
-    conn.execute(
-        "INSERT INTO store_entities (namespace, entity, version, definition, owner_plugin)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![namespace, def.name, def.version, definition, owner_plugin],
-    )
-    .ctx("failed to register the entity")?;
+    let mut params = Params::new(exec.dialect());
+    let values = [
+        params.bind(DataValue::Text(namespace.to_owned())),
+        params.bind(DataValue::Text(def.name.clone())),
+        params.bind(DataValue::Int(def.version as i64)),
+        params.bind(DataValue::Text(definition)),
+        params.bind(DataValue::Text(owner_plugin.to_owned())),
+    ];
+    let sql = format!(
+        "INSERT INTO store_entities (namespace, entity, version, definition, owner_plugin) \
+         VALUES ({}) RETURNING id",
+        values.join(", ")
+    );
+    let row_id = exec
+        .query_i64(&sql, &params.into_values())
+        .context("failed to register the entity")?;
     // The table is named after the registry row, so it can only be created once the row exists.
     let schema = EntitySchema {
-        row_id: conn.last_insert_rowid(),
+        row_id,
         def: def.clone(),
         owner_plugin: owner_plugin.to_owned(),
     };
-    let table = schema.table();
-    let mut columns = vec![
-        "id INTEGER PRIMARY KEY AUTOINCREMENT".to_owned(),
-        "uid TEXT UNIQUE".to_owned(),
-        "created_at INTEGER NOT NULL".to_owned(),
-        "updated_at INTEGER NOT NULL".to_owned(),
-    ];
-    for attr in &def.attrs {
-        columns.push(column_definition(attr)?);
-    }
-    let table_q = quote_ident(&table);
-    conn.execute_batch(&format!("CREATE TABLE {table_q} ({});", columns.join(", ")))
-        .with_ctx(|| format!("failed to create the table for `{}`", def.name))?;
-    // Always indexed, because every list, sync and paginate query orders or filters on them.
-    let [created_idx, updated_idx] = schema.timestamp_indexes().map(|i| quote_ident(&i));
-    conn.execute_batch(&format!(
-        "CREATE INDEX {created_idx} ON {table_q}(created_at);
-         CREATE INDEX {updated_idx} ON {table_q}(updated_at);"
-    ))
-    .ctx("failed to create the timestamp indexes")?;
+    create_table(exec, &schema)?;
 
     let mut indexes_created = Vec::new();
     for attr in &def.attrs {
-        if create_attr_indexes(conn, &schema, attr)? {
+        if create_attr_indexes(exec, &schema, attr)? {
             indexes_created.push(attr.name.clone());
         }
     }
-    let full_text_rebuilt = rebuild_full_text(conn, &schema)?;
+    let full_text_rebuilt = rebuild_full_text(exec, &schema)?;
     Ok(DataSchemaInfo {
         indexes_created,
         full_text_rebuilt,
         ..schema_info(namespace, def, true)
     })
+}
+
+/// Record a migrated definition against its registry row.
+pub(super) fn store_definition(
+    exec: &mut dyn Executor,
+    row_id: i64,
+    def: &EntityDef,
+) -> Result<(), DataError> {
+    let definition = serde_json::to_string(def)
+        .map_err(|e| storage_err("failed to serialize the entity definition", e))?;
+    let mut params = Params::new(exec.dialect());
+    let version = params.bind(DataValue::Int(def.version as i64));
+    let definition = params.bind(DataValue::Text(definition));
+    let id = params.bind(DataValue::Int(row_id));
+    let sql = format!(
+        "UPDATE store_entities SET version = {}, definition = {} WHERE id = {}",
+        version, definition, id
+    );
+    exec.execute(&sql, &params.into_values())
+        .context("failed to record the new definition")?;
+    Ok(())
 }
 
 /// An empty report for one entity, for `create_entity` and `migrate_entity` to fill in.
@@ -224,13 +214,43 @@ pub(super) fn schema_info(namespace: &str, def: &EntityDef, created: bool) -> Da
     }
 }
 
-pub(super) fn column_definition(attr: &AttrDef) -> Result<String, DataError> {
-    let mut sql = format!("{} {}", quote_ident(&attr.name), attr.kind.sql_type());
+pub(super) fn column_definition(
+    dialect: &dyn Dialect,
+    attr: &AttrDef,
+) -> Result<String, DataError> {
+    let mut sql = format!(
+        "{} {}",
+        super::sql::quote_ident(&attr.name),
+        dialect.column_type(attr.kind)
+    );
     if attr.required {
         sql.push_str(" NOT NULL");
     }
     if let Some(default) = &attr.default {
-        sql.push_str(&format!(" DEFAULT {}", sql_literal(default)?));
+        sql.push_str(&format!(" DEFAULT {}", dialect.literal(default)?));
     }
     Ok(sql)
+}
+
+fn registry_row(row: Vec<DataValue>) -> Result<(i64, String, String), DataError> {
+    let mut values = row.into_iter();
+    let unexpected = |what: &str, value: Option<DataValue>| {
+        DataError::Storage(format!(
+            "the entity registry holds {:?} where {} was expected",
+            value, what
+        ))
+    };
+    let row_id = match values.next() {
+        Some(DataValue::Int(id)) => id,
+        other => return Err(unexpected("an id", other)),
+    };
+    let definition = match values.next() {
+        Some(DataValue::Text(s)) => s,
+        other => return Err(unexpected("a definition", other)),
+    };
+    let owner_plugin = match values.next() {
+        Some(DataValue::Text(s)) => s,
+        other => return Err(unexpected("an owner", other)),
+    };
+    Ok((row_id, definition, owner_plugin))
 }

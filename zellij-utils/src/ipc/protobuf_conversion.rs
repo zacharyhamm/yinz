@@ -863,6 +863,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             // Not on the wire: the server reads this straight out of the config
             // file it loads itself, and it has no per-invocation CLI form.
             detachable_panes: None,
+            // Likewise, and the URL may carry a database password.
+            plugin_data_url: None,
+            plugin_data_schema: None,
             pane_frames: options.pane_frames,
             pane_frame_style: options.pane_frame_style.as_deref().and_then(|s| match s {
                 "full" => Some(crate::input::options::PaneFrameStyle::Full),

@@ -1,8 +1,8 @@
 //! What the store knows about one entity, and the names it derives from that.
 //!
-//! Every name an entity's storage goes by — its table, its FTS table, its per-attribute indexes —
-//! is derived from the registry row id here, so the `e_<row_id>` scheme is stated in one place and
-//! no plugin-supplied string reaches a table name.
+//! Every name an entity's storage goes by — its table, its full-text index, its per-attribute
+//! indexes — is derived from the registry row id here, so the `e_<row_id>` scheme is stated in one
+//! place and no plugin-supplied string reaches a table name.
 
 use crate::plugin_data::{AttrDef, AttrKind, DataError, EntityDef};
 
@@ -22,7 +22,21 @@ impl EntitySchema {
         format!("e_{}", self.row_id)
     }
 
+    /// SQLite's external-content FTS5 table.
     pub(super) fn fts_table(&self) -> String {
+        format!("e_{}_fts", self.row_id)
+    }
+
+    /// Postgres's generated `tsvector` column on the entity table itself.
+    ///
+    /// The leading underscore is what keeps it out of a plugin's way: `validate_name` requires an
+    /// attribute to start with a lowercase letter, so no declared attribute can take this name.
+    pub(super) fn fts_column(&self) -> &'static str {
+        "_fts"
+    }
+
+    /// The GIN index over [`EntitySchema::fts_column`].
+    pub(super) fn fts_index(&self) -> String {
         format!("e_{}_fts", self.row_id)
     }
 
@@ -43,7 +57,8 @@ impl EntitySchema {
         ]
     }
 
-    /// The three triggers that keep the full-text index exact, after insert, delete and update.
+    /// The three triggers that keep SQLite's full-text index exact, after insert, delete and
+    /// update.
     pub(super) fn fts_triggers(&self) -> [String; 3] {
         [
             format!("e_{}_fts_ai", self.row_id),

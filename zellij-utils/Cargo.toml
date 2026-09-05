@@ -58,6 +58,8 @@ humantime = { workspace = true }
 suggest = { workspace = true }
 names = { workspace = true }
 rusqlite = { version = "0.30", default-features = false, features = ["bundled"] }
+postgres = { version = "0.19", default-features = false }
+bytes = { version = "1", default-features = false }
 notify = { workspace = true }
 mlua = { workspace = true }
 vte = { workspace = true }
@@ -72,4 +74,7 @@ hegeltest = "0.29.3"
 
 [features]
 unstable = []
+# The plugin-data store suite against a real Postgres, run by `cargo x postgres-test`. Off by
+# default so `cargo x test` never needs docker; `cargo x lint --all-features` still compiles it.
+postgres-tests = []
 vendored_curl = ["isahc/static-curl", "dep:openssl-sys", "dep:curl-sys"]

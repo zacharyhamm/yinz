@@ -200,3 +200,42 @@ fn a_blob_round_trips() {
     let rows = store.fetch(NS, &FetchRequest::entity("raw")).unwrap();
     assert_eq!(column(&rows, "bytes"), vec![DataValue::Blob(payload)]);
 }
+
+/// The engines' defaults are opposite (SQLite puts nulls first ascending, Postgres last), so the
+/// store says which it means. SQLite's is the one kept, and a plugin paging through a sorted set
+/// sees the same order wherever its data lives.
+#[test]
+fn nulls_sort_first_ascending_and_last_descending() {
+    let (store, _dir) = store();
+    let def = EntityDef::new("row", 1).attr(AttrDef::int("n"));
+    store.define_entity(NS, OWNER, &def, false).unwrap();
+    store
+        .apply(
+            NS,
+            &[
+                Mutation::put("row").set("n", 2i64).build(),
+                Mutation::put("row").set("n", DataValue::Null).build(),
+                Mutation::put("row").set("n", 1i64).build(),
+            ],
+        )
+        .unwrap();
+    let ordered = |dir: SortDir| {
+        column(
+            &store
+                .fetch(
+                    NS,
+                    &FetchRequest::entity("row").select(["n"]).sort_by("n", dir),
+                )
+                .unwrap(),
+            "n",
+        )
+    };
+    assert_eq!(
+        ordered(SortDir::Asc),
+        vec![DataValue::Null, DataValue::Int(1), DataValue::Int(2)]
+    );
+    assert_eq!(
+        ordered(SortDir::Desc),
+        vec![DataValue::Int(2), DataValue::Int(1), DataValue::Null]
+    );
+}

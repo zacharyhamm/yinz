@@ -1,0 +1,43 @@
+# The database the plugin-data store suite runs against a second time.
+#
+# Separate from `docker-compose.yml` (the e2e suite) and
+# `docker-compose.remote-panes.yml` (the remote-pane suite) on purpose: the
+# three are unrelated, and each should come up and down without touching the
+# others. `cargo x postgres-test --build` brings this one up under its own
+# compose project name; `--clean` takes it down.
+#
+# Tuned for throwaway test data, not durability: the data directory is a
+# tmpfs and the write-ahead settings trade crash safety for speed. Every test
+# creates a schema of its own and drops it afterwards, so nextest's
+# one-process-per-test runs the suite in parallel — hence `max_connections`
+# well above the default 100.
+---
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: zellij-postgres-test
+    command:
+      - postgres
+      - -c
+      - max_connections=300
+      - -c
+      - fsync=off
+      - -c
+      - synchronous_commit=off
+      - -c
+      - full_page_writes=off
+    environment:
+      POSTGRES_USER: zellij
+      POSTGRES_PASSWORD: zellij
+      POSTGRES_DB: zellij_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    ports:
+      # As `xtask/src/postgres_test.rs` expects it. A port of our own, so a
+      # developer's local Postgres on 5432 is neither needed nor disturbed.
+      - "127.0.0.1:54329:5432/tcp"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zellij -d zellij_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 30

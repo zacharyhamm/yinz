@@ -563,6 +563,8 @@ fn test_client_messages() {
                 mouse_mode: Some(true),
                 // Intentionally not carried over the wire; see the field's docs.
                 detachable_panes: None,
+                plugin_data_url: None,
+                plugin_data_schema: None,
                 firecracker_provider: None,
                 firecracker_provider_timeout_secs: None,
                 pane_frames: Some(true),
