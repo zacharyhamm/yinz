@@ -5773,6 +5773,51 @@ fn permissions_awaitable_resolves_with_the_answer() {
 }
 
 #[test]
+fn concurrent_permission_awaitables_are_dispatched_and_resolved_in_order() {
+    for (first, second) in [
+        (
+            zellij_utils::data::PermissionStatus::Granted,
+            zellij_utils::data::PermissionStatus::Denied,
+        ),
+        (
+            zellij_utils::data::PermissionStatus::Denied,
+            zellij_utils::data::PermissionStatus::Granted,
+        ),
+    ] {
+        let mut plugin = task_plugin(
+            r#"
+            zellij.request_permission = function(permissions) log("ask:" .. permissions[1]) end
+            zellij.task(function()
+              local answer = zellij.await(zellij.async.permissions { "run_commands" })
+              log("first:" .. answer)
+            end)
+            zellij.task(function()
+              local answer = zellij.await(zellij.async.permissions { "read_files" })
+              log("second:" .. answer)
+            end)
+            "#,
+        );
+        assert_eq!(logged(&mut plugin), "ask:run_commands");
+
+        plugin
+            .update(&Event::PermissionRequestResult(first))
+            .unwrap();
+        assert_eq!(
+            logged(&mut plugin),
+            format!("ask:run_commands ask:read_files first:{first:?}")
+        );
+
+        plugin
+            .update(&Event::PermissionRequestResult(second))
+            .unwrap();
+        assert_eq!(
+            logged(&mut plugin),
+            format!("ask:run_commands ask:read_files first:{first:?} second:{second:?}")
+        );
+    }
+}
+
+#[test]
 fn agent_send_writes_a_bracketed_paste_then_enter() {
     let mut plugin = load_permitted(
         r#"
@@ -5808,6 +5853,33 @@ fn agent_event(pane_id: u32, hook: &str, state: Option<zellij_utils::data::Agent
         raw: "{}".to_owned(),
         ..Default::default()
     })
+}
+
+#[test]
+fn a_failing_agent_listener_does_not_strand_later_listeners() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = { log = {} }
+        function M.load()
+          zellij.agent.on(function() error("first listener broke") end)
+          zellij.agent.on(function(event) table.insert(M.log, event.hook) end)
+        end
+        function M.render() return table.concat(M.log, " ") end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+
+    let error = plugin
+        .update(&agent_event(7, "Stop", None))
+        .expect_err("the first listener's error is the entrypoint error");
+    assert!(
+        format!("{error:#}").contains("first listener broke"),
+        "{error:#}"
+    );
+    assert_eq!(logged(&mut plugin), "Stop");
 }
 
 #[test]

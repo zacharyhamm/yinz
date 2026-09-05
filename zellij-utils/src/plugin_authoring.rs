@@ -602,6 +602,41 @@ fn attribute_name(lexed: &Lexed, entry: Range<usize>) -> Option<(usize, &str)> {
     literal_value(lexed, entry.clone(), "name").or_else(|| lexed.strings_in(entry).next())
 }
 
+/// Whether a call runs before an ordinary callback can wait for a first permission grant.
+fn data_call_runs_during_load(code: &str, call_at: usize) -> bool {
+    let mut blocks = Vec::new();
+    let mut pending_do = 0usize;
+    for (at, word) in words(&code[..call_at]) {
+        match word {
+            "function" => {
+                let is_load = definition(code, at).is_some_and(|definition| {
+                    definition
+                        .text
+                        .split('(')
+                        .next()
+                        .unwrap_or_default()
+                        .split_whitespace()
+                        .map(|word| word.trim_end_matches('='))
+                        .any(|word| word.rsplit(['.', ':']).next() == Some("load"))
+                });
+                blocks.push(Some(is_load));
+            },
+            "if" | "repeat" => blocks.push(None),
+            "for" | "while" => {
+                blocks.push(None);
+                pending_do += 1;
+            },
+            "do" if pending_do > 0 => pending_do -= 1,
+            "do" => blocks.push(None),
+            "end" | "until" => {
+                blocks.pop();
+            },
+            _ => {},
+        }
+    }
+    blocks.iter().rev().find_map(|block| *block).unwrap_or(true)
+}
+
 // Definitions ------------------------------------------------------------------------------
 
 /// A named function's opening: where its statement starts (`local` included) and its signature
@@ -961,9 +996,22 @@ pub fn lint(name: &str, source: &str) -> Vec<String> {
         ));
     }
 
+    let calls = data_calls(&lexed);
+    if let Some((at, _)) = calls
+        .iter()
+        .find(|(at, _)| data_call_runs_during_load(&lexed.code, *at))
+    {
+        out.push(say(
+            *at,
+            "an uncached first load must await `zellij.async.permissions` before a data call; \
+             cached grants take effect synchronously, but cannot make this first load safe."
+                .to_owned(),
+        ));
+    }
+
     let mut uses_data = false;
     let mut said_shared = false;
-    for (at, arguments) in data_calls(&lexed) {
+    for (at, arguments) in calls {
         uses_data = true;
         let named = literal_value(&lexed, arguments.clone(), "namespace");
         let positional = match lexed.code[at..].starts_with("data.apply") {
@@ -1138,6 +1186,50 @@ end)
                 .any(|found| found.contains("shared_plugin_data")),
             "{:?}",
             lint("todo-pane", &granted)
+        );
+    }
+
+    #[test]
+    fn data_calls_during_initial_load_explain_permission_cache_semantics() {
+        for source in [
+            r#"
+zellij.request_permission { "plugin_data" }
+zellij.data.fetch { entity = "todo", namespace = "todo" }
+"#,
+            r#"
+function M.load()
+  zellij.request_permission { "plugin_data" }
+  zellij.data.fetch { entity = "todo", namespace = "todo" }
+end
+"#,
+        ] {
+            let found = lint("todo", source).join("\n");
+            assert!(found.contains("uncached first load"), "{found}");
+            assert!(
+                found.contains("await `zellij.async.permissions`"),
+                "{found}"
+            );
+            assert!(
+                found.contains("cached grants take effect synchronously"),
+                "{found}"
+            );
+        }
+    }
+
+    #[test]
+    fn data_calls_in_ordinary_event_handlers_do_not_get_the_load_warning() {
+        let source = r#"
+zellij.request_permission { "plugin_data" }
+zellij.on("permission_request_result", function()
+  zellij.data.fetch { entity = "todo", namespace = "todo" }
+end)
+"#;
+        assert!(
+            !lint("todo", source)
+                .iter()
+                .any(|found| found.contains("uncached first load")),
+            "{:?}",
+            lint("todo", source)
         );
     }
 

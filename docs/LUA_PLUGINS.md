@@ -474,7 +474,7 @@ each subscribes to the events it needs, so you do not:
 | `agent_state(pane_id, "idle" \| { … }, { after = { "busy" } })` | the pane's `PaneInfo` when its agent record reaches one of the states - after one of `after`, when given | `read_application_state` |
 | `agent_event(pane_id, "Stop")`, `turn(pane_id)` | see *Agents* | `read_application_state` |
 | `pipe(name)` | the next pipe message named `name` | - |
-| `permissions { … }` | `"Granted"` or `"Denied"` | - |
+| `permissions { … }` | `"Granted"` or `"Denied"`; concurrent requests are dispatched one at a time, FIFO | - |
 | `sleep(seconds)` | `true`, after whole `seconds` | - |
 | `event(name, match)` | the next `name` event for which `match(event)` is truthy | whatever the event needs |
 | `all { a = …, b = … }` | every value, in the same shape | - |
@@ -489,10 +489,12 @@ flight arrives with a token nobody holds. `zellij.await` outside a task is an er
 entrypoint has no coroutine to suspend - so a task is where anything that waits is written, and
 `load` is the usual place to start one.
 
-`zellij.async.permissions` is how `load` is written now: ask, await, act. A permission the user
-granted before - or one hocus granted when it approved the source - is in force from the
-request on, so the await resolves without a prompt and a gated call made straight after
-`zellij.request_permission` in `load` is not refused either.
+`zellij.async.permissions` is how `load` is written now: ask, await, act. Its requests are
+serialized in FIFO order because permission results carry no request id. On an uncached first
+load, await the answer before any gated call. A permission the user granted before - or one hocus
+granted when it approved the source - takes effect synchronously when requested, so a gated call
+made straight after `zellij.request_permission` in `load` works on later, cached loads; the result
+event still arrives asynchronously.
 
 ## Agents
 
