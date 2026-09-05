@@ -3511,10 +3511,33 @@ fn resolve_zellij(explicit: Option<&Path>) -> Result<PathBuf> {
     resolve_zellij_from(explicit, &provider, env::var_os("PATH").as_deref())
 }
 
-/// The dynamic loader an ELF executable asks for, from its `PT_INTERP` program header;
-/// `None` for a static binary, and for anything that is not a 64-bit little-endian ELF.
-fn elf_interpreter(path: &Path) -> Result<Option<PathBuf>> {
+/// What a 64-bit little-endian ELF file says about its own dynamic linking: the loader it
+/// asks for, the shared libraries it names, and the newest glibc symbol version it mentions.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ElfInfo {
+    /// `PT_INTERP`; `None` for a static binary.
+    interpreter: Option<PathBuf>,
+    /// `DT_NEEDED` names, e.g. `libc.so.6`.
+    needed: Vec<String>,
+    /// The newest `GLIBC_<major>.<minor>` named in `.dynstr`. In an executable those names
+    /// are its `.gnu.version_r` requirements, so this is the newest glibc it needs; in a
+    /// `libc.so.6` they are its `.gnu.version_d` definitions, so it is the newest one that
+    /// library provides. Reading the string table serves both without parsing either record.
+    max_glibc: Option<(u32, u32)>,
+}
+
+/// What `path` says about itself. `None` for anything that is not a 64-bit little-endian
+/// ELF - a shell script, a truncated file - and for a malformed one: only a file that cannot
+/// be *read* is an error, because every caller here would rather say nothing than guess.
+fn elf_info(path: &Path) -> Result<Option<ElfInfo>> {
     let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(parse_elf_info(&bytes))
+}
+
+/// The parsing half of [`elf_info`], over program headers alone. Section headers are gone
+/// from a stripped release binary, so `.dynstr` has to be reached the way the loader reaches
+/// it: through `PT_DYNAMIC`, with `PT_LOAD` to turn its virtual address into a file offset.
+fn parse_elf_info(bytes: &[u8]) -> Option<ElfInfo> {
     let u16_at = |at: usize| {
         bytes
             .get(at..at + 2)
@@ -3531,63 +3554,218 @@ fn elf_interpreter(path: &Path) -> Result<Option<PathBuf>> {
             .map(|b| u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
     };
     if bytes.get(..4) != Some(b"\x7fELF") || bytes.get(4) != Some(&2) || bytes.get(5) != Some(&1) {
-        return Ok(None);
+        return None;
     }
-    let (Some(offset), Some(entry_size), Some(count)) = (u64_at(0x20), u16_at(0x36), u16_at(0x38))
-    else {
-        return Ok(None);
-    };
+    let (offset, entry_size, count) = (u64_at(0x20)?, u16_at(0x36)?, u16_at(0x38)?);
+    let offset = usize::try_from(offset).ok()?;
+    let mut info = ElfInfo::default();
+    // (p_vaddr, p_filesz, p_offset) of every PT_LOAD, and the file extent of PT_DYNAMIC.
+    let mut loads: Vec<(u64, u64, u64)> = Vec::new();
+    let mut dynamic: Option<(usize, usize)> = None;
     for index in 0..usize::from(count) {
-        let header = usize::try_from(offset)?.saturating_add(index * usize::from(entry_size));
-        if u32_at(header) != Some(3) {
-            continue;
-        }
-        let (Some(start), Some(len)) = (u64_at(header + 8), u64_at(header + 0x20)) else {
-            return Ok(None);
+        let header = offset.saturating_add(index * usize::from(entry_size));
+        let (Some(kind), Some(p_offset), Some(p_vaddr), Some(p_filesz)) = (
+            u32_at(header),
+            u64_at(header + 8),
+            u64_at(header + 0x10),
+            u64_at(header + 0x20),
+        ) else {
+            break;
         };
-        let start = usize::try_from(start)?;
-        let end = start.saturating_add(usize::try_from(len)?);
-        let interpreter = bytes.get(start..end).context("truncated ELF interpreter")?;
-        let interpreter = interpreter.strip_suffix(&[0]).unwrap_or(interpreter);
-        return Ok(Some(PathBuf::from(OsStr::from_bytes(interpreter))));
+        match kind {
+            1 => loads.push((p_vaddr, p_filesz, p_offset)),
+            2 => {
+                dynamic = Some((
+                    usize::try_from(p_offset).ok()?,
+                    usize::try_from(p_filesz).ok()?,
+                ))
+            },
+            3 => {
+                let start = usize::try_from(p_offset).ok()?;
+                let end = start.saturating_add(usize::try_from(p_filesz).ok()?);
+                let interpreter = bytes.get(start..end)?;
+                let interpreter = interpreter.strip_suffix(&[0]).unwrap_or(interpreter);
+                info.interpreter = Some(PathBuf::from(OsStr::from_bytes(interpreter)));
+            },
+            _ => {},
+        }
     }
-    Ok(None)
+    let Some((dynamic_at, dynamic_size)) = dynamic else {
+        return Some(info);
+    };
+    // Elf64_Dyn is a 16-byte tag/value pair, and the array ends at DT_NULL.
+    let mut needed_at: Vec<u64> = Vec::new();
+    let (mut strtab, mut strsz) = (None, None);
+    let mut at = dynamic_at;
+    let dynamic_end = dynamic_at.saturating_add(dynamic_size);
+    while at.saturating_add(16) <= dynamic_end {
+        let (Some(tag), Some(value)) = (u64_at(at), u64_at(at + 8)) else {
+            break;
+        };
+        match tag {
+            0 => break,                 // DT_NULL
+            1 => needed_at.push(value), // DT_NEEDED
+            5 => strtab = Some(value),  // DT_STRTAB
+            10 => strsz = Some(value),  // DT_STRSZ
+            _ => {},
+        }
+        at += 16;
+    }
+    let to_file_offset = |vaddr: u64| {
+        loads.iter().find_map(|&(p_vaddr, p_filesz, p_offset)| {
+            (vaddr >= p_vaddr && vaddr < p_vaddr.saturating_add(p_filesz))
+                .then(|| p_offset.saturating_add(vaddr - p_vaddr))
+        })
+    };
+    let table = strtab
+        .and_then(to_file_offset)
+        .and_then(|start| usize::try_from(start).ok())
+        .zip(strsz.and_then(|size| usize::try_from(size).ok()))
+        .and_then(|(start, size)| bytes.get(start..start.saturating_add(size)));
+    let Some(table) = table else {
+        return Some(info);
+    };
+    info.needed = needed_at
+        .into_iter()
+        .filter_map(|at| usize::try_from(at).ok())
+        .filter_map(|at| string_at(table, at))
+        .collect();
+    info.max_glibc = max_glibc_in(table);
+    Some(info)
 }
 
-/// Say so when the Zellij going into a guest is dynamically linked. A static build runs in
-/// any guest; a dynamic one needs the guest's loader and a glibc at least as new as the
-/// host's, and a host newer than the guest's Ubuntu 24.04 fails inside the VM only, with
-/// nothing on this side to explain it. With the staged `root` in hand the loader can at
-/// least be looked for.
-fn warn_about_dynamic_zellij(zellij: &Path, root: Option<&Path>) {
-    let interpreter = match elf_interpreter(zellij) {
-        Ok(Some(interpreter)) => interpreter,
+/// The NUL-terminated string starting at `at` in an ELF string table.
+fn string_at(table: &[u8], at: usize) -> Option<String> {
+    let rest = table.get(at..)?;
+    let end = rest
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(rest.len());
+    String::from_utf8(rest[..end].to_vec()).ok()
+}
+
+/// The newest `GLIBC_<major>.<minor>` in a string table. Names without a version - the
+/// `GLIBC_PRIVATE` every glibc carries, and marker names like `GLIBC_ABI_DT_RELR` - are
+/// skipped rather than read as some bare version.
+fn max_glibc_in(table: &[u8]) -> Option<(u32, u32)> {
+    table
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| std::str::from_utf8(entry).ok())
+        .filter_map(|entry| entry.strip_prefix("GLIBC_"))
+        .filter_map(|version| {
+            let (major, minor) = version.split_once('.')?;
+            Some((major.parse().ok()?, minor.parse().ok()?))
+        })
+        .max()
+}
+
+/// What a staged guest root file system offers a dynamically linked binary.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct GuestLibs {
+    /// Whether the binary's `PT_INTERP` is present in the guest.
+    loader_present: bool,
+    /// The `DT_NEEDED` names the guest does not have.
+    missing: Vec<String>,
+    /// The newest glibc version the guest's own `libc.so.6` defines, when it has one that
+    /// could be read.
+    provides_glibc: Option<(u32, u32)>,
+}
+
+/// Where a guest looks for a shared library, relative to its root. The multiarch directories
+/// come first because that is where Debian and Ubuntu put everything; `lib64` and `lib` are
+/// symlinks into `usr` on a merged-`/usr` image, which is why plain existence - not
+/// `symlink_metadata` - is the test.
+const GUEST_LIB_DIRS: [&str; 6] = [
+    "usr/lib/x86_64-linux-gnu",
+    "lib/x86_64-linux-gnu",
+    "usr/lib64",
+    "lib64",
+    "usr/lib",
+    "lib",
+];
+
+fn guest_libs(root: &Path, binary: &ElfInfo) -> GuestLibs {
+    let loader_present = binary.interpreter.as_ref().is_none_or(|interpreter| {
+        root.join(interpreter.strip_prefix("/").unwrap_or(interpreter))
+            .exists()
+    });
+    let mut guest = GuestLibs {
+        loader_present,
+        ..Default::default()
+    };
+    for name in &binary.needed {
+        let found = GUEST_LIB_DIRS
+            .iter()
+            .map(|dir| root.join(dir).join(name))
+            .find(|path| path.exists());
+        match found {
+            Some(path) if name == "libc.so.6" => {
+                guest.provides_glibc = elf_info(&path)
+                    .ok()
+                    .flatten()
+                    .and_then(|libc| libc.max_glibc);
+            },
+            Some(_) => {},
+            None => guest.missing.push(name.clone()),
+        }
+    }
+    guest
+}
+
+/// Why `binary` will not run in a guest offering `guest`, or `None` if it will. A static
+/// binary runs anywhere. For a dynamic one three things can be wrong, and each is invisible
+/// on the host and fatal in every pane, which is what makes saying so worthwhile. Anything
+/// this cannot establish - a guest `libc.so.6` that would not parse, above all - is not a
+/// reason: an unsubstantiated warning is exactly what this check exists to avoid.
+fn guest_incompatibility(binary: &ElfInfo, guest: &GuestLibs) -> Option<String> {
+    let interpreter = binary.interpreter.as_ref()?;
+    if !guest.loader_present {
+        return Some(format!(
+            "the guest image has no {}, the dynamic loader it asks for",
+            interpreter.display()
+        ));
+    }
+    if let Some(name) = guest.missing.first() {
+        return Some(format!(
+            "the guest image has no {name}, which it links against"
+        ));
+    }
+    match (binary.max_glibc, guest.provides_glibc) {
+        (Some(needs), Some(has)) if needs > has => Some(format!(
+            "it needs GLIBC_{}.{} and the guest image provides only {}.{}",
+            needs.0, needs.1, has.0, has.1
+        )),
+        _ => None,
+    }
+}
+
+/// Say so when the Zellij about to be installed cannot run in the guest being built. A
+/// static build runs in any guest; a dynamic one needs the guest's loader, its libraries and
+/// a glibc at least as new as the one it was built against, and a host newer than the
+/// guest's Ubuntu 24.04 fails inside the VM only, with nothing on this side to explain it.
+/// The staged `root` is what makes this answerable rather than a guess - the guest's own
+/// `libc.so.6` is right there to be read - which is also why nothing warns from `doctor`,
+/// where neither the binary that went into the image nor the image's contents are known.
+fn warn_if_guest_cannot_run(zellij: &Path, root: &Path) {
+    let binary = match elf_info(zellij) {
+        Ok(Some(binary)) => binary,
         Ok(None) => return,
         Err(error) => {
             eprintln!(
-                "warning: could not tell whether {} is statically linked: {error:#}",
+                "warning: could not tell whether {} can run in the guest: {error:#}",
                 zellij.display()
             );
             return;
         },
     };
-    let loader_missing = root.is_some_and(|root| {
-        !root
-            .join(interpreter.strip_prefix("/").unwrap_or(&interpreter))
-            .exists()
-    });
+    let Some(reason) = guest_incompatibility(&binary, &guest_libs(root, &binary)) else {
+        return;
+    };
     eprintln!(
-        "warning: {} is dynamically linked (loader {}){}; a guest whose glibc is older than \
-         this host's cannot run it, and every pane in the VM then fails to start. Build a \
-         static Zellij (for example --target x86_64-unknown-linux-musl) and pass it with \
-         --zellij",
-        zellij.display(),
-        interpreter.display(),
-        if loader_missing {
-            " which the guest image does not have"
-        } else {
-            ""
-        }
+        "warning: {} cannot run in this guest image: {reason}, so every pane in the VM \
+         would fail to start. Build a static Zellij (cargo build --release --target \
+         x86_64-unknown-linux-musl --bin zellij) and pass it with --zellij",
+        zellij.display()
     );
 }
 
@@ -3987,11 +4165,11 @@ fn doctor() -> Result<()> {
     if !output.status.success() {
         return Err(anyhow!("Firecracker --version failed"));
     }
-    if let Ok(provider) = env::current_exe() {
-        if let Ok(zellij) = resolve_zellij_from(None, &provider, env::var_os("PATH").as_deref()) {
-            warn_about_dynamic_zellij(&zellij, None);
-        }
-    }
+    // Nothing here checks whether Zellij can run in the guest: `doctor` knows neither which
+    // binary `--zellij` put in the image nor what the image contains, so the only Zellij it
+    // could look at - the one beside the provider or on PATH - is one that may never enter a
+    // VM. `image build` has both in hand and warns there instead.
+    //
     // Not fatal. `setup` runs this at the end, and someone who declined the offer must not
     // be told their host is broken for having done so.
     if let Some(home) = env::var_os("HOME") {
@@ -4111,7 +4289,7 @@ fn image_build_inner(args: &[String]) -> Result<()> {
     } else {
         find_in_path(&zellij).with_context(|| format!("could not find {}", zellij.display()))?
     };
-    warn_about_dynamic_zellij(&zellij, Some(&root));
+    warn_if_guest_cannot_run(&zellij, &root);
     let guest_zellij = root.join(GUEST_ZELLIJ.trim_start_matches('/'));
     fs::copy(&zellij, &guest_zellij).context("failed to install Zellij in the guest")?;
     fs::set_permissions(&guest_zellij, fs::Permissions::from_mode(0o755))?;
@@ -6509,49 +6687,215 @@ mod tests {
         );
     }
 
-    /// A minimal ELF64 with one `PT_INTERP` header, as a linker would write it.
-    fn elf_with_interpreter(interpreter: &str) -> Vec<u8> {
+    /// A minimal ELF64 as a linker would write it: one `PT_LOAD` covering the whole file, so
+    /// that a virtual address is also its file offset; an optional `PT_INTERP`; and a
+    /// `PT_DYNAMIC` whose string table holds `needed` and `versions`.
+    fn elf(interpreter: Option<&str>, needed: &[&str], versions: &[&str]) -> Vec<u8> {
+        const HEADERS: u64 = 64 + 3 * 56;
+        let interp = interpreter
+            .map(|path| format!("{path}\0"))
+            .unwrap_or_default();
+        // A string table opens with a NUL so that index 0 is the empty string.
+        let mut strings = vec![0u8];
+        let mut needed_at = Vec::new();
+        for name in needed.iter().chain(versions) {
+            needed_at.push(strings.len() as u64);
+            strings.extend(name.as_bytes());
+            strings.push(0);
+        }
+        needed_at.truncate(needed.len());
+        let interp_at = HEADERS;
+        let strings_at = interp_at + interp.len() as u64;
+        let dynamic_at = strings_at + strings.len() as u64;
+        let mut entries: Vec<(u64, u64)> = needed_at.iter().map(|at| (1, *at)).collect();
+        entries.push((5, strings_at)); // DT_STRTAB
+        entries.push((10, strings.len() as u64)); // DT_STRSZ
+        entries.push((0, 0)); // DT_NULL
+        let dynamic: Vec<u8> = entries
+            .iter()
+            .flat_map(|(tag, value)| {
+                let mut pair = tag.to_le_bytes().to_vec();
+                pair.extend(value.to_le_bytes());
+                pair
+            })
+            .collect();
+        let total = dynamic_at + dynamic.len() as u64;
+
+        let phdr = |kind: u32, offset: u64, size: u64| {
+            let mut header = vec![0u8; 56];
+            header[..4].copy_from_slice(&kind.to_le_bytes());
+            header[8..16].copy_from_slice(&offset.to_le_bytes()); // p_offset
+            header[0x10..0x18].copy_from_slice(&offset.to_le_bytes()); // p_vaddr
+            header[0x20..0x28].copy_from_slice(&size.to_le_bytes()); // p_filesz
+            header
+        };
         let mut bytes = vec![0u8; 64];
         bytes[..4].copy_from_slice(b"\x7fELF");
         bytes[4] = 2; // 64-bit
         bytes[5] = 1; // little-endian
         bytes[0x20..0x28].copy_from_slice(&64u64.to_le_bytes()); // e_phoff
         bytes[0x36..0x38].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
-        bytes[0x38..0x3a].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
-        let mut header = vec![0u8; 56];
-        header[..4].copy_from_slice(&3u32.to_le_bytes()); // PT_INTERP
-        let interp = format!("{interpreter}\0");
-        header[8..16].copy_from_slice(&120u64.to_le_bytes()); // p_offset
-        header[0x20..0x28].copy_from_slice(&(interp.len() as u64).to_le_bytes()); // p_filesz
-        bytes.extend(header);
+        bytes[0x38..0x3a].copy_from_slice(&3u16.to_le_bytes()); // e_phnum
+        bytes.extend(phdr(1, 0, total)); // PT_LOAD, the whole file
+        bytes.extend(if interp.is_empty() {
+            phdr(4, interp_at, 0) // PT_NOTE: a static binary asks for no loader
+        } else {
+            phdr(3, interp_at, interp.len() as u64) // PT_INTERP
+        });
+        bytes.extend(phdr(2, dynamic_at, dynamic.len() as u64)); // PT_DYNAMIC
         bytes.extend(interp.as_bytes());
+        bytes.extend(&strings);
+        bytes.extend(&dynamic);
         bytes
     }
 
+    const LOADER: &str = "/lib64/ld-linux-x86-64.so.2";
+
     #[test]
-    fn elf_interpreter_reads_pt_interp_and_nothing_else() {
+    fn elf_info_reads_the_interpreter_the_needed_libraries_and_the_glibc_version() {
         let dir = tempfile::tempdir().unwrap();
         let dynamic = dir.path().join("dynamic");
         fs::write(
             &dynamic,
-            elf_with_interpreter("/lib64/ld-linux-x86-64.so.2"),
+            elf(
+                Some(LOADER),
+                &["libc.so.6", "libm.so.6"],
+                // The two unversioned names every real glibc carries must not be read as
+                // versions of their own.
+                &[
+                    "GLIBC_2.34",
+                    "GLIBC_2.39",
+                    "GLIBC_PRIVATE",
+                    "GLIBC_ABI_DT_RELR",
+                ],
+            ),
         )
         .unwrap();
-        assert_eq!(
-            elf_interpreter(&dynamic).unwrap(),
-            Some(PathBuf::from("/lib64/ld-linux-x86-64.so.2"))
-        );
+        let info = elf_info(&dynamic).unwrap().unwrap();
+        assert_eq!(info.interpreter, Some(PathBuf::from(LOADER)));
+        assert_eq!(info.needed, ["libc.so.6", "libm.so.6"]);
+        assert_eq!(info.max_glibc, Some((2, 39)));
 
-        let mut static_elf = elf_with_interpreter("/lib64/ld-linux-x86-64.so.2");
-        static_elf[64..68].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD instead
         let static_path = dir.path().join("static");
-        fs::write(&static_path, static_elf).unwrap();
-        assert_eq!(elf_interpreter(&static_path).unwrap(), None);
+        fs::write(&static_path, elf(None, &[], &[])).unwrap();
+        assert_eq!(elf_info(&static_path).unwrap().unwrap().interpreter, None);
 
         let script = dir.path().join("script");
         fs::write(&script, "#!/bin/sh\n").unwrap();
-        assert_eq!(elf_interpreter(&script).unwrap(), None);
-        assert!(elf_interpreter(&dir.path().join("missing")).is_err());
+        assert_eq!(elf_info(&script).unwrap(), None);
+        assert!(elf_info(&dir.path().join("missing")).is_err());
+    }
+
+    /// The synthetic ELFs above only prove the parser reads what this test module wrote. A
+    /// real linker's output is the other half, and there is one to hand.
+    #[test]
+    fn elf_info_reads_a_real_binary() {
+        if !cfg!(target_env = "gnu") {
+            return;
+        }
+        let info = elf_info(&env::current_exe().unwrap()).unwrap().unwrap();
+        assert!(info.interpreter.is_some(), "{info:?}");
+        assert!(
+            info.needed.iter().any(|name| name == "libc.so.6"),
+            "{info:?}"
+        );
+        assert!(info.max_glibc.is_some(), "{info:?}");
+    }
+
+    #[test]
+    fn guest_incompatibility_names_the_one_thing_that_is_wrong() {
+        let dynamic = ElfInfo {
+            interpreter: Some(PathBuf::from(LOADER)),
+            needed: vec!["libc.so.6".to_owned()],
+            max_glibc: Some((2, 39)),
+        };
+        let ready = GuestLibs {
+            loader_present: true,
+            missing: Vec::new(),
+            provides_glibc: Some((2, 39)),
+        };
+        assert_eq!(guest_incompatibility(&dynamic, &ready), None);
+
+        // A static binary is never asked anything else about it.
+        let static_binary = ElfInfo::default();
+        assert_eq!(
+            guest_incompatibility(&static_binary, &GuestLibs::default()),
+            None
+        );
+
+        let no_loader = GuestLibs {
+            loader_present: false,
+            ..ready.clone()
+        };
+        assert!(guest_incompatibility(&dynamic, &no_loader)
+            .is_some_and(|reason| reason.contains(LOADER)));
+
+        let no_library = GuestLibs {
+            missing: vec!["libz.so.1".to_owned()],
+            ..ready.clone()
+        };
+        assert!(guest_incompatibility(&dynamic, &no_library)
+            .is_some_and(|reason| reason.contains("libz.so.1")));
+
+        let old_glibc = GuestLibs {
+            provides_glibc: Some((2, 17)),
+            ..ready.clone()
+        };
+        let reason = guest_incompatibility(&dynamic, &old_glibc).unwrap();
+        assert!(reason.contains("GLIBC_2.39"), "{reason}");
+        assert!(reason.contains("2.17"), "{reason}");
+
+        // An unreadable guest libc is not evidence of anything, so it says nothing.
+        let unknown_glibc = GuestLibs {
+            provides_glibc: None,
+            ..ready
+        };
+        assert_eq!(guest_incompatibility(&dynamic, &unknown_glibc), None);
+    }
+
+    #[test]
+    fn a_staged_guest_root_is_read_for_its_loader_and_its_libc() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("lib64")).unwrap();
+        fs::write(root.join("lib64/ld-linux-x86-64.so.2"), "loader").unwrap();
+        let libdir = root.join("usr/lib/x86_64-linux-gnu");
+        fs::create_dir_all(&libdir).unwrap();
+        fs::write(libdir.join("libc.so.6"), elf(None, &[], &["GLIBC_2.39"])).unwrap();
+
+        let satisfied = ElfInfo {
+            interpreter: Some(PathBuf::from(LOADER)),
+            needed: vec!["libc.so.6".to_owned()],
+            max_glibc: Some((2, 39)),
+        };
+        let guest = guest_libs(root, &satisfied);
+        assert_eq!(
+            guest,
+            GuestLibs {
+                loader_present: true,
+                missing: Vec::new(),
+                provides_glibc: Some((2, 39)),
+            }
+        );
+        assert_eq!(guest_incompatibility(&satisfied, &guest), None);
+
+        // The case the warning exists for: a host newer than the guest.
+        let too_new = ElfInfo {
+            max_glibc: Some((2, 42)),
+            ..satisfied.clone()
+        };
+        let reason = guest_incompatibility(&too_new, &guest_libs(root, &too_new)).unwrap();
+        assert!(reason.contains("GLIBC_2.42"), "{reason}");
+        assert!(reason.contains("2.39"), "{reason}");
+
+        let needs_more = ElfInfo {
+            needed: vec!["libc.so.6".to_owned(), "libz.so.1".to_owned()],
+            ..satisfied.clone()
+        };
+        assert_eq!(guest_libs(root, &needs_more).missing, ["libz.so.1"]);
+
+        let bare = tempfile::tempdir().unwrap();
+        assert!(!guest_libs(bare.path(), &satisfied).loader_present);
     }
 
     #[test]

@@ -64,10 +64,17 @@ verifies their SHA-256 checksums.
 
 The Zellij copied into the guest should be statically linked: the guest is Ubuntu 24.04 with its
 glibc 2.39, and a dynamically linked binary from a host with a newer glibc boots and provisions
-fine but fails inside every pane, where nothing on the host can explain it. `image build` and
-`doctor` warn when the binary they find is dynamically linked; build a static one with
-`cargo build --release --target x86_64-unknown-linux-musl --bin zellij` and pass it with
+fine but fails inside every pane, where nothing on the host can explain it. Build a static one
+with `cargo build --release --target x86_64-unknown-linux-musl --bin zellij` and pass it with
 `--zellij`, as `cargo x firecracker-test --build` does.
+
+A dynamically linked binary is not refused, and is not warned about merely for being dynamic —
+a glibc build from a host no newer than the guest runs there perfectly well. `image build` reads
+the binary it is about to install against the root file system it has just unpacked, and warns
+only when the guest actually cannot run it: the loader named in `PT_INTERP` is absent, a
+`DT_NEEDED` library is absent, or the binary requires a `GLIBC_x.y` newer than the guest's own
+`libc.so.6` defines. `doctor` says nothing about this, because it knows neither which binary
+`--zellij` put in the image nor what the image holds.
 
 If `~/.codex/auth.json` exists, setup offers to copy it to `/root/.codex/auth.json` in each VM. It
 separately offers the same for `~/.claude/.credentials.json`. Setup records only the selected file
