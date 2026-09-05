@@ -17,7 +17,8 @@ use crate::input::layout::{
 };
 use crate::input::options::{
     Clipboard, NotificationPosition, OnForceClose, Options, PaneFrameStyle,
-    DEFAULT_NOTIFICATION_TIMEOUT_SECS, DEFAULT_WORD_SEPARATORS,
+    DEFAULT_AGENT_PANE_MIN_COLUMNS, DEFAULT_AGENT_PANE_MIN_ROWS, DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+    DEFAULT_WORD_SEPARATORS,
 };
 use crate::input::permission::{GrantedPermission, PermissionCache};
 use crate::input::plugins::PluginAliases;
@@ -4449,7 +4450,7 @@ impl Options {
         match self.agent_pane_min_columns {
             Some(value) => Some(create_node(value)),
             None if add_comments => {
-                let mut node = create_node(80);
+                let mut node = create_node(DEFAULT_AGENT_PANE_MIN_COLUMNS);
                 node.set_leading(comment_text);
                 Some(node)
             },
@@ -4465,7 +4466,7 @@ impl Options {
         match self.agent_pane_min_rows {
             Some(value) => Some(create_node(value)),
             None if add_comments => {
-                let mut node = create_node(24);
+                let mut node = create_node(DEFAULT_AGENT_PANE_MIN_ROWS);
                 node.set_leading("// ".to_owned());
                 Some(node)
             },

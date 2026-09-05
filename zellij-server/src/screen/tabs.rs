@@ -33,11 +33,6 @@ impl Screen {
         self.tabs.get_mut(&id)
     }
 
-    /// Gets the tab holding `pane_id`, if any.
-    ///
-    /// "Find the tab containing this pane, then act on it" is the single most repeated shape in
-    /// the screen thread; before this existed it was spelled out as a `for` loop over
-    /// `has_pane_with_pid` at eighty-odd sites.
     /// Whether any tab is still waiting for its layout to land. A tab is pending from its
     /// creation until `apply_layout` runs for it; until then its pane count and geometry are
     /// provisional, and instructions that move clients between tabs wait for it. Asked of the
@@ -47,6 +42,11 @@ impl Screen {
         self.tabs.values().any(Tab::is_pending)
     }
 
+    /// Gets the tab holding `pane_id`, if any.
+    ///
+    /// "Find the tab containing this pane, then act on it" is the single most repeated shape in
+    /// the screen thread; before this existed it was spelled out as a `for` loop over
+    /// `has_pane_with_pid` at eighty-odd sites.
     pub(super) fn tab_containing_pane(&self, pane_id: PaneId) -> Option<&Tab> {
         self.tabs
             .values()

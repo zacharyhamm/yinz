@@ -154,18 +154,19 @@ pub fn hook_settings(events: &[&str], command: &str, timeout: u64) -> Value {
     json!({ "hooks": hooks })
 }
 
-/// The program a command pane's agent record is named for: the command's file name, looked
-/// through an `env(1)` wrapper - `env K=V claude …` is `claude`, because `env` execs it and the
-/// pane is running the agent, not the wrapper. `None` when there is no program to name.
-pub fn agent_kind_of(program: &Path, args: &[String]) -> Option<String> {
-    let name = program.file_name()?.to_string_lossy().to_string();
-    if name != "env" {
-        return Some(name);
+/// The command `env(1)` will execute and its remaining arguments, skipping `env` options and
+/// assignments. A non-`env` command is returned unchanged.
+fn unwrapped_program_and_args<'a>(
+    program: &'a Path,
+    args: &'a [String],
+) -> Option<(&'a Path, &'a [String])> {
+    if program.file_name()? != "env" {
+        return Some((program, args));
     }
     // `env`'s own options and assignments come first; the program is the first word that
     // is neither. `-u NAME` takes a value, which is skipped with it.
     let mut skip_next = false;
-    for arg in args {
+    for (index, arg) in args.iter().enumerate() {
         if skip_next {
             skip_next = false;
             continue;
@@ -177,11 +178,18 @@ pub fn agent_kind_of(program: &Path, args: &[String]) -> Option<String> {
         if arg.starts_with('-') || arg.contains('=') {
             continue;
         }
-        return Path::new(arg)
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string());
+        return Some((Path::new(arg), &args[index + 1..]));
     }
     None
+}
+
+/// The program a command pane's agent record is named for: the command's file name, looked
+/// through an `env(1)` wrapper - `env K=V claude …` is `claude`, because `env` execs it and the
+/// pane is running the agent, not the wrapper. `None` when there is no program to name.
+pub fn agent_kind_of(program: &Path, args: &[String]) -> Option<String> {
+    unwrapped_program_and_args(program, args)
+        .and_then(|(program, _)| program.file_name())
+        .map(|name| name.to_string_lossy().to_string())
 }
 
 /// Every agent we know.
@@ -269,7 +277,8 @@ pub fn kind_from_command(command: &str) -> Option<&'static str> {
 /// an agent its environment, and `env` is not an interpreter in the sense above: its program
 /// is not among its own arguments' interpreters but after its assignments.
 pub fn kind_from_program_and_args(program_path: &Path, args: &[String]) -> Option<&'static str> {
-    let name = agent_kind_of(program_path, args)?;
+    let (program_path, args) = unwrapped_program_and_args(program_path, args)?;
+    let name = program_path.file_name()?.to_string_lossy();
     if let Some(kind) = kind_of(&name) {
         return Some(kind);
     }
@@ -1131,6 +1140,24 @@ mod tests {
             ),
             Some("gemini")
         );
+        for (list, kind) in [
+            (&["-C", "/repo", "node", "/opt/bin/claude"][..], "claude"),
+            (&["-u", "HOME", "node", "/opt/bin/claude"][..], "claude"),
+            (
+                &["--chdir", "/repo", "python3", "-u", "/opt/bin/codex"][..],
+                "codex",
+            ),
+            (
+                &["--unset", "HOME", "node", "/opt/bin/gemini"][..],
+                "gemini",
+            ),
+        ] {
+            assert_eq!(
+                kind_from_program_and_args(Path::new("env"), &args(list)),
+                Some(kind),
+                "env {list:?}"
+            );
+        }
         for (program_path, list) in [
             (
                 "node",

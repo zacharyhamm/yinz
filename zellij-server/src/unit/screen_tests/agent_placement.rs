@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::route::{wait_for_action_completion, NotificationEnd};
-use crate::screen::agent_placement::{choose_tab, projected_share, Candidate};
+use crate::screen::agent_placement::{choose_tab, floor_of, projected_share, Candidate};
 use std::collections::BTreeMap;
 use zellij_utils::data::{OriginatingPlugin, HOCUS_AGENT_PANE_CONTEXT};
 use zellij_utils::pane_size::Viewport;
@@ -113,6 +113,29 @@ fn a_share_is_the_viewport_split_among_the_tiled_panes_and_the_newcomer() {
     assert_eq!(projected_share(viewport, 1), 800);
     assert_eq!(projected_share(viewport, 3), 400);
     assert_eq!(projected_share(viewport, 4), 320);
+}
+
+#[test]
+fn projected_areas_saturate() {
+    assert_eq!(
+        projected_share(
+            Viewport {
+                x: 0,
+                y: 0,
+                rows: usize::MAX,
+                cols: 2,
+            },
+            0,
+        ),
+        usize::MAX
+    );
+    assert_eq!(
+        floor_of(Size {
+            cols: usize::MAX,
+            rows: 2,
+        }),
+        Some(usize::MAX)
+    );
 }
 
 #[test]
@@ -331,6 +354,29 @@ fn a_pending_tab_is_not_a_candidate() {
         ClientTabIndexOrPaneId::TabIndex(2),
         "a tab of its own, not the pending one"
     );
+}
+
+#[test]
+fn a_fullscreen_tab_is_not_a_candidate() {
+    let mut screen = screen_with_floor();
+    tab_with_panes(&mut screen, 0, 1, 4);
+    tab_with_panes(&mut screen, 1, 10, 2);
+    tab_with_panes(&mut screen, 2, 20, 3);
+    screen.go_to_tab(1, CLIENT).expect("TEST");
+    screen
+        .tabs
+        .get_mut(&1)
+        .expect("TEST")
+        .toggle_pane_fullscreen(PaneId::Terminal(10));
+    assert!(screen.tabs[&1].is_fullscreen_active());
+    screen.go_to_tab(0, CLIENT).expect("TEST");
+    let (placed, _, _) = target_of(
+        &mut screen,
+        Some(run("claude")),
+        tiled(),
+        ClientTabIndexOrPaneId::ClientId(CLIENT),
+    );
+    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndex(2));
 }
 
 #[test]
