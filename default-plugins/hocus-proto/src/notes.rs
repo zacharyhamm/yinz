@@ -69,6 +69,9 @@ pub struct Note {
     /// Wall-clock milliseconds, as the store stamps them.
     pub created_at: i64,
     pub updated_at: i64,
+    /// The store's revision of this row when it was read, and what an edit guards on. Zero on a
+    /// note that did not come from a store row.
+    pub rev: i64,
     pub tags: Vec<String>,
     pub todo_ids: Vec<u64>,
 }
@@ -274,6 +277,7 @@ pub fn from_rows(rows: &DataRows) -> Vec<Note> {
                 archived: bool_at(rows, row, "archived"),
                 created_at: int_at(rows, row, "created_at").unwrap_or_default(),
                 updated_at: int_at(rows, row, "updated_at").unwrap_or_default(),
+                rev: int_at(rows, row, "rev").unwrap_or_default(),
                 tags: Vec::new(),
                 todo_ids: Vec::new(),
             })
@@ -752,6 +756,13 @@ pub fn plan_edit(
     }
     let mut after = note.clone();
     let mut update = Mutation::update("note", Pred::eq("id", note.id));
+    // Guarded on the revision the note was read at, for the reason `todos::plan_edit` is: an
+    // edit replaces a whole title or body with something composed from what the caller saw, so
+    // landing it on a row somebody else has since edited destroys their wording. Archiving is
+    // left unguarded — a flag two writers set the same way is not a disagreement.
+    if note.rev > 0 {
+        update = update.expect_rev(note.rev);
+    }
     if let Some(title) = title {
         after.title = clean_title(title)?;
         update = update.set("title", after.title.clone());
@@ -909,6 +920,85 @@ mod tests {
         assert!(normalize_tag("").is_err());
         let too_many: Vec<String> = (0..=MAX_TAGS).map(|i| format!("t{i}")).collect();
         assert!(normalize_tags(&too_many).unwrap_err().contains("at most"));
+    }
+
+    /// Two writers editing one note. The second edit was composed from a body the first has
+    /// already replaced, so it is refused rather than overwriting it.
+    #[test]
+    fn an_edit_planned_from_a_stale_read_is_refused() {
+        use crate::store::{self, Backend};
+
+        let local = store::Local::shared("hocus");
+        local.define_all(&store::shared_defs()).unwrap();
+        let (mutations, _) = plan_add(0, None, "Why", "because", "user", &[], &[]).unwrap();
+        let id = local.apply(mutations).unwrap().ids[0] as u64;
+
+        // Both read the same note.
+        let mine = fetch_note(&local, id).unwrap().expect("stored");
+        let theirs = mine.clone();
+
+        local
+            .apply(
+                plan_edit(&theirs, None, Some("because of the deadline"))
+                    .unwrap()
+                    .0,
+            )
+            .unwrap();
+
+        let error = local
+            .apply(
+                plan_edit(&mine, None, Some("because of the budget"))
+                    .unwrap()
+                    .0,
+            )
+            .unwrap_err();
+        assert!(error.is_conflict(), "{error:?}");
+        assert_eq!(
+            fetch_note(&local, id).unwrap().unwrap().body,
+            "because of the deadline",
+            "the refused write should have changed nothing"
+        );
+
+        // Reading again is all it takes.
+        let fresh = fetch_note(&local, id).unwrap().unwrap();
+        local
+            .apply(
+                plan_edit(&fresh, None, Some("because of the budget"))
+                    .unwrap()
+                    .0,
+            )
+            .unwrap();
+        assert_eq!(
+            fetch_note(&local, id).unwrap().unwrap().body,
+            "because of the budget"
+        );
+    }
+
+    /// Archiving is deliberately not guarded, for the reason crossing a todo item off is not: a
+    /// flag two writers set the same way is not a disagreement.
+    #[test]
+    fn archiving_is_not_guarded() {
+        use crate::store::{self, Backend};
+
+        let local = store::Local::shared("hocus");
+        local.define_all(&store::shared_defs()).unwrap();
+        let (mutations, _) = plan_add(0, None, "Why", "because", "user", &[], &[]).unwrap();
+        let id = local.apply(mutations).unwrap().ids[0] as u64;
+
+        // Somebody edits the body, moving the revision on.
+        let fresh = fetch_note(&local, id).unwrap().unwrap();
+        local
+            .apply(
+                plan_edit(&fresh, None, Some("because it is late"))
+                    .unwrap()
+                    .0,
+            )
+            .unwrap();
+
+        local.apply(plan_archive(id, true)).unwrap();
+        let after = fetch_note(&local, id).unwrap().unwrap();
+        assert!(after.archived);
+        assert_eq!(after.body, "because it is late");
     }
 
     // ------------------------------------------------------------- planners

@@ -5237,6 +5237,13 @@ pub enum DataDefineResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DataApplyResponse {
     Ok(ApplyReport),
+    /// A write guarded with `expect_rev` found the row at another revision, or gone. The whole
+    /// batch was rolled back; re-read and decide again.
+    ///
+    /// Its own variant rather than an `Err` a caller has to read the message of, because the
+    /// answer is different in kind: a conflict is a race worth retrying, and everything else is
+    /// a request that will not work however often it is sent.
+    Conflict(String),
     Err(String),
 }
 

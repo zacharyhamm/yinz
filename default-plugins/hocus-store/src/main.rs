@@ -553,8 +553,10 @@ mod tests {
         fn apply(
             &self,
             _mutations: Vec<zellij_tile::prelude::Mutation>,
-        ) -> Result<ApplyReport, String> {
-            Err("unreachable".to_owned())
+        ) -> Result<ApplyReport, zellij_tile::prelude::WriteError> {
+            Err(zellij_tile::prelude::WriteError::Failed(
+                "unreachable".to_owned(),
+            ))
         }
         fn watch(
             &self,
