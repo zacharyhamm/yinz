@@ -18,11 +18,20 @@
 -- builtin - one loaded from a `zellij:` location - is granted every gated call
 -- unconditionally by `check_command_permission`, and the permission dialog is drawn
 -- *in the requesting plugin's pane*, which is this one. A copy of this file loaded
--- from a `file:` location is not a builtin and does need the request, so add
+-- from a `file:` location needs the permissions below. Insert this wrapper just
+-- before `return M` so initialization waits for approval (including on first load):
 --
---   zellij.request_permission { "change_application_state" }
+-- local load = M.load
+-- function M.load(config)
+--   zellij.task(function()
+--     local result = zellij.await(zellij.async.permissions {
+--       "change_application_state", "read_application_state", "run_commands",
+--       "read_files", "full_hd_access", "message_and_launch_other_plugins",
+--     })
+--     if result == "Granted" then load(config) end
+--   end)
+-- end
 --
--- to `load` if you fork it.
 local zellij = require("zellij")
 
 local M = {}
@@ -127,9 +136,12 @@ end
 local function git(...)
   return command { "git", "-C", W.root, ... }
 end
+local function git_query(...)
+  return raw { "git", "--no-optional-locks", "-C", W.root, ... }
+end
 local function must_git(...)
-  local code, text = git(...)
-  if code ~= 0 then error(W.diagnostic, 0) end
+  local code, text, err = git_query(...)
+  if code ~= 0 then error(text .. err, 0) end
   return text:gsub("\n$", "")
 end
 local function choose(title, options, detail)
@@ -169,34 +181,32 @@ local function config()
   return ok
 end
 local function rebase_in_progress()
-  for _, name in ipairs { "rebase-merge", "rebase-apply" } do
-    local path = must_git("rev-parse", "--path-format=absolute", "--git-path", name)
-    local code = raw { "test", "-d", path }
-    if code == 0 then return true end
-  end
-  return false
+  local code = shell('[ -d "$1/rebase-merge" ] || [ -d "$1/rebase-apply" ]', W.gitdir)
+  return code == 0
 end
 local function clean()
   return must_git("status", "--porcelain=v1", "--untracked-files=all") == ""
 end
+local function inferred_default_branch()
+  local branch
+  local refs = must_git("for-each-ref", "--format=%(symref)", "refs/remotes")
+  local names = {}
+  for ref in refs:gmatch("[^\n]+") do
+    local name = ref:match("^refs/remotes/[^/]+/(.+)$")
+    if name then names[name] = true end
+  end
+  for name in pairs(names) do
+    if branch then branch = nil; break end
+    branch = name
+  end
+  if branch and git_query("rev-parse", "--verify", "refs/heads/" .. branch) == 0 then return branch end
+end
 local function default_branch()
   if not config() then error(W.config_error, 0) end
-  local branch = W.config.default_branch or W.manual_default
-  if not branch then
-    local refs = must_git("for-each-ref", "--format=%(symref)", "refs/remotes")
-    local names = {}
-    for ref in refs:gmatch("[^\n]+") do
-      local name = ref:match("^refs/remotes/[^/]+/(.+)$")
-      if name then names[name] = true end
-    end
-    for name in pairs(names) do
-      if branch then branch = nil; break end
-      branch = name
-    end
-  end
+  local branch = W.config.default_branch or W.manual_default or inferred_default_branch()
   if not branch then branch = edit("Local default branch (no fetch)", ""); W.manual_default = branch end
   if not branch then return nil end
-  local code = git("check-ref-format", "--branch", branch)
+  local code = git_query("check-ref-format", "--branch", branch)
   if code ~= 0 or branch:sub(1, 1) == "-" then error("Invalid default branch: " .. branch, 0) end
   must_git("rev-parse", "--verify", "refs/heads/" .. branch)
   W.default = branch
@@ -214,7 +224,7 @@ git read-tree HEAD 2>/dev/null || git read-tree --empty || exit 1
 git add -A -- . && git write-tree
 ]], "agent-exit", W.root, index }
   if code ~= 0 then error(W.diagnostic, 0) end
-  local _, head = git("rev-parse", "--verify", "HEAD")
+  local _, head = git_query("rev-parse", "--verify", "HEAD")
   local branch = must_git("symbolic-ref", "--short", "HEAD")
   return tree .. head .. branch
 end
@@ -483,7 +493,7 @@ rm -f -- "$lock/owner" "$lock/operation" "$lock/helper"
 rmdir -- "$lock/recovery"
 rmdir -- "$lock"
 mkdir -- "$lock"
-]], W.lock, owner:gsub("\n$", ""))
+]], W.lock, (owner:gsub("\n$", "")))
     if recovered ~= 0 then error("Ownership changed during recovery. Reopen the workflow.", 0) end
   end
   local owner = ids.zellij_pid .. " " .. ids.plugin_id .. " " .. W.run
@@ -516,15 +526,7 @@ local function workflow()
   if not acquire() then return end
   config()
   -- Resolve from configuration/metadata without forcing an input prompt until rebase needs it.
-  W.default = W.config.default_branch
-  if not W.default then
-    local _, refs = git("for-each-ref", "--format=%(symref)", "refs/remotes")
-    local names = {}
-    for ref in refs:gmatch("[^\n]+") do local name = ref:match("^refs/remotes/[^/]+/(.+)$"); if name then names[name] = true end end
-    local count = 0
-    for name in pairs(names) do W.default = name; count = count + 1 end
-    if count ~= 1 then W.default = nil end
-  end
+  W.default = W.config.default_branch or inferred_default_branch()
   local stage = inspect()
   while stage do
     W.title, W.options = "Inspecting repository...", {}
@@ -680,7 +682,7 @@ zellij.on("key", function(event)
       end
     end)
     return true
-  elseif event.key == "s" and M.changes and not M.syncing then
+  elseif event.key == "s" and M.changes and M.changes > 0 and not M.syncing then
     M.syncing = true
     M.status = "Syncing VM worktree..."
     run("sync", { M.zellij, "firecracker", "sync", M.vm, "--session", M.session })
@@ -712,12 +714,10 @@ zellij.on("run_command_result", function(event)
       M.status = "VM changes could not be checked. See plugin log for details."
       log_failure(step, exit_code, stdout, stderr)
     end
-    if step == "recheck" then
-      M.syncing = false
-      if M.changes == 0 then
-        if M.sync_warnings then M.status = "Sync conflicts require resolution. Press R to review and confirm."
-        else W.start() end
-      end
+    if step == "recheck" then M.syncing = false end
+    if M.changes == 0 then
+      if M.sync_warnings then M.status = "Sync conflicts require resolution. Press R to review and confirm."
+      else W.start() end
     end
     return true
   elseif step == "sync" then
@@ -750,7 +750,7 @@ function M.render(rows, cols)
   table.insert(lines, centered(zellij.text.truncate(M.status or "", cols), cols))
   table.insert(lines, "")
   local controls = M.helper_owner and "<ENTER> return to workflow  <ESC> close helper" or CONTROLS
-  if M.changes then
+  if M.changes and M.changes > 0 then
     controls = ("<ENTER> restart  <S> sync %d  <ESC> close pane"):format(M.changes)
   end
   if M.sync_warnings then controls = controls .. "  <R> resolve sync conflicts" end
