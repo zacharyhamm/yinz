@@ -2,6 +2,7 @@ use super::{KeyResponse, LayoutListScreen, OptimisticUpdate, Screen};
 use crate::errors::{format_kdl_error, ErrorScreen};
 use crate::ui::{truncate_with_ellipsis_start, LayoutDetail, Title};
 use crate::{DisplayLayout, LayoutInfo};
+use unicode_width::UnicodeWidthStr;
 use zellij_tile::prelude::*;
 use zellij_tile::ui_components::forms::{InputAction, TextInput};
 
@@ -187,18 +188,26 @@ impl ImportLayoutScreen {
             " (<r> Rename)" // Show rename hint when not editing
         };
 
+        // The cursor sits after `cursor_pos` characters of the name; the column it lands on is
+        // the width of those characters, which differs for wide and combining ones.
+        let columns_before_cursor = |name: &str, chars: usize| -> usize {
+            name.chars().take(chars).collect::<String>().width()
+        };
         let mut text = format!("Save as: {}{}", display_name, text_suffix);
-        let mut cursor_position_in_line = 9 + cursor_pos;
+        let mut cursor_position_in_line = 9 + columns_before_cursor(display_name, cursor_pos);
 
         if let Some(max_width) = max_width {
-            if text.chars().count() > max_width {
+            if text.width() > max_width {
                 let truncated_display_name = truncate_with_ellipsis_start(
                     display_name,
-                    max_width.saturating_sub(9 + text_suffix.chars().count()),
+                    max_width.saturating_sub(9 + text_suffix.width()),
                 );
                 text = format!("Save as: {}{}", truncated_display_name, text_suffix);
                 let truncated_len = truncated_display_name.chars().count();
-                cursor_position_in_line = 9 + cursor_pos.min(truncated_len);
+                cursor_position_in_line = 9 + columns_before_cursor(
+                    &truncated_display_name,
+                    cursor_pos.min(truncated_len),
+                );
             }
         }
 

@@ -533,4 +533,5 @@ mod resize_right;
 mod resize_up;
 mod scroll_forwarding;
 mod splitting;
+mod stack_resize;
 mod text_selection;

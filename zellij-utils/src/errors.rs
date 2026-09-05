@@ -830,6 +830,11 @@ open an issue on GitHub:
     // plugin_pane
     #[error("Pane size remains unchanged")]
     PaneSizeUnchanged,
+    /// The solved layout was refused before anything moved: a pane stack came out shorter than
+    /// the number of panes in it. Distinct from `PaneSizeUnchanged`, which is a valid layout
+    /// that happened to round to the same geometry.
+    #[error("Pane layout rejected: a pane stack does not fit its minimum height")]
+    PaneLayoutRejected,
 
     #[error("an error occurred")]
     GenericError { source: anyhow::Error },

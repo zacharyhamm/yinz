@@ -1572,58 +1572,45 @@ impl TiledPanes {
                 *viewport,
             );
 
-            let resize_horizontally = |pane_grid: &mut TiledPaneGrid,
-                                       display_area: &mut Size,
-                                       viewport: &mut Viewport,
-                                       cols: usize|
-             -> bool {
-                match pane_grid.layout(SplitDirection::Horizontal, cols) {
-                    Ok(_) => {
-                        let column_difference = cols as isize - display_area.cols as isize;
-                        viewport.cols = (viewport.cols as isize + column_difference) as usize;
-                        display_area.cols = cols;
-                        true
-                    },
-                    Err(e) => match e.downcast_ref::<ZellijError>() {
-                        Some(ZellijError::PaneSizeUnchanged) => true,
-                        _ => false,
-                    },
+            // `PaneSizeUnchanged` is a valid layout that rounded to the same geometry, so it
+            // counts as laid out. Anything else - `PaneLayoutRejected` when a stack cannot fit,
+            // or the solver running out of room - left every pane where it was, and the other
+            // axis is tried first in case that frees the space.
+            let laid_out = |result: Result<()>| -> bool {
+                match result {
+                    Ok(_) => true,
+                    Err(e) => matches!(
+                        e.downcast_ref::<ZellijError>(),
+                        Some(ZellijError::PaneSizeUnchanged)
+                    ),
                 }
             };
-
-            let resize_vertically = |pane_grid: &mut TiledPaneGrid,
-                                     display_area: &mut Size,
-                                     viewport: &mut Viewport,
-                                     rows: usize|
-             -> bool {
-                match pane_grid.layout(SplitDirection::Vertical, rows) {
-                    Ok(_) => {
-                        let row_difference = rows as isize - display_area.rows as isize;
-                        viewport.rows = (viewport.rows as isize + row_difference) as usize;
-                        display_area.rows = rows;
-                        true
-                    },
-                    Err(e) => match e.downcast_ref::<ZellijError>() {
-                        Some(ZellijError::PaneSizeUnchanged) => true,
-                        _ => false,
-                    },
-                }
+            let resize_horizontally = |pane_grid: &mut TiledPaneGrid| -> bool {
+                laid_out(pane_grid.layout(SplitDirection::Horizontal, cols))
+            };
+            let resize_vertically = |pane_grid: &mut TiledPaneGrid| -> bool {
+                laid_out(pane_grid.layout(SplitDirection::Vertical, rows))
             };
 
-            let successfully_resized_horizontally =
-                resize_horizontally(&mut pane_grid, &mut display_area, &mut viewport, cols);
-            if successfully_resized_horizontally {
-                resize_vertically(&mut pane_grid, &mut display_area, &mut viewport, rows);
+            if resize_horizontally(&mut pane_grid) {
+                resize_vertically(&mut pane_grid);
             } else {
                 log::warn!("Failed to resize horizontally, attempting to first resize vertically");
-                let successfully_resized_vertically =
-                    resize_vertically(&mut pane_grid, &mut display_area, &mut viewport, rows);
-                if successfully_resized_vertically {
-                    resize_horizontally(&mut pane_grid, &mut display_area, &mut viewport, cols);
+                if resize_vertically(&mut pane_grid) {
+                    resize_horizontally(&mut pane_grid);
                 } else {
                     log::error!("Failed to resize vertically, will not attempt again.");
                 }
             }
+
+            // The screen is the new size whether or not the panes could follow it: the viewport
+            // and display area describe the screen, not the solver's outcome. Updating them only
+            // on success used to leave the viewport one resize behind the display area after a
+            // refused layout, so the next successful resize moved it by the wrong delta.
+            let column_difference = cols as isize - display_area.cols as isize;
+            let row_difference = rows as isize - display_area.rows as isize;
+            viewport.cols = (viewport.cols as isize + column_difference) as usize;
+            viewport.rows = (viewport.rows as isize + row_difference) as usize;
             display_area.rows = rows;
             display_area.cols = cols;
         }

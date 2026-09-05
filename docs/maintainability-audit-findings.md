@@ -18,6 +18,8 @@ E-group validation: `NEXTEST_TEST_THREADS=16 cargo x ci check` passed format, li
 
 D-group validation: the 16 focused downloader tests pass 10/10 in a loop, and the 7 `wasm_bridge` tests pass. `NEXTEST_TEST_THREADS=16 cargo x ci check` passed format, lint, all 6,954 workspace tests (45 skipped), and doctests. `cargo x integration-test -j 16` passed all 344 whole-app tests with no skips.
 
+The "Runtime and UI contracts" findings F.2–F.5 were revalidated against `93fa6bbb0` and remediated on 2026-09-04. F-group validation: the six duplicate-block tests, the fifteen layout-manager native tests (nine new), and the resizer, stacked-pane, tab-resize and overlay-focus tests (301, three new) pass. `NEXTEST_TEST_THREADS=16 cargo x ci check` passed format, lint, all 7,064 workspace tests (45 skipped), and doctests. `cargo x integration-test -j 16` passed 342 of 344 whole-app tests; the two failures, `hocus_plugin_authoring::hocus_writes_a_lua_plugin_and_loads_it` (a `.bak` file listed by `/plugin_list`) and `hocus_agent_picker::the_agent_list_and_conversation_are_one_panel` (the panel not put away on Esc), fail the same way alone and on the untouched `93fa6bbb0` sources, so they predate this group and are not covered by it.
+
 ## 1. Executive Summary (Minto Top)
 
 - **Configuration saves can silently change existing behavior.** Custom `NewTab` layouts disappear during serialization, and the persistence check cannot detect that information loss.
@@ -148,31 +150,89 @@ Together with the eight findings above, this inventory contains **20 retained fi
 
 ### Runtime and UI contracts
 
-- [ ] **F.2 — Resize success can mean rejected geometry.** Invalid layouts
+- [x] **F.2 — Resize success can mean rejected geometry.** Invalid layouts
   return `Ok(())` without applying spans, while valid but unchanged geometry
   returns `PaneSizeUnchanged`. Callers distinguish those outcomes and can
   update viewport/display dimensions after rejection. The trigger is a layout
   below a stack's minimum height or unchanged geometry after rounding; return
   semantics are proven, but the resulting screen appearance was not exercised.
-- [ ] **F.3 — Focus dispatch discards the actual operation error.** Mapping the
+  Remediation: a refused layout returns the new `ZellijError::PaneLayoutRejected`
+  from `PaneResizer::layout`, so no caller can mistake untouched panes for an
+  applied layout; `PaneSizeUnchanged` keeps meaning a valid layout that rounded
+  to the same geometry. `TiledPanes::resize` already treats any other error as
+  "not laid out" and tries the other axis first, so a rejection now takes that
+  path and is logged. Its screen-size bookkeeping moved out of the success arms:
+  the viewport and display area now follow the screen whether or not the panes
+  could, because updating the display area unconditionally while moving the
+  viewport only on success left the viewport one resize behind after a refusal
+  and applied the wrong delta on the next one. The interactive resize path
+  (`change_pane_size` → `Tab::resize` / `Tab::resize_pane_with_id`) logs the
+  new error non-fatally, as it does every non-fixed-pane error. The best-effort
+  relayouts after a pane closes still discard their result on purpose.
+  Regression coverage: the resizer fixture that locked in the silent `Ok` now
+  asserts the rejection and that nothing moved; the property test treats a
+  rejection like any other failure and checks no pane moved; tab-level tests
+  resize a three-pane stack into two rows and assert every geometry is unchanged
+  while the viewport tracks the display area, then resize into ten rows and
+  assert the stack fills them and the viewport is exactly ten.
+- [x] **F.3 — Focus dispatch discards the actual operation error.** Mapping the
   located tab produces an `Option<Result<()>>`; adding context creates an outer
   result, and `non_fatal()` checks only that outer layer. When the tab
   operation returns an error, its diagnostic is lost while screen focus
   dispatch returns success. Confidence is High for this result-handling
   mechanism; a separate conditional pane-loss concern remains in section 4.
-- [ ] **F.4 — Repeated configuration blocks are silently overlooked.** One
+  Remediation: the lookup is a `match`; the tab's own result gets the context
+  and `non_fatal()`, and a tab that vanished between `go_to_tab` and the lookup
+  is logged. The context names the pane instead of the unrelated
+  `focus_plugin_pane`. The function still returns `Ok` after logging: two screen
+  handlers `?` its result into the `.fatal()` screen thread, so propagating the
+  tab's error would turn a focus failure into a server exit. `rg -U` finds no
+  other `Option<Result>` reaching `non_fatal` in the server.
+  Regression coverage: the existing screen and overlay focus tests. There is no
+  injected-error test: `Tab::focus_pane_with_id` has no failing branch a test can
+  reach without a fault seam (an unknown pane ends in `Ok(())`), and the fix is
+  a shape change that the type system now enforces.
+- [x] **F.4 — Repeated configuration blocks are silently overlooked.** One
   named-node lookup handles each top-level block, with an explicit TODO
   acknowledging repeated blocks and missing informative errors. A document
   containing two `keybinds` blocks, or another repeated supported block, can
   parse successfully without incorporating every occurrence. Confidence is High
   from the lookup paths and explicit comment; this differs from merging
   separate configurations with `base_config`.
-- [ ] **F.5 — Layout-manager mixes width units.** Truncation interprets
+  Remediation: `Config::from_kdl` reads `keybinds`, `themes`, `plugins`,
+  `load_plugins`, `context_menu`, `hooks`, `ui` and `env` through one helper that
+  returns a `KdlError` naming the block, with its span on the second occurrence,
+  when a document repeats it; `Themes::from_string` (theme-directory files) uses
+  the same helper. Merging across files is untouched, since each `config.d`
+  fragment and each layout's embedded config is its own `from_kdl` call over the
+  base. The check is per block rather than "no repeated top-level node": swap
+  layout files legitimately repeat `swap_tiled_layout` at top level. Scalar
+  options read by `Options::from_kdl` keep first-wins semantics; they are a
+  different lookup family and were not part of this finding.
+  Regression coverage: each of the eight blocks repeated is an error naming it
+  and pointing at the second block; one of each block still parses; the shipped
+  default config parses; a theme file with two `themes` blocks is rejected; the
+  same block in a base config and a fragment still merges both bindings.
+- [x] **F.5 — Layout-manager mixes width units.** Truncation interprets
   terminal-column budgets as character counts, wrapping uses byte lengths, and
   a separate ANSI helper uses terminal-cell widths. Wide names can exceed their
   assigned columns, while multibyte Latin text can wrap prematurely. Confidence
   is High for incorrect calculations; exact clipping depends on the renderer
   and terminal dimensions.
+  Remediation: `truncate_with_ellipsis`, `truncate_with_ellipsis_start` and
+  `wrap_text_to_width` budget by `unicode-width` columns through one shared
+  prefix/suffix helper, keeping the plugin's `...` glyph so ASCII output is
+  byte-for-byte what it was. The error screen's wrap decision and centring, and
+  the import screen's save-as line (its fit check, its budget, and the cursor
+  column, which is now the width of the characters before the cursor rather
+  than their count) use the same unit.
+  Regression coverage: ASCII results unchanged at every budget edge; CJK, emoji
+  and a decomposed accent truncated from both ends within their column budget;
+  multibyte Latin and CJK wrapping by column where byte counting broke early;
+  wrap edge cases; and two property tests over mixed narrow, wide, zero-width
+  and multibyte text: truncation never exceeds its budget, text that fits is
+  returned verbatim, a cut with room carries the ellipsis, and wrapped lines fit
+  and keep every word in order.
 
 ### Verification reliability
 

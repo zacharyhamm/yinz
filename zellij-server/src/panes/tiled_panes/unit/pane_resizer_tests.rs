@@ -187,7 +187,7 @@ fn fixtures() -> Vec<Fixture> {
             bands: vec![],
         },
         Fixture {
-            name: "short_stack_aborts_without_error",
+            name: "short_stack_is_rejected_without_mutation",
             specs: vec![
                 spec_stacked(1, 0, 0, dim_pct(100.0, 80), dim_fixed(1), 0),
                 spec_stacked(2, 0, 1, dim_pct(100.0, 80), dim_pct(100.0, 8), 0),
@@ -396,6 +396,7 @@ fn axis_dim(geom: &PaneGeom, axis: Axis) -> (usize, usize, Constraint) {
 fn assert_result_is_benign(run: &Run, name: &str) {
     match &run.outcome {
         Outcome::Ok | Outcome::PaneSizeUnchanged => {},
+        Outcome::LayoutRejected => panic!("fixture `{}` was rejected", name),
         Outcome::OtherErr(msg) => panic!("fixture `{}` produced an error: {}", name, msg),
     }
 }
@@ -595,6 +596,7 @@ fn canonical(run: &Run) -> String {
     let outcome = match &run.outcome {
         Outcome::Ok => "ok".to_string(),
         Outcome::PaneSizeUnchanged => "unchanged".to_string(),
+        Outcome::LayoutRejected => "rejected".to_string(),
         Outcome::OtherErr(msg) => format!("err({})", msg),
     };
     let mut out = outcome;
@@ -792,10 +794,14 @@ fn stack_main_pane_carries_whole_stack() {
 }
 
 #[test]
-fn short_stack_aborts_without_error() {
-    let f = fixture("short_stack_aborts_without_error");
+fn short_stack_is_rejected_without_mutation() {
+    let f = fixture("short_stack_is_rejected_without_mutation");
     let run = f.run();
-    assert_ok(&run, f.name);
+    assert_eq!(
+        run.outcome,
+        Outcome::LayoutRejected,
+        "a stack shorter than its member count must be refused, not reported as applied"
+    );
     assert_no_mutation(&run, &f.specs, f.name);
 }
 
@@ -993,7 +999,7 @@ fn class_b_invariants_hold_for_any_layout(tc: hegel::TestCase) {
     // A layout that cannot fit the space it was given (say a `Fixed(1)` pane in 0 columns) is
     // legitimately unsatisfiable. `PaneResizer::layout` bails before `apply_spans`, so the
     // contract there is that nothing moved - the output invariants have no output to check.
-    if let Outcome::OtherErr(_) = run.outcome {
+    if let Outcome::OtherErr(_) | Outcome::LayoutRejected = run.outcome {
         for snapshot in &run.panes {
             assert_geom_field_eq(
                 &snapshot.current,
