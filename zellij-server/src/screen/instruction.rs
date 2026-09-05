@@ -202,7 +202,7 @@ pub enum ScreenInstruction {
     UpdatePaneCwd(u32, Option<PathBuf>),
     /// The machine a pane's process runs on, for panes that are not local.
     /// Sent once when the pane is created and once when it closes.
-    UpdatePaneHost(u32, Option<String>),
+    UpdatePaneHost(u32, Option<String>, Option<PathBuf>),
     /// A decoration to compose in front of a pane's title, or `None` to drop it.
     ///
     /// Separate from every rename instruction on purpose: this does not touch the

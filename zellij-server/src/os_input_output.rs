@@ -724,6 +724,26 @@ impl ServerOsInputOutput {
         if cmd.cwd.is_none() {
             cmd.cwd = ensured.cwd;
         }
+        // The same adoption for the worktree the VM mirrors. A pane that joins a VM
+        // somebody else provisioned names no worktree, and without one nothing downstream
+        // can say which checkout its guest folder is a copy of: not the daemon working out
+        // the pane's project, not the layout serializer writing `firecracker_worktree=`,
+        // not a duplicate of the pane. The provider has it on record, so ask rather than
+        // guess - and only when the caller named none, since what the caller named is what
+        // the VM was ensured with.
+        let mut rerun_cmd = rerun_cmd;
+        if let Some(worktree) = &ensured.worktree {
+            for target in [&mut cmd.target, &mut rerun_cmd.target] {
+                if let PaneTarget::Firecracker {
+                    worktree: named, ..
+                } = target
+                {
+                    if named.is_none() {
+                        *named = Some(worktree.clone());
+                    }
+                }
+            }
+        }
         let endpoint = RemoteEndpoint {
             host: ensured.ssh_host,
             ssh_options: SshOptions {
@@ -1173,6 +1193,15 @@ pub trait ServerOsApi: Send + Sync {
     fn remote_pane_host(&self, _terminal_id: u32) -> Option<String> {
         None
     }
+    /// The host worktree a Firecracker pane's VM mirrors, as the VM was actually
+    /// provisioned rather than as the caller asked.
+    ///
+    /// Read off the transport's own command for the reason `remote_pane_host` is: a pane
+    /// that joined a VM somebody else named the worktree for asked for none, and the
+    /// answer is the one `resolve_target` adopted from the provider.
+    fn remote_pane_worktree(&self, _terminal_id: u32) -> Option<PathBuf> {
+        None
+    }
     /// Hand a pane's supervisor over without killing it, so another session can
     /// take the running process. Defaulted to an error rather than a no-op: a
     /// backend that cannot do this must refuse the warp, not silently succeed and
@@ -1350,6 +1379,9 @@ impl ServerOsApi for ServerOsInputOutput {
     }
     fn remote_pane_host(&self, terminal_id: u32) -> Option<String> {
         self.pty_backend.remote_host(terminal_id)
+    }
+    fn remote_pane_worktree(&self, terminal_id: u32) -> Option<PathBuf> {
+        self.pty_backend.remote_worktree(terminal_id)
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
         Box::new((*self).clone())

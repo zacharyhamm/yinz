@@ -2160,14 +2160,15 @@ impl State {
             })
     }
 
-    /// The folder a pane is in, with the machine it is on.
+    /// The folder that identifies a pane's work, with the machine it is on.
     ///
-    /// Both halves come off the pane: the daemon puts the folder there and the
-    /// manifest puts the host there. Keeping them together is what stops two
-    /// panes sitting in the same path on different machines from being read as
-    /// one folder.
+    /// Every half comes off the pane: the daemon puts the folder there, and the
+    /// manifest puts the host and the worktree a Firecracker VM mirrors there.
+    /// Keeping them together is what stops two panes sitting in the same path on
+    /// different machines from being read as one folder — see
+    /// [`agents::checkout_location`], which is where the rule lives.
     fn pane_location(pane: &agents::AgentPane) -> Option<Location> {
-        Some(Location::new(pane.host.clone(), pane.cwd.as_deref()?))
+        pane.checkout_location()
     }
 
     /// Pane id to project name, for each agent whose folder a project owns.
@@ -2508,15 +2509,15 @@ impl State {
             "title": header.title,
             "pane_id": header.pane_id,
             "cwd": header.cwd,
-            "project": header
-                .cwd
-                .as_deref()
-                .and_then(|cwd| {
-                    projects::for_cwd(
-                        &self.projects,
-                        &Location::new(header.host.clone(), cwd),
-                    )
-                })
+            // A Firecracker run's `cwd` is a guest path, so its project is the one that
+            // owns the host worktree its VM mirrored — the rule `agents::checkout_location`
+            // states for a live pane, applied to a run that may have no pane left.
+            "project": agents::checkout_location(
+                    header.worktree.as_deref(),
+                    header.host.as_deref(),
+                    header.cwd.as_deref(),
+                )
+                .and_then(|location| projects::for_cwd(&self.projects, &location))
                 .map(|project| project.name.clone()),
             "active": matches!(header.outcome, agents::RunOutcome::Active),
             "outcome": match header.outcome {

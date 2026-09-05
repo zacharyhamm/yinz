@@ -3839,6 +3839,7 @@ mod tests {
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),
             host: None,
+            worktree: None,
             started_at_ms: 10,
             ended_at_ms: Some(20),
             outcome: agents::RunOutcome::Completed,

@@ -54,6 +54,69 @@ fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
     );
 }
 
+/// A pane that names a VM and no worktree - `zellij action new-pane --firecracker review`
+/// joining a VM somebody else provisioned - has no way of its own to say which checkout
+/// the guest copy came from. The provider does, and the answer is adopted onto the pane so
+/// everything downstream can use it: the daemon working out the pane's project, the layout
+/// that serializes it, a duplicate of the pane.
+#[test]
+fn a_firecracker_pane_adopts_the_worktree_the_provider_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("provider");
+    zellij_test_support::write_warm_script(
+        &path,
+        "printf '{\"version\":2,\"ssh_host\":\"build-box\",\"cwd\":\"/workspace\",\
+         \"worktree\":\"/work/hocus\"}'\n",
+    );
+
+    let server = make_server();
+    *server.firecracker.write().unwrap() = Some((
+        crate::firecracker::Provider::new(path, crate::firecracker::AMPLE_TIMEOUT).unwrap(),
+        "work".to_owned(),
+    ));
+    let joined = RunCommand {
+        command: PathBuf::from("claude"),
+        target: PaneTarget::Firecracker {
+            vm: "review".to_owned(),
+            image: None,
+            worktree: None,
+        },
+        ..Default::default()
+    };
+
+    let (resolved, rerun, _) = server.resolve_target(joined, None).unwrap();
+    assert_eq!(
+        resolved.target.firecracker_worktree(),
+        Some(Path::new("/work/hocus"))
+    );
+    // The rerun command too, so a held pane that is run again keeps the identity rather
+    // than waiting for the next ensure to hand it back.
+    assert_eq!(
+        rerun.target.firecracker_worktree(),
+        Some(Path::new("/work/hocus"))
+    );
+
+    // What the caller named is what the VM was ensured with, so it is never overridden.
+    let named = RunCommand {
+        command: PathBuf::from("claude"),
+        target: PaneTarget::Firecracker {
+            vm: "review".to_owned(),
+            image: None,
+            worktree: Some(PathBuf::from("/work/other")),
+        },
+        ..Default::default()
+    };
+    assert_eq!(
+        server
+            .resolve_target(named, None)
+            .unwrap()
+            .0
+            .target
+            .firecracker_worktree(),
+        Some(Path::new("/work/other"))
+    );
+}
+
 #[test]
 fn rename_firecracker_session_updates_the_session_key() {
     use std::fs;

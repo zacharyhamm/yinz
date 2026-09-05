@@ -792,6 +792,9 @@ fn response(config: &Config, state: &VmState) -> EnsureResponse {
         cwd: Some(config.guest_cwd.clone()),
         ssh_identity_file: Some(config.ssh_private_key.clone()),
         ssh_known_hosts_file: Some(state.known_hosts.clone()),
+        // What this VM mirrors, whoever asked for it. A join names no worktree of its
+        // own, and this is the only place the answer exists.
+        worktree: state.worktree.clone(),
     }
 }
 
@@ -5837,6 +5840,24 @@ mod tests {
             known_hosts: PathBuf::from("known_hosts"),
             cgroup,
         }
+    }
+
+    /// The `ensure` reply carries the worktree the VM mirrors, so a pane that joined a VM
+    /// it named no worktree for can still say which checkout its guest copy came from.
+    #[test]
+    fn an_ensure_reply_names_the_worktree_the_vm_mirrors() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = provider_config(dir.path());
+        let mut state = vm_state(dir.path().join("rootfs"), dir.path().join("api"), None);
+
+        // A VM an agent got to itself mirrors nothing, and says so.
+        assert_eq!(response(&config, &state).worktree, None);
+
+        state.worktree = Some(PathBuf::from("/work/hocus"));
+        assert_eq!(
+            response(&config, &state).worktree,
+            Some(PathBuf::from("/work/hocus"))
+        );
     }
 
     fn provider_config(root: &Path) -> Config {

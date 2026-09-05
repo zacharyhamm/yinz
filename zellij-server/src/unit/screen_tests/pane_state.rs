@@ -26,6 +26,65 @@ fn a_pane_manifest_carries_the_pane_cwd() {
     assert_eq!(pane.cwd.as_deref(), Some("/work/hocus"));
 }
 
+/// A pane that named a VM and no worktree of its own gets the one the provider named,
+/// so every reader of the manifest can say which checkout its guest folder is a copy of.
+/// The pane's own `invoked_with` is what it *asked* for, and a pane joining a VM
+/// somebody else provisioned asked for a VM by name and nothing else.
+#[test]
+fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
+    use zellij_utils::data::PaneTarget;
+    use zellij_utils::input::command::RunCommand;
+    use zellij_utils::input::layout::Run;
+
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    let joined = RunCommand {
+        command: std::path::PathBuf::from("claude"),
+        target: PaneTarget::Firecracker {
+            vm: "review".to_owned(),
+            image: None,
+            worktree: None,
+        },
+        ..Default::default()
+    };
+    screen.new_tab(0, (vec![], vec![]), None, Some(1)).unwrap();
+    screen
+        .apply_layout(
+            TiledPaneLayout {
+                run: Some(Run::Command(joined)),
+                ..TiledPaneLayout::default()
+            },
+            vec![],
+            vec![(1, None)],
+            vec![],
+            HashMap::new(),
+            0,
+            true,
+            1,
+            None,
+        )
+        .expect("TEST");
+    screen
+        .set_pane_host(
+            1,
+            Some("firecracker:review".to_owned()),
+            Some(std::path::PathBuf::from("/work/hocus")),
+        )
+        .unwrap();
+
+    let manifest = screen.generate_and_report_pane_state().expect("TEST");
+    let pane = manifest
+        .panes
+        .values()
+        .flatten()
+        .find(|pane| pane.id == 1 && !pane.is_plugin)
+        .expect("the terminal pane is in the manifest");
+    assert_eq!(
+        pane.target.firecracker_worktree(),
+        Some(std::path::Path::new("/work/hocus"))
+    );
+    assert_eq!(pane.host.as_deref(), Some("firecracker:review"));
+}
+
 /// A plugin is not a process in a folder, and a plugin id shares its number
 /// space with a terminal id — so an unguarded lookup would hand it one.
 #[test]

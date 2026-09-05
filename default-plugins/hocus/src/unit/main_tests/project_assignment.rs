@@ -465,6 +465,29 @@ fn an_agent_on_another_machine_does_not_join_a_local_project_by_path() {
     );
 }
 
+/// The exception, and the pair the rule above reads with: a Firecracker VM mirrors a
+/// folder on *this* machine, so its agent is doing that project's work in a copy. The
+/// guest folder is still a path over there and still matches nothing by itself.
+#[test]
+fn a_firecracker_agent_joins_the_project_of_the_worktree_its_vm_mirrors() {
+    let mut state = state_with_panes();
+    state.projects.insert(
+        "hocus".to_owned(),
+        projects::validate("hocus", "/work/hocus").unwrap(),
+    );
+    state.panes[0].cwd = Some("/workspace".to_owned());
+    state.panes[0].host = Some("firecracker:review".to_owned());
+    state.panes[0].firecracker_worktree = Some("/work/hocus".to_owned());
+    state.repositories =
+        BTreeMap::from([(Location::local("/work/hocus"), checkout("/work/hocus"))]);
+
+    let pane_id = state.panes[0].pane_id;
+    assert_eq!(
+        state.pane_projects().get(&pane_id).map(String::as_str),
+        Some("hocus"),
+    );
+}
+
 /// What a remote checkout *may* match on. The same repository on two machines is
 /// the same work, and its remote url is the one identity that says so.
 #[test]

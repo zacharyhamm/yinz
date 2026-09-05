@@ -369,6 +369,16 @@ fn agent_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
 }
 
 /// A state with one tab, active, that the poll can assign.
+/// An agent in a Firecracker VM, whose folder is a guest path in a copy of
+/// `worktree` — the folder on this machine its work is merged back into.
+fn vm_agent_in(pane_id: u32, worktree: &str, tab_id: usize) -> agents::AgentPane {
+    agents::AgentPane {
+        host: Some("firecracker:review".to_owned()),
+        firecracker_worktree: Some(worktree.to_owned()),
+        ..agent_in(pane_id, "/workspace", tab_id)
+    }
+}
+
 /// A plain shell, which names a tab but is nobody's agent.
 fn shell_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
     agents::AgentPane {
@@ -472,9 +482,11 @@ fn poll_focus(
     let probed: Vec<(Location, projects::Repository)> = panes
         .iter()
         .filter_map(|pane| {
-            let cwd = pane.cwd.clone()?;
-            let repository = probe(&cwd);
-            Some((Location::new(pane.host.clone(), &cwd), repository))
+            // The folder the daemon would have probed, which for a Firecracker pane is
+            // the host worktree its VM mirrors rather than the guest copy.
+            let location = pane.checkout_location()?;
+            let repository = probe(&location.path).on_host(location.host.clone());
+            Some((location, repository))
         })
         .collect();
     // Keyed by the pane's folder, which is what the daemon keys it by —
@@ -487,7 +499,7 @@ fn poll_focus(
     let agent_folders: BTreeSet<Location> = panes
         .iter()
         .filter(|pane| agents::classify(pane, &state.manual_kinds).is_some())
-        .filter_map(|pane| Some(Location::new(pane.host.clone(), pane.cwd.as_deref()?)))
+        .filter_map(|pane| pane.checkout_location())
         .collect();
     let repositories: Vec<projects::Repository> = probed
         .into_iter()

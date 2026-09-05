@@ -29,6 +29,26 @@ fn seed_on_host(state: &State, id: &str, cwd: &str, host: &str) {
     seed_run(state, id, "claude", "main", cwd, Some(host), Vec::new());
 }
 
+/// And for a run in a Firecracker VM: its folder is a guest path, and `worktree` is the
+/// folder on this machine the VM mirrored.
+fn seed_in_vm(state: &State, id: &str, worktree: &str) {
+    let run = AgentRun {
+        worktree: Some(worktree.to_owned()),
+        ..stored_run(
+            id,
+            "claude",
+            "main",
+            "/workspace",
+            Some("firecracker:review"),
+            Vec::new(),
+        )
+    };
+    state
+        .store()
+        .apply(hocus_proto::agents::rows::run_mutations(&run))
+        .expect("seeded the run");
+}
+
 fn seed_run(
     state: &State,
     id: &str,
@@ -38,7 +58,22 @@ fn seed_run(
     host: Option<&str>,
     entries: Vec<RunEntry>,
 ) {
-    let run = AgentRun {
+    let run = stored_run(id, kind, session, cwd, host, entries);
+    state
+        .store()
+        .apply(hocus_proto::agents::rows::run_mutations(&run))
+        .expect("seeded the run");
+}
+
+fn stored_run(
+    id: &str,
+    kind: &str,
+    session: &str,
+    cwd: &str,
+    host: Option<&str>,
+    entries: Vec<RunEntry>,
+) -> AgentRun {
+    AgentRun {
         id: id.to_owned(),
         pane_id: 7,
         zellij_session_name: session.to_owned(),
@@ -46,6 +81,7 @@ fn seed_run(
         kind: kind.to_owned(),
         cwd: Some(cwd.to_owned()),
         host: host.map(str::to_owned),
+        worktree: None,
         started_at_ms: 1_000,
         ended_at_ms: None,
         outcome: RunOutcome::Active,
@@ -53,11 +89,7 @@ fn seed_run(
         summarized_revision: 0,
         summary: None,
         entries,
-    };
-    state
-        .store()
-        .apply(hocus_proto::agents::rows::run_mutations(&run))
-        .expect("seeded the run");
+    }
 }
 
 /// A state with a project and two runs in it: one here, one in another session.
@@ -167,6 +199,35 @@ fn a_run_from_another_machine_belongs_to_no_local_project() {
         .find(|run| run["run_id"] == "claude:remote")
         .expect("the remote run is still listed");
     assert_eq!(remote["project"], serde_json::Value::Null);
+}
+
+/// The pair the test above reads with, and the one that has to hold in both directions
+/// at once: a VM run is annotated with the project of the worktree its VM mirrored, and
+/// the filter for that project lists it. Either half alone would let the listing say a
+/// run is in a project it then leaves out of that project's page.
+#[test]
+fn a_firecracker_run_is_listed_and_annotated_with_the_project_its_vm_mirrored() {
+    let mut state = state_with_runs();
+    seed_in_vm(&state, "claude:vm", "/work/hocus");
+
+    let by_project = tool(&mut state, "agent_runs", r#"{"project":"hocus"}"#);
+    let listed_ids: Vec<&str> = by_project["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|run| run["run_id"].as_str().unwrap())
+        .collect();
+    assert!(listed_ids.contains(&"claude:vm"), "{listed_ids:?}");
+
+    let vm = by_project["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|run| run["run_id"] == "claude:vm")
+        .expect("the VM run is listed under the project");
+    assert_eq!(vm["project"], "hocus");
+    // And the folder it names is still the guest one, which is where the process was.
+    assert_eq!(vm["cwd"], "/workspace");
 }
 
 #[test]

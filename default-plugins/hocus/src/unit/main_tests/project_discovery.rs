@@ -176,6 +176,36 @@ fn a_tab_with_agents_from_two_projects_gets_no_assignment() {
     assert!(state.active_project.is_none());
 }
 
+/// An agent in a VM is working on the checkout the VM mirrors, so its tab takes that
+/// project — the same answer an agent sitting in the worktree would give.
+#[test]
+fn a_tab_of_firecracker_agents_takes_the_project_their_vms_mirror() {
+    let mut state = state_with_tab(9);
+    poll(&mut state, vec![vm_agent_in(3, "/work/hocus", 9)]);
+
+    assert_eq!(state.auto_tab_projects[&9], "hocus");
+    assert_eq!(state.active_project.as_deref(), Some("hocus"));
+}
+
+/// And it counts as a vote, so a tab that mixes one with a local agent elsewhere is a
+/// tab about two projects and gets no assignment. Before a VM agent had a project it
+/// contributed nothing and the local one won alone.
+#[test]
+fn a_tab_mixing_a_local_agent_and_a_firecracker_agent_elsewhere_gets_no_assignment() {
+    let mut state = state_with_tab(9);
+    poll(
+        &mut state,
+        vec![
+            agent_in(3, "/work/hocus", 9),
+            vm_agent_in(4, "/other/pocus", 9),
+        ],
+    );
+
+    assert_eq!(state.projects.len(), 2);
+    assert!(state.auto_tab_projects.is_empty());
+    assert!(state.active_project.is_none());
+}
+
 #[test]
 fn an_explicit_assignment_wins_over_the_automatic_one() {
     let mut state = state_with_tab(9);

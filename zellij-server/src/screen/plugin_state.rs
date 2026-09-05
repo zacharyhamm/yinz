@@ -10,7 +10,7 @@ use std::time::Duration;
 use zellij_utils::consts::ZELLIJ_SOCK_DIR;
 use zellij_utils::data::{
     Event, EventType, LayoutInfo, LayoutWithError, ListPanesResponse, ListTabsResponse, PaneInfo,
-    PaneListEntry, PaneManifest, SessionInfo, TabInfo,
+    PaneListEntry, PaneManifest, PaneTarget, SessionInfo, TabInfo,
 };
 #[cfg(not(test))]
 use zellij_utils::input::layout::Layout;
@@ -144,6 +144,24 @@ impl Screen {
                 .get(&pane_info.id)
                 .map(|cwd| cwd.to_string_lossy().into_owned());
             pane_info.host = self.terminal_hosts.get(&pane_info.id).cloned();
+            // The worktree the pane's VM actually mirrors, for a pane that named none of
+            // its own: `pane_info.target` is what the pane was *asked* for, and a pane
+            // that joined an existing VM asked for a VM by name and nothing else. Only
+            // filled in, never overridden - a pane that named a worktree was ensured with
+            // that one.
+            if let (
+                Some(worktree),
+                PaneTarget::Firecracker {
+                    worktree: named, ..
+                },
+            ) = (
+                self.terminal_firecracker_worktrees.get(&pane_info.id),
+                &mut pane_info.target,
+            ) {
+                if named.is_none() {
+                    *named = Some(worktree.clone());
+                }
+            }
         }
         let mut plugin_updates = vec![];
         let client_ids: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();
