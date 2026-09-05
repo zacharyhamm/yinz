@@ -1969,7 +1969,7 @@ fn open_file_near_plugin(
         Some(title),
         NewPanePlacement::default(),
         start_suppressed,
-        ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
+        ClientTabIndexOrPaneId::PaneIdOrClient(PaneId::Plugin(env.plugin_id), env.client_id),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
     );
@@ -2012,7 +2012,7 @@ fn open_file_floating_near_plugin(
         Some(title),
         NewPanePlacement::Floating(floating_pane_coordinates),
         start_suppressed,
-        ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
+        ClientTabIndexOrPaneId::PaneIdOrClient(PaneId::Plugin(env.plugin_id), env.client_id),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
     );
@@ -2127,7 +2127,7 @@ fn open_terminal_near_plugin(env: &mut PluginEnv, cwd: PathBuf) {
             borderless: None,
         },
         false,
-        ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
+        ClientTabIndexOrPaneId::PaneIdOrClient(PaneId::Plugin(env.plugin_id), env.client_id),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
     ));
@@ -2206,7 +2206,7 @@ fn open_terminal_floating_near_plugin(
         name,
         NewPanePlacement::Floating(floating_pane_coordinates),
         false,
-        ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
+        ClientTabIndexOrPaneId::PaneIdOrClient(PaneId::Plugin(env.plugin_id), env.client_id),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
     ));
@@ -2518,7 +2518,7 @@ fn spawn_command_pane_near_plugin(
             borderless: None,
         },
         false,
-        ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
+        ClientTabIndexOrPaneId::PaneIdOrClient(PaneId::Plugin(env.plugin_id), env.client_id),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
     ));
@@ -2968,7 +2968,7 @@ fn open_command_pane_floating_near_plugin(
         name,
         NewPanePlacement::Floating(floating_pane_coordinates),
         false,
-        ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
+        ClientTabIndexOrPaneId::PaneIdOrClient(PaneId::Plugin(env.plugin_id), env.client_id),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
     ));

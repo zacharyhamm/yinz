@@ -525,6 +525,11 @@ checkout share one VM. The pane is an agent pane from its first
 moment: its record is on `pane_update`, its exit fires `agent_exit`. Answers with the pane id
 (`{ Terminal = n }`), raises on failure. Needs `run_commands`.
 
+The pane opens beside the plugin's own. A plugin that has no pane - one loaded headless while no
+client was attached, so nothing of it is on screen yet - opens it in the tab the session is
+looking at instead, rather than losing the agent. The same holds for every other `*_near_plugin`
+command.
+
 `zellij.open_command_pane_in_git_checkout_near_plugin` is the lower-level command it is built
 on - a `CommandToRun` plus a `GitCheckout` (`"Current"`, `{ NewBranch = { branch, base } }`,
 `{ NewWorktree = { branch, base, path } }`) - for a command that is not an agent.

@@ -2118,6 +2118,7 @@ mod host_query;
 mod key_intercepts;
 mod mouse;
 mod nested_sessions;
+mod new_pane_placement;
 mod notification_animation;
 mod overlays;
 mod pane_state;
