@@ -2,4 +2,6 @@
 source: zellij-server/src/plugins/./unit/plugin_tests.rs
 expression: "format!(\"{:#?}\", plugin_bytes_event)"
 ---
-None
+Some(
+    "Delete layout success\n\r",
+)

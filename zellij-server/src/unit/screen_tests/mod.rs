@@ -136,13 +136,36 @@ fn wait_for_settled_render(
     what: &str,
     is_settled: impl Fn(&str) -> bool,
 ) -> String {
+    wait_for_render_after(
+        received_server_instructions,
+        screen_size,
+        0,
+        what,
+        |_, frame| is_settled(frame),
+    )
+}
+
+fn wait_for_render_after(
+    received_server_instructions: &Watched<Vec<ServerInstruction>>,
+    screen_size: Size,
+    checkpoint: usize,
+    what: &str,
+    is_settled: impl Fn(Option<(usize, usize)>, &str) -> bool,
+) -> String {
     received_server_instructions.wait_until_described(
         what,
         zellij_test_support::default_timeout(),
         |events| {
+            // Replay all deltas to reconstruct the grid; only accept new frames.
+            let old_frames = events
+                .iter()
+                .take(checkpoint)
+                .filter(|event| matches!(event, ServerInstruction::Render(Some(_))))
+                .count();
             take_snapshots_and_cursor_coordinates_from_render_events(events.iter(), screen_size)
                 .into_iter()
-                .find(|(_, snapshot)| is_settled(snapshot))
+                .skip(old_frames)
+                .find(|(cursor, snapshot)| is_settled(*cursor, snapshot))
                 .map(|(_, snapshot)| snapshot)
         },
         |events| {
@@ -1632,21 +1655,23 @@ fn fill_pane_zero(mock_screen: &MockScreen) {
         0,
         pane_contents.as_bytes().to_vec(),
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
 }
 
-fn last_change_mode_for_client(
-    received_server_instructions: &Watched<Vec<ServerInstruction>>,
+fn wait_for_mode_after(
+    log: &Watched<Vec<ServerInstruction>>,
+    checkpoint: usize,
     client_id: ClientId,
-) -> Option<InputMode> {
-    received_server_instructions
-        .lock()
-        .iter()
-        .rev()
-        .find_map(|instruction| match instruction {
-            ServerInstruction::ChangeMode(cid, mode, _) if *cid == client_id => Some(*mode),
-            _ => None,
-        })
+    mode: InputMode,
+) {
+    log.wait_until(
+        "mode change after focus action",
+        zellij_test_support::default_timeout(),
+        |events| {
+            events.iter().skip(checkpoint).any(|event| {
+                matches!(event, ServerInstruction::ChangeMode(cid, observed, _) if *cid == client_id && *observed == mode)
+            }).then_some(())
+        },
+    );
 }
 
 fn assert_focus_change_syncs_scroll_mode(default_mode: InputMode) {
@@ -1673,6 +1698,12 @@ fn assert_focus_change_syncs_scroll_mode(default_mode: InputMode) {
     // survives (see scroll_position_is_preserved_across_move_focus above), so the left pane is
     // left scrolled while the client is back in its default mode.
     fill_pane_zero(&mock_screen);
+    wait_for_settled_render(
+        &received_server_instructions,
+        size,
+        "pane filled",
+        |frame| frame.contains("something 19"),
+    );
     let _ = mock_screen.to_screen.send(ScreenInstruction::ChangeMode(
         InputMode::Scroll,
         None,
@@ -1689,7 +1720,13 @@ fn assert_focus_change_syncs_scroll_mode(default_mode: InputMode) {
         client_id,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    wait_for_settled_render(
+        &received_server_instructions,
+        size,
+        "left pane scrolled",
+        |frame| frame.contains("SCROLL:  4/13") && !frame.contains("something 19"),
+    );
+    let checkpoint = received_server_instructions.lock().len();
 
     // From the default mode, focus the unscrolled (right) pane: nothing to sync.
     send_cli_action_to_server(
@@ -1699,7 +1736,14 @@ fn assert_focus_change_syncs_scroll_mode(default_mode: InputMode) {
         },
         client_id,
     );
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    wait_for_render_after(
+        &received_server_instructions,
+        size,
+        checkpoint,
+        "focus on right pane",
+        |cursor, _| cursor.is_some_and(|(x, _)| x > 40),
+    );
+    let checkpoint = received_server_instructions.lock().len();
     // Focus back to the scrolled (left) pane: the client should be switched to Scroll.
     send_cli_action_to_server(
         &session_metadata,
@@ -1708,11 +1752,11 @@ fn assert_focus_change_syncs_scroll_mode(default_mode: InputMode) {
         },
         client_id,
     );
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    assert_eq!(
-        last_change_mode_for_client(&received_server_instructions, client_id),
-        Some(InputMode::Scroll),
-        "focusing the scrolled pane should switch the client to Scroll mode",
+    wait_for_mode_after(
+        &received_server_instructions,
+        checkpoint,
+        client_id,
+        InputMode::Scroll,
     );
 
     // The mock has no server loop to round-trip ServerInstruction::ChangeMode back into the
@@ -1723,7 +1767,7 @@ fn assert_focus_change_syncs_scroll_mode(default_mode: InputMode) {
         client_id,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    let checkpoint = received_server_instructions.lock().len();
     // Focus the unscrolled (right) pane: the client should return to its default mode.
     send_cli_action_to_server(
         &session_metadata,
@@ -1732,11 +1776,11 @@ fn assert_focus_change_syncs_scroll_mode(default_mode: InputMode) {
         },
         client_id,
     );
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    assert_eq!(
-        last_change_mode_for_client(&received_server_instructions, client_id),
-        Some(default_mode),
-        "focusing the unscrolled pane should return the client to its default mode",
+    wait_for_mode_after(
+        &received_server_instructions,
+        checkpoint,
+        client_id,
+        default_mode,
     );
 
     mock_screen.teardown(vec![server_thread, screen_thread]);

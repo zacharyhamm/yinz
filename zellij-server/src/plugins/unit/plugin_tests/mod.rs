@@ -189,6 +189,25 @@ fn deny_permissions_and_log_until_disconnect(
     plugin_thread_sender: SenderWithContext<PluginInstruction>,
     client_id: ClientId,
 ) -> std::thread::JoinHandle<()> {
+    permissions_and_log_until_disconnect(
+        log,
+        screen_receiver,
+        cache_path,
+        plugin_thread_sender,
+        client_id,
+        PermissionStatus::Denied,
+    )
+}
+
+/// Answers permissions before logging the request; joins only after teardown.
+fn permissions_and_log_until_disconnect(
+    log: &Watched<Vec<ScreenInstruction>>,
+    screen_receiver: Receiver<(ScreenInstruction, ErrorContext)>,
+    cache_path: PathBuf,
+    plugin_thread_sender: SenderWithContext<PluginInstruction>,
+    client_id: ClientId,
+    status: PermissionStatus,
+) -> std::thread::JoinHandle<()> {
     let log = log.clone();
     std::thread::Builder::new()
         .name("fake_screen_thread".to_string())
@@ -203,7 +222,7 @@ fn deny_permissions_and_log_until_disconnect(
                                 *plugin_id,
                                 Some(client_id),
                                 permission.permissions.clone(),
-                                PermissionStatus::Denied,
+                                status,
                                 Some(cache_path.clone()),
                             ));
                     }
@@ -305,8 +324,12 @@ fn describe_renders(instructions: &[ScreenInstruction]) -> String {
 /// nothing it renders can say the denial arrived; the render the host forces after one shows an
 /// empty event list.)
 fn wait_for_permissions_to_be_denied(log: &Watched<Vec<ScreenInstruction>>) {
+    wait_for_permissions(log);
+}
+
+fn wait_for_permissions(log: &Watched<Vec<ScreenInstruction>>) {
     log.wait_until_described(
-        "the plugin's permission request, answered with Denied",
+        "the plugin's permission request to be answered",
         default_timeout(),
         |instructions| {
             instructions

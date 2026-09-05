@@ -30,6 +30,12 @@ pub fn scroll_position_is_preserved_across_move_focus() {
     // Fill and scroll up the left pane (terminal 0), then leave Scroll mode: with the fix, the
     // scroll position must survive the mode change (this used to be unconditionally cleared).
     fill_pane_zero(&mock_screen);
+    wait_for_settled_render(
+        &received_server_instructions,
+        size,
+        "pane filled",
+        |frame| frame.contains("something 19"),
+    );
     let _ = mock_screen.to_screen.send(ScreenInstruction::ChangeMode(
         InputMode::Scroll,
         None,
@@ -46,7 +52,13 @@ pub fn scroll_position_is_preserved_across_move_focus() {
         client_id,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    let scrolled = wait_for_settled_render(
+        &received_server_instructions,
+        size,
+        "left pane scrolled",
+        |frame| frame.contains("SCROLL:  4/13") && !frame.contains("something 19"),
+    );
+    let checkpoint = received_server_instructions.lock().len();
 
     // Move focus away to the right pane and back to the left (scrolled) pane. A MoveFocus always
     // leaves Scroll mode first, which is exactly the path that used to reset the scroll position.
@@ -57,7 +69,14 @@ pub fn scroll_position_is_preserved_across_move_focus() {
         },
         client_id,
     );
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    wait_for_render_after(
+        &received_server_instructions,
+        size,
+        checkpoint,
+        "focus on right pane",
+        |cursor, _| cursor.is_some_and(|(x, _)| x > 40),
+    );
+    let checkpoint = received_server_instructions.lock().len();
     send_cli_action_to_server(
         &session_metadata,
         CliAction::MoveFocus {
@@ -65,24 +84,22 @@ pub fn scroll_position_is_preserved_across_move_focus() {
         },
         client_id,
     );
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    mock_screen.teardown(vec![server_thread, screen_thread]);
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().iter(),
+    let returned = wait_for_render_after(
+        &received_server_instructions,
         size,
+        checkpoint,
+        "focus back on scrolled left pane",
+        |cursor, frame| {
+            cursor.is_some_and(|(x, _)| x < 40)
+                && frame.contains("SCROLL:")
+                && !frame.contains("something 19")
+        },
     );
-    let (_cursor_position, last_snapshot) = snapshots.last().unwrap();
-    assert!(
-        last_snapshot.contains("SCROLL:"),
-        "the left pane should still show a scroll indicator after moving focus away and back, got:\n{}",
-        last_snapshot
+    assert_eq!(
+        returned, scrolled,
+        "focus must preserve the scroll position"
     );
-    assert!(
-        !last_snapshot.contains("something 19"),
-        "the left pane should still be scrolled up (the last line should not be visible) after moving focus away and back, got:\n{}",
-        last_snapshot
-    );
+    mock_screen.teardown(vec![server_thread, screen_thread]);
 }
 
 #[test]

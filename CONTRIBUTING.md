@@ -49,6 +49,12 @@ You can see a list of all commands (with supported arguments) with `cargo xtask
 
 To run `test`, you will need the package `pkg-config` and a version of `openssl`.
 
+Before handing off a branch or opening a PR, run `cargo x ci check`. This fork has no hosted
+CI. The gate runs format checking, lint, workspace tests, and whole-app integration tests.
+Every phase runs even if an earlier phase fails; any failure makes the gate fail. The integration
+phase uses 16 nextest workers (or the existing serial fallback if nextest is unavailable).
+Standalone `cargo x test` selection is unchanged. Docker-dependent suites remain separate.
+
 ### How builtin plugins are found
 
 Builtin plugins (`status-bar`, `tab-bar`, ...) are `.wasm` files loaded from disk on

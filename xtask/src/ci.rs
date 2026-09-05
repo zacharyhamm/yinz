@@ -295,6 +295,21 @@ fn check(sh: &Shell) -> anyhow::Result<()> {
         failed.push("test");
     }
 
+    {
+        let _threads = sh.push_env("NEXTEST_TEST_THREADS", "16");
+        if crate::integration_test::integration_test(
+            sh,
+            flags::IntegrationTest {
+                serial: false,
+                args: vec![],
+            },
+        )
+        .is_err()
+        {
+            failed.push("integration-test");
+        }
+    }
+
     if failed.is_empty() {
         crate::status(">> All checks passed");
         println!("\n>> All checks passed");

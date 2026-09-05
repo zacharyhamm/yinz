@@ -30,7 +30,7 @@ xflags::xflags! {
                 required triple: OsString
             }
 
-            /// The pre-handoff gate: format --check, lint, test
+            /// The pre-handoff gate: format --check, lint, test, integration-test (16 workers)
             cmd check {
             }
 

@@ -28,15 +28,13 @@ pub fn load_new_plugin_from_hd() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = grant_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        2,
-        &PermissionType::ChangeApplicationState,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
@@ -58,14 +56,15 @@ pub fn load_new_plugin_from_hd() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_permissions(&received_screen_instructions);
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::InputReceived,
     )])); // will be cached and sent to the plugin once it's loaded
-    screen_thread.join().unwrap(); // this might take a while if the cache is cold
+    wait_for_render_containing(&received_screen_instructions, "InputReceived");
     teardown();
+    screen_thread.join().unwrap();
     let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
         if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
             for plugin_render_asset in plugin_render_assets {
@@ -108,15 +107,13 @@ pub fn shared_plugin_has_one_instance_serving_all_clients() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = grant_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        2,
-        &PermissionType::ChangeApplicationState,
         cache_path,
-        plugin_thread_sender,
-        first_client_id
+        plugin_thread_sender.clone(),
+        first_client_id,
+        PermissionStatus::Granted,
     );
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(first_client_id));
@@ -138,17 +135,32 @@ pub fn shared_plugin_has_one_instance_serving_all_clients() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_permissions(&received_screen_instructions);
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(second_client_id));
-    std::thread::sleep(std::time::Duration::from_millis(500));
     // directed at the second client, which has no instance of its own
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(second_client_id),
         Event::InputReceived,
     )]));
-    screen_thread.join().unwrap();
+    received_screen_instructions.wait_until_described(
+        "both clients to render the event",
+        default_timeout(),
+        |log| {
+            let frames = rendered_assets(log);
+            [first_client_id, second_client_id]
+                .iter()
+                .all(|id| {
+                    frames
+                        .iter()
+                        .any(|(client, frame)| client == id && frame.contains("InputReceived"))
+                })
+                .then_some(())
+        },
+        |log| describe_renders(log),
+    );
     teardown();
+    screen_thread.join().unwrap();
     let mut clients_that_rendered_the_event = vec![];
     for screen_instruction in received_screen_instructions.lock().iter() {
         if let ScreenInstruction::PluginBytes(plugin_render_assets) = screen_instruction {
@@ -197,15 +209,13 @@ pub fn load_new_plugin_with_plugin_alias() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = grant_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        2,
-        &PermissionType::ChangeApplicationState,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
@@ -227,14 +237,15 @@ pub fn load_new_plugin_with_plugin_alias() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_permissions(&received_screen_instructions);
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::InputReceived,
     )])); // will be cached and sent to the plugin once it's loaded
-    screen_thread.join().unwrap(); // this might take a while if the cache is cold
+    wait_for_render_containing(&received_screen_instructions, "InputReceived");
     teardown();
+    screen_thread.join().unwrap();
     let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
         if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
             for plugin_render_asset in plugin_render_assets {
@@ -275,15 +286,13 @@ pub fn plugin_workers() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = grant_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        3,
-        &PermissionType::ChangeApplicationState,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
@@ -305,18 +314,18 @@ pub fn plugin_workers() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_permissions(&received_screen_instructions);
     // we send a SystemClipboardFailure to trigger the custom handler in the fixture plugin that
     // will send a message to the worker and in turn back to the plugin to be rendered, so we know
     // that this cycle is working
-    std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::SystemClipboardFailure,
     )])); // will be cached and sent to the plugin once it's loaded
-    screen_thread.join().unwrap(); // this might take a while if the cache is cold
+    wait_for_render_containing(&received_screen_instructions, "Payload from worker");
     teardown();
+    screen_thread.join().unwrap();
     let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
         if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
             for plugin_render_asset in plugin_render_assets {
@@ -357,15 +366,13 @@ pub fn plugin_workers_persist_state() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = grant_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        5,
-        &PermissionType::ChangeApplicationState,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
@@ -387,27 +394,27 @@ pub fn plugin_workers_persist_state() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_permissions(&received_screen_instructions);
     // we send a SystemClipboardFailure to trigger the custom handler in the fixture plugin that
     // will send a message to the worker and in turn back to the plugin to be rendered, so we know
     // that this cycle is working
     // we do this a second time so that the worker will log the first message on its own state and
     // then send us the "received 2 messages" indication we check for below, letting us know it
     // managed to persist its own state and act upon it
-    //std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::SystemClipboardFailure,
     )]));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_render_containing(&received_screen_instructions, "Payload from worker");
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::SystemClipboardFailure,
     )]));
-    screen_thread.join().unwrap(); // this might take a while if the cache is cold
+    wait_for_render_containing(&received_screen_instructions, "received 2 messages");
     teardown();
+    screen_thread.join().unwrap();
     let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
         if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
             for plugin_render_asset in plugin_render_assets {
@@ -449,15 +456,13 @@ pub fn can_subscribe_to_hd_events() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = grant_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        2,
-        &PermissionType::ChangeApplicationState,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
@@ -479,16 +484,31 @@ pub fn can_subscribe_to_hd_events() {
         None,
         None,
     ));
-    // extra long time because we only start the fs watcher on plugin load
-    std::thread::sleep(std::time::Duration::from_millis(5000));
+    // Registration is queued during load, before this post-load state request.
+    wait_for_permissions(&received_screen_instructions);
+    received_screen_instructions.wait_until("post-load state request", default_timeout(), |log| {
+        log.iter()
+            .any(|i| matches!(i, ScreenInstruction::RequestStateUpdateForPlugins))
+            .then_some(())
+    });
+    let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
+        None,
+        Some(client_id),
+        Event::InputReceived,
+    )]));
+    wait_for_render_containing(&received_screen_instructions, "InputReceived");
     std::fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
         .open(PathBuf::from(temp_folder.path()).join("test1"))
         .unwrap();
-    screen_thread.join().unwrap(); // this might take a while if the cache is cold
+    wait_for_render_containing(
+        &received_screen_instructions,
+        "FileSystemCreate([(\"/host/test1\",",
+    );
     teardown();
+    screen_thread.join().unwrap();
     let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
         if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
             for plugin_render_asset in plugin_render_assets {
@@ -496,7 +516,7 @@ pub fn can_subscribe_to_hd_events() {
                 let client_id = plugin_render_asset.client_id;
                 let plugin_bytes = plugin_render_asset.bytes.clone();
                 let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                if plugin_bytes.contains("FileSystemCreate") {
+                if plugin_bytes.contains("FileSystemCreate([(\"/host/test1\",") {
                     return Some((plugin_id, client_id, plugin_bytes));
                 }
             }
@@ -527,15 +547,13 @@ pub fn a_background_plugin_loaded_before_its_client_attached_is_not_instantiated
     let client_id = 1; // the harness's initiating client, not yet connected
     let plugin_id = 0; // the first plugin the thread loads
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
-        received_screen_instructions,
-        ScreenInstruction::Exit,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        1,
-        &PermissionType::ChangeApplicationState,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
     // the index of the first render at or after `from` that contains `needle`, and the number of
     // times it contains it
