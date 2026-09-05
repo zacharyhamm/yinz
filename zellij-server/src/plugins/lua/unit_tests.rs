@@ -1529,6 +1529,75 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
 }
 
 #[test]
+fn agent_exit_dialog_keys_do_not_reach_restart_or_close() {
+    let source = zellij_utils::consts::builtin_lua_plugin("agent-exit")
+        .unwrap()
+        .replace(
+            "function M.load(config)",
+            "M.test_dialogs = { state = W, choose = choose, edit = edit }\nfunction M.load(config)",
+        );
+    let plugin = load(&source).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin
+        .lua
+        .load(
+            r#"
+local z = require('zellij')
+local T = M.test_dialogs
+local actions, commands = {}, {}
+z.subscribe = function() end
+z.rerun_command_pane = function(id) table.insert(actions, 'restart ' .. id) end
+z.close_terminal_pane = function(id) table.insert(actions, 'close ' .. id) end
+z.close_self = function() table.insert(actions, 'self') end
+z.run_command = function(opts) table.insert(commands, opts) end
+M.load { agent_pane_id = '7' }
+local function key(k) z.__update(M, {Key={bare_key=k, key_modifiers={}}}) end
+for _, dismiss in ipairs({'Enter', 'Esc', 'q'}) do
+  for _, next_key in ipairs({'Enter', 'Esc'}) do
+    actions, commands = {}, {}
+    M.sync_warnings = 'kept guest copy'
+    key('r')
+    assert(T.state.active and T.state.title == 'Resolve sync conflicts before continuing')
+    key(dismiss)
+    assert(not T.state.active and #actions == 0 and #commands == 0)
+    assert(M.sync_warnings == 'kept guest copy')
+    key(next_key)
+    assert(#actions == 2 and actions[2] == 'self')
+    assert(actions[1] == (next_key == 'Enter' and 'restart 7' or 'close 7'))
+  end
+end
+actions, commands = {}, {}
+M.vm, M.session, M.zellij = 'review', 'work', 'zellij'
+key('r'); key('y')
+assert(not T.state.active and M.syncing and not M.sync_warnings and #actions == 0)
+assert(#commands == 1 and commands[1].context.step == 'recheck')
+M.syncing = false
+-- Both dialog primitives can be the last await before a workflow returns.
+for _, dialog in ipairs({'choose', 'edit'}) do
+  for _, dismiss in ipairs({'Enter', 'Esc', 'q'}) do
+    if dialog == 'choose' or dismiss ~= 'q' then
+      T.state.active = true
+      z.task(function()
+        if dialog == 'choose' then T.choose('Workflow', {Enter='back'})
+        else T.edit('Draft', 'message') end
+        T.state.active = false
+      end)
+      key(dismiss)
+      assert(not T.state.active and #actions == 0, dialog .. ': ' .. dismiss)
+    end
+  end
+end
+"#,
+        )
+        .exec()
+        .unwrap();
+}
+
+#[test]
 fn agent_exit_handles_missing_metadata_and_unavailable_changes() {
     let source = zellij_utils::consts::builtin_lua_plugin("agent-exit").unwrap();
     for cwd in [None, Some(""), Some("/guest")] {
@@ -5219,6 +5288,14 @@ fn a_remote_command_pane_keeps_its_guest_cwd() {
             { path = "remote-explicit", cwd = "/srv/work", remote_host = "build-box" }, {}
           }
           zellij.open_command_pane { { path = "local", cwd = "/host/src" }, {} }
+          for _, mount in ipairs({'/tmp', '/host', '/data', '/cache'}) do
+            -- A dropped completion has no pane ID; the spawn instruction is what we inspect.
+            pcall(zellij.agent.spawn, {
+              kind = 'claude', cwd = mount .. '/checkout',
+              context = {agent_workflow_role='message', agent_workflow_run='test'},
+            })
+            zellij.open_command_pane_near_plugin {{path='ordinary', cwd=mount .. '/checkout'}, {}}
+          end
         end
         return M
         "#,
@@ -5257,8 +5334,9 @@ fn a_remote_command_pane_keeps_its_guest_cwd() {
     let ssh = zellij_utils::data::PaneTarget::Ssh {
         host: "build-box".to_owned(),
     };
+    let spawned = spawned.lock().unwrap();
     assert_eq!(
-        *spawned.lock().unwrap(),
+        spawned[..3],
         vec![
             (PathBuf::from("remote"), None, ssh.clone()),
             (
@@ -5273,6 +5351,21 @@ fn a_remote_command_pane_keeps_its_guest_cwd() {
             ),
         ]
     );
+    for (pair, mount) in spawned[3..]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(["/tmp", "/host", "/data", "/cache"])
+    {
+        assert_eq!(pair[0].1, Some(PathBuf::from(mount).join("checkout")));
+        let translated = match mount {
+            "/tmp" => zellij_utils::consts::ZELLIJ_TMP_DIR.join("checkout"),
+            "/host" => PathBuf::from("/plugin/cwd/checkout"),
+            _ => PathBuf::from("./checkout"),
+        };
+        assert_eq!(pair[1].1, Some(translated));
+    }
+    assert_eq!(spawned.len(), 11);
 }
 
 #[test]
