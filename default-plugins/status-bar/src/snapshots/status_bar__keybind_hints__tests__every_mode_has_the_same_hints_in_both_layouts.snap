@@ -71,6 +71,7 @@ Select pane (Select): ENTER
 == Agent
 New agent (New): n
 Duplicate agent (Duplicate): d
+Fork agent (Fork): f
 Agents (Agents): a
 Chat (Chat): c
 Select pane (Select): ENTER

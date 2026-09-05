@@ -48,6 +48,15 @@ fn agent_keybinds(entry_key: &str, exit_mode: &str, plain_entry: bool) -> String
             }};
             SwitchToMode "{exit_mode}"
         }}
+        bind "f" {{
+            LaunchOrFocusPlugin "hocus-fork-agent" {{
+                floating true
+                overlay true
+                modal true
+                move_to_focused_tab true
+            }};
+            SwitchToMode "{exit_mode}"
+        }}
         bind "a" {{
             LaunchOrFocusPlugin "hocus-agents" {{
                 floating true

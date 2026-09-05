@@ -284,6 +284,21 @@ Config {
                 initial_cwd: None,
                 relative_path: None,
             },
+            "hocus-fork-agent": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Zellij(
+                    PluginTag(
+                        "hocus-new-agent",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "fork_focused": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+            },
             "hocus-new-agent": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Zellij(
