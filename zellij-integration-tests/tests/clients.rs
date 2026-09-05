@@ -2,8 +2,8 @@
 
 use insta::assert_snapshot;
 use zellij_integration_tests::{
-    claim_first_terminal_and_wait_for_prompt, col, keys, normalized, start_zellij, GridSnapshot,
-    TestRunner, PROMPT, TERMINAL_SIZE,
+    claim_first_terminal_and_wait_for_prompt, col, keys, normalized, start_zellij,
+    tab_bar_shows_no_lone_pane_id, GridSnapshot, TestRunner, PROMPT, TERMINAL_SIZE,
 };
 
 fn session_name_rendered(grid_snapshot: &GridSnapshot) -> bool {
@@ -181,7 +181,9 @@ fn detach_and_attach_session() {
     let right_terminal = zellij.expect_pty_spawn();
     right_terminal.output(PROMPT);
     zellij.wait_until("right terminal prompt rendered", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(2))
+        grid_snapshot.status_bar_appears()
+            && grid_snapshot.cursor_is_at(col(62).row(2))
+            && tab_bar_shows_no_lone_pane_id(grid_snapshot)
     });
 
     right_terminal.output(b"I am some text");

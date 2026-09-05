@@ -2,7 +2,7 @@
 source: zellij-integration-tests/tests/scroll.rs
 expression: normalized(&grid_snapshot)
 ---
- Zellij (test)  Tab #1  +                                                                        [ SCROLL 19/19 ]
+ Zellij (test)  [0] Tab #1  +                                                                    [ SCROLL 19/19 ]
 $ line01
 line02
 line03

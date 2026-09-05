@@ -4,8 +4,8 @@ use insta::assert_snapshot;
 use zellij_integration_tests::{
     col, composite_contains_settled_guest_grid, guest_ascended_bar_settled,
     host_descended_bar_settled, host_descended_bar_with_ascend_keys_settled, keys, normalized,
-    wait_for_settled_composite, GridSnapshot, NestedDepthThreeHarness, NestedHarness, PROMPT,
-    TERMINAL_SIZE,
+    tab_bar_shows_no_lone_pane_id, wait_for_settled_composite, GridSnapshot,
+    NestedDepthThreeHarness, NestedHarness, PROMPT, TERMINAL_SIZE,
 };
 use zellij_utils::data::Direction;
 use zellij_utils::nested_session::NestedSessionMessage;
@@ -107,6 +107,8 @@ fn two_pane_guest_settled(guest_grid: &GridSnapshot) -> bool {
         && guest_grid.contains("Pane #2")
         && prompt_count(guest_grid) == 1
         && guest_grid.cursor.is_some()
+        // Two panes, so the guest's own tab bar has stopped naming a lone pane.
+        && tab_bar_shows_no_lone_pane_id(guest_grid)
 }
 
 fn host_own_tab_bar_settled(grid_snapshot: &GridSnapshot, guest_session_name: &str) -> bool {

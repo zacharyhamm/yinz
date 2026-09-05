@@ -4,7 +4,7 @@ expression: normalized(&host_after_guest_gone)
 ---
  Zellij (test)  Tab #1  + 
                          [0] test-1                        │                         [1] Pane #2
- Zellij (test)  Tab #1  +                            │$
+ Zellij (test)  [0] Tab #1  +                        │$
                                                            │
                                                            │
                                                            │

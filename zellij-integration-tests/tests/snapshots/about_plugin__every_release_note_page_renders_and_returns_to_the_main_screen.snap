@@ -3,7 +3,7 @@ source: zellij-integration-tests/tests/about_plugin.rs
 expression: "rendered_pages.join(\"\\n\")"
 ---
 === Nested Sessions
- Zellij (test)  Tab #1  + 
+ Zellij (test)  [0] Tab #1  + 
 $
                ┌ Release Notes 0.45.0 ───────────────────────────────────────────────────────── PIN [ ] ┐
                │                                                                                        │
@@ -27,7 +27,7 @@ $
                └────────────────────────────────────────────────────────────────────────────────────────┘
  Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT   
 === Kitty Graphics Protocol
- Zellij (test)  Tab #1  + 
+ Zellij (test)  [0] Tab #1  + 
 $
                ┌ Release Notes 0.45.0 ───────────────────────────────────────────────────────── PIN [ ] ┐
                │                                                                                        │
@@ -51,7 +51,7 @@ $
                └────────────────────────────────────────────────────────────────────────────────────────┘
  Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT   
 === Scroll By Command
- Zellij (test)  Tab #1  + 
+ Zellij (test)  [0] Tab #1  + 
 $
                ┌ Release Notes 0.45.0 ───────────────────────────────────────────────────────── PIN [ ] ┐
                │                                                                                        │
@@ -75,7 +75,7 @@ $
                └────────────────────────────────────────────────────────────────────────────────────────┘
  Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT   
 === New UI
- Zellij (test)  Tab #1  + 
+ Zellij (test)  [0] Tab #1  + 
 $
                ┌ Release Notes 0.45.0 ───────────────────────────────────────────────────────── PIN [ ] ┐
                │                                                                                        │
@@ -99,7 +99,7 @@ $
                └────────────────────────────────────────────────────────────────────────────────────────┘
  Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT   
 === Focus Last Pane and Fullscreen Floating Panes
- Zellij (test)  Tab #1  + 
+ Zellij (test)  [0] Tab #1  + 
 $
                ┌ Release Notes 0.45.0 ───────────────────────────────────────────────────────── PIN [ ] ┐
                │                                                                                        │

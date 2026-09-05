@@ -1,3 +1,5 @@
+use unicode_width::UnicodeWidthStr;
+use zellij_tile_utils::ellipsize;
 use zellij_utils::errors::prelude::*;
 
 use super::Screen;
@@ -270,6 +272,15 @@ impl Screen {
     /// that has stopped ([`Tab::exit_marker`]). That is not a fourth name and does
     /// not compete with the others: it says the pane is finished, which is worth
     /// saying about a tab called "hocus" as much as about one called "vim README".
+    ///
+    /// A tab down to one pane leads whichever name won with that pane's id
+    /// ([`Tab::lone_pane_id_marker`]). Same story as the marker: not a name, just
+    /// the label the pane's own frame wears, said where the eye already is.
+    ///
+    /// The decorations are charged to [`Tab::tab_name_budget`] and the winning name is cut
+    /// to what is left, so the finished string fits the cap the bars apply anyway
+    /// (`MAX_TAB_NAME_WIDTH`) and they have nothing to take off the end - which is where
+    /// the exit marker lives, and the part a reader could not put back.
     pub(super) fn plugin_tab_names(&self) -> HashMap<usize, String> {
         // Positions, because the `#1`/`#2` a collision earns are read off the tab
         // bar left to right. Ids would number by age instead, which is invisible.
@@ -286,7 +297,11 @@ impl Screen {
         let mut seen: HashMap<&str, usize> = HashMap::new();
         let mut names = HashMap::new();
         for tab in by_position {
-            let base = match self.tab_project_name(tab) {
+            // The "#1" is a decoration too, not part of the name: charged to the
+            // budget rather than truncated away, or two tabs on a long shared
+            // project would both end in an ellipsis and neither would say which
+            // is which.
+            let (base, suffix) = match self.tab_project_name(tab) {
                 // A project only one tab is on reads better without a "#1" that
                 // implies a "#2" somewhere. Two or more, and every one of them is
                 // numbered — a bare name beside a numbered one would look like the
@@ -294,15 +309,30 @@ impl Screen {
                 Some(project) if project_counts.get(project).copied().unwrap_or(0) > 1 => {
                     let ordinal = seen.entry(project).or_default();
                     *ordinal += 1;
-                    format!("{} #{}", project, ordinal)
+                    (project.to_owned(), format!(" #{}", ordinal))
                 },
-                Some(project) => project.to_owned(),
-                None => tab.lent_pane_title().unwrap_or_else(|| tab.name.clone()),
+                Some(project) => (project.to_owned(), String::new()),
+                None => (
+                    tab.lent_pane_title().unwrap_or_else(|| tab.name.clone()),
+                    String::new(),
+                ),
             };
-            // The marker goes on whichever of the three won. It says the pane has
-            // stopped, which is as true of a tab wearing a project's name as of
-            // one wearing the title that pane lent it.
-            names.insert(tab.id, format!("{}{}", base, tab.exit_marker()));
+            // The decorations go on whichever of the three won, and the name is cut
+            // to what they leave. They say the pane has stopped and which pane it
+            // is — as worth saying about a tab wearing a project's name as about one
+            // wearing the title that pane lent it, and neither reconstructable from
+            // what a bar would leave if it did the cutting itself.
+            let budget = tab.tab_name_budget().saturating_sub(suffix.width());
+            names.insert(
+                tab.id,
+                format!(
+                    "{}{}{}{}",
+                    tab.lone_pane_id_marker(),
+                    ellipsize(&base, budget),
+                    suffix,
+                    tab.exit_marker()
+                ),
+            );
         }
         names
     }

@@ -2,8 +2,8 @@
 source: zellij-integration-tests/tests/nested_sessions.rs
 expression: normalized(&host_descended_on_load)
 ---
- Zellij (test)  test-1  + 
- Zellij (test)  Tab #1  + 
+ Zellij (test)  [0] test-1  + 
+ Zellij (test)  [0] Tab #1  + 
 █
  Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT 
  Ascend: Ctrl + <o> + <]>
