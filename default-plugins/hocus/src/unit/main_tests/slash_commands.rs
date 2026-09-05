@@ -218,6 +218,108 @@ fn slash_clear_on_an_empty_chat_opens_no_second_tab() {
     assert!(state.parked.is_empty());
 }
 
+// -- --help ----------------------------------------------------------------
+
+/// The point of the flag: it explains a tool without running it. A tool this
+/// destructive going off because someone asked what it does would be the one
+/// unforgivable bug in the feature.
+#[test]
+fn a_tool_help_request_explains_and_runs_nothing() {
+    let mut state = idle_state();
+    assert!(state.run_manual("/close_pane --help"));
+    let notice = state.messages.last().unwrap();
+    assert_eq!(notice.role, Role::Notice);
+    assert!(
+        notice.content.starts_with("/close_pane"),
+        "{}",
+        notice.content
+    );
+    assert!(
+        notice.content.contains("stop the program"),
+        "{}",
+        notice.content
+    );
+    assert!(state.pending.is_empty(), "nothing was queued");
+    assert!(
+        state
+            .messages
+            .iter()
+            .all(|message| message.tool_calls.is_empty()),
+        "no call was recorded"
+    );
+    assert!(!state.manual_head);
+}
+
+/// The plugin's own commands have no schema, so their help comes from the
+/// hand-written half. `/plan` is the one people get wrong.
+#[test]
+fn a_local_command_has_help_too() {
+    let mut state = idle_state();
+    assert!(state.run_manual("/plan --help"));
+    let notice = state.messages.last().unwrap();
+    assert_eq!(notice.role, Role::Notice);
+    assert!(notice.content.contains("/execute"), "{}", notice.content);
+}
+
+/// A deferred family is withheld from the *model*, never from the person
+/// typing. Help for one has to answer before `tools_load` has ever run.
+#[test]
+fn help_answers_for_a_deferred_family() {
+    let mut state = idle_state();
+    assert!(state.run_manual("/plugin_write --help"));
+    assert_eq!(state.messages.last().unwrap().role, Role::Notice);
+}
+
+/// The branch sits above the `tools_busy` guard on purpose: reading about a
+/// command changes nothing, so a running tool is no reason to refuse.
+#[test]
+fn help_answers_while_a_tool_is_running() {
+    let mut state = idle_state();
+    // Off wasm a dispatch answers at once, so the busy state is set here
+    // rather than reached through a call that never finishes.
+    state.status = Status::AwaitingCommand;
+    assert!(state.tools_busy());
+    assert!(state.run_manual("/focus --help"));
+    let notice = state.messages.last().unwrap();
+    assert_eq!(notice.role, Role::Notice);
+    assert!(notice.content.starts_with("/focus"), "{}", notice.content);
+}
+
+/// A name nothing answers to gets the same sentence a mistyped call gets.
+#[test]
+fn help_for_an_unknown_name_is_the_usual_error() {
+    let mut state = State::default();
+    assert!(state.run_manual("/nonsense --help"));
+    let error = state.messages.last().unwrap();
+    assert_eq!(error.role, Role::Error);
+    assert!(error.content.contains("no such tool or skill: nonsense"));
+}
+
+/// A skill takes the rest of the line as its arguments, and `--help` is part
+/// of that line. Claiming the flag from skills would make `--help` mean two
+/// things depending on what is loaded.
+#[test]
+fn a_skill_keeps_its_own_help_argument() {
+    let mut state = ready_state();
+    settle(&mut state);
+    load_skill(
+        &mut state,
+        skills::Source::User,
+        "bench",
+        "Run the benchmarks.",
+    );
+    state.input.set_text("/bench --help".to_owned());
+    assert!(state.submit());
+
+    let user = state
+        .messages
+        .iter()
+        .rfind(|message| message.role == Role::User)
+        .expect("a user turn");
+    assert_eq!(user.display.as_deref(), Some("/bench --help"));
+    assert!(user.content.ends_with("--help"), "{}", user.content);
+}
+
 // -- skills ----------------------------------------------------------------
 
 /// The whole feature: the body goes out as a user turn, the typed line is what

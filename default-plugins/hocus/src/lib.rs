@@ -10,6 +10,7 @@ mod api;
 mod archive;
 mod events;
 mod extensions;
+mod help;
 mod history;
 mod linear;
 mod log;
@@ -122,7 +123,8 @@ const MAX_QUEUED_ASKS: usize = 8;
 
 /// Slash commands that drive the plugin itself rather than a tool. Typed and
 /// completed like tools, but never offered to the model.
-const LOCAL_COMMANDS: [&str; 8] = [
+const LOCAL_COMMANDS: [&str; 9] = [
+    "help",
     "history",
     "models",
     "stop_jobs",

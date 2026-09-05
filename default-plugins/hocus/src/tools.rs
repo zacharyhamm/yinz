@@ -1193,7 +1193,7 @@ pub fn specs() -> Value {
                 "properties": {
                     "name": { "type": "string" },
                     "root": { "type": "string", "description": "Absolute; required when new." },
-                    "tab_id": { "type": "integer", "description": "Defaults to the active tab." },
+                    "tab_id": { "type": "integer", "description": "Defaults to the focused agent's tab, else the active tab." },
                 },
                 "required": ["name"],
             }),
