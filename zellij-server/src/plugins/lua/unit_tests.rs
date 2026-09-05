@@ -4308,6 +4308,47 @@ fn decode_error(command: CommandType, bytes: &[u8]) -> String {
     format!("{error:#}")
 }
 
+/// A conflict and an ordinary failure are one Lua error apiece, and a plugin has to tell them
+/// apart to know whether trying again is worth anything. The difference rides on the front of
+/// the conflict's message, which is what `zellij.data.is_conflict` reads.
+#[test]
+fn a_write_conflict_is_marked_and_an_ordinary_failure_is_not() {
+    use prost::Message;
+    use zellij_utils::plugin_api::plugin_command::{
+        data_apply_response, ProtobufDataApplyResponse,
+    };
+    let reply = |result| {
+        ProtobufDataApplyResponse {
+            result: Some(result),
+        }
+        .encode_to_vec()
+    };
+    let conflict = decode_error(
+        CommandType::DataApply,
+        &reply(data_apply_response::Result::Conflict(
+            "no row of `note` is at revision 3 any more".to_owned(),
+        )),
+    );
+    assert!(
+        conflict.starts_with(super::response::DATA_CONFLICT_MARKER),
+        "a conflict has to say so before anything else: {conflict}"
+    );
+    assert!(
+        conflict.contains("revision 3"),
+        "and it still has to say what happened: {conflict}"
+    );
+    let failure = decode_error(
+        CommandType::DataApply,
+        &reply(data_apply_response::Result::Error(
+            "no entity named `note`".to_owned(),
+        )),
+    );
+    assert!(
+        !failure.contains(super::response::DATA_CONFLICT_MARKER),
+        "a request that will never work is not a race: {failure}"
+    );
+}
+
 #[test]
 fn a_pane_id_reply_is_the_same_table_the_prelude_builds() {
     use prost::Message;
@@ -4775,6 +4816,69 @@ fn a_lua_plugin_can_guard_a_write_on_a_revision() {
     assert_eq!(
         out.trim(),
         "claimed-twice:false|rev:1|per_mutation:1|stale:false|title:second"
+    );
+}
+
+/// The marker `response.rs` writes and the one `prelude.lua` looks for are two spellings of the
+/// same string, and nothing compares them except a conflict that really happened - so this test
+/// makes one, through a real store, and asks the plugin what it saw. The second half is the
+/// point of the distinction: a request that will never work must not be reported as a race, or
+/// a plugin that retries conflicts retries it forever.
+#[test]
+fn a_lua_plugin_tells_a_write_conflict_from_a_failure_that_will_not_pass() {
+    let source = r#"
+        local M = {}
+        function M.render()
+          zellij.data.define {
+            name = "note", version = 1,
+            attrs = { { "title", "text", required = true } },
+          }
+          local out = {}
+
+          -- A guarded write at a revision somebody else has moved past: a race.
+          zellij.data.apply(zellij.data.put("note", { title = "first" }, "n1",
+                                            zellij.data.REV_ABSENT))
+          local stale = zellij.data.fetch { entity = "note" }[1].rev
+          zellij.data.apply(zellij.data.put("note", { title = "second" }, "n1", stale))
+          local ok, err = pcall(function()
+            zellij.data.apply(zellij.data.put("note", { title = "third" }, "n1", stale))
+          end)
+          out[#out + 1] = "raised:" .. tostring(not ok)
+          out[#out + 1] = "conflict:" .. tostring(zellij.data.is_conflict(err))
+          out[#out + 1] = "says-what:" .. tostring(tostring(err):find("revision", 1, true) ~= nil)
+
+          -- An entity nobody declared: no amount of retrying makes this one land.
+          local ok2, err2 = pcall(function()
+            zellij.data.apply(zellij.data.put("nope", { title = "x" }, "n2"))
+          end)
+          out[#out + 1] = "raised2:" .. tostring(not ok2)
+          out[#out + 1] = "conflict2:" .. tostring(zellij.data.is_conflict(err2))
+          out[#out + 1] = "names-it:" .. tostring(tostring(err2):find("nope", 1, true) ~= nil)
+
+          -- Nothing at all is not a conflict either.
+          out[#out + 1] = "nil:" .. tostring(zellij.data.is_conflict(nil))
+
+          return table.concat(out, "|")
+        end
+        return M
+    "#;
+    let store = tempfile::tempdir().unwrap();
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    env.data_access = Arc::new(DataAccess::sqlite(store.path()));
+    let mut plugin = load_lua_plugin(source, "test.lua", env).unwrap();
+    let out = String::from_utf8(plugin.render(1, 500).unwrap()).unwrap();
+    assert_eq!(
+        out.trim().split('|').collect::<Vec<_>>(),
+        [
+            "raised:true",
+            "conflict:true",
+            "says-what:true",
+            "raised2:true",
+            "conflict2:false",
+            "names-it:true",
+            "nil:false",
+        ]
     );
 }
 

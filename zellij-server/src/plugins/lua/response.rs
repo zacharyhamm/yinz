@@ -343,11 +343,12 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
                     .map_err(|e| anyhow!("{}", e))?
                 {
                     DataApplyResponse::Ok(report) => value(lua, report),
-                    // Both are Lua errors, which `pcall` catches. The conflict says so in its
-                    // message, which is the only channel a Lua error has.
-                    DataApplyResponse::Conflict(e) | DataApplyResponse::Err(e) => {
-                        Err(anyhow!("{}", e))
-                    },
+                    // Both are Lua errors, which `pcall` catches, but they are not the same
+                    // question: a conflict is worth re-reading and trying again, and everything
+                    // else will fail the same way however often it is sent. A Lua error carries
+                    // nothing but its message, so that is where the difference is carried.
+                    DataApplyResponse::Conflict(e) => Err(anyhow!("{}{}", DATA_CONFLICT_MARKER, e)),
+                    DataApplyResponse::Err(e) => Err(anyhow!("{}", e)),
                 },
             )
         },
@@ -664,6 +665,17 @@ fn pane_id(lua: &Lua, id: Option<ProtobufPaneId>) -> Result<LuaValue> {
         None => Ok(LuaValue::Nil),
     }
 }
+
+/// The front of the message a `DataApply` conflict raises. A Lua error is a string and nothing
+/// else, so this is how a plugin tells "somebody wrote it first" - a race worth re-reading for -
+/// from a request that will fail the same way however often it is sent. `zellij.data.is_conflict`
+/// in `prelude.lua` looks for it, and the two are pinned together by a test that provokes a real
+/// conflict through the store.
+///
+/// It rides in the message rather than in a raised table because mlua renders a table error as
+/// `<table 0x...>` and ignores its `__tostring`, so an uncaught conflict would reach the log with
+/// its message gone.
+pub(crate) const DATA_CONFLICT_MARKER: &str = "data conflict: ";
 
 /// The replies whose only field is an optional error: absent means it worked.
 fn error_or_true(error: Option<String>) -> Result<LuaValue> {

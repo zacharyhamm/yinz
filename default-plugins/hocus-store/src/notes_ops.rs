@@ -31,6 +31,13 @@ fn id_arg(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(Value::as_u64)
 }
 
+/// The revision the caller composed its text from, where it says. Absent is the ordinary case
+/// and means "guard on what the row said when this call read it" — see
+/// `hocus_proto::store::guarded_rev`.
+fn rev_arg(args: &Value) -> Option<i64> {
+    args.get("expect_rev").and_then(Value::as_i64)
+}
+
 fn flag(args: &Value, key: &str) -> bool {
     args.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
@@ -164,7 +171,7 @@ pub fn run_mutate(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
             let tags = strings_arg(args, "tags")?;
             let mut mutations = Vec::new();
             if title.is_some() || body.is_some() {
-                mutations.extend(notes::plan_edit(&note, title, body)?.0);
+                mutations.extend(notes::plan_edit(&note, title, body, rev_arg(args))?.0);
             }
             if let Some(tags) = &tags {
                 mutations.extend(notes::plan_set_tags(id, tags)?.0);
@@ -172,7 +179,24 @@ pub fn run_mutate(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
             if mutations.is_empty() {
                 return Err("give a title, a body, tags, or some of each".to_owned());
             }
-            backend.apply(mutations)?;
+            if let Err(error) = backend.apply(mutations) {
+                if !error.is_conflict() {
+                    return Err(error.into());
+                }
+                // The same answer the model-facing tool gives, for the same reason: the wording
+                // on offer was composed from a version somebody has since replaced, so writing
+                // it anyway is the loss the guard exists to prevent. The store's own prose says
+                // a revision is gone without saying which note or what it says now.
+                return Err(match existing(backend, id) {
+                    Ok(now) => format!(
+                        "note {id} was edited by somebody else and now reads {:?} at rev {}; \
+                         read it again and retry with that expect_rev if the change is still \
+                         wanted",
+                        now.title, now.rev
+                    ),
+                    Err(_) => format!("note {id} was removed by somebody else"),
+                });
+            }
             Ok(reply(&projects, &existing(backend, id)?, now).to_string())
         },
         "note_archive" => {
@@ -425,6 +449,54 @@ mod tests {
         .unwrap();
         let back = parsed(&run_query(&backend, "note_list", &json!({ "global": true })).unwrap());
         assert_eq!(back["count"], 1);
+    }
+
+    /// A caller that says what revision it composed its text from is refused when somebody has
+    /// since rewritten the note — and told what the note says now, rather than handed the
+    /// store's own prose about a revision that is gone.
+    #[test]
+    fn an_edit_carrying_a_stale_revision_is_refused_and_says_why() {
+        let backend = backend();
+        let note = parsed(
+            &run_mutate(
+                &backend,
+                "note_add",
+                &json!({ "project": "work", "title": "t", "body": "b" }),
+            )
+            .unwrap(),
+        );
+        let (id, saw) = (note["id"].clone(), note["rev"].clone());
+        assert!(saw.as_i64().unwrap() > 0, "the reply carries a revision");
+
+        run_mutate(
+            &backend,
+            "note_edit",
+            &json!({ "id": id, "body": "somebody else's wording" }),
+        )
+        .unwrap();
+
+        let error = run_mutate(
+            &backend,
+            "note_edit",
+            &json!({ "id": id, "body": "mine", "expect_rev": saw }),
+        )
+        .unwrap_err();
+        assert!(error.contains("edited by somebody else"), "{error}");
+        assert!(error.contains("expect_rev"), "{error}");
+        assert_eq!(
+            parsed(&run_query(&backend, "note_get", &json!({ "id": id })).unwrap())["body"],
+            "somebody else's wording",
+            "the refused write changed nothing"
+        );
+
+        // Carrying the revision it was actually read at goes through.
+        let now = parsed(&run_query(&backend, "note_get", &json!({ "id": id })).unwrap());
+        run_mutate(
+            &backend,
+            "note_edit",
+            &json!({ "id": id, "body": "mine", "expect_rev": now["rev"] }),
+        )
+        .unwrap();
     }
 
     #[test]

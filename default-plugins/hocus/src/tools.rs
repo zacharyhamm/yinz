@@ -1295,6 +1295,7 @@ pub fn specs() -> Value {
                     "id": { "type": "integer" },
                     "text": { "type": "string" },
                     "project": { "type": "string", "description": "Defaults to the active project." },
+                    "expect_rev": { "type": "integer", "description": "The item's rev as you read it; refuses the edit if it changed since." },
                 },
                 "required": ["id", "text"],
             }),
@@ -1352,6 +1353,7 @@ pub fn specs() -> Value {
                     "title": { "type": "string" },
                     "body": { "type": "string" },
                     "tags": { "type": "array", "items": { "type": "string" } },
+                    "expect_rev": { "type": "integer", "description": "The note's rev as you read it; refuses the edit if it changed since." },
                 },
                 "required": ["id"],
             }),
@@ -2697,6 +2699,10 @@ pub struct Args {
     pub hooks: Option<bool>,
     // The todo tools. `text`, `query` and `project` above are theirs as well.
     pub id: Option<u64>,
+    /// The `rev` an edited item or note was read at, so a write composed from that reading is
+    /// refused rather than landing on somebody else's. Spelled out rather than reusing
+    /// `revision`, which is the `agent_run` timeline's position and means something else.
+    pub expect_rev: Option<i64>,
     pub parent_id: Option<u64>,
     pub include_done: bool,
     pub all_projects: bool,

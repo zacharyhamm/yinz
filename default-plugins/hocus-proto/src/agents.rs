@@ -869,7 +869,9 @@ pub struct AgentRun {
     /// the pane, not by the box.
     ///
     /// Empty on runs recorded before the store could be shared between machines, which reads as
-    /// "this one" and was true when there was only one.
+    /// "this one" and was true when there was only one. `rows::owned_or_unclaimed` is where
+    /// that reading is implemented, and `rows::claim_unowned_runs` is what stops a restored run
+    /// staying that way.
     #[serde(default)]
     pub host_id: String,
     #[serde(default)]
@@ -988,12 +990,37 @@ pub struct AgentRunHeader {
     pub title: String,
 }
 
-/// A stable run id where the agent supplies one, and a timestamped fallback for legacy hook
-/// scripts that do not. The kind is part of the id so two providers cannot collide.
-pub fn run_id(kind: &str, pane_id: u32, session_id: &str, started_at_ms: i64) -> String {
-    match session_id.trim() {
-        "" => format!("{kind}:pane:{pane_id}:{started_at_ms}"),
-        session_id => format!("{kind}:{session_id}"),
+/// A run id derived from the agent's own session id. The kind is part of it so two providers
+/// cannot collide, and nothing else is: the derivation has to reach the same answer on the far
+/// side of a warp, where the pane and the session are both different. See [`stored_run_id`].
+pub fn session_run_id(kind: &str, session_id: &str) -> String {
+    format!("{kind}:{}", session_id.trim())
+}
+
+/// A stable run id where the agent supplies a session id, and a timestamped fallback for
+/// legacy hook scripts that do not.
+///
+/// The fallback names the machine too, and has to. A pane id means nothing outside the server
+/// that handed it out, so `kind:pane:5:<epoch>` is a name two servers can mint at once — two
+/// machines sharing a Postgres, or two zellij servers sharing this machine's data dir. The row
+/// is written with an unguarded `Put` keyed on this id, so a collision does not fail: it
+/// interleaves two agents' timelines under one uid and says nothing.
+///
+/// Appended rather than woven in, so that [`short_run_id`] reads old and new ids alike without
+/// being taught the difference, and so a run recorded before this keeps the id it has. An
+/// empty `host_id` — a caller that does not know its machine yet — leaves the old shape, which
+/// is no worse than what it replaced.
+pub fn run_id(
+    kind: &str,
+    pane_id: u32,
+    session_id: &str,
+    started_at_ms: i64,
+    host_id: &str,
+) -> String {
+    match (session_id.trim(), host_id.trim()) {
+        ("", "") => format!("{kind}:pane:{pane_id}:{started_at_ms}"),
+        ("", host_id) => format!("{kind}:pane:{pane_id}:{started_at_ms}:{host_id}"),
+        (session_id, _) => session_run_id(kind, session_id),
     }
 }
 
@@ -1001,10 +1028,13 @@ pub fn run_id(kind: &str, pane_id: u32, session_id: &str, started_at_ms: i64) ->
 /// person reads dropped.
 ///
 /// Both shapes `run_id` builds are longer than an agents pane is wide - a session id is a
-/// uuid, and the fallback ends in a raw epoch - and `fit_label` cuts from the tail, so the
-/// whole id is no id at all on a narrow half. A uuid is recognised by its first few
-/// characters and nothing else, and the timestamp in the fallback says only that the run
-/// began, which the row it labels already says.
+/// uuid, and the fallback ends in a raw epoch and the machine's own uuid - and `fit_label` cuts
+/// from the tail, so the whole id is no id at all on a narrow half. A uuid is recognised by its
+/// first few characters and nothing else, and the timestamp and the machine in the fallback say
+/// only that the run began here, which the row it labels already says.
+///
+/// The `splitn(4, ':')` reaches both fallback shapes without knowing there are two: whatever
+/// follows the epoch lands in the fourth part along with it, and the fourth part is discarded.
 pub fn short_run_id(id: &str) -> String {
     let mut parts = id.splitn(4, ':');
     match (parts.next(), parts.next(), parts.next(), parts.next()) {
@@ -1041,9 +1071,13 @@ const KEEP_SESSION_ID_UPTO: usize = 16;
 /// that does supply one has a run id derived from it, and the derivation is the same wherever
 /// it happens ([`run_id`]), so it can be recomputed on the far side of a warp.
 ///
-/// `None` where neither holds: a run keyed by pane id and a timestamp is a name only the
-/// session that made it can pronounce, and there is nothing honest to do but start a new one.
-pub fn stored_run_id(agent: &AgentInfo, pane_id: u32) -> Option<String> {
+/// `None` where neither holds: a run keyed by a pane, a timestamp and a machine is a name only
+/// the server that made it can pronounce, and there is nothing honest to do but start a new one.
+///
+/// Takes no pane id, and that absence is the point: the derived shape must not mention the
+/// pane, or the far side of a warp — a different pane in a different session — could not reach
+/// the same answer.
+pub fn stored_run_id(agent: &AgentInfo) -> Option<String> {
     if let Some(run_id) = agent
         .run_id
         .as_deref()
@@ -1053,7 +1087,10 @@ pub fn stored_run_id(agent: &AgentInfo, pane_id: u32) -> Option<String> {
         return Some(run_id.to_owned());
     }
     let session_id = agent.session_id.as_deref().unwrap_or_default().trim();
-    (!session_id.is_empty()).then(|| run_id(&agent.kind, pane_id, session_id, 0))
+    // [`session_run_id`] rather than [`run_id`]: this branch is the session-derived shape by
+    // construction, and calling the dispatcher would mean handing it a machine and a timestamp
+    // it must not use.
+    (!session_id.is_empty()).then(|| session_run_id(&agent.kind, session_id))
 }
 
 /// Reduce one hook event to the history it is worth keeping.
@@ -1338,10 +1375,16 @@ pub mod rows {
     /// kilobytes — and small next to the two megabytes a fetch may hand back.
     pub const RUN_DETAIL_BYTES: usize = 256 * 1024;
 
+    /// This server's open runs, for the restore at load.
+    ///
+    /// Scoped by [`owned_or_unclaimed`] rather than [`owned_by`]: a run recorded before the
+    /// store could be shared between machines names no machine, and it is this one's. Read
+    /// strictly, the first launch after the upgrade would restore none of its own open runs
+    /// and could not close them either — see [`owned_or_unclaimed`].
     pub fn active_runs_request(owner: &Owner) -> FetchRequest {
         FetchRequest::entity(RUN_ENTITY)
             .filter(Pred::eq("active", true))
-            .filter(owned_by(owner))
+            .filter(owned_or_unclaimed(owner))
             .select(["payload"])
     }
 
@@ -1366,8 +1409,9 @@ pub mod rows {
 
     /// One entry on a run's timeline.
     ///
-    /// `host_id` is attribution rather than key — the uid is `{run_id}#{revision}`, and a run id
-    /// carries the agent's own session uuid, which does not collide between machines. It is here
+    /// `host_id` is attribution rather than key — the uid is `{run_id}#{revision}`, and a run
+    /// id does not collide between machines: the ordinary shape carries the agent's own session
+    /// uuid, and the fallback for a hook that supplies none carries the machine. It is here
     /// so that a search across a shared history can say where a hit happened.
     pub fn entry_mutation(run_id: &str, host_id: &str, entry: &RunEntry) -> Mutation {
         let mut put = Mutation::put(ENTRY_ENTITY)
@@ -1546,11 +1590,58 @@ pub mod rows {
 
     /// Only this server's rows. Every prune and every restore is scoped by it, so one session
     /// closing a pane cannot delete another's row for the pane id it happens to share.
+    ///
+    /// Strict about the host, and stays that way. The rows this reaches are latches and
+    /// summaries, whose pre-migration copies name a pane in a server that is gone — they are
+    /// deleted by [`stale_unowned_delete_mutations`], not adopted. Runs are the other case, and
+    /// use [`owned_or_unclaimed`].
     fn owned_by(owner: &Owner) -> Pred {
         Pred::eq("host_id", owner.host_id.clone()).and(Pred::eq(
             "zellij_session_name",
             owner.zellij_session_name.clone(),
         ))
+    }
+
+    /// This server's rows, and the rows that name no server at all — which are also this
+    /// server's, since there was only one machine when they were written.
+    ///
+    /// The store migrates an entity unasked, and adding `host_id` to `agent_run` was an
+    /// `ALTER TABLE ADD COLUMN ... NOT NULL DEFAULT ''`: every run already recorded came out of
+    /// the migration with an empty host. Demanding this machine's id would therefore match none
+    /// of a daemon's own runs on the first launch after the upgrade. They would never be
+    /// restored, never adopted, and — since the guarded close in [`run_owned_mutation`] names
+    /// the host too — never closed, sitting `active` forever while a fresh run started beside
+    /// each of them for the same agent.
+    ///
+    /// The session half stays strict, so this is no weaker than the guard was before the host
+    /// existed. It is weaker than the current guard in exactly one case: two machines sharing a
+    /// store, both running a session of the same name, over a run neither has claimed yet. That
+    /// needs a database written before the host column existed, and the first ordinary write of
+    /// such a run claims it — see [`claim_unowned_runs`].
+    fn owned_or_unclaimed(owner: &Owner) -> Pred {
+        Pred::eq("host_id", owner.host_id.clone())
+            .or(Pred::eq("host_id", ""))
+            .and(Pred::eq(
+                "zellij_session_name",
+                owner.zellij_session_name.clone(),
+            ))
+    }
+
+    /// Stamp this machine onto restored runs that name none.
+    ///
+    /// Not a write of its own: [`run_values`] takes `host_id` straight off the run, so the claim
+    /// lands with the run's next ordinary persist rather than costing a write per run at load.
+    /// A run that is never written again keeps its empty host, which [`owned_or_unclaimed`] goes
+    /// on reading — the accommodation is permanent on the read side and one-shot on the write
+    /// side, which is the right way round.
+    ///
+    /// It also puts the machine back on the run's *entries*: `entry_mutation` is given
+    /// `run.host_id`, so an unclaimed run would go on recording entries that say where they
+    /// happened only by omission.
+    pub fn claim_unowned_runs(runs: &mut [AgentRun], owner: &Owner) {
+        for run in runs.iter_mut().filter(|run| run.host_id.is_empty()) {
+            run.host_id = owner.host_id.clone();
+        }
     }
 
     /// The two columns that say who a row belongs to, for a `Put` that writes one.
@@ -1793,10 +1884,15 @@ pub mod rows {
     /// between machines a session called `main` on one of them would otherwise pass the guard
     /// held by `main` on another and close a run it has nothing to do with — worse than no
     /// guard, because it looks like one.
+    ///
+    /// A run that names no machine passes it too ([`owned_or_unclaimed`]): it was recorded
+    /// before the column existed, and a guard this session can never satisfy would leave it
+    /// open for good. The write itself carries the run's host, so the row is claimed by the
+    /// same act that closes it.
     pub fn run_owned_mutation(run: &AgentRun, owner: &Owner) -> Mutation {
         let mut update = Mutation::update(
             RUN_ENTITY,
-            Pred::eq("uid", run.id.clone()).and(owned_by(owner)),
+            Pred::eq("uid", run.id.clone()).and(owned_or_unclaimed(owner)),
         );
         for (attr, value) in run_values(run) {
             update = update.set(attr, value);
@@ -1817,11 +1913,30 @@ pub mod rows {
     pub fn run_headers_from_rows(rows: &DataRows) -> Vec<AgentRunHeader> {
         rows.rows
             .iter()
-            .filter_map(|row| match rows.get(row, "header") {
-                Some(DataValue::Text(value)) => serde_json::from_str(value).ok(),
-                _ => None,
+            .filter_map(|row| header_at(rows, row))
+            .collect()
+    }
+
+    /// The headers, each with the machine its *row* names.
+    ///
+    /// The header is JSON written when the run was recorded and carries no machine — a run
+    /// stored before the column existed could not have one. The column is on every row and was
+    /// backfilled, so it is the only honest answer to "where did this happen", and a reader
+    /// narrowing to a project on this machine needs it. See `run_history::matches_root`.
+    pub fn run_headers_with_hosts(rows: &DataRows) -> Vec<(AgentRunHeader, String)> {
+        rows.rows
+            .iter()
+            .filter_map(|row| {
+                header_at(rows, row).map(|header| (header, text_at(rows, row, "host_id")))
             })
             .collect()
+    }
+
+    fn header_at(rows: &DataRows, row: &[DataValue]) -> Option<AgentRunHeader> {
+        match rows.get(row, "header") {
+            Some(DataValue::Text(value)) => serde_json::from_str(value).ok(),
+            _ => None,
+        }
     }
 }
 
@@ -4325,16 +4440,49 @@ mod tests {
         assert_eq!(run_history(&run, 60, 0, 0).label, "claude:9f3c1a7e");
     }
 
-    /// A run the agent gave no session id is keyed by pane and start time (`run_id`), and
-    /// calling that a session would be a claim it cannot make.
+    /// The fallback id names the machine, and has to.
+    ///
+    /// A pane id means nothing outside the server that handed it out, so two servers sharing a
+    /// store — two machines on one Postgres, or two zellij servers on this machine's data dir —
+    /// can reach for the same `kind:pane:5:<epoch>`. The row is written with an unguarded `Put`
+    /// keyed on it, so a collision would not fail: it would interleave two agents' timelines
+    /// under one uid and say nothing.
+    #[test]
+    fn two_machines_minting_a_fallback_run_at_once_do_not_collide() {
+        let here = run_id("claude", 5, "", 1_764_618_000_000, "host-a");
+        let there = run_id("claude", 5, "", 1_764_618_000_000, "host-b");
+        assert_ne!(here, there);
+        assert_eq!(here, "claude:pane:5:1764618000000:host-a");
+
+        // An agent with a session id of its own is host-free, and stays that way: the
+        // derivation has to reach the same answer on the far side of a warp.
+        assert_eq!(
+            run_id("claude", 5, "s1", 1_764_618_000_000, "host-a"),
+            run_id("claude", 99, "s1", 0, "host-b"),
+        );
+        assert_eq!(
+            run_id("claude", 5, "s1", 0, "host-a"),
+            session_run_id("claude", "s1"),
+        );
+
+        // A caller that does not know its machine yet keeps the old shape, which is no worse
+        // than what it replaced — and it is the shape every run recorded before this has.
+        assert_eq!(
+            run_id("claude", 5, "", 1_764_618_000_000, ""),
+            "claude:pane:5:1764618000000",
+        );
+    }
+
+    /// A run the agent gave no session id is keyed by pane, start time and machine (`run_id`),
+    /// and calling that a session would be a claim it cannot make.
     #[test]
     fn a_run_with_no_session_id_of_its_own_is_headed_by_its_run_id() {
         let mut run = a_pane_run();
         run.session_id = String::new();
-        run.id = run_id("claude", 3, "", 10);
+        run.id = run_id("claude", 3, "", 10, "host-a");
 
         let header = run_history(&run, 60, 100, 0).header;
-        assert_eq!(header[1].text, "run     claude:pane:3:10");
+        assert_eq!(header[1].text, "run     claude:pane:3:10:host-a");
     }
 
     /// Cut ids are useless ids, so a half too narrow for one wraps it instead - under the
@@ -4988,27 +5136,23 @@ mod tests {
         };
         // Named outright: the only road open to an agent with no session id of its own.
         assert_eq!(
-            stored_run_id(&record(None, Some("mine:7")), 4),
+            stored_run_id(&record(None, Some("mine:7"))),
             Some("mine:7".to_owned())
         );
-        // Derived, and the derivation does not mention the pane - which is what lets the far
-        // side of a warp reach the same answer.
+        // Derived, and the derivation mentions neither the pane nor the machine - which is
+        // what lets the far side of a warp reach the same answer.
         assert_eq!(
-            stored_run_id(&record(Some("s1"), None), 4),
+            stored_run_id(&record(Some("s1"), None)),
             Some("claude:s1".to_owned())
-        );
-        assert_eq!(
-            stored_run_id(&record(Some("s1"), None), 99),
-            stored_run_id(&record(Some("s1"), None), 4)
         );
         // A name wins over a derivation: it is what a plugin actually wrote down.
         assert_eq!(
-            stored_run_id(&record(Some("s1"), Some("mine:7")), 4),
+            stored_run_id(&record(Some("s1"), Some("mine:7"))),
             Some("mine:7".to_owned())
         );
         // Neither. A run keyed by pane id and a timestamp cannot be found from here.
-        assert_eq!(stored_run_id(&record(None, None), 4), None);
-        assert_eq!(stored_run_id(&record(Some("  "), Some(" ")), 4), None);
+        assert_eq!(stored_run_id(&record(None, None)), None);
+        assert_eq!(stored_run_id(&record(Some("  "), Some(" "))), None);
     }
 
     /// Two sessions, one store file, one pane id. These rows used to be uid'd by the pane id
@@ -5202,6 +5346,167 @@ mod tests {
             2,
             "only the two session-scoped rows are left"
         );
+    }
+
+    /// The `agent_run` half of the same migration, and the one that could not be cleaned up
+    /// afterwards: a run is history, so an unreachable row is data lost rather than litter.
+    ///
+    /// The store fills the new `host_id` in with the declaration's default, which is empty, so
+    /// every run recorded before this branch names no machine. A restore that demanded this
+    /// machine's id found none of its own open runs — and the guarded close names the host too,
+    /// so it could not have closed them either. They would have sat `active` forever while a
+    /// fresh run started beside each of them for the same agent.
+    #[test]
+    fn a_run_written_before_the_host_column_is_restored_and_then_claimed() {
+        use crate::store::{self, Backend};
+        use zellij_tile::prelude::{AttrDef, EntityDef, Mutation};
+
+        let local = store::Local::shared("hocus-agentd");
+        // The definition as it was, without a host, and a run stored under it. Its payload has
+        // no `host_id` field at all, which is what a run serialized by that version looks like.
+        local
+            .define(
+                &EntityDef::new(rows::RUN_ENTITY, 2)
+                    .attr(AttrDef::int("pane_id").indexed().required())
+                    .attr(AttrDef::text("session_id").indexed().required().default(""))
+                    .attr(AttrDef::text("zellij_session_name").indexed())
+                    .attr(AttrDef::text("kind").indexed().required())
+                    .attr(
+                        AttrDef::boolean("active")
+                            .indexed()
+                            .required()
+                            .default(true),
+                    )
+                    .attr(AttrDef::int("started_at_ms").required())
+                    .attr(AttrDef::json("header"))
+                    .attr(AttrDef::json("payload").required()),
+            )
+            .expect("the old definition still declares");
+        let mut before = a_run_with_entries("claude:session-1", "zellij", 7, &[]);
+        before.host_id = String::new();
+        local
+            .apply(vec![Mutation::put(rows::RUN_ENTITY)
+                .uid(before.id.clone())
+                .set("pane_id", before.pane_id)
+                .set("session_id", before.session_id.clone())
+                .set("zellij_session_name", before.zellij_session_name.clone())
+                .set("kind", before.kind.clone())
+                .set("active", true)
+                .set("started_at_ms", before.started_at_ms)
+                .set("payload", serde_json::to_string(&before).unwrap())
+                .build()])
+            .expect("a run from before the column");
+
+        local
+            .define_all(&store::shared_defs())
+            .expect("the new definition migrates rather than being refused");
+
+        // The restore finds it, where a strict host check would have found nothing.
+        let mut restored = rows::runs_from_rows(
+            &local
+                .fetch(&rows::active_runs_request(&owner("zellij")))
+                .unwrap(),
+        );
+        assert_eq!(restored, vec![before.clone()], "the run was stranded");
+        assert!(restored[0].host_id.is_empty(), "and it still names no host");
+
+        // Claiming costs no write of its own: the stamp rides out with the next persist.
+        rows::claim_unowned_runs(&mut restored, &owner("zellij"));
+        assert_eq!(restored[0].host_id, HOST);
+        local.apply(rows::run_mutations(&restored[0])).unwrap();
+
+        // Which narrows the row. Another machine running a session of the same name could reach
+        // it while it named no host, and cannot once it does.
+        let elsewhere = rows::Owner::new("host-b", "zellij");
+        assert!(
+            rows::runs_from_rows(&local.fetch(&rows::active_runs_request(&elsewhere)).unwrap())
+                .is_empty(),
+            "the claimed run is not the other machine's"
+        );
+        assert_eq!(
+            rows::runs_from_rows(
+                &local
+                    .fetch(&rows::active_runs_request(&owner("zellij")))
+                    .unwrap()
+            )
+            .len(),
+            1,
+            "and is still ours"
+        );
+    }
+
+    /// The other end of the same run's life. A close is written under a guard, so a guard this
+    /// session could never satisfy would leave a pre-migration run open for good.
+    #[test]
+    fn a_guarded_close_can_close_a_run_that_predates_the_host_column() {
+        use crate::store::{self, Backend};
+
+        let local = store::Local::shared("hocus-agentd");
+        local.define_all(&store::shared_defs()).unwrap();
+        let mut run = a_run_with_entries("claude:session-1", "zellij", 7, &["asked"]);
+        run.host_id = String::new();
+        local.apply(rows::run_mutations(&run)).unwrap();
+
+        // The daemon restores it, claims it in memory, and closes it when the pane goes.
+        run.host_id = HOST.to_owned();
+        run.ended_at_ms = Some(99);
+        run.outcome = RunOutcome::Closed;
+        local
+            .apply(vec![rows::run_owned_mutation(&run, &owner("zellij"))])
+            .unwrap();
+
+        assert!(
+            rows::runs_from_rows(
+                &local
+                    .fetch(&rows::active_runs_request(&owner("zellij")))
+                    .unwrap()
+            )
+            .is_empty(),
+            "the run could not be closed"
+        );
+        let closed = rows::runs_from_rows(&local.fetch(&rows::run_by_id_request(&run.id)).unwrap());
+        assert_eq!(closed[0].outcome, RunOutcome::Closed);
+        assert_eq!(
+            closed[0].host_id, HOST,
+            "the close is also what claimed the row"
+        );
+    }
+
+    /// And the case that must *not* be adopted, so the two predicates stay distinct. A latch or
+    /// a summary that names no machine names a pane in a server that is gone, and is dropped
+    /// rather than taken over — a stale latch is worth less than a wrong one.
+    #[test]
+    fn a_latch_that_predates_the_host_column_is_not_adopted() {
+        use crate::store::{self, Backend};
+        use zellij_tile::prelude::{FetchRequest, Mutation};
+
+        let local = store::Local::shared("hocus");
+        local.define_all(&store::shared_defs()).unwrap();
+        local
+            .apply(vec![Mutation::put(rows::LATCH_ENTITY)
+                .uid("zellij:5")
+                .set("pane_id", 5_u32)
+                .set("zellij_session_name", "zellij")
+                .set("host_id", "")
+                .set("kind", "reviewer")
+                .build()])
+            .expect("a latch from before the column");
+
+        let mine = local
+            .fetch(&rows::owned_rows_request(
+                rows::LATCH_ENTITY,
+                &owner("zellij"),
+            ))
+            .unwrap();
+        assert!(
+            rows::latches_from_rows(&mine).is_empty(),
+            "a latch naming no machine is not this machine's to restore"
+        );
+        local.apply(rows::stale_unowned_delete_mutations()).unwrap();
+        assert!(local
+            .fetch(&FetchRequest::entity(rows::LATCH_ENTITY))
+            .unwrap()
+            .is_empty());
     }
 
     /// The interruption the feed exists to make in time. Shaped like `summary_toast`, so
@@ -7046,6 +7351,13 @@ mod tests {
             "claude:9f3c1a7e",
         );
         assert_eq!(short_run_id("claude:pane:7:1764618000000"), "claude:pane:7");
+        // The shape that names the machine too, which `splitn(4, ':')` reaches without being
+        // taught there are two fallbacks: everything after the epoch lands in the part that is
+        // thrown away.
+        assert_eq!(
+            short_run_id("claude:pane:7:1764618000000:9f3c1a7e-4b21-4d0a-8c55-7e2f6b1d90aa"),
+            "claude:pane:7",
+        );
         // Short enough to be read whole is left whole.
         assert_eq!(short_run_id("claude:session-1"), "claude:session-1");
         // Neither shape: not ours to shorten.

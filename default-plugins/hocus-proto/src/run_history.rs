@@ -101,9 +101,9 @@ pub struct Filter {
     /// better question when it can answer across every machine the user works on, which is what
     /// a shared store now makes possible. Narrowing is the option, as it is for the session.
     pub host_id: Option<String>,
-    /// A project root. Matched against a run's `cwd` by prefix, in the guest — see
-    /// [`matches_root`].
-    pub root: Option<String>,
+    /// A project, as a root folder and the machine that folder is on. Matched against a run's
+    /// `cwd` by prefix, in the guest — see [`matches_root`].
+    pub root: Option<RootScope>,
     /// An agent kind: `claude`, `codex`.
     pub kind: Option<String>,
     /// Only runs started at or after this epoch millisecond.
@@ -142,18 +142,44 @@ impl Filter {
 
     /// Whether this filter needs a guest-side pass, and so an over-fetch.
     fn narrows_in_guest(&self) -> bool {
-        trimmed(&self.root).is_some()
+        self.root.is_some()
     }
 
-    fn keeps(&self, header: &AgentRunHeader) -> bool {
-        match trimmed(&self.root) {
-            Some(root) => matches_root(
+    /// `host_id` is the run row's, not the header's: the header is JSON written when the run
+    /// was recorded and rows older than the column have none, while the column is on every row
+    /// and is what the migration backfilled.
+    fn keeps(&self, header: &AgentRunHeader, host_id: &str) -> bool {
+        match &self.root {
+            Some(scope) => matches_root(
                 header.cwd.as_deref(),
                 header.host.as_deref(),
+                host_id,
                 header.worktree.as_deref(),
-                root,
+                scope,
             ),
             None => true,
+        }
+    }
+}
+
+/// A project: a root folder, and the machine that folder is on.
+///
+/// The two together rather than a bare root, so that a caller cannot narrow to a project
+/// without saying whose it is. See [`matches_root`] for why the machine is not optional.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RootScope {
+    /// The normalized project root.
+    pub root: String,
+    /// The machine the root is a folder on — this one, for every caller there is. See
+    /// `agents::rows::Owner`.
+    pub host_id: String,
+}
+
+impl RootScope {
+    pub fn new(root: impl Into<String>, host_id: impl Into<String>) -> Self {
+        RootScope {
+            root: root.into(),
+            host_id: host_id.into(),
         }
     }
 }
@@ -178,18 +204,35 @@ fn trimmed(value: &Option<String>) -> Option<&str> {
 /// in a *copy* of a folder on this machine, and `worktree` names the original. The work was
 /// done on this project, so the path matched is the worktree and the host is beside the
 /// point — the same exception `agents::checkout_location` makes for a live pane.
+///
+/// `host_id` is a second, independent way a run can be on another machine, checked whether or
+/// not `worktree` is set: `host` is the ssh or VM target the *pane* was opened on, which the run
+/// has always carried, while `host_id` is the machine whose server recorded the run, which only
+/// matters once the store is shared. With `plugin_data_url` pointing at Postgres, a laptop and
+/// a build box writing to one database both record runs whose `host` is empty, and only the
+/// row's own machine tells them apart.
+///
+/// An **empty** `host_id` matches. It is a row from before the column, and for a run `""` reads
+/// as "this machine" — the same accommodation `agents::rows::owned_or_unclaimed` makes, and for
+/// the same reason: there was only one machine when it was written, so refusing it would hide a
+/// project's whole history from before the upgrade.
 pub fn matches_root(
     cwd: Option<&str>,
     host: Option<&str>,
+    host_id: &str,
     worktree: Option<&str>,
-    root: &str,
+    scope: &RootScope,
 ) -> bool {
     let cwd = match worktree {
         Some(worktree) => Some(worktree),
         None if host.is_some_and(|host| !host.trim().is_empty()) => return false,
         None => cwd,
     };
-    let (Some(cwd), root) = (cwd, root.trim_end_matches('/')) else {
+    let host_id = host_id.trim();
+    if !host_id.is_empty() && host_id != scope.host_id.trim() {
+        return false;
+    }
+    let (Some(cwd), root) = (cwd, scope.root.trim_end_matches('/')) else {
         return false;
     };
     let cwd = cwd.trim_end_matches('/');
@@ -246,7 +289,9 @@ pub fn list_runs(
         // A tiebreak, so two runs that began in the same millisecond page deterministically
         // rather than swapping places between one fetch and the next.
         .sort_by("uid", SortDir::Asc)
-        .select(["header"])
+        // `host_id` beside the header because the header does not carry one — see
+        // [`Filter::keeps`].
+        .select(["header", "host_id"])
         .limit(want as u32)
         .offset(offset as u32);
     if let Some(pred) = filter.pred() {
@@ -260,11 +305,11 @@ pub fn list_runs(
     let mut headers: Vec<AgentRunHeader> = Vec::new();
     let mut scanned = raw;
     let mut overflowed = false;
-    for (index, header) in rows::run_headers_from_rows(&fetched)
+    for (index, (header, host_id)) in rows::run_headers_with_hosts(&fetched)
         .into_iter()
         .enumerate()
     {
-        if !filter.keeps(&header) {
+        if !filter.keeps(&header, &host_id) {
             continue;
         }
         if headers.len() == limit {
@@ -861,12 +906,72 @@ mod tests {
     fn a_search_is_narrowed_by_project_root() {
         let backend = seeded();
         let filter = Filter {
-            root: Some("/work/hocus".to_owned()),
+            root: Some(RootScope::new("/work/hocus", HOST)),
             ..Filter::default()
         };
         let found = search(&backend, &filter, None, "parser", 10).unwrap();
         assert_eq!(found.hits.len(), 1);
         assert_eq!(found.hits[0].run_id, "claude:one");
+    }
+
+    /// A project is a folder on *this* machine, and on a shared store the same path on another
+    /// one is a different folder holding work nobody did here.
+    ///
+    /// The header cannot answer this — it is JSON written when the run was recorded, and a run
+    /// older than the column has no machine in it — so the narrowing reads the row's own
+    /// `host_id` column. A row that names none is from before the column, and for a run `""`
+    /// reads as this machine.
+    #[test]
+    fn a_project_narrowing_does_not_reach_another_machines_runs() {
+        let backend = backend();
+
+        let mut mine = run("claude:mine", "claude", "main", 3_000);
+        mine.entries = vec![entry(1, RunEntryKind::Prompt, "fix the parser", 3_000)];
+        write(&backend, &mine);
+
+        // The same path, on a machine sharing the store. Nothing about the run says "remote":
+        // its pane was local to *that* machine, so `host` is empty exactly as mine is.
+        let mut theirs = run("claude:theirs", "claude", "main", 4_000);
+        theirs.host_id = "another-machine".to_owned();
+        theirs.entries = vec![entry(1, RunEntryKind::Prompt, "fix the parser", 4_000)];
+        write(&backend, &theirs);
+
+        // And one from before the column, which there was only one machine to have written.
+        let mut legacy = run("claude:legacy", "claude", "main", 2_000);
+        legacy.host_id = String::new();
+        legacy.entries = vec![entry(1, RunEntryKind::Prompt, "fix the parser", 2_000)];
+        write(&backend, &legacy);
+
+        let filter = Filter {
+            root: Some(RootScope::new("/work/hocus", HOST)),
+            ..Filter::default()
+        };
+        let listed: BTreeSet<String> = list_runs(&backend, &filter, 10, 0)
+            .unwrap()
+            .headers
+            .into_iter()
+            .map(|header| header.id)
+            .collect();
+        assert_eq!(
+            listed,
+            BTreeSet::from(["claude:mine".to_owned(), "claude:legacy".to_owned()]),
+            "another machine's run is not this project's"
+        );
+
+        // A search narrows through the same pass, so it inherits the scoping.
+        let found = search(&backend, &filter, None, "parser", 10).unwrap();
+        let hits: BTreeSet<&str> = found.hits.iter().map(|hit| hit.run_id.as_str()).collect();
+        assert_eq!(
+            hits,
+            BTreeSet::from(["claude:mine", "claude:legacy"]),
+            "{:?}",
+            found.hits
+        );
+
+        // Unnarrowed, every machine's history is the answer — which is the whole point of a
+        // shared store, and what "have I had an agent look at this before" is really asking.
+        let every = search(&backend, &Filter::default(), None, "parser", 10).unwrap();
+        assert_eq!(every.hits.len(), 3, "{:?}", every.hits);
     }
 
     /// The `notes::search` fallback, pinned here too: FTS5 tokenizes on word boundaries, so a
@@ -1045,7 +1150,7 @@ mod tests {
             write(&backend, &run);
         }
         let filter = Filter {
-            root: Some("/work/hocus".to_owned()),
+            root: Some(RootScope::new("/work/hocus", HOST)),
             ..Filter::default()
         };
         let mut seen: Vec<String> = Vec::new();
@@ -1113,7 +1218,7 @@ mod tests {
         write(&backend, &here);
         write(&backend, &there);
         let filter = Filter {
-            root: Some("/work/hocus".to_owned()),
+            root: Some(RootScope::new("/work/hocus", HOST)),
             ..Filter::default()
         };
         let page = list_runs(&backend, &filter, 10, 0).unwrap();
@@ -1130,52 +1235,71 @@ mod tests {
     /// inside it.
     #[test]
     fn a_project_root_does_not_claim_a_sibling_that_shares_its_name() {
-        assert!(matches_root(Some("/work/hocus"), None, None, "/work/hocus"));
+        let here = RootScope::new("/work/hocus", HOST);
+        assert!(matches_root(Some("/work/hocus"), None, HOST, None, &here));
         assert!(matches_root(
             Some("/work/hocus/src"),
             None,
+            HOST,
             None,
-            "/work/hocus"
+            &here
         ));
         assert!(matches_root(
             Some("/work/hocus/"),
             None,
+            HOST,
             None,
-            "/work/hocus"
+            &here
         ));
         assert!(!matches_root(
             Some("/work/hocus-fork"),
             None,
+            HOST,
             None,
-            "/work/hocus"
+            &here
         ));
-        assert!(!matches_root(None, None, None, "/work/hocus"));
-        // The same path on another machine is another folder, not this project.
+        assert!(!matches_root(None, None, HOST, None, &here));
+        // The same path over ssh is another folder, not this project.
         assert!(!matches_root(
             Some("/work/hocus"),
             Some("build-box"),
+            HOST,
             None,
-            "/work/hocus"
+            &here
         ));
+        // And so is the same path on another machine sharing the store, where the pane is
+        // local to *that* machine and says nothing about being remote.
+        assert!(!matches_root(
+            Some("/work/hocus"),
+            None,
+            "another-machine",
+            None,
+            &here
+        ));
+        // A run from before the column names no machine, and there was only one machine then.
+        assert!(matches_root(Some("/work/hocus"), None, "", None, &here));
     }
 
     /// The exception the host rule makes for a VM: the folder the run names is a copy of
     /// one on this machine, and the worktree is where the work actually landed.
     #[test]
     fn a_firecracker_run_matches_the_project_of_the_worktree_its_vm_mirrored() {
+        let here = RootScope::new("/work/hocus", HOST);
         assert!(matches_root(
             Some("/workspace"),
             Some("firecracker:review"),
+            HOST,
             Some("/work/hocus"),
-            "/work/hocus"
+            &here
         ));
         // And only that project: the worktree is matched on path boundaries like any
         // other folder.
         assert!(!matches_root(
             Some("/workspace"),
             Some("firecracker:review"),
+            HOST,
             Some("/work/hocus-fork"),
-            "/work/hocus"
+            &here
         ));
     }
 

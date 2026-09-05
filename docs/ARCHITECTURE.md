@@ -38,12 +38,45 @@ machine*, which is the granularity that matters — two servers sharing a data d
 ids and session names it qualifies. Plugins read it off `PluginIds` beside the hostname, which
 stays the label to show rather than the key to store.
 
+The same reasoning reaches ids and reads, not just columns. A uid built from a pane id needs the
+machine in it — `rows::pane_uid` does this, and so does the fallback shape of `agents::run_id`,
+which would otherwise let two servers mint one name for two agents' timelines and interleave
+them under an unguarded put. And a read that narrows to a *folder* has to narrow to a machine
+too: `/home/me/work` on a build box is not this project, so `run_history::matches_root` takes
+the row's `host_id` beside the run's ssh `host`, and `run_history::RootScope` pairs the root with
+the machine so a caller cannot ask for one without the other.
+
+**An empty `host_id` is a row from before the column, and what to do with one differs.** The
+store migrates an entity unasked, and adding the column was an `ALTER TABLE ADD COLUMN ... NOT
+NULL DEFAULT ''`, so every row already stored came out naming no machine. There was only one
+machine then, so `""` reads as "this one" — but only where adopting the row is the right answer.
+An `agent_run` is history: `rows::owned_or_unclaimed` accepts it on the read and on the guarded
+close, and `rows::claim_unowned_runs` stamps the machine on so the run's next ordinary write
+narrows the row. An `import_marker` is the same, and `store::import_recorded` goes further and
+drops the legacy row in the same batch as its claim, since a marker naming no machine is one
+every machine sharing the store answers to. An `agent_latch` or `agent_summary` is the opposite:
+it names a pane in a server that is gone, so `rows::stale_unowned_delete_mutations` deletes it
+rather than adopting it, and `rows::owned_by` stays strict. A `job` is left alone entirely —
+firing a dead server's prompts at whoever upgrades first is worse than dropping them.
+
 **Writes can say what they expected to find.** Every row carries a `rev`, which the store
 advances on every write that touches it, and a `Put` or `Update` may name the `rev` it expects —
 a compare-and-set, refused with `DataError::Conflict` and rolling the whole batch back. Used
 where a write replaces something composed from an earlier read (a todo's text, a note's body),
 and deliberately not where it sets a flag, since two writers agreeing is not a conflict.
 `ApplyReport.per_mutation` reports rows affected per mutation, for callers guarding by hand.
+
+**The `rev` has to be the one the value's author read.** A writer that fetches the row, builds
+the new value and guards on the `rev` it just fetched has guarded a window microseconds wide:
+the row already carries the other writer's revision, so the write that should be refused lands.
+The revision worth guarding on is the one whoever composed the value was looking at, which for a
+model is several turns back — so it travels outward in what the reader is shown and back inward
+as an argument. `todos::items_json` and `notes::note_json` emit it, `todo_edit` and `note_edit`
+take it as `expect_rev`, and `store::guarded_rev` prefers it to the row's own. A caller that
+supplies none falls back to the fresh read, which is the old behaviour and nearly no guard at
+all. Note that a fetch naming its columns loses the ones the store adds unasked, `rev` among
+them, so a projection can silently turn a guarded write into an unguarded one —
+`notes::LIST_COLUMNS` names `rev` for that reason.
 
 **What is not handled:** a watch is only re-evaluated by writes made in the same server process
 (`refresh_watches` has one caller, in the local apply path), so on a shared Postgres another

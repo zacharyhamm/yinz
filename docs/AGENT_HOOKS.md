@@ -133,10 +133,18 @@ own size, cutting entries to a per-entry cap once a page holds more than one —
 For a claude or a codex the name needs no help: a run is `"{kind}:{the agent's own session
 id}"`, and the session id does not change when the pane moves, so the adopting session derives
 the same id the losing one used. `run_id` is for everything else — a hand-rolled
-`agent-report` script, or a legacy hook that reports no session id, whose run would otherwise
-be keyed by a pane id and a timestamp that mean nothing in the session it arrives in. Such a
-script names its run once with `zellij action agent-report --run-id <id>` and need not repeat
-it.
+`agent-report` script, or a legacy hook that reports no session id, whose run is keyed
+`"{kind}:pane:{pane id}:{started at}:{machine}"` and means nothing in the session it arrives
+in. Such a script names its run once with `zellij action agent-report --run-id <id>` and need
+not repeat it.
+
+The machine on the end of that fallback is not decoration. A pane id means nothing outside the
+server that handed it out, and one store serves every zellij server on a machine — every
+machine, with `plugin_data_url` pointing at Postgres — so `claude:pane:5:<epoch>` is a name two
+servers can reach for at once. The row is written with an unguarded put keyed on it, so a
+collision does not fail: it interleaves two agents' timelines under one id and says nothing.
+The machine is appended rather than woven in, so a run recorded before this keeps the id it has
+and the panel's short form reads both shapes without being taught the difference.
 
 The other half is in hocus-agentd. The session that *loses* a warped pane cannot tell a warp
 from a `kill -9` — a pane simply stops being in the manifest — so it writes the weaker of the

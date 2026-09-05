@@ -180,7 +180,7 @@ fn completed_runs_are_nested_under_the_archive_and_page_on_demand() {
 /// One archive header, as `load_more_agent_runs` puts them in `archived_runs`.
 fn header(session_id: &str, host: Option<&str>) -> agents::AgentRunHeader {
     agents::AgentRunHeader {
-        id: agents::run_id("claude", 3, session_id, 10),
+        id: agents::run_id("claude", 3, session_id, 10, "test-host"),
         pane_id: 3,
         session_id: session_id.to_owned(),
         kind: "claude".to_owned(),
@@ -202,7 +202,7 @@ fn header(session_id: &str, host: Option<&str>) -> agents::AgentRunHeader {
 /// temporary store, so nothing here stands in for the daemon.
 fn seed_run(state: &State, session_id: &str, host: Option<&str>, ended: bool) {
     let run = agents::AgentRun {
-        id: agents::run_id("claude", 3, session_id, 10),
+        id: agents::run_id("claude", 3, session_id, 10, "test-host"),
         pane_id: 3,
         zellij_session_name: "main".to_owned(),
         host_id: "test-host".to_owned(),
@@ -257,7 +257,7 @@ fn a_run_that_cannot_be_resumed_says_why() {
     // and there is nothing in that to resume.
     seed_run(&state, "", None, true);
     let refused = state
-        .resume_plan(&agents::run_id("claude", 3, "", 10))
+        .resume_plan(&agents::run_id("claude", 3, "", 10, "test-host"))
         .unwrap_err();
     assert!(refused.contains("no session id"), "{refused}");
 

@@ -1881,8 +1881,9 @@ end
 --- Insert a row, or replace the one with `uid` if it exists. A mutation; hand it to `apply`.
 ---
 --- `expect_rev` makes it a compare-and-set: the write applies only if the row is still at that
---- `rev`, and the whole `apply` fails otherwise. Needs a `uid`. `zellij.data.REV_ABSENT` (0)
---- means the row must not exist yet, so the put claims the uid or fails.
+--- `rev`, and the whole `apply` fails otherwise - with an error `zellij.data.is_conflict` says
+--- yes to. Needs a `uid`. `zellij.data.REV_ABSENT` (0) means the row must not exist yet, so the
+--- put claims the uid or fails.
 function zellij.data.put(entity, values, uid, expect_rev)
   return {
     Put = {
@@ -1897,7 +1898,8 @@ end
 --- Set `values` on every row `filter` matches.
 ---
 --- `expect_rev` narrows the match to rows still at that `rev` and fails the `apply` if none are,
---- which with a filter naming one row is a compare-and-set on it.
+--- which with a filter naming one row is a compare-and-set on it. That failure is a conflict,
+--- which `zellij.data.is_conflict` tells from the failures that will never work.
 function zellij.data.update(entity, filter, values, expect_rev)
   return {
     Update = {
@@ -1912,6 +1914,29 @@ end
 --- The `expect_rev` meaning "this row must not exist yet". No stored row is ever at revision 0.
 zellij.data.REV_ABSENT = 0
 
+--- The front the host puts on a conflict's message (`response.rs`). Searched for rather than
+--- compared against the start of the message: `pcall` hands the message back as it was raised,
+--- but the same error seen after a trip through the host wears a prefix of its own.
+local DATA_CONFLICT_MARKER = "data conflict: "
+
+--- Did this failed `apply` lose a race, or is it broken? A conflict means the row moved on
+--- between the read the value was composed from and the guarded write, so the answer is to read
+--- it again and decide what to do with the other writer's version. Every other failure - an
+--- entity that was never declared, a malformed filter, a permission that was not granted - will
+--- fail the same way however often it is sent, and retrying one loops forever.
+---
+---     local ok, err = pcall(function()
+---       zellij.data.apply(zellij.data.put("note", { title = title }, "n1", note.rev))
+---     end)
+---     if not ok and zellij.data.is_conflict(err) then
+---       -- re-read and decide again
+---     elseif not ok then
+---       error(err)
+---     end
+function zellij.data.is_conflict(err)
+  return err ~= nil and string.find(tostring(err), DATA_CONFLICT_MARKER, 1, true) ~= nil
+end
+
 --- Remove every row `filter` matches.
 function zellij.data.delete(entity, filter)
   return { Delete = { entity = entity, filter = filter } }
@@ -1923,7 +1948,8 @@ end
 --- `namespace` is the plugin's own when omitted, or a `"shared:"` one - see `zellij.data.define`.
 ---
 --- A mutation carrying `expect_rev` whose row has moved on fails the whole call, rolling the
---- rest of the batch back: re-read and decide again.
+--- rest of the batch back: re-read and decide again. That is the one failure worth retrying, so
+--- ask `zellij.data.is_conflict` before you do - everything else fails again the same way.
 function zellij.data.apply(mutations, namespace)
   if mutations.Put or mutations.Update or mutations.Delete then
     mutations = { mutations }

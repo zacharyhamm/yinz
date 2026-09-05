@@ -646,6 +646,10 @@ impl State {
             .fetch(&agents::rows::active_runs_request(&self.owner()).limit(MAX_FETCH_ROWS))
         {
             let mut runs = agents::rows::runs_from_rows(&rows);
+            // A run recorded before the store could be shared between machines names none, and
+            // it is this one's. Stamped here rather than written: the claim lands with the run's
+            // next ordinary persist.
+            agents::rows::claim_unowned_runs(&mut runs, &self.owner());
             self.hydrate_runs(&mut runs);
             for run in runs {
                 let (pane_id, run_id) = (run.pane_id, run.id.clone());
@@ -1103,7 +1107,7 @@ impl State {
             .runs
             .entry(pane_id)
             .or_insert_with(|| agents::AgentRun {
-                id: agents::run_id(kind, pane_id, &event.session_id, now_ms),
+                id: agents::run_id(kind, pane_id, &event.session_id, now_ms, &owner.host_id),
                 pane_id,
                 zellij_session_name: owner.zellij_session_name.clone(),
                 host_id: owner.host_id.clone(),
@@ -1190,7 +1194,9 @@ impl State {
         if !self.run_lookups.insert(pane_id) {
             return;
         }
-        let run_id = agents::run_id(kind, pane_id, session_id, 0);
+        // The session-derived shape by construction — an empty session id returned above — so
+        // the derivation is `session_run_id`, which is the one a warp can reproduce.
+        let run_id = agents::session_run_id(kind, session_id);
         let Ok(rows) = store::Host::shared().fetch(&agents::rows::run_by_id_request(&run_id))
         else {
             return;
@@ -1811,12 +1817,7 @@ impl State {
             .flatten()
             .filter(|pane| !self.runs.contains_key(&pane.pane_id))
             .filter(|pane| !self.run_lookups.contains(&pane.pane_id))
-            .filter_map(|pane| {
-                Some((
-                    pane.pane_id,
-                    agents::stored_run_id(pane.agent.as_ref()?, pane.pane_id)?,
-                ))
-            })
+            .filter_map(|pane| Some((pane.pane_id, agents::stored_run_id(pane.agent.as_ref()?)?)))
             .collect();
         for (pane_id, run_id) in candidates {
             // Asked once per pane. A pane that has no stored run is the common case by far, and

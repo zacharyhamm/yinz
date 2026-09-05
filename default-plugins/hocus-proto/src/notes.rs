@@ -44,6 +44,11 @@ const IN_CHUNK: usize = 500;
 
 /// The columns a listing reads. Not `body`: a thousand notes at the body cap
 /// would blow the byte limit of one fetch, and a listing does not show it.
+///
+/// `rev` is here because naming any column at all drops the ones the store adds
+/// unasked, and a `Note` whose `rev` came back zero is indistinguishable from one
+/// with no row to guard — so a listing that omitted it would hand every reader a
+/// note that [`plan_edit`] then writes unguarded.
 pub const LIST_COLUMNS: &[&str] = &[
     "id",
     "root",
@@ -52,6 +57,7 @@ pub const LIST_COLUMNS: &[&str] = &[
     "archived",
     "created_at",
     "updated_at",
+    "rev",
 ];
 
 /// One note, with its tags and the todo items it references.
@@ -644,6 +650,11 @@ pub fn note_json(note: &Note, now_ms: i64) -> serde_json::Value {
         "updated_at": note.updated_at,
         "age_seconds": age_seconds,
     });
+    // The revision this note was read at, so an edit composed from it can say so and be
+    // refused if somebody has since rewritten it. Left out when there is none.
+    if note.rev > 0 {
+        value["rev"] = serde_json::json!(note.rev);
+    }
     if !note.body.is_empty() {
         value["body"] = serde_json::json!(note.body);
     }
@@ -746,10 +757,17 @@ fn link_mutation(note_id: u64, todo_id: u64) -> Mutation {
 
 /// Plan changing a note's title, body, or both, answering with the note as it
 /// will read. Neither given is an error rather than a no-op write.
+///
+/// `expect_rev` is the revision the *author of the text* read, where the caller can say. It
+/// takes precedence over the note's own `rev`, and the difference is the whole point: a note
+/// fetched here is a note fetched microseconds ago, and the race worth catching is the one
+/// where the wording on offer was composed from a reading several turns old. See
+/// [`crate::todos::plan_edit`], which says the same at greater length.
 pub fn plan_edit(
     note: &Note,
     title: Option<&str>,
     body: Option<&str>,
+    expect_rev: Option<i64>,
 ) -> Result<(Vec<Mutation>, Note), String> {
     if title.is_none() && body.is_none() {
         return Err("give a title, a body, or both".to_owned());
@@ -760,8 +778,12 @@ pub fn plan_edit(
     // edit replaces a whole title or body with something composed from what the caller saw, so
     // landing it on a row somebody else has since edited destroys their wording. Archiving is
     // left unguarded — a flag two writers set the same way is not a disagreement.
-    if note.rev > 0 {
-        update = update.expect_rev(note.rev);
+    //
+    // Zero means there is no row to guard: a note that came from the legacy file rather than
+    // the store. It must never be allowed to mean "a projection dropped the column" — see
+    // [`LIST_COLUMNS`], which reads `rev` for exactly that reason.
+    if let Some(rev) = crate::store::guarded_rev(expect_rev, note.rev) {
+        update = update.expect_rev(rev);
     }
     if let Some(title) = title {
         after.title = clean_title(title)?;
@@ -939,7 +961,7 @@ mod tests {
 
         local
             .apply(
-                plan_edit(&theirs, None, Some("because of the deadline"))
+                plan_edit(&theirs, None, Some("because of the deadline"), None)
                     .unwrap()
                     .0,
             )
@@ -947,7 +969,7 @@ mod tests {
 
         let error = local
             .apply(
-                plan_edit(&mine, None, Some("because of the budget"))
+                plan_edit(&mine, None, Some("because of the budget"), None)
                     .unwrap()
                     .0,
             )
@@ -963,7 +985,7 @@ mod tests {
         let fresh = fetch_note(&local, id).unwrap().unwrap();
         local
             .apply(
-                plan_edit(&fresh, None, Some("because of the budget"))
+                plan_edit(&fresh, None, Some("because of the budget"), None)
                     .unwrap()
                     .0,
             )
@@ -972,6 +994,82 @@ mod tests {
             fetch_note(&local, id).unwrap().unwrap().body,
             "because of the budget"
         );
+    }
+
+    /// The window the guard has to span is the caller's, not the writer's — the note half of
+    /// `todos::an_edit_guards_on_the_revision_its_author_read_not_the_writers`, and see that
+    /// test for the reasoning.
+    #[test]
+    fn an_edit_guards_on_the_revision_its_author_read_not_the_writers() {
+        use crate::store::{self, Backend};
+
+        let local = store::Local::shared("hocus");
+        local.define_all(&store::shared_defs()).unwrap();
+        let (mutations, _) = plan_add(0, None, "Why", "because", "user", &[], &[]).unwrap();
+        let id = local.apply(mutations).unwrap().ids[0] as u64;
+
+        // What the reader was shown, and the revision it was shown beside the body.
+        let read = fetch_note(&local, id).unwrap().unwrap();
+        let saw = read.rev;
+        assert!(saw > 0);
+        assert_eq!(
+            note_json(&read, 0)["rev"],
+            serde_json::json!(saw),
+            "and the reader is shown it"
+        );
+
+        // Somebody else rewrites it in the meantime.
+        local
+            .apply(
+                plan_edit(&read, None, Some("because of the deadline"), None)
+                    .unwrap()
+                    .0,
+            )
+            .unwrap();
+
+        // The write re-reads first, as every caller does, so guarding on the row's own
+        // revision would let this through.
+        let fresh = fetch_note(&local, id).unwrap().unwrap();
+        let error = local
+            .apply(
+                plan_edit(&fresh, None, Some("because of the budget"), Some(saw))
+                    .unwrap()
+                    .0,
+            )
+            .unwrap_err();
+        assert!(error.is_conflict(), "{error:?}");
+        assert_eq!(
+            fetch_note(&local, id).unwrap().unwrap().body,
+            "because of the deadline",
+            "the refused write should have changed nothing"
+        );
+    }
+
+    /// A listing reads a named set of columns, and naming any drops the ones the store adds
+    /// unasked. `rev` has to be among them: a note that came back with none is indistinguishable
+    /// from one with no row to guard, and [`plan_edit`] would write it unguarded.
+    #[test]
+    fn a_listed_note_carries_a_revision_to_guard_on() {
+        use crate::store::{self, Backend};
+
+        let local = store::Local::shared("hocus");
+        local.define_all(&store::shared_defs()).unwrap();
+        let (mutations, _) = plan_add(0, None, "Why", "because", "user", &[], &[]).unwrap();
+        let id = local.apply(mutations).unwrap().ids[0] as u64;
+
+        let listed = list_notes(&local, Filter::default()).unwrap();
+        let listed = listed.iter().find(|note| note.id == id).expect("listed");
+        assert_eq!(listed.rev, fetch_note(&local, id).unwrap().unwrap().rev);
+        assert!(listed.rev > 0);
+
+        // And an edit planned from the listing is guarded, rather than quietly not being.
+        local
+            .apply(plan_edit(listed, Some("Why not"), None, None).unwrap().0)
+            .unwrap();
+        let error = local
+            .apply(plan_edit(listed, Some("Why ever"), None, None).unwrap().0)
+            .unwrap_err();
+        assert!(error.is_conflict(), "{error:?}");
     }
 
     /// Archiving is deliberately not guarded, for the reason crossing a todo item off is not: a
@@ -989,7 +1087,7 @@ mod tests {
         let fresh = fetch_note(&local, id).unwrap().unwrap();
         local
             .apply(
-                plan_edit(&fresh, None, Some("because it is late"))
+                plan_edit(&fresh, None, Some("because it is late"), None)
                     .unwrap()
                     .0,
             )
@@ -1061,8 +1159,8 @@ mod tests {
             id: 1,
             ..Default::default()
         };
-        assert!(plan_edit(&note, None, None).is_err());
-        let (mutations, after) = plan_edit(&note, Some(" New "), None).unwrap();
+        assert!(plan_edit(&note, None, None, None).is_err());
+        let (mutations, after) = plan_edit(&note, Some(" New "), None, None).unwrap();
         assert_eq!(mutations.len(), 1);
         assert_eq!(after.title, "New");
     }
