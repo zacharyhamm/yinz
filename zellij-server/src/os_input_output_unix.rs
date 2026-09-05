@@ -929,6 +929,19 @@ impl UnixPtyBackend {
             .and_then(|conn| conn.cmd().display_host())
     }
 
+    /// The host worktree a Firecracker pane's VM mirrors, off the transport's own
+    /// command — which is the one `resolve_target` resolved, so it carries the worktree
+    /// the provider named even when the caller asked for none.
+    pub fn remote_worktree(&self, terminal_id: u32) -> Option<PathBuf> {
+        self.terminal_id_to_transport
+            .lock()
+            .ok()?
+            .get(&terminal_id)?
+            .remote()
+            .and_then(|conn| conn.cmd().target.firecracker_worktree())
+            .map(std::path::Path::to_path_buf)
+    }
+
     /// Deliver a signal to a remote pane's child, by name rather than by pid.
     pub fn signal_remote_child(&self, terminal_id: u32, signal: ChildSignal) -> Result<()> {
         let conn = self

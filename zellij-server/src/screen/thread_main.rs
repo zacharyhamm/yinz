@@ -1756,8 +1756,8 @@ pub(crate) fn screen_thread_main(
                 screen.render(None)?;
                 screen.log_and_report_session_state()?;
             },
-            ScreenInstruction::UpdatePaneHost(terminal_id, host) => {
-                screen.set_pane_host(terminal_id, host)?;
+            ScreenInstruction::UpdatePaneHost(terminal_id, host, worktree) => {
+                screen.set_pane_host(terminal_id, host, worktree)?;
             },
             ScreenInstruction::UpdatePaneCwd(terminal_id, cwd) => {
                 // Only pty says a pane moved, and it only says so on a change,

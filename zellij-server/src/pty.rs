@@ -3821,11 +3821,27 @@ impl Pty {
             .as_ref()
             .and_then(|os_input| os_input.remote_pane_host(terminal_id));
         if host.is_some() {
+            // The worktree rides with the host because it is the same fact about the
+            // same transport, discovered at the same moment: a Firecracker pane that
+            // joined a VM asked for no worktree, and what it got is only knowable once
+            // the provider has answered.
+            let worktree = self.remote_worktree(terminal_id);
             let _ = self
                 .bus
                 .senders
-                .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, host));
+                .send_to_screen(ScreenInstruction::UpdatePaneHost(
+                    terminal_id,
+                    host,
+                    worktree,
+                ));
         }
+    }
+
+    fn remote_worktree(&self, terminal_id: u32) -> Option<std::path::PathBuf> {
+        self.bus
+            .os_input
+            .as_ref()
+            .and_then(|os_input| os_input.remote_pane_worktree(terminal_id))
     }
 
     /// The respawn counterpart of `report_terminal_host`. A pane's host is fixed for the life
@@ -3840,17 +3856,22 @@ impl Pty {
             .os_input
             .as_ref()
             .and_then(|os_input| os_input.remote_pane_host(terminal_id));
+        let worktree = self.remote_worktree(terminal_id);
         let _ = self
             .bus
             .senders
-            .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, host));
+            .send_to_screen(ScreenInstruction::UpdatePaneHost(
+                terminal_id,
+                host,
+                worktree,
+            ));
     }
 
     fn forget_terminal_host(&mut self, terminal_id: u32) {
         let _ = self
             .bus
             .senders
-            .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, None));
+            .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, None, None));
     }
 
     fn forget_terminal_cwd(&mut self, terminal_id: u32) {

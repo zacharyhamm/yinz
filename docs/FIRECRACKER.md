@@ -367,11 +367,18 @@ Requests:
 ```
 
 An `ensure` response supplies an SSH URL. It can also supply the guest working directory, SSH key,
-and known-hosts file:
+known-hosts file, and the host worktree the VM mirrors:
 
 ```json
-{"version":2,"ssh_host":"ssh://root@172.31.0.2:22","cwd":"/workspace","ssh_identity_file":"/home/me/.local/share/zellij/firecracker/id_ed25519","ssh_known_hosts_file":"/home/me/.local/state/zellij/firecracker/vms/abc/known_hosts"}
+{"version":2,"ssh_host":"ssh://root@172.31.0.2:22","cwd":"/workspace","ssh_identity_file":"/home/me/.local/share/zellij/firecracker/id_ed25519","ssh_known_hosts_file":"/home/me/.local/state/zellij/firecracker/vms/abc/known_hosts","worktree":"/home/me/src/project"}
 ```
+
+`worktree` is additive to version 2, read as not known when a provider omits it. It answers for
+the pane that names a VM and no worktree - `zellij action new-pane --firecracker review` joining
+a VM somebody else provisioned. Zellij adopts it into that pane, so the pane, the layout it
+serializes into, and the agent daemon working out its project all know which checkout the guest
+copy came from. A pane that names a worktree keeps the one it named, since that is what the VM
+was ensured with.
 
 `rename_session` moves every VM `from` owns or leases to `to` and returns `{"version":2}`.
 Zellij sends it when the session is renamed, because `zellij firecracker stop` and `sync`
@@ -542,6 +549,15 @@ the same resolved worktree share a VM. An agent without a mirrored checkout gets
 and cannot pass a host `cwd`, because an arbitrary host path has no guest equivalent.
 Hocus's generic `new_pane` tool instead accepts an explicit `firecracker_vm` when panes should
 deliberately share a named VM.
+
+An agent in a VM belongs to the project of the host worktree its VM mirrors, and shows that
+worktree's branch - the same rule `zellij firecracker list` resolves a VM's branch by. The guest
+folder is a copy: the provider clones the worktree into the guest, so the guest checkout's only
+remote names the worktree's path and nothing over there can be matched to a project here. So the
+agent strip groups a VM agent under that project, its pane frame carries that checkout's
+`repo:branch`, its tab takes the project's name, and `agent_runs` lists its runs under it - while
+`cwd` still reports the guest path, which is where the process actually is. An agent in a VM of
+its own mirrors no folder here and belongs to no project, which is right.
 
 Hocus manages the VMs it has spawned through four more tools, which shell out to the
 `zellij firecracker` commands above:

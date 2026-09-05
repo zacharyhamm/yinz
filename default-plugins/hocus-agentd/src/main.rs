@@ -138,6 +138,14 @@ struct State {
     /// across that. A host that went away with it would key the folder as local
     /// for as long as the pane stayed hidden.
     hosts: BTreeMap<u32, String>,
+    /// The host worktree each Firecracker pane's VM mirrors, for the panes in one.
+    ///
+    /// A VM pane's folder is a guest path in a copy of this one, and the copy is a
+    /// repository of its own that matches no project here — see
+    /// `agents::checkout_location`, which is where the rule lives. Kept beside `hosts`
+    /// and pruned with it for the reason `hosts` is: the pane list is the *visible*
+    /// panes, and a suppressed pane keeps its folder.
+    firecracker_worktrees: BTreeMap<u32, String>,
     activity: agents::Activity,
     /// The checkout each agent pane's frame is currently decorated with.
     ///
@@ -1015,6 +1023,10 @@ impl State {
         // is; the pane is the only thing that knows, and without it a run recorded on a build
         // box is indistinguishable from one recorded here.
         let host = self.hosts.get(&pane_id).cloned();
+        // And, for a pane in a Firecracker VM, the host worktree that folder is a copy of.
+        // The run outlives the pane, so it has to carry its own answer: an archived VM run
+        // has nothing left to ask which project it was work on.
+        let worktree = self.firecracker_worktrees.get(&pane_id).cloned();
         let run = self
             .runs
             .entry(pane_id)
@@ -1026,6 +1038,7 @@ impl State {
                 kind: kind.to_owned(),
                 cwd: event.cwd.clone(),
                 host: host.clone(),
+                worktree: worktree.clone(),
                 started_at_ms: now_ms,
                 ended_at_ms: None,
                 outcome: agents::RunOutcome::Active,
@@ -1046,9 +1059,15 @@ impl State {
             }
         }
         // Kept level with the pane on every hook and not only at the start, so a run whose
-        // pane was warped to another machine stops claiming the folder it had here.
+        // pane was warped to another machine stops claiming the folder it had here. The
+        // worktree goes with it: a run adopted into a VM pane, or one whose first hook beat
+        // the manifest that named the worktree, would otherwise keep the wrong identity.
         if run.host != host {
             run.host = host;
+            changed = true;
+        }
+        if run.worktree != worktree {
+            run.worktree = worktree;
             changed = true;
         }
         if let Some((kind, text)) = agents::run_entry(event) {
@@ -1504,6 +1523,13 @@ impl State {
             if let Some(host) = pane.host.clone() {
                 self.hosts.insert(pane.id, host);
             }
+            // The host path a Firecracker pane's VM mirrors, which is what identifies
+            // its work. Read from the target rather than from the pane's folder: the
+            // folder is a guest path.
+            if let Some(worktree) = pane.target.firecracker_worktree() {
+                self.firecracker_worktrees
+                    .insert(pane.id, worktree.display().to_string());
+            }
         }
         let mut panes = terminal_panes(&self.manifest, &self.tabs);
         for pane in &mut panes {
@@ -1533,6 +1559,7 @@ impl State {
         self.commands.retain(|id, _| live.contains(id));
         self.cwds.retain(|id, _| live.contains(id));
         self.hosts.retain(|id, _| live.contains(id));
+        self.firecracker_worktrees.retain(|id, _| live.contains(id));
         // A pane that closes stops being an agent because it stops being in the
         // manifest — the same rule as the two maps above, which is what keeps
         // the latch from being one more thing that can go stale.
@@ -1914,35 +1941,48 @@ impl State {
             .collect()
     }
 
-    /// The folder a pane is in, with the machine it is on.
+    /// The folder that identifies a pane's work, with the machine it is on.
     ///
-    /// The pane is the only thing that knows both: `cwds` holds the path, and
-    /// the manifest holds the host. A pane nothing has reported a folder for has
-    /// no location at all, which is what keeps it from being probed under a
-    /// half-known one.
+    /// The pane is the only thing that knows every half: `cwds` holds the path,
+    /// the manifest holds the host, and `firecracker_worktrees` holds the host
+    /// worktree a VM pane's guest folder is a copy of. A pane nothing has said
+    /// any of that about has no location at all, which is what keeps it from
+    /// being probed under a half-known one.
     fn pane_location(&self, pane: &agents::AgentPane) -> Option<Location> {
         self.location_of(pane.pane_id)
-            .or_else(|| Some(Location::new(pane.host.clone(), pane.cwd.as_deref()?)))
+            .or_else(|| pane.checkout_location())
     }
 
     /// Where a pane is, by id alone.
     ///
-    /// Both halves come out of the maps rather than off the pane list, so a pane
+    /// Every half comes out of the maps rather than off the pane list, so a pane
     /// the list has dropped — suppressed behind the scrollback editor — still
     /// answers, and the folder probed for it is not thrown away while it is
     /// hidden.
     fn location_of(&self, pane_id: u32) -> Option<Location> {
-        let cwd = self.cwds.get(&pane_id)?;
-        Some(Location::new(self.hosts.get(&pane_id).cloned(), cwd))
+        agents::checkout_location(
+            self.firecracker_worktrees.get(&pane_id).map(String::as_str),
+            self.hosts.get(&pane_id).map(String::as_str),
+            self.cwds.get(&pane_id).map(String::as_str),
+        )
     }
 
     /// Every folder a pane we still know of is in.
     ///
-    /// Keyed off `cwds` rather than the visible pane list, because that is what
-    /// decides how long a folder is remembered — see `hosts`.
+    /// Keyed off the maps rather than the visible pane list, because that is
+    /// what decides how long a folder is remembered — see `hosts`.
+    ///
+    /// `firecracker_worktrees` is in the key set beside `cwds`, not only read
+    /// through it: a VM pane whose guest folder has not been reported yet has a
+    /// location all the same, and this list is the live set eviction keys on. A
+    /// location `repository_cwds` probes and this one omits is evicted and
+    /// probed again on every host event, forever.
     fn pane_locations(&self) -> Vec<Location> {
         self.cwds
             .keys()
+            .chain(self.firecracker_worktrees.keys())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .filter_map(|pane_id| self.location_of(*pane_id))
             .collect()
     }
@@ -2045,6 +2085,16 @@ impl State {
             .iter()
             .flatten()
             .filter(|pane| pane.host.is_some())
+            // A Firecracker pane that mirrors a host worktree is identified by that
+            // worktree, which is on *this* machine and probed with the local pass. The
+            // guest's own answer is about a copy — a repository of its own, whose remote
+            // names the worktree's path — and it would be filed under the guest folder,
+            // which nothing asks about any more: evicted on the next event, re-added on
+            // the next heartbeat, and a whole-session snapshot published each time round.
+            //
+            // Filtered here rather than further down so the emptiness check and the
+            // cursor arithmetic below both see the real set.
+            .filter(|pane| pane.firecracker_worktree.is_none())
             .filter(|pane| pane.status == agents::AgentStatus::Running)
             .map(|pane| pane.pane_id)
             .collect();
@@ -3248,6 +3298,7 @@ mod tests {
             kind: CLAUDE.to_owned(),
             cwd: Some("/work".to_owned()),
             host: None,
+            worktree: None,
             started_at_ms: 10,
             ended_at_ms: Some(20),
             outcome: agents::RunOutcome::Closed,
@@ -3484,6 +3535,25 @@ mod tests {
         }
     }
 
+    /// An agent in a Firecracker VM, as the manifest and the daemon's maps see it
+    /// together: the guest folder in `cwds`, the VM in `hosts`, and the host worktree
+    /// the VM mirrors in `firecracker_worktrees`.
+    fn vm_agent(pane_id: u32, vm: &str, guest_cwd: &str, worktree: Option<&str>) -> State {
+        let mut pane = pane(pane_id, "claude", guest_cwd);
+        let host = format!("firecracker:{vm}");
+        pane.host = Some(host.clone());
+        pane.firecracker_worktree = worktree.map(ToOwned::to_owned);
+        State {
+            panes: Some(vec![pane]),
+            cwds: BTreeMap::from([(pane_id, guest_cwd.to_owned())]),
+            hosts: BTreeMap::from([(pane_id, host)]),
+            firecracker_worktrees: worktree
+                .map(|worktree| BTreeMap::from([(pane_id, worktree.to_owned())]))
+                .unwrap_or_default(),
+            ..State::default()
+        }
+    }
+
     /// What the far machine's `git rev-parse` writes for a checkout.
     fn probe_bytes(root: &str, branch: &str) -> Vec<u8> {
         format!("{root}\n{root}/.git\n{root}/.git\n{branch}\n").into_bytes()
@@ -3538,6 +3608,135 @@ mod tests {
             !state.repositories.contains_key(&local("/work/hocus")),
             "and nothing was filed as if it were here",
         );
+    }
+
+    // -- firecracker folders ---------------------------------------------
+
+    /// The map is filled from the *manifest*, not from the pane list, so a pane hidden
+    /// behind the scrollback editor keeps the worktree that identifies its work — and so
+    /// keeps the checkout probed for it — for as long as it is hidden. It goes when the
+    /// pane leaves the manifest, which is the only thing that means "closed".
+    #[test]
+    fn a_suppressed_firecracker_pane_keeps_the_worktree_its_vm_mirrors() {
+        let mut state = State::default();
+        let mut vm = PaneInfo {
+            id: 7,
+            title: "claude".to_owned(),
+            host: Some("firecracker:review".to_owned()),
+            is_suppressed: true,
+            ..PaneInfo::default()
+        };
+        vm.target =
+            PaneTarget::firecracker("review", None, Some(std::path::Path::new("/work/hocus")))
+                .expect("a valid VM name and an absolute worktree");
+        state.manifest.panes.insert(0, vec![vm]);
+        state.rebuild_panes();
+
+        assert!(
+            state.panes.iter().flatten().next().is_none(),
+            "a suppressed pane is not one of the panes on show",
+        );
+        assert_eq!(state.location_of(7), Some(local("/work/hocus")));
+
+        state.manifest.panes.insert(0, vec![]);
+        state.rebuild_panes();
+        assert_eq!(state.location_of(7), None);
+    }
+
+    /// A VM mirrors a folder on this machine, so that folder is what Git is asked
+    /// about — the same answer `zellij firecracker list` gives for a VM's branch. The
+    /// guest's own repository is a clone whose only remote names the worktree's path,
+    /// so nothing here could match it to a project.
+    #[test]
+    fn a_firecracker_pane_is_probed_at_the_worktree_its_vm_mirrors() {
+        let state = vm_agent(7, "review", "/workspace", Some("/work/hocus"));
+
+        assert_eq!(state.repository_cwds(false), vec![local("/work/hocus")]);
+    }
+
+    /// And is not asked for the guest's answer as well. Filed under the guest folder it
+    /// would be read by nobody, evicted on the next event and re-added on the next
+    /// heartbeat — a whole-session snapshot published each time round.
+    #[test]
+    fn a_firecracker_pane_with_a_worktree_is_never_asked_for_a_remote_probe() {
+        let mut state = vm_agent(7, "review", "/workspace", Some("/work/hocus"));
+
+        state.refresh_remote_repositories_with(|pane_id| {
+            panic!("pane {pane_id} was asked for a remote probe");
+        });
+
+        assert!(state.repositories.is_empty());
+    }
+
+    /// A VM an agent got to itself mirrors nothing here, so it stays on the remote road
+    /// — and is answered by the guest, which is the only machine that can answer.
+    #[test]
+    fn a_firecracker_pane_without_a_worktree_is_answered_by_its_guest() {
+        let mut state = vm_agent(7, "review", "/workspace", None);
+
+        assert!(state.repository_cwds(false).is_empty());
+        state.refresh_remote_repositories_with(|pane_id| {
+            assert_eq!(pane_id, 7);
+            Some(far_probe("firecracker:review", "/workspace", "topic"))
+        });
+
+        assert!(state
+            .repositories
+            .contains_key(&remote("firecracker:review", "/workspace")));
+    }
+
+    /// The worktree is the identity, so it answers before the guest folder has been
+    /// reported at all. Without that the folder is probed by `repository_cwds` and
+    /// missing from `pane_locations`, which evicts it — twice a `git` process on every
+    /// host event, and a frame that never keeps its prefix.
+    #[test]
+    fn a_firecracker_pane_with_no_guest_folder_yet_is_probed_once() {
+        let mut state = vm_agent(7, "review", "/workspace", Some("/work/hocus"));
+        state.cwds.clear();
+
+        assert_eq!(state.repository_cwds(false), vec![local("/work/hocus")]);
+        state.resolve_repositories();
+        assert!(
+            state.repository_cwds(false).is_empty(),
+            "the probe already in flight answers for the folder",
+        );
+    }
+
+    /// The point of it all: an agent in a VM wears the checkout its work will be merged
+    /// back into, exactly as an agent sitting in that worktree does.
+    #[test]
+    fn a_firecracker_agent_is_decorated_with_the_checkout_its_vm_mirrors() {
+        let mut state = vm_agent(
+            7,
+            "review",
+            "/workspace",
+            Some("/work/hocus/.worktrees/topic"),
+        );
+        state.repositories = BTreeMap::from([(
+            Location::local("/work/hocus/.worktrees/topic"),
+            checkout("/work/hocus/.worktrees/topic", "/work/hocus/.git", "topic"),
+        )]);
+
+        assert_eq!(
+            prefixes(&mut state),
+            vec![(7, Some("hocus:topic".to_owned()))]
+        );
+    }
+
+    /// A suppressed pane is hidden, not closed. Its worktree is kept for the reason its
+    /// folder is — the probed checkout must survive the scrollback editor being open —
+    /// and goes when the pane leaves the manifest.
+    #[test]
+    fn a_firecracker_panes_worktree_outlives_the_pane_list_and_not_the_manifest() {
+        let mut state = vm_agent(7, "review", "/workspace", Some("/work/hocus"));
+        state.panes = Some(vec![]);
+
+        assert_eq!(state.location_of(7), Some(local("/work/hocus")));
+        assert_eq!(state.pane_locations(), vec![local("/work/hocus")]);
+
+        state.firecracker_worktrees.clear();
+        state.cwds.clear();
+        assert_eq!(state.location_of(7), None);
     }
 
     /// The hazard the whole change exists to close: the same path on two
@@ -4740,6 +4939,7 @@ mod tests {
             kind: CLAUDE.to_owned(),
             cwd: None,
             host: None,
+            worktree: None,
             started_at_ms: 0,
             ended_at_ms: None,
             outcome: agents::RunOutcome::Active,
@@ -5844,6 +6044,7 @@ mod tests {
             kind: "claude".to_owned(),
             cwd: None,
             host: None,
+            worktree: None,
             started_at_ms: 1,
             ended_at_ms: None,
             outcome: agents::RunOutcome::Active,
@@ -7160,6 +7361,7 @@ mod tests {
             kind: CLAUDE.to_owned(),
             cwd: Some("/work".to_owned()),
             host: None,
+            worktree: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: agents::RunOutcome::Active,
@@ -7198,6 +7400,7 @@ mod tests {
             kind: CLAUDE.to_owned(),
             cwd: Some("/work".to_owned()),
             host: None,
+            worktree: None,
             started_at_ms: 10,
             ended_at_ms: Some(20),
             outcome: agents::RunOutcome::Completed,

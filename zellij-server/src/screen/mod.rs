@@ -669,6 +669,9 @@ pub(crate) struct Screen {
     /// The machine each remote pane runs on. Absent for local panes, which is
     /// nearly all of them.
     terminal_hosts: HashMap<u32, String>,
+    /// The host worktree each Firecracker pane's VM mirrors. See [`Screen::set_pane_host`],
+    /// which fills it, and `generate_and_report_pane_state`, which puts it on the manifest.
+    terminal_firecracker_worktrees: HashMap<u32, PathBuf>,
     /// The name each tab last showed a plugin, so a change to one that no other
     /// event reports — a lone pane retitling itself, a project arriving, a
     /// collision forming or clearing — still redraws the tab bar.
@@ -1305,6 +1308,7 @@ impl Screen {
             tabs: BTreeMap::new(),
             terminal_cwds: HashMap::new(),
             terminal_hosts: HashMap::new(),
+            terminal_firecracker_worktrees: HashMap::new(),
             last_plugin_tab_names: HashMap::new(),
             tab_projects: HashMap::new(),
             terminal_emulator_colors: Rc::new(RefCell::new(Palette::default())),
@@ -3873,13 +3877,35 @@ impl Screen {
     /// against here and not every arrival is one: a respawn re-reports the host the pane
     /// already had, and a local pane's close retracts a host it never announced. Reporting
     /// either would cost the session a whole-manifest broadcast to say nothing.
-    pub fn set_pane_host(&mut self, terminal_id: u32, host: Option<String>) -> Result<()> {
+    ///
+    /// `worktree` travels with it: a Firecracker pane's VM mirrors a folder on this
+    /// machine, and a pane that joined a VM somebody else provisioned asked for no
+    /// worktree, so the only word on which folder its guest copy came from is the one the
+    /// provider gave when the pane was resolved. Kept beside the host and retracted with
+    /// it, because it is a fact about the same transport.
+    pub fn set_pane_host(
+        &mut self,
+        terminal_id: u32,
+        host: Option<String>,
+        worktree: Option<PathBuf>,
+    ) -> Result<()> {
         self.with_pane(PaneId::Terminal(terminal_id), |pane| {
             pane.set_remote_host(host.clone())
         });
-        let changed = match host {
+        let mut changed = match host {
             Some(host) => self.terminal_hosts.insert(terminal_id, host.clone()) != Some(host),
             None => self.terminal_hosts.remove(&terminal_id).is_some(),
+        };
+        changed |= match worktree {
+            Some(worktree) => {
+                self.terminal_firecracker_worktrees
+                    .insert(terminal_id, worktree.clone())
+                    != Some(worktree)
+            },
+            None => self
+                .terminal_firecracker_worktrees
+                .remove(&terminal_id)
+                .is_some(),
         };
         if changed {
             self.render(None)?;

@@ -122,6 +122,16 @@ pub struct EnsureResponse {
     pub ssh_identity_file: Option<PathBuf>,
     #[serde(default)]
     pub ssh_known_hosts_file: Option<PathBuf>,
+    /// The host worktree this VM mirrors, as the provider has it on record.
+    ///
+    /// Additive to protocol version 2, the way `VmEntry`'s own optional fields are: a
+    /// provider that omits it is read as not knowing, which is also what an older provider
+    /// means. It is here for the pane that joins a VM somebody else named the worktree
+    /// for - `zellij action new-pane --firecracker review` carries no worktree of its own,
+    /// and without this the pane has no way to say which checkout its guest folder is a
+    /// copy of. See `resolve_target`, which adopts it.
+    #[serde(default)]
+    pub worktree: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -693,6 +703,9 @@ esac
         assert_eq!(first.cwd, Some(PathBuf::from("/workspace")));
         assert_eq!(first.ssh_identity_file, None);
         assert_eq!(first.ssh_known_hosts_file, None);
+        // This provider names no worktree either, which reads as not knowing rather than
+        // as a VM that mirrors nothing - the same rule the listing's fields take.
+        assert_eq!(first.worktree, None);
         assert_eq!(
             provider.list(None).unwrap(),
             Listing {

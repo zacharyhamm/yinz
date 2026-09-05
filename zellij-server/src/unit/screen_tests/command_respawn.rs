@@ -305,7 +305,7 @@ fn only_a_changed_pane_host_is_broadcast() {
     let _ = drain_background_jobs(&background_jobs);
 
     screen
-        .set_pane_host(1, Some("build-box".to_owned()))
+        .set_pane_host(1, Some("build-box".to_owned()), None)
         .unwrap();
     let jobs = drain_background_jobs(&background_jobs);
     assert_eq!(
@@ -319,7 +319,7 @@ fn only_a_changed_pane_host_is_broadcast() {
     );
 
     screen
-        .set_pane_host(1, Some("build-box".to_owned()))
+        .set_pane_host(1, Some("build-box".to_owned()), None)
         .unwrap();
     let jobs = drain_background_jobs(&background_jobs);
     assert_eq!(
@@ -332,14 +332,14 @@ fn only_a_changed_pane_host_is_broadcast() {
         "an unchanged host needs no repaint: {jobs:?}"
     );
 
-    screen.set_pane_host(1, None).unwrap();
+    screen.set_pane_host(1, None, None).unwrap();
     assert_eq!(
         session_reports(&drain_background_jobs(&background_jobs)),
         1,
         "a respawn back onto this machine is"
     );
 
-    screen.set_pane_host(1, None).unwrap();
+    screen.set_pane_host(1, None, None).unwrap();
     assert_eq!(
         session_reports(&drain_background_jobs(&background_jobs)),
         0,

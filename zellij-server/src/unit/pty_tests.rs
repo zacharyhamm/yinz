@@ -509,7 +509,7 @@ fn collect_pane_host_instructions(
 ) -> Vec<(u32, Option<String>)> {
     let mut updates = Vec::new();
     while let Ok((instruction, _)) = rx.try_recv() {
-        if let ScreenInstruction::UpdatePaneHost(terminal_id, host) = instruction {
+        if let ScreenInstruction::UpdatePaneHost(terminal_id, host, _) = instruction {
             updates.push((terminal_id, host));
         }
     }
@@ -2273,7 +2273,7 @@ fn a_failed_host_change_retracts_the_old_host_and_cwd() {
     for (instruction, _) in screen_rx.try_iter() {
         match instruction {
             ScreenInstruction::UpdatePaneCwd(id, cwd) => cwd_updates.push((id, cwd)),
-            ScreenInstruction::UpdatePaneHost(id, host) => host_updates.push((id, host)),
+            ScreenInstruction::UpdatePaneHost(id, host, _) => host_updates.push((id, host)),
             _ => {},
         }
     }

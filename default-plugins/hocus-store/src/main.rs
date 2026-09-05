@@ -31,7 +31,6 @@
 mod notes_ops;
 mod ops;
 
-use hocus_proto::location::Location;
 use hocus_proto::store::{Backend, Host};
 use hocus_proto::wire::{self, Mutation, PollReply, Query};
 use hocus_proto::{agents, notes, projects, store, todos};
@@ -157,7 +156,7 @@ impl State {
         let owners: BTreeMap<u32, String> = panes
             .iter()
             .filter_map(|pane| {
-                let location = Location::new(pane.host.clone(), pane.cwd.as_deref()?);
+                let location = pane.checkout_location()?;
                 let label = projects::label_for_cwd(&reply.repositories, registry, &location)?;
                 Some((pane.pane_id, label))
             })
@@ -261,13 +260,18 @@ fn discover_from(
         .iter()
         .filter(|pane| agents::classify(pane, &reply.manual_kinds).is_some())
         .filter_map(|pane| {
-            let location = Location::new(pane.host.clone(), pane.cwd.as_deref()?);
+            let location = pane.checkout_location()?;
             reply.repositories.get(&location).cloned()
         })
         // A checkout on another machine makes no project: every path a project
         // row holds is a path on *this* one. `projects::discover` refuses these
         // too, and is the guarantee; this is the same rule said where the panes
         // are, so a reader here is not left wondering.
+        //
+        // A Firecracker pane passes it. Its location is the host worktree its VM
+        // mirrors — a folder on this machine, probed here — so the checkout it
+        // names is one a project row can hold, exactly as it would be for a pane
+        // sitting in that worktree without a VM.
         .filter(|repository| repository.host.is_none())
         .collect();
 
@@ -464,9 +468,12 @@ mod tests {
         let repositories = panes
             .iter()
             .filter_map(|pane| {
-                let cwd = pane.cwd.clone()?;
-                let location = Location::new(pane.host.clone(), &cwd);
-                Some((location, checkout(&cwd).on_host(pane.host.clone())))
+                // Keyed the way every reader looks a folder up, so a Firecracker
+                // pane's checkout is filed under the host worktree it mirrors and
+                // not under its guest folder.
+                let location = pane.checkout_location()?;
+                let repository = checkout(&location.path).on_host(location.host.clone());
+                Some((location, repository))
             })
             .collect();
         serde_json::to_string(&PollReply {
@@ -743,8 +750,10 @@ mod tests {
 
     /// A snapshot with one pane in one checkout, as the daemon sends it.
     fn snapshot(pane: agents::AgentPane, manual_kinds: BTreeMap<u32, String>) -> String {
-        let cwd = pane.cwd.clone().expect("the pane is somewhere");
-        let repository = checkout(&cwd);
+        // The folder the daemon would have probed, which for a Firecracker pane is the
+        // host worktree its VM mirrors rather than the guest copy.
+        let location = pane.checkout_location().expect("the pane is somewhere");
+        let repository = checkout(&location.path);
         snapshot_with(pane, repository, manual_kinds)
     }
 
@@ -758,9 +767,8 @@ mod tests {
         repository: projects::Repository,
         manual_kinds: BTreeMap<u32, String>,
     ) -> String {
-        let cwd = pane.cwd.clone().expect("the pane is somewhere");
-        let location = Location::new(pane.host.clone(), &cwd);
-        let repository = repository.on_host(pane.host.clone());
+        let location = pane.checkout_location().expect("the pane is somewhere");
+        let repository = repository.on_host(location.host.clone());
         serde_json::to_string(&PollReply {
             panes: Some(vec![pane]),
             activity: agents::Activity::new(),
@@ -832,6 +840,44 @@ mod tests {
             "{:?}",
             project_names(&backend)
         );
+    }
+
+    /// The exception, and the pair the rule above reads with. A Firecracker VM mirrors a
+    /// folder on *this* machine, and the agent in it is working on that folder — so the
+    /// project it makes is the same one a local agent there would make, named after the
+    /// host worktree and not after the guest copy.
+    #[test]
+    fn a_firecracker_agents_worktree_becomes_the_project_its_guest_copy_came_from() {
+        let backend = backend();
+        let mut pane = pane_in(3, "claude", Some("claude"), "/workspace");
+        pane.host = Some("firecracker:review".to_owned());
+        pane.firecracker_worktree = Some("/tmp/work".to_owned());
+
+        apply(&backend, &snapshot(pane, BTreeMap::new()));
+
+        assert_eq!(project_names(&backend), vec!["work"]);
+    }
+
+    /// And makes no second project when the worktree is already inside one — the
+    /// ordinary case, since a VM is usually a copy of a checkout the user is in.
+    #[test]
+    fn a_firecracker_agent_inside_a_known_project_starts_no_new_one() {
+        let backend = backend();
+        apply(
+            &backend,
+            &snapshot(
+                pane_in(3, "codex", Some("codex"), "/tmp/work"),
+                BTreeMap::new(),
+            ),
+        );
+        assert_eq!(project_names(&backend), vec!["work"]);
+
+        let mut vm = pane_in(4, "claude", Some("claude"), "/workspace");
+        vm.host = Some("firecracker:review".to_owned());
+        vm.firecracker_worktree = Some("/tmp/work/sub".to_owned());
+        apply(&backend, &snapshot(vm, BTreeMap::new()));
+
+        assert_eq!(project_names(&backend), vec!["work"]);
     }
 
     /// A worktree nested inside the checkout it came from makes no second

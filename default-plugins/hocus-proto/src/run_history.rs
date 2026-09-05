@@ -131,7 +131,12 @@ impl Filter {
 
     fn keeps(&self, header: &AgentRunHeader) -> bool {
         match trimmed(&self.root) {
-            Some(root) => matches_root(header.cwd.as_deref(), header.host.as_deref(), root),
+            Some(root) => matches_root(
+                header.cwd.as_deref(),
+                header.host.as_deref(),
+                header.worktree.as_deref(),
+                root,
+            ),
             None => true,
         }
     }
@@ -152,10 +157,22 @@ fn trimmed(value: &Option<String>) -> Option<&str> {
 /// folders, and a project is a folder on *this* machine. Filing a remote agent's run under a
 /// local project because the two spell the same path would put work nobody did here into the
 /// answer to "what has been done on this".
-pub fn matches_root(cwd: Option<&str>, host: Option<&str>, root: &str) -> bool {
-    if host.is_some_and(|host| !host.trim().is_empty()) {
-        return false;
-    }
+///
+/// A Firecracker run is the exception the host rule has to make: its `cwd` is a guest path
+/// in a *copy* of a folder on this machine, and `worktree` names the original. The work was
+/// done on this project, so the path matched is the worktree and the host is beside the
+/// point — the same exception `agents::checkout_location` makes for a live pane.
+pub fn matches_root(
+    cwd: Option<&str>,
+    host: Option<&str>,
+    worktree: Option<&str>,
+    root: &str,
+) -> bool {
+    let cwd = match worktree {
+        Some(worktree) => Some(worktree),
+        None if host.is_some_and(|host| !host.trim().is_empty()) => return false,
+        None => cwd,
+    };
     let (Some(cwd), root) = (cwd, root.trim_end_matches('/')) else {
         return false;
     };
@@ -712,6 +729,7 @@ mod tests {
             kind: kind.to_owned(),
             cwd: Some("/work/hocus".to_owned()),
             host: None,
+            worktree: None,
             started_at_ms,
             ended_at_ms: None,
             outcome: RunOutcome::Active,
@@ -1079,15 +1097,51 @@ mod tests {
     /// inside it.
     #[test]
     fn a_project_root_does_not_claim_a_sibling_that_shares_its_name() {
-        assert!(matches_root(Some("/work/hocus"), None, "/work/hocus"));
-        assert!(matches_root(Some("/work/hocus/src"), None, "/work/hocus"));
-        assert!(matches_root(Some("/work/hocus/"), None, "/work/hocus"));
-        assert!(!matches_root(Some("/work/hocus-fork"), None, "/work/hocus"));
-        assert!(!matches_root(None, None, "/work/hocus"));
+        assert!(matches_root(Some("/work/hocus"), None, None, "/work/hocus"));
+        assert!(matches_root(
+            Some("/work/hocus/src"),
+            None,
+            None,
+            "/work/hocus"
+        ));
+        assert!(matches_root(
+            Some("/work/hocus/"),
+            None,
+            None,
+            "/work/hocus"
+        ));
+        assert!(!matches_root(
+            Some("/work/hocus-fork"),
+            None,
+            None,
+            "/work/hocus"
+        ));
+        assert!(!matches_root(None, None, None, "/work/hocus"));
         // The same path on another machine is another folder, not this project.
         assert!(!matches_root(
             Some("/work/hocus"),
             Some("build-box"),
+            None,
+            "/work/hocus"
+        ));
+    }
+
+    /// The exception the host rule makes for a VM: the folder the run names is a copy of
+    /// one on this machine, and the worktree is where the work actually landed.
+    #[test]
+    fn a_firecracker_run_matches_the_project_of_the_worktree_its_vm_mirrored() {
+        assert!(matches_root(
+            Some("/workspace"),
+            Some("firecracker:review"),
+            Some("/work/hocus"),
+            "/work/hocus"
+        ));
+        // And only that project: the worktree is matched on path boundaries like any
+        // other folder.
+        assert!(!matches_root(
+            Some("/workspace"),
+            Some("firecracker:review"),
+            Some("/work/hocus-fork"),
             "/work/hocus"
         ));
     }
