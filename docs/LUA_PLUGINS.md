@@ -1042,9 +1042,16 @@ return M
 
 A handler returns the text the model reads - or a table, which is sent as JSON - or raises, and
 the error reaches the model as `failed: …`. A call is a `zellij.rpc` call named
-`hocus_tool:<name>` (see *Plugin-to-plugin calls*), so a handler that needs to wait for something
-can do so from a task and answer through `zellij.rpc.handle("hocus_tool:<name>", …)` of its own
-instead. Hocus gives up on a call that goes unanswered for thirty seconds, and on one whose
+`hocus_tool:<name>` (see *Plugin-to-plugin calls*); handlers may call `zellij.await` directly:
+
+```lua
+handler = function(args)
+  local result = zellij.await(zellij.async.run_command { command = { "date" } })
+  return result.stdout
+end
+```
+
+Hocus gives up on a call that goes unanswered for thirty seconds, and on one whose
 extension unloaded first, and tells the model so.
 
 `hocus_extension_name` and `hocus_extension_path` are in the configuration only when Hocus was

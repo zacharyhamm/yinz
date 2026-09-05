@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use mlua::{Lua, StdLib, Table, Value as LuaValue};
+use uuid::Uuid;
 use zellij_utils::errors::prelude::*;
 
 use super::{LuaPlugin, PRELUDE};
@@ -116,6 +117,12 @@ pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result
             crate::plugins::plugin_map::CANCELLED_BY_HOST,
         )
         .map_err(|e| anyhow!("failed to hand the cancel message to the prelude: {}", e))?;
+    globals
+        .set(
+            "__zellij_interpreter_id",
+            Uuid::new_v4().simple().to_string(),
+        )
+        .map_err(|e| anyhow!("failed to hand the interpreter id to the prelude: {}", e))?;
 
     let zellij: Table = lua
         .load(PRELUDE)

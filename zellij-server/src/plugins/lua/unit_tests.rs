@@ -5087,6 +5087,7 @@ fn task_plugin(body: &str) -> super::LuaPlugin {
         local M = {{ log = {{}} }}
         function log(entry) table.insert(M.log, entry) end
         zellij.run_command = function(args) log("run:" .. args.context.__async) end
+        zellij.web_request = function(args) log("web:" .. args.context.__async) end
         zellij.set_timeout = function() end
         function M.load()
           M.task = zellij.task(function()
@@ -5111,6 +5112,19 @@ fn command_result(token: &str, exit_code: i32, stdout: &str) -> Event {
     )
 }
 
+fn async_token(log: &str, index: usize) -> String {
+    log.split_whitespace()
+        .filter_map(|entry| {
+            entry
+                .strip_prefix("run:")
+                .or_else(|| entry.strip_prefix("web:"))
+                .or_else(|| entry.strip_prefix("token:"))
+        })
+        .nth(index)
+        .expect("the async token was logged")
+        .to_owned()
+}
+
 #[test]
 fn a_task_runs_to_its_first_await_and_resumes_on_the_reply_bearing_its_token() {
     let mut plugin = task_plugin(
@@ -5120,18 +5134,20 @@ fn a_task_runs_to_its_first_await_and_resumes_on_the_reply_bearing_its_token() {
         log("exit:" .. tostring(result.exit_code) .. " " .. result.stdout)
         "#,
     );
+    let initial = logged(&mut plugin);
+    let token = async_token(&initial, 0);
     assert_eq!(
-        logged(&mut plugin),
-        "start run:a1",
+        initial,
+        format!("start run:{token}"),
         "synchronous up to the await"
     );
 
     // Somebody else's reply is not this task's.
     plugin.update(&command_result("a9", 0, "other")).unwrap();
-    assert_eq!(logged(&mut plugin), "start run:a1");
+    assert_eq!(logged(&mut plugin), format!("start run:{token}"));
 
-    plugin.update(&command_result("a1", 0, "out")).unwrap();
-    assert_eq!(logged(&mut plugin), "start run:a1 exit:0 out");
+    plugin.update(&command_result(&token, 0, "out")).unwrap();
+    assert_eq!(logged(&mut plugin), format!("start run:{token} exit:0 out"));
 }
 
 /// Awaitables are eager: both commands are dispatched before either is awaited, and their
@@ -5146,9 +5162,15 @@ fn two_outstanding_commands_resolve_in_whichever_order_they_answer() {
         log("second:" .. zellij.await(second).stdout)
         "#,
     );
-    plugin.update(&command_result("a2", 0, "B")).unwrap();
-    plugin.update(&command_result("a1", 0, "A")).unwrap();
-    assert_eq!(logged(&mut plugin), "run:a1 run:a2 first:A second:B");
+    let initial = logged(&mut plugin);
+    let first = async_token(&initial, 0);
+    let second = async_token(&initial, 1);
+    plugin.update(&command_result(&second, 0, "B")).unwrap();
+    plugin.update(&command_result(&first, 0, "A")).unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        format!("run:{first} run:{second} first:A second:B")
+    );
 }
 
 /// Tasks are resumed before the handlers and `update`, and the event is not consumed.
@@ -5159,7 +5181,7 @@ fn an_event_a_task_awaited_still_reaches_handlers_and_update() {
         local zellij = require("zellij")
         local M = { log = {} }
         local function log(entry) table.insert(M.log, entry) end
-        zellij.run_command = function() end
+        zellij.run_command = function(args) log("run:" .. args.context.__async) end
         function M.load()
           zellij.task(function()
             zellij.await(zellij.async.run_command { command = { "x" } })
@@ -5176,8 +5198,12 @@ fn an_event_a_task_awaited_still_reaches_handlers_and_update() {
     )
     .unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
-    plugin.update(&command_result("a1", 0, "")).unwrap();
-    assert_eq!(logged(&mut plugin), "task handler update");
+    let token = async_token(&logged(&mut plugin), 0);
+    plugin.update(&command_result(&token, 0, "")).unwrap();
+    assert_eq!(
+        logged(&mut plugin),
+        format!("run:{token} task handler update")
+    );
 }
 
 #[test]
@@ -5225,15 +5251,18 @@ fn all_resolves_when_every_child_has_and_race_with_the_first() {
         log("race:" .. won.key .. "=" .. won.value.stdout)
         "#,
     );
-    plugin.update(&command_result("a2", 0, "B")).unwrap();
-    assert_eq!(logged(&mut plugin), "run:a1 run:a2", "all waits for both");
-    plugin.update(&command_result("a1", 0, "A")).unwrap();
-    assert_eq!(logged(&mut plugin), "run:a1 run:a2 all:AB run:a3 run:a4");
-    plugin.update(&command_result("a4", 0, "F")).unwrap();
-    assert_eq!(
-        logged(&mut plugin),
-        "run:a1 run:a2 all:AB run:a3 run:a4 race:fast=F"
-    );
+    let initial = logged(&mut plugin);
+    let first = async_token(&initial, 0);
+    let second = async_token(&initial, 1);
+    plugin.update(&command_result(&second, 0, "B")).unwrap();
+    assert_eq!(logged(&mut plugin), initial, "all waits for both");
+    plugin.update(&command_result(&first, 0, "A")).unwrap();
+    let after_all = logged(&mut plugin);
+    let slow = async_token(&after_all, 2);
+    let fast = async_token(&after_all, 3);
+    assert!(after_all.ends_with(&format!("all:AB run:{slow} run:{fast}")));
+    plugin.update(&command_result(&fast, 0, "F")).unwrap();
+    assert_eq!(logged(&mut plugin), format!("{after_all} race:fast=F"));
 }
 
 #[test]
@@ -5249,13 +5278,15 @@ fn all_with_an_already_settled_child_waits_for_the_pending_ones() {
         log("all:" .. tostring(both[1]) .. "/" .. tostring(both[2] and both[2].stdout))
         "#,
     );
+    let initial = logged(&mut plugin);
+    let token = async_token(&initial, 0);
     assert_eq!(
-        logged(&mut plugin),
-        "empty:nil run:a1",
+        initial,
+        format!("empty:nil run:{token}"),
         "an empty list resolves at once; a settled child does not stand in for a pending one"
     );
-    plugin.update(&command_result("a1", 0, "B")).unwrap();
-    assert_eq!(logged(&mut plugin), "empty:nil run:a1 all:x/B");
+    plugin.update(&command_result(&token, 0, "B")).unwrap();
+    assert_eq!(logged(&mut plugin), format!("{initial} all:x/B"));
 }
 
 fn manifest_with_agent(pane_id: u32, state: zellij_utils::data::AgentState) -> Event {
@@ -5349,12 +5380,13 @@ fn an_error_in_a_resumed_task_fails_the_update_that_resumed_it() {
         error("the task broke")
         "#,
     );
+    let token = async_token(&logged(&mut plugin), 0);
     let error = plugin
-        .update(&command_result("a1", 0, ""))
+        .update(&command_result(&token, 0, ""))
         .expect_err("a task error is the entrypoint's error");
     assert!(format!("{error:#}").contains("the task broke"), "{error:#}");
     // Gone: a later reply resumes nothing.
-    plugin.update(&command_result("a1", 0, "")).unwrap();
+    plugin.update(&command_result("stale", 0, "")).unwrap();
 }
 
 /// Two tasks woken by one message: the first raising does not strand the second, which has
@@ -5401,6 +5433,143 @@ fn a_raising_task_does_not_strand_the_others_in_its_batch() {
 }
 
 #[test]
+fn a_raising_task_drains_newly_ready_tasks_before_reporting_the_error() {
+    for entrypoint in ["pipe", "load", "update"] {
+        let mut plugin = load_permitted(
+            r#"
+            local zellij = require("zellij")
+            local M = { log = {} }
+            function M.load(config)
+              local start, resolve = zellij.async.future()
+              M.resolve = resolve
+              local next_ready, resolve_next = zellij.async.future()
+              M.first = zellij.task(function()
+                zellij.await(config.entrypoint == "pipe" and zellij.async.pipe("go") or start)
+                resolve_next("second ran")
+                error("first broke")
+              end)
+              M.second = zellij.task(function()
+                table.insert(M.log, zellij.await(next_ready))
+              end)
+              if config.entrypoint == "load" then resolve() end
+            end
+            function M.update() M.resolve() end
+            function M.render()
+              return table.concat(M.log, " ") .. " running:" .. tostring(M.first:is_running())
+                .. "," .. tostring(M.second:is_running())
+            end
+            return M
+            "#,
+        )
+        .unwrap();
+        let loaded = plugin.load(&BTreeMap::from([(
+            "entrypoint".to_owned(),
+            entrypoint.to_owned(),
+        )]));
+        let result = match entrypoint {
+            "load" => loaded,
+            "update" => {
+                loaded.unwrap();
+                plugin.update(&Event::InputReceived).map(|_| ())
+            },
+            "pipe" => {
+                loaded.unwrap();
+                plugin
+                    .pipe(&zellij_utils::data::PipeMessage::new(
+                        zellij_utils::data::PipeSource::Keybind,
+                        "go",
+                        &None,
+                        &None,
+                        false,
+                    ))
+                    .map(|_| ())
+            },
+            _ => unreachable!(),
+        };
+        let error = result.expect_err("the first task's error is the entrypoint's");
+        assert!(
+            format!("{error:#}").contains("first broke"),
+            "{entrypoint}: {error:#}"
+        );
+        assert_eq!(
+            logged(&mut plugin),
+            "second ran running:false,false",
+            "{entrypoint}"
+        );
+    }
+}
+
+#[test]
+fn a_task_can_cancel_another_task_already_queued_in_its_batch() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = { resumed = false }
+        function M.load()
+          local shared, resolve = zellij.async.future()
+          M.resolve = resolve
+          M.first = zellij.task(function()
+            zellij.await(shared)
+            M.second:cancel()
+          end)
+          M.second = zellij.task(function()
+            zellij.await(shared)
+            M.resumed = true
+          end)
+        end
+        function M.update() M.resolve() end
+        function M.render()
+          return "resumed:" .. tostring(M.resumed) .. " running:" .. tostring(M.first:is_running())
+            .. "," .. tostring(M.second:is_running())
+        end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    plugin.update(&Event::InputReceived).unwrap();
+    assert_eq!(logged(&mut plugin), "resumed:false running:false,false");
+}
+
+#[test]
+fn failing_batches_keep_the_first_error_and_drain_later_tasks() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = { log = {} }
+        zellij.log = function(message) table.insert(M.log, message) end
+        function M.load()
+          local first, resolve_first = zellij.async.future()
+          local second, resolve_second = zellij.async.future()
+          local third, resolve_third = zellij.async.future()
+          zellij.task(function()
+            zellij.await(first)
+            resolve_second()
+            error("first broke", 0)
+          end)
+          zellij.task(function()
+            zellij.await(second)
+            resolve_third()
+            error("second broke", 0)
+          end)
+          zellij.task(function()
+            zellij.await(third)
+            table.insert(M.log, "third ran")
+          end)
+          resolve_first()
+        end
+        function M.render() return table.concat(M.log, " | ") end
+        return M
+        "#,
+    )
+    .unwrap();
+    let error = plugin.load(&BTreeMap::new()).unwrap_err();
+    assert!(format!("{error:#}").contains("first broke"), "{error:#}");
+    assert!(!format!("{error:#}").contains("second broke"), "{error:#}");
+    assert_eq!(logged(&mut plugin), "error: second broke | third ran");
+}
+
+#[test]
 fn a_cancelled_task_propagates_the_hosts_cancel() {
     let error = cancel_mid_update(
         r#"
@@ -5421,7 +5590,8 @@ fn a_task_asks_for_a_render_by_returning_truthy_or_calling_request_render() {
         r#"
         local zellij = require("zellij")
         local M = {}
-        zellij.run_command = function() end
+        zellij.run_command = function(args) table.insert(M.tokens, args.context.__async) end
+        M.tokens = {}
         function M.load()
           zellij.task(function()
             zellij.await(zellij.async.run_command { command = { "x" } })
@@ -5433,15 +5603,18 @@ fn a_task_asks_for_a_render_by_returning_truthy_or_calling_request_render() {
           end)
         end
         function M.update() return false end
-        function M.render() return "" end
+        function M.render() return table.concat(M.tokens, " ") end
         return M
         "#,
     )
     .unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
-    assert!(plugin.update(&command_result("a1", 0, "")).unwrap());
-    assert!(plugin.update(&command_result("a2", 0, "")).unwrap());
-    assert!(!plugin.update(&command_result("a3", 0, "")).unwrap());
+    let tokens = logged(&mut plugin);
+    let first = tokens.split_whitespace().next().unwrap().to_owned();
+    let second = tokens.split_whitespace().nth(1).unwrap().to_owned();
+    assert!(plugin.update(&command_result(&first, 0, "")).unwrap());
+    assert!(plugin.update(&command_result(&second, 0, "")).unwrap());
+    assert!(!plugin.update(&command_result("stale", 0, "")).unwrap());
 }
 
 #[test]
@@ -5505,15 +5678,16 @@ fn web_request_takes_named_arguments_with_absent_stream_and_proxy() {
         log("status:" .. reply.status .. " " .. reply.body)
         "#,
     );
+    let token = async_token(&logged(&mut plugin), 0);
     plugin
         .update(&Event::WebRequestResult(
             200,
             BTreeMap::new(),
             b"ok".to_vec(),
-            BTreeMap::from([("__async".to_owned(), "a1".to_owned())]),
+            BTreeMap::from([("__async".to_owned(), token.clone())]),
         ))
         .unwrap();
-    assert_eq!(logged(&mut plugin), "status:200 ok");
+    assert_eq!(logged(&mut plugin), format!("web:{token} status:200 ok"));
 }
 
 #[test]
@@ -5694,6 +5868,13 @@ fn an_rpc_call_is_answered_by_the_handler_and_the_reply_resumes_the_caller() {
     )
     .unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
+    let initial = logged(&mut plugin);
+    let call_id = initial
+        .split(r#""call_id":""#)
+        .nth(1)
+        .and_then(|value| value.split('"').next())
+        .expect("the rpc call id was logged")
+        .to_owned();
     let call = |name: &str, payload: &str| {
         zellij_utils::data::PipeMessage::new(
             zellij_utils::data::PipeSource::Plugin(3),
@@ -5720,14 +5901,16 @@ fn an_rpc_call_is_answered_by_the_handler_and_the_reply_resumes_the_caller() {
     plugin
         .pipe(&call(
             "zellij_rpc_reply",
-            r#"{"version":1,"call_id":"rpc1","result":4}"#,
+            &format!(r#"{{"version":1,"call_id":"{call_id}","result":4}}"#),
         ))
         .unwrap();
     let log = logged(&mut plugin);
     let lines: Vec<&str> = log.split(" | ").collect();
     assert_eq!(
         lines[0],
-        r#"zellij_rpc_call>file:other.lua:{"call_id":"rpc1","name":"double","payload":{"n":2},"version":1}"#
+        format!(
+            r#"zellij_rpc_call>file:other.lua:{{"call_id":"{call_id}","name":"double","payload":{{"n":2}},"version":1}}"#
+        )
     );
     assert!(
         lines[1].starts_with("zellij_rpc_reply>3:") && lines[1].contains(r#""result":42"#),
@@ -5753,7 +5936,7 @@ fn tracing_logs_commands_events_and_tasks() {
         local zellij = require("zellij")
         local M = { lines = {} }
         zellij.log = function(...) table.insert(M.lines, table.concat({ ... }, " ")) end
-        zellij.run_command = function() end
+        zellij.run_command = function(args) zellij.log("token:" .. args.context.__async) end
         function M.load()
           zellij.task(function()
             zellij.await(zellij.async.run_command { command = { "x" } })
@@ -5767,7 +5950,8 @@ fn tracing_logs_commands_events_and_tasks() {
     plugin
         .load(&BTreeMap::from([("trace".to_owned(), "true".to_owned())]))
         .unwrap();
-    plugin.update(&command_result("a1", 0, "")).unwrap();
+    let token = async_token(&logged(&mut plugin), 0);
+    plugin.update(&command_result(&token, 0, "")).unwrap();
     let log = logged(&mut plugin);
     for expected in [
         "~ task#1 started",
