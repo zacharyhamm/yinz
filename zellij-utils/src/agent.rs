@@ -429,27 +429,39 @@ pub const WAITING_TOOLS: &[&str] = &["AskUserQuestion", "ExitPlanMode", "request
 /// `bypassPermissions` and `dontAsk` do answer *every* one: Claude Code resolves them to a
 /// blanket allow and a blanket deny. `auto` resolves to a classifier, which clears what it
 /// judges safe and puts the rest in front of the user exactly as `default` would - so a wait
-/// under it is silenced on the odds rather than on a promise, which is what
-/// [`CLASSIFIED_MODES`] names and [`suppression_is_a_guarantee`] answers for.
+/// under it is silenced on the odds rather than on a promise, which is the line
+/// [`PROMISED_ANSWER_MODES`] draws and [`suppression_is_a_guarantee`] reads.
 ///
 /// `acceptEdits` is deliberately not here: it answers one kind of prompt rather than all of
 /// them, which is what [`AUTO_ACCEPTED_EDIT_TOOLS`] names.
+///
+/// Adding a mode here silences its prompts and grants nothing else. The backstop is named
+/// separately, in [`PROMISED_ANSWER_MODES`], and a mode absent from that list is never
+/// interrupted over - so if a new mode's silence is a promise rather than a guess, it belongs
+/// in both.
 pub const UNATTENDED_MODES: &[&str] = &["bypassPermissions", "dontAsk", "auto"];
 
-/// The unattended modes that silence a prompt on the odds rather than on a promise.
+/// The modes whose silence is a promise to answer rather than a guess at the odds.
 ///
-/// `bypassPermissions` and `dontAsk` resolve a permission prompt outright, and `acceptEdits`
-/// resolves the file-editing ones; a prompt still up six seconds later under any of those is a
-/// promise that did not hold - a `deny` or `ask` rule, a `PreToolUse` hook that asks anyway, an
-/// edit outside the workspace - and the `Notification` behind it is worth acting on.
+/// `bypassPermissions` and `dontAsk` resolve a permission prompt outright, to a blanket allow
+/// and a blanket deny, and `acceptEdits` resolves the file-editing ones. So a prompt still up
+/// six seconds later under one of them is a promise that did not hold - a `deny` or `ask` rule,
+/// a `PreToolUse` hook that asks anyway, an edit outside the workspace - and the `Notification`
+/// behind it is worth acting on, which is what [`suppression_is_a_guarantee`] says.
 ///
-/// `auto` is the exception, and the reason this list exists. It is a classifier that is
-/// routinely still deciding a `Bash` call well past the six seconds, the notification is a
-/// plain timer Claude Code arms when the dialog goes up rather than a verdict, and it carries
-/// no `permission_mode` of its own for anyone to read. So it proves nothing about whether a
-/// person is needed. A prompt the classifier does refuse is still drawn, in the row and in the
-/// pane; it is just not interrupted over.
-pub const CLASSIFIED_MODES: &[&str] = &["auto"];
+/// This is an allowlist, and that direction is the point. `auto` is absent because it is a
+/// classifier: routinely still deciding a `Bash` call well past the six seconds, with a
+/// notification that is a plain timer Claude Code arms when the dialog goes up rather than a
+/// verdict, and no `permission_mode` of its own for anyone to read. It proves nothing about
+/// whether a person is needed. Every mode nobody has named here is treated the same way - the
+/// wait is still drawn, in the row and in the pane, it is just not interrupted over - so a mode
+/// added to [`UNATTENDED_MODES`] and forgotten here costs a toast that was never sent rather
+/// than one sent over a `cargo` build that approved itself.
+///
+/// `acceptEdits` is named here without being in [`UNATTENDED_MODES`]: it silences only the
+/// [`AUTO_ACCEPTED_EDIT_TOOLS`], and [`waiting_needs_a_person`] has already applied that tool
+/// gate by the time this list is read.
+pub const PROMISED_ANSWER_MODES: &[&str] = &["bypassPermissions", "dontAsk", "acceptEdits"];
 
 /// The tools whose permission prompt `acceptEdits` answers by itself.
 ///
@@ -850,8 +862,9 @@ pub fn waiting_needs_a_person(event: &HookEvent) -> bool {
 /// `Notification` about six seconds later. A prompt silenced because the mode answers it - the
 /// blanket allow and deny of `bypassPermissions` and `dontAsk`, the file-editing tools under
 /// `acceptEdits` - was silenced on a promise, so a notification means the promise did not hold
-/// and there is a person to tell. A prompt silenced under `auto` was silenced on the odds, and
-/// its notification says nothing either way; see [`CLASSIFIED_MODES`].
+/// and there is a person to tell. A prompt silenced under any other mode - `auto` today, and
+/// whatever is added next - was silenced on the odds, and its notification says nothing either
+/// way; see [`PROMISED_ANSWER_MODES`], which is the allowlist this reads.
 ///
 /// `false` for anything that was not silenced in the first place, so a caller needs no second
 /// check: a wait that was announced has no held edge to owe anybody.
@@ -859,10 +872,10 @@ pub fn suppression_is_a_guarantee(event: &HookEvent) -> bool {
     if waiting_needs_a_person(event) {
         return false;
     }
-    !event
+    event
         .permission_mode
         .as_deref()
-        .is_some_and(|mode| CLASSIFIED_MODES.contains(&mode))
+        .is_some_and(|mode| PROMISED_ANSWER_MODES.contains(&mode))
 }
 
 /// The few words a record carries for the tool a `PreToolUse` names.
@@ -1480,24 +1493,48 @@ mod tests {
             tool_name: Some(tool.to_owned()),
             ..event("PermissionRequest")
         };
-        for mode in ["bypassPermissions", "dontAsk"] {
-            assert!(
-                suppression_is_a_guarantee(&request("Bash", mode)),
-                "{mode} answers every prompt it silences"
-            );
+        for mode in PROMISED_ANSWER_MODES {
+            // Naming a mode a promise says nothing unless it can silence a prompt in the first
+            // place: the blanket modes do it through `UNATTENDED_MODES`, and `acceptEdits`
+            // through the tool gate `waiting_needs_a_person` applies.
+            if *mode == "acceptEdits" {
+                for tool in AUTO_ACCEPTED_EDIT_TOOLS {
+                    assert!(
+                        suppression_is_a_guarantee(&request(tool, mode)),
+                        "{tool} under {mode} is answered, not judged"
+                    );
+                }
+            } else {
+                assert!(
+                    UNATTENDED_MODES.contains(mode),
+                    "{mode} promises an answer it has no prompt to give it to"
+                );
+                assert!(
+                    suppression_is_a_guarantee(&request("Bash", mode)),
+                    "{mode} answers every prompt it silences"
+                );
+            }
         }
-        for tool in AUTO_ACCEPTED_EDIT_TOOLS {
-            assert!(
-                suppression_is_a_guarantee(&request(tool, "acceptEdits")),
-                "{tool} under acceptEdits is answered, not judged"
-            );
-        }
-        for mode in CLASSIFIED_MODES {
+
+        // And the direction the allowlist exists for: an unattended mode nobody named a promise
+        // is quiet rather than noisy, so a mode added there and forgotten here costs a toast
+        // never sent rather than one sent over a `Bash cargo` that approved itself a moment
+        // later. `auto` is the one today.
+        for mode in UNATTENDED_MODES
+            .iter()
+            .filter(|mode| !PROMISED_ANSWER_MODES.contains(*mode))
+        {
             assert!(
                 !suppression_is_a_guarantee(&request("Bash", mode)),
                 "{mode} silences on the odds"
             );
         }
+        assert!(
+            UNATTENDED_MODES
+                .iter()
+                .any(|mode| !PROMISED_ANSWER_MODES.contains(mode)),
+            "that loop proves nothing if every unattended mode is a promise"
+        );
 
         // Nothing that was announced in the first place is owed a backstop.
         assert!(!suppression_is_a_guarantee(&request("Bash", "acceptEdits")));
