@@ -238,16 +238,27 @@ pub const WAITING_TOOLS: &[&str] = &["AskUserQuestion", "ExitPlanMode", "request
 /// `bypassPermissions` and `dontAsk` do answer *every* one: Claude Code resolves them to a
 /// blanket allow and a blanket deny. `auto` resolves to a classifier, which clears what it
 /// judges safe and puts the rest in front of the user exactly as `default` would - so a wait
-/// under it is silenced on the odds, not on a guarantee, and silenced outright: the
-/// `Notification` about six seconds later is a plain timer Claude Code arms when the dialog
-/// goes up, the classifier is routinely still deciding a `Bash` call when it fires, and it
-/// carries no `permission_mode` of its own - so it proves nothing about whether a person is
-/// needed, and the daemon does not let it reopen the edge the request was silenced on. A
-/// prompt the classifier does refuse is drawn, in the row and in the pane, but not toasted.
+/// under it is silenced on the odds rather than on a promise, which is what
+/// [`CLASSIFIED_MODES`] names and [`suppression_is_a_guarantee`] answers for.
 ///
 /// `acceptEdits` is deliberately not here: it answers one kind of prompt rather than all of
 /// them, which is what [`AUTO_ACCEPTED_EDIT_TOOLS`] names.
 pub const UNATTENDED_MODES: &[&str] = &["bypassPermissions", "dontAsk", "auto"];
+
+/// The unattended modes that silence a prompt on the odds rather than on a promise.
+///
+/// `bypassPermissions` and `dontAsk` resolve a permission prompt outright, and `acceptEdits`
+/// resolves the file-editing ones; a prompt still up six seconds later under any of those is a
+/// promise that did not hold - a `deny` or `ask` rule, a `PreToolUse` hook that asks anyway, an
+/// edit outside the workspace - and the `Notification` behind it is worth acting on.
+///
+/// `auto` is the exception, and the reason this list exists. It is a classifier that is
+/// routinely still deciding a `Bash` call well past the six seconds, the notification is a
+/// plain timer Claude Code arms when the dialog goes up rather than a verdict, and it carries
+/// no `permission_mode` of its own for anyone to read. So it proves nothing about whether a
+/// person is needed. A prompt the classifier does refuse is still drawn, in the row and in the
+/// pane; it is just not interrupted over.
+pub const CLASSIFIED_MODES: &[&str] = &["auto"];
 
 /// The tools whose permission prompt `acceptEdits` answers by itself.
 ///
@@ -604,9 +615,10 @@ pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
 /// A waiting `Notification` is never suppressed here either, but for a plainer reason: Claude
 /// Code builds it without a `permission_mode`, so there is no mode to read. Treating it as
 /// attended is what lets it fill a gap - a notification with no `PermissionRequest` before it
-/// is the only word of that prompt. The one behind a request the mode silenced is kept quiet by
-/// the daemon's busy→waiting edge, which the request has already used up, not by this
-/// function; the timer it fires on says nothing about whether the prompt was answered.
+/// is the only word of that prompt. Whether the one *behind* a silenced request says anything
+/// is not this function's question: the daemon's busy→waiting edge has already been used up by
+/// the request, and what decides whether that edge is held open for the backstop is
+/// [`suppression_is_a_guarantee`].
 ///
 /// That leaves `PermissionRequest`, where the mode decides: everything under
 /// [`UNATTENDED_MODES`], and only the file-editing tools under `acceptEdits`. A request naming
@@ -629,6 +641,28 @@ pub fn waiting_needs_a_person(event: &HookEvent) -> bool {
         .tool_name
         .as_deref()
         .is_some_and(|tool| AUTO_ACCEPTED_EDIT_TOOLS.contains(&tool))
+}
+
+/// Whether a wait this event silenced was silenced on a promise rather than on the odds.
+///
+/// Only [`waiting_needs_a_person`] decides whether a wait is announced when it arrives. This
+/// decides what happens to the one signal that comes *after* a wait nobody was told about: the
+/// `Notification` about six seconds later. A prompt silenced because the mode answers it - the
+/// blanket allow and deny of `bypassPermissions` and `dontAsk`, the file-editing tools under
+/// `acceptEdits` - was silenced on a promise, so a notification means the promise did not hold
+/// and there is a person to tell. A prompt silenced under `auto` was silenced on the odds, and
+/// its notification says nothing either way; see [`CLASSIFIED_MODES`].
+///
+/// `false` for anything that was not silenced in the first place, so a caller needs no second
+/// check: a wait that was announced has no held edge to owe anybody.
+pub fn suppression_is_a_guarantee(event: &HookEvent) -> bool {
+    if waiting_needs_a_person(event) {
+        return false;
+    }
+    !event
+        .permission_mode
+        .as_deref()
+        .is_some_and(|mode| CLASSIFIED_MODES.contains(&mode))
 }
 
 /// The few words a record carries for the tool a `PreToolUse` names.
@@ -1137,6 +1171,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// And of the waits a mode does answer, only some are answered on a promise. That is what
+    /// decides whether the `Notification` six seconds later is worth anything.
+    #[test]
+    fn only_a_promised_answer_is_worth_a_backstop() {
+        let request = |tool: &str, mode: &str| HookEvent {
+            permission_mode: Some(mode.to_owned()),
+            tool_name: Some(tool.to_owned()),
+            ..event("PermissionRequest")
+        };
+        for mode in ["bypassPermissions", "dontAsk"] {
+            assert!(
+                suppression_is_a_guarantee(&request("Bash", mode)),
+                "{mode} answers every prompt it silences"
+            );
+        }
+        for tool in AUTO_ACCEPTED_EDIT_TOOLS {
+            assert!(
+                suppression_is_a_guarantee(&request(tool, "acceptEdits")),
+                "{tool} under acceptEdits is answered, not judged"
+            );
+        }
+        for mode in CLASSIFIED_MODES {
+            assert!(
+                !suppression_is_a_guarantee(&request("Bash", mode)),
+                "{mode} silences on the odds"
+            );
+        }
+
+        // Nothing that was announced in the first place is owed a backstop.
+        assert!(!suppression_is_a_guarantee(&request("Bash", "acceptEdits")));
+        assert!(!suppression_is_a_guarantee(&request("Bash", "default")));
+        assert!(!suppression_is_a_guarantee(&HookEvent {
+            permission_mode: Some("auto".to_owned()),
+            tool_name: Some("AskUserQuestion".to_owned()),
+            ..event("PreToolUse")
+        }));
+        assert!(!suppression_is_a_guarantee(&notification(
+            "permission_prompt"
+        )));
     }
 
     /// What a record says the agent is blocked on. Every source is text the agent or an MCP

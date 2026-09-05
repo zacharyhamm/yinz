@@ -229,6 +229,20 @@ struct State {
     /// manifest road is for a pane that reports some other way: one hocus spawned, an
     /// `agent-report --state` script, a plugin speaking for an agent.
     event_fed: BTreeSet<u32>,
+    /// The panes now waiting on something nobody was told about.
+    ///
+    /// A `PermissionRequest` under a mode that answers it is drawn but not announced. That
+    /// prompt's only other signal is the `Notification` about six seconds later, and by then
+    /// the feed is already `Waiting`, so there is no busy→waiting edge left for it to cross.
+    ///
+    /// This is that edge, held open - but only for the suppressions that were a promise rather
+    /// than a guess, which is what `agents::suppression_is_a_guarantee` answers.
+    /// `bypassPermissions` and `dontAsk` answer every prompt they silence and `acceptEdits`
+    /// answers the file-editing ones, so a dialog still up six seconds later under any of them
+    /// is a promise that did not hold, and the backstop toasts on the question the request
+    /// itself worded. Under `auto` nothing is held: the classifier is routinely still deciding
+    /// a `Bash` call when that timer fires, so the notification is no evidence of anything.
+    suppressed_waits: BTreeSet<u32>,
     /// What the user last asked each hook-fed pane for, from its `UserPromptSubmit`.
     ///
     /// Kept so a summary can say what the run was *for*.
@@ -786,6 +800,7 @@ impl State {
             // not ours. The question the last turn answered goes with it either way.
             self.prompts.remove(&pane_id);
             self.event_fed.remove(&pane_id);
+            self.suppressed_waits.remove(&pane_id);
             if self.hooks.remove(&pane_id).is_some() {
                 self.publish();
             }
@@ -951,21 +966,28 @@ impl State {
         // on the first answer, and the `PostToolUse` for that is a `busy` — so a real
         // second question crosses this edge on its own.
         //
-        // The same edge is what keeps a prompt the mode silenced silent all the way through.
-        // A request under `auto` is not announced (`waiting_needs_a_person`), and the
-        // notification behind it arrives with the feed already `Waiting`, so it has no edge
-        // to cross. That is deliberate rather than a gap: the notification is a plain timer
-        // Claude Code arms when the dialog goes up, and under `auto` the classifier is still
-        // deciding a `Bash` call well past it — so a notification that fired proves nothing
-        // about whether a person is needed, and it names no mode of its own for anyone to
-        // read. A prompt the classifier does refuse is still drawn; it is just not
-        // interrupted over. A notification with no request before it — a Claude Code without
-        // the `PermissionRequest` hook — enters the wait itself and is announced as before.
+        // The same edge is what keeps a prompt silenced under `auto` silent all the way
+        // through. A request under it is not announced (`waiting_needs_a_person`), and the
+        // notification behind it arrives with the feed already `Waiting`, so it has no edge to
+        // cross. That is deliberate rather than a gap: the notification is a plain timer Claude
+        // Code arms when the dialog goes up, and under `auto` the classifier is still deciding
+        // a `Bash` call well past it — so a notification that fired proves nothing about
+        // whether a person is needed, and it names no mode of its own for anyone to read. A
+        // prompt the classifier does refuse is still drawn; it is just not interrupted over. A
+        // notification with no request before it — a Claude Code without the
+        // `PermissionRequest` hook — enters the wait itself and is announced as before.
         let entered_wait = phase == agents::HookPhase::Waiting
             && previous
                 .as_ref()
                 .is_none_or(|was| was.phase != agents::HookPhase::Waiting);
-        let announce = entered_wait && agents::waiting_needs_a_person(event);
+        // The one thing that reopens a spent edge: a wait silenced under a mode that *promised*
+        // to answer it, and did not. See `suppressed_waits`. Taken out of the set here whether
+        // or not this event announces it, because either way the edge it was holding has now
+        // been used.
+        let held_edge = self.suppressed_waits.remove(&pane_id);
+        let announce = phase == agents::HookPhase::Waiting
+            && agents::waiting_needs_a_person(event)
+            && (entered_wait || held_edge);
         // Not over the very pane it describes: the user is looking at the question. The same
         // rule the summary toast keeps — and the reason this is not part of `announce`, which
         // is about the wait having been spoken for rather than about it being seen.
@@ -975,6 +997,17 @@ impl State {
                 pane_id,
                 &agents::waiting_toast(pane_id, kind.as_deref(), &feed),
             );
+        }
+        // A wait still standing that nobody has been told about, and that a mode promised to
+        // answer. The edge stays open for its backstop; anything that ends the wait takes it
+        // out above and leaves it out, and a wait silenced on the odds is never put in - see
+        // `suppressed_waits`.
+        if phase == agents::HookPhase::Waiting
+            && !announce
+            && (entered_wait || held_edge)
+            && agents::suppression_is_a_guarantee(event)
+        {
+            self.suppressed_waits.insert(pane_id);
         }
         if changed {
             self.publish();
@@ -1542,6 +1575,7 @@ impl State {
         // otherwise leave its id in both for the life of the daemon, and leave `event_fed`
         // disagreeing with `hooks` about which road the pane is read from.
         self.event_fed.retain(|id| live.contains(id));
+        self.suppressed_waits.retain(|id| live.contains(id));
         self.run_lookups.retain(|id| live.contains(id));
         // A pane that has come back to life is running a new process, and has to
         // earn its latch again rather than inherit the dead one's. `settle_latches`
@@ -1607,6 +1641,7 @@ impl State {
             if agent.state == AgentState::Exited {
                 self.hooks.remove(&pane.pane_id);
                 self.event_fed.remove(&pane.pane_id);
+                self.suppressed_waits.remove(&pane.pane_id);
                 continue;
             }
             // A pane whose events we hear is read from them; see `event_fed`.
@@ -2668,6 +2703,7 @@ impl State {
     fn forget_agent(&mut self, pane_id: u32) {
         self.hooks.remove(&pane_id);
         self.event_fed.remove(&pane_id);
+        self.suppressed_waits.remove(&pane_id);
         self.activity.remove(&pane_id);
         self.summaries.remove(&pane_id);
         self.summary_requests.remove(&pane_id);
@@ -5541,6 +5577,75 @@ mod tests {
             vec![(7, "agent waiting · 7 · claude◆\nWhich crate?".to_owned())],
             "a real question after a silenced prompt still interrupts"
         );
+    }
+
+    /// A mode that *promised* to answer, though, is held to it.
+    ///
+    /// `bypassPermissions` and `dontAsk` resolve every permission prompt and `acceptEdits`
+    /// resolves the file-editing ones, so a dialog still up six seconds later under one of them
+    /// is a promise that did not hold — a `deny` rule, a `PreToolUse` hook that asks anyway, an
+    /// edit outside the workspace. The request itself is still silenced on the way in, so the
+    /// edge is held open (`suppressed_waits`) and the backstop spends it, toasting the question
+    /// in the request's own words rather than the notification's vaguer ones.
+    #[test]
+    fn a_promised_answer_that_never_came_is_announced_by_its_backstop() {
+        for (mode, tool, input, said) in [
+            (
+                "acceptEdits",
+                "Write",
+                serde_json::json!({ "file_path": "/elsewhere/notes.md" }),
+                "Write notes.md",
+            ),
+            (
+                "bypassPermissions",
+                "Bash",
+                serde_json::json!({ "command": "cargo test" }),
+                "Bash cargo",
+            ),
+        ] {
+            let mut state = State {
+                panes: Some(vec![pane(7, "claude", "/work")]),
+                ..State::default()
+            };
+            let under = |event: wire::HookEvent| wire::HookEvent {
+                permission_mode: Some(mode.to_owned()),
+                ..event
+            };
+            let request =
+                |input: serde_json::Value| under(tool_hook("PermissionRequest", tool, input));
+            let backstop = || wire::HookEvent {
+                notification_type: Some("permission_prompt".to_owned()),
+                message: Some(format!("Claude needs your permission to use {tool}")),
+                ..hook("Notification")
+            };
+
+            let (silent, _) = feed(&mut state, 7, &request(input.clone()), None);
+            assert!(silent.is_empty(), "{mode} is expected to answer it");
+            assert_eq!(cell(&state, 7), format!("waiting · {said}"));
+
+            let (toasts, _) = feed(&mut state, 7, &backstop(), None);
+            assert_eq!(
+                toasts,
+                vec![(7, format!("agent waiting · 7 · claude◆\n{said}"))],
+                "{mode} did not answer it after all, and the row's own words are the better ones"
+            );
+
+            // Answered, and then a second prompt the mode is expected to answer: the edge the
+            // first one held is spent, and nothing is owed for the second until its own
+            // backstop fires.
+            feed(&mut state, 7, &under(hook("PostToolUse")), None);
+            let (again, _) = feed(&mut state, 7, &request(input), None);
+            assert!(
+                again.is_empty(),
+                "{mode} is expected to answer this one too"
+            );
+            let (settled, _) = feed(&mut state, 7, &backstop(), None);
+            assert_eq!(
+                settled.len(),
+                1,
+                "and the second promise is held to the same account"
+            );
+        }
     }
 
     /// But only the prompts that mode actually answers. `acceptEdits` accepts edits;
