@@ -153,7 +153,9 @@ history and a well-judged interruption are made of. So one process spawn does bo
 is read once, in the session (`agent::AgentEvent::from_hook`): `pane_id`, `kind`, `hook`, the
 `state` the record moved to, `detail`, `prompt`, `last_message`, `tool_name`, `cwd`,
 `session_id` - and `raw`, the agent's own JSON, for the one reader that keeps a run's history
-and needs the rest. It goes only to subscribers, gated on `read_application_state` like the
+and needs the rest. The whole event is bounded (`agent::HOOK_BROADCAST_MAX_BYTES`, 64 KiB): over
+it `raw` is pruned, prose to 8 K characters, and `prompt` and `last_message` are cut the same way,
+so the typed fields and the JSON never disagree. It goes only to subscribers, gated on `read_application_state` like the
 manifest, and nothing waits on it, so a hook cannot stall the turn it fired in. A Lua plugin
 reads it with `zellij.agent.on`, or awaits it with `zellij.async.turn` (`docs/LUA_PLUGINS.md`,
 "Agents").

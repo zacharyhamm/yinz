@@ -1172,29 +1172,45 @@ local event_intercepts = {}
 local event_followers = {}
 
 --- Called from `__update` before the handlers: settle what the event settles, then resume.
+---
+--- Every stage runs even when an earlier one raises, and the error is raised again only after
+--- the last: a callback that breaks on the tick that also wakes a sleeper has already queued
+--- that sleeper in `ready`, and with no later event nothing else would ever drain it.
 local function deliver(event)
-  for _, intercept in ipairs(event_intercepts) do
-    intercept(event)
-  end
-  local list = waiters[event.name]
-  if list then
-    for _, aw in ipairs { table.unpack(list) } do
-      if not aw.done then
-        local matched, value = aw.match(aw, event)
-        if matched then
-          settle(aw, value)
-        end
+  each_guarded({
+    function()
+      for _, intercept in ipairs(event_intercepts) do
+        intercept(event)
       end
-    end
-  end
-  if event.name == "timer" then
-    sweep_deadlines()
-  end
-  drain()
-  for _, follower in ipairs(event_followers) do
-    follower(event)
-  end
-  drain()
+    end,
+    function()
+      local list = waiters[event.name]
+      if list then
+        each_guarded({ table.unpack(list) }, function(aw)
+          if not aw.done then
+            local matched, value = aw.match(aw, event)
+            if matched then
+              settle(aw, value)
+            end
+          end
+        end)
+      end
+    end,
+    function()
+      if event.name == "timer" then
+        sweep_deadlines()
+      end
+    end,
+    drain,
+    function()
+      for _, follower in ipairs(event_followers) do
+        follower(event)
+      end
+    end,
+    drain,
+  }, function(stage)
+    stage()
+  end)
 end
 
 --- Called from `__pipe`, the same way. Returns true when the message was one of this layer's
@@ -1203,15 +1219,23 @@ local pipe_intercepts = {}
 
 local function deliver_pipe(message)
   local intercepted = false
-  for _, intercept in ipairs(pipe_intercepts) do
-    if intercept(message) then
-      intercepted = true
-    end
-  end
-  for _, aw in ipairs { table.unpack(pipe_waiters[message.name] or {}) } do
-    settle(aw, message)
-  end
-  drain()
+  each_guarded({
+    function()
+      for _, intercept in ipairs(pipe_intercepts) do
+        if intercept(message) then
+          intercepted = true
+        end
+      end
+    end,
+    function()
+      each_guarded({ table.unpack(pipe_waiters[message.name] or {}) }, function(aw)
+        settle(aw, message)
+      end)
+    end,
+    drain,
+  }, function(stage)
+    stage()
+  end)
   return intercepted
 end
 
@@ -1238,8 +1262,11 @@ local SPAWN_SPEC_FIELDS = {
 --- `agent_exit`. `branch` (with `base`, default `main`) makes a worktree at `worktree_path`
 --- (default `.worktrees/<branch>`), or the branch in place with `worktree = false`;
 --- `source_directory` is the repository that happens in, as a plugin path (`/host` by default);
---- `cwd` is where the pane runs when no branch is named. `name` titles the pane and `context`
---- comes back on `command_pane_exited`. Answers with the pane id and raises on failure. Needs
+--- `cwd` is where the pane runs when no branch is named. `firecracker` names a session VM to
+--- run in, `firecracker_image` its image; with `automatic_firecracker_vm = true` the host names
+--- the VM after the folder the pane runs in and mirrors that folder into it instead, so agents
+--- on one checkout share one VM. `name` titles the pane and `context` comes back on
+--- `command_pane_exited`. Answers with the pane id and raises on failure. Needs
 --- `run_commands`.
 function zellij.agent.spawn(opts)
   if type(opts) ~= "table" then
@@ -1255,6 +1282,7 @@ function zellij.agent.spawn(opts)
     cwd = opts.cwd,
     name = opts.name,
     context = opts.context or {},
+    automatic_firecracker_vm = opts.automatic_firecracker_vm or false,
   })
 end
 

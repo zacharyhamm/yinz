@@ -369,6 +369,79 @@ fn a_firecracker_spawn_outside_a_project_refuses_a_host_cwd() {
     );
 }
 
+/// `firecracker=true` promises a VM per agent unless there is a folder to share: the host is
+/// told to name the VM after the folder only when a checkout is being cut or a project is
+/// selected. Outside both, the unique name hocus generated reaches the host as the VM to run
+/// in, and nothing of this machine is mirrored - two agents started from one directory get
+/// two VMs.
+#[test]
+fn a_firecracker_spawn_without_a_checkout_or_project_keeps_its_own_vm() {
+    let spawns = || {
+        tools::test_seams::SPAWN_AGENT_CALLS.with_borrow(|calls| {
+            calls
+                .iter()
+                .map(|call| {
+                    (
+                        call.firecracker.clone().unwrap_or_default(),
+                        call.automatic_firecracker_vm,
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+
+    let mut state = idle_state();
+    tools::test_seams::reset();
+    state.run_local(&agent_call(
+        "agent_spawn",
+        r#"{"agent":"claude","firecracker":true}"#,
+    ));
+    state.run_local(&agent_call(
+        "agent_spawn",
+        r#"{"agent":"claude","firecracker":true}"#,
+    ));
+    let isolated = spawns();
+    assert_eq!(isolated.len(), 2, "{isolated:?}");
+    for (vm, automatic) in &isolated {
+        assert!(vm.starts_with("hocus-agent-"), "{vm}");
+        assert!(!automatic, "{vm} would be renamed after the focused folder");
+    }
+    assert_ne!(isolated[0].0, isolated[1].0, "two agents, two VMs");
+
+    tools::test_seams::reset();
+    state.run_local(&agent_call(
+        "agent_spawn",
+        r#"{"agent":"claude","firecracker":true,"branch":"fix-parser"}"#,
+    ));
+    assert_eq!(
+        spawns()
+            .iter()
+            .map(|(_, automatic)| *automatic)
+            .collect::<Vec<_>>(),
+        vec![true],
+        "a checkout is a folder to name the VM after"
+    );
+
+    let mut state = state_with_project();
+    tools::test_seams::reset();
+    state.run_local(&agent_call(
+        "agent_spawn",
+        r#"{"agent":"claude","firecracker":true}"#,
+    ));
+    assert_eq!(
+        spawns()
+            .iter()
+            .map(|(_, automatic)| *automatic)
+            .collect::<Vec<_>>(),
+        vec![true],
+        "a project's root is a folder to name the VM after"
+    );
+
+    tools::test_seams::reset();
+    state.run_local(&agent_call("agent_spawn", r#"{"agent":"claude"}"#));
+    assert_eq!(spawns(), vec![(String::new(), false)], "no VM at all");
+}
+
 #[test]
 fn project_images_apply_only_to_firecracker_spawns_and_explicit_images_win() {
     let mut local = launch::Spec {

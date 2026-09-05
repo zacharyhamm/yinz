@@ -37,6 +37,9 @@ pub fn unique_firecracker_vm() -> String {
 
 /// Do the Git setup and open the pane: `PluginCommand::SpawnAgent`, which runs the same
 /// planner on the host, makes the checkout, opens the pane and records it as an agent's.
+///
+/// Always with a repository, and so always with a folder for a Firecracker VM to be named
+/// after and mirror: the modal's VM name is a placeholder the host replaces.
 #[cfg(target_family = "wasm")]
 pub fn open(spec: &Spec, source_directory: std::path::PathBuf) -> Result<PaneId, String> {
     zellij_tile::shim::spawn_agent(
@@ -45,6 +48,7 @@ pub fn open(spec: &Spec, source_directory: std::path::PathBuf) -> Result<PaneId,
         None,
         None,
         std::collections::BTreeMap::new(),
+        true,
     )
 }
 

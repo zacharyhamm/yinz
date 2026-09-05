@@ -1542,6 +1542,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             cwd: optional_paths(tc),
             name: optional_strings(tc),
             context: context(tc),
+            automatic_firecracker_vm: booleans(tc),
         },
         CommandType::SetQuitNotice => PluginCommand::SetQuitNotice {
             notice: optional_strings(tc),

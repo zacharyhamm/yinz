@@ -656,6 +656,7 @@ message SpawnAgentPayload {
   optional string cwd = 3;
   optional string name = 4;
   repeated ContextItem context = 5;
+  bool automatic_firecracker_vm = 6;
 }
 
 message SpawnAgentResponse {

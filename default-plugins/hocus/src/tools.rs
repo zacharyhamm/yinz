@@ -4752,7 +4752,9 @@ mod host {
     /// point being that there is one answer to "what does starting an agent do".
     ///
     /// `source` is the repository a checkout is made in; `cwd` is where the pane runs when
-    /// there is no checkout to make. All this adds is the reporting: the same JSON
+    /// there is no checkout to make; `automatic_firecracker_vm` is whether the host names a
+    /// Firecracker spec's VM after that folder and mirrors it in, or leaves the named VM as it
+    /// is (see `PluginCommand::SpawnAgent`). All this adds is the reporting: the same JSON
     /// `report_opened_pane` emits, so `present` and `register_spawned` read one shape, plus
     /// the branch and the folder, which the caller has no other way to learn.
     pub fn spawn_agent(
@@ -4760,6 +4762,7 @@ mod host {
         spec: &launch::Spec,
         source: Option<String>,
         cwd: Option<String>,
+        automatic_firecracker_vm: bool,
     ) -> String {
         // The git work resolves the repository from this folder, so it cannot be left
         // unset. The focused pane's cwd is the one the user would mean.
@@ -4774,6 +4777,7 @@ mod host {
             cwd.map(PathBuf::from),
             args.name.clone(),
             BTreeMap::new(),
+            automatic_firecracker_vm,
         ) {
             Ok(pane) => {
                 let (id, is_plugin) = split_pane_id(pane);
@@ -5149,13 +5153,22 @@ pub fn dispatch(_call: &ToolCall) -> String {
     "tools are unavailable outside zellij".to_owned()
 }
 
+/// Off wasm the ask is recorded - the VM the spec names, and whether the host was told to
+/// rename it - for the tests to read.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn spawn_agent(
     _args: &Args,
-    _spec: &launch::Spec,
+    spec: &launch::Spec,
     _source: Option<String>,
     _cwd: Option<String>,
+    automatic_firecracker_vm: bool,
 ) -> String {
+    test_seams::SPAWN_AGENT_CALLS.with_borrow_mut(|calls| {
+        calls.push(test_seams::SpawnAgentCall {
+            firecracker: spec.firecracker.clone(),
+            automatic_firecracker_vm,
+        })
+    });
     "tools are unavailable outside zellij".to_owned()
 }
 
@@ -5179,6 +5192,14 @@ pub mod test_seams {
     use super::PermissionType;
     use std::cell::{Cell, RefCell};
 
+    /// The Firecracker half of one `spawn_agent` ask: the VM the spec named, and whether the
+    /// host was told to name it after the folder instead.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct SpawnAgentCall {
+        pub firecracker: Option<String>,
+        pub automatic_firecracker_vm: bool,
+    }
+
     thread_local! {
         pub static CURRENT_SESSION: RefCell<Option<super::SessionInfo>> = const { RefCell::new(None) };
         pub static PLUGIN_FS_EXISTS: Cell<Option<bool>> = const { Cell::new(None) };
@@ -5188,6 +5209,8 @@ pub mod test_seams {
         pub static PLUGIN_READS: RefCell<super::BTreeMap<String, Result<String, String>>> = const { RefCell::new(super::BTreeMap::new()) };
         /// The `running` each `reload_plugin_headless` was given, in order.
         pub static HEADLESS_RELOADS: RefCell<Vec<Option<u32>>> = const { RefCell::new(Vec::new()) };
+        /// What each `spawn_agent` asked the host for, in order.
+        pub static SPAWN_AGENT_CALLS: RefCell<Vec<SpawnAgentCall>> = const { RefCell::new(Vec::new()) };
         pub static PLUGIN_SOURCE: RefCell<Option<String>> = const { RefCell::new(None) };
         pub static GRANTED_PERMISSIONS: RefCell<Vec<PermissionType>> = const { RefCell::new(Vec::new()) };
     }
@@ -5205,6 +5228,7 @@ pub mod test_seams {
         RELOAD_CALLS.set(0);
         PLUGIN_WRITE_CALLS.set(0);
         HEADLESS_RELOADS.with_borrow_mut(Vec::clear);
+        SPAWN_AGENT_CALLS.with_borrow_mut(Vec::clear);
         PLUGIN_SOURCE.with_borrow_mut(|source| *source = None);
         GRANTED_PERMISSIONS.with_borrow_mut(Vec::clear);
     }

@@ -307,7 +307,16 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 cwd,
                 name,
                 context,
-            } => spawn_agent(env, spec, source_directory, cwd, name, context),
+                automatic_firecracker_vm,
+            } => spawn_agent(
+                env,
+                spec,
+                source_directory,
+                cwd,
+                name,
+                context,
+                automatic_firecracker_vm,
+            ),
             PluginCommand::SetQuitNotice { notice, guard } => set_quit_notice(env, notice, guard),
             PluginCommand::ReloadPluginByUrl(url) => reload_plugin_by_url(env, url)?,
             PluginCommand::ReadPluginLog { name, lines } => read_plugin_log(env, name, lines),
@@ -2558,6 +2567,7 @@ fn spawn_agent(
     cwd: Option<PathBuf>,
     name: Option<String>,
     mut context: BTreeMap<String, String>,
+    automatic_firecracker_vm: bool,
 ) {
     let result: SpawnAgentResponse = (|| {
         let (mut command, checkout) = zellij_utils::agent::launch::plan(&spec)?;
@@ -2569,11 +2579,14 @@ fn spawn_agent(
             .map(|path| translate_plugin_path(env, path))
             .unwrap_or_else(|| env.plugin_cwd.clone());
         let cwd = cwd.map(|path| translate_plugin_path(env, path));
+        let checkout_made = !matches!(checkout, GitCheckout::Current);
         let folder = agent_folder(checkout, cwd, source)?;
-        // A Firecracker pane mirrors the folder into the guest and names its VM from it, as
-        // the checkout command does when asked to; a local pane simply runs there.
-        let automatic_vm = command.target.is_firecracker();
-        apply_git_checkout_to_command(&mut command, folder, automatic_vm)?;
+        place_agent(
+            &mut command,
+            folder,
+            automatic_firecracker_vm,
+            checkout_made,
+        )?;
         context.insert(HOCUS_AGENT_PANE_CONTEXT.to_owned(), kind);
         spawn_command_pane_near_plugin(env, command, context, name)
             .ok_or_else(|| "Zellij did not open the agent pane".to_owned())
@@ -2600,6 +2613,27 @@ fn agent_folder(
         (GitCheckout::Current, None) => Ok(source),
         (checkout, _) => prepare_git_checkout_in(source, checkout),
     }
+}
+
+/// Put the agent's pane in `folder` - or, for a Firecracker pane, decide what the guest sees
+/// of it.
+///
+/// A local pane simply runs there. A Firecracker pane mirrors the folder into the guest when
+/// the folder is the agent's to work in: a checkout the host just made, or any folder when
+/// the VM is `automatic` - named after that folder, so that agents on one checkout share one
+/// VM. A named VM with no checkout made is the other case, and the one `agent_spawn
+/// firecracker=true` outside a project asks for: nothing of this machine goes into the guest,
+/// the name stands, and the pane starts in the VM's own workspace - a VM of the agent's own.
+fn place_agent(
+    command: &mut CommandToRun,
+    folder: PathBuf,
+    automatic_firecracker_vm: bool,
+    checkout_made: bool,
+) -> Result<(), String> {
+    if command.target.is_firecracker() && !automatic_firecracker_vm && !checkout_made {
+        return Ok(());
+    }
+    apply_git_checkout_to_command(command, folder, automatic_firecracker_vm)
 }
 
 fn apply_git_checkout_to_command(
@@ -4858,6 +4892,61 @@ mod validation_tests {
             );
         }
         assert!(outside.join("sentinel").exists());
+    }
+
+    /// The three things a Firecracker spawn can mean by its folder: an automatic VM is named
+    /// after it and gets it mirrored in; a named VM gets a checkout the host made mirrored in
+    /// and keeps its name; a named VM with no checkout gets nothing of this machine - it is
+    /// the agent's own VM, and its pane starts in the guest's workspace. A local pane just
+    /// runs in the folder, whatever was asked.
+    #[test]
+    fn a_named_firecracker_vm_without_a_checkout_keeps_its_name_and_mirrors_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().canonicalize().unwrap();
+        let firecracker = || CommandToRun {
+            path: PathBuf::from("claude"),
+            target: PaneTarget::Firecracker {
+                vm: "hocus-agent-1".to_owned(),
+                image: None,
+                worktree: None,
+            },
+            ..Default::default()
+        };
+
+        let mut isolated = firecracker();
+        place_agent(&mut isolated, folder.clone(), false, false).unwrap();
+        assert_eq!(isolated.target.firecracker_vm(), Some("hocus-agent-1"));
+        assert_eq!(isolated.target.firecracker_worktree(), None);
+        assert_eq!(isolated.cwd, None);
+
+        let mut automatic = firecracker();
+        place_agent(&mut automatic, folder.clone(), true, false).unwrap();
+        assert_eq!(
+            automatic.target.firecracker_vm(),
+            Some(crate::firecracker::worktree_vm_name(&folder).as_str())
+        );
+        assert_eq!(
+            automatic.target.firecracker_worktree(),
+            Some(folder.as_path())
+        );
+
+        let mut named_checkout = firecracker();
+        place_agent(&mut named_checkout, folder.clone(), false, true).unwrap();
+        assert_eq!(
+            named_checkout.target.firecracker_vm(),
+            Some("hocus-agent-1")
+        );
+        assert_eq!(
+            named_checkout.target.firecracker_worktree(),
+            Some(folder.as_path())
+        );
+
+        let mut local = CommandToRun {
+            path: PathBuf::from("claude"),
+            ..Default::default()
+        };
+        place_agent(&mut local, folder.clone(), false, false).unwrap();
+        assert_eq!(local.cwd, Some(folder));
     }
 
     #[test]

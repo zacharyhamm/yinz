@@ -724,13 +724,15 @@ pub fn open_command_pane_in_git_checkout_near_plugin_with_automatic_firecracker_
 /// Start a coding agent in a command pane near this plugin: the launch planner
 /// (`zellij_utils::agent::launch::plan`) decides the argv, the host makes the branch or
 /// worktree `spec` names, opens the pane there and records it as an agent pane. Answers with
-/// the pane id or the error text. See `PluginCommand::SpawnAgent` for the arguments.
+/// the pane id or the error text. See `PluginCommand::SpawnAgent` for the arguments, and for
+/// what `automatic_firecracker_vm` decides about a Firecracker spec's VM.
 pub fn spawn_agent(
     spec: AgentSpawnSpec,
     source_directory: Option<PathBuf>,
     cwd: Option<PathBuf>,
     name: Option<String>,
     context: BTreeMap<String, String>,
+    automatic_firecracker_vm: bool,
 ) -> Result<PaneId, String> {
     let plugin_command = PluginCommand::SpawnAgent {
         spec,
@@ -738,6 +740,7 @@ pub fn spawn_agent(
         cwd,
         name,
         context,
+        automatic_firecracker_vm,
     };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());

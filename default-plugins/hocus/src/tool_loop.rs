@@ -2767,7 +2767,11 @@ impl State {
         } else {
             None
         };
-        let result = tools::spawn_agent(args, &spec, cwd, run_in);
+        // A VM is named after the folder it mirrors when there is one: the checkout being cut,
+        // or the project's root. Outside both there is no folder for the agent at all, and the
+        // unique name stands - the isolated VM `firecracker=true` promises, one per agent.
+        let automatic_vm = firecracker && (!no_checkout || project_firecracker);
+        let result = tools::spawn_agent(args, &spec, cwd, run_in, automatic_vm);
         self.register_spawned(args.kind.as_deref(), &result)
     }
 
