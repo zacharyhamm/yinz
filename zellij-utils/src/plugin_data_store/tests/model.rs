@@ -8,8 +8,8 @@ use hegel::generators::{self, Generator};
 /// the two can be compared directly without sorting either side.
 struct StoreModel {
     store: PluginDataStore,
-    // held so the temp dir outlives the store
-    _dir: TempDir,
+    // held so the database outlives the store
+    _guard: Guard,
     model: BTreeMap<String, (Option<String>, Option<i64>)>,
 }
 
@@ -140,15 +140,14 @@ impl StoreModel {
 /// example test covers the combinations.
 #[hegel::test(test_cases = 25)]
 fn the_store_agrees_with_a_map_over_any_sequence_of_writes(tc: hegel::TestCase) {
-    let dir = tempdir().unwrap();
-    let store = PluginDataStore::new(dir.path());
+    let (store, guard) = store();
     let def = EntityDef::new("row", 1)
         .attr(AttrDef::text("t"))
         .attr(AttrDef::int("n").indexed());
     store.define_entity(NS, OWNER, &def, false).unwrap();
     let machine = StoreModel {
         store,
-        _dir: dir,
+        _guard: guard,
         model: BTreeMap::new(),
     };
     hegel::stateful::run(machine, tc);

@@ -1,14 +1,15 @@
 //! Building and running fetches: the `SELECT` half of the store.
 
-use rusqlite::Connection;
-
-use crate::plugin_data::{AttrKind, DataError, DataRows, DataValue, FetchRequest, MAX_FETCH_BYTES};
+use crate::plugin_data::{
+    AttrKind, DataError, DataRows, DataValue, FetchRequest, SortDir, MAX_FETCH_BYTES,
+};
 use crate::session_recording::fts_phrase;
 
+use super::dialect::{Dialect, Params};
+use super::executor::Executor;
 use super::predicate::compile_pred;
 use super::schema::{EntitySchema, STORE_COLUMNS};
-use super::sql::{qualify, quote_ident, SqlContext};
-use super::value::read_value;
+use super::sql::{qualify, quote_ident, StoreContext};
 
 /// The columns a fetch returns, in order.
 pub(super) fn output_columns(
@@ -31,13 +32,29 @@ pub(super) fn is_default_ordering(request: &FetchRequest) -> bool {
     request.sort.is_empty() && request.search.is_none()
 }
 
+/// The search term as it is bound. NUL is stripped rather than rejected: a search is something a
+/// person pastes, and Postgres refuses a NUL anywhere in a text parameter.
+pub(super) fn search_term(request: &FetchRequest) -> Option<String> {
+    request.search.as_ref().map(|s| s.replace('\0', ""))
+}
+
 pub(super) struct FetchSql {
-    sql: String,
-    params: Vec<DataValue>,
-    output_columns: Vec<String>,
+    pub(super) sql: String,
+    pub(super) params: Vec<DataValue>,
+    pub(super) output_columns: Vec<String>,
+}
+
+/// The `WHERE` clause of a fetch, the join it may need, its parameters, and the ranking term a
+/// search contributes to the ordering.
+pub(super) struct WhereSql<'d> {
+    pub(super) clause: String,
+    pub(super) join: String,
+    pub(super) params: Params<'d>,
+    pub(super) rank: Option<String>,
 }
 
 pub(super) fn build_fetch_sql(
+    dialect: &dyn Dialect,
     schema: &EntitySchema,
     request: &FetchRequest,
     search: Option<&str>,
@@ -50,49 +67,67 @@ pub(super) fn build_fetch_sql(
     for column in &columns {
         selected.push(qualify(&table, column));
     }
-    let (where_clause, params, join) = build_where(schema, request, search)?;
-    let order = build_order(schema, request, search)?;
-    let sql = format!(
-        "SELECT {} FROM \"{}\"{} {} ORDER BY {} LIMIT ? OFFSET ?",
-        selected.join(", "),
-        table,
+    let WhereSql {
+        clause,
         join,
-        where_clause,
-        order
+        mut params,
+        rank,
+    } = build_where(dialect, schema, request, search)?;
+    let order = build_order(schema, request, rank.as_deref())?;
+    // One row past the limit, so that hitting it is distinguishable from reaching the end.
+    let limit = params.bind(DataValue::Int(request.effective_limit() as i64 + 1));
+    let offset = params.bind(DataValue::Int(request.offset as i64));
+    let sql = format!(
+        "SELECT {} FROM {}{} {} ORDER BY {} LIMIT {} OFFSET {}",
+        selected.join(", "),
+        quote_ident(&table),
+        join,
+        clause,
+        order,
+        limit,
+        offset
     );
     Ok(FetchSql {
         sql,
-        params,
+        params: params.into_values(),
         output_columns: columns,
     })
 }
 
 pub(super) fn build_count_sql(
+    dialect: &dyn Dialect,
     schema: &EntitySchema,
     request: &FetchRequest,
     search: Option<&str>,
 ) -> Result<(String, Vec<DataValue>), DataError> {
-    let table = schema.table();
-    let (where_clause, params, join) = build_where(schema, request, search)?;
+    let WhereSql {
+        clause,
+        join,
+        params,
+        ..
+    } = build_where(dialect, schema, request, search)?;
     Ok((
         format!(
-            "SELECT COUNT(*) FROM \"{}\"{} {}",
-            table, join, where_clause
+            "SELECT COUNT(*) FROM {}{} {}",
+            quote_ident(&schema.table()),
+            join,
+            clause
         ),
-        params,
+        params.into_values(),
     ))
 }
 
-/// Build the `WHERE` clause, its parameters, and the FTS join it may need.
-pub(super) fn build_where(
+pub(super) fn build_where<'d>(
+    dialect: &'d dyn Dialect,
     schema: &EntitySchema,
     request: &FetchRequest,
     search: Option<&str>,
-) -> Result<(String, Vec<DataValue>, String), DataError> {
+) -> Result<WhereSql<'d>, DataError> {
     let table = schema.table();
     let mut conditions: Vec<String> = Vec::new();
-    let mut params: Vec<DataValue> = Vec::new();
+    let mut params = Params::new(dialect);
     let mut join = String::new();
+    let mut rank = None;
 
     if let Some(search) = search {
         if schema.def.full_text_attrs().is_empty() {
@@ -101,14 +136,11 @@ pub(super) fn build_where(
                 schema.def.name
             )));
         }
-        let fts = schema.fts_table();
-        join = format!(
-            " JOIN \"{fts}\" ON \"{fts}\".rowid = \"{table}\".\"id\"",
-            fts = fts,
-            table = table
-        );
-        conditions.push(format!("{} MATCH ?", quote_ident(&fts)));
-        params.push(DataValue::Text(search.to_owned()));
+        let placeholder = params.bind(DataValue::Text(search.to_owned()));
+        let pieces = dialect.search(schema, &placeholder);
+        join = pieces.join;
+        conditions.push(pieces.condition);
+        rank = Some(pieces.rank);
     }
 
     if let Some(filter) = &request.filter {
@@ -125,34 +157,44 @@ pub(super) fn build_where(
                     .to_owned(),
             ));
         }
-        conditions.push(format!("{} > ?", qualify(&table, "id")));
-        params.push(DataValue::Int(after_id));
+        let placeholder = params.bind(DataValue::Int(after_id));
+        conditions.push(format!("{} > {}", qualify(&table, "id"), placeholder));
     }
 
-    let where_clause = if conditions.is_empty() {
+    let clause = if conditions.is_empty() {
         String::new()
     } else {
         format!("WHERE {}", conditions.join(" AND "))
     };
-    Ok((where_clause, params, join))
+    Ok(WhereSql {
+        clause,
+        join,
+        params,
+        rank,
+    })
 }
 
+/// The `ORDER BY` terms: the request's sort, or the search ranking when there is one, and always
+/// `id` last.
+///
+/// Null placement is spelled out because the engines disagree — SQLite puts nulls first in an
+/// ascending sort and Postgres puts them last — and a plugin paging through a sorted set should
+/// see the same order wherever its data lives. SQLite's native placement is the one kept.
 pub(super) fn build_order(
     schema: &EntitySchema,
     request: &FetchRequest,
-    search: Option<&str>,
+    rank: Option<&str>,
 ) -> Result<String, DataError> {
     let table = schema.table();
     let mut terms: Vec<String> = Vec::new();
     if request.sort.is_empty() {
-        if search.is_some() {
-            // bm25 returns a more negative score the better the match, so ascending is best-first.
-            terms.push(format!("bm25(\"{}\") ASC", schema.fts_table()));
+        if let Some(rank) = rank {
+            terms.push(rank.to_owned());
         }
     } else {
         for (attr, dir) in &request.sort {
             schema.require_column(attr)?;
-            terms.push(format!("{} {}", qualify(&table, attr), dir.sql()));
+            terms.push(order_term(&qualify(&table, attr), *dir));
         }
     }
     // Always break ties on `id`, so that paging through a set sorted on a column with duplicates
@@ -161,19 +203,32 @@ pub(super) fn build_order(
     Ok(terms.join(", "))
 }
 
-/// Run a fetch, retrying a search that isn't valid FTS5 as a literal phrase.
+pub(super) fn order_term(column: &str, dir: SortDir) -> String {
+    match dir {
+        SortDir::Asc => format!("{} ASC NULLS FIRST", column),
+        SortDir::Desc => format!("{} DESC NULLS LAST", column),
+    }
+}
+
+/// Run a search, retrying one the engine rejects as bad syntax as a literal phrase.
 ///
 /// Punctuation and unbalanced quotes are FTS5 syntax errors, and are also exactly what gets pasted
 /// in from a log line — the same reason [`crate::session_recording`] does this. On a second failure
 /// the *first* error is returned, since that is the one describing what the plugin actually asked.
+/// An engine whose search syntax accepts anything gets the first result back untouched.
 pub(super) fn with_search_fallback<T>(
+    dialect: &dyn Dialect,
     request: &FetchRequest,
     mut run: impl FnMut(Option<&str>) -> Result<T, DataError>,
 ) -> Result<T, DataError> {
-    let first = run(request.search.as_deref());
-    let (Err(first_error), Some(search)) = (&first, &request.search) else {
+    let search = search_term(request);
+    let first = run(search.as_deref());
+    let (Err(first_error), Some(search)) = (&first, &search) else {
         return first;
     };
+    if !dialect.retries_search_as_phrase() {
+        return first;
+    }
     match run(Some(&fts_phrase(search))) {
         Ok(value) => Ok(value),
         Err(_) => Err(first_error.clone()),
@@ -181,66 +236,81 @@ pub(super) fn with_search_fallback<T>(
 }
 
 pub(super) fn run_fetch_with_search_fallback(
-    conn: &Connection,
+    exec: &mut dyn Executor,
     schema: &EntitySchema,
     request: &FetchRequest,
 ) -> Result<DataRows, DataError> {
-    with_search_fallback(request, |search| run_fetch(conn, schema, request, search))
+    let dialect = exec.dialect();
+    with_search_fallback(dialect, request, |search| {
+        run_fetch(exec, schema, request, search)
+    })
+}
+
+pub(super) fn run_count_with_search_fallback(
+    exec: &mut dyn Executor,
+    schema: &EntitySchema,
+    request: &FetchRequest,
+) -> Result<u64, DataError> {
+    let dialect = exec.dialect();
+    with_search_fallback(dialect, request, |search| {
+        let (sql, params) = build_count_sql(dialect, schema, request, search)?;
+        let count = exec
+            .query_i64(&sql, &params)
+            .context("failed to count rows")?;
+        Ok(count.max(0) as u64)
+    })
 }
 
 pub(super) fn run_fetch(
-    conn: &Connection,
+    exec: &mut dyn Executor,
     schema: &EntitySchema,
     request: &FetchRequest,
     search: Option<&str>,
 ) -> Result<DataRows, DataError> {
     let FetchSql {
         sql,
-        mut params,
+        params,
         output_columns,
-    } = build_fetch_sql(schema, request, search)?;
+    } = build_fetch_sql(exec.dialect(), schema, request, search)?;
     let limit = request.effective_limit();
-    // One row past the limit, so that hitting it is distinguishable from reaching the end.
-    params.push(DataValue::Int(limit as i64 + 1));
-    params.push(DataValue::Int(request.offset as i64));
 
-    let kinds: Vec<Option<AttrKind>> = output_columns
-        .iter()
-        .map(|c| schema.column_kind(c))
-        .collect();
-
-    let mut stmt = conn.prepare(&sql).ctx("failed to prepare the fetch")?;
-    let mut sqlite_rows = stmt
-        .query(rusqlite::params_from_iter(params.iter()))
-        .ctx("failed to run the fetch")?;
+    // The leading `id`, then the selected columns.
+    let mut kinds: Vec<AttrKind> = Vec::with_capacity(output_columns.len() + 1);
+    kinds.push(AttrKind::Int);
+    kinds.extend(output_columns.iter().map(|c| schema.any_column_kind(c)));
 
     let mut rows: Vec<Vec<DataValue>> = Vec::new();
     let mut truncated = false;
     let mut last_id: Option<i64> = None;
     let mut bytes = 0usize;
-    while let Some(row) = sqlite_rows.next().ctx("failed to read a row")? {
+    exec.query_rows(&sql, &params, &kinds, &mut |mut values| {
         if rows.len() as u32 >= limit {
             truncated = true;
-            break;
+            return Ok(false);
         }
-        let id: i64 = row.get(0).ctx("failed to read a row id")?;
-        let mut values = Vec::with_capacity(output_columns.len());
-        let mut row_bytes = 0usize;
-        for (offset, kind) in kinds.iter().enumerate() {
-            let value = read_value(row, offset + 1, *kind)?;
-            row_bytes += value.encoded_size();
-            values.push(value);
-        }
+        let id = match values.first() {
+            Some(DataValue::Int(id)) => *id,
+            other => {
+                return Err(DataError::Storage(format!(
+                    "failed to read a row id: got {:?}",
+                    other
+                )))
+            },
+        };
+        values.remove(0);
+        let row_bytes: usize = values.iter().map(DataValue::encoded_size).sum();
         // Stop before exceeding the budget rather than after, but never return zero rows for it:
         // a single row over the budget still has to come back, or the plugin cannot make progress.
         if bytes + row_bytes > MAX_FETCH_BYTES && !rows.is_empty() {
             truncated = true;
-            break;
+            return Ok(false);
         }
         bytes += row_bytes;
         last_id = Some(id);
         rows.push(values);
-    }
+        Ok(true)
+    })
+    .context("failed to run the fetch")?;
 
     let next_cursor = if truncated && is_default_ordering(request) {
         last_id

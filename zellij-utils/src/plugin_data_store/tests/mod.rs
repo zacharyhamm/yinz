@@ -1,22 +1,27 @@
-//! The store's tests, grouped the way the engine is.
+//! The store's tests, grouped the way the engine is — and run once per database.
 //!
-//! Every group shares the fixtures below, which each file picks up with `use super::*`.
+//! The files beside this one hold the tests; none of them names a database. Each harness module
+//! ([`sqlite`], and `postgres` behind the `postgres-tests` feature) supplies `store()`,
+//! `defined()` and a `Guard` that keeps the database alive for the test, then includes every
+//! test file with `#[path]`, so the same ~1900 lines run against both engines and a divergence
+//! between them fails a test rather than a plugin. The fixtures every file shares are here, and
+//! reach the files through the harness's `use super::*`.
+//!
+//! Loading one file as two modules is exactly what clippy's `duplicate_mod` warns about, and
+//! exactly the point.
+#![allow(clippy::duplicate_mod)]
 
-mod model;
-mod oracle;
-mod pagination;
-mod properties;
-mod queries;
-mod schema;
-mod search;
-mod watches;
-mod writes;
+mod dialect;
+#[cfg(feature = "postgres-tests")]
+pub(crate) mod postgres;
+mod postgres_offline;
+mod sqlite;
 
 use super::*;
 // The flat module's own `use` block used to reach the tests through `use super::*`. Now that the
 // engine is split up, the types plugins speak in are imported here directly.
 use crate::plugin_data::*;
-use tempfile::{tempdir, TempDir};
+use std::collections::BTreeMap;
 
 /// Assert that an error has a particular shape, and say which shape was wanted when it doesn't.
 ///
@@ -38,19 +43,13 @@ const NS: &str = "plugin:test";
 const OWNER: &str = "zellij:test";
 
 /// The plugin and client a watch is registered for. Shared with the watch property test in
-/// [`oracle`].
+/// `oracle`.
 const PLUGIN: u32 = 7;
 const CLIENT: ClientId = 1;
 
 /// The touched-entity set `refresh_watches` filters on, for a write to one entity.
 fn touched(entity: &str) -> BTreeSet<String> {
     [entity.to_owned()].into_iter().collect()
-}
-
-fn store() -> (PluginDataStore, TempDir) {
-    let dir = tempdir().unwrap();
-    let store = PluginDataStore::new(dir.path());
-    (store, dir)
 }
 
 /// The entity most tests use: two indexed columns, one searchable one, one plain.
@@ -60,12 +59,6 @@ fn agent_def() -> EntityDef {
         .attr(AttrDef::text("branch").indexed())
         .attr(AttrDef::text("summary").full_text())
         .attr(AttrDef::int("updated_at_ms").indexed())
-}
-
-fn defined() -> (PluginDataStore, TempDir) {
-    let (store, dir) = store();
-    store.define_entity(NS, OWNER, &agent_def(), false).unwrap();
-    (store, dir)
 }
 
 fn put(store: &PluginDataStore, project: &str, summary: &str, updated: i64) {

@@ -546,8 +546,9 @@ the module system is host-mediated, so it can be confined the way `zellij.fs` is
 Lua state is gone on reload, and `zellij.fs` into `/cache` is a file. For anything with rows in
 it there is the plugin data store: a persistent store zellij keeps for plugins, with entities
 you declare, writes in transactions, fetches with filters and full-text search, and watches
-that send an event whenever a fetch's results change. SQLite is the default backend. It needs the
-`plugin_data` permission.
+that send an event whenever a fetch's results change. SQLite is the default backend; the
+`plugin_data_url` option points the store at a Postgres database instead, and a plugin cannot
+tell the difference. It needs the `plugin_data` permission.
 
 ```lua
 local data = zellij.data

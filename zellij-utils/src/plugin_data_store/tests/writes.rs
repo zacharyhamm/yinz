@@ -72,6 +72,30 @@ fn a_batch_is_all_or_nothing() {
 }
 
 #[test]
+fn a_batch_with_a_nul_uid_leaves_stored_data_unchanged() {
+    let (store, _dir) = defined();
+    put(&store, "zellij", "keep", 1);
+    let request = FetchRequest::entity("agent");
+    let before = store.fetch(NS, &request).unwrap();
+    let err = store
+        .apply(
+            NS,
+            &[
+                Mutation::update("agent", Pred::eq("project", "zellij"))
+                    .set("summary", "changed")
+                    .build(),
+                Mutation::put("agent")
+                    .uid("bad\0uid")
+                    .set("project", "new")
+                    .build(),
+            ],
+        )
+        .unwrap_err();
+    assert_err!(err, DataError::InvalidQuery(_));
+    assert_eq!(store.fetch(NS, &request).unwrap(), before);
+}
+
+#[test]
 fn the_stores_own_columns_cannot_be_written_directly() {
     let (store, _dir) = defined();
     for name in ["id", "created_at", "updated_at", "uid"] {
@@ -184,4 +208,37 @@ fn a_unique_attribute_rejects_a_duplicate() {
         .apply(NS, &[Mutation::put("agent").set("slug", "a").build()])
         .unwrap_err();
     assert_err!(err, DataError::Storage(_));
+}
+
+/// `DataValue::fits` lets an integer into a Real attribute, so that a plugin writing `0` to a
+/// float column need not know to write `0.0`. What comes back is a Real on every engine — SQLite
+/// by its column affinity, Postgres because the value is bound as one.
+#[test]
+fn an_int_written_to_a_real_attribute_reads_back_as_a_real() {
+    let (store, _dir) = store();
+    let def = EntityDef::new("m", 1).attr(AttrDef::real("score").default(0i64));
+    store.define_entity(NS, OWNER, &def, false).unwrap();
+    store
+        .apply(
+            NS,
+            &[
+                Mutation::put("m").set("score", 3i64).build(),
+                Mutation::put("m").set("score", DataValue::Null).build(),
+            ],
+        )
+        .unwrap();
+    let rows = store
+        .fetch(NS, &FetchRequest::entity("m").select(["score"]))
+        .unwrap();
+    assert_eq!(
+        column(&rows, "score"),
+        vec![DataValue::Real(3.0), DataValue::Null]
+    );
+    let found = store
+        .fetch(
+            NS,
+            &FetchRequest::entity("m").filter(Pred::gte("score", 3i64)),
+        )
+        .unwrap();
+    assert_eq!(found.len(), 1);
 }

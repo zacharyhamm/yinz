@@ -373,6 +373,23 @@ pub struct Options {
     #[serde(default)]
     pub session_recording_input: Option<bool>,
 
+    /// Where plugin data lives. Unset: the SQLite file in the data dir. A `postgres://` or
+    /// `postgresql://` URL: that database, in the schema named by `plugin_data_schema`.
+    /// Session recordings stay in SQLite either way.
+    ///
+    /// Config-file only, like `detachable_panes`: the store is built once when the session
+    /// starts, so a per-invocation flag would be misleading on `zellij attach` — and the URL
+    /// may carry a password that has no business in `ps` or on the client socket.
+    #[clap(skip)]
+    #[serde(default)]
+    pub plugin_data_url: Option<String>,
+
+    /// The Postgres schema the plugin data store owns when `plugin_data_url` is set. Default
+    /// `zellij_plugin_data`; must match `^[a-z][a-z0-9_]{0,62}$`.
+    #[clap(skip)]
+    #[serde(default)]
+    pub plugin_data_schema: Option<String>,
+
     /// Whether pane viewports are serialized along with the session, default is false
     #[clap(long, value_parser)]
     #[serde(default)]
@@ -589,6 +606,14 @@ impl Options {
         let session_recording_input = other
             .session_recording_input
             .or(self.session_recording_input);
+        let plugin_data_url = other
+            .plugin_data_url
+            .clone()
+            .or_else(|| self.plugin_data_url.clone());
+        let plugin_data_schema = other
+            .plugin_data_schema
+            .clone()
+            .or_else(|| self.plugin_data_schema.clone());
         let serialize_pane_viewport = other
             .serialize_pane_viewport
             .or(self.serialize_pane_viewport);
@@ -674,6 +699,8 @@ impl Options {
             session_serialization,
             session_recording,
             session_recording_input,
+            plugin_data_url,
+            plugin_data_schema,
             serialize_pane_viewport,
             scrollback_lines_to_serialize,
             styled_underlines,
@@ -736,6 +763,15 @@ impl Options {
         let session_recording = merge_bool(other.session_recording, self.session_recording);
         let session_recording_input =
             merge_bool(other.session_recording_input, self.session_recording_input);
+        // Config-file only, so the CLI side never carries them; keep what the config said.
+        let plugin_data_url = other
+            .plugin_data_url
+            .clone()
+            .or_else(|| self.plugin_data_url.clone());
+        let plugin_data_schema = other
+            .plugin_data_schema
+            .clone()
+            .or_else(|| self.plugin_data_schema.clone());
         let serialize_pane_viewport =
             merge_bool(other.serialize_pane_viewport, self.serialize_pane_viewport);
 
@@ -849,6 +885,8 @@ impl Options {
             session_serialization,
             session_recording,
             session_recording_input,
+            plugin_data_url,
+            plugin_data_schema,
             serialize_pane_viewport,
             scrollback_lines_to_serialize,
             styled_underlines,

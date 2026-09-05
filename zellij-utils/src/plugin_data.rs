@@ -57,7 +57,8 @@ pub enum AttrKind {
 }
 
 impl AttrKind {
-    /// The SQLite column type for this kind.
+    /// The SQLite column type for this kind. Other engines map kinds to their own types in
+    /// their dialect; this one is here because it predates them and is shared with plugins.
     pub fn sql_type(&self) -> &'static str {
         match self {
             AttrKind::Text | AttrKind::Json => "TEXT",
@@ -370,10 +371,31 @@ impl EntityDef {
                         default.kind_name()
                     )));
                 }
+                if let Err(DataError::InvalidQuery(message)) = reject_nul(&attr.name, default) {
+                    return Err(DataError::InvalidSchema(message));
+                }
             }
         }
         Ok(())
     }
+}
+
+/// Reject a text value holding a NUL byte.
+///
+/// SQLite would store one; Postgres cannot (`TEXT` is NUL-free by definition), and a value that
+/// round-trips on one engine and not the other is worse than a refusal on both. Text is for
+/// text; a plugin with bytes to keep has `Blob`.
+fn reject_nul(attr: &str, value: &DataValue) -> Result<(), DataError> {
+    if let DataValue::Text(text) = value {
+        if text.contains('\0') {
+            return Err(DataError::InvalidQuery(format!(
+                "the text for `{}` contains a NUL byte, which the store does not hold in text; \
+                 use a Blob attribute for bytes",
+                attr
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// What a name is for, so that validation failures can say.
@@ -665,9 +687,18 @@ impl Pred {
                         attr
                     )));
                 }
-                Ok(())
+                values.iter().try_for_each(|value| reject_nul(attr, value))
             },
-            _ => Ok(()),
+            Pred::Eq(attr, value)
+            | Pred::Ne(attr, value)
+            | Pred::Gt(attr, value)
+            | Pred::Gte(attr, value)
+            | Pred::Lt(attr, value)
+            | Pred::Lte(attr, value) => reject_nul(attr, value),
+            Pred::Prefix(attr, needle) | Pred::Contains(attr, needle) => {
+                reject_nul(attr, &DataValue::Text(needle.clone()))
+            },
+            Pred::IsNull(_) | Pred::NotNull(_) => Ok(()),
         }
     }
 }
@@ -846,7 +877,14 @@ impl Mutation {
     pub fn validate(&self) -> Result<(), DataError> {
         validate_name(self.entity(), NameKind::Entity)?;
         match self {
-            Mutation::Put { entity, values, .. } => {
+            Mutation::Put {
+                entity,
+                uid,
+                values,
+            } => {
+                if let Some(uid) = uid {
+                    reject_nul("uid", &DataValue::Text(uid.clone()))?;
+                }
                 if values.is_empty() {
                     return Err(DataError::InvalidQuery(format!(
                         "a Put into `{}` sets no attributes",
@@ -876,8 +914,9 @@ impl Mutation {
 
 fn validate_value_attrs(values: &[(String, DataValue)]) -> Result<(), DataError> {
     let mut seen: Vec<&str> = Vec::with_capacity(values.len());
-    for (attr, _) in values {
+    for (attr, value) in values {
         validate_name(attr, NameKind::Attribute)?;
+        reject_nul(attr, value)?;
         if seen.contains(&attr.as_str()) {
             return Err(DataError::InvalidQuery(format!(
                 "attribute `{}` is set twice in one mutation",
@@ -1070,7 +1109,7 @@ pub enum DataError {
     UnknownEntity(String),
     /// The plugin lacks the permission for what it asked.
     PermissionDenied(String),
-    /// Anything from SQLite or the filesystem.
+    /// Anything from the storage engine, its connection, or the filesystem.
     Storage(String),
 }
 
@@ -1142,6 +1181,42 @@ mod tests {
     fn a_default_of_the_wrong_kind_is_rejected() {
         let def = EntityDef::new("agent", 1).attr(AttrDef::int("count").default("not a number"));
         assert!(matches!(def.validate(), Err(DataError::InvalidSchema(_))));
+    }
+
+    /// Postgres cannot store a NUL in text, so no engine is allowed to: the value is refused at
+    /// the boundary, on both sides of it, wherever text can be supplied.
+    #[test]
+    fn a_nul_byte_in_text_is_rejected_wherever_text_is_supplied() {
+        let put = Mutation::put("agent").set("project", "a\0b").build();
+        assert!(matches!(put.validate(), Err(DataError::InvalidQuery(_))));
+        let put_uid = Mutation::put("agent")
+            .uid("a\0b")
+            .set("project", "ok")
+            .build();
+        assert!(matches!(
+            put_uid.validate(),
+            Err(DataError::InvalidQuery(_))
+        ));
+        let filtered = FetchRequest::entity("agent").filter(Pred::eq("project", "a\0b"));
+        assert!(matches!(
+            filtered.validate(),
+            Err(DataError::InvalidQuery(_))
+        ));
+        let contained = FetchRequest::entity("agent").filter(Pred::contains("project", "\0"));
+        assert!(matches!(
+            contained.validate(),
+            Err(DataError::InvalidQuery(_))
+        ));
+        let listed = FetchRequest::entity("agent").filter(Pred::is_in("project", ["ok", "\0"]));
+        assert!(matches!(listed.validate(), Err(DataError::InvalidQuery(_))));
+        let defaulted = EntityDef::new("agent", 1).attr(AttrDef::text("project").default("\0"));
+        assert!(matches!(
+            defaulted.validate(),
+            Err(DataError::InvalidSchema(_))
+        ));
+        // A blob is the place for bytes, and takes them.
+        let blob = Mutation::put("agent").set("raw", vec![0u8, 1]).build();
+        assert_eq!(blob.validate(), Ok(()));
     }
 
     #[test]

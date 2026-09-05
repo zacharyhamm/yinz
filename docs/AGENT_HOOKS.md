@@ -84,7 +84,8 @@ That exists for the warp. **A pane's agent history is not in its record**: the r
 fields on a manifest handed to every plugin on every pane update, and a history is a growing
 list of prompts, plans, questions and results. History lives in `agent_run` rows in the shared
 plugin data store — with the default SQLite backend, one file per *machine*, not per session, so a run written in one
-session is legible in another. What a warped pane needs is not the history but its *name*, and
+session is legible in another; with `plugin_data_url` pointing at Postgres, one database per
+however many machines share it. What a warped pane needs is not the history but its *name*, and
 that is what travels.
 
 ### Reading it back
