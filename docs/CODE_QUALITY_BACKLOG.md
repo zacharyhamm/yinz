@@ -29,6 +29,11 @@ completion includes focused regression coverage and a passing `cargo x ci check`
   actions require their own capabilities; internal DCS payloads are bounded; the Kitty graphics
   quota is a hard retained-byte limit; debug plugin builds detect missing wasm and build-recipe
   changes; and Kitty/termwiz stdin parsing has one owner for every byte.
+- **Fifth round** (2026-09-04 maintainability pass): **#13**. The plugin downloader rejects
+  non-2xx responses before touching the cache, resumes only on a `206` whose `Content-Range`
+  starts at the partial file's length, lets a `200` replace the partial file, checks the stored
+  length against `Content-Length`/`Content-Range`, and reports a failed HTTP-client build as an
+  error instead of a silent success.
 
 ## Next up
 
@@ -51,13 +56,6 @@ completion includes focused regression coverage and a passing `cargo x ci check`
     helper whose `try_wait` panics on `ECHILD`; `login_tty` and spawn failures also panic.
   - Complete when exactly one component owns reaping, stop/continue notifications remain intact,
     spawn/setup failures return contextual errors, and the quit callback runs once.
-
-- [ ] **#13 Validate downloader status and resume semantics** — high, 5.3 (`I4/U4/E3`)
-  - Evidence: `zellij-utils/src/downloader.rs:73` does not reject HTTP errors or distinguish a
-    honored Range response from a full `200` response before appending partial data.
-  - Complete when only successful responses are cached, resume appends only a valid partial
-    response, a full response replaces the partial file, and client-construction failure is an
-    error.
 
 - [ ] **#14 Reject an entire malformed plugin command** — high, 5.3 (`I4/U4/E3`)
   - Evidence: `zellij-utils/src/plugin_api/plugin_command.rs:709` and related conversions use
