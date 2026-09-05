@@ -452,13 +452,15 @@ fn ensure(
     let entries = locked.entries()?;
     let state_path = locked.identity_path(&entries, session, name, worktree.as_deref())?;
     ensure_vm_identity_available(&entries, &state_path, session, name)?;
+    let ResolvedIdentity { worktree, borrowed } =
+        resolve_identity(&entries, &state_path, session, worktree);
     // Whether this user may run the VM under a cgroup of its own is settled here, before
     // the clone and the boot: a host that refuses is told so at once, not after the
     // expensive work has been done and undone.
     let cgroup_root = cgroup_root_or_skip(delegated_cgroup_root(), config.require_resource_limits)?;
     if let Some(mut existing) = read_state_opt(&state_path)? {
         if vm_is_running(&existing) {
-            match existing_vm_disposition(&existing, name, image) {
+            match existing_vm_disposition(&existing, name, image, borrowed) {
                 Disposition::Join => {
                     copy_credentials(&existing, config)?;
                     // A VM outlives the server that made it, so a join is also the only
@@ -741,12 +743,73 @@ enum Disposition {
     Replace,
 }
 
+/// What a request takes from the record its identity resolved to, rather than from itself.
+struct ResolvedIdentity {
+    /// The worktree the VM at this identity mirrors: the request's own, or the one the
+    /// resolved record is keyed by.
+    worktree: Option<PathBuf>,
+    /// Whether the identity was resolved to a record that is another session's.
+    borrowed: bool,
+}
+
+/// Read from the record already at `state_path`, when `identity_path` found the path on
+/// record rather than deriving it from the request.
+///
+/// A request that names no worktree is asking for a VM by name, and `identity_path` may
+/// answer with a record keyed by a worktree - the session's own VM of that name, or the
+/// running worktree VM of that name somebody else provisioned, which is what `new-pane
+/// --firecracker review` joins. That worktree belongs to the identity rather than to the
+/// request, so it is adopted before anything is booted at that identity: without it a
+/// replacement lands as a worktree-less VM at a path derived from a worktree, mirroring
+/// nothing, and the next request that *does* name the checkout finds a ready VM of the right
+/// name and joins a guest that never cloned it.
+///
+/// `borrowed` is the same reading applied to the other half: a record this request resolved
+/// to rather than named, belonging to another session, is one to join and not to take over.
+/// A request that names the worktree is naming the identity, so it is never borrowing it -
+/// the same checkout is one VM, whichever session asks for it.
+fn resolve_identity(
+    entries: &[(PathBuf, VmState)],
+    state_path: &Path,
+    session: &str,
+    worktree: Option<PathBuf>,
+) -> ResolvedIdentity {
+    let resolved = match worktree {
+        Some(worktree) => {
+            return ResolvedIdentity {
+                worktree: Some(worktree),
+                borrowed: false,
+            }
+        },
+        None => entries
+            .iter()
+            .find(|(path, _)| path == state_path)
+            .map(|(_, state)| state),
+    };
+    ResolvedIdentity {
+        worktree: resolved.and_then(|state| state.worktree.clone()),
+        borrowed: resolved.is_some_and(|state| {
+            !state.leases.iter().any(|lease| lease == session) && state.session != session
+        }),
+    }
+}
+
 /// An image the request does not name is no preference rather than a demand for the default
 /// one. A pane that joins a VM names neither an image nor a worktree - `new-pane
 /// --firecracker review` carries only the name - and `--firecracker-image` says for itself
 /// that it is "only meaningful the first time a VM is started". An image that is named and
 /// disagrees with the running VM's is still refused.
-fn existing_vm_disposition(existing: &VmState, name: &str, image: Option<&str>) -> Disposition {
+///
+/// A `borrowed` VM is refused rather than replaced for that last reason turned around: the
+/// request resolved to another session's VM instead of naming it, and ending a pane in that
+/// session over an image only the first start of a VM decides is not what asking for one by
+/// name means. See `resolve_identity`.
+fn existing_vm_disposition(
+    existing: &VmState,
+    name: &str,
+    image: Option<&str>,
+    borrowed: bool,
+) -> Disposition {
     let mismatch = if existing.name != name {
         Some(format!(
             "worktree VM is already running as {:?}, not {name:?}",
@@ -764,6 +827,9 @@ fn existing_vm_disposition(existing: &VmState, name: &str, image: Option<&str>) 
         (true, None) => Disposition::Join,
         (true, Some(why)) => Disposition::Refuse(why),
         (false, None) => Disposition::Resume,
+        (false, Some(why)) if borrowed => Disposition::Refuse(format!(
+            "{why}; it belongs to another session, so it is joined rather than replaced"
+        )),
         (false, Some(_)) => Disposition::Replace,
     }
 }
@@ -8226,7 +8292,7 @@ mod tests {
         assert_ne!(adopted.pid, Some(bystander.pid));
         assert!(vm_is_running(&adopted));
         assert_eq!(
-            existing_vm_disposition(&adopted, "review", None),
+            existing_vm_disposition(&adopted, "review", None, false),
             Disposition::Resume
         );
         let entries = locked.entries().unwrap();
@@ -8409,51 +8475,100 @@ mod tests {
             None,
         );
         assert_eq!(
-            existing_vm_disposition(&state, "review", None),
+            existing_vm_disposition(&state, "review", None, false),
             Disposition::Resume
         );
         assert_eq!(
-            existing_vm_disposition(&state, "other", None),
+            existing_vm_disposition(&state, "other", None, false),
             Disposition::Replace
         );
         assert_eq!(
-            existing_vm_disposition(&state, "review", Some("rust")),
+            existing_vm_disposition(&state, "review", Some("rust"), false),
             Disposition::Replace
         );
 
         state.ready = true;
         assert_eq!(
-            existing_vm_disposition(&state, "review", None),
+            existing_vm_disposition(&state, "review", None, false),
             Disposition::Join
         );
         assert!(matches!(
-            existing_vm_disposition(&state, "other", None),
+            existing_vm_disposition(&state, "other", None, false),
             Disposition::Refuse(why) if why.contains("\"other\"")
         ));
         state.image = Some("rust".to_owned());
         assert_eq!(
-            existing_vm_disposition(&state, "review", Some("rust")),
+            existing_vm_disposition(&state, "review", Some("rust"), false),
             Disposition::Join
         );
         assert_eq!(
-            existing_vm_disposition(&state, "review", None),
+            existing_vm_disposition(&state, "review", None, false),
             Disposition::Join,
             "a join names no image, which is no preference rather than the default image"
         );
         assert!(matches!(
-            existing_vm_disposition(&state, "review", Some("other")),
+            existing_vm_disposition(&state, "review", Some("other"), false),
             Disposition::Refuse(why) if why.contains("image")
         ));
 
         state.ready = false;
         assert_eq!(
-            existing_vm_disposition(&state, "review", None),
+            existing_vm_disposition(&state, "review", None, false),
             Disposition::Resume
         );
         assert_eq!(
-            existing_vm_disposition(&state, "review", Some("other")),
+            existing_vm_disposition(&state, "review", Some("other"), false),
             Disposition::Replace
         );
+        // Except when it is another session's, resolved by name rather than named: their
+        // pane is not ended over an image only the first start of a VM decides.
+        assert!(matches!(
+            existing_vm_disposition(&state, "review", Some("other"), true),
+            Disposition::Refuse(why) if why.contains("another session")
+        ));
+        assert_eq!(
+            existing_vm_disposition(&state, "review", None, true),
+            Disposition::Resume,
+            "a borrowed VM that nothing disagrees with is still provisioned"
+        );
+    }
+
+    /// A request that names no worktree can resolve to a record keyed by one, and what that
+    /// record mirrors is part of the identity rather than of the request. Adopting it is what
+    /// keeps a VM booted at that path a VM of that checkout: without it a replacement mirrors
+    /// nothing, and the next request that *does* name the checkout joins a guest that never
+    /// cloned it.
+    #[test]
+    fn an_identity_resolved_by_name_lends_the_worktree_it_is_keyed_by() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let live = LiveProcess::spawn();
+        let keyed = locked
+            .identity_path(&[], "work", "review", Some(Path::new("/repo")))
+            .unwrap();
+        let theirs = vec![identity_entry(&keyed, &live, Some("/repo"), &["other"])];
+
+        let resolved = resolve_identity(&theirs, &keyed, "work", None);
+        assert_eq!(resolved.worktree.as_deref(), Some(Path::new("/repo")));
+        assert!(resolved.borrowed, "the record is another session's");
+
+        // The same record, leased by this session: its own VM to restart.
+        let ours = vec![identity_entry(&keyed, &live, Some("/repo"), &["work"])];
+        let resolved = resolve_identity(&ours, &keyed, "work", None);
+        assert_eq!(resolved.worktree.as_deref(), Some(Path::new("/repo")));
+        assert!(!resolved.borrowed);
+
+        // And a request that names the worktree is naming the identity, not borrowing it:
+        // the same checkout is one VM, whichever session asks for it.
+        let resolved = resolve_identity(&theirs, &keyed, "work", Some(PathBuf::from("/repo")));
+        assert_eq!(resolved.worktree.as_deref(), Some(Path::new("/repo")));
+        assert!(!resolved.borrowed);
+
+        // A path nothing is on record at is the session's own new VM, and mirrors what the
+        // request said it does - nothing.
+        let resolved = resolve_identity(&[], &locked.path("work", "review"), "work", None);
+        assert_eq!(resolved.worktree, None);
+        assert!(!resolved.borrowed);
     }
 
     /// The server times a provider out for silence, so a phase that takes a while has to

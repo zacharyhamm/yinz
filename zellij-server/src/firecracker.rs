@@ -268,6 +268,12 @@ impl Provider {
                 "ssh_known_hosts_file",
                 response.ssh_known_hosts_file.as_deref(),
             ),
+            // Checked here rather than where it is adopted: `resolve_target` and the pane
+            // state a plugin reads both write it straight into the target's field, which is
+            // the one path into `PaneTarget::Firecracker` that does not go through
+            // `PaneTarget::firecracker` and its absolute-path rule. A relative one would be
+            // written into a layout the parser then refuses to read back.
+            ("worktree", response.worktree.as_deref()),
         ] {
             if path.is_some_and(|path| !path.is_absolute()) {
                 return Err(anyhow!("firecracker provider returned a relative {field}"));
@@ -900,6 +906,23 @@ printf '{"version":2}'"#,
             .ensure("work", "review", None, None, &AtomicBool::new(false))
             .unwrap();
         assert_eq!(response.ssh_host, "ssh://zellij@127.0.0.1:2201");
+    }
+
+    /// The worktree a provider names is adopted onto the pane's target by direct assignment,
+    /// which is the one way into `PaneTarget::Firecracker` that skips the constructor's
+    /// absolute-path rule. A relative one would be written into a layout that then fails to
+    /// parse back, and matched against project roots as if it were a path on this machine.
+    #[test]
+    fn a_relative_worktree_from_a_provider_is_refused() {
+        let (_dir, provider) = provider_script(
+            r#"printf '%s' '{"version":2,"ssh_host":"ssh://zellij@127.0.0.1:2201","worktree":"repo"}'"#,
+            AMPLE_TIMEOUT,
+        );
+        let error = provider
+            .ensure("work", "review", None, None, &AtomicBool::new(false))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("relative worktree"), "{error}");
     }
 
     /// A guest that failed to boot can leave a console log bigger than the output cap; the

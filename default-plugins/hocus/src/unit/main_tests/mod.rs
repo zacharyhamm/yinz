@@ -368,7 +368,6 @@ fn agent_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
     }
 }
 
-/// A state with one tab, active, that the poll can assign.
 /// An agent in a Firecracker VM, whose folder is a guest path in a copy of
 /// `worktree` — the folder on this machine its work is merged back into.
 fn vm_agent_in(pane_id: u32, worktree: &str, tab_id: usize) -> agents::AgentPane {
@@ -388,6 +387,7 @@ fn shell_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
     }
 }
 
+/// A state with one tab, active, that the poll can assign.
 fn state_with_tab(tab_id: usize) -> State {
     let mut state = idle_state();
     state.tabs = vec![TabInfo {
