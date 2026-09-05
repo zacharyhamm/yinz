@@ -360,7 +360,7 @@ fn a_read_is_a_page_of_lines() {
 
 /// A listing answers in names, because a name is what every plugin tool takes back — handing
 /// over paths would invite the model to send one and be refused. One folder deep, for modules,
-/// and only Lua files.
+/// and only Lua files, excluding backups.
 #[test]
 fn a_listing_is_names_one_folder_deep() {
     let entry = |path: &str, is_dir: bool| FsEntry {
@@ -373,9 +373,11 @@ fn a_listing_is_names_one_folder_deep() {
     };
     let entries = vec![
         entry("/plugins/probe.lua", false),
+        entry("/plugins/probe.bak.lua", false),
         entry("/plugins/notes.md", false),
         entry("/plugins/app", true),
         entry("/plugins/app/ui.lua", false),
+        entry("/plugins/app/ui.bak.lua", false),
         FsEntry {
             path: "/plugins/keys.lua".to_owned(),
             metadata: None,
