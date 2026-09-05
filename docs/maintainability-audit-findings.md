@@ -175,6 +175,20 @@ Together with the eight findings above, this inventory contains **20 retained fi
   resize a three-pane stack into two rows and assert every geometry is unchanged
   while the viewport tracks the display area, then resize into ten rows and
   assert the stack fills them and the viewport is exactly ten.
+  Follow-up: making that bookkeeping unconditional also made a wrapping cast
+  reachable. The viewport is the screen minus what the ui panes reserve on each
+  edge, so it is smaller than the display area whenever a tab bar or status bar
+  is up, and the case where the panes cannot follow the screen is exactly the
+  case where a screen-sized delta subtracts past zero - `(viewport.rows as isize
+  + row_difference) as usize` then wrapped to near `usize::MAX`, and
+  `set_pane_frames`, which `resize` calls on its way out, overflowed on
+  `viewport.y + viewport.rows` in `is_inside_viewport` under the default
+  title-only frames. The delta is now expressed as the per-edge insets it
+  already was (`new_extent = new_total - leading - trailing`) and clamped into
+  the new screen, so `viewport.y + viewport.rows <= rows` and `viewport.x +
+  viewport.cols <= cols` hold on every path. `tab_tests::viewport_clamp` covers
+  it with a tab whose top and bottom panes are non-selectable, the mechanism
+  that makes `LayoutApplier::offset_viewport` treat them as chrome.
 - [x] **F.3 — Focus dispatch discards the actual operation error.** Mapping the
   located tab produces an `Option<Result<()>>`; adding context creates an outer
   result, and `non_fatal()` checks only that outer layer. When the tab

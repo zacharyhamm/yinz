@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use zellij_utils::input::options::PaneFrameStyle;
 use zellij_utils::ipc::IpcReceiverWithContext;
-use zellij_utils::pane_size::{PaneGeom, Size, SizeInPixels};
+use zellij_utils::pane_size::{PaneGeom, Size, SizeInPixels, Viewport};
 use zellij_utils::{
     data::{ModeInfo, Palette, Style},
     input::command::{RunCommand, TerminalAction},
@@ -535,3 +535,4 @@ mod scroll_forwarding;
 mod splitting;
 mod stack_resize;
 mod text_selection;
+mod viewport_clamp;
