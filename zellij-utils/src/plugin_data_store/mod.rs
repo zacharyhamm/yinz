@@ -56,6 +56,7 @@ mod registry;
 mod schema;
 mod sql;
 mod sqlite;
+mod store_migrations;
 mod value;
 mod watch;
 mod write;

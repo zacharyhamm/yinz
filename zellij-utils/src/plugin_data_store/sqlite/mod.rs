@@ -18,6 +18,7 @@ use super::dialect::Dialect;
 use super::engine;
 use super::executor::Executor;
 use super::sql::{storage_err, SqlContext};
+use super::store_migrations;
 
 use self::dialect::SQLITE;
 use self::value::read_value;
@@ -139,7 +140,8 @@ fn open_db(db_path: &Path) -> Result<Connection, DataError> {
         std::fs::create_dir_all(parent)
             .map_err(|e| storage_err(&format!("failed to create {:?}", parent), e))?;
     }
-    let conn = Connection::open(db_path).with_ctx(|| format!("failed to open {:?}", db_path))?;
+    let mut conn =
+        Connection::open(db_path).with_ctx(|| format!("failed to open {:?}", db_path))?;
     // The same pragma set as the recording store. WAL and a busy timeout matter more here than
     // there: this file lives in the data dir rather than a session cache dir, so two zellij
     // servers running at once share it.
@@ -160,20 +162,15 @@ fn open_db(db_path: &Path) -> Result<Connection, DataError> {
             let _ = std::fs::set_permissions(db_path, perms);
         }
     }
-    conn.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS store_entities (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            namespace TEXT NOT NULL,
-            entity TEXT NOT NULL,
-            version INTEGER NOT NULL,
-            definition TEXT NOT NULL,
-            owner_plugin TEXT NOT NULL,
-            UNIQUE(namespace, entity)
-        );
-        "#,
-    )
-    .ctx("failed to create the entity registry")?;
+    // The store's own tables, brought up to date in one write transaction. `BEGIN IMMEDIATE`
+    // takes the database's single write lock for its whole length, which is what stops two
+    // servers opening this file at once from both deciding a migration has not run — the same
+    // job Postgres does with its advisory lock.
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .ctx("failed to begin the store migration transaction")?;
+    store_migrations::migrate_store(&mut SqliteExec(&tx))?;
+    tx.commit().ctx("failed to commit the store migration")?;
     Ok(conn)
 }
 

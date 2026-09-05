@@ -24,13 +24,34 @@ impl Dialect for SqliteDialect {
         kind.sql_type()
     }
 
-    fn store_columns(&self) -> [String; 4] {
+    fn store_columns(&self) -> [String; 5] {
         [
             "id INTEGER PRIMARY KEY AUTOINCREMENT".to_owned(),
             "uid TEXT UNIQUE".to_owned(),
             "created_at INTEGER NOT NULL".to_owned(),
             "updated_at INTEGER NOT NULL".to_owned(),
+            "rev INTEGER NOT NULL DEFAULT 1".to_owned(),
         ]
+    }
+
+    fn rev_column_added(&self) -> &'static str {
+        "INTEGER NOT NULL DEFAULT 1"
+    }
+
+    fn registry_ddl(&self) -> &'static str {
+        r#"CREATE TABLE IF NOT EXISTS store_entities (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               namespace TEXT NOT NULL,
+               entity TEXT NOT NULL,
+               version INTEGER NOT NULL,
+               definition TEXT NOT NULL,
+               owner_plugin TEXT NOT NULL,
+               UNIQUE(namespace, entity)
+           );"#
+    }
+
+    fn store_meta_ddl(&self) -> &'static str {
+        "CREATE TABLE IF NOT EXISTS store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
     }
 
     fn literal(&self, value: &DataValue) -> Result<String, DataError> {

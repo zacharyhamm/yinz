@@ -85,6 +85,7 @@ pub(super) fn build_put(
         .collect::<Vec<_>>()
         .join(", ");
     let conflict = if uid.is_some() {
+        let table_q = quote_ident(&schema.table());
         let assignments = values
             .iter()
             .map(|(attr, _)| {
@@ -94,6 +95,11 @@ pub(super) fn build_put(
             .chain(std::iter::once(
                 "\"updated_at\" = excluded.\"updated_at\"".to_owned(),
             ))
+            // Read off the stored row rather than `excluded`: the incoming row carries the
+            // column's default, so `excluded."rev"` would reset every upsert to 1. Qualified
+            // because in a `DO UPDATE` an unqualified name is the *target* row's on Postgres but
+            // reads better said outright, and both engines accept the qualified form.
+            .chain(std::iter::once(format!("\"rev\" = {table_q}.\"rev\" + 1")))
             .collect::<Vec<_>>()
             .join(", ");
         format!(" ON CONFLICT(\"uid\") DO UPDATE SET {}", assignments)
@@ -126,6 +132,7 @@ pub(super) fn build_update(
     }
     let placeholder = params.bind(DataValue::Int(now));
     assignments.push(format!("\"updated_at\" = {}", placeholder));
+    assignments.push("\"rev\" = \"rev\" + 1".to_owned());
     let mut where_sql = String::new();
     compile_pred(filter, schema, &table, &mut where_sql, &mut params)?;
     let sql = format!(

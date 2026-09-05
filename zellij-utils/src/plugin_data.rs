@@ -47,6 +47,7 @@ pub const RESERVED_ATTR_NAMES: &[&str] = &[
     "uid",
     "created_at",
     "updated_at",
+    "rev",
     "rowid",
     "oid",
     "xmin",

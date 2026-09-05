@@ -80,6 +80,8 @@ fn defined() -> (PluginDataStore, Guard) {
     (store, guard)
 }
 
+#[path = "concurrency.rs"]
+mod concurrency;
 #[path = "model.rs"]
 mod model;
 #[path = "oracle.rs"]
@@ -230,4 +232,101 @@ fn a_constraint_violation_includes_the_operation_and_server_explanation() {
         "{message}"
     );
     assert_eq!(store.count(NS, &FetchRequest::entity("agent")).unwrap(), 1);
+}
+
+/// A schema created by a zellij from before `rev` existed: at store version 1, with entity tables
+/// that have the four original store columns and no fifth.
+///
+/// The Postgres half of the migration story; the SQLite half is
+/// `sqlite::a_database_from_before_rev_is_migrated_in_place`. Both are engine-specific because
+/// the fixture has to build the old shape in that engine's own DDL.
+#[test]
+fn a_database_from_before_rev_is_migrated_in_place() {
+    let guard = Guard::fresh();
+    let schema = &guard.schema;
+    {
+        let mut client = PgConfig::from_str(&guard.url)
+            .unwrap()
+            .connect(NoTls)
+            .unwrap();
+        client
+            .batch_execute(&format!(
+                r#"CREATE SCHEMA "{schema}";
+                   SET search_path TO "{schema}";
+                   CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                   INSERT INTO store_meta (key, value) VALUES ('schema_version', '1');
+                   CREATE TABLE store_entities (
+                       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                       namespace TEXT COLLATE "C" NOT NULL,
+                       entity TEXT COLLATE "C" NOT NULL,
+                       version BIGINT NOT NULL,
+                       definition TEXT NOT NULL,
+                       owner_plugin TEXT NOT NULL,
+                       UNIQUE (namespace, entity)
+                   );
+                   INSERT INTO store_entities (namespace, entity, version, definition, owner_plugin)
+                   VALUES ('plugin:test', 'agent', 1,
+                           '{{"name":"agent","version":1,"attrs":[{{"name":"project","kind":"Text","indexed":true,"full_text":false,"unique":false,"required":false,"default":null}}]}}',
+                           'zellij:test');
+                   CREATE TABLE "e_1" (
+                       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                       uid TEXT COLLATE "C" UNIQUE,
+                       created_at BIGINT NOT NULL,
+                       updated_at BIGINT NOT NULL,
+                       project TEXT COLLATE "C"
+                   );
+                   INSERT INTO "e_1" (uid, created_at, updated_at, project)
+                   VALUES ('old', 1, 1, 'written-before-rev');"#
+            ))
+            .unwrap();
+    }
+
+    let store = PluginDataStore::from_backend(Arc::new(guard.backend()));
+    let rows = store.fetch(NS, &FetchRequest::entity("agent")).unwrap();
+    assert_eq!(texts(&rows, "project"), vec!["written-before-rev"]);
+    assert_eq!(column(&rows, "rev"), vec![DataValue::Int(1)]);
+
+    store
+        .apply(
+            NS,
+            &[Mutation::update("agent", Pred::eq("uid", "old"))
+                .set("project", "written-after")
+                .build()],
+        )
+        .unwrap();
+    let rows = store.fetch(NS, &FetchRequest::entity("agent")).unwrap();
+    assert_eq!(column(&rows, "rev"), vec![DataValue::Int(2)]);
+}
+
+/// The case a shared database makes real: one machine upgrades zellij first, and the machine
+/// still on the old binary must refuse the database rather than write to a shape it does not
+/// understand.
+#[test]
+fn a_schema_from_a_newer_zellij_is_refused() {
+    let guard = Guard::fresh();
+    let schema = &guard.schema;
+    {
+        let mut client = PgConfig::from_str(&guard.url)
+            .unwrap()
+            .connect(NoTls)
+            .unwrap();
+        client
+            .batch_execute(&format!(
+                r#"CREATE SCHEMA "{schema}";
+                   SET search_path TO "{schema}";
+                   CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                   INSERT INTO store_meta (key, value) VALUES ('schema_version', '9999');"#
+            ))
+            .unwrap();
+    }
+    let store = PluginDataStore::from_backend(Arc::new(guard.backend()));
+    let err = store
+        .define_entity(NS, OWNER, &agent_def(), false)
+        .unwrap_err();
+    assert_err!(err, DataError::Storage(_));
+    assert!(
+        err.to_string().contains("newer than this zellij"),
+        "the error should say what is wrong, got {:?}",
+        err
+    );
 }

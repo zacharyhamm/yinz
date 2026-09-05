@@ -23,9 +23,25 @@ pub(super) trait Dialect: Send + Sync + 'static {
     /// The column type for a declared attribute, collation included where it matters.
     fn column_type(&self, kind: AttrKind) -> &'static str;
 
-    /// The store's own four columns, in the order of [`super::schema::STORE_COLUMNS`]:
-    /// `id`, `uid`, `created_at`, `updated_at`, each as a full column definition.
-    fn store_columns(&self) -> [String; 4];
+    /// The store's own columns, in the order of [`super::schema::STORE_COLUMNS`]:
+    /// `id`, `uid`, `created_at`, `updated_at`, `rev`, each as a full column definition.
+    fn store_columns(&self) -> [String; 5];
+
+    /// The type and constraint of the `rev` column on its own, for the migration that adds it to
+    /// a table created before it existed. Separate from [`Dialect::store_columns`] because an
+    /// `ALTER TABLE ADD COLUMN` needs a default and a `CREATE TABLE` does not: an existing row
+    /// has to land on some revision, and 1 is the one a row written today would have had.
+    fn rev_column_added(&self) -> &'static str;
+
+    /// `CREATE TABLE IF NOT EXISTS` for the entity registry.
+    ///
+    /// `IF NOT EXISTS` because this is migration 1 and a SQLite database predating the store's
+    /// own version tracking already has the table — it is at version 0 by having no record, not
+    /// by being empty, so step 1 runs against a registry that is already there.
+    fn registry_ddl(&self) -> &'static str;
+
+    /// `CREATE TABLE IF NOT EXISTS` for `store_meta`, which holds the schema version.
+    fn store_meta_ddl(&self) -> &'static str;
 
     /// Render a default as a literal for a column definition.
     ///
