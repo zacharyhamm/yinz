@@ -61,6 +61,13 @@ pub enum ClientTabIndexOrPaneId {
     TabIndex(usize),
     TabIndexNoFocus(usize),
     PaneId(PaneId),
+    /// Beside `PaneId`, or - when no tab holds it - in the tab `ClientId` is looking at.
+    ///
+    /// What a plugin means by "near me". A plugin loaded while no client was attached has no
+    /// pane of its own yet: its `AddPlugin` is still parked in
+    /// `pending_events_waiting_for_client`, so nothing it opens can be placed beside it. The
+    /// pane it asked for must still land somewhere rather than be forgotten and killed.
+    PaneIdOrClient(PaneId, ClientId),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1853,7 +1860,8 @@ impl Pty {
             ClientTabIndexOrPaneId::TabIndex(_) | ClientTabIndexOrPaneId::TabIndexNoFocus(_) => {
                 terminal_action.unwrap_or_else(|| self.get_default_terminal(None, None))
             },
-            ClientTabIndexOrPaneId::PaneId(pane_id) => {
+            ClientTabIndexOrPaneId::PaneId(pane_id)
+            | ClientTabIndexOrPaneId::PaneIdOrClient(pane_id, _) => {
                 let mut terminal_action =
                     terminal_action.unwrap_or_else(|| self.get_default_terminal(None, None));
                 self.fill_cwd_from_pane_id(&mut terminal_action, &pane_id);

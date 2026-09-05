@@ -3225,7 +3225,10 @@ impl Screen {
                     }
                 });
             },
-            ClientTabIndexOrPaneId::PaneId(pane_id) => {
+            ClientTabIndexOrPaneId::PaneId(pane_id)
+            | ClientTabIndexOrPaneId::PaneIdOrClient(pane_id, _) => {
+                // No client fallback here on purpose: replacing a pane the caller does not have
+                // is not a placement question, it is a request with no subject.
                 let tab_index = self.tab_position_containing_pane(pane_id);
                 match tab_index {
                     Some(tab_index) => {
@@ -3252,6 +3255,29 @@ impl Screen {
             },
         }
         Ok(())
+    }
+    /// Settle a [`ClientTabIndexOrPaneId::PaneIdOrClient`] against the tabs there are now.
+    ///
+    /// "Beside that pane, or wherever this client is looking" is what a plugin means by "near
+    /// me", and the second half is the half that matters: a plugin loaded while no client was
+    /// attached has no pane of its own yet - its `AddPlugin` is still parked in
+    /// `pending_events_waiting_for_client` - and without a fallback the pane it opened would
+    /// find no tab, be forgotten, and have the process the pty thread already started closed
+    /// behind its back. `ClientIdNoFocus` rather than `ClientId` because the `PaneId` placement
+    /// this stands in for does not steal focus either.
+    ///
+    /// Every other spelling passes through untouched.
+    pub fn resolve_pane_placement(&self, target: ClientTabIndexOrPaneId) -> ClientTabIndexOrPaneId {
+        match target {
+            ClientTabIndexOrPaneId::PaneIdOrClient(pane_id, client_id) => {
+                if self.tab_containing_pane(pane_id).is_some() {
+                    ClientTabIndexOrPaneId::PaneId(pane_id)
+                } else {
+                    ClientTabIndexOrPaneId::ClientIdNoFocus(client_id)
+                }
+            },
+            other => other,
+        }
     }
     /// A pane the pty thread already started has nowhere to go: the tab or
     /// pane it was meant for closed while it was being spawned, which for a

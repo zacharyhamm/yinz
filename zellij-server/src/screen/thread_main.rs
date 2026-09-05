@@ -422,6 +422,10 @@ pub(crate) fn screen_thread_main(
 
                 let blocking_notification = if set_blocking { completion_tx } else { None };
 
+                // Resolve a plugin-pane target first: when the plugin has not been placed yet,
+                // agent placement must reason from the client's current tab instead.
+                let client_or_tab_index = screen.resolve_pane_placement(client_or_tab_index);
+
                 // An agent's pane may be sent to a roomier tab than the one it was asked for,
                 // or to a tab of its own - `agent_pane_target` says when. Every other pane
                 // keeps the target it came with.
@@ -434,7 +438,6 @@ pub(crate) fn screen_thread_main(
                     start_suppressed,
                     client_or_tab_index,
                 );
-
                 match client_or_tab_index {
                     ClientTabIndexOrPaneId::ClientId(client_id)
                     | ClientTabIndexOrPaneId::ClientIdNoFocus(client_id) => {
@@ -518,7 +521,10 @@ pub(crate) fn screen_thread_main(
                             );
                         }
                     },
-                    ClientTabIndexOrPaneId::PaneId(pane_id) => {
+                    ClientTabIndexOrPaneId::PaneId(pane_id)
+                    | ClientTabIndexOrPaneId::PaneIdOrClient(pane_id, _) => {
+                        // The second spelling cannot reach here - it was resolved above - but
+                        // an arm for it keeps the match exhaustive without a catch-all.
                         let mut found = false;
                         let all_tabs = screen.get_tabs_mut();
                         let should_focus_pane = false;
@@ -620,7 +626,10 @@ pub(crate) fn screen_thread_main(
                     | ClientTabIndexOrPaneId::TabIndexNoFocus(_tab_index) => {
                         log::error!("Cannot OpenInPlaceEditor with a TabIndex");
                     },
-                    ClientTabIndexOrPaneId::PaneId(pane_id_to_replace) => {
+                    ClientTabIndexOrPaneId::PaneId(pane_id_to_replace)
+                    | ClientTabIndexOrPaneId::PaneIdOrClient(pane_id_to_replace, _) => {
+                        // As in `replace_pane`: there is nothing to edit in place of a pane the
+                        // caller does not have, so no client fallback here.
                         match screen.tab_containing_pane_mut(pane_id_to_replace) {
                             Some(tab) => tab
                                 .replace_pane_with_editor_pane(pid, pane_id_to_replace)

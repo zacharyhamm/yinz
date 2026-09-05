@@ -7,6 +7,7 @@
 use super::*;
 use crate::plugins::HookFiring;
 use crate::plugins::PluginId;
+use crate::pty::ClientTabIndexOrPaneId;
 use zellij_test_support::Watched;
 use zellij_utils::data::HookPayload;
 use zellij_utils::input::command::TerminalAction;
@@ -467,13 +468,18 @@ fn spawned_agent_command(key: char) -> zellij_utils::input::command::RunCommand 
     pty_thread.join().unwrap();
     teardown();
 
-    let run: RunCommand = received_pty_instructions
+    let (run, placement): (RunCommand, ClientTabIndexOrPaneId) = received_pty_instructions
         .lock()
         .iter()
         .find_map(|instruction| match instruction {
-            PtyInstruction::SpawnTerminal(Some(TerminalAction::RunCommand(run)), ..) => {
-                Some(run.clone())
-            },
+            PtyInstruction::SpawnTerminal(
+                Some(TerminalAction::RunCommand(run)),
+                _,
+                _,
+                _,
+                placement,
+                ..,
+            ) => Some((run.clone(), *placement)),
             _ => None,
         })
         .unwrap_or_else(|| {
@@ -482,6 +488,16 @@ fn spawned_agent_command(key: char) -> zellij_utils::input::command::RunCommand 
                 received_pty_instructions.lock()
             )
         });
+    // Beside the plugin, or - when it has none, having been loaded before any client attached -
+    // wherever this client is looking. Anchoring to the pane alone would have the screen forget
+    // the pane and close the agent the pty thread had already started.
+    assert!(
+        matches!(
+            placement,
+            ClientTabIndexOrPaneId::PaneIdOrClient(PaneId::Plugin(_), 1)
+        ),
+        "the agent pane is placed near the plugin with a client fallback, got: {placement:?}"
+    );
     // The folder's name rather than its path: a `tempdir()` lives under `/tmp`, which the host
     // reads as the plugin's shared `/tmp` mount and re-translates on the way to the pty.
     assert_eq!(
