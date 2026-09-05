@@ -136,6 +136,7 @@ local function choose(title, options, detail)
   W.title, W.options, W.detail, W.offset = title, options, detail or "", 0
   while true do
     local event = zellij.await(zellij.async.event("key"))
+    event.workflow_handled = true
     local key = event.key
     if key == "Esc" or key == "q" then return nil end
     if key == "Down" then W.offset = W.offset + 1
@@ -151,6 +152,7 @@ local function edit(title, initial)
   while true do
     W.detail = text .. "\n\nType a message. Enter accepts this draft; committing needs separate approval."
     local event = zellij.await(zellij.async.event("key"))
+    event.workflow_handled = true
     if event.key == "Esc" then return nil
     elseif event.key == "Enter" then if text:match("%S") then return text end
     elseif event.key == "Backspace" then
@@ -644,7 +646,7 @@ function M.load(config)
 end
 
 zellij.on("key", function(event)
-  if W.active then return true end
+  if event.workflow_handled or W.active then return true end
   if event.key == "Enter" and M.helper_owner then
     zellij.focus_plugin_pane(M.helper_owner, false, false)
     return true

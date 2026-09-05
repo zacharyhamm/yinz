@@ -2498,7 +2498,7 @@ fn open_command_pane_near_plugin(
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) {
-    let pane_id = spawn_command_pane_near_plugin(env, command_to_run, context, None);
+    let pane_id = spawn_command_pane_near_plugin(env, command_to_run, context, None, false);
     let response = ProtobufOpenCommandPaneNearPluginResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_near_plugin response".to_string())
@@ -2507,11 +2507,18 @@ fn open_command_pane_near_plugin(
 
 fn spawn_command_pane_near_plugin(
     env: &PluginEnv,
-    command_to_run: CommandToRun,
+    mut command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
     name: Option<String>,
+    cwd_already_resolved: bool,
 ) -> OpenCommandPaneNearPluginResponse {
-    let run_command_action = run_command_action(env, command_to_run, false, context);
+    let preserve_cwd = cwd_already_resolved && !command_to_run.target.is_remote();
+    let resolved_cwd = preserve_cwd.then(|| command_to_run.cwd.take());
+    let mut run_command_action = run_command_action(env, command_to_run, false, context);
+    // Checkout launchers already resolved host paths, including names like /tmp and /host.
+    if let Some(cwd) = resolved_cwd {
+        run_command_action.cwd = cwd;
+    }
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
     // Create completion channel
@@ -2554,6 +2561,7 @@ fn open_command_pane_in_git_checkout_near_plugin(
                 command_to_run,
                 BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), kind)]),
                 None,
+                true,
             )
             .ok_or_else(|| "Zellij did not open the agent pane".to_owned())
         });
@@ -2623,7 +2631,7 @@ fn spawn_agent(
             checkout_made,
         )?;
         context.insert(HOCUS_AGENT_PANE_CONTEXT.to_owned(), kind);
-        spawn_command_pane_near_plugin(env, command, context, name)
+        spawn_command_pane_near_plugin(env, command, context, name, true)
             .ok_or_else(|| "Zellij did not open the agent pane".to_owned())
     })();
     let response = ProtobufSpawnAgentResponse::from(result);
