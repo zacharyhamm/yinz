@@ -252,6 +252,9 @@ pub fn commands_with(extra: Vec<String>, skills: Vec<String>) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+        // No `/name` token in it, so the completeness test above — which reads
+        // every slash-prefixed word back out — is unaffected.
+        + "\n\nType a command with --help to read about it."
 }
 
 /// `/skills`: every loaded skill with its description and tier, then what was

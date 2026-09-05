@@ -90,6 +90,7 @@ takes the rest of the line as its prompt — but `/plan …` and then `/bench �
 | `/skills disable <user\|project> <name>` | disable one exact copy without deleting it |
 | `/skills enable <user\|project> <name>` | enable one exact copy |
 | `/help` | the command list, with a `skills` row |
+| `/<skill> --help` | **not** a help request — the flag is the skill's arguments, and the prompt goes to the model. Tools and hocus's own commands take `--help`; skills do not, because their argument is free text |
 | Tab | completes a skill name like a tool's |
 
 There is no file watcher: after editing a skill, `/skills reload`.

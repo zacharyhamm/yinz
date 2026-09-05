@@ -370,6 +370,36 @@ impl State {
     pub(crate) fn run_manual(&mut self, line: &str) -> bool {
         self.pin_to_bottom();
         let line = line.trim();
+        // Ahead of every other arm, and ahead of the `tools_busy` guard below:
+        // help runs nothing, so there is no state it could be illegal in.
+        if let Some(name) = help::split_help_request(line) {
+            // A skill is a prompt and takes the rest of the line as its
+            // arguments, so `--help` after one is text for the model. Skills
+            // fall through to `run_skill`, which is where they are answered.
+            if self.skills.get(name).is_none() {
+                return match help::lookup(name, &self.extensions) {
+                    Some(text) => {
+                        self.messages.push(Message::notice(text.clone()));
+                        self.log(
+                            "notice",
+                            serde_json::json!({"content": log::truncate(&text)}),
+                        );
+                        true
+                    },
+                    // The same sentence `run_manual_call` gives a typo, so the
+                    // two paths into a wrong name read alike.
+                    None => {
+                        let error = format!(
+                            "no such tool or skill: {name} — /help lists the commands, /skills \
+                             the skills"
+                        );
+                        self.messages.push(Message::error(error.clone()));
+                        self.log("error", serde_json::json!({"error": error}));
+                        true
+                    },
+                };
+            }
+        }
         if line == "/" || line == "/help" {
             let help = present::commands_with(self.extensions.names(), self.skills.names());
             self.messages.push(Message::notice(help.clone()));
