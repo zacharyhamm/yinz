@@ -1754,6 +1754,7 @@ mod layout;
 mod mouse;
 mod osc99;
 mod pane_content;
+mod pane_creation;
 mod rendering;
 mod stacked_panes;
 mod swap_layouts;

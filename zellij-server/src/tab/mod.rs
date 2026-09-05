@@ -3031,88 +3031,15 @@ impl Tab {
         let err_context = || format!("failed to create new pane with id {pid:?}");
         self.close_down_to_max_terminals()
             .with_context(err_context)?;
-        let mut new_pane = match pid {
-            PaneId::Terminal(term_pid) => {
-                let next_terminal_position = self.get_next_terminal_position();
-                PaneFactory::terminal(
-                    term_pid,
-                    PaneGeom::default(), // this will be filled out later
-                    self.style,
-                    next_terminal_position,
-                    initial_pane_title.clone().unwrap_or_default(),
-                    self.link_handler.clone(),
-                    self.character_cell_size.clone(),
-                    self.sixel_image_store.clone(),
-                    self.kitty_image_store.clone(),
-                    self.terminal_emulator_colors.clone(),
-                    self.terminal_emulator_color_codes.clone(),
-                    initial_pane_title,
-                    invoked_with,
-                    self.debug,
-                    self.arrow_fonts,
-                    self.styled_underlines,
-                    self.osc8_hyperlinks,
-                    self.explicitly_disable_kitty_keyboard_protocol,
-                    blocking_notification,
-                )
-            },
-            PaneId::Plugin(plugin_pid) => {
-                PaneFactory::plugin(
-                    plugin_pid,
-                    PaneGeom::default(), // this will be filled out later
-                    self.senders
-                        .to_plugin
-                        .as_ref()
-                        .with_context(err_context)?
-                        .clone(),
-                    initial_pane_title.unwrap_or("".to_owned()),
-                    String::new(),
-                    self.sixel_image_store.clone(),
-                    self.kitty_image_store.clone(),
-                    self.terminal_emulator_colors.clone(),
-                    self.terminal_emulator_color_codes.clone(),
-                    self.link_handler.clone(),
-                    self.character_cell_size.clone(),
-                    self.connected_clients_in_app
-                        .borrow()
-                        .iter()
-                        .copied()
-                        .collect(),
-                    self.style,
-                    invoked_with,
-                    self.debug,
-                    self.arrow_fonts,
-                    self.styled_underlines,
-                )
-            },
-        };
+        let mut new_pane =
+            self.build_pane(pid, initial_pane_title, invoked_with, blocking_notification)?;
 
         if let Some(borderless) = borderless {
             new_pane.set_borderless(borderless);
         }
 
         if start_suppressed {
-            // this pane needs to start in the background (suppressed), only accessible if a plugin takes it out
-            // of there in one way or another
-            // we need to do some bookkeeping for this pane, namely setting its geom and
-            // content_offset so that things will appear properly in the terminal - we set it to
-            // the default geom of the first floating pane - this is just in order to give it some
-            // reasonable size, when it is shown - if needed - it will be given the proper geom as if it were
-            // resized
-            let viewport = { *self.viewport.borrow() };
-            let new_pane_geom = half_size_middle_geom(&viewport, 0);
-            new_pane.set_active_at(Instant::now());
-            new_pane.set_geom(new_pane_geom);
-            new_pane.set_content_offset(Offset::frame(1));
-            resize_pty!(
-                new_pane,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .with_context(err_context)?;
-            self.park_pane(new_pane);
-            Ok(())
+            self.park_new_pane(new_pane).with_context(err_context)
         } else {
             // no overlay exclusion needed here any more: an overlay is not in `floating_panes`,
             // so "the client's active pane is a floating pane" can no longer accidentally mean
@@ -3167,7 +3094,34 @@ impl Tab {
         }
         self.close_down_to_max_terminals()
             .with_context(err_context)?;
-        let mut new_pane = match pid {
+        let mut new_pane =
+            self.build_pane(pid, initial_pane_title, invoked_with, blocking_notification)?;
+
+        if let Some(borderless) = borderless {
+            new_pane.set_borderless(borderless);
+        }
+
+        if start_suppressed {
+            self.park_new_pane(new_pane).with_context(err_context)
+        } else {
+            let focus_client_id = if should_focus_pane { client_id } else { None };
+            self.add_tiled_pane(new_pane, pid, false, focus_client_id)
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
+    /// Build the pane a `new_*_pane` path is about to place, without deciding where it goes.
+    ///
+    /// Shared by no-preference, tiled, stacked, floating, and overlay creation. Each caller
+    /// retains its placement, focus, and borderless decisions.
+    fn build_pane(
+        &mut self,
+        pid: PaneId,
+        initial_pane_title: Option<String>,
+        invoked_with: Option<Run>,
+        blocking_notification: Option<NotificationEnd>,
+    ) -> Result<Box<dyn Pane>> {
+        let err_context = || format!("failed to create new pane with id {pid:?}");
+        Ok(match pid {
             PaneId::Terminal(term_pid) => {
                 let next_terminal_position = self.get_next_terminal_position();
                 PaneFactory::terminal(
@@ -3220,107 +3174,6 @@ impl Tab {
                     self.arrow_fonts,
                     self.styled_underlines,
                 )
-            },
-        };
-
-        if let Some(borderless) = borderless {
-            new_pane.set_borderless(borderless);
-        }
-
-        if start_suppressed {
-            // this pane needs to start in the background (suppressed), only accessible if a plugin takes it out
-            // of there in one way or another
-            // we need to do some bookkeeping for this pane, namely setting its geom and
-            // content_offset so that things will appear properly in the terminal - we set it to
-            // the default geom of the first floating pane - this is just in order to give it some
-            // reasonable size, when it is shown - if needed - it will be given the proper geom as if it were
-            // resized
-            let viewport = { *self.viewport.borrow() };
-            let new_pane_geom = half_size_middle_geom(&viewport, 0);
-            new_pane.set_active_at(Instant::now());
-            new_pane.set_geom(new_pane_geom);
-            new_pane.set_content_offset(Offset::frame(1));
-            resize_pty!(
-                new_pane,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .with_context(err_context)?;
-            self.park_pane(new_pane);
-            Ok(())
-        } else {
-            let focus_client_id = if should_focus_pane { client_id } else { None };
-            self.add_tiled_pane(new_pane, pid, false, focus_client_id)
-        }
-    }
-    #[allow(clippy::too_many_arguments)]
-    /// Build the pane a `new_*_pane` path is about to place, without deciding where it goes.
-    ///
-    /// Extracted so that the floating and overlay paths share one construction: they differ only
-    /// in which collection takes the pane, and a second copy of this would be a second place for
-    /// the two to drift.
-    fn build_pane(
-        &mut self,
-        pid: PaneId,
-        initial_pane_title: Option<String>,
-        invoked_with: Option<Run>,
-        blocking_notification: Option<NotificationEnd>,
-    ) -> Result<Box<dyn Pane>> {
-        let err_context = || format!("failed to create new pane with id {pid:?}");
-        Ok(match pid {
-            PaneId::Terminal(term_pid) => {
-                let next_terminal_position = self.get_next_terminal_position();
-                Box::new(TerminalPane::new(
-                    term_pid,
-                    PaneGeom::default(), // this will be filled out later
-                    self.style,
-                    next_terminal_position,
-                    initial_pane_title.clone().unwrap_or_default(),
-                    self.link_handler.clone(),
-                    self.character_cell_size.clone(),
-                    self.sixel_image_store.clone(),
-                    self.kitty_image_store.clone(),
-                    self.terminal_emulator_colors.clone(),
-                    self.terminal_emulator_color_codes.clone(),
-                    initial_pane_title,
-                    invoked_with,
-                    self.debug,
-                    self.arrow_fonts,
-                    self.styled_underlines,
-                    self.osc8_hyperlinks,
-                    self.explicitly_disable_kitty_keyboard_protocol,
-                    blocking_notification,
-                )) as Box<dyn Pane>
-            },
-            PaneId::Plugin(plugin_pid) => {
-                Box::new(PluginPane::new(
-                    plugin_pid,
-                    PaneGeom::default(), // this will be filled out later
-                    self.senders
-                        .to_plugin
-                        .as_ref()
-                        .with_context(err_context)?
-                        .clone(),
-                    initial_pane_title.unwrap_or("".to_owned()),
-                    String::new(),
-                    self.sixel_image_store.clone(),
-                    self.kitty_image_store.clone(),
-                    self.terminal_emulator_colors.clone(),
-                    self.terminal_emulator_color_codes.clone(),
-                    self.link_handler.clone(),
-                    self.character_cell_size.clone(),
-                    self.connected_clients_in_app
-                        .borrow()
-                        .iter()
-                        .copied()
-                        .collect(),
-                    self.style,
-                    invoked_with,
-                    self.debug,
-                    self.arrow_fonts,
-                    self.styled_underlines,
-                )) as Box<dyn Pane>
             },
         })
     }
@@ -3502,88 +3355,15 @@ impl Tab {
         }
         self.close_down_to_max_terminals()
             .with_context(err_context)?;
-        let mut new_pane = match pid {
-            PaneId::Terminal(term_pid) => {
-                let next_terminal_position = self.get_next_terminal_position();
-                Box::new(TerminalPane::new(
-                    term_pid,
-                    PaneGeom::default(), // this will be filled out later
-                    self.style,
-                    next_terminal_position,
-                    initial_pane_title.clone().unwrap_or_default(),
-                    self.link_handler.clone(),
-                    self.character_cell_size.clone(),
-                    self.sixel_image_store.clone(),
-                    self.kitty_image_store.clone(),
-                    self.terminal_emulator_colors.clone(),
-                    self.terminal_emulator_color_codes.clone(),
-                    initial_pane_title,
-                    invoked_with,
-                    self.debug,
-                    self.arrow_fonts,
-                    self.styled_underlines,
-                    self.osc8_hyperlinks,
-                    self.explicitly_disable_kitty_keyboard_protocol,
-                    blocking_notification,
-                )) as Box<dyn Pane>
-            },
-            PaneId::Plugin(plugin_pid) => {
-                Box::new(PluginPane::new(
-                    plugin_pid,
-                    PaneGeom::default(), // this will be filled out later
-                    self.senders
-                        .to_plugin
-                        .as_ref()
-                        .with_context(err_context)?
-                        .clone(),
-                    initial_pane_title.unwrap_or("".to_owned()),
-                    String::new(),
-                    self.sixel_image_store.clone(),
-                    self.kitty_image_store.clone(),
-                    self.terminal_emulator_colors.clone(),
-                    self.terminal_emulator_color_codes.clone(),
-                    self.link_handler.clone(),
-                    self.character_cell_size.clone(),
-                    self.connected_clients_in_app
-                        .borrow()
-                        .iter()
-                        .copied()
-                        .collect(),
-                    self.style,
-                    invoked_with,
-                    self.debug,
-                    self.arrow_fonts,
-                    self.styled_underlines,
-                )) as Box<dyn Pane>
-            },
-        };
+        let mut new_pane =
+            self.build_pane(pid, initial_pane_title, invoked_with, blocking_notification)?;
 
         if let Some(borderless) = borderless {
             new_pane.set_borderless(borderless);
         }
 
         if start_suppressed {
-            // this pane needs to start in the background (suppressed), only accessible if a plugin takes it out
-            // of there in one way or another
-            // we need to do some bookkeeping for this pane, namely setting its geom and
-            // content_offset so that things will appear properly in the terminal - we set it to
-            // the default geom of the first floating pane - this is just in order to give it some
-            // reasonable size, when it is shown - if needed - it will be given the proper geom as if it were
-            // resized
-            let viewport = { *self.viewport.borrow() };
-            let new_pane_geom = half_size_middle_geom(&viewport, 0);
-            new_pane.set_active_at(Instant::now());
-            new_pane.set_geom(new_pane_geom);
-            new_pane.set_content_offset(Offset::frame(1));
-            resize_pty!(
-                new_pane,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .with_context(err_context)?;
-            self.park_pane(new_pane);
-            Ok(())
+            self.park_new_pane(new_pane).with_context(err_context)
         } else {
             if let Some(pane_id_to_stack_under) = pane_id_to_stack_under {
                 self.add_stacked_pane_to_pane_id(
