@@ -1,6 +1,6 @@
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn main() {
-    if let Err(error) = zellij_server::firecracker::provider::main() {
+    if let Err(error) = zellij_process::firecracker::provider::main() {
         eprintln!("Error: {error:#}");
         std::process::exit(1);
     }

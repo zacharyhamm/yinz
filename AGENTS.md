@@ -206,7 +206,7 @@ Three rules learned the hard way, all from tests that were flaky for years:
 converted in bulk: changing scheduling everywhere at once is a bigger perturbation than the
 problem, and this suite's flakes shift when scheduling does.
 
-Kitty graphics conformance: see `zellij-server/src/panes/kitty_graphics/CLAUDE.md`.
+Kitty graphics conformance: see `zellij-terminal/src/panes/kitty_graphics/CLAUDE.md`.
 
 Benchmarks: see `.claude/skills/bench/SKILL.md` (`cargo x bench`).
 
@@ -214,7 +214,9 @@ Benchmarks: see `.claude/skills/bench/SKILL.md` (`cargo x bench`).
 
 | Path | What |
 |---|---|
-| `zellij-server/` | screen, tabs, panes, pty, plugin host — most logic lives here |
+| `zellij-server/` | screen, tabs, pane orchestration, OS implementations, pty scheduling, plugin host |
+| `zellij-process/` | pane supervisors, local/remote protocols, SSH broker, Firecracker provider |
+| `zellij-terminal/` | terminal emulation, graphics, output serialization, host queries, component parsing |
 | `zellij-client/` | input handling and terminal I/O |
 | `zellij-utils/` | shared: IPC contracts, config/KDL parsing, errors, plugin API |
 | `zellij-tile/`, `zellij-tile-utils/` | plugin-facing API |

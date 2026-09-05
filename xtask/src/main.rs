@@ -143,6 +143,14 @@ fn workspace_members() -> &'static Vec<WorkspaceMember> {
                 build: false,
             },
             WorkspaceMember {
+                crate_name: "zellij-process",
+                build: false,
+            },
+            WorkspaceMember {
+                crate_name: "zellij-terminal",
+                build: false,
+            },
+            WorkspaceMember {
                 crate_name: "zellij-server",
                 build: false,
             },

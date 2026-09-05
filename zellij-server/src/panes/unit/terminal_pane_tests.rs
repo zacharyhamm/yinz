@@ -1,5 +1,5 @@
 use super::super::TerminalPane;
-use crate::panes::kitty_graphics::{test_support::apc_b64, KittyImageStore};
+use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::LinkHandler;
 use crate::tab::Pane;
@@ -1583,4 +1583,52 @@ fn frame_params(is_main_client: bool) -> FrameParams {
         dimmed: false,
         guest_choice_indicator: None,
     }
+}
+
+#[test]
+fn terminal_pane_grid_shows_ab_around_captured_apc() {
+    let mut fake_win_size = PaneGeom::default();
+    fake_win_size.cols.set_inner(121);
+    fake_win_size.rows.set_inner(20);
+    let pid = 1;
+    let style = Style::default();
+    let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));
+    let terminal_emulator_colors = Rc::new(RefCell::new(Palette::default()));
+    let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
+    let debug = false;
+    let arrow_fonts = true;
+    let styled_underlines = true;
+    let osc8_hyperlinks = true;
+    let explicitly_disable_kitty_keyboard_protocol = false;
+    let mut terminal_pane = TerminalPane::new(
+        pid,
+        fake_win_size,
+        style,
+        0,
+        String::new(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        Rc::new(RefCell::new(None)),
+        sixel_image_store,
+        Rc::new(RefCell::new(KittyImageStore::default())),
+        terminal_emulator_colors,
+        terminal_emulator_color_codes,
+        None,
+        None,
+        debug,
+        arrow_fonts,
+        styled_underlines,
+        osc8_hyperlinks,
+        explicitly_disable_kitty_keyboard_protocol,
+        None,
+    );
+    terminal_pane.handle_pty_bytes(Vec::from(&b"A\x1b_Gq=2,a=d,d=A\x1b\\B"[..]));
+    assert_snapshot!(format!("{:?}", terminal_pane.grid));
+    assert_eq!(terminal_pane.grid.kitty_commands_handled(), 1);
+}
+
+fn apc_b64(control: &str, payload: &[u8]) -> Vec<u8> {
+    use base64::Engine as _;
+    let payload = base64::engine::general_purpose::STANDARD.encode(payload);
+    let separator = if payload.is_empty() { "" } else { ";" };
+    format!("\x1b_G{control}{separator}{payload}\x1b\\").into_bytes()
 }

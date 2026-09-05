@@ -1,12 +1,8 @@
-pub mod alacritty_functions;
-pub mod grid;
-pub mod hyperlink_tracker;
-pub mod kitty_graphics;
-pub mod link_handler;
+pub use zellij_terminal::panes::{
+    alacritty_functions, grid, hyperlink_tracker, kitty_graphics, link_handler, selection, sixel,
+    terminal_character,
+};
 pub mod nested_session_modal;
-pub mod selection;
-pub mod sixel;
-pub mod terminal_character;
 
 mod active_panes;
 pub mod floating_panes;
@@ -14,7 +10,6 @@ mod frame_color_override;
 pub mod overlay_panes;
 mod pane_factory;
 mod plugin_pane;
-mod search;
 pub mod terminal_pane;
 mod tiled_panes;
 

@@ -608,7 +608,8 @@ impl UnixPtyBackend {
             if let Some(host_bin) = self.host_bin.as_ref() {
                 match self.spawn_via_pty_host(host_bin, &cmd, &failover_cmd, terminal_id) {
                     Ok(pending) => {
-                        let spawned = pending.finish(quit_cb, self.child_state_cb());
+                        let spawned =
+                            pending.finish(terminal_exit_callback(quit_cb), self.child_state_cb());
                         let master_fd = spawned.master.into_raw_fd();
                         self.terminal_id_to_transport
                             .lock()
@@ -828,14 +829,14 @@ impl UnixPtyBackend {
         terminal_id: u32,
         conn: Arc<RemoteConn>,
         read_socket: std::os::unix::net::UnixStream,
-        quit_cb: crate::pty_host::client::QuitCb,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         cmd: RunCommand,
     ) -> Result<Box<dyn AsyncReader>> {
         let mut reader = crate::pty_host::remote::RemoteReader::new(conn.clone(), read_socket)
             .map_err(|e| anyhow!("failed to create a remote async reader: {e}"))?
             // The remote counterpart of the supervisor's reader thread: the
             // one thing that will tell the pty thread this pane has ended.
-            .on_exit(terminal_id, cmd, quit_cb);
+            .on_exit(terminal_id, cmd, terminal_exit_callback(quit_cb));
         if let Some(cb) = self.agent_report_cb() {
             reader = reader.on_agent_report(cb);
         }
@@ -1201,7 +1202,7 @@ impl UnixPtyBackend {
             terminal_id,
             session_name: zellij_utils::envs::get_session_name().ok(),
         })?;
-        let attached = pending.finish(quit_cb, self.child_state_cb());
+        let attached = pending.finish(terminal_exit_callback(quit_cb), self.child_state_cb());
         let master_fd = attached.master.into_raw_fd();
         self.terminal_id_to_transport
             .lock()
@@ -1410,5 +1411,40 @@ mod tests {
                 .contains_key(&7),
             "a released pane leaves the transport table whether or not the broker confirmed"
         );
+    }
+}
+
+/// Adapt process terminal IDs at the server boundary.
+fn terminal_exit_callback(
+    callback: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+) -> crate::pty_host::client::QuitCb {
+    Box::new(move |terminal_id, status, command| {
+        callback(PaneId::Terminal(terminal_id), status, command);
+    })
+}
+
+#[cfg(test)]
+mod callback_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_exit_callback_preserves_id_status_and_command() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let callback = terminal_exit_callback(Box::new(move |id, status, command| {
+            sender.send((id, status, command)).unwrap();
+        }));
+        let command = RunCommand {
+            command: "/usr/bin/true".into(),
+            args: vec!["argument".into()],
+            cwd: Some("/tmp".into()),
+            ..Default::default()
+        };
+        for status in [Some(17), None] {
+            callback(42, status, command.clone());
+            assert_eq!(
+                receiver.recv().unwrap(),
+                (PaneId::Terminal(42), status, command.clone())
+            );
+        }
     }
 }

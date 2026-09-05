@@ -1,3 +1,5 @@
+const AMPLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 use super::*;
 use zellij_utils::input::command::{PaneTarget, RunCommand};
 
@@ -16,7 +18,7 @@ fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
 
     let server = make_server();
     *server.firecracker.write().unwrap() = Some((
-        crate::firecracker::Provider::new(path, crate::firecracker::AMPLE_TIMEOUT).unwrap(),
+        crate::firecracker::Provider::new(path, AMPLE_TIMEOUT).unwrap(),
         "work".to_owned(),
     ));
     let requested = RunCommand {
@@ -71,7 +73,7 @@ fn a_firecracker_pane_adopts_the_worktree_the_provider_names() {
 
     let server = make_server();
     *server.firecracker.write().unwrap() = Some((
-        crate::firecracker::Provider::new(path, crate::firecracker::AMPLE_TIMEOUT).unwrap(),
+        crate::firecracker::Provider::new(path, AMPLE_TIMEOUT).unwrap(),
         "work".to_owned(),
     ));
     let joined = RunCommand {
@@ -132,7 +134,7 @@ fn rename_firecracker_session_updates_the_session_key() {
     );
     let server = make_server();
     *server.firecracker.write().unwrap() = Some((
-        crate::firecracker::Provider::new(path, crate::firecracker::AMPLE_TIMEOUT).unwrap(),
+        crate::firecracker::Provider::new(path, AMPLE_TIMEOUT).unwrap(),
         "work".to_owned(),
     ));
 
@@ -178,7 +180,7 @@ fn two_quick_renames_leave_the_provider_keyed_on_the_last_name() {
     );
     let server = make_server();
     *server.firecracker.write().unwrap() = Some((
-        crate::firecracker::Provider::new(path, crate::firecracker::AMPLE_TIMEOUT).unwrap(),
+        crate::firecracker::Provider::new(path, AMPLE_TIMEOUT).unwrap(),
         "a".to_owned(),
     ));
 
@@ -257,7 +259,7 @@ fn a_refused_rename_keeps_the_old_firecracker_session_key() {
     zellij_test_support::write_warm_script(&path, "echo 'unknown action' >&2\nexit 1\n");
     let server = make_server();
     *server.firecracker.write().unwrap() = Some((
-        crate::firecracker::Provider::new(path, crate::firecracker::AMPLE_TIMEOUT).unwrap(),
+        crate::firecracker::Provider::new(path, AMPLE_TIMEOUT).unwrap(),
         "work".to_owned(),
     ));
 
@@ -290,7 +292,7 @@ fn failed_firecracker_pane_termination_does_not_skip_provider_shutdown() {
     );
     let server = make_server();
     *server.firecracker.write().unwrap() = Some((
-        crate::firecracker::Provider::new(path, crate::firecracker::AMPLE_TIMEOUT).unwrap(),
+        crate::firecracker::Provider::new(path, AMPLE_TIMEOUT).unwrap(),
         "work".to_owned(),
     ));
     let (write_socket, broker_peer) = UnixStream::pair().unwrap();
