@@ -124,6 +124,7 @@ pub struct PaneSnapshot {
 pub enum Outcome {
     Ok,
     PaneSizeUnchanged,
+    LayoutRejected,
     OtherErr(String),
 }
 
@@ -151,6 +152,7 @@ pub fn run_layout(specs: &[PaneSpec], direction: SplitDirection, space: usize) -
         Ok(()) => Outcome::Ok,
         Err(e) => match e.downcast_ref::<ZellijError>() {
             Some(ZellijError::PaneSizeUnchanged) => Outcome::PaneSizeUnchanged,
+            Some(ZellijError::PaneLayoutRejected) => Outcome::LayoutRejected,
             _ => Outcome::OtherErr(format!("{:#}", e)),
         },
     };

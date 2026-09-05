@@ -2732,24 +2732,29 @@ impl Screen {
         should_open_in_place: bool,
         client_id: ClientId,
     ) -> Result<()> {
-        let err_context = || "failed to focus_plugin_pane".to_string();
+        let err_context = || format!("failed to focus pane {pane_id:?}");
         let tab_index = self.tab_position_containing_pane(pane_id);
         match tab_index {
             Some(tab_index) => {
                 self.go_to_tab(tab_index + 1, client_id)?;
-                self.tabs
-                    .iter_mut()
-                    .find(|(_, t)| t.position == tab_index)
-                    .map(|(_, t)| {
-                        t.focus_pane_with_id(
+                // The tab's own result is what gets logged. Mapping over the lookup used to
+                // produce an `Option<Result>` whose *outer* layer was the only thing
+                // `non_fatal` ever looked at, so a tab that failed to focus the pane was
+                // reported as success.
+                match self.tabs.iter_mut().find(|(_, t)| t.position == tab_index) {
+                    Some((_, tab)) => tab
+                        .focus_pane_with_id(
                             pane_id,
                             should_float_if_hidden,
                             should_open_in_place,
                             client_id,
                         )
-                    })
-                    .with_context(err_context)
-                    .non_fatal();
+                        .with_context(err_context)
+                        .non_fatal(),
+                    None => log::error!(
+                        "Tab at position {tab_index} containing pane {pane_id:?} disappeared before it could be focused"
+                    ),
+                }
             },
             None => {
                 log::error!("Could not find pane with id: {:?}", pane_id);

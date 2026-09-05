@@ -1,5 +1,6 @@
 use crate::screens::{KeyResponse, Screen};
 use crate::ui::{truncate_line_with_ansi, wrap_text_to_width, ErrorMessage, MultiLineErrorMessage};
+use unicode_width::UnicodeWidthStr;
 use zellij_tile::prelude::*;
 
 /// Format a layout parsing error into a detailed error string
@@ -44,7 +45,7 @@ impl ErrorScreen {
     }
 
     pub fn render(&self, rows: usize, cols: usize) {
-        if self.message.chars().count() > cols.saturating_sub(4) {
+        if self.message.width() > cols.saturating_sub(4) {
             let max_width = cols.saturating_sub(4);
             let max_rows = rows.saturating_sub(4);
             let lines = wrap_text_to_width(&self.message, max_width);
@@ -52,7 +53,7 @@ impl ErrorScreen {
             let base_y = rows.saturating_sub(4 + lines.len()) / 2;
             MultiLineErrorMessage::new(lines).render(base_x, base_y, max_rows);
         } else {
-            let desired_width = self.message.chars().count();
+            let desired_width = self.message.width();
             let base_y = rows.saturating_sub(5) / 2;
             let base_x = cols.saturating_sub(desired_width) / 2;
             ErrorMessage::new(&self.message).render(base_x, base_y);

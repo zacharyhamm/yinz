@@ -51,10 +51,11 @@ impl<'a> PaneResizer<'a> {
             .discretize_spans(grid, space)
             .map_err(|err| anyhow!("{}", err))?;
 
-        if self.is_layout_valid(&spans) {
-            self.apply_spans(spans)?;
+        if !self.is_layout_valid(&spans) {
+            return Err(ZellijError::PaneLayoutRejected)
+                .with_context(|| format!("failed to lay out {direction:?} in {space} cells"));
         }
-        Ok(())
+        self.apply_spans(spans)
     }
 
     fn solve(&mut self, direction: SplitDirection, space: usize) -> Result<Grid, String> {
@@ -128,7 +129,9 @@ impl<'a> PaneResizer<'a> {
     }
 
     // HACK: This whole function is a bit of a hack — it's here to stop us from breaking the layout if we've been given
-    // a bad state to start with. If this function returns false, nothing is resized.
+    // a bad state to start with. If this function returns false, nothing is resized and `layout`
+    // reports `ZellijError::PaneLayoutRejected`, so a caller cannot mistake the untouched panes
+    // for an applied layout.
     fn is_layout_valid(&self, spans: &[Span]) -> bool {
         // If pane stacks are too tall to fit on the screen, abandon ship before the status bar gets caught up in
         // any erroneous resizing...

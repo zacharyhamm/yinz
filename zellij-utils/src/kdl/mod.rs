@@ -5646,6 +5646,28 @@ impl BareKey {
     }
 }
 
+/// The one `name` block of a document, or an error naming the second when there are more.
+///
+/// `KdlDocument::get` returns the first match, so a second `keybinds` (or `plugins`, …) block
+/// in the same file used to parse successfully and silently contribute nothing. Merging across
+/// *files* is unaffected: each `config.d` fragment and layout is its own `Config::from_kdl` call
+/// over `base_config`.
+#[allow(clippy::result_large_err)]
+fn single_top_level_block<'a>(
+    document: &'a KdlDocument,
+    name: &str,
+) -> Result<Option<&'a KdlNode>, ConfigError> {
+    let mut blocks = document.nodes().iter().filter(|n| n.name().value() == name);
+    let first = blocks.next();
+    if let Some(second) = blocks.next() {
+        return Err(kdl_parsing_error!(
+            format!("'{name}' is defined more than once in this file; merge the blocks into one"),
+            second
+        ));
+    }
+    Ok(first)
+}
+
 impl Config {
     #[allow(clippy::result_large_err)]
     pub fn from_kdl(kdl_config: &str, base_config: Option<Config>) -> Result<Config, ConfigError> {
@@ -5655,21 +5677,19 @@ impl Config {
         let config_options = Options::from_kdl(&kdl_config)?;
         config.options = config.options.merge(config_options);
 
-        // TODO: handle cases where we have more than one of these blocks (eg. two "keybinds")
-        // this should give an informative parsing error
-        if let Some(kdl_keybinds) = kdl_config.get("keybinds") {
+        if let Some(kdl_keybinds) = single_top_level_block(&kdl_config, "keybinds")? {
             config.keybinds = Keybinds::from_kdl(kdl_keybinds, config.keybinds, &config.options)?;
         }
-        if let Some(kdl_themes) = kdl_config.get("themes") {
+        if let Some(kdl_themes) = single_top_level_block(&kdl_config, "themes")? {
             let sourced_from_external_file = false;
             let config_themes = Themes::from_kdl(kdl_themes, sourced_from_external_file)?;
             config.themes = config.themes.merge(config_themes);
         }
-        if let Some(kdl_plugin_aliases) = kdl_config.get("plugins") {
+        if let Some(kdl_plugin_aliases) = single_top_level_block(&kdl_config, "plugins")? {
             let config_plugins = PluginAliases::from_kdl(kdl_plugin_aliases)?;
             config.plugins.merge(config_plugins);
         }
-        if let Some(kdl_load_plugins) = kdl_config.get("load_plugins") {
+        if let Some(kdl_load_plugins) = single_top_level_block(&kdl_config, "load_plugins")? {
             // Additive, like every other block here: a config written before a
             // default background plugin existed must still get it, otherwise the
             // plugin silently never starts.
@@ -5683,18 +5703,18 @@ impl Config {
                 .background_plugins
                 .extend(load_plugins_from_kdl(kdl_load_plugins)?);
         }
-        if let Some(kdl_context_menu) = kdl_config.get("context_menu") {
+        if let Some(kdl_context_menu) = single_top_level_block(&kdl_config, "context_menu")? {
             config.context_menu = context_menu_from_kdl(kdl_context_menu, &config.options)?;
         }
-        if let Some(kdl_hooks) = kdl_config.get("hooks") {
+        if let Some(kdl_hooks) = single_top_level_block(&kdl_config, "hooks")? {
             let parsed_hooks = hooks_from_kdl(kdl_hooks, &mut config.hooks)?;
             config.hooks.merge(parsed_hooks);
         }
-        if let Some(kdl_ui_config) = kdl_config.get("ui") {
+        if let Some(kdl_ui_config) = single_top_level_block(&kdl_config, "ui")? {
             let config_ui = UiConfig::from_kdl(kdl_ui_config)?;
             config.ui = config.ui.merge(config_ui);
         }
-        if let Some(env_config) = kdl_config.get("env") {
+        if let Some(env_config) = single_top_level_block(&kdl_config, "env")? {
             let config_env = EnvironmentVariables::from_kdl(env_config)?;
             config.env = config.env.merge(config_env);
         }
@@ -6332,11 +6352,12 @@ impl Themes {
         sourced_from_external_file: bool,
     ) -> Result<Self, ConfigError> {
         let kdl_config: KdlDocument = raw_string.parse()?;
-        let kdl_themes = kdl_config.get("themes").ok_or(ConfigError::new_kdl_error(
-            "No theme node found in file".into(),
-            kdl_config.span().offset(),
-            kdl_config.span().len(),
-        ))?;
+        let kdl_themes =
+            single_top_level_block(&kdl_config, "themes")?.ok_or(ConfigError::new_kdl_error(
+                "No theme node found in file".into(),
+                kdl_config.span().offset(),
+                kdl_config.span().len(),
+            ))?;
         let all_themes_in_file = Themes::from_kdl(kdl_themes, sourced_from_external_file)?;
         Ok(all_themes_in_file)
     }
