@@ -148,7 +148,7 @@ Jobs, agent latches, summaries and hook-backed run histories live in `shared:hoc
 keeps prompts, plans and explicit agent questions under the agent's session id; completed runs
 remain selectable in the agents panel archive, and are legible to the in-session model through
 `agent_runs`, `agent_run` and `agent_history_search` — machine-wide by default, since the store
-is per machine and not per session, so hocus can find what an agent concluded in a session that
+is not per session — per machine, or shared between machines on Postgres — so hocus can find what an agent concluded in a session that
 has since been closed rather than commissioning the work again. `agent_run_entry.text` is
 full-text indexed for it (`agent_run` and `agent_run_entry` are both at version 2); the reading
 half is `hocus-proto/src/run_history.rs`, and `docs/AGENT_HOOKS.md` "Reading it back" is the

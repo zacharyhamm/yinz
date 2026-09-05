@@ -327,6 +327,14 @@ Every test creates a schema of its own and drops it afterwards, so the suite run
 against the one database. `cargo x ci check` never needs the container: `cargo x lint` compiles
 the suite with `--all-features`, and `cargo x test` leaves the feature off.
 
+Two groups are worth knowing about because they are only meaningful on one engine each.
+`tests/concurrency.rs` covers `rev` and `expect_rev` — the row revision and the compare-and-set
+built on it — and runs on both, deliberately: a guard that behaved differently on SQLite and
+Postgres would be worse than none, since the case it exists for (several servers sharing one
+database) only arises on the engine the tests would have skipped. The two migration fixtures,
+`a_database_from_before_rev_is_migrated_in_place`, live in the per-engine harnesses instead,
+because each has to build the pre-`rev` table shape in its own DDL.
+
 ## Debugging / Troubleshooting while developing
 Zellij uses the excellent [`log`](https://crates.io/crates/log) crate to handle its internal logging. The output of these logs will go to `/$temp_dir/zellij-<UID>/zellij-log/zellij.log` which `$temp_dir` refers to [std::env::temp_dir()](https://doc.rust-lang.org/std/env/fn.temp_dir.html). On most of operating systems it points to `/tmp`, but there are exceptions, such as `/var/folders/dr/xxxxxxxxxxxxxx/T/` for Mac.
 
