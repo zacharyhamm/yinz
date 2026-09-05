@@ -205,7 +205,11 @@ pub fn plan_mutate(
                 return Err("id and text are required".to_owned());
             };
             let (_, name) = todo_root(&view.projects, args)?;
-            let (mutations, text) = todos::plan_edit(&view.list(), id, text)?;
+            // `expect_rev` is the revision the caller composed this text from, where it says.
+            // Absent means "guard on what the view read", which is this call's own fetch — see
+            // `hocus_proto::store::guarded_rev`.
+            let expect_rev = args.get("expect_rev").and_then(Value::as_i64);
+            let (mutations, text) = todos::plan_edit(&view.list(), id, text, expect_rev)?;
             Ok((
                 mutations,
                 Reply::Fixed(
@@ -294,8 +298,38 @@ pub fn run_mutate(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
     }
     let view = load_view(backend, op, args)?;
     let (mutations, reply) = plan_mutate(&view, op, args)?;
-    let report = backend.apply(mutations)?;
+    let report = match backend.apply(mutations) {
+        Ok(report) => report,
+        Err(error) if error.is_conflict() => return Err(edit_conflict(backend, &view, args)),
+        Err(error) => return Err(error.into()),
+    };
     Ok(reply.finish(&report))
+}
+
+/// What to say when a guarded edit was refused.
+///
+/// `todo_edit` is the only op here that guards, so the answer can name the item without asking
+/// which op it was. The store's own prose says a revision is gone without saying what the item
+/// reads now or what to guard on next, and both are what a caller needs to decide.
+fn edit_conflict(backend: &impl Backend, view: &StoreView, args: &Value) -> String {
+    let Some(id) = args.get("id").and_then(Value::as_u64) else {
+        return "the row was written by somebody else first; read it again and decide".to_owned();
+    };
+    // The view's own root rather than resolving the selector again: it is the list the refused
+    // write was planned against, and it is already in hand.
+    let now = view
+        .list
+        .as_ref()
+        .and_then(|(root, _)| todos::fetch_list(backend, root).ok())
+        .and_then(|list| todos::item_of(&list, id).cloned());
+    match now {
+        Some(item) => format!(
+            "todo item {id} was edited by somebody else and now reads {:?} at rev {}; retry \
+             with that expect_rev if the change is still wanted",
+            item.text, item.rev
+        ),
+        None => format!("todo item {id} was edited or removed by somebody else"),
+    }
 }
 
 /// Load and answer, or search.
@@ -566,6 +600,49 @@ mod tests {
         )
         .expect("listed");
         assert!(listed.contains("ship it faster"), "got {listed}");
+    }
+
+    /// A caller that says what revision it composed its text from is refused when somebody has
+    /// since rewritten the item, and told what the item reads now — rather than handed the
+    /// store's own prose about a revision that is gone.
+    #[test]
+    fn an_edit_carrying_a_stale_revision_is_refused_and_says_why() {
+        let backend = backend();
+        let added = run_mutate(
+            &backend,
+            "todo_add",
+            &json!({ "project": "work", "text": "ship it" }),
+        )
+        .expect("added");
+        let id = field(&added, "id").as_u64().expect("id");
+
+        // The revision a listing shows beside the text.
+        let listed: Value = serde_json::from_str(
+            &run_query(&backend, "todo_list", &json!({ "project": "work" })).expect("listed"),
+        )
+        .expect("json");
+        let saw = listed["items"][0]["rev"].as_i64().expect("a rev");
+        assert!(saw > 0);
+
+        run_mutate(
+            &backend,
+            "todo_edit",
+            &json!({ "project": "work", "id": id, "text": "somebody else's wording" }),
+        )
+        .expect("they wrote first");
+
+        let error = run_mutate(
+            &backend,
+            "todo_edit",
+            &json!({ "project": "work", "id": id, "text": "mine", "expect_rev": saw }),
+        )
+        .expect_err("refused");
+        assert!(error.contains("edited by somebody else"), "got {error}");
+        assert!(error.contains("expect_rev"), "got {error}");
+
+        let listed =
+            run_query(&backend, "todo_list", &json!({ "project": "work" })).expect("listed");
+        assert!(listed.contains("somebody else's wording"), "got {listed}");
     }
 
     #[test]

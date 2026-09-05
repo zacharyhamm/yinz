@@ -1779,7 +1779,7 @@ impl State {
             "todo_edit" => {
                 let id = args.id.ok_or("id is required")?;
                 let text = args.text.as_deref().ok_or("text is required")?;
-                let (mutations, text) = todos::plan_edit(&list, id, text)?;
+                let (mutations, text) = todos::plan_edit(&list, id, text, args.expect_rev)?;
                 if let Err(error) = backend.apply(mutations) {
                     if !error.is_conflict() {
                         return Err(error.into());
@@ -1788,13 +1788,18 @@ impl State {
                     // item between the read and the write, and the text on offer was composed
                     // from the older wording — writing it anyway is the loss the guard exists
                     // to prevent. So the model is told what the item says now and decides.
+                    //
+                    // The revision goes out with the wording, so a retry composed from what it
+                    // says here can name what it was composed from.
                     let now = todos::fetch_list(&backend, &root)
                         .ok()
-                        .and_then(|list| todos::text_of(&list, id));
+                        .and_then(|list| todos::item_of(&list, id).cloned());
                     return Err(match now {
-                        Some(current) => format!(
-                            "todo item {id} was edited by somebody else and now reads {current:?}; \
-                             call todo_edit again if the change is still wanted"
+                        Some(item) => format!(
+                            "todo item {id} was edited by somebody else and now reads {:?} at \
+                             rev {}; call todo_edit again with that expect_rev if the change is \
+                             still wanted",
+                            item.text, item.rev
                         ),
                         None => format!("todo item {id} was removed by somebody else"),
                     });
@@ -1956,7 +1961,13 @@ impl State {
                 let mut mutations = Vec::new();
                 if args.title.is_some() || args.body.is_some() {
                     mutations.extend(
-                        notes::plan_edit(&note, args.title.as_deref(), args.body.as_deref())?.0,
+                        notes::plan_edit(
+                            &note,
+                            args.title.as_deref(),
+                            args.body.as_deref(),
+                            args.expect_rev,
+                        )?
+                        .0,
                     );
                 }
                 if let Some(tags) = &args.tags {
@@ -1970,12 +1981,14 @@ impl State {
                         return Err(error.into());
                     }
                     // Not retried, for the reason `todo_edit` is not: the title and body on
-                    // offer were composed from the version that has since been replaced.
+                    // offer were composed from the version that has since been replaced. The
+                    // revision goes out with the title so a retry can name what it read.
                     return Err(match existing_note(&backend, id) {
                         Ok(now) => format!(
-                            "note {id} was edited by somebody else and now reads {:?}; call \
-                             note_read and then note_edit again if the change is still wanted",
-                            now.title
+                            "note {id} was edited by somebody else and now reads {:?} at rev \
+                             {}; call note_get and then note_edit again with that expect_rev if \
+                             the change is still wanted",
+                            now.title, now.rev
                         ),
                         Err(_) => format!("note {id} was removed by somebody else"),
                     });
@@ -2524,7 +2537,13 @@ impl State {
                     return Err(format!("unknown project {name}; call project_list"));
                 };
                 scope.push(project.name.clone());
-                Some(project.root.clone())
+                // The machine as well as the folder. A project is a folder on *this* machine,
+                // and on a store shared with a build box a run whose `cwd` spells the same path
+                // is work nobody did here — see `run_history::matches_root`.
+                Some(run_history::RootScope::new(
+                    project.root.clone(),
+                    self.host_id.clone(),
+                ))
             },
         };
         let kind = args
@@ -2717,7 +2736,7 @@ impl State {
             .iter()
             .find(|pane| pane.pane_id == pane_id)
             .and_then(|pane| pane.agent.as_ref())
-            .and_then(|agent| agents::stored_run_id(agent, pane_id))
+            .and_then(agents::stored_run_id)
             .ok_or_else(|| format!("pane {pane_id} has no agent run; call agent_runs"))
     }
 

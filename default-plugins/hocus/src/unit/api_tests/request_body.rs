@@ -182,21 +182,28 @@ fn request_body_advertises_registered_extension_tools() {
 /// the ratchet rather than the number — a tool added to a deferred family now moves
 /// `full` and leaves `floor`, which is the one paid every turn, exactly where it was.
 ///
-/// Measured when this landed: the floor body is 19 513 bytes and the fully loaded tool
-/// array is 33 390. The four Firecracker VM tools are what the split was for — they are
-/// a deferred family, so their ~1.4kb moved `full` and left `floor` where it was. The
-/// 175 bytes the floor did take are `project_list`, which is always on because the
+/// Measured when the split landed: the floor body was 19 513 bytes and the fully loaded
+/// tool array 33 390. The four Firecracker VM tools are what the split was for — they
+/// are a deferred family, so their ~1.4kb moved `full` and left `floor` where it was.
+/// The 175 bytes the floor did take are `project_list`, which is always on because the
 /// always-on readers answer "no active project; … call project_list" and a model
 /// constrained to the advertised set cannot follow that otherwise. Both caps keep
 /// headroom, for the reason the old comment gave — "a ceiling with no headroom stops
 /// measuring growth and starts forbidding it".
+///
+/// Raised a kilobyte each when `todo_edit` and `note_edit` grew `expect_rev`. Both are
+/// always-on families, so that one landed square on the floor, which had crept to
+/// within 170 bytes of its cap — no headroom left to absorb a two-property change that
+/// is not optional: without the argument the guard on those two writes spans a window
+/// microseconds wide and catches nothing. The descriptions were trimmed first, which is
+/// the standing instruction, and bought 22 bytes of the 230.
 #[test]
-fn the_tool_payload_floor_stays_under_20_kb() {
+fn the_tool_payload_floor_stays_under_21_kb() {
     let mut cfg = test_config();
     cfg.tools = true;
     let body = request_body(&cfg, &[Message::user("hi")]);
     assert!(
-        body.len() < 20_000,
+        body.len() < 21_000,
         "the always-on tool payload grew to {} bytes",
         body.len()
     );
@@ -204,10 +211,10 @@ fn the_tool_payload_floor_stays_under_20_kb() {
 
 /// The other end: what a conversation pays once it has asked for every family. Loose
 /// enough that a new domain tool lands here rather than on the floor, and tight enough
-/// that the whole set cannot quietly double. The last move was the two orienting plugin
-/// tools and `plugin_edit`'s batch form, ~1 KB between them.
+/// that the whole set cannot quietly double. The last move was `expect_rev` on the two
+/// edit tools, which the floor cap above explains.
 #[test]
-fn the_fully_loaded_tool_payload_stays_under_36_kb() {
+fn the_fully_loaded_tool_payload_stays_under_37_kb() {
     let mut cfg = test_config();
     cfg.tools = true;
     // A load of every deferred family, which is what puts them in the array — the
@@ -232,7 +239,7 @@ fn the_fully_loaded_tool_payload_stays_under_36_kb() {
     // and a real conversation's transcript is not this one.
     let tools_bytes = serde_json::to_vec(&value["tools"]).unwrap().len();
     assert!(
-        tools_bytes < 36_000,
+        tools_bytes < 37_000,
         "the fully loaded tool payload grew to {tools_bytes} bytes",
     );
 }

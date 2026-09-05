@@ -344,14 +344,11 @@ fn marker(host_id: &str, what: &str) -> zellij_tile::prelude::Mutation {
     store::import_marker_mutation(host_id, what)
 }
 
+/// Shared with hocus rather than written twice: the two have to agree about the marker's uid,
+/// and about what a marker written before that uid carried a host means — see
+/// `store::import_recorded`.
 fn imported(backend: &impl Backend, host_id: &str, what: &str) -> bool {
-    backend
-        .count(&store::import_marker_request(host_id, what))
-        .map(|count| count > 0)
-        // An error here means the store is unreachable, and the import would
-        // fail too. Claiming it is done is the safe direction: a retry next
-        // launch is fine, a double import is not.
-        .unwrap_or(true)
+    store::import_recorded(backend, host_id, what)
 }
 
 #[cfg(target_family = "wasm")]

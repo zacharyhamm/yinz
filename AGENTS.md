@@ -262,11 +262,19 @@ at Postgres, one database serves every machine. Two rules follow, and both bite 
   run a session called `main`, and a pane id means nothing outside the server that allocated it.
   The id comes from `zellij_utils::host_identity`, resolved once at server startup and read by
   plugins off `PluginIds.host_id`. Carry it; do not call `get_plugin_ids()` from library code,
-  which reads real stdin in a native test binary.
+  which reads real stdin in a native test binary. An **empty** `host_id` is a row from before the
+  column, backfilled by the migration, and what to do with one differs per entity: a run or an
+  import marker is claimed (`rows::owned_or_unclaimed`, `store::import_recorded`), a latch or
+  summary is deleted, a job is left alone. See `docs/ARCHITECTURE.md`.
 - **A write that replaces what it read guards on `rev`.** `expect_rev` on a `Put` or `Update`
   makes it a compare-and-set, refused with `DataError::Conflict` and rolling the batch back. Use
   it where a write replaces something composed from an earlier read; do not use it where a write
-  sets a flag, since two writers agreeing is not a conflict.
+  sets a flag, since two writers agreeing is not a conflict. **The rev must be the one the
+  value's author read**, not one re-fetched just before writing — that window is microseconds
+  wide and catches nothing. It travels out in what the reader is shown and back in as an
+  argument (`todo_edit` / `note_edit` take `expect_rev`); `store::guarded_rev` prefers it to the
+  row's own. A fetch that names its columns drops `rev`, which silently unguards the write —
+  see `notes::LIST_COLUMNS`.
 
 Not handled: a watch is only re-evaluated by writes from its own server process, so on a shared
 Postgres another machine's write does not wake it. See `docs/ARCHITECTURE.md` ("Sharing a store

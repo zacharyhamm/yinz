@@ -724,14 +724,32 @@ local ok, err = pcall(function()
   zellij.data.apply(
     zellij.data.put("note", { title = note.title .. "!" }, "n1", note.rev))
 end)
-if not ok then
+if not ok and zellij.data.is_conflict(err) then
   -- Somebody wrote it first. Read it again and decide what to do with their version.
+elseif not ok then
+  error(err) -- not a race: this request fails the same way however often it is sent.
 end
 ```
+
+**Ask `zellij.data.is_conflict(err)` before you retry.** A failed `apply` raises for two
+different reasons, and they have opposite answers: a conflict is a race, and reading the row
+again is what resolves it, while an entity that was never declared, a malformed filter or a
+permission that was not granted will fail identically every time. A retry loop that cannot tell
+them apart spins forever on the second kind.
 
 A guarded `put` never inserts: if the row has been deleted since you read it, the write conflicts
 rather than bringing it back, because resurrecting it would lose the delete just as surely as an
 unguarded write loses an edit.
+
+**Pass the `rev` the *text* was composed from, not the one you just read.** This is the mistake
+worth naming, because the code that makes it looks correct: fetch the row, build the new value,
+guard on the row's `rev`, write. The two reads are microseconds apart, so the guard spans a
+window nothing happens in — and the row already carries the other writer's revision by the time
+you read it, so the write it should refuse goes straight through. The revision that matters is
+the one whoever composed the value was looking at, which for a plugin taking an edit from a
+person or a model is turns or minutes back. Carry it with the value: put it in what you hand
+out, take it back as an argument, and guard on *that*. hocus does exactly this for
+`todo_edit` and `note_edit`, whose `expect_rev` argument is the rev the listing showed.
 
 `apply` answers with `per_mutation` as well as `rows_written` and `rows_deleted` — rows affected
 by each mutation, in the order you gave them. The totals cannot say *which* mutation matched, so
@@ -939,16 +957,21 @@ Postgres, per-machine: a bare pane id would make two sessions' pane 5 into one r
 session name alone would do the same to two machines that both run a session called `main`. A
 pane id means nothing outside the server that handed it out, so filter on **both**
 `host_id` and `zellij_session_name` before believing a `pane_id`. Rows written before this
-existed have an empty `host_id`.
+existed have an empty `host_id`; do **not** treat those as yours - they name panes in a server
+that is gone, and hocus deletes them on its next restore.
 
-**`agent_run`** - one hook-backed agent session, live or finished. `uid` is `<kind>:<session id>`.
+**`agent_run`** - one hook-backed agent session, live or finished. `uid` is `<kind>:<session
+id>`, or `<kind>:pane:<pane id>:<started at>:<host id>` for a hook that reports no session id of
+its own. The machine is in the second shape because a pane id and a millisecond are a name two
+servers sharing the store can reach for at once; the first needs no help, since the agent's own
+session id is a uuid.
 
 | Attribute | Kind | |
 |---|---|---|
 | `pane_id` | int | required, indexed |
 | `session_id` | text | required, indexed; the agent's own |
 | `zellij_session_name` | text | indexed |
-| `host_id` | text | required, indexed; the machine whose server owns the run. Empty on runs recorded before this attribute existed |
+| `host_id` | text | required, indexed; the machine whose server owns the run. Empty on runs recorded before this attribute existed, which reads as *this* machine - unlike `agent_latch` above, a run is history and is claimed rather than dropped |
 | `kind` | text | required |
 | `active` | bool | required, indexed; false once the run ended |
 | `started_at_ms` | int | required |
@@ -964,7 +987,7 @@ result, or a summary somebody asked for. `uid` is `<run uid>#<revision>`.
 | Attribute | Kind | |
 |---|---|---|
 | `run_id` | text | required, indexed; the `agent_run` uid this belongs to |
-| `host_id` | text | required, indexed; where the entry was recorded. Attribution only — a run id carries the agent's own session uuid, so entries do not collide between machines |
+| `host_id` | text | required, indexed; where the entry was recorded. Attribution only — a run id does not collide between machines either way, carrying the agent's own session uuid or, in the fallback shape, the machine — so entries do not collide |
 | `revision` | int | required; the run's own counter, and what orders the timeline |
 | `event_id` | text | the provider's id for the event behind it, where it has one |
 | `kind` | text | required; `prompt`, `plan`, `question`, `step`, `result`, `summary` |

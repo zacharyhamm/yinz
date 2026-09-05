@@ -373,8 +373,8 @@ pub fn resume_command(
     let session_id = session_id.trim();
     if session_id.is_empty() {
         // A run recorded by a hook script that reported no session id of its own: its id
-        // is the `kind:pane:<n>:<started at>` fallback, and there is nothing in it to hand
-        // to `--resume`.
+        // is the `kind:pane:<n>:<started at>:<machine>` fallback, and there is nothing in
+        // it to hand to `--resume`.
         return Err("this run recorded no session id to resume".to_owned());
     }
     let target = PaneTarget::parse_display(host);

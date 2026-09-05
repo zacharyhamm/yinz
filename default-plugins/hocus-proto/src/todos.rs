@@ -297,6 +297,12 @@ fn items_json(items: &[Item], include_done: bool) -> Vec<serde_json::Value> {
         .filter(|item| include_done || !item.done)
         .map(|item| {
             let mut value = serde_json::json!({ "id": item.id, "text": item.text });
+            // The revision this text was read at, so an edit composed from it can say what it
+            // was composed from and be refused if somebody has since rewritten the item. Left
+            // out when there is none — an item from the legacy file has no row to guard.
+            if item.rev > 0 {
+                value["rev"] = serde_json::json!(item.rev);
+            }
             if include_done {
                 value["done"] = serde_json::json!(item.done);
             }
@@ -518,7 +524,7 @@ pub fn set_done(store: &mut Store, root: &str, id: u64, done: bool) -> Result<Ch
     let Some(list) = store.get_mut(root) else {
         return Err(format!("no todo item {id} in this project; call todo_list"));
     };
-    let Some(text) = find_text(&list.items, id) else {
+    let Some(text) = find_item(&list.items, id).map(|item| item.text.clone()) else {
         return Err(format!("no todo item {id} in this project; call todo_list"));
     };
 
@@ -537,14 +543,15 @@ pub fn set_done(store: &mut Store, root: &str, id: u64, done: bool) -> Result<Ch
     })
 }
 
-/// One item's text, by id, wherever it sits in the tree. For reporting what an item says now
-/// after a guarded edit was refused.
-pub fn text_of(list: &List, id: u64) -> Option<String> {
-    find_text(&list.items, id)
+/// One item, by id, wherever it sits in the tree. For reporting what an item says now — and at
+/// what revision — after a guarded edit was refused.
+pub fn item_of(list: &List, id: u64) -> Option<&Item> {
+    find_item(&list.items, id)
 }
 
-fn find_text(items: &[Item], id: u64) -> Option<String> {
-    find_item(items, id).map(|item| item.text.clone())
+/// Just the text of [`item_of`], for a caller that has nothing to say about revisions.
+pub fn text_of(list: &List, id: u64) -> Option<String> {
+    item_of(list, id).map(|item| item.text.clone())
 }
 
 fn find_item(items: &[Item], id: u64) -> Option<&Item> {
@@ -964,25 +971,36 @@ pub fn plan_set_done(
 ///
 /// One update over the single row the id names — ids are unique in a list, so no
 /// root scoping is needed beyond confirming the item is in this list at all.
-pub fn plan_edit(list: &List, id: u64, text: &str) -> Result<(Vec<Mutation>, String), String> {
+///
+/// `expect_rev` is the revision the *author of the text* read, where the caller can say so.
+/// It takes precedence over the item's own, and that is the point: `list` was fetched
+/// microseconds ago by the writer itself, while the wording on offer was composed from a
+/// reading that may be several turns old. See [`crate::store::guarded_rev`].
+pub fn plan_edit(
+    list: &List,
+    id: u64,
+    text: &str,
+    expect_rev: Option<i64>,
+) -> Result<(Vec<Mutation>, String), String> {
     let text = clean_text(text)?;
     let Some(item) = find_item(&list.items, id) else {
         return Err(format!("no todo item {id} in this project; call todo_list"));
     };
-    // Guarded on the revision the list was read at. An edit replaces the whole of an item's
-    // text with something composed from what the caller saw, so a write that lands on a row
-    // somebody else has since edited destroys their wording outright — and the store is shared
-    // by every session, and with Postgres by every machine, pointed at it.
+    // Guarded on the revision the text was composed from. An edit replaces the whole of an
+    // item's text with something composed from what the caller saw, so a write that lands on a
+    // row somebody else has since edited destroys their wording outright — and the store is
+    // shared by every session, and with Postgres by every machine, pointed at it.
     //
     // Only here, and not on crossing an item off: `done` is a flag, two writers setting it
     // agree, and guarding it would refuse a write that had nothing to disagree about. This is
     // the write where a conflict is real.
     //
     // A `rev` of 0 means the item did not come from a store row — the legacy file — so there is
-    // nothing to guard against and an unguarded write is the only one that can work.
+    // nothing to guard against and an unguarded write is the only one that can work. It must
+    // never come to mean a fetch that projected the column away.
     let mut update = Mutation::update("todo", Pred::eq("id", id)).set("text", text.clone());
-    if item.rev > 0 {
-        update = update.expect_rev(item.rev);
+    if let Some(rev) = crate::store::guarded_rev(expect_rev, item.rev) {
+        update = update.expect_rev(rev);
     }
     Ok((vec![update.build()], text))
 }
@@ -1414,7 +1432,7 @@ mod tests {
             next_id: 2,
             items: vec![item(1, "old text", vec![])],
         };
-        let (mutations, text) = plan_edit(&list, 1, "new text").expect("planned");
+        let (mutations, text) = plan_edit(&list, 1, "new text", None).expect("planned");
         assert_eq!(text, "new text");
         assert_eq!(
             mutations,
@@ -1447,12 +1465,12 @@ mod tests {
 
         // They write first.
         local
-            .apply(plan_edit(&theirs, id, "ship it on Friday").unwrap().0)
+            .apply(plan_edit(&theirs, id, "ship it on Friday", None).unwrap().0)
             .unwrap();
 
         // My edit was composed from what the item said before, so it is refused whole.
         let error = local
-            .apply(plan_edit(&mine, id, "ship it on Monday").unwrap().0)
+            .apply(plan_edit(&mine, id, "ship it on Monday", None).unwrap().0)
             .unwrap_err();
         assert!(error.is_conflict(), "{error:?}");
         assert_eq!(
@@ -1464,7 +1482,77 @@ mod tests {
         // Reading again is all it takes.
         let fresh = fetch_list(&local, "/work").unwrap();
         local
-            .apply(plan_edit(&fresh, id, "ship it on Monday").unwrap().0)
+            .apply(plan_edit(&fresh, id, "ship it on Monday", None).unwrap().0)
+            .unwrap();
+        assert_eq!(
+            text_of(&fetch_list(&local, "/work").unwrap(), id).as_deref(),
+            Some("ship it on Monday")
+        );
+    }
+
+    /// The window the guard has to span is the caller's, not the writer's.
+    ///
+    /// The test above reads once and plans twice, which is not how an edit actually arrives: a
+    /// model reads a list in one turn, composes new wording several turns later, and the code
+    /// that writes it re-reads the list microseconds before writing. Guarding on *that* read
+    /// catches nothing — the row already carries the other writer's revision. The revision the
+    /// text was composed from has to travel with the text, which is what `expect_rev` is.
+    #[test]
+    fn an_edit_guards_on_the_revision_its_author_read_not_the_writers() {
+        use crate::store::{self, Backend};
+
+        let local = store::Local::shared("hocus");
+        local.define_all(&store::shared_defs()).unwrap();
+        local
+            .apply(
+                plan_add(&List::default(), "/work", "ship it", None)
+                    .unwrap()
+                    .0,
+            )
+            .unwrap();
+
+        // What the model was shown, and the revision it was shown beside the text.
+        let read = fetch_list(&local, "/work").unwrap();
+        let id = read.items[0].id;
+        let saw = read.items[0].rev;
+        assert!(saw > 0, "a listing carries a revision to guard on");
+        assert_eq!(
+            items_json(&read.items, false)[0]["rev"],
+            serde_json::json!(saw),
+            "and the model is shown it"
+        );
+
+        // Somebody else rewrites the item in the meantime.
+        local
+            .apply(plan_edit(&read, id, "ship it on Friday", None).unwrap().0)
+            .unwrap();
+
+        // The write re-reads first, as every caller does, so the row's own revision is now the
+        // other writer's and guarding on it would let this through.
+        let fresh = fetch_list(&local, "/work").unwrap();
+        let error = local
+            .apply(
+                plan_edit(&fresh, id, "ship it on Monday", Some(saw))
+                    .unwrap()
+                    .0,
+            )
+            .unwrap_err();
+        assert!(error.is_conflict(), "{error:?}");
+        assert_eq!(
+            text_of(&fetch_list(&local, "/work").unwrap(), id).as_deref(),
+            Some("ship it on Friday"),
+            "the refused write should have changed nothing"
+        );
+
+        // Reading again and carrying the new revision is all it takes.
+        let fresh = fetch_list(&local, "/work").unwrap();
+        let now = item_of(&fresh, id).unwrap().rev;
+        local
+            .apply(
+                plan_edit(&fresh, id, "ship it on Monday", Some(now))
+                    .unwrap()
+                    .0,
+            )
             .unwrap();
         assert_eq!(
             text_of(&fetch_list(&local, "/work").unwrap(), id).as_deref(),
@@ -1493,7 +1581,7 @@ mod tests {
         // Somebody edits the text, moving the row's revision on.
         let fresh = fetch_list(&local, "/work").unwrap();
         local
-            .apply(plan_edit(&fresh, id, "ship it soon").unwrap().0)
+            .apply(plan_edit(&fresh, id, "ship it soon", None).unwrap().0)
             .unwrap();
 
         // Crossing off from the older read still lands.
@@ -1508,7 +1596,7 @@ mod tests {
     #[test]
     fn planning_an_edit_rejects_an_unknown_id() {
         let list = List::default();
-        let error = plan_edit(&list, 7, "text").expect_err("no such item");
+        let error = plan_edit(&list, 7, "text", None).expect_err("no such item");
         assert!(error.contains("no todo item 7 in this project"), "{error}");
     }
 
