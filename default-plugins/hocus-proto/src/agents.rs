@@ -356,8 +356,8 @@ pub fn activity_hash(activity: &Activity, pane_id: u32) -> Option<u64> {
 // ---------------------------------------------------------------------------
 
 pub use zellij_tile::agent::{
-    clean_hint, hook_detail, question_text, waiting_detail, waiting_needs_a_person,
-    HOOK_DETAIL_CHARS, HOOK_SESSION_END, WAITING_DETAIL_CHARS,
+    clean_hint, hook_detail, question_text, suppression_is_a_guarantee, waiting_detail,
+    waiting_needs_a_person, HOOK_DETAIL_CHARS, HOOK_SESSION_END, WAITING_DETAIL_CHARS,
 };
 use zellij_tile::prelude::{AgentInfo, AgentSource, AgentState};
 

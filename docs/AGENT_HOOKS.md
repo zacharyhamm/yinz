@@ -589,7 +589,8 @@ agent waiting · 7 · claude◆
 Which library should we use for date formatting?
 ```
 
-Three rules, each the same one the summary toast already keeps:
+Three rules, each the same one the summary toast already keeps — and a fourth this one needs
+on its own:
 
 - **Not over the pane it describes.** If the user is focused there, they can see it.
 - **The edge, on the phase alone.** `PermissionRequest` puts the prompt up and the
@@ -607,17 +608,22 @@ Three rules, each the same one the summary toast already keeps:
   never suppressed under any mode: they address a person directly. The row draws the wait
   either way — it is what the agent said.
 
-The `Notification` behind a silenced request is silent too, and that follows from the first
-two rules rather than needing one of its own: the request has already moved the feed to
-`waiting`, so the notification has no edge to cross. This used to be read the other way — a
-notification that fired at all was taken as proof the classifier had refused, and the daemon
-held the suppressed edge open for it — but the notification is a six-second timer Claude Code
-arms when the dialog goes up, the `auto` classifier is routinely still deciding a `Bash` call
-when it fires, and it names no `permission_mode` for anyone to read. Toasting on it meant a
-`Bash cargo` interruption for a prompt that approved itself a moment later. A prompt the
-classifier does refuse is still drawn in the row and marked `!`; it is just not interrupted
-over. A notification with no request before it — a Claude Code without the
-`PermissionRequest` hook — enters the wait itself and is announced as before.
+- **A promise is held to; a guess is not.** A silenced request has by then moved the feed to
+  `waiting`, so the `Notification` behind it has no busy→waiting edge left to cross. Where the
+  silence was a *promise* — `bypassPermissions` and `dontAsk`, which resolve every prompt, and
+  `acceptEdits` on a file-editing tool — that edge is held open for the backstop instead
+  (`suppressed_waits` in the daemon, gated on `agent::suppression_is_a_guarantee`): a dialog
+  still up six seconds later means the promise did not hold — a `deny` or `ask` rule, a
+  `PreToolUse` hook that asks anyway, an edit outside the workspace — and the toast goes out in
+  the question the *request* worded, which is better than the notification's "Claude needs your
+  permission to use Bash". Under `auto` nothing is held and the notification says nothing. It
+  used to: a notification that fired at all was taken as proof the classifier had refused. But
+  it is a six-second timer Claude Code arms when the dialog goes up, the classifier is routinely
+  still deciding a `Bash` call when it fires, and it names no `permission_mode` for anyone to
+  read — so toasting on it meant a `Bash cargo` interruption for a prompt that approved itself a
+  moment later. A prompt the classifier does refuse is still drawn in the row and marked `!`; it
+  is just not interrupted over. A notification with no request before it — a Claude Code without
+  the `PermissionRequest` hook — enters the wait itself and is announced as before.
 
 ### And the pane itself says so
 
@@ -636,10 +642,13 @@ its frame blinks a 🔔 in the top-right corner, beside where SCROLL and PIN are
   it. The two roads that are not a hook say it for themselves: `agent-report --state waiting`
   sets it (a script that troubles itself to say `waiting` means a person), and a plugin's
   `set_pane_agent` leaves it `false` unless it names it, because registering a pane *as* an
-  agent is not reporting a prompt anybody is looking at. One seam remains: the record is
-  written per event by a CLI that keeps no state, and the `Notification` behind a request
-  `auto` silenced names no mode, so its record says a person is needed and the bell can start
-  on it six seconds in. The toast does not, because the daemon has seen the request.
+  agent is not reporting a prompt anybody is looking at. One seam remains, and is accepted:
+  the record is written per event by a CLI that keeps no state, and the `Notification` behind a
+  request `auto` silenced names no mode, so its record says a person is needed and the bell
+  starts on it six seconds in where the toast does not — the daemon has seen the request and the
+  pane has only the record. Closing it would mean the record carrying *which kind* of silence it
+  was, a field on `AgentInfo` and so on the plugin and IPC wire, to spare a blink that is
+  passive and that the agent's next `busy` report clears by itself.
 - **Answering it takes it down, not the agent noticing.** Typing into the pane, or simply
   focusing it, ends the blink at once rather than waiting for the next hook to say `busy`. The
   record is untouched by either — a person answering the prompt is not the agent saying
