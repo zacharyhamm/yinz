@@ -1,12 +1,10 @@
 #![cfg(unix)]
 
-//! Authoring a Lua plugin end to end: a real session, a real `sh`, a real file on disk, and a
-//! real Lua plugin loaded from it.
+//! Authoring a Lua plugin end to end: a real session, host filesystem operations, a real file
+//! on disk, and a real Lua plugin loaded from it.
 //!
-//! The unit tests cover both halves and both pass with the wiring cut. They build an argv from a
-//! folder without running it, and they render a command result without having asked for one — so
-//! a tool that never reaches the host, or reaches it with a cwd the host rejects, looks exactly
-//! like a working one.
+//! The unit tests cover path resolution and tool results separately. This test checks that
+//! hocus reaches the host's `/plugins` filesystem root and loads the file it wrote there.
 //!
 //! It also proves the part no unit test can: that a wasm plugin, which cannot open a file in a
 //! config dir at all, still gets a plugin written there and then running.
@@ -161,7 +159,7 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
     });
     clear(&zellij, "probe is running");
 
-    // Writing it again without `overwrite` fails on `set -C` rather than truncating it.
+    // Writing it again without `overwrite` is refused after checking the host's file metadata.
     submit(
         &zellij,
         r#"/plugin_write {"name": "probe", "source": "return {}"}"#,
@@ -237,14 +235,15 @@ fn hocus_writes_a_lua_plugin_and_loads_it() {
     });
     clear(&zellij, "plugin_read it and copy");
 
-    // The backup is a copy, not a plugin: it is not offered as one to load or edit.
+    // The listing annotates the original with its backup, without listing the backup separately.
     submit(&zellij, "/plugin_list");
-    zellij.wait_until("the plugin is listed", |grid_snapshot| {
+    let listing = zellij.wait_until("the plugin is listed with its backup", |grid_snapshot| {
         grid_snapshot.contains("probe.lua")
+            && grid_snapshot.contains("probe.bak kept from an earlier edit")
     });
     assert!(
-        !zellij.snapshot().contains("probe.bak"),
-        "a backup must not be listed as a plugin"
+        !listing.contains("probe.bak.lua"),
+        "a backup must not be listed as a separate plugin: {listing}"
     );
     clear(&zellij, "probe.lua");
 
