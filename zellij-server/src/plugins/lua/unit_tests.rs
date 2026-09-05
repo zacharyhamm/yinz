@@ -5355,6 +5355,31 @@ fn all_with_an_already_settled_child_waits_for_the_pending_ones() {
     assert_eq!(logged(&mut plugin), format!("{initial} all:x/B"));
 }
 
+#[test]
+fn race_detaches_its_listeners_without_unregistering_the_losers() {
+    let mut plugin = task_plugin(
+        r#"
+        local abort, resolve_abort = zellij.async.future()
+        for i = 1, 3 do
+          local step, resolve_step = zellij.async.future()
+          local raced = zellij.async.race { step = step, abort = abort }
+          resolve_step(i)
+          local won = zellij.await(raced)
+          assert(won.key == "step" and won.value == i)
+          assert(#abort.on_settle == 0, "the losing listener stayed attached")
+        end
+        local pending = zellij.async.future()
+        local raced = zellij.async.race { pending = pending, abort = abort }
+        resolve_abort("stop")
+        local won = zellij.await(raced)
+        assert(won.key == "abort" and won.value == "stop")
+        assert(#pending.on_settle == 0, "the final losing listener stayed attached")
+        log("done")
+        "#,
+    );
+    assert_eq!(logged(&mut plugin), "done");
+}
+
 fn manifest_with_agent(pane_id: u32, state: zellij_utils::data::AgentState) -> Event {
     use zellij_utils::data::{AgentInfo, AgentSource, PaneInfo, PaneManifest};
     let mut manifest = PaneManifest::default();

@@ -1178,18 +1178,31 @@ function zellij.async.all(list)
 end
 
 --- The first of `list` to settle: resolves with `{ key = k, value = v }`. The others stay
---- registered and settle on their own later, unheard - so an awaitable can be raced again,
+--- registered but this race stops listening to them, so an awaitable can be raced again,
 --- which is how a timeout is retried.
 function zellij.async.race(list)
   local aw, resolve = zellij.async.future()
+  local listeners = {}
+  local function won(key, value)
+    if aw.done then
+      return
+    end
+    for _, listener in ipairs(listeners) do
+      remove_from(listener[1].on_settle, listener[2])
+    end
+    listeners = {}
+    resolve { key = key, value = value }
+  end
   for key, child in pairs(list) do
-    local function won(value)
-      resolve { key = key, value = value }
+    if aw.done then
+      break
     end
     if child.done then
-      won(child.value)
+      won(key, child.value)
     else
-      table.insert(child.on_settle, won)
+      local listener = function(value) won(key, value) end
+      table.insert(listeners, { child, listener })
+      table.insert(child.on_settle, listener)
     end
   end
   return aw
