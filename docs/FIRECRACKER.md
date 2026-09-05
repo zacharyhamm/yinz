@@ -4,8 +4,9 @@ Zellij can run agent panes in Firecracker microVMs. The Linux package includes t
 `zellij-firecracker` provider. Zellij connects to each VM through the existing remote-pane
 transport.
 
-A host worktree identifies a VM. Sessions that use the same worktree share the VM. The provider
-stops the VM after the last session releases it.
+A host worktree identifies a VM. Sessions that use the same worktree share the VM, and a pane
+that names only the VM joins it without naming the worktree again. The provider stops the VM
+after the last session releases it.
 
 ## One-command development setup
 
@@ -380,6 +381,17 @@ serializes into, and the agent daemon working out its project all know which che
 copy came from. A pane that names a worktree keeps the one it named, since that is what the VM
 was ensured with.
 
+An `ensure` that names only the session and the VM is such a join, and the included provider
+resolves it in that order: the VM this session already has under that name, whatever keys its
+record; failing that, the one running worktree VM of that name, whichever session provisioned
+it; failing that, a new VM of the session's own. An image and a worktree the request does not
+name are no preference rather than a demand for none - `--firecracker-image` is only meaningful
+the first time a VM is started - while an image that is named and disagrees with the running
+VM's still refuses. Two worktree VMs of one name is an error asking for the worktree, since a
+request naming only the name cannot choose between them. A VM with no worktree is never joined
+this way: it is one an agent got to itself, so two sessions that each open a `dev` VM get one
+each.
+
 `rename_session` moves every VM `from` owns or leases to `to` and returns `{"version":2}`.
 Zellij sends it when the session is renamed, because `zellij firecracker stop` and `sync`
 resolve the session by its current name. It is additive to version 2: a provider that rejects
@@ -439,7 +451,9 @@ next request for the same VM, image, and worktree resumes the copy, which is inc
 than starting a new disk. The state record is written before Firecracker is started, so a
 provider killed in the moment between starting it and recording its pid still leaves a record:
 the next request finds the VMM by the API socket in its arguments and adopts it, instead of
-starting a second guest on the same TAP beside one nothing manages. Releasing a VM that never finished provisioning retains its disk
+starting a second guest on the same TAP beside one nothing manages. A request that names only
+the VM resolves to the record an existing VM is already on rather than deriving a path of its
+own, so a join and the pane that provisioned the VM share one state file and one lease list. Releasing a VM that never finished provisioning retains its disk
 without merging anything back: a partial copy would read as deletions.
 
 When the last session releases the VM, the provider pulls the guest's copy and merges it into

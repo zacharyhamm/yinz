@@ -416,19 +416,30 @@ fn two_sessions_share_a_worktree_vm_until_the_last_one_leaves() {
     );
     assert!(cleared.contains("hooks-cleared"), "{cleared}");
 
+    // By name alone, which is `zellij action new-pane --firecracker shared`: no worktree and
+    // no image, because a pane that joins a VM names neither. The provider has to find the
+    // VM by its name and answer with the worktree it mirrors, which is the only way the
+    // pane, the layout it serializes and the agent daemon learn which checkout it got.
     let joined = provider
-        .ensure(
-            second,
-            name,
-            Some(IMAGE),
-            Some(&worktree_path),
-            &AtomicBool::new(false),
-        )
+        .ensure(second, name, None, None, &AtomicBool::new(false))
         .unwrap();
     assert_eq!(
         joined.ssh_host, ensured.ssh_host,
         "the second session got its own VM"
     );
+    assert_eq!(
+        joined.worktree.as_deref(),
+        Some(worktree_path.as_path()),
+        "the join was not told which host checkout its guest folder came from"
+    );
+
+    // The same from the session that provisioned it: a second pane in the first session
+    // names only the VM too.
+    let rejoined = provider
+        .ensure(first, name, None, None, &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(rejoined.ssh_host, ensured.ssh_host);
+    assert_eq!(rejoined.worktree.as_deref(), Some(worktree_path.as_path()));
     let restored = run_in_guest(
         &joined,
         "set -e; grep -q hocus-hook /root/.claude/settings.json; printf 'hooks-restored'",

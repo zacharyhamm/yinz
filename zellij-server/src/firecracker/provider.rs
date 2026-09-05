@@ -255,13 +255,43 @@ impl LockedState {
         self.dir.join(format!("{}.json", vm_id(session, name)))
     }
 
-    fn identity_path(&self, session: &str, name: &str, worktree: Option<&Path>) -> PathBuf {
-        match worktree {
-            Some(worktree) => self
+    /// Where the state file for the identity an `ensure` names lives.
+    ///
+    /// A worktree names the VM: the same checkout is one VM, whichever session asks for it.
+    /// A request that names no worktree is asking for a VM by name, and that is either one
+    /// this session already has under that name - possibly keyed by a worktree another pane
+    /// named, so no path can be derived for it - or the running worktree VM of that name
+    /// somebody else provisioned, which is what `new-pane --firecracker review` joins. Only
+    /// when neither exists is the VM the session's own, at a path derived from both.
+    ///
+    /// The session's own comes first, so a session that already has a VM of the name keeps
+    /// it: the shared lookup only reaches requests that would otherwise boot a new VM. Only
+    /// a running VM lends its record: reprovisioning at the path of one whose process is
+    /// gone would key a worktree-less VM by a worktree, and every request has already had
+    /// those records retained and removed by `recover_unusable_vms`. Skipping one changes
+    /// nothing for a record of the session's own that names no worktree, which the last
+    /// line derives the same path for.
+    fn identity_path(
+        &self,
+        entries: &[(PathBuf, VmState)],
+        session: &str,
+        name: &str,
+        worktree: Option<&Path>,
+    ) -> Result<PathBuf> {
+        if let Some(worktree) = worktree {
+            return Ok(self
                 .dir
-                .join(format!("{}.json", worktree_vm_name(worktree))),
-            None => self.path(session, name),
+                .join(format!("{}.json", worktree_vm_name(worktree))));
         }
+        if let Some((path, _)) =
+            find_vm(entries, session, name)?.filter(|(_, state)| vm_is_running(state))
+        {
+            return Ok(path);
+        }
+        if let Some(path) = find_shared_worktree_vm(entries, name)? {
+            return Ok(path);
+        }
+        Ok(self.path(session, name))
     }
 
     fn entries(&self) -> Result<Vec<(PathBuf, VmState)>> {
@@ -419,8 +449,8 @@ fn ensure(
     if worktree.as_ref().is_some_and(|path| !path.is_dir()) {
         return Err(anyhow!("Firecracker worktree must be a directory"));
     }
-    let state_path = locked.identity_path(session, name, worktree.as_deref());
     let entries = locked.entries()?;
+    let state_path = locked.identity_path(&entries, session, name, worktree.as_deref())?;
     ensure_vm_identity_available(&entries, &state_path, session, name)?;
     // Whether this user may run the VM under a cgroup of its own is settled here, before
     // the clone and the boot: a host that refuses is told so at once, not after the
@@ -437,8 +467,7 @@ fn ensure(
                     // nothing else installs the hooks, and a spawned agent is handed no
                     // inline settings to fall back on.
                     install_agent_hooks(&existing, config)?;
-                    if !existing.leases.iter().any(|lease| lease == session) {
-                        existing.leases.push(session.to_owned());
+                    if add_lease(&mut existing, session) {
                         write_state(&state_path, &existing)?;
                     }
                     return Ok(response(config, &existing));
@@ -446,9 +475,7 @@ fn ensure(
                 Disposition::Resume => {
                     // The lease goes on record before another attempt at provisioning,
                     // so a session that asked for the VM releases it however that ends.
-                    if !existing.leases.iter().any(|lease| lease == session) {
-                        existing.leases.push(session.to_owned());
-                    }
+                    add_lease(&mut existing, session);
                     write_state(&state_path, &existing)?;
                     // A VM adopted from an attempt that never got as far as its cgroup is
                     // placed in one now, under the same rules as a fresh start.
@@ -680,6 +707,24 @@ fn ensure(
     finish_provisioning(locked, config, &state_path, vm, Some(&mut child))
 }
 
+/// Put `session` on the VM's leases, and say whether that changed anything.
+///
+/// A record written by a provider old enough to have left `leases` empty names its owner in
+/// `session` alone, which `find_vm` reads as ownership. Seeding that owner first is what
+/// keeps a join from taking the VM away from it: the list is authoritative once it exists.
+fn add_lease(state: &mut VmState, session: &str) -> bool {
+    let mut changed = false;
+    if state.leases.is_empty() {
+        state.leases.push(state.session.clone());
+        changed = true;
+    }
+    if !state.leases.iter().any(|lease| lease == session) {
+        state.leases.push(session.to_owned());
+        changed = true;
+    }
+    changed
+}
+
 /// What to do about a VM already on record for the identity an `ensure` names.
 #[derive(Debug, PartialEq, Eq)]
 enum Disposition {
@@ -696,13 +741,18 @@ enum Disposition {
     Replace,
 }
 
+/// An image the request does not name is no preference rather than a demand for the default
+/// one. A pane that joins a VM names neither an image nor a worktree - `new-pane
+/// --firecracker review` carries only the name - and `--firecracker-image` says for itself
+/// that it is "only meaningful the first time a VM is started". An image that is named and
+/// disagrees with the running VM's is still refused.
 fn existing_vm_disposition(existing: &VmState, name: &str, image: Option<&str>) -> Disposition {
     let mismatch = if existing.name != name {
         Some(format!(
             "worktree VM is already running as {:?}, not {name:?}",
             existing.name
         ))
-    } else if existing.image.as_deref() != image {
+    } else if image.is_some_and(|image| existing.image.as_deref() != Some(image)) {
         Some(format!(
             "worktree VM is already running with image {:?}, not {:?}",
             existing.image, image
@@ -2403,6 +2453,28 @@ fn find_vm(
     if matching.next().is_some() {
         return Err(anyhow!(
             "multiple Firecracker VMs named {name:?} are running for session {session:?}"
+        ));
+    }
+    Ok(found)
+}
+
+/// The running worktree VM of this name that another session provisioned, for a request that
+/// names the VM and nothing else.
+///
+/// Only a worktree VM is shared this way. One without a worktree is a VM an agent got to
+/// itself: it has no host checkout for the response to name, and it belongs to the session
+/// that asked for it, so two sessions that each open a `dev` VM get one each. Several
+/// worktree VMs of one name is not something a request naming only the name can choose
+/// between, so it is an error rather than a guess.
+fn find_shared_worktree_vm(entries: &[(PathBuf, VmState)], name: &str) -> Result<Option<PathBuf>> {
+    let mut matching = entries.iter().filter(|(_, state)| {
+        state.name == name && state.worktree.is_some() && vm_is_running(state)
+    });
+    let found = matching.next().map(|(path, _)| path.clone());
+    if matching.next().is_some() {
+        return Err(anyhow!(
+            "several Firecracker VMs named {name:?} are running for other sessions; \
+             name the worktree to say which one to join"
         ));
     }
     Ok(found)
@@ -6953,7 +7025,9 @@ mod tests {
         shared.name = "shared".to_owned();
         shared.worktree = Some(PathBuf::from("/repo"));
         shared.leases = vec!["other".to_owned(), "work".to_owned()];
-        let shared_path = locked.identity_path("work", "shared", Some(Path::new("/repo")));
+        let shared_path = locked
+            .identity_path(&[], "work", "shared", Some(Path::new("/repo")))
+            .unwrap();
         write_state(&shared_path, &shared).unwrap();
 
         rename_session(&locked, "work", "renamed").unwrap();
@@ -6989,7 +7063,9 @@ mod tests {
         let mut leased = ours.clone();
         leased.name = "shared".to_owned();
         leased.worktree = Some(PathBuf::from("/repo"));
-        let leased_path = locked.identity_path("work", "shared", Some(Path::new("/repo")));
+        let leased_path = locked
+            .identity_path(&[], "work", "shared", Some(Path::new("/repo")))
+            .unwrap();
         write_state(&leased_path, &leased).unwrap();
 
         assert!(rename_session(&locked, "work", "renamed").is_err());
@@ -7015,7 +7091,9 @@ mod tests {
             (locked.path("work", "review"), first),
             (locked.path("work", "second"), second),
             (
-                locked.identity_path("work", "shared", Some(Path::new("/repo"))),
+                locked
+                    .identity_path(&[], "work", "shared", Some(Path::new("/repo")))
+                    .unwrap(),
                 leased,
             ),
         ];
@@ -7126,6 +7204,148 @@ mod tests {
             (PathBuf::from("second.json"), state),
         ];
         assert!(find_vm(&duplicates, "work", "review").is_err());
+    }
+
+    /// A running VM on record, for the identity tests: the worktree it mirrors, if any, and
+    /// the sessions leasing it. The pid is a real one, because only a running VM is joined.
+    fn identity_entry(
+        path: &Path,
+        live: &LiveProcess,
+        worktree: Option<&str>,
+        leases: &[&str],
+    ) -> (PathBuf, VmState) {
+        let mut state = vm_state(PathBuf::from("rootfs.ext4"), PathBuf::from("vm.sock"), None);
+        state.ready = true;
+        state.worktree = worktree.map(PathBuf::from);
+        state.session = leases[0].to_owned();
+        state.leases = leases.iter().map(|lease| (*lease).to_owned()).collect();
+        state.pid = Some(live.pid);
+        state.start_time = Some(live.start_time);
+        (path.to_owned(), state)
+    }
+
+    /// A request that names only the VM joins the one this session already has under that
+    /// name, even when the worktree another pane named is what keys its record. Deriving the
+    /// path from session and name instead is what used to refuse the join outright.
+    #[test]
+    fn identity_path_joins_a_vm_the_session_already_has_under_that_name() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let live = LiveProcess::spawn();
+        let keyed = locked
+            .identity_path(&[], "work", "review", Some(Path::new("/repo")))
+            .unwrap();
+        let entries = vec![identity_entry(&keyed, &live, Some("/repo"), &["work"])];
+
+        assert_eq!(
+            locked
+                .identity_path(&entries, "work", "review", None)
+                .unwrap(),
+            keyed
+        );
+        ensure_vm_identity_available(&entries, &keyed, "work", "review").unwrap();
+
+        // A record whose process is gone lends no identity: reprovisioning at its path
+        // would key a worktree-less VM by a worktree. `recover_unusable_vms` has already
+        // retained and removed it before any request, so what is left is the refusal this
+        // has always been - loud, rather than a VM filed under the wrong name.
+        let mut stale = entries;
+        stale[0].1.pid = Some(i32::MAX);
+        assert_eq!(
+            locked
+                .identity_path(&stale, "work", "review", None)
+                .unwrap(),
+            locked.path("work", "review")
+        );
+        assert!(ensure_vm_identity_available(
+            &stale,
+            &locked.path("work", "review"),
+            "work",
+            "review"
+        )
+        .is_err());
+    }
+
+    /// The same for a worktree VM another session provisioned, which is the pane that names
+    /// a VM and nothing else. A VM without a worktree is not shared that way: it is one an
+    /// agent got to itself, so a session asking for that name gets its own.
+    #[test]
+    fn identity_path_joins_a_shared_worktree_vm_from_another_session() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let live = LiveProcess::spawn();
+        let keyed = locked
+            .identity_path(&[], "work", "review", Some(Path::new("/repo")))
+            .unwrap();
+        let shared = vec![identity_entry(&keyed, &live, Some("/repo"), &["other"])];
+        assert_eq!(
+            locked
+                .identity_path(&shared, "work", "review", None)
+                .unwrap(),
+            keyed
+        );
+
+        let plain = locked.path("other", "review");
+        let alone = vec![identity_entry(&plain, &live, None, &["other"])];
+        assert_eq!(
+            locked
+                .identity_path(&alone, "work", "review", None)
+                .unwrap(),
+            locked.path("work", "review"),
+            "a VM an agent got to itself is not joined by name"
+        );
+
+        let elsewhere = locked
+            .identity_path(&[], "work", "review", Some(Path::new("/elsewhere")))
+            .unwrap();
+        let ambiguous = vec![
+            identity_entry(&keyed, &live, Some("/repo"), &["other"]),
+            identity_entry(&elsewhere, &live, Some("/elsewhere"), &["third"]),
+        ];
+        let error = locked
+            .identity_path(&ambiguous, "work", "review", None)
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("name the worktree"),
+            "{error:#}"
+        );
+    }
+
+    /// A named worktree keys the VM by that worktree whatever else is on record - and a
+    /// session that already has a VM of the name somewhere else is still refused, which is
+    /// the job `ensure_vm_identity_available` keeps.
+    #[test]
+    fn identity_path_keys_a_named_worktree_by_the_worktree() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let live = LiveProcess::spawn();
+        let own = locked.path("work", "review");
+        let entries = vec![identity_entry(&own, &live, None, &["work"])];
+
+        let named = locked
+            .identity_path(&entries, "work", "review", Some(Path::new("/repo")))
+            .unwrap();
+        assert_eq!(
+            named,
+            locked
+                .identity_path(&[], "work", "review", Some(Path::new("/repo")))
+                .unwrap()
+        );
+        assert!(ensure_vm_identity_available(&entries, &named, "work", "review").is_err());
+    }
+
+    /// A join adds the joining session's lease, and seeds the owner first when the record is
+    /// old enough to name it in `session` alone: the owner must not lose the VM to a join.
+    #[test]
+    fn a_join_seeds_the_owner_before_adding_its_own_lease() {
+        let mut state = vm_state(PathBuf::from("rootfs.ext4"), PathBuf::from("vm.sock"), None);
+        state.leases = vec![];
+
+        assert!(add_lease(&mut state, "other"));
+        assert_eq!(state.leases, ["work", "other"]);
+        assert!(!add_lease(&mut state, "other"), "nothing to write twice");
+        assert!(add_lease(&mut state, "third"));
+        assert_eq!(state.leases, ["work", "other", "third"]);
     }
 
     #[test]
@@ -8211,13 +8431,28 @@ mod tests {
             Disposition::Refuse(why) if why.contains("\"other\"")
         ));
         state.image = Some("rust".to_owned());
-        assert!(matches!(
-            existing_vm_disposition(&state, "review", None),
-            Disposition::Refuse(why) if why.contains("image")
-        ));
         assert_eq!(
             existing_vm_disposition(&state, "review", Some("rust")),
             Disposition::Join
+        );
+        assert_eq!(
+            existing_vm_disposition(&state, "review", None),
+            Disposition::Join,
+            "a join names no image, which is no preference rather than the default image"
+        );
+        assert!(matches!(
+            existing_vm_disposition(&state, "review", Some("other")),
+            Disposition::Refuse(why) if why.contains("image")
+        ));
+
+        state.ready = false;
+        assert_eq!(
+            existing_vm_disposition(&state, "review", None),
+            Disposition::Resume
+        );
+        assert_eq!(
+            existing_vm_disposition(&state, "review", Some("other")),
+            Disposition::Replace
         );
     }
 
