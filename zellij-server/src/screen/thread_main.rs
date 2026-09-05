@@ -748,11 +748,7 @@ pub(crate) fn screen_thread_main(
                                         if !(raw_bytes == BRACKETED_PASTE_BEGIN
                                             || raw_bytes == BRACKETED_PASTE_END)
                                         {
-                                            if let Err(e) =
-                                                tab.update_search_term(raw_bytes, client_id)
-                                            {
-                                                log::error!("{}", e);
-                                            }
+                                            tab.update_search_term(raw_bytes, client_id);
                                         }
                                         state_changed = true;
                                     },
@@ -2492,7 +2488,7 @@ pub(crate) fn screen_thread_main(
                 active_tab_and_connected_client_id!(
                     screen,
                     client_id,
-                    |tab: &mut Tab, client_id: ClientId| tab.update_search_term(c, client_id), ?
+                    |tab: &mut Tab, client_id: ClientId| tab.update_search_term(c, client_id)
                 );
                 screen.render(None)?;
             },

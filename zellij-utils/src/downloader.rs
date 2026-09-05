@@ -1,4 +1,6 @@
-use isahc::http::header::{HeaderName, CONTENT_LENGTH, CONTENT_RANGE};
+use isahc::http::header::{
+    HeaderName, ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
+};
 use isahc::http::{HeaderMap, StatusCode};
 use isahc::prelude::*;
 use isahc::{config::RedirectPolicy, HttpClient, Request};
@@ -33,6 +35,8 @@ pub enum DownloaderError {
     },
     #[error("{url} responded with HTTP {status}")]
     UnexpectedStatus { url: String, status: StatusCode },
+    #[error("{url} sent a {encoding}-encoded body although an identity encoding was requested")]
+    UnexpectedEncoding { url: String, encoding: String },
     #[error(
         "{url} sent a partial response that does not continue the {expected_offset} bytes already downloaded (Content-Range: {})",
         .content_range.as_deref().unwrap_or("missing")
@@ -128,6 +132,25 @@ fn ensure_success(url: &str, status: StatusCode) -> Result<(), DownloaderError> 
     }
 }
 
+/// Sends a `GET` for `url` asking for the bytes as stored: no content coding, so that
+/// `Content-Length`, `Content-Range` and the `Range` offset all describe what is written to disk.
+/// `resume_from` above zero asks for the rest of the artifact from that offset.
+async fn send_identity_request(
+    client: &HttpClient,
+    url: &str,
+    resume_from: u64,
+) -> Result<isahc::Response<isahc::AsyncBody>, DownloaderError> {
+    let mut request = Request::get(url)
+        .header("Content-Type", "application/octet-stream")
+        .header(ACCEPT_ENCODING, "identity")
+        .automatic_decompression(false);
+    if resume_from > 0 {
+        log::debug!("Resuming download from {} bytes", resume_from);
+        request = request.header("Range", format!("bytes={}-", resume_from));
+    }
+    Ok(client.send_async(request.body(())?).await?)
+}
+
 /// Lossy, so a malformed value still shows up in the error that quotes it.
 fn header_string(headers: &HeaderMap, name: HeaderName) -> Option<String> {
     headers
@@ -165,9 +188,12 @@ impl Downloader {
     /// Downloads `url` into this downloader's location, or returns the path it already occupies
     /// there. On success the returned path holds exactly the bytes the server sent for the URL.
     ///
-    /// A partial download is kept as `<file_name>.part` and resumed with a `Range` request: a
-    /// `206` that continues it is appended, a `200` replaces it, and anything else is an error
-    /// that leaves nothing at the final path.
+    /// A partial download is kept as `<file_name>.part` and resumed with a `Range` request. A
+    /// `206` that continues it is appended; a `200` or `203` replaces it; a `416` means the server
+    /// has nothing past the bytes on disk, so the partial file is discarded and the whole artifact
+    /// fetched again; any other status is an error that leaves the partial file and the cache
+    /// untouched. The bytes are requested with an identity encoding and a response encoded any
+    /// other way is rejected before anything is written.
     pub async fn download(
         &self,
         url: &str,
@@ -204,24 +230,39 @@ impl Downloader {
             Err(e) => return Err(DownloaderError::Io(e)),
         };
 
-        // Identity encoding, so that Content-Length, Content-Range and the Range offset all
-        // describe the bytes as stored.
-        let mut request = Request::get(url)
-            .header("Content-Type", "application/octet-stream")
-            .automatic_decompression(false);
-        if file_part_size > 0 {
-            log::debug!("Resuming download from {} bytes", file_part_size);
-            request = request.header("Range", format!("bytes={}-", file_part_size));
+        let mut file_part_size = file_part_size;
+        let mut res = send_identity_request(client, url, file_part_size).await?;
+        if res.status() == StatusCode::RANGE_NOT_SATISFIABLE && file_part_size > 0 {
+            // The server has nothing past the bytes on disk: the partial file is already the
+            // whole artifact, or the artifact has changed under it. Either way it is not a
+            // trusted prefix, so start over rather than resend the same Range next time.
+            log::debug!(
+                "Range from {} bytes not satisfiable; refetching",
+                file_part_size
+            );
+            discard_partial_file(&file_part_path).await;
+            file_part_size = 0;
+            res = send_identity_request(client, url, 0).await?;
         }
-        let mut res = client.send_async(request.body(())?).await?;
 
+        // Nothing is opened until the status and encoding say the body is the artifact.
         let status = res.status();
-        ensure_success(url, status)?;
+        if let Some(encoding) = header_string(res.headers(), CONTENT_ENCODING)
+            .filter(|encoding| !encoding.trim().eq_ignore_ascii_case("identity"))
+        {
+            return Err(DownloaderError::UnexpectedEncoding {
+                url: url.to_owned(),
+                encoding: encoding.trim().to_owned(),
+            });
+        }
         // resume_from: Some(offset) appends to the partial file, None replaces it.
         // expected_after: what the partial file must hold once this response has been written.
         // complete: the artifact's full length when the server said it.
         let (resume_from, expected_after, complete) = match status {
-            StatusCode::OK => {
+            // 203 is a complete body that passed through a transforming proxy. The other 2xx
+            // codes carry no body (204, 205) or not the artifact's bytes (226), so they fall
+            // through to the error below along with everything outside 2xx.
+            StatusCode::OK | StatusCode::NON_AUTHORITATIVE_INFORMATION => {
                 let content_length = header_u64(res.headers(), CONTENT_LENGTH);
                 (None, content_length, content_length)
             },

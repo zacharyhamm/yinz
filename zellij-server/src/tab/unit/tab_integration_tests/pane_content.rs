@@ -616,8 +616,7 @@ fn enter_search_pane() {
     // Pane title should show 'tortor' as search term
     // Only lines containing 'tortor' get marked as render-targets, so
     // only those are updated (search-styling is not visible here).
-    tab.update_search_term("tortor".as_bytes().to_vec(), client_id)
-        .unwrap();
+    tab.update_search_term("tortor".as_bytes().to_vec(), client_id);
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
         output.serialize().unwrap().get(&client_id).unwrap(),
@@ -695,8 +694,7 @@ fn enter_search_floating_pane() {
     assert_snapshot!("search_floating_tab_nothing_highlighted", snapshot);
 
     // Only the line inside the floating tab which contain 'fring' should be in the new snapshot
-    tab.update_search_term("fring".as_bytes().to_vec(), client_id)
-        .unwrap();
+    tab.update_search_term("fring".as_bytes().to_vec(), client_id);
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
         output.serialize().unwrap().get(&client_id).unwrap(),
@@ -1343,20 +1341,21 @@ fn search_input_accepts_unicode_and_preserves_editing_commands() {
     tab.handle_pty_bytes(1, "café 東京 🙂 end".as_bytes().to_vec())
         .unwrap();
 
-    for (input, expected, is_error) in [
-        ("café 東京 🙂".as_bytes().to_vec(), "café 東京 🙂", false),
-        (vec![0x7f], "café 東京 ", false),
-        (vec![0x08], "café 東京", false),
-        (vec![0x08], "café 東", false),
-        ("京".as_bytes().to_vec(), "café 東京", false),
-        ("bad\ninput".as_bytes().to_vec(), "café 東京", false),
-        ("\u{85}".as_bytes().to_vec(), "café 東京", false),
-        (vec![0x1b, b'[', b'A'], "café 東京", false),
-        (vec![0xff], "café 東京", true),
-        (vec![0], "", false),
-        ("é".as_bytes().to_vec(), "é", false),
+    for (input, expected) in [
+        ("café 東京 🙂".as_bytes().to_vec(), "café 東京 🙂"),
+        (vec![0x7f], "café 東京 "),
+        (vec![0x08], "café 東京"),
+        (vec![0x08], "café 東"),
+        ("京".as_bytes().to_vec(), "café 東京"),
+        ("bad\ninput".as_bytes().to_vec(), "café 東京"),
+        ("\u{85}".as_bytes().to_vec(), "café 東京"),
+        (vec![0x1b, b'[', b'A'], "café 東京"),
+        // Not UTF-8: dropped like a control sequence, never an error.
+        (vec![0xff], "café 東京"),
+        (vec![0], ""),
+        ("é".as_bytes().to_vec(), "é"),
     ] {
-        assert_eq!(tab.update_search_term(input, client_id).is_err(), is_error);
+        tab.update_search_term(input, client_id);
         let mut output = Output::default();
         tab.set_force_render();
         tab.render(&mut output, None).unwrap();
