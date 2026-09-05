@@ -5050,9 +5050,9 @@ mod host {
 
 #[cfg(target_arch = "wasm32")]
 pub use host::{
-    current_session_info, dispatch, grant_permissions, new_pane_with_context, observe_plugin,
-    plugin_fs_exists, plugin_fs_list, plugin_fs_read, plugin_fs_read_capped, plugin_fs_write,
-    plugin_log_tail, reload_plugin, reload_plugin_headless, report_pane_agent, spawn_agent,
+    current_session_info, dispatch, grant_permissions, observe_plugin, plugin_fs_exists,
+    plugin_fs_list, plugin_fs_read, plugin_fs_read_capped, plugin_fs_write, plugin_log_tail,
+    reload_plugin, reload_plugin_headless, report_pane_agent, spawn_agent,
 };
 
 /// What a `plugin_reload` found when it went to look: the plugin's pane, and its text.

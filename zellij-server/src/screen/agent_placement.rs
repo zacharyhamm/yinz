@@ -185,7 +185,8 @@ impl Screen {
                 let source = self.tab_a_client_is_looking_at(client_id);
                 (source, connected, wants_focus)
             },
-            ClientTabIndexOrPaneId::PaneId(pane_id) => {
+            ClientTabIndexOrPaneId::PaneId(pane_id)
+            | ClientTabIndexOrPaneId::PaneIdOrClient(pane_id, _) => {
                 let source = self.tab_id_containing_pane(pane_id);
                 let client_id = self
                     .active_tab_ids

@@ -39,14 +39,15 @@ const EXAMPLE_HOCUS_NOTES: &str = include_str!("../../../example-plugins/hocus-n
 const EXAMPLE_CAPABILITIES: &str = include_str!("../../../example-plugins/capabilities.lua");
 const EXAMPLE_AGENT_HARNESS: &str = include_str!("../../../example-plugins/agent-harness.lua");
 /// The Lua half of the API, verbatim: the argument sugar and the named wrappers live here, so
-/// a model that has read it does not have to guess how a command is spelled. Served in eight
+/// a model that has read it does not have to guess how a command is spelled. Served in nine
 /// parts, cut at its own section markers, so that none is more than a tool call should cost.
 const PRELUDE: &str = include_str!("../../../zellij-server/src/plugins/lua/prelude.lua");
-const PRELUDE_CUTS: [&str; 7] = [
+const PRELUDE_CUTS: [&str; 8] = [
     "\n-- Host commands ",
     "\n-- Tasks ",
     "\n-- The awaitables.",
     "\n-- Agents ",
+    "\n-- Plugin-to-plugin calls ",
     "\n-- Data ",
     "\n-- Rendering ",
     "\n-- Pane workflows ",
@@ -70,7 +71,7 @@ fn prelude_part(index: usize) -> &'static str {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 42] = [
+pub const SECTIONS: [&str; 43] = [
     "index",
     "quickstart",
     "contract",
@@ -110,6 +111,7 @@ pub const SECTIONS: [&str; 42] = [
     "prelude_tasks",
     "prelude_awaitables",
     "prelude_agents",
+    "prelude_rpc",
     "prelude_data",
     "prelude_ui",
     "prelude_workflows",
@@ -264,7 +266,8 @@ fn index() -> String {
             "prelude_commands" => "its host-command wrappers and keybinding helpers".to_owned(),
             "prelude_tasks" => "zellij.task/await and the timers".to_owned(),
             "prelude_awaitables" => "the zellij.async awaitables".to_owned(),
-            "prelude_agents" => "zellij.agent and zellij.rpc".to_owned(),
+            "prelude_agents" => "its zellij.agent part".to_owned(),
+            "prelude_rpc" => "its zellij.rpc part".to_owned(),
             "prelude_data" => "its zellij.data part: the persistent store, with every helper".to_owned(),
             "prelude_ui" => "its zellij.text (widths) and zellij.ui (themed text, ribbons, tables, lists) parts".to_owned(),
             "prelude_workflows" => "the rest of it: pane_workflow and run_command_in_pane - command sequences in one pane".to_owned(),
@@ -316,9 +319,10 @@ pub fn section(name: &str) -> Option<String> {
         "prelude_tasks" => Some(fenced(prelude_part(2))),
         "prelude_awaitables" => Some(fenced(prelude_part(3))),
         "prelude_agents" => Some(fenced(prelude_part(4))),
-        "prelude_data" => Some(fenced(prelude_part(5))),
-        "prelude_ui" => Some(fenced(prelude_part(6))),
-        "prelude_workflows" => Some(fenced(prelude_part(7))),
+        "prelude_rpc" => Some(fenced(prelude_part(5))),
+        "prelude_data" => Some(fenced(prelude_part(6))),
+        "prelude_ui" => Some(fenced(prelude_part(7))),
+        "prelude_workflows" => Some(fenced(prelude_part(8))),
         other => heading(other).and_then(|heading| guide_section(heading, cut(other))),
     }
 }
