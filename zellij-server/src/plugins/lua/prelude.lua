@@ -7,6 +7,9 @@
 
 local zellij = {}
 
+local interpreter_id = __zellij_interpreter_id
+__zellij_interpreter_id = nil
+
 -- The host stops a cancelled plugin by raising this error from an instruction-count hook. It is
 -- an ordinary Lua error, so `pcall` would catch it and a loop around a `pcall` would run on
 -- forever. These wrappers hand every other error back exactly as the real functions do, and
@@ -698,7 +701,7 @@ end
 
 --- Resume `task` once. `coroutine.resume` is the rethrowing wrapper installed at the top of
 --- this file, so a host cancel raised inside the task unwinds the entrypoint; any other error
---- is re-raised too, so a task cannot fail silently - from `drain`, once the rest of the batch
+--- is re-raised too, so a task cannot fail silently - from `drain`, once the rest of the queue
 --- has run.
 local function step(task, ...)
   local ok, yielded = coroutine.resume(task.co, ...)
@@ -723,15 +726,30 @@ local function step(task, ...)
 end
 
 --- Resume every task whose awaitable settled, in the order they became ready, until none is.
---- A task that raises does not strand the others in its batch: they are already off their
---- awaitables, so they are resumed first and the error is raised again after the last.
+--- A task that raises does not strand any ready task, including those queued by a failing
+--- batch: drain the entire queue, then re-raise the first error and log any later ones.
 local function drain()
+  local failed, first = false, nil
   while #ready > 0 do
     local batch = ready
     ready = {}
-    each_guarded(batch, function(entry)
-      step(entry[1], entry[2])
+    local ok, err = pcall(each_guarded, batch, function(entry)
+      if tasks[entry[1].co] then
+        step(entry[1], entry[2])
+      end
     end)
+    if not ok then
+      if failed then
+        if zellij.log then
+          zellij.log("error: " .. tostring(err))
+        end
+      else
+        failed, first = true, err
+      end
+    end
+  end
+  if failed then
+    error(first, 0)
   end
 end
 
@@ -898,7 +916,7 @@ end
 
 local function next_token()
   token_count = token_count + 1
-  return "a" .. token_count
+  return interpreter_id .. ":a" .. token_count
 end
 
 --- `context` with a fresh token in it, and the token.
@@ -1036,13 +1054,7 @@ function zellij.async.run_in_pane(pane_id, step)
   aw.token = token
   zellij.run_command_in_pane {
     pane_id = id,
-    command = {
-      path = step.path,
-      args = step.args,
-      cwd = step.cwd,
-      remote_host = step.remote_host,
-      remote_default_shell = step.remote_default_shell,
-    },
+    command = step,
     context = context,
     keep_scrollback = step.keep_scrollback ~= false,
   }
@@ -1475,7 +1487,7 @@ end
 --- `{ result = ... }` or `{ error = "..." }`; `timeout` (seconds) is the latter too.
 function zellij.rpc.call(opts)
   rpc_count = rpc_count + 1
-  local call_id = "rpc" .. rpc_count
+  local call_id = interpreter_id .. ":rpc" .. rpc_count
   local aw, resolve = zellij.async.future()
   rpc_calls[call_id] = resolve
   zellij.message_to_plugin {
@@ -1511,21 +1523,24 @@ table.insert(pipe_intercepts, function(message)
     local handler = rpc_handlers[call.name]
     if handler == nil then
       reply.error = "no rpc handler named " .. tostring(call.name)
-    else
-      local handled, result = pcall(handler, call.payload, call)
-      if handled then
-        reply.result = result
-      else
-        reply.error = tostring(result)
-      end
     end
     local from = type(message.source) == "table" and message.source.Plugin or call.reply_to
     if from ~= nil then
-      zellij.message_to_plugin {
-        destination_plugin_id = from,
-        message_name = RPC_REPLY,
-        message_payload = zellij.json.encode(reply),
-      }
+      zellij.task(function()
+        if handler ~= nil then
+          local handled, result = pcall(handler, call.payload, call)
+          if handled then
+            reply.result = result
+          else
+            reply.error = tostring(result)
+          end
+        end
+        zellij.message_to_plugin {
+          destination_plugin_id = from,
+          message_name = RPC_REPLY,
+          message_payload = zellij.json.encode(reply),
+        }
+      end)
     end
     return true
   elseif message.name == RPC_REPLY then
