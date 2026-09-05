@@ -7,9 +7,10 @@
 //! Launch a dialog plugin with `modal true` so it opens as an overlay without
 //! revealing ordinary floating panes.
 
+use super::RenderBuffer;
 use super::{take_columns, Form, FormEvent, Rect};
 use crate::prelude::*;
-use crate::ui_components::{print_text_with_coordinates, Text};
+use crate::ui_components::Text;
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone)]
@@ -116,39 +117,44 @@ impl Dialog {
     /// the full content does not fit. Optional help and message rows are
     /// dropped before the title or form.
     pub fn render(&mut self, area: Rect) {
+        self.render_buffer(area).print();
+    }
+
+    /// As [`Self::render`], without printing or calling host shims.
+    pub fn render_buffer(&mut self, area: Rect) -> RenderBuffer {
         let layout = self.layout(area);
         let inset = if area.columns > 4 { 2 } else { 0 };
         let form_x = area.x + inset;
         let form_width = area.columns.saturating_sub(inset * 2);
 
-        // Form::render_in_viewport places the cursor, which must happen before
-        // any print call. Keep it first even though its rows appear below the
-        // title.
-        if layout.form_rows > 0 && area.columns > 0 {
+        // Compose the form first so its dropdown geometry is known before
+        // drawing the surrounding chrome. The output adapter delivers its cursor.
+        let mut buffer = if layout.form_rows > 0 && area.columns > 0 {
             // The rows below the form - the blank one, the status and the help -
             // are the dialog's, and an open dropdown may cover them. Lending
             // them out is what keeps a select on the form's last row from having
             // to scroll the form to find space.
-            self.form.render_in_viewport_with_overlay(
+            self.form.render_buffer_with_overlay(
                 form_x,
                 layout.form_y,
                 form_width,
                 layout.form_rows,
                 area.y.saturating_add(area.rows),
-            );
+            )
         } else {
-            show_cursor(None);
-        }
+            self.form
+                .render_buffer_in_viewport(form_x, layout.form_y, form_width, 0)
+        };
 
         if area.rows == 0 || area.columns == 0 {
-            return;
+            return buffer;
         }
         // Drawn after the form, so a tail row the list is sitting on has to be
         // left alone rather than printed over it.
         let overlay = self.form.overlay_rect();
-        self.render_centered(&self.title, area, layout.title_y);
+        self.render_centered(&mut buffer, &self.title, area, layout.title_y);
         if let (Some(message), Some(y)) = (&self.message, layout.message_y) {
-            self.render_centered(message, area, y);
+            self.render_centered(&mut buffer, message, area, y);
         }
         let status_y = layout.status_y.filter(|y| !covered(overlay, *y));
         let help_y = layout.help_y.filter(|y| !covered(overlay, *y));
@@ -160,11 +166,12 @@ impl Dialog {
             let clipped = status
                 .clone()
                 .with_content(take_columns(status.content(), area.columns));
-            self.render_centered(&clipped, area, y);
+            self.render_centered(&mut buffer, &clipped, area, y);
         }
         if let (Some(help), Some(y)) = (&self.help, help_y) {
-            self.render_centered(help, area, y);
+            self.render_centered(&mut buffer, help, area, y);
         }
+        buffer
     }
 
     /// The status row is reserved from `reserve_status` alone, never from
@@ -229,9 +236,9 @@ impl Dialog {
         }
     }
 
-    fn render_centered(&self, text: &Text, area: Rect, y: usize) {
+    fn render_centered(&self, buffer: &mut RenderBuffer, text: &Text, area: Rect, y: usize) {
         let (x, width) = centered_span(area, text.content());
-        print_text_with_coordinates(text.clone(), x, y, Some(width), None);
+        buffer.text(text.clone(), x, y, Some(width), None);
     }
 }
 

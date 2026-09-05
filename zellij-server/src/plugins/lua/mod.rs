@@ -6,7 +6,7 @@
 //!
 //! The design deliberately mirrors the wasm host rather than inventing a parallel API. There,
 //! exactly one function is imported by the guest (`host_run_plugin_command`), and every
-//! capability is a `PluginCommand` sent through it. Here, exactly one function is exposed to Lua
+//! capability is a `PluginCommand` sent through it. Here, exactly one function gives Lua access to host authority
 //! (`__dispatch`), and it builds the very same `PluginCommand` and hands it to the very same
 //! [`run_plugin_command`]. No capability is implemented twice.
 //!
@@ -17,6 +17,7 @@
 mod command;
 mod loader;
 mod response;
+mod ui;
 #[cfg(test)]
 mod unit_tests;
 

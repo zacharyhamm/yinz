@@ -9,9 +9,6 @@ workspace = true
 
 [dependencies]
 zellij-tile = { path = "../../zellij-tile" }
-# The markdown the agents pane and the conversation both draw. Moved here from
-# `hocus` when the renderer above it was: one dialect, read one way.
-pulldown-cmark = { version = "0.13.4", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 unicode-width = { workspace = true }

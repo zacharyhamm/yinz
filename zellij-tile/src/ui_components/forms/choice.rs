@@ -2,8 +2,9 @@
 
 use super::viewport::take_columns;
 use super::Rect;
+use super::RenderBuffer;
 use crate::prelude::*;
-use crate::ui_components::{print_text_with_coordinates, Text};
+use crate::ui_components::Text;
 use unicode_width::UnicodeWidthStr;
 
 /// The whole row is the click target - it is the label that says what the box
@@ -49,6 +50,7 @@ impl Checkbox {
 
     pub(super) fn render_row(
         &mut self,
+        buffer: &mut RenderBuffer,
         prompt: &str,
         x: usize,
         y: usize,
@@ -61,7 +63,7 @@ impl Checkbox {
         if focused {
             prompt = prompt.selected();
         }
-        print_text_with_coordinates(prompt, x, y, Some(width), None);
+        buffer.text(prompt, x, y, Some(width), None);
 
         let room = width.saturating_sub(prompt_width);
         if room > 0 {
@@ -73,7 +75,7 @@ impl Checkbox {
                 Text::new(marker)
             };
             let marker_x = x + prompt_width;
-            print_text_with_coordinates(text, marker_x, y, Some(room), None);
+            buffer.text(text, marker_x, y, Some(room), None);
             self.last_marker = Some(Rect::new(marker_x, y, marker_width, 1));
         }
     }
@@ -168,6 +170,7 @@ impl RadioGroup {
 
     pub(super) fn render_row(
         &mut self,
+        buffer: &mut RenderBuffer,
         prompt: &str,
         x: usize,
         y: usize,
@@ -181,7 +184,7 @@ impl RadioGroup {
         if focused {
             prompt = prompt.selected();
         }
-        print_text_with_coordinates(prompt, x, y, Some(width), None);
+        buffer.text(prompt, x, y, Some(width), None);
 
         let right = x.saturating_add(width);
         let mut option_x = x.saturating_add(prompt_width);
@@ -210,7 +213,7 @@ impl RadioGroup {
             } else {
                 Text::new(visible)
             };
-            print_text_with_coordinates(text, option_x, y, Some(visible_width), None);
+            buffer.text(text, option_x, y, Some(visible_width), None);
             self.last_option_rects
                 .push((index, Rect::new(option_x, y, visible_width, 1)));
             option_x = option_x.saturating_add(visible_width);
@@ -285,7 +288,7 @@ mod tests {
         let mut checkbox = Checkbox::new(true);
         assert_eq!(checkbox.last_marker, None);
         // "Frames: " is eight columns, so the marker starts eight past the row.
-        checkbox.render_row("Frames: ", 4, 2, 20, false);
+        checkbox.render_row(&mut RenderBuffer::default(), "Frames: ", 4, 2, 20, false);
         assert_eq!(checkbox.last_marker, Some(Rect::new(12, 2, 3, 1)));
         checkbox.clear_rendered();
         assert_eq!(checkbox.last_marker, None);
@@ -294,7 +297,7 @@ mod tests {
     #[test]
     fn a_checkbox_with_no_room_for_its_marker_records_none() {
         let mut checkbox = Checkbox::new(false);
-        checkbox.render_row("Frames: ", 0, 0, 8, false);
+        checkbox.render_row(&mut RenderBuffer::default(), "Frames: ", 0, 0, 8, false);
         assert_eq!(checkbox.last_marker, None);
     }
 
@@ -313,7 +316,7 @@ mod tests {
     #[test]
     fn narrow_unicode_radio_options_stay_inside_the_row() {
         let mut radio = RadioGroup::new(["日本語", "English"]);
-        radio.render_row("Mode: ", 4, 2, 12, true);
+        radio.render_row(&mut RenderBuffer::default(), "Mode: ", 4, 2, 12, true);
         assert!(radio
             .last_option_rects
             .iter()

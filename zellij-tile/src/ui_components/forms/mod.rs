@@ -8,6 +8,10 @@
 //! copies of a text editor, three incompatible ways of drawing a cursor, and a
 //! different meaning for `Tab` in each one. This module is the shared version.
 //!
+//! Native callers use [`Form::render_buffer_in_viewport`] or [`Dialog::render_buffer`].
+//! These return a [`RenderBuffer`] without printing or calling host shims.
+//! The existing render methods deliver its cursor update before printing its output.
+//!
 //! Nothing here needs server support. Widgets render by composing the existing
 //! components, so a plugin using them emits the same `text` and `ribbon`
 //! sequences it always did.
@@ -89,3 +93,6 @@ pub use list::list_window;
 pub use select::{Select, SelectAction};
 pub use text_input::{InputAction, TextInput};
 pub use viewport::{column_to_cursor, take_columns, viewport, viewport_window};
+
+mod buffer;
+pub use buffer::RenderBuffer;

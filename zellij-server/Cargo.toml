@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }
 zellij-process = { path = "../zellij-process", version = "0.45.0" }
+zellij-tile = { path = "../zellij-tile" }
 ansi_term = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { version = "0.1.50", default-features = false }
@@ -73,10 +74,6 @@ signal-hook = { workspace = true }
 
 [dev-dependencies]
 png = { version = "0.17.16", default-features = false }
-# Test-only, and deliberately: the plugin-pane image tests drive the real helpers a plugin calls
-# rather than a second hand-written copy of the escape sequences, which is the only way the two
-# halves can be shown to agree. `zellij-tile` depends on `zellij-utils` alone, so this is acyclic.
-zellij-tile = { path = "../zellij-tile" }
 criterion = { workspace = true }
 hegeltest = "0.29.3"
 tokio = { workspace = true, features = ["sync", "test-util"] }

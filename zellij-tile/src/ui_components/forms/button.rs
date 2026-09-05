@@ -14,8 +14,7 @@
 
 use super::viewport::take_columns;
 use crate::ui_components::{
-    print_ribbon_with_coordinates, print_text_with_coordinates, serialize_ribbon_with_coordinates,
-    serialize_text_with_coordinates, Text,
+    serialize_ribbon_with_coordinates, serialize_text_with_coordinates, Text,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -193,16 +192,11 @@ impl Button {
     /// Returns the width drawn, so a caller laying buttons out in a row can
     /// advance without measuring again.
     pub fn render(&mut self, x: usize, y: usize, max_width: Option<usize>) -> usize {
-        let text = self.to_text(max_width);
-        let width = max_width
+        let output = self.serialize(x, y, max_width);
+        print!("{}", output);
+        max_width
             .map(|max| self.width().min(max))
-            .unwrap_or(self.width());
-        match self.style {
-            ButtonStyle::Ribbon => print_ribbon_with_coordinates(text, x, y, None, None),
-            ButtonStyle::Text => print_text_with_coordinates(text, x, y, None, None),
-        }
-        self.last_rendered = Some(Rect::new(x, y, width, 1));
-        width
+            .unwrap_or(self.width())
     }
 
     /// As [`Button::render`], but returning the escape sequence instead of
@@ -213,9 +207,24 @@ impl Button {
         let width = max_width
             .map(|max| self.width().min(max))
             .unwrap_or(self.width());
-        let serialized = match self.style {
-            ButtonStyle::Ribbon => serialize_ribbon_with_coordinates(&text, x, y, None, None),
-            ButtonStyle::Text => serialize_text_with_coordinates(&text, x, y, None, None),
+        let serialized = if width == 0 {
+            String::new()
+        } else {
+            match self.style {
+                // The host may add two arrows as well as its two spaces. If the
+                // full ribbon cannot fit, use bounded text: ribbon chrome itself
+                // cannot be clipped by the component protocol.
+                ButtonStyle::Ribbon if max_width.is_none_or(|max| max >= self.width() + 2) => {
+                    serialize_ribbon_with_coordinates(&text, x, y, None, None)
+                },
+                ButtonStyle::Ribbon => {
+                    let text = text.with_content(take_columns(self.visible_label(), width));
+                    serialize_text_with_coordinates(&text, x, y, Some(width), Some(1))
+                },
+                ButtonStyle::Text => {
+                    serialize_text_with_coordinates(&text, x, y, Some(width), Some(1))
+                },
+            }
         };
         self.last_rendered = Some(Rect::new(x, y, width, 1));
         serialized
