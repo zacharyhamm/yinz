@@ -12,7 +12,11 @@ fn test_reapply_layout_exact_match() {
     "#;
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(1, None), (2, None), (3, None)];
+    let terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
 
     let size = Size {
         cols: 120,
@@ -73,7 +77,7 @@ fn test_reapply_layout_exact_match() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -116,7 +120,11 @@ fn test_reapply_layout_logical_position_match() {
     "#;
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(1, None), (2, None), (3, None)];
+    let terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
 
     let size = Size {
         cols: 120,
@@ -177,7 +185,7 @@ fn test_reapply_layout_logical_position_match() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -221,7 +229,7 @@ fn test_reapply_layout_with_more_positions() {
     "#;
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(1, None), (2, None)];
+    let terminal_ids = vec![(TerminalId(1), None), (TerminalId(2), None)];
 
     let size = Size {
         cols: 100,
@@ -282,7 +290,7 @@ fn test_reapply_layout_with_more_positions() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -330,8 +338,8 @@ fn test_reapply_floating_pane_layout() {
     "#;
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(1, None)];
-    let floating_terminal_ids = vec![(2, None)];
+    let terminal_ids = vec![(TerminalId(1), None)];
+    let floating_terminal_ids = vec![(TerminalId(2), None)];
 
     let size = Size {
         cols: 100,
@@ -392,7 +400,7 @@ fn test_reapply_floating_pane_layout() {
             terminal_ids,
             floating_terminal_ids,
             HashMap::new(),
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -445,7 +453,13 @@ fn test_apply_complex_nested_layout() {
     "#;
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
-    let terminal_ids = vec![(1, None), (2, None), (3, None), (4, None), (5, None)];
+    let terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+        (TerminalId(4), None),
+        (TerminalId(5), None),
+    ];
 
     let size = Size {
         cols: 200,
@@ -506,7 +520,7 @@ fn test_apply_complex_nested_layout() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -535,7 +549,12 @@ fn test_apply_layout_with_stacked_panes() {
     "#;
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
-    let terminal_ids = vec![(1, None), (2, None), (3, None), (4, None)];
+    let terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+        (TerminalId(4), None),
+    ];
 
     let size = Size {
         cols: 120,
@@ -596,7 +615,7 @@ fn test_apply_layout_with_stacked_panes() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -631,7 +650,13 @@ fn test_apply_layout_with_multiple_stacks() {
     "#;
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
-    let terminal_ids = vec![(1, None), (2, None), (3, None), (4, None), (5, None)];
+    let terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+        (TerminalId(4), None),
+        (TerminalId(5), None),
+    ];
 
     let size = Size {
         cols: 150,
@@ -692,7 +717,7 @@ fn test_apply_layout_with_multiple_stacks() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -722,7 +747,7 @@ fn test_apply_layout_with_plugin_panes() {
     "#;
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
-    let terminal_ids = vec![(1, None)];
+    let terminal_ids = vec![(TerminalId(1), None)];
 
     // Create plugin IDs - need to match the RunPluginOrAlias from the layout
 
@@ -733,8 +758,14 @@ fn test_apply_layout_with_plugin_panes() {
     let status_bar_plugin =
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap();
 
-    new_plugin_ids.insert(tab_bar_plugin, vec![100]);
-    new_plugin_ids.insert(status_bar_plugin, vec![101]);
+    new_plugin_ids.insert(
+        tab_bar_plugin,
+        vec![zellij_utils::internal_ids::PluginId(100)],
+    );
+    new_plugin_ids.insert(
+        status_bar_plugin,
+        vec![zellij_utils::internal_ids::PluginId(101)],
+    );
 
     let size = Size {
         cols: 120,
@@ -795,7 +826,7 @@ fn test_apply_layout_with_plugin_panes() {
             terminal_ids,
             vec![],
             new_plugin_ids,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -833,7 +864,7 @@ fn test_apply_layout_with_mixed_plugin_and_terminal_panes() {
     "#;
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
-    let terminal_ids = vec![(1, None), (2, None)];
+    let terminal_ids = vec![(TerminalId(1), None), (TerminalId(2), None)];
 
     let mut new_plugin_ids = HashMap::new();
 
@@ -842,8 +873,14 @@ fn test_apply_layout_with_mixed_plugin_and_terminal_panes() {
     let compact_bar_plugin =
         RunPluginOrAlias::from_url("zellij:compact-bar", &None, None, None).unwrap();
 
-    new_plugin_ids.insert(filebrowser_plugin, vec![102]);
-    new_plugin_ids.insert(compact_bar_plugin, vec![103]);
+    new_plugin_ids.insert(
+        filebrowser_plugin,
+        vec![zellij_utils::internal_ids::PluginId(102)],
+    );
+    new_plugin_ids.insert(
+        compact_bar_plugin,
+        vec![zellij_utils::internal_ids::PluginId(103)],
+    );
 
     let size = Size {
         cols: 200,
@@ -904,7 +941,7 @@ fn test_apply_layout_with_mixed_plugin_and_terminal_panes() {
             terminal_ids,
             vec![],
             new_plugin_ids,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -933,7 +970,7 @@ fn test_apply_layout_with_missing_plugin_ids() {
     "#;
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
-    let terminal_ids = vec![(1, None)];
+    let terminal_ids = vec![(TerminalId(1), None)];
     // Don't provide plugin IDs - empty HashMap
     let new_plugin_ids = HashMap::new();
 
@@ -995,7 +1032,7 @@ fn test_apply_layout_with_missing_plugin_ids() {
         terminal_ids,
         vec![],
         new_plugin_ids,
-        1,
+        crate::ClientId(1),
     );
 
     // This should return an error - missing plugin ID
@@ -1013,7 +1050,12 @@ fn test_apply_layout_with_excess_terminal_ids() {
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
     // Provide more terminal IDs than needed
-    let terminal_ids = vec![(1, None), (2, None), (3, None), (4, None)];
+    let terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+        (TerminalId(4), None),
+    ];
 
     let size = Size {
         cols: 100,
@@ -1073,7 +1115,7 @@ fn test_apply_layout_with_excess_terminal_ids() {
         terminal_ids,
         vec![],
         HashMap::new(),
-        1,
+        crate::ClientId(1),
     );
 
     assert!(result.is_ok());

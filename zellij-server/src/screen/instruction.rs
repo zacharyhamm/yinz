@@ -1,4 +1,5 @@
 use zellij_utils::errors::prelude::*;
+use zellij_utils::internal_ids::TerminalId;
 
 use super::{GuestModalOutcome, HoldForCommand, InitialTitle, TabOverrideResult};
 use crate::panes::grid::PendingNotification;
@@ -47,8 +48,8 @@ use zellij_utils::position::Position;
 /// that mapping is total.
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ScreenInstruction {
-    PtyBytes(u32, VteBytes),
-    RemotePaneReady(u32),
+    PtyBytes(TerminalId, VteBytes),
+    RemotePaneReady(TerminalId),
     PluginBytes(Vec<PluginRenderAsset>),
     Render,
     RenderToClients,
@@ -178,7 +179,7 @@ pub enum ScreenInstruction {
     TogglePaneFrames(Option<NotificationEnd>),
     SetPaneFrameStyle(PaneFrameStyle, Option<NotificationEnd>),
     SetSelectable(PaneId, bool),
-    ShowPluginCursor(u32, ClientId, Option<(usize, usize)>),
+    ShowPluginCursor(PluginId, ClientId, Option<(usize, usize)>),
     ClosePane(
         PaneId,
         Option<ClientId>,
@@ -199,10 +200,10 @@ pub enum ScreenInstruction {
     /// move, but an announcement is only heard once: a plugin that was not
     /// loaded yet, or that missed the event, had no second way to find out and
     /// stayed wrong about the pane for as long as it lived.
-    UpdatePaneCwd(u32, Option<PathBuf>),
+    UpdatePaneCwd(TerminalId, Option<PathBuf>),
     /// The machine a pane's process runs on, for panes that are not local.
     /// Sent once when the pane is created and once when it closes.
-    UpdatePaneHost(u32, Option<String>, Option<PathBuf>),
+    UpdatePaneHost(TerminalId, Option<String>, Option<PathBuf>),
     /// A decoration to compose in front of a pane's title, or `None` to drop it.
     ///
     /// Separate from every rename instruction on purpose: this does not touch the
@@ -234,15 +235,15 @@ pub enum ScreenInstruction {
     ApplyLayout(
         TiledPaneLayout,
         Vec<FloatingPaneLayout>,
-        Vec<(u32, HoldForCommand)>, // new pane pids
-        Vec<(u32, HoldForCommand)>, // new floating pane pids
-        Vec<(u32, AgentInfo)>,      // transferred agent records for adopted terminals
-        HashMap<RunPluginOrAlias, Vec<u32>>,
+        Vec<(TerminalId, HoldForCommand)>, // new pane pids
+        Vec<(TerminalId, HoldForCommand)>, // new floating pane pids
+        Vec<(TerminalId, AgentInfo)>,      // transferred agent records for adopted terminals
+        HashMap<RunPluginOrAlias, Vec<PluginId>>,
         usize, // tab_id - stable identifier from NewTab instruction
         bool,  // should change focus to new tab
         ClientId,
-        Option<NotificationEnd>,        // regular completion signal
-        Option<(u32, NotificationEnd)>, // blocking_terminal (terminal_id, completion_tx)
+        Option<NotificationEnd>,               // regular completion signal
+        Option<(TerminalId, NotificationEnd)>, // blocking_terminal (terminal_id, completion_tx)
     ),
     SwitchTabNext(ClientId, Option<NotificationEnd>),
     SwitchTabPrev(ClientId, Option<NotificationEnd>),
@@ -355,9 +356,9 @@ pub enum ScreenInstruction {
     Copy(ClientId, Option<NotificationEnd>),
     AddClient(
         ClientId,
-        Size,                // client viewport size
-        Option<usize>,       // tab position to focus
-        Option<(u32, bool)>, // (pane_id, is_plugin) => pane_id to focus
+        Size,           // client viewport size
+        Option<usize>,  // tab position to focus
+        Option<PaneId>, // pane to focus
     ),
     RemoveClient(ClientId),
     UpdateSearch(Vec<u8>, ClientId, Option<NotificationEnd>),
@@ -377,7 +378,7 @@ pub enum ScreenInstruction {
     /// Desktop notifications a pane asked for, to be rendered per client in the protocol that
     /// client's host speaks.
     ForwardDesktopNotifications {
-        pane_id: u32,
+        pane_id: TerminalId,
         notifications: Vec<PendingNotification>,
     },
     PreviousSwapLayout(ClientId, Option<NotificationEnd>),
@@ -445,7 +446,7 @@ pub enum ScreenInstruction {
         RunPluginOrAlias,
         Option<String>, // pane title
         Option<usize>,  // tab index
-        u32,            // plugin id
+        PluginId,       // plugin id
         Option<PaneId>,
         Option<PathBuf>, // cwd
         bool,            // start suppressed
@@ -457,13 +458,13 @@ pub enum ScreenInstruction {
         // the plugin's own `overlay`/`modal` configuration
         Option<OverlayPlacement>,
     ),
-    UpdatePluginLoadingStage(u32, LoadingIndication), // u32 - plugin_id
-    StartPluginLoadingIndication(u32, LoadingIndication), // u32 - plugin_id
+    UpdatePluginLoadingStage(PluginId, LoadingIndication), // u32 - plugin_id
+    StartPluginLoadingIndication(PluginId, LoadingIndication), // u32 - plugin_id
     /// Start and stop taking loading-indicator frames from the shared animation clock for this
     /// plugin. The dots themselves are derived from elapsed time, so these only say *whether* the
     /// plugin is still loading.
-    StartPluginLoadingAnimation(u32),
-    StopPluginLoadingAnimation(u32), // u32 - plugin id
+    StartPluginLoadingAnimation(PluginId),
+    StopPluginLoadingAnimation(PluginId), // u32 - plugin id
     RequestStateUpdateForPlugins,
     LaunchOrFocusPlugin(
         RunPluginOrAlias,
@@ -502,7 +503,7 @@ pub enum ScreenInstruction {
     RenameActivePane(Vec<u8>, ClientId, Option<NotificationEnd>),
     RenameTab(usize, Vec<u8>, Option<NotificationEnd>),
     RequestPluginPermissions(
-        u32, // u32 - plugin_id
+        PluginId, // plugin_id
         PluginPermission,
     ),
     BreakPane(Option<TerminalAction>, ClientId, Option<NotificationEnd>),
@@ -527,7 +528,7 @@ pub enum ScreenInstruction {
     /// gone, so every `PtyBytes` it ever emitted is queued ahead of this and has
     /// already been applied.
     PaneReleasedForWarp {
-        terminal_id: u32,
+        terminal_id: TerminalId,
         to_session: String,
         placement: WarpPlacement,
         client_id: ClientId,
@@ -536,7 +537,7 @@ pub enum ScreenInstruction {
     /// The pty thread has taken a supervisor over and this session now owns
     /// `terminal_id`. All that is left is to give it a pane and paint it.
     AdoptedPaneReady {
-        terminal_id: u32,
+        terminal_id: TerminalId,
         payload: Box<WarpedPane>,
         placement: WarpPlacement,
         client_id: ClientId,
@@ -564,7 +565,7 @@ pub enum ScreenInstruction {
     /// the reader tasks are gone, so all their output is queued ahead of this.
     TabReleasedForWarp {
         tab_index: usize,
-        released: Vec<(u32, Result<ReleasedPane, String>)>,
+        released: Vec<(TerminalId, Result<ReleasedPane, String>)>,
     },
     /// The pty thread has taken a tab's supervisors over and this session now
     /// owns their terminal ids. All that is left is to build the tab around them.
@@ -600,7 +601,7 @@ pub enum ScreenInstruction {
         /// The plugin that answered, so an item's echoed context goes back to it and to nothing
         /// else. `None` when the plugin thread answered from the configuration - no plugin was
         /// involved, and configured items carry no context to echo.
-        plugin_id: Option<u32>,
+        plugin_id: Option<PluginId>,
         client_id: ClientId,
     },
     /// Run a context menu item's actions against the pane its menu was opened over.
@@ -685,8 +686,8 @@ pub enum ScreenInstruction {
         /// zero in either turns the rule off. See `Screen::agent_pane_target`.
         agent_pane_min_size: Size,
     },
-    RerunCommandPane(u32, Option<NotificationEnd>), // u32 - terminal pane id
-    RunCommandInPane(u32, RunCommand, bool), // u32 - terminal pane id, bool - keep_scrollback;
+    RerunCommandPane(TerminalId, Option<NotificationEnd>), // u32 - terminal pane id
+    RunCommandInPane(TerminalId, RunCommand, bool), // u32 - terminal pane id, bool - keep_scrollback;
     // runs a *different* command in an existing command pane
     ResizePaneWithId(ResizeStrategy, PaneId),
     EditScrollbackForPaneWithId(PaneId, Option<NotificationEnd>),
@@ -705,7 +706,7 @@ pub enum ScreenInstruction {
         PaneId,
         Option<NotificationEnd>,
     ),
-    CopyTextToClipboard(String, u32), // String - text to copy, u32 - plugin_id
+    CopyTextToClipboard(String, PluginId), // String - text to copy, u32 - plugin_id
     MovePaneWithPaneId(PaneId),
     MovePaneWithPaneIdInDirection(PaneId, Direction),
     ClearScreenForPaneId(PaneId),
@@ -781,14 +782,14 @@ pub enum ScreenInstruction {
     UpdateAvailableLayouts(Vec<LayoutInfo>, Vec<LayoutWithError>),
     SetPluginRegexHighlights {
         pane_id: PaneId,
-        plugin_id: u32,
+        plugin_id: PluginId,
         highlights: Vec<RegexHighlight>,
     },
     ClearPluginHighlights {
         pane_id: PaneId,
-        plugin_id: u32,
+        plugin_id: PluginId,
     },
-    ClearAllPluginHighlights(u32), // plugin_id — clears across all panes
+    ClearAllPluginHighlights(PluginId), // plugin_id — clears across all panes
     SubscribeToPaneRenders {
         client_id: ClientId,
         pane_ids: Vec<zellij_utils::data::PaneId>,

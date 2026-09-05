@@ -1,5 +1,6 @@
 ---
-source: zellij-server/src/tab/./unit/layout_applier_tests.rs
+source: zellij-server/src/tab/./unit/layout_applier_tests/reapply.rs
+assertion_line: 952
 expression: "take_pane_state_snapshot(&tiled_panes, &floating_panes, &focus_pane_id,\n&viewport, &display_area,)"
 ---
 VIEWPORT: x=0, y=0, cols=200, rows=50
@@ -7,7 +8,7 @@ DISPLAY: cols=200, rows=50
 FOCUS: None
 
 TILED PANES (4)
-  Terminal(1):
+  Terminal(TerminalId(1)):
     geom: x=40, y=0, cols=120, rows=25
     logical_position: 1
     run: Command(vim)
@@ -15,7 +16,7 @@ TILED PANES (4)
     title: vim
     borderless: false
 
-  Terminal(2):
+  Terminal(TerminalId(2)):
     geom: x=40, y=25, cols=120, rows=25
     logical_position: 3
     run: Command(cargo) args=["watch", "-x", "test"]
@@ -23,7 +24,7 @@ TILED PANES (4)
     title: cargo watch -x test
     borderless: false
 
-  Plugin(102):
+  Plugin(PluginId(102)):
     geom: x=0, y=0, cols=40, rows=50
     logical_position: 0
     run: Plugin(file:/path/to/filebrowser.wasm)
@@ -31,7 +32,7 @@ TILED PANES (4)
     title: file:/path/to/filebrowser.wasm
     borderless: false
 
-  Plugin(103):
+  Plugin(PluginId(103)):
     geom: x=160, y=0, cols=40, rows=50
     logical_position: 2
     run: Plugin(zellij:compact-bar)

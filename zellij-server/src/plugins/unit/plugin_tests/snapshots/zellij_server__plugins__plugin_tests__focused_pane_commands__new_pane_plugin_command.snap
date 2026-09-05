@@ -1,5 +1,6 @@
 ---
 source: zellij-server/src/plugins/./unit/plugin_tests/focused_pane_commands.rs
+assertion_line: 1837
 expression: "format!(\"{:#?}\", new_pane_event)"
 ---
 Some(
@@ -11,7 +12,9 @@ Some(
         },
         false,
         ClientId(
-            1,
+            ClientId(
+                1,
+            ),
         ),
         Some(
             NotificationEnd {

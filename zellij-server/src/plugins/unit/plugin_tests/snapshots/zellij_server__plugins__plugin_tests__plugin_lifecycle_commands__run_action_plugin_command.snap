@@ -1,10 +1,13 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/plugin_lifecycle_commands.rs
+assertion_line: 688
 expression: "format!(\"{:#?}\", move_focus_instruction)"
 ---
 Some(
     (
-        1,
+        ClientId(
+            1,
+        ),
         Some(
             NotificationEnd {
                 channel: None,

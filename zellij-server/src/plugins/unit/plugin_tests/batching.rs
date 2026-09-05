@@ -102,7 +102,7 @@ impl Harness {
         let cache_path = dir.path().join("permissions_test.kdl");
         let (to_plugin, server_receiver, screen_receiver, teardown) =
             create_plugin_thread_with_server_receiver(Some(PathBuf::from(dir.path())), None);
-        let client_id = 1;
+        let client_id = ClientId(1);
         let screen = Watched::new(vec![]);
         let server = Watched::new(vec![]);
         let screen_thread = std::thread::Builder::new()
@@ -301,7 +301,7 @@ pub fn a_batch_of_scrolls_renders_once() {
     let harness = Harness::new();
     harness.load_logger(&[], &[]);
 
-    harness.update((0..20).map(|_| (1, scroll_up(3))).collect());
+    harness.update((0..20).map(|_| (ClientId(1), scroll_up(3))).collect());
 
     let frame = harness.wait_for(&format!("{}", "scroll_up 3 client=1\n".repeat(19)));
     assert_eq!(
@@ -335,9 +335,13 @@ pub fn a_batch_of_scrolls_renders_once() {
 pub fn a_shared_plugin_sees_each_event_under_its_acting_client() {
     let harness = Harness::new();
     harness.load_logger(&[("shared", "true")], &[]);
-    harness.add_client(2);
+    harness.add_client(crate::ClientId(2));
 
-    harness.update(vec![(1, scroll_up(3)), (2, key('x')), (1, scroll_up(3))]);
+    harness.update(vec![
+        (crate::ClientId(1), scroll_up(3)),
+        (crate::ClientId(2), key('x')),
+        (crate::ClientId(1), scroll_up(3)),
+    ]);
 
     let frame = harness.wait_for("key x client=2\nscroll_up 3 client=1");
     assert_eq!(
@@ -363,7 +367,7 @@ pub fn a_shared_plugin_sees_each_event_under_its_acting_client() {
     clients.sort();
     assert_eq!(
         clients,
-        vec![1, 2],
+        vec![ClientId(1), ClientId(2)],
         "with a frame for every attached client"
     );
 }
@@ -382,9 +386,9 @@ pub fn a_shared_plugin_sees_each_event_under_its_acting_client() {
 pub fn a_shared_plugin_renders_every_client_at_one_size() {
     let harness = Harness::new();
     harness.load_logger(&[("shared", "true")], &[]);
-    harness.add_client(2);
+    harness.add_client(crate::ClientId(2));
 
-    harness.update(vec![(1, scroll_up(3))]);
+    harness.update(vec![(crate::ClientId(1), scroll_up(3))]);
 
     harness.wait_for("scroll_up 3 client=1");
     let batch = harness
@@ -420,7 +424,7 @@ pub fn a_batch_that_renders_nothing_still_unblocks_cli_pipes() {
     harness.cli_pipe("hold");
     harness.wait_for("pipe hold");
 
-    harness.update(vec![(1, key(UNBLOCK))]);
+    harness.update(vec![(crate::ClientId(1), key(UNBLOCK))]);
 
     harness.server.wait_until_described(
         "the pipe to be unblocked by a batch that did not render",
@@ -455,7 +459,10 @@ pub fn an_error_mid_batch_still_delivers_the_unblocks_before_it() {
     harness.cli_pipe("hold");
     harness.wait_for("pipe hold");
 
-    harness.update(vec![(1, key(UNBLOCK)), (1, key(RAISE))]);
+    harness.update(vec![
+        (crate::ClientId(1), key(UNBLOCK)),
+        (crate::ClientId(1), key(RAISE)),
+    ]);
 
     harness.server.wait_until_described(
         "the pipe to be unblocked although the batch's last event raised",
@@ -477,16 +484,19 @@ pub fn the_last_change_to_a_pipe_in_a_batch_wins() {
     harness.cli_pipe("hold");
     harness.wait_for("pipe hold");
 
-    harness.update(vec![(1, key(UNBLOCK)), (1, key(BLOCK))]);
+    harness.update(vec![
+        (crate::ClientId(1), key(UNBLOCK)),
+        (crate::ClientId(1), key(BLOCK)),
+    ]);
     // a rendering batch behind it, to know the first has been handled in full
-    harness.update(vec![(1, key('x'))]);
+    harness.update(vec![(crate::ClientId(1), key('x'))]);
     harness.wait_for("key b client=1\nkey x client=1");
     assert!(
         !unblocks_of(&harness.server.lock(), PIPE),
         "the block came last, so the pipe stays held"
     );
 
-    harness.update(vec![(1, key(UNBLOCK))]);
+    harness.update(vec![(crate::ClientId(1), key(UNBLOCK))]);
     harness.server.wait_until_described(
         "the pipe to be released by a later batch",
         WAIT,
@@ -510,9 +520,9 @@ pub fn hovers_in_a_batch_keep_only_the_last() {
     harness.load_logger(&[], &[]);
 
     let mut batch: Vec<(ClientId, Event)> = (1..=5)
-        .map(|n| (1, Event::Mouse(Mouse::Hover(n, n as usize))))
+        .map(|n| (ClientId(1), Event::Mouse(Mouse::Hover(n, n as usize))))
         .collect();
-    batch.push((1, scroll_up(3)));
+    batch.push((crate::ClientId(1), scroll_up(3)));
     harness.update(batch);
 
     let frame = harness.wait_for("scroll_up 3 client=1");
@@ -527,7 +537,7 @@ fn update_of(events: &[Event]) -> PluginInstruction {
     PluginInstruction::Update(
         events
             .iter()
-            .map(|event| (None, Some(1), event.clone()))
+            .map(|event| (None, Some(ClientId(1)), event.clone()))
             .collect(),
     )
 }
@@ -545,12 +555,16 @@ fn bus_with(instructions: Vec<PluginInstruction>) -> Bus<PluginInstruction> {
 pub fn drain_merges_adjacent_updates_and_stops_at_the_first_other_kind() {
     let bus = bus_with(vec![
         update_of(&[scroll_up(2)]),
-        PluginInstruction::AddClient(7),
+        PluginInstruction::AddClient(crate::ClientId(7)),
         update_of(&[scroll_up(3)]),
     ]);
     let mut queued = None;
 
-    let merged = drain_updates(&bus, vec![(None, Some(1), scroll_up(1))], &mut queued);
+    let merged = drain_updates(
+        &bus,
+        vec![(None, Some(crate::ClientId(1)), scroll_up(1))],
+        &mut queued,
+    );
 
     let events: Vec<_> = merged.iter().map(|(_, _, event)| event.clone()).collect();
     assert_eq!(
@@ -559,7 +573,7 @@ pub fn drain_merges_adjacent_updates_and_stops_at_the_first_other_kind() {
         "the adjacent update was merged in, in order"
     );
     assert!(
-        matches!(queued, Some((PluginInstruction::AddClient(7), _))),
+        matches!(queued, Some((PluginInstruction::AddClient(ClientId(7)), _))),
         "the first other kind was pulled and set aside for the next iteration"
     );
     let (left_behind, _) = bus
@@ -744,7 +758,7 @@ pub fn joined_completions_are_answered_together_with_the_primarys_payload() {
         vec![NotificationEnd::new(tx_b), NotificationEnd::new(tx_c)],
     )
     .expect("a primary always yields a handle");
-    joined.set_affected_pane_id(PaneId::Plugin(7));
+    joined.set_affected_pane_id(PaneId::Plugin(crate::PluginId(7)));
     assert!(
         rx_a.try_recv().is_err() && rx_b.try_recv().is_err() && rx_c.try_recv().is_err(),
         "nobody is answered while the joined handle is held"
@@ -755,7 +769,10 @@ pub fn joined_completions_are_answered_together_with_the_primarys_payload() {
         let result = rx
             .try_recv()
             .expect("answered when the joined handle drops");
-        assert_eq!(result.affected_pane_id, Some(PaneId::Plugin(7)));
+        assert_eq!(
+            result.affected_pane_id,
+            Some(PaneId::Plugin(crate::PluginId(7)))
+        );
     }
 
     let (tx, mut rx) = tokio::sync::oneshot::channel();
@@ -795,7 +812,7 @@ pub fn collapsed_reloads_of_an_unloaded_plugin_are_answered_by_the_add_plugin() 
     let (tx_second, mut rx_second) = tokio::sync::oneshot::channel();
     // The client the plugin loads for. Handling it also keeps the thread busy while both reloads
     // land on the bus behind it, so the second is there to collapse when the first is taken.
-    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(1));
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(crate::ClientId(1)));
     for tx in [tx_first, tx_second] {
         let _ = plugin_thread_sender.send(PluginInstruction::Reload(
             Some(false),
@@ -862,13 +879,17 @@ pub fn coalescing_hovers_keeps_the_newest_per_client_and_nothing_else_moves() {
     let hover =
         |client: ClientId, at: isize| (None, Some(client), Event::Mouse(Mouse::Hover(at, 0)));
     let updates = vec![
-        hover(1, 1),
-        hover(2, 1),
-        (None, Some(1), scroll_up(3)),
-        hover(1, 2),
-        (Some(4), Some(1), Event::Mouse(Mouse::Hover(9, 9))),
-        hover(2, 2),
-        (None, Some(1), scroll_up(3)),
+        hover(crate::ClientId(1), 1),
+        hover(crate::ClientId(2), 1),
+        (None, Some(crate::ClientId(1)), scroll_up(3)),
+        hover(crate::ClientId(1), 2),
+        (
+            Some(zellij_utils::internal_ids::PluginId(4)),
+            Some(crate::ClientId(1)),
+            Event::Mouse(Mouse::Hover(9, 9)),
+        ),
+        hover(crate::ClientId(2), 2),
+        (None, Some(crate::ClientId(1)), scroll_up(3)),
     ];
 
     let coalesced = coalesce_hovers(updates);
@@ -876,11 +897,15 @@ pub fn coalescing_hovers_keeps_the_newest_per_client_and_nothing_else_moves() {
     assert_eq!(
         coalesced,
         vec![
-            (None, Some(1), scroll_up(3)),
-            hover(1, 2),
-            (Some(4), Some(1), Event::Mouse(Mouse::Hover(9, 9))),
-            hover(2, 2),
-            (None, Some(1), scroll_up(3)),
+            (None, Some(ClientId(1)), scroll_up(3)),
+            hover(crate::ClientId(1), 2),
+            (
+                Some(zellij_utils::internal_ids::PluginId(4)),
+                Some(ClientId(1)),
+                Event::Mouse(Mouse::Hover(9, 9))
+            ),
+            hover(crate::ClientId(2), 2),
+            (None, Some(ClientId(1)), scroll_up(3)),
         ],
         "each client's last hover survives, keyed by plugin too; scrolls are untouched"
     );

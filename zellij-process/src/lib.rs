@@ -1,4 +1,6 @@
 //! Terminal process supervision, local and remote transport, and VM providers.
+pub use zellij_utils::internal_ids::{ClientId, PluginId, TerminalId};
+
 pub mod command;
 pub mod firecracker;
 pub mod pty_host;

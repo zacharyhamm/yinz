@@ -1,6 +1,8 @@
 use crate::panes::PaneId;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
+#[cfg(test)]
+use zellij_utils::internal_ids::TerminalId;
 
 pub const PING_INTERVAL_MS: u64 = 2000;
 pub const PONG_TIMEOUT_MS: u64 = 5000;
@@ -97,7 +99,7 @@ mod tests {
     #[test]
     fn announced_guest_gets_pinged_and_pong_keeps_it_alive() {
         let mut tracker = NestedGuestTracker::default();
-        let pane_id = PaneId::Terminal(1);
+        let pane_id = PaneId::Terminal(TerminalId(1));
         let start = Instant::now();
         tracker.on_announce(pane_id, start);
         assert_eq!(
@@ -114,7 +116,7 @@ mod tests {
     #[test]
     fn guest_that_never_pongs_suspends_after_timeout() {
         let mut tracker = NestedGuestTracker::default();
-        let pane_id = PaneId::Terminal(1);
+        let pane_id = PaneId::Terminal(TerminalId(1));
         let start = Instant::now();
         tracker.on_announce(pane_id, start);
         assert_eq!(
@@ -133,7 +135,7 @@ mod tests {
     #[test]
     fn suspended_guest_revives_on_reannounce_however_long_later() {
         let mut tracker = NestedGuestTracker::default();
-        let pane_id = PaneId::Terminal(1);
+        let pane_id = PaneId::Terminal(TerminalId(1));
         let start = Instant::now();
         tracker.on_announce(pane_id, start);
         assert_eq!(
@@ -156,7 +158,7 @@ mod tests {
     #[test]
     fn reannounce_of_live_guest_is_a_refresh() {
         let mut tracker = NestedGuestTracker::default();
-        let pane_id = PaneId::Terminal(1);
+        let pane_id = PaneId::Terminal(TerminalId(1));
         let start = Instant::now();
         assert_eq!(tracker.on_announce(pane_id, start), AnnounceKind::New);
         assert_eq!(
@@ -169,7 +171,7 @@ mod tests {
     #[test]
     fn pong_refreshes_the_expiry_deadline() {
         let mut tracker = NestedGuestTracker::default();
-        let pane_id = PaneId::Terminal(1);
+        let pane_id = PaneId::Terminal(TerminalId(1));
         let start = Instant::now();
         tracker.on_announce(pane_id, start);
         tracker.on_pong(pane_id, start + millis(4000));
@@ -186,7 +188,7 @@ mod tests {
     #[test]
     fn pong_from_unannounced_pane_is_ignored() {
         let mut tracker = NestedGuestTracker::default();
-        let pane_id = PaneId::Terminal(1);
+        let pane_id = PaneId::Terminal(TerminalId(1));
         let now = Instant::now();
         tracker.on_pong(pane_id, now);
         assert!(!tracker.is_tracked(pane_id));
@@ -196,7 +198,7 @@ mod tests {
     #[test]
     fn removed_guest_stops_being_tracked() {
         let mut tracker = NestedGuestTracker::default();
-        let pane_id = PaneId::Terminal(1);
+        let pane_id = PaneId::Terminal(TerminalId(1));
         let now = Instant::now();
         tracker.on_announce(pane_id, now);
         tracker.remove(pane_id);

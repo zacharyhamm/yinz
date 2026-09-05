@@ -1,5 +1,6 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/focused_pane_commands.rs
+assertion_line: 689
 expression: "format!(\"{:#?}\", new_tab_event)"
 ---
 Some(
@@ -11,7 +12,9 @@ Some(
             111,
         ],
         false,
-        1,
+        ClientId(
+            1,
+        ),
         Some(
             NotificationEnd {
                 channel: None,

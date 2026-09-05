@@ -1,10 +1,13 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/layout_api.rs
+assertion_line: 729
 expression: "format!(\"{:#?}\", dump_layout_instruction)"
 ---
 Some(
     DumpLayoutToPlugin {
-        plugin_id: 0,
+        plugin_id: PluginId(
+            0,
+        ),
         tab_index: Some(
             0,
         ),

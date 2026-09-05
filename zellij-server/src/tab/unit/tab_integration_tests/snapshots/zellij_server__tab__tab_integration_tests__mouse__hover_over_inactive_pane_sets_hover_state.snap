@@ -1,5 +1,6 @@
 ---
-source: zellij-server/src/tab/./unit/tab_integration_tests.rs
+source: zellij-server/src/tab/./unit/tab_integration_tests/mouse.rs
+assertion_line: 1709
 expression: "format!(\"{:?}\", hover_panes)"
 ---
-{1: Terminal(1)}
+{ClientId(1): Terminal(TerminalId(1))}

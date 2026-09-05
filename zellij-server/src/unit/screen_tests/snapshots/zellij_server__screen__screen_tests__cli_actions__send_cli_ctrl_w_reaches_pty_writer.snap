@@ -1,6 +1,6 @@
 ---
-source: zellij-server/src/./unit/screen_tests.rs
-assertion_line: 2335
+source: zellij-server/src/screen/../unit/screen_tests/cli_actions.rs
+assertion_line: 291
 expression: "format!(\"{:#?}\", received_write_instructions)"
 ---
 [
@@ -8,7 +8,9 @@ expression: "format!(\"{:#?}\", received_write_instructions)"
         [
             23,
         ],
-        0,
+        TerminalId(
+            0,
+        ),
         None,
     ),
 ]

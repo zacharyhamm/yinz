@@ -17,6 +17,7 @@ use std::collections::VecDeque;
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
+use zellij_utils::internal_ids::TerminalId;
 
 use tokio::io::unix::AsyncFd;
 use zellij_utils::input::command::RunCommand;
@@ -89,7 +90,7 @@ pub struct RemoteReader {
     /// Passed back to the callback, which reports it to the plugin that asked
     /// for the pane and uses it to re-run a held one.
     cmd: RunCommand,
-    terminal_id: u32,
+    terminal_id: TerminalId,
     /// Where a coding agent's hook reports from this pane go. One closure for
     /// every pane, registered on the backend; `None` on a reader nobody asked.
     agent_report_cb: Option<AgentReportCb>,
@@ -108,7 +109,7 @@ impl RemoteReader {
             synthetic_prefix: 0,
             on_exit: Mutex::new(None),
             cmd: RunCommand::default(),
-            terminal_id: 0,
+            terminal_id: TerminalId(0),
             agent_report_cb: None,
         })
     }
@@ -124,7 +125,7 @@ impl RemoteReader {
     /// Without this a remote pane never closes itself: `TerminalBytes::listen`
     /// only breaks its loop, and the instruction that actually retires a pane —
     /// `ClosePane`, or `HoldPane` — comes from nowhere else.
-    pub fn on_exit(mut self, terminal_id: u32, cmd: RunCommand, quit_cb: QuitCb) -> Self {
+    pub fn on_exit(mut self, terminal_id: TerminalId, cmd: RunCommand, quit_cb: QuitCb) -> Self {
         self.on_exit = Mutex::new(Some(quit_cb));
         self.cmd = cmd;
         self.terminal_id = terminal_id;

@@ -46,7 +46,7 @@ impl Fixture {
 }
 
 fn tid(id: u32) -> PaneId {
-    PaneId::Terminal(id)
+    PaneId::Terminal(crate::TerminalId(id))
 }
 
 fn fixtures() -> Vec<Fixture> {
@@ -337,7 +337,7 @@ fn fixture(name: &str) -> Fixture {
 fn pane(run: &Run, id: u32) -> PaneSnapshot {
     *run.panes
         .iter()
-        .find(|p| p.id == PaneId::Terminal(id))
+        .find(|p| p.id == PaneId::Terminal(crate::TerminalId(id)))
         .unwrap_or_else(|| panic!("no snapshot for pane {}", id))
 }
 
@@ -948,7 +948,7 @@ fn any_pane_spec(tc: &hegel::TestCase, id: u32) -> PaneSpec {
     let cols = dimension(tc);
     let rows = dimension(tc);
     PaneSpec {
-        id: PaneId::Terminal(id),
+        id: PaneId::Terminal(crate::TerminalId(id)),
         x: tc.draw(generators::integers::<usize>().max_value(200)),
         y: tc.draw(generators::integers::<usize>().max_value(200)),
         cols,

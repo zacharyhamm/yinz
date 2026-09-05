@@ -1,6 +1,5 @@
 use std::{collections::VecDeque, io::Write};
 
-use crate::plugins::PluginId;
 use log::{debug, error};
 use zellij_utils::errors::prelude::*;
 
@@ -12,15 +11,15 @@ const ZELLIJ_MAX_PIPE_BUFFER_SIZE: usize = 16_384;
 pub struct LoggingPipe {
     buffer: VecDeque<u8>,
     plugin_name: String,
-    plugin_id: PluginId,
+    plugin_id: u32,
 }
 
 impl LoggingPipe {
-    pub fn new(plugin_name: &str, plugin_id: PluginId) -> LoggingPipe {
+    pub fn new(plugin_name: &str, plugin_id: crate::PluginId) -> LoggingPipe {
         LoggingPipe {
             buffer: VecDeque::new(),
             plugin_name: String::from(plugin_name),
-            plugin_id,
+            plugin_id: plugin_id.0,
         }
     }
 
@@ -100,7 +99,7 @@ mod logging_pipe_test {
 
     #[test]
     fn write_without_endl_does_not_consume_buffer_after_flush() {
-        let mut pipe = LoggingPipe::new("TestPipe", 0);
+        let mut pipe = LoggingPipe::new("TestPipe", crate::PluginId(0));
 
         let test_buffer = b"Testing write";
 
@@ -112,7 +111,7 @@ mod logging_pipe_test {
 
     #[test]
     fn write_with_single_endl_at_the_end_consumes_whole_buffer_after_flush() {
-        let mut pipe = LoggingPipe::new("TestPipe", 0);
+        let mut pipe = LoggingPipe::new("TestPipe", crate::PluginId(0));
 
         let test_buffer = b"Testing write \n";
 
@@ -124,7 +123,7 @@ mod logging_pipe_test {
 
     #[test]
     fn write_with_endl_in_the_middle_consumes_buffer_up_to_endl_after_flush() {
-        let mut pipe = LoggingPipe::new("TestPipe", 0);
+        let mut pipe = LoggingPipe::new("TestPipe", crate::PluginId(0));
 
         let test_buffer = b"Testing write \n";
         let test_buffer2: &[_] = b"And the rest";
@@ -148,7 +147,7 @@ mod logging_pipe_test {
 
     #[test]
     fn write_with_many_endl_consumes_whole_buffer_after_flush() {
-        let mut pipe = LoggingPipe::new("TestPipe", 0);
+        let mut pipe = LoggingPipe::new("TestPipe", crate::PluginId(0));
 
         let test_buffer: &[_] = b"Testing write \n";
 
@@ -171,7 +170,7 @@ mod logging_pipe_test {
 
     #[test]
     fn write_with_incorrect_byte_boundary_does_not_crash() {
-        let mut pipe = LoggingPipe::new("TestPipe", 0);
+        let mut pipe = LoggingPipe::new("TestPipe", crate::PluginId(0));
 
         let test_buffer = "😱".as_bytes();
 
@@ -189,7 +188,7 @@ mod logging_pipe_test {
 
     #[test]
     fn write_with_many_endls_consumes_everything_after_flush() {
-        let mut pipe = LoggingPipe::new("TestPipe", 0);
+        let mut pipe = LoggingPipe::new("TestPipe", crate::PluginId(0));
         let test_buffer: &[_] = b"Testing write \n";
 
         pipe.write_all(
@@ -246,7 +245,7 @@ mod logging_pipe_test {
         let write_count = tc.draw(generators::integers::<usize>().max_value(12));
         let writes: Vec<Vec<u8>> = (0..write_count).map(|_| tc.draw(any_write())).collect();
 
-        let mut pipe = LoggingPipe::new("TestPipe", 0);
+        let mut pipe = LoggingPipe::new("TestPipe", crate::PluginId(0));
         for (index, write) in writes.iter().enumerate() {
             // an over-cap write is reported as an error, not a panic, and clears the buffer
             let _ = pipe.write(write);

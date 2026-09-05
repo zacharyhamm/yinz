@@ -201,7 +201,7 @@ fn the_handshake_refuses_a_version_gap_and_names_both_sides() {
         command: std::path::PathBuf::from("/bin/sh"),
         ..Default::default()
     };
-    let err = handshake_and_spawn(&ours, "build-box", &cmd, None, 0, &[])
+    let err = handshake_and_spawn(&ours, "build-box", &cmd, None, TerminalId(0), &[])
         .expect_err("a version gap must be refused");
     let msg = format!("{err:#}");
     assert!(msg.contains("build-box"), "should name the host: {msg}");
@@ -251,7 +251,7 @@ fn a_missing_remote_command_arrives_as_command_not_found() {
         command: std::path::PathBuf::from("definitely-not-a-command"),
         ..Default::default()
     };
-    let err = handshake_and_spawn(&ours, "build-box", &cmd, None, 0, &[])
+    let err = handshake_and_spawn(&ours, "build-box", &cmd, None, TerminalId(0), &[])
         .expect_err("a missing command must be refused");
     assert!(
         matches!(
@@ -294,7 +294,8 @@ fn a_confirmed_spawn_completes_the_handshake() {
         command: std::path::PathBuf::from("/bin/sh"),
         ..Default::default()
     };
-    handshake_and_spawn(&ours, "build-box", &cmd, None, 0, &[]).expect("handshake should succeed");
+    handshake_and_spawn(&ours, "build-box", &cmd, None, TerminalId(0), &[])
+        .expect("handshake should succeed");
     let _ = peer.join();
 }
 
@@ -338,7 +339,8 @@ fn a_default_shell_pane_ships_no_command_of_its_own() {
         },
         ..Default::default()
     };
-    handshake_and_spawn(&ours, "build-box", &cmd, None, 0, &[]).expect("handshake should succeed");
+    handshake_and_spawn(&ours, "build-box", &cmd, None, TerminalId(0), &[])
+        .expect("handshake should succeed");
 
     let (_theirs, spawn) = peer.join().expect("peer panicked");
     let body = match spawn {
@@ -411,7 +413,7 @@ fn a_pane_whose_forward_has_gone_stale_is_retried_through_a_fresh_one() {
         },
         ..Default::default()
     };
-    let msg = match hosts.open_pane(host, &cmd, None, 0) {
+    let msg = match hosts.open_pane(host, &cmd, None, TerminalId(0)) {
         Err(err) => format!("{err:#}"),
         Ok(_) => panic!("an unreachable host cannot open a pane"),
     };
@@ -561,7 +563,7 @@ fn a_pane_carries_this_sides_terminal_and_its_own_id() {
         ("TERM".to_owned(), "xterm-256color".to_owned()),
         ("LC_TIME".to_owned(), "C".to_owned()),
     ];
-    handshake_and_spawn(&ours, "build-box", &cmd, None, 42, &carried)
+    handshake_and_spawn(&ours, "build-box", &cmd, None, TerminalId(42), &carried)
         .expect("handshake should succeed");
 
     let (_theirs, spawn) = peer.join().expect("peer panicked");

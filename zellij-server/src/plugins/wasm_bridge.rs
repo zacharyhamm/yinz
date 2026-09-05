@@ -67,13 +67,24 @@ pub enum EventOrPipeMessage {
     PipeMessage(PipeMessage),
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PluginRenderAsset {
     // TODO: naming
     pub client_id: ClientId,
     pub plugin_id: PluginId,
     pub bytes: Vec<u8>,
     pub cli_pipes: HashMap<String, PipeStateChange>,
+}
+
+impl Default for PluginRenderAsset {
+    fn default() -> Self {
+        Self {
+            client_id: ClientId(0),
+            plugin_id: PluginId(0),
+            bytes: Vec::new(),
+            cli_pipes: HashMap::new(),
+        }
+    }
 }
 
 impl PluginRenderAsset {
@@ -192,7 +203,7 @@ pub struct WasmBridge {
     data_access: Arc<DataAccess>,
     plugin_map: Arc<Mutex<PluginMap>>,
     plugin_executor: Arc<PinnedExecutor>,
-    next_plugin_id: PluginId,
+    next_plugin_id: u32,
     // plugins that run as a single instance for the whole session rather than one per client
     shared_plugin_ids: HashSet<PluginId>,
     plugin_ids_waiting_for_permission_request: HashSet<PluginId>,
@@ -375,7 +386,7 @@ impl WasmBridge {
                 "Plugins must have a client id, none was provided and none are connected"
             })?;
 
-        let plugin_id = self.next_plugin_id;
+        let plugin_id = PluginId(self.next_plugin_id);
 
         match run {
             Some(run) => {
@@ -632,7 +643,7 @@ impl WasmBridge {
             cancel.store(true, Ordering::Relaxed);
         }
         let _ = self.senders.send_to_server(ServerInstruction::RebindKeys {
-            client_id: 0,
+            client_id: ClientId(0),
             keys_to_rebind: vec![],
             keys_to_unbind: vec![],
             write_config_to_disk: false,
@@ -698,7 +709,7 @@ impl WasmBridge {
             // reuse, so leaving them would send a later plugin someone else's rows.
             self.data_access
                 .plugin_data()
-                .drop_watches_for_plugin(plugin_id);
+                .drop_watches_for_plugin(plugin_id.0);
 
             // Send worker exit messages
             for (_worker_name, worker_sender) in workers {
@@ -920,7 +931,7 @@ impl WasmBridge {
                     let started = Event::QueueJobStarted {
                         queue: job.queue.clone(),
                         job_id: job.job_id,
-                        plugin_id,
+                        plugin_id: plugin_id.0,
                         context: job.context.clone(),
                     };
                     let enqueuer = job.enqueuer;
@@ -1024,7 +1035,7 @@ impl WasmBridge {
             event,
         )]));
     }
-    pub fn reload_plugin_with_id(&mut self, plugin_id: u32) -> Result<()> {
+    pub fn reload_plugin_with_id(&mut self, plugin_id: PluginId) -> Result<()> {
         let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id) else {
             log::error!("Failed to find plugin with id: {}", plugin_id);
             return Ok(());
@@ -1985,19 +1996,28 @@ impl WasmBridge {
 
         // Remove client from cached pane render report
         if let Some(ref mut prev_report) = self.previous_pane_render_report {
-            prev_report.all_pane_contents.remove(&client_id);
+            prev_report.all_pane_contents.remove(&client_id.0);
         }
     }
 
     fn get_changed_panes_per_client(
         &self,
-        new_contents: &HashMap<ClientId, HashMap<zellij_utils::data::PaneId, PaneContents>>,
-        previous_contents: Option<
-            &HashMap<ClientId, HashMap<zellij_utils::data::PaneId, PaneContents>>,
+        new_contents: &HashMap<
+            zellij_utils::data::ClientId,
+            HashMap<zellij_utils::data::PaneId, PaneContents>,
         >,
-    ) -> HashMap<ClientId, HashMap<zellij_utils::data::PaneId, PaneContents>> {
-        let mut result: HashMap<ClientId, HashMap<zellij_utils::data::PaneId, PaneContents>> =
-            HashMap::new();
+        previous_contents: Option<
+            &HashMap<
+                zellij_utils::data::ClientId,
+                HashMap<zellij_utils::data::PaneId, PaneContents>,
+            >,
+        >,
+    ) -> HashMap<zellij_utils::data::ClientId, HashMap<zellij_utils::data::PaneId, PaneContents>>
+    {
+        let mut result: HashMap<
+            zellij_utils::data::ClientId,
+            HashMap<zellij_utils::data::PaneId, PaneContents>,
+        > = HashMap::new();
 
         // First report - return everything grouped by client
         let Some(prev_contents) = previous_contents else {
@@ -2044,7 +2064,11 @@ impl WasmBridge {
                 .map(|r| &r.all_pane_contents),
         );
         for (client_id, client_panes) in changed_panes_per_client {
-            let updates = vec![(None, Some(client_id), Event::PaneRenderReport(client_panes))];
+            let updates = vec![(
+                None,
+                Some(ClientId(client_id)),
+                Event::PaneRenderReport(client_panes),
+            )];
             self.update_plugins(updates, shutdown_sender.clone())?;
         }
 
@@ -3480,7 +3504,7 @@ mod tests {
     #[test]
     fn intercepted_keypress_batches_are_input_jobs() {
         let events = vec![(
-            1,
+            ClientId(1),
             Event::InterceptedKeyPress(KeyWithModifier::new(BareKey::Char('x'))),
         )];
 
@@ -3513,7 +3537,7 @@ mod tests {
             ("caller_cwd", "/repo"),
             ("caller_terminal_pane_id", "0"),
         ]);
-        let at_this_location = HashMap::from([(running, vec![(7, 1)])]);
+        let at_this_location = HashMap::from([(running, vec![(PluginId(7), ClientId(1))])]);
 
         // as asked for by `hocus-agents`, whose message is stamped with `caller_cwd` alone
         let greeting = configuration(&[
@@ -3524,7 +3548,7 @@ mod tests {
         ]);
         assert_eq!(
             instances_of(&at_this_location, &greeting),
-            &[(7, 1)],
+            &[(PluginId(7), ClientId(1))],
             "the conversation that is already open"
         );
 
@@ -3542,33 +3566,33 @@ mod tests {
         let (plugin_id, owner_client_id, other_client_id) = (1, 1, 2);
         // a message for another client reaches a shared plugin, but not a per-client one
         assert!(WasmBridge::message_is_directed_at_plugin(
-            Some(plugin_id),
-            Some(other_client_id),
-            &plugin_id,
-            &owner_client_id,
+            Some(PluginId(plugin_id)),
+            Some(ClientId(other_client_id)),
+            &PluginId(plugin_id),
+            &ClientId(owner_client_id),
             true,
         ));
         assert!(!WasmBridge::message_is_directed_at_plugin(
-            Some(plugin_id),
-            Some(other_client_id),
-            &plugin_id,
-            &owner_client_id,
+            Some(PluginId(plugin_id)),
+            Some(ClientId(other_client_id)),
+            &PluginId(plugin_id),
+            &ClientId(owner_client_id),
             false,
         ));
         // a message for another plugin never reaches it
         assert!(!WasmBridge::message_is_directed_at_plugin(
-            Some(plugin_id + 1),
-            Some(other_client_id),
-            &plugin_id,
-            &owner_client_id,
+            Some(PluginId(plugin_id + 1)),
+            Some(ClientId(other_client_id)),
+            &PluginId(plugin_id),
+            &ClientId(owner_client_id),
             true,
         ));
         // broadcasts still reach it exactly as before
         assert!(WasmBridge::message_is_directed_at_plugin(
             None,
             None,
-            &plugin_id,
-            &owner_client_id,
+            &PluginId(plugin_id),
+            &ClientId(owner_client_id),
             true,
         ));
     }

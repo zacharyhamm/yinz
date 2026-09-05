@@ -70,21 +70,27 @@ fn hole_filling_characterization() {
                 Viewport::default(),
             );
             let expand = if case == MissingExpansion {
-                vec![PaneId::Terminal(99)]
+                vec![PaneId::Terminal(crate::TerminalId(99))]
             } else if case == EmptyExpansion {
                 vec![]
             } else {
-                vec![PaneId::Terminal(2), PaneId::Terminal(1)]
+                vec![
+                    PaneId::Terminal(crate::TerminalId(2)),
+                    PaneId::Terminal(crate::TerminalId(1)),
+                ]
             };
             let holes = if case == EmptyHoles {
                 vec![]
             } else if case == MissingHole {
-                vec![PaneId::Terminal(3), PaneId::Terminal(99)]
+                vec![
+                    PaneId::Terminal(crate::TerminalId(3)),
+                    PaneId::Terminal(crate::TerminalId(99)),
+                ]
             } else {
                 vec![
-                    PaneId::Terminal(5),
-                    PaneId::Terminal(4),
-                    PaneId::Terminal(3),
+                    PaneId::Terminal(crate::TerminalId(5)),
+                    PaneId::Terminal(crate::TerminalId(4)),
+                    PaneId::Terminal(crate::TerminalId(3)),
                 ]
             };
             assert_eq!(

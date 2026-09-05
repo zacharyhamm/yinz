@@ -1,5 +1,6 @@
 ---
-source: zellij-server/src/tab/./unit/layout_applier_tests.rs
+source: zellij-server/src/tab/./unit/layout_applier_tests/override_tiled.rs
+assertion_line: 142
 expression: "take_pane_state_snapshot(&tiled_panes, &floating_panes, &focus_pane_id,\n&viewport, &display_area,)"
 ---
 VIEWPORT: x=0, y=0, cols=120, rows=40
@@ -7,7 +8,7 @@ DISPLAY: cols=120, rows=40
 FOCUS: None
 
 TILED PANES (2)
-  Terminal(1):
+  Terminal(TerminalId(1)):
     geom: x=0, y=20, cols=120, rows=20
     logical_position: 1
     run: Command(htop)
@@ -15,7 +16,7 @@ TILED PANES (2)
     title: htop
     borderless: false
 
-  Terminal(4):
+  Terminal(TerminalId(4)):
     geom: x=0, y=0, cols=120, rows=20
     logical_position: 0
     run: Command(top)
@@ -24,7 +25,7 @@ TILED PANES (2)
     borderless: false
 
 FLOATING PANES (1)
-  Terminal(5):
+  Terminal(TerminalId(5)):
     geom: x=20, y=15, cols=50, rows=25
     logical_position: 0
     run: Command(watch) args=["df", "-h"]

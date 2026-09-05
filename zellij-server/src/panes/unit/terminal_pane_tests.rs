@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use zellij_utils::internal_ids::ClientId;
 use zellij_utils::{
     data::{AgentInfo, AgentSource, AgentState, InputMode, Palette, Style},
     input::command::RunCommand,
@@ -30,7 +31,7 @@ fn read_fixture(fixture_name: &str) -> Vec<u8> {
 
 #[test]
 pub fn scrolling_inside_a_pane() {
-    let fake_client_id = 1;
+    let fake_client_id = ClientId(1);
     let mut fake_win_size = PaneGeom::default();
     fake_win_size.cols.set_inner(121);
     fake_win_size.rows.set_inner(20);
@@ -46,7 +47,7 @@ pub fn scrolling_inside_a_pane() {
     let osc8_hyperlinks = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let mut terminal_pane = TerminalPane::new(
-        pid,
+        crate::TerminalId(pid),
         fake_win_size,
         style,
         0,
@@ -100,7 +101,7 @@ pub fn sixel_image_inside_terminal_pane() {
     let osc8_hyperlinks = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let mut terminal_pane = TerminalPane::new(
-        pid,
+        crate::TerminalId(pid),
         fake_win_size,
         style,
         0,
@@ -154,7 +155,7 @@ pub fn partial_sixel_image_inside_terminal_pane() {
     let osc8_hyperlinks = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let mut terminal_pane = TerminalPane::new(
-        pid,
+        crate::TerminalId(pid),
         fake_win_size,
         style,
         0,
@@ -202,7 +203,7 @@ pub fn overflowing_sixel_image_inside_terminal_pane() {
     let osc8_hyperlinks = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let mut terminal_pane = TerminalPane::new(
-        pid,
+        crate::TerminalId(pid),
         fake_win_size,
         style,
         0,
@@ -229,7 +230,7 @@ pub fn overflowing_sixel_image_inside_terminal_pane() {
 
 #[test]
 pub fn scrolling_through_a_sixel_image() {
-    let fake_client_id = 1;
+    let fake_client_id = ClientId(1);
     let mut fake_win_size = PaneGeom::default();
     fake_win_size.cols.set_inner(121);
     fake_win_size.rows.set_inner(20);
@@ -249,7 +250,7 @@ pub fn scrolling_through_a_sixel_image() {
     let osc8_hyperlinks = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let mut terminal_pane = TerminalPane::new(
-        pid,
+        crate::TerminalId(pid),
         fake_win_size,
         style,
         0,
@@ -287,7 +288,7 @@ pub fn scrolling_through_a_sixel_image() {
 
 #[test]
 pub fn multiple_sixel_images_in_pane() {
-    let fake_client_id = 1;
+    let fake_client_id = ClientId(1);
     let mut fake_win_size = PaneGeom::default();
     fake_win_size.cols.set_inner(121);
     fake_win_size.rows.set_inner(20);
@@ -307,7 +308,7 @@ pub fn multiple_sixel_images_in_pane() {
     let osc8_hyperlinks = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let mut terminal_pane = TerminalPane::new(
-        pid,
+        crate::TerminalId(pid),
         fake_win_size,
         style,
         0,
@@ -343,7 +344,7 @@ pub fn multiple_sixel_images_in_pane() {
 #[test]
 pub fn resizing_pane_with_sixel_images() {
     // here we test, for example, that sixel images don't wrap with other lines
-    let fake_client_id = 1;
+    let fake_client_id = ClientId(1);
     let mut fake_win_size = PaneGeom::default();
     fake_win_size.cols.set_inner(121);
     fake_win_size.rows.set_inner(20);
@@ -363,7 +364,7 @@ pub fn resizing_pane_with_sixel_images() {
     let osc8_hyperlinks = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let mut terminal_pane = TerminalPane::new(
-        pid,
+        crate::TerminalId(pid),
         fake_win_size,
         style,
         0,
@@ -402,7 +403,7 @@ pub fn resizing_pane_with_sixel_images() {
 
 #[test]
 pub fn changing_character_cell_size_with_sixel_images() {
-    let fake_client_id = 1;
+    let fake_client_id = ClientId(1);
     let mut fake_win_size = PaneGeom::default();
     fake_win_size.cols.set_inner(121);
     fake_win_size.rows.set_inner(20);
@@ -422,7 +423,7 @@ pub fn changing_character_cell_size_with_sixel_images() {
     let osc8_hyperlinks = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let mut terminal_pane = TerminalPane::new(
-        pid,
+        crate::TerminalId(pid),
         fake_win_size,
         style,
         0,
@@ -486,7 +487,7 @@ pub fn keep_working_after_corrupted_sixel_image() {
     let osc8_hyperlinks = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let mut terminal_pane = TerminalPane::new(
-        pid,
+        crate::TerminalId(pid),
         fake_win_size,
         style,
         0,
@@ -548,7 +549,7 @@ pub fn pane_with_frame_position_is_on_frame() {
     let osc8_hyperlinks = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let mut terminal_pane = TerminalPane::new(
-        pid,
+        crate::TerminalId(pid),
         fake_win_size,
         style,
         0,
@@ -646,7 +647,7 @@ pub fn pane_with_bottom_and_right_borders_position_is_on_frame() {
     let osc8_hyperlinks = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let mut terminal_pane = TerminalPane::new(
-        pid,
+        crate::TerminalId(pid),
         fake_win_size,
         style,
         0,
@@ -727,7 +728,7 @@ fn make_terminal_pane_for_bell() -> TerminalPane {
     let terminal_emulator_colors = Rc::new(RefCell::new(Palette::default()));
     let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
     TerminalPane::new(
-        1,
+        crate::TerminalId(1),
         fake_win_size,
         Style::default(),
         0,
@@ -938,7 +939,7 @@ pub fn frameless_pane_position_is_on_frame() {
     let osc8_hyperlinks = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let mut terminal_pane = TerminalPane::new(
-        pid,
+        crate::TerminalId(pid),
         fake_win_size,
         style,
         0,
@@ -1019,7 +1020,7 @@ fn create_guest_modal_pane() -> TerminalPane {
     let terminal_emulator_colors = Rc::new(RefCell::new(Palette::default()));
     let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
     TerminalPane::new(
-        1,
+        crate::TerminalId(1),
         fake_win_size,
         Style::default(),
         0,
@@ -1044,7 +1045,7 @@ fn create_guest_modal_pane() -> TerminalPane {
 fn press_key(
     pane: &mut TerminalPane,
     bare_key: zellij_utils::data::BareKey,
-    client_id: u16,
+    client_id: ClientId,
 ) -> Option<crate::tab::AdjustedInput> {
     let key = zellij_utils::data::KeyWithModifier::new(bare_key);
     pane.adjust_input_to_terminal(&Some(key), vec![], false, Some(client_id))
@@ -1066,7 +1067,7 @@ fn an_ordinary_held_command_still_drops_to_a_shell_on_escape() {
         },
     );
     assert!(matches!(
-        press_key(&mut pane, BareKey::Esc, 1),
+        press_key(&mut pane, BareKey::Esc, crate::ClientId(1)),
         Some(AdjustedInput::DropToShellInThisPane { .. })
     ));
 }
@@ -1075,7 +1076,7 @@ fn an_ordinary_held_command_still_drops_to_a_shell_on_escape() {
 pub fn guest_modal_navigation_wraps() {
     use zellij_utils::data::BareKey;
     let mut pane = create_guest_modal_pane();
-    let client_id = 1;
+    let client_id = ClientId(1);
     pane.set_guest_modal(&[client_id]);
     assert_eq!(pane.guest_modal_selection(client_id), Some(0));
     press_key(&mut pane, BareKey::Up, client_id);
@@ -1092,7 +1093,7 @@ pub fn guest_modal_navigation_wraps() {
 pub fn guest_modal_tab_is_ignored() {
     use zellij_utils::data::{BareKey, KeyWithModifier};
     let mut pane = create_guest_modal_pane();
-    let client_id = 1;
+    let client_id = ClientId(1);
     pane.set_guest_modal(&[client_id]);
     press_key(&mut pane, BareKey::Tab, client_id);
     assert_eq!(pane.guest_modal_selection(client_id), Some(0));
@@ -1106,7 +1107,7 @@ pub fn guest_modal_enter_confirms_selection() {
     use crate::tab::AdjustedInput;
     use zellij_utils::data::BareKey;
     let mut pane = create_guest_modal_pane();
-    let client_id = 1;
+    let client_id = ClientId(1);
 
     pane.set_guest_modal(&[client_id]);
     let outcome = press_key(&mut pane, BareKey::Enter, client_id);
@@ -1123,7 +1124,7 @@ pub fn guest_modal_digit_shortcuts() {
     use crate::tab::AdjustedInput;
     use zellij_utils::data::BareKey;
     let mut pane = create_guest_modal_pane();
-    let client_id = 1;
+    let client_id = ClientId(1);
 
     pane.set_guest_modal(&[client_id]);
     let outcome = press_key(&mut pane, BareKey::Char('1'), client_id);
@@ -1139,7 +1140,7 @@ pub fn guest_modal_esc_descends() {
     use crate::tab::AdjustedInput;
     use zellij_utils::data::BareKey;
     let mut pane = create_guest_modal_pane();
-    let client_id = 1;
+    let client_id = ClientId(1);
     pane.set_guest_modal(&[client_id]);
     let outcome = press_key(&mut pane, BareKey::Esc, client_id);
     assert!(matches!(outcome, Some(AdjustedInput::GuestModalDescend)));
@@ -1149,7 +1150,7 @@ pub fn guest_modal_esc_descends() {
 pub fn guest_modal_swallows_other_input() {
     use zellij_utils::data::BareKey;
     let mut pane = create_guest_modal_pane();
-    let client_id = 1;
+    let client_id = ClientId(1);
     pane.set_guest_modal(&[client_id]);
     let outcome = press_key(&mut pane, BareKey::Char('x'), client_id);
     assert!(outcome.is_none());
@@ -1162,17 +1163,23 @@ pub fn guest_modal_is_per_client() {
     let mut pane = create_guest_modal_pane();
     let client_a = 1;
     let client_b = 2;
-    pane.set_guest_modal(&[client_a, client_b]);
-    press_key(&mut pane, BareKey::Down, client_a);
-    assert_eq!(pane.guest_modal_selection(client_a), Some(1));
-    assert_eq!(pane.guest_modal_selection(client_b), Some(0));
+    pane.set_guest_modal(&[crate::ClientId(client_a), crate::ClientId(client_b)]);
+    press_key(&mut pane, BareKey::Down, crate::ClientId(client_a));
+    assert_eq!(
+        pane.guest_modal_selection(crate::ClientId(client_a)),
+        Some(1)
+    );
+    assert_eq!(
+        pane.guest_modal_selection(crate::ClientId(client_b)),
+        Some(0)
+    );
 }
 
 #[test]
 pub fn guest_modal_no_modal_passes_input_through() {
     use zellij_utils::data::BareKey;
     let mut pane = create_guest_modal_pane();
-    let client_id = 1;
+    let client_id = ClientId(1);
     let outcome = press_key(&mut pane, BareKey::Char('x'), client_id);
     assert!(matches!(
         outcome,
@@ -1201,7 +1208,7 @@ fn make_pane_for_ingest_with_cell_size(
     fake_win_size.cols.set_inner(121);
     fake_win_size.rows.set_inner(20);
     TerminalPane::new(
-        1,
+        crate::TerminalId(1),
         fake_win_size,
         Style::default(),
         0,
@@ -1423,32 +1430,32 @@ fn a_suspended_pane_resumes_on_enter_and_swallows_everything_else() {
 
     let mut pane = suspended_pane();
     assert!(matches!(
-        press_key(&mut pane, BareKey::Enter, 1),
+        press_key(&mut pane, BareKey::Enter, crate::ClientId(1)),
         Some(AdjustedInput::ResumeSuspendedProcessInThisPane)
     ));
 
     let mut pane = suspended_pane();
     assert!(matches!(
-        pane.adjust_input_to_terminal(&None, vec![b' '], false, Some(1)),
+        pane.adjust_input_to_terminal(&None, vec![b' '], false, Some(crate::ClientId(1))),
         Some(AdjustedInput::ResumeSuspendedProcessInThisPane)
     ));
 
     let mut pane = suspended_pane();
     assert!(matches!(
-        pane.adjust_input_to_terminal(&None, vec![3], false, Some(1)),
+        pane.adjust_input_to_terminal(&None, vec![3], false, Some(crate::ClientId(1))),
         Some(AdjustedInput::CloseThisPane)
     ));
 
     let mut pane = suspended_pane();
     assert!(
-        press_key(&mut pane, BareKey::Char('x'), 1).is_none(),
+        press_key(&mut pane, BareKey::Char('x'), crate::ClientId(1)).is_none(),
         "an ordinary key must not reach a stopped process"
     );
 
     // Esc means "drop to shell" for a held pane; a suspended pane has a live
     // process and nothing to drop out of.
     let mut pane = suspended_pane();
-    assert!(press_key(&mut pane, BareKey::Esc, 1).is_none());
+    assert!(press_key(&mut pane, BareKey::Esc, crate::ClientId(1)).is_none());
 }
 
 /// Once the process is gone the resume hint is a lie, and the pane would keep
@@ -1472,7 +1479,7 @@ fn a_resumed_pane_forwards_input_again() {
     let mut pane = suspended_pane();
     pane.set_suspended(false);
     assert!(matches!(
-        press_key(&mut pane, BareKey::Char('x'), 1),
+        press_key(&mut pane, BareKey::Char('x'), crate::ClientId(1)),
         Some(AdjustedInput::WriteBytesToTerminal(_))
     ));
 }
@@ -1503,7 +1510,7 @@ pub fn focusing_a_pane_takes_down_its_waiting_agents_bell() {
     let mut pane = agent_pane();
     assert!(pane.set_agent_info(Some(waiting.clone())));
     assert!(pane.agent_attention_since().is_some());
-    pane.render_frame(1, frame_params(false), InputMode::Normal)
+    pane.render_frame(crate::ClientId(1), frame_params(false), InputMode::Normal)
         .expect("the frame renders");
     assert!(
         pane.agent_attention_since().is_some(),
@@ -1511,7 +1518,7 @@ pub fn focusing_a_pane_takes_down_its_waiting_agents_bell() {
     );
 
     // The focused client's is.
-    pane.render_frame(1, frame_params(true), InputMode::Normal)
+    pane.render_frame(crate::ClientId(1), frame_params(true), InputMode::Normal)
         .expect("the frame renders");
     assert!(pane.agent_attention_since().is_none());
 
@@ -1523,7 +1530,7 @@ pub fn focusing_a_pane_takes_down_its_waiting_agents_bell() {
     assert!(pane.set_agent_info(Some(busy)));
     assert!(pane.set_agent_info(Some(waiting)));
     assert!(pane.agent_attention_since().is_some());
-    pane.render_frame(1, frame_params(true), InputMode::Normal)
+    pane.render_frame(crate::ClientId(1), frame_params(true), InputMode::Normal)
         .expect("the frame renders");
     assert!(pane.agent_attention_since().is_none());
 }
@@ -1533,7 +1540,7 @@ fn agent_pane() -> TerminalPane {
     geom.cols.set_inner(80);
     geom.rows.set_inner(20);
     TerminalPane::new(
-        1,
+        crate::TerminalId(1),
         geom,
         Style::default(),
         0,
@@ -1557,7 +1564,7 @@ fn agent_pane() -> TerminalPane {
 
 fn frame_params(is_main_client: bool) -> FrameParams {
     FrameParams {
-        focused_client: is_main_client.then_some(1),
+        focused_client: is_main_client.then_some(crate::ClientId(1)),
         is_main_client,
         other_focused_clients: vec![],
         style: Style::default(),
@@ -1601,7 +1608,7 @@ fn terminal_pane_grid_shows_ab_around_captured_apc() {
     let osc8_hyperlinks = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let mut terminal_pane = TerminalPane::new(
-        pid,
+        crate::TerminalId(pid),
         fake_win_size,
         style,
         0,

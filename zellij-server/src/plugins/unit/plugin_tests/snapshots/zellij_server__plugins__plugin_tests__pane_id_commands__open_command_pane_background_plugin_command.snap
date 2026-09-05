@@ -1,5 +1,6 @@
 ---
 source: zellij-server/src/plugins/./unit/plugin_tests/pane_id_commands.rs
+assertion_line: 238
 expression: "format!(\"{:#?}\",\nnew_tab_event).replace(&format!(\"{:?}\", temp_folder.path()), \"\\\"CWD\\\"\")"
 ---
 Some(
@@ -36,7 +37,9 @@ Some(
         },
         true,
         ClientId(
-            1,
+            ClientId(
+                1,
+            ),
         ),
         Some(
             NotificationEnd {

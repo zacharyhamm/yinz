@@ -11,6 +11,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use zellij_utils::internal_ids::TerminalId;
 
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
@@ -34,7 +35,7 @@ const HOST_EXIT_GRACE: Duration = Duration::from_secs(4);
 
 pub struct SpawnParams<'a> {
     pub host_bin: &'a Path,
-    pub terminal_id: u32,
+    pub terminal_id: TerminalId,
     pub session_name: Option<String>,
     pub cmd: RunCommand,
     pub failover_cmd: Option<RunCommand>,
@@ -70,7 +71,7 @@ pub struct PendingHost {
     control_socket: Option<PathBuf>,
     master: Option<OwnedFd>,
     child_pid: u32,
-    terminal_id: u32,
+    terminal_id: TerminalId,
     cmd: RunCommand,
 }
 
@@ -413,7 +414,7 @@ impl Drop for HostGuard {
     }
 }
 
-pub type QuitCb = Box<dyn Fn(u32, Option<i32>, RunCommand) + Send>;
+pub type QuitCb = Box<dyn Fn(TerminalId, Option<i32>, RunCommand) + Send>;
 
 /// Whether a pane's root process is stopped or running.
 ///
@@ -433,12 +434,12 @@ pub enum ChildRunState {
 /// fakes, and none of them has anything to say about suspension. This is
 /// registered once, on the backend, and is the same closure for every pane —
 /// which it can be, because unlike `quit_cb` it carries no per-pane policy.
-pub type ChildStateCb = Arc<dyn Fn(u32, ChildRunState) + Send + Sync>;
+pub type ChildStateCb = Arc<dyn Fn(TerminalId, ChildRunState) + Send + Sync>;
 
 /// Told when a coding agent's hook in a remote pane reports an event, with the
 /// pane's terminal id, the agent kind and the event JSON. Registered once on
 /// the backend, like `ChildStateCb`, and handed to every remote reader.
-pub type AgentReportCb = Arc<dyn Fn(u32, String, String) + Send + Sync>;
+pub type AgentReportCb = Arc<dyn Fn(TerminalId, String, String) + Send + Sync>;
 
 fn handshake_and_spawn(
     control: &UnixStream,
@@ -486,7 +487,7 @@ fn handshake_and_spawn(
     write_msg(
         &mut stream,
         &ServerToHostMsg::Spawn {
-            terminal_id: params.terminal_id,
+            terminal_id: params.terminal_id.0,
             session_name: params.session_name.clone(),
             cmd: params.cmd.clone(),
             failover_cmd: params.failover_cmd.clone(),
@@ -513,7 +514,7 @@ fn handshake_and_spawn(
             // The server checks this before spawning a supervisor at all, so
             // reaching it means the command vanished in between.
             SpawnFailureKind::CommandNotFound => Err(ZellijError::CommandNotFound {
-                terminal_id: params.terminal_id,
+                terminal_id: params.terminal_id.0,
                 command: params.cmd.command.to_string_lossy().to_string(),
             }
             .into()),
@@ -534,7 +535,7 @@ pub struct AttachParams<'a> {
     pub control_socket: &'a Path,
     /// The terminal id this pane will have in the *adopting* session. Ids are
     /// per-server, so the one it had before means nothing here.
-    pub terminal_id: u32,
+    pub terminal_id: TerminalId,
     pub session_name: Option<String>,
 }
 
@@ -548,7 +549,7 @@ pub struct PendingAttach {
     control_socket: PathBuf,
     master: Option<OwnedFd>,
     child_pid: u32,
-    terminal_id: u32,
+    terminal_id: TerminalId,
     cmd: RunCommand,
     buffered: Vec<u8>,
     status: HostStatus,
@@ -695,7 +696,7 @@ fn try_attach(params: &AttachParams<'_>) -> Result<PendingAttach> {
         &ServerToHostMsg::Attach {
             protocol_version: PROTOCOL_VERSION,
             zellij_version: VERSION.to_owned(),
-            terminal_id: params.terminal_id,
+            terminal_id: params.terminal_id.0,
             session_name: params.session_name.clone(),
         },
     )
@@ -792,7 +793,7 @@ fn spawn_reader_thread(
     host_process: HostProcess,
     host_id: String,
     host_pid: u32,
-    terminal_id: u32,
+    terminal_id: TerminalId,
     cmd: RunCommand,
     quit_cb: QuitCb,
     child_state_cb: Option<ChildStateCb>,

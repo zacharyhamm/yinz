@@ -5,13 +5,14 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use tokio::task;
+use zellij_utils::internal_ids::TerminalId;
 use zellij_utils::{
     errors::{get_current_ctx, prelude::*, ContextType},
     logging::debug_to_file,
 };
 
 pub(crate) struct TerminalBytes {
-    terminal_id: u32,
+    terminal_id: TerminalId,
     senders: ThreadSenders,
     async_reader: Box<dyn AsyncReader>,
     debug: bool,
@@ -20,7 +21,7 @@ pub(crate) struct TerminalBytes {
 
 impl TerminalBytes {
     pub fn new(
-        terminal_id: u32,
+        terminal_id: TerminalId,
         async_reader: Box<dyn AsyncReader>,
         senders: ThreadSenders,
         debug: bool,
@@ -52,7 +53,7 @@ impl TerminalBytes {
         err_ctx.add_call(ContextType::AsyncTask);
         struct PaneClosedGuard {
             recorder: Option<crate::session_recorder::SessionRecorderHandle>,
-            terminal_id: u32,
+            terminal_id: TerminalId,
         }
         impl Drop for PaneClosedGuard {
             fn drop(&mut self) {
@@ -81,7 +82,7 @@ impl TerminalBytes {
                     self.activity_flag.store(true, Ordering::Relaxed);
                     let bytes = &buf[..n_bytes];
                     if self.debug {
-                        let _ = debug_to_file(bytes, self.terminal_id as i32);
+                        let _ = debug_to_file(bytes, self.terminal_id.0 as i32);
                     }
                     // record output if enabled, before sending to screen
                     if let Some(recorder) = &self.senders.session_recorder {
@@ -179,7 +180,7 @@ mod tests {
             ..Default::default()
         };
         let mut terminal_bytes = TerminalBytes::new(
-            1,
+            crate::TerminalId(1),
             Box::new(FakeReader {
                 data: Some(b"hello".to_vec()),
             }),
@@ -205,7 +206,7 @@ mod tests {
             events[0].kind,
             zellij_utils::session_recording::EventKind::Output
         );
-        assert_eq!(closed, Some(1));
+        assert_eq!(closed, Some(TerminalId(1)));
         Ok(())
     }
 }

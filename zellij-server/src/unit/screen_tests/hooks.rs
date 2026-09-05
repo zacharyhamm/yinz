@@ -103,28 +103,32 @@ fn report(state: AgentState, session_id: Option<&str>) -> AgentInfo {
 
 fn new_pane(pane_id: u32, invoked_with: Option<Run>) -> ScreenInstruction {
     ScreenInstruction::NewPane(
-        PaneId::Terminal(pane_id),
+        PaneId::Terminal(crate::TerminalId(pane_id)),
         Some("codex".to_string()),
         None,
         invoked_with,
         NewPanePlacement::default(),
         false,
-        ClientTabIndexOrPaneId::ClientId(10),
+        ClientTabIndexOrPaneId::ClientId(crate::ClientId(10)),
         None,
         false,
     )
 }
 
 fn set_agent(pane_id: u32, agent: Option<AgentInfo>) -> ScreenInstruction {
-    ScreenInstruction::SetPaneAgent(PaneId::Terminal(pane_id), agent, None)
+    ScreenInstruction::SetPaneAgent(PaneId::Terminal(crate::TerminalId(pane_id)), agent, None)
 }
 
 fn hold(pane_id: u32, run_command: RunCommand) -> ScreenInstruction {
-    ScreenInstruction::HoldPane(PaneId::Terminal(pane_id), Some(0), run_command)
+    ScreenInstruction::HoldPane(
+        PaneId::Terminal(crate::TerminalId(pane_id)),
+        Some(0),
+        run_command,
+    )
 }
 
 fn run_command_in_pane(pane_id: u32, run_command: RunCommand) -> ScreenInstruction {
-    ScreenInstruction::RunCommandInPane(pane_id, run_command, false)
+    ScreenInstruction::RunCommandInPane(crate::TerminalId(pane_id), run_command, false)
 }
 
 /// Drive the screen through `steps` and return every hook it asked the plugin thread for, in
@@ -215,7 +219,7 @@ fn a_changed_agent_record_reports_pane_and_session_state() {
     drain_background_jobs(&background_jobs);
     plugin_receiver.try_iter().for_each(drop);
 
-    let pane_id = PaneId::Terminal(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId(1));
     let waiting = report(AgentState::Waiting, Some("s1"));
     assert!(screen
         .tab_containing_pane_mut(pane_id)
@@ -270,7 +274,7 @@ fn a_report_that_names_no_run_keeps_the_panes() {
     let (mut screen, background_jobs) = screen_with_background_jobs(Size { cols: 80, rows: 20 });
     new_tab(&mut screen, 1, 0);
     drain_background_jobs(&background_jobs);
-    let pane_id = PaneId::Terminal(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId(1));
     let record_of = |screen: &Screen| {
         screen
             .tab_containing_pane(pane_id)
@@ -333,20 +337,20 @@ fn agent_reports_wait_for_adopted_panes_and_tabs() {
                 None,
                 false,
                 true,
-                10,
+                crate::ClientId(10),
                 None,
             ),
             set_agent(42, Some(fresh)),
             ScreenInstruction::ApplyLayout(
                 layout,
                 vec![],
-                vec![(42, None)],
+                vec![(crate::TerminalId(42), None)],
                 vec![],
-                vec![(42, serialized)],
+                vec![(crate::TerminalId(42), serialized)],
                 HashMap::new(),
                 1,
                 true,
-                10,
+                crate::ClientId(10),
                 None,
                 None,
             ),
@@ -397,7 +401,7 @@ fn an_exiting_agent_pane_fires_the_agent_exit_hook() {
         .find(|(point, _, _)| *point == HookPoint::AgentExit)
         .unwrap_or_else(|| panic!("expected an agent_exit hook, got: {fired:?}"));
     assert_eq!(*point, HookPoint::AgentExit);
-    assert_eq!(*pane_id, Some(PaneId::Terminal(2)));
+    assert_eq!(*pane_id, Some(PaneId::Terminal(crate::TerminalId(2))));
     let payload = config(payload);
     assert_eq!(payload.get("agent_pane_id").map(String::as_str), Some("2"));
     assert_eq!(
@@ -485,7 +489,7 @@ fn a_pane_whose_agent_reported_for_itself_fires_the_hook_on_exit() {
         ],
         "got: {fired:?}"
     );
-    assert_eq!(fired[2].1, Some(PaneId::Terminal(3)));
+    assert_eq!(fired[2].1, Some(PaneId::Terminal(crate::TerminalId(3))));
 }
 
 /// The shape of a pane warped in from another session: no originating plugin - the supervisor
@@ -516,7 +520,7 @@ fn a_pane_whose_record_was_cleared_before_it_exited_still_fires_agent_exit() {
         ],
         "got: {fired:?}"
     );
-    assert_eq!(fired[2].1, Some(PaneId::Terminal(3)));
+    assert_eq!(fired[2].1, Some(PaneId::Terminal(crate::TerminalId(3))));
 }
 
 /// Clearing a record a pane never had says nothing about the pane, so it must not arm the
@@ -628,7 +632,7 @@ fn a_command_pane_from_a_plugin_that_is_not_an_agent_fires_no_agent_hook() {
 fn an_exiting_command_pane_fires_pane_exit() {
     let fired = hooks_fired_by_holding(2, echo_command());
     let (_, pane_id, payload) = &fired[0];
-    assert_eq!(*pane_id, Some(PaneId::Terminal(2)));
+    assert_eq!(*pane_id, Some(PaneId::Terminal(crate::TerminalId(2))));
     let (exited_pane, exit_code, cwd, command, held) = exit(payload);
     assert_eq!(exited_pane, 2);
     assert_eq!(exit_code, Some(0));
@@ -648,7 +652,7 @@ fn a_command_pane_closed_by_its_own_exit_fires_pane_exit_without_hold() {
     echo.hold_on_close = false;
     let fired = hooks_fired_by(vec![
         new_pane(2, Some(Run::Command(echo))),
-        ScreenInstruction::ClosePane(PaneId::Terminal(2), None, None, Some(1)),
+        ScreenInstruction::ClosePane(PaneId::Terminal(crate::TerminalId(2)), None, None, Some(1)),
     ]);
     assert_eq!(points(&fired), vec![HookPoint::PaneExit], "got: {fired:?}");
     let (_, exit_code, _, _, held) = exit(&fired[0].2);
@@ -661,7 +665,12 @@ fn a_pane_closed_by_the_user_fires_no_pane_exit() {
     // A close that names a client is the user's doing, not the command's.
     let fired = hooks_fired_by(vec![
         new_pane(2, Some(Run::Command(echo_command()))),
-        ScreenInstruction::ClosePane(PaneId::Terminal(2), Some(10), None, None),
+        ScreenInstruction::ClosePane(
+            PaneId::Terminal(crate::TerminalId(2)),
+            Some(crate::ClientId(10)),
+            None,
+            None,
+        ),
     ]);
     assert!(fired.is_empty(), "expected no hook, got: {fired:?}");
 }
@@ -671,7 +680,7 @@ fn a_shell_pane_closing_fires_no_pane_exit() {
     // Not a command pane: a shell that exits is the user leaving, not a command finishing.
     let fired = hooks_fired_by(vec![
         new_pane(2, None),
-        ScreenInstruction::ClosePane(PaneId::Terminal(2), None, None, Some(0)),
+        ScreenInstruction::ClosePane(PaneId::Terminal(crate::TerminalId(2)), None, None, Some(0)),
     ]);
     assert!(fired.is_empty(), "expected no hook, got: {fired:?}");
 }
@@ -797,7 +806,7 @@ fn rerunning_an_exited_agent_pane_fires_agent_start() {
     let fired = hooks_fired_by(vec![
         new_pane(2, Some(Run::Command(agent_command("/work")))),
         hold(2, agent_command("/work")),
-        ScreenInstruction::RerunCommandPane(2, None),
+        ScreenInstruction::RerunCommandPane(crate::TerminalId(2), None),
     ]);
     assert_eq!(
         points(&fired),
@@ -842,7 +851,7 @@ fn enter_in_a_held_agent_pane_fires_agent_start() {
     let is_rerun = |instruction: &PtyInstruction| {
         matches!(
             instruction,
-            PtyInstruction::ReRunCommandInPane(PaneId::Terminal(2), _, _)
+            PtyInstruction::ReRunCommandInPane(PaneId::Terminal(TerminalId(2)), _, _)
         )
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -941,7 +950,7 @@ fn a_wait_a_person_must_answer_blinks_until_somebody_answers_it() {
     let (mut screen, background_jobs) = screen_with_background_jobs(Size { cols: 80, rows: 20 });
     new_tab(&mut screen, 1, 0);
     drain_background_jobs(&background_jobs);
-    let pane_id = PaneId::Terminal(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId(1));
     let blinking_since = |screen: &Screen| {
         screen
             .tab_containing_pane(pane_id)
@@ -1166,7 +1175,7 @@ fn report_router_acknowledges_with_screen_and_plugins_paused_and_no_active_clien
             Box::new(os),
             to_server,
             IpcReceiverWithContext::new(server),
-            99,
+            crate::ClientId(99),
             Duration::from_secs(1),
         );
         finished.send(result).unwrap();
@@ -1179,7 +1188,7 @@ fn report_router_acknowledges_with_screen_and_plugins_paused_and_no_active_clien
             .server_to_client_messages
             .lock()
             .unwrap()
-            .get(&99)
+            .get(&ClientId(99))
             .unwrap(),
         &vec![ServerToClientMsg::AgentReportAccepted {
             report_id: report.report_id.clone()
@@ -1195,7 +1204,7 @@ fn report_router_acknowledges_with_screen_and_plugins_paused_and_no_active_clien
         .as_ref()
         .unwrap()
         .try_iter()
-        .filter(|(message, _)| matches!(message, ServerInstruction::RemoveClient(99)))
+        .filter(|(message, _)| matches!(message, ServerInstruction::RemoveClient(ClientId(99))))
         .count();
     assert_eq!(
         removals, 1,

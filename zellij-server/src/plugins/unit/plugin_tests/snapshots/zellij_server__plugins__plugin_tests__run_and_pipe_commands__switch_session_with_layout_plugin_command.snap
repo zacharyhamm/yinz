@@ -1,5 +1,6 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/run_and_pipe_commands.rs
+assertion_line: 790
 expression: "format!(\"{:#?}\",\nswitch_session_event).replace(&format!(\"{:?}\", temp_folder.path()), \"\\\"CWD\\\"\")"
 ---
 Some(
@@ -19,7 +20,9 @@ Some(
                 "CWD",
             ),
         },
-        1,
+        ClientId(
+            1,
+        ),
         Some(
             NotificationEnd {
                 channel: None,

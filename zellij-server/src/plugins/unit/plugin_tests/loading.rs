@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_utils::internal_ids::PluginId;
 
 #[test]
 #[serial(plugin_tests)]
@@ -22,7 +23,7 @@ pub fn load_new_plugin_from_hd() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -100,8 +101,8 @@ pub fn shared_plugin_has_one_instance_serving_all_clients() {
         configuration: PluginUserConfiguration::new(configuration),
         ..Default::default()
     });
-    let first_client_id = 1;
-    let second_client_id = 2;
+    let first_client_id = ClientId(1);
+    let second_client_id = ClientId(2);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -203,7 +204,7 @@ pub fn load_new_plugin_with_plugin_alias() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -280,7 +281,7 @@ pub fn plugin_workers() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -360,7 +361,7 @@ pub fn plugin_workers_persist_state() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -450,7 +451,7 @@ pub fn can_subscribe_to_hd_events() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -544,8 +545,8 @@ pub fn a_background_plugin_loaded_before_its_client_attached_is_not_instantiated
         configuration: Default::default(),
         ..Default::default()
     });
-    let client_id = 1; // the harness's initiating client, not yet connected
-    let plugin_id = 0; // the first plugin the thread loads
+    let client_id = ClientId(1); // the harness's initiating client, not yet connected
+    let plugin_id = PluginId(0); // the first plugin the thread loads
     let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = permissions_and_log_until_disconnect(
         &received_screen_instructions,

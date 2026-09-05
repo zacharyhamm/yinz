@@ -1,5 +1,6 @@
 ---
 source: zellij-server/src/plugins/./unit/plugin_tests/layout_api.rs
+assertion_line: 2001
 expression: "format!(\"{:#?}\", override_layout_instruction)"
 ---
 Some(
@@ -4586,7 +4587,9 @@ Some(
         false,
         false,
         false,
-        1,
+        ClientId(
+            1,
+        ),
         Some(
             NotificationEnd {
                 channel: None,

@@ -1,12 +1,14 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
-assertion_line: 7979
+source: zellij-server/src/plugins/./unit/plugin_tests/pane_id_commands.rs
+assertion_line: 1380
 expression: "format!(\"{:#?}\", screen_instruction)"
 ---
 Some(
     TogglePaneIdFullscreen(
         Terminal(
-            2,
+            TerminalId(
+                2,
+            ),
         ),
     ),
 )

@@ -1,12 +1,14 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
-assertion_line: 7837
+source: zellij-server/src/plugins/./unit/plugin_tests/pane_id_commands.rs
+assertion_line: 1228
 expression: "format!(\"{:#?}\", screen_instruction)"
 ---
 Some(
     PageScrollUpInPaneId(
         Terminal(
-            2,
+            TerminalId(
+                2,
+            ),
         ),
     ),
 )

@@ -52,7 +52,7 @@ const PANE_COUNTS: &[usize] = &[1, 2, 4, 8, 16];
 /// `CursorMoves` only writes to every `ROW_STRIDE`th row, so the rest of the viewport stays clean.
 const ROW_STRIDE: usize = 4;
 
-const CLIENT_ID: zellij_utils::data::ClientId = 1;
+const CLIENT_ID: zellij_server::ClientId = zellij_server::ClientId(1);
 
 // ---------------------------------------------------------------------------------------------
 // deterministic byte generation
@@ -310,10 +310,10 @@ struct PaneFleet {
     kitty_image_store: Rc<RefCell<KittyImageStore>>,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     link_handler: Rc<RefCell<LinkHandler>>,
-    kitty_host_capabilities: Rc<RefCell<HashMap<zellij_utils::data::ClientId, bool>>>,
-    kitty_host_state: Rc<RefCell<HashMap<zellij_utils::data::ClientId, HostKittyState>>>,
-    sixel_host_capabilities: Rc<RefCell<HashMap<zellij_utils::data::ClientId, bool>>>,
-    clients: HashSet<zellij_utils::data::ClientId>,
+    kitty_host_capabilities: Rc<RefCell<HashMap<zellij_server::ClientId, bool>>>,
+    kitty_host_state: Rc<RefCell<HashMap<zellij_server::ClientId, HostKittyState>>>,
+    sixel_host_capabilities: Rc<RefCell<HashMap<zellij_server::ClientId, bool>>>,
+    clients: HashSet<zellij_server::ClientId>,
 }
 
 impl PaneFleet {
@@ -330,7 +330,7 @@ impl PaneFleet {
             .enumerate()
             .map(|(index, geom)| {
                 TerminalPane::new(
-                    index as u32,
+                    zellij_server::TerminalId(index as u32),
                     geom,
                     Style::default(),
                     index,
@@ -387,7 +387,7 @@ impl PaneFleet {
 
     /// One frame: collect every dirty pane's chunks into a single `Output` and serialize it, the
     /// way `Screen::render_to_clients` does.
-    fn frame(&mut self) -> HashMap<zellij_utils::data::ClientId, String> {
+    fn frame(&mut self) -> HashMap<zellij_server::ClientId, String> {
         let mut output = Output::new(
             self.sixel_image_store.clone(),
             self.character_cell_size.clone(),

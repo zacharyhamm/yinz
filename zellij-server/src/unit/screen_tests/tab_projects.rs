@@ -86,8 +86,11 @@ fn a_lone_pane_lending_its_title_outranks_the_project() {
     // Only a tab that draws pane titles has one to lend.
     let tab = screen.get_tab_by_id_mut(0).unwrap();
     tab.set_pane_frames(PaneFrameStyle::Titles);
-    tab.rename_pane_by_pane_id(PaneId::Terminal(1), "vim README".as_bytes().to_vec())
-        .expect("TEST");
+    tab.rename_pane_by_pane_id(
+        PaneId::Terminal(crate::TerminalId(1)),
+        "vim README".as_bytes().to_vec(),
+    )
+    .expect("TEST");
 
     set_projects(&mut screen, &[(0, "hocus")]);
 
@@ -102,19 +105,22 @@ fn a_tab_with_two_panes_takes_the_project_name() {
     // Only a tab that draws pane titles has one to lend.
     let tab = screen.get_tab_by_id_mut(0).unwrap();
     tab.set_pane_frames(PaneFrameStyle::Titles);
-    tab.rename_pane_by_pane_id(PaneId::Terminal(1), "vim README".as_bytes().to_vec())
-        .expect("TEST");
+    tab.rename_pane_by_pane_id(
+        PaneId::Terminal(crate::TerminalId(1)),
+        "vim README".as_bytes().to_vec(),
+    )
+    .expect("TEST");
     screen
         .get_tab_by_id_mut(0)
         .unwrap()
         .new_pane(
-            PaneId::Terminal(2),
+            PaneId::Terminal(crate::TerminalId(2)),
             None,
             None,
             false,
             true,
             NewPanePlacement::default(),
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
         )
         .expect("TEST");
@@ -136,7 +142,12 @@ fn a_pane_that_exits_without_a_title_keeps_the_projects_name() {
     new_tab(&mut screen, 1, 0);
     let tab = screen.get_tab_by_id_mut(0).unwrap();
     tab.set_pane_frames(PaneFrameStyle::Titles);
-    tab.hold_pane(PaneId::Terminal(1), Some(2), false, RunCommand::default());
+    tab.hold_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        Some(2),
+        false,
+        RunCommand::default(),
+    );
 
     set_projects(&mut screen, &[(0, "hocus")]);
 
@@ -150,9 +161,17 @@ fn a_pane_that_exits_with_a_title_still_lends_it() {
     new_tab(&mut screen, 1, 0);
     let tab = screen.get_tab_by_id_mut(0).unwrap();
     tab.set_pane_frames(PaneFrameStyle::Titles);
-    tab.rename_pane_by_pane_id(PaneId::Terminal(1), "cargo test".as_bytes().to_vec())
-        .expect("TEST");
-    tab.hold_pane(PaneId::Terminal(1), None, false, RunCommand::default());
+    tab.rename_pane_by_pane_id(
+        PaneId::Terminal(crate::TerminalId(1)),
+        "cargo test".as_bytes().to_vec(),
+    )
+    .expect("TEST");
+    tab.hold_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        None,
+        false,
+        RunCommand::default(),
+    );
 
     set_projects(&mut screen, &[(0, "hocus")]);
 
@@ -213,13 +232,13 @@ fn a_tab_with_two_panes_wears_no_pane_id() {
     let tab = screen.get_tab_by_id_mut(0).unwrap();
     tab.set_pane_frames(PaneFrameStyle::Titles);
     tab.new_pane(
-        PaneId::Terminal(2),
+        PaneId::Terminal(crate::TerminalId(2)),
         None,
         None,
         false,
         true,
         NewPanePlacement::default(),
-        Some(1),
+        Some(crate::ClientId(1)),
         None,
     )
     .expect("TEST");
@@ -238,7 +257,12 @@ fn a_long_project_name_is_cut_rather_than_the_exit_marker() {
     new_tab(&mut screen, 1, 0);
     let tab = screen.get_tab_by_id_mut(0).unwrap();
     tab.set_pane_frames(PaneFrameStyle::Titles);
-    tab.hold_pane(PaneId::Terminal(1), Some(2), false, RunCommand::default());
+    tab.hold_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        Some(2),
+        false,
+        RunCommand::default(),
+    );
 
     set_projects(&mut screen, &[(0, &"p".repeat(60))]);
 

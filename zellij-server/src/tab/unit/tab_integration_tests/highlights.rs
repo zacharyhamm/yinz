@@ -6,13 +6,16 @@ fn click_on_plugin_highlight_sends_highlight_clicked() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let (mut tab, mock_plugin_receiver) =
         create_new_tab_with_plugin_receiver(size, ModeInfo::default());
 
     // Feed PTY bytes to pane 1
-    tab.handle_pty_bytes(1, Vec::from("click here foo bar".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId(1),
+        Vec::from("click here foo bar".as_bytes()),
+    )
+    .unwrap();
 
     // Set plugin highlight on pane 1 for pattern "foo"
     let highlights = vec![RegexHighlight {
@@ -27,8 +30,8 @@ fn click_on_plugin_highlight_sends_highlight_clicked() {
         tooltip_text: None,
     }];
     tab.set_plugin_regex_highlights_for_pane(
-        PaneId::Terminal(1),
-        42,
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(42),
         highlights,
         &Style::default(),
     );
@@ -54,8 +57,8 @@ fn click_on_plugin_highlight_sends_highlight_clicked() {
             ..
         } = instruction
         {
-            assert_eq!(plugin_id, 42);
-            assert_eq!(pane_id, PaneId::Terminal(1));
+            assert_eq!(plugin_id, crate::PluginId(42));
+            assert_eq!(pane_id, PaneId::Terminal(crate::TerminalId(1)));
             assert_eq!(pattern, "foo");
             assert_eq!(matched_string, "foo");
             found_highlight_clicked = true;
@@ -74,12 +77,15 @@ fn click_outside_highlight_starts_normal_selection() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let (mut tab, mock_plugin_receiver) =
         create_new_tab_with_plugin_receiver(size, ModeInfo::default());
 
-    tab.handle_pty_bytes(1, Vec::from("click here foo bar".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId(1),
+        Vec::from("click here foo bar".as_bytes()),
+    )
+    .unwrap();
 
     let highlights = vec![RegexHighlight {
         pattern: "foo".into(),
@@ -93,8 +99,8 @@ fn click_outside_highlight_starts_normal_selection() {
         tooltip_text: None,
     }];
     tab.set_plugin_regex_highlights_for_pane(
-        PaneId::Terminal(1),
-        42,
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(42),
         highlights,
         &Style::default(),
     );
@@ -127,12 +133,15 @@ fn hover_over_highlight_shows_styling() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
 
-    tab.handle_pty_bytes(1, Vec::from("hello link_text bar".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId(1),
+        Vec::from("hello link_text bar".as_bytes()),
+    )
+    .unwrap();
 
     let highlights = vec![RegexHighlight {
         pattern: "link_text".into(),
@@ -145,7 +154,12 @@ fn hover_over_highlight_shows_styling() {
         underline: true,
         tooltip_text: None,
     }];
-    tab.set_plugin_regex_highlights_for_pane(PaneId::Terminal(1), 1, highlights, &Style::default());
+    tab.set_plugin_regex_highlights_for_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(1),
+        highlights,
+        &Style::default(),
+    );
 
     // Hover over the match (link_text starts at offset 6, with frame offset col = 7)
     let hover_position = Position::new(1, 9);
@@ -188,22 +202,25 @@ fn hover_on_unfocused_pane_no_highlight() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(2);
+    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
     let mut output = Output::default();
 
     // Create a vertical split
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(1, Vec::from("link_text".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("link_text".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(2, Vec::from("right pane".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("right pane".as_bytes()))
         .unwrap();
 
     // Active pane is pane 2 (right)
-    assert_eq!(tab.get_active_pane_id(client_id), Some(PaneId::Terminal(2)));
+    assert_eq!(
+        tab.get_active_pane_id(client_id),
+        Some(PaneId::Terminal(crate::TerminalId(2)))
+    );
 
     // Set on_hover highlight on pane 1 (left, unfocused)
     let highlights = vec![RegexHighlight {
@@ -217,7 +234,12 @@ fn hover_on_unfocused_pane_no_highlight() {
         underline: true,
         tooltip_text: None,
     }];
-    tab.set_plugin_regex_highlights_for_pane(PaneId::Terminal(1), 1, highlights, &Style::default());
+    tab.set_plugin_regex_highlights_for_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(1),
+        highlights,
+        &Style::default(),
+    );
 
     // Hover over left pane (unfocused)
     let hover_position = Position::new(1, 5);
@@ -245,15 +267,18 @@ fn highlight_click_in_mouse_mode_pane_suppressed() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let (mut tab, mock_plugin_receiver) =
         create_new_tab_with_plugin_receiver(size, ModeInfo::default());
 
     // Feed PTY bytes that enable mouse tracking (SGR mode + any-event tracking)
-    tab.handle_pty_bytes(1, Vec::from("\x1b[?1006h\x1b[?1003h".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId(1),
+        Vec::from("\x1b[?1006h\x1b[?1003h".as_bytes()),
+    )
+    .unwrap();
     // Then feed text with matchable content
-    tab.handle_pty_bytes(1, Vec::from("foo bar baz".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("foo bar baz".as_bytes()))
         .unwrap();
 
     // Set plugin highlight
@@ -269,8 +294,8 @@ fn highlight_click_in_mouse_mode_pane_suppressed() {
         tooltip_text: None,
     }];
     tab.set_plugin_regex_highlights_for_pane(
-        PaneId::Terminal(1),
-        42,
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(42),
         highlights,
         &Style::default(),
     );
@@ -301,10 +326,10 @@ fn set_and_clear_highlights_across_tiled_and_floating() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let pane2 = PaneId::Terminal(2);
-    let pane3 = PaneId::Terminal(3);
+    let pane2 = PaneId::Terminal(crate::TerminalId(2));
+    let pane3 = PaneId::Terminal(crate::TerminalId(3));
 
     // Create a second tiled pane
     tab.vertical_split(pane2, None, client_id, None, None)
@@ -326,11 +351,11 @@ fn set_and_clear_highlights_across_tiled_and_floating() {
     .unwrap();
 
     // Feed content to all panes
-    tab.handle_pty_bytes(1, Vec::from("aaa bbb".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("aaa bbb".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(2, Vec::from("aaa bbb".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("aaa bbb".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(3, Vec::from("aaa bbb".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("aaa bbb".as_bytes()))
         .unwrap();
 
     // Set highlights from plugin 1 (pattern "aaa") on all panes
@@ -345,9 +370,24 @@ fn set_and_clear_highlights_across_tiled_and_floating() {
         underline: true,
         tooltip_text: None,
     }];
-    tab.set_plugin_regex_highlights_for_pane(PaneId::Terminal(1), 1, h1.clone(), &Style::default());
-    tab.set_plugin_regex_highlights_for_pane(pane2, 1, h1.clone(), &Style::default());
-    tab.set_plugin_regex_highlights_for_pane(pane3, 1, h1.clone(), &Style::default());
+    tab.set_plugin_regex_highlights_for_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(1),
+        h1.clone(),
+        &Style::default(),
+    );
+    tab.set_plugin_regex_highlights_for_pane(
+        pane2,
+        crate::PluginId(1),
+        h1.clone(),
+        &Style::default(),
+    );
+    tab.set_plugin_regex_highlights_for_pane(
+        pane3,
+        crate::PluginId(1),
+        h1.clone(),
+        &Style::default(),
+    );
 
     // Set highlights from plugin 2 (pattern "bbb") on all panes
     let h2 = vec![RegexHighlight {
@@ -361,12 +401,27 @@ fn set_and_clear_highlights_across_tiled_and_floating() {
         underline: false,
         tooltip_text: None,
     }];
-    tab.set_plugin_regex_highlights_for_pane(PaneId::Terminal(1), 2, h2.clone(), &Style::default());
-    tab.set_plugin_regex_highlights_for_pane(pane2, 2, h2.clone(), &Style::default());
-    tab.set_plugin_regex_highlights_for_pane(pane3, 2, h2.clone(), &Style::default());
+    tab.set_plugin_regex_highlights_for_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(2),
+        h2.clone(),
+        &Style::default(),
+    );
+    tab.set_plugin_regex_highlights_for_pane(
+        pane2,
+        crate::PluginId(2),
+        h2.clone(),
+        &Style::default(),
+    );
+    tab.set_plugin_regex_highlights_for_pane(
+        pane3,
+        crate::PluginId(2),
+        h2.clone(),
+        &Style::default(),
+    );
 
     // Clear plugin 1 highlights across all panes
-    tab.clear_all_plugin_highlights(1);
+    tab.clear_all_plugin_highlights(crate::PluginId(1));
 
     // Verify plugin 2 highlights remain — we can use the tab render to snapshot,
     // or directly check that plugin 2 pattern still matches on pane 1
@@ -390,12 +445,15 @@ fn plain_click_on_highlight_does_not_send_highlight_clicked() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let (mut tab, mock_plugin_receiver) =
         create_new_tab_with_plugin_receiver(size, ModeInfo::default());
 
-    tab.handle_pty_bytes(1, Vec::from("click here foo bar".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId(1),
+        Vec::from("click here foo bar".as_bytes()),
+    )
+    .unwrap();
 
     let highlights = vec![RegexHighlight {
         pattern: "foo".into(),
@@ -409,8 +467,8 @@ fn plain_click_on_highlight_does_not_send_highlight_clicked() {
         tooltip_text: None,
     }];
     tab.set_plugin_regex_highlights_for_pane(
-        PaneId::Terminal(1),
-        42,
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(42),
         highlights,
         &Style::default(),
     );
@@ -442,12 +500,15 @@ fn alt_click_outside_highlight_falls_through_to_group_toggle() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let (mut tab, mock_plugin_receiver) =
         create_new_tab_with_plugin_receiver(size, ModeInfo::default());
 
-    tab.handle_pty_bytes(1, Vec::from("click here foo bar".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId(1),
+        Vec::from("click here foo bar".as_bytes()),
+    )
+    .unwrap();
 
     let highlights = vec![RegexHighlight {
         pattern: "foo".into(),
@@ -461,8 +522,8 @@ fn alt_click_outside_highlight_falls_through_to_group_toggle() {
         tooltip_text: None,
     }];
     tab.set_plugin_regex_highlights_for_pane(
-        PaneId::Terminal(1),
-        42,
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(42),
         highlights,
         &Style::default(),
     );
@@ -486,7 +547,10 @@ fn alt_click_outside_highlight_falls_through_to_group_toggle() {
     );
 
     // Group toggle effect should have been produced
-    assert_eq!(effect.group_toggle, Some(PaneId::Terminal(1)));
+    assert_eq!(
+        effect.group_toggle,
+        Some(PaneId::Terminal(crate::TerminalId(1)))
+    );
 }
 
 #[test]
@@ -495,12 +559,15 @@ fn hover_over_highlight_with_tooltip_caches_tooltip() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
 
-    tab.handle_pty_bytes(1, Vec::from("hello link_text bar".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId(1),
+        Vec::from("hello link_text bar".as_bytes()),
+    )
+    .unwrap();
 
     let highlights = vec![RegexHighlight {
         pattern: "link_text".into(),
@@ -513,7 +580,12 @@ fn hover_over_highlight_with_tooltip_caches_tooltip() {
         underline: true,
         tooltip_text: Some("Open".to_string()),
     }];
-    tab.set_plugin_regex_highlights_for_pane(PaneId::Terminal(1), 1, highlights, &Style::default());
+    tab.set_plugin_regex_highlights_for_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(1),
+        highlights,
+        &Style::default(),
+    );
 
     // Hover over the match (link_text starts at offset 6, with frame offset col = 7)
     let hover_position = Position::new(1, 9);
@@ -561,12 +633,15 @@ fn higher_layer_highlight_style_wins_in_rendered_output() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
 
-    tab.handle_pty_bytes(1, Vec::from("overlap_text here\n".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId(1),
+        Vec::from("overlap_text here\n".as_bytes()),
+    )
+    .unwrap();
 
     // Plugin 1 (id: 10): Hint layer, underline only
     let h1 = vec![RegexHighlight {
@@ -592,8 +667,18 @@ fn higher_layer_highlight_style_wins_in_rendered_output() {
         underline: false,
         tooltip_text: None,
     }];
-    tab.set_plugin_regex_highlights_for_pane(PaneId::Terminal(1), 10, h1, &Style::default());
-    tab.set_plugin_regex_highlights_for_pane(PaneId::Terminal(1), 20, h2, &Style::default());
+    tab.set_plugin_regex_highlights_for_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(10),
+        h1,
+        &Style::default(),
+    );
+    tab.set_plugin_regex_highlights_for_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(20),
+        h2,
+        &Style::default(),
+    );
 
     tab.render(&mut output, None).unwrap();
     let raw_output = output.serialize().unwrap();
@@ -631,12 +716,15 @@ fn click_dispatches_to_higher_layer_plugin() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let (mut tab, mock_plugin_receiver) =
         create_new_tab_with_plugin_receiver(size, ModeInfo::default());
 
-    tab.handle_pty_bytes(1, Vec::from("click here shared_text bar\n".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId(1),
+        Vec::from("click here shared_text bar\n".as_bytes()),
+    )
+    .unwrap();
 
     // Plugin 1 (id: 10): Hint layer
     let h1 = vec![RegexHighlight {
@@ -662,8 +750,18 @@ fn click_dispatches_to_higher_layer_plugin() {
         underline: true,
         tooltip_text: None,
     }];
-    tab.set_plugin_regex_highlights_for_pane(PaneId::Terminal(1), 10, h1, &Style::default());
-    tab.set_plugin_regex_highlights_for_pane(PaneId::Terminal(1), 20, h2, &Style::default());
+    tab.set_plugin_regex_highlights_for_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(10),
+        h1,
+        &Style::default(),
+    );
+    tab.set_plugin_regex_highlights_for_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(20),
+        h2,
+        &Style::default(),
+    );
 
     // Alt+Click on "shared_text" (starts at offset 11, frame adds +1 => col 12)
     let click_position = Position::new(1, 12);
@@ -680,7 +778,7 @@ fn click_dispatches_to_higher_layer_plugin() {
     }
     assert_eq!(
         found_plugin_id,
-        Some(20),
+        Some(zellij_utils::internal_ids::PluginId(20)),
         "HighlightClicked should be dispatched to the Tool layer plugin (id: 20)"
     );
 }
@@ -691,12 +789,15 @@ fn hover_tooltip_shows_higher_layer_tooltip() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
 
-    tab.handle_pty_bytes(1, Vec::from("hover here tooltipped bar\n".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId(1),
+        Vec::from("hover here tooltipped bar\n".as_bytes()),
+    )
+    .unwrap();
 
     // Plugin 1 (id: 10): Hint layer with tooltip
     let h1 = vec![RegexHighlight {
@@ -722,8 +823,18 @@ fn hover_tooltip_shows_higher_layer_tooltip() {
         underline: true,
         tooltip_text: Some("Tool Tooltip".to_string()),
     }];
-    tab.set_plugin_regex_highlights_for_pane(PaneId::Terminal(1), 10, h1, &Style::default());
-    tab.set_plugin_regex_highlights_for_pane(PaneId::Terminal(1), 20, h2, &Style::default());
+    tab.set_plugin_regex_highlights_for_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(10),
+        h1,
+        &Style::default(),
+    );
+    tab.set_plugin_regex_highlights_for_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(20),
+        h2,
+        &Style::default(),
+    );
 
     // Hover over "tooltipped" (starts at offset 11, frame adds +1 => col 12)
     let hover_position = Position::new(1, 12);
@@ -751,11 +862,11 @@ fn non_overlapping_highlights_from_different_layers_coexist() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
 
-    tab.handle_pty_bytes(1, Vec::from("aaa bbb ccc\n".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("aaa bbb ccc\n".as_bytes()))
         .unwrap();
 
     // Plugin 1 (id: 10): Hint layer, underline on "aaa"
@@ -794,9 +905,24 @@ fn non_overlapping_highlights_from_different_layers_coexist() {
         underline: false,
         tooltip_text: None,
     }];
-    tab.set_plugin_regex_highlights_for_pane(PaneId::Terminal(1), 10, h1, &Style::default());
-    tab.set_plugin_regex_highlights_for_pane(PaneId::Terminal(1), 20, h2, &Style::default());
-    tab.set_plugin_regex_highlights_for_pane(PaneId::Terminal(1), 30, h3, &Style::default());
+    tab.set_plugin_regex_highlights_for_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(10),
+        h1,
+        &Style::default(),
+    );
+    tab.set_plugin_regex_highlights_for_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(20),
+        h2,
+        &Style::default(),
+    );
+    tab.set_plugin_regex_highlights_for_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        crate::PluginId(30),
+        h3,
+        &Style::default(),
+    );
 
     tab.render(&mut output, None).unwrap();
     let raw_output = output.serialize().unwrap();

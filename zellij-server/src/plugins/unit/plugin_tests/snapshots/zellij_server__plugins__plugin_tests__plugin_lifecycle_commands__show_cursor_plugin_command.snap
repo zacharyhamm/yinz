@@ -1,11 +1,16 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/plugin_lifecycle_commands.rs
+assertion_line: 456
 expression: "format!(\"{:#?}\", show_cursor_instruction)"
 ---
 Some(
     (
-        0,
-        1,
+        PluginId(
+            0,
+        ),
+        ClientId(
+            1,
+        ),
         Some(
             (
                 5,

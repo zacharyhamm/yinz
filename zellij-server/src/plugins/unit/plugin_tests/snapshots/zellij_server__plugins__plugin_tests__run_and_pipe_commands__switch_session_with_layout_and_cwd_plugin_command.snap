@@ -1,5 +1,6 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/run_and_pipe_commands.rs
+assertion_line: 877
 expression: "format!(\"{:#?}\", switch_session_event)"
 ---
 Some(
@@ -19,7 +20,9 @@ Some(
                 "/foo/bar",
             ),
         },
-        1,
+        ClientId(
+            1,
+        ),
         Some(
             NotificationEnd {
                 channel: None,

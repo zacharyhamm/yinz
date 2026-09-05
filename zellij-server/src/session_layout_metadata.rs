@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zellij_utils::common_path::common_path_all;
+use zellij_utils::internal_ids::{PluginId, TerminalId};
 use zellij_utils::pane_size::PaneGeom;
 use zellij_utils::{
     data::{LayoutMetadata, PaneMetadata, TabMetadata},
@@ -224,7 +225,7 @@ impl SessionLayoutMetadata {
             floating_panes,
         })
     }
-    pub fn all_terminal_ids(&self) -> Vec<u32> {
+    pub fn all_terminal_ids(&self) -> Vec<TerminalId> {
         let mut terminal_ids = vec![];
         for tab in &self.tabs {
             for pane_layout_metadata in &tab.tiled_panes {
@@ -240,7 +241,7 @@ impl SessionLayoutMetadata {
         }
         terminal_ids
     }
-    pub fn all_plugin_ids(&self) -> Vec<u32> {
+    pub fn all_plugin_ids(&self) -> Vec<PluginId> {
         let mut plugin_ids = vec![];
         for tab in &self.tabs {
             for pane_layout_metadata in &tab.tiled_panes {
@@ -256,7 +257,7 @@ impl SessionLayoutMetadata {
         }
         plugin_ids
     }
-    pub fn remove_plugin_from_layout(&mut self, plugin_id_to_remove: u32) {
+    pub fn remove_plugin_from_layout(&mut self, plugin_id_to_remove: PluginId) {
         for tab in &mut self.tabs {
             // Filter tiled panes
             tab.tiled_panes.retain(|pane| {
@@ -279,7 +280,7 @@ impl SessionLayoutMetadata {
     }
     pub fn update_terminal_commands(
         &mut self,
-        mut terminal_ids_to_commands: HashMap<u32, Vec<String>>,
+        mut terminal_ids_to_commands: HashMap<TerminalId, Vec<String>>,
     ) {
         let mut update_cmd_in_pane_metadata = |pane_layout_metadata: &mut PaneLayoutMetadata| {
             if let PaneId::Terminal(id) = pane_layout_metadata.id {
@@ -308,7 +309,7 @@ impl SessionLayoutMetadata {
             }
         }
     }
-    pub fn update_terminal_cwds(&mut self, mut terminal_ids_to_cwds: HashMap<u32, PathBuf>) {
+    pub fn update_terminal_cwds(&mut self, mut terminal_ids_to_cwds: HashMap<TerminalId, PathBuf>) {
         if let Some(common_path_between_cwds) =
             common_path_all(terminal_ids_to_cwds.values().map(|p| p.as_path()))
         {
@@ -335,7 +336,10 @@ impl SessionLayoutMetadata {
             }
         }
     }
-    pub fn update_plugin_cmds(&mut self, mut plugin_ids_to_run_plugins: HashMap<u32, RunPlugin>) {
+    pub fn update_plugin_cmds(
+        &mut self,
+        mut plugin_ids_to_run_plugins: HashMap<PluginId, RunPlugin>,
+    ) {
         let mut update_cmd_in_pane_metadata = |pane_layout_metadata: &mut PaneLayoutMetadata| {
             if let PaneId::Plugin(id) = pane_layout_metadata.id {
                 if let Some(run_plugin) = plugin_ids_to_run_plugins.remove(&id) {
@@ -693,7 +697,11 @@ mod tests {
     use super::*;
     use zellij_utils::pane_size::PaneGeom;
 
-    fn make_command_pane(terminal_id: u32, command: &str, args: Vec<&str>) -> PaneLayoutMetadata {
+    fn make_command_pane(
+        terminal_id: TerminalId,
+        command: &str,
+        args: Vec<&str>,
+    ) -> PaneLayoutMetadata {
         let mut run_command = RunCommand::new(PathBuf::from(command));
         run_command.args = args.into_iter().map(|s| s.to_string()).collect();
         PaneLayoutMetadata::new(
@@ -711,7 +719,7 @@ mod tests {
     }
 
     fn make_edit_file_pane(
-        terminal_id: u32,
+        terminal_id: TerminalId,
         path: &str,
         line_number: Option<usize>,
     ) -> PaneLayoutMetadata {
@@ -748,7 +756,7 @@ mod tests {
 
     #[test]
     fn detects_editor_pane_with_line_number_vim_family() {
-        let pane = make_command_pane(1, "nvim", vec!["+50", "file.txt"]);
+        let pane = make_command_pane(crate::TerminalId(1), "nvim", vec!["+50", "file.txt"]);
         let mut meta = session_with_editor("nvim", vec![pane]);
         meta.detect_editor_panes();
         assert_eq!(
@@ -759,7 +767,7 @@ mod tests {
 
     #[test]
     fn detects_editor_pane_with_line_number_helix() {
-        let pane = make_command_pane(1, "hx", vec!["file.txt:50"]);
+        let pane = make_command_pane(crate::TerminalId(1), "hx", vec!["file.txt:50"]);
         let mut meta = session_with_editor("hx", vec![pane]);
         meta.detect_editor_panes();
         assert_eq!(
@@ -773,7 +781,7 @@ mod tests {
 
     #[test]
     fn skips_non_editor_command() {
-        let pane = make_command_pane(1, "grep", vec!["pattern", "file.txt"]);
+        let pane = make_command_pane(crate::TerminalId(1), "grep", vec!["pattern", "file.txt"]);
         let mut meta = session_with_editor("nvim", vec![pane]);
         meta.detect_editor_panes();
         // Run::Command(grep ...) unchanged
@@ -787,7 +795,7 @@ mod tests {
 
     #[test]
     fn skips_editor_with_no_args() {
-        let pane = make_command_pane(1, "nvim", vec![]);
+        let pane = make_command_pane(crate::TerminalId(1), "nvim", vec![]);
         let mut meta = session_with_editor("nvim", vec![pane]);
         meta.detect_editor_panes();
         match get_first_tiled_run(&meta) {
@@ -801,7 +809,7 @@ mod tests {
 
     #[test]
     fn skips_editor_with_multiple_files() {
-        let pane = make_command_pane(1, "nvim", vec!["a.txt", "b.txt"]);
+        let pane = make_command_pane(crate::TerminalId(1), "nvim", vec!["a.txt", "b.txt"]);
         let mut meta = session_with_editor("nvim", vec![pane]);
         meta.detect_editor_panes();
         match get_first_tiled_run(&meta) {
@@ -816,7 +824,7 @@ mod tests {
     #[test]
     fn detects_editor_matching_by_binary_name() {
         // configured as /usr/bin/nvim, running as nvim
-        let pane = make_command_pane(1, "nvim", vec!["file.txt"]);
+        let pane = make_command_pane(crate::TerminalId(1), "nvim", vec!["file.txt"]);
         let mut meta = session_with_editor("/usr/bin/nvim", vec![pane]);
         meta.detect_editor_panes();
         assert_eq!(
@@ -827,7 +835,7 @@ mod tests {
 
     #[test]
     fn does_not_affect_existing_edit_file_run() {
-        let pane = make_edit_file_pane(1, "file.txt", Some(10));
+        let pane = make_edit_file_pane(crate::TerminalId(1), "file.txt", Some(10));
         let mut meta = session_with_editor("nvim", vec![pane]);
         meta.detect_editor_panes();
         assert_eq!(
@@ -844,7 +852,7 @@ mod tests {
     #[test]
     fn does_not_cross_match_vim_with_emacs() {
         // configured as emacs, pane running vim — NOT cross-matched
-        let pane = make_command_pane(1, "vim", vec!["file.txt"]);
+        let pane = make_command_pane(crate::TerminalId(1), "vim", vec!["file.txt"]);
         let mut meta = session_with_editor("emacs", vec![pane]);
         meta.detect_editor_panes();
         match get_first_tiled_run(&meta) {
@@ -956,7 +964,11 @@ mod tests {
         #[hegel::test]
         fn any_known_editor_invocation_becomes_an_edit_file_run(tc: hegel::TestCase) {
             let (configured, command, args, path, line) = tc.draw(editor_invocation());
-            let pane = make_command_pane(1, &command, args.iter().map(|s| s.as_str()).collect());
+            let pane = make_command_pane(
+                crate::TerminalId(1),
+                &command,
+                args.iter().map(|s| s.as_str()).collect(),
+            );
             let mut meta = session_with_editor(&configured, vec![pane]);
             meta.detect_editor_panes();
             assert_eq!(
@@ -977,7 +989,11 @@ mod tests {
         #[hegel::test]
         fn detecting_editor_panes_twice_changes_nothing(tc: hegel::TestCase) {
             let (configured, command, args, _, _) = tc.draw(editor_invocation());
-            let pane = make_command_pane(1, &command, args.iter().map(|s| s.as_str()).collect());
+            let pane = make_command_pane(
+                crate::TerminalId(1),
+                &command,
+                args.iter().map(|s| s.as_str()).collect(),
+            );
             let mut meta = session_with_editor(&configured, vec![pane]);
             meta.detect_editor_panes();
             let after_once = get_first_tiled_run(&meta).cloned();
@@ -1004,7 +1020,7 @@ mod tests {
             ]));
             let file = tc.draw(generators::sampled_from(file_paths()));
 
-            let pane = make_command_pane(1, command, vec![file]);
+            let pane = make_command_pane(crate::TerminalId(1), command, vec![file]);
             let mut meta = session_with_editor(configured, vec![pane]);
             meta.detect_editor_panes();
 

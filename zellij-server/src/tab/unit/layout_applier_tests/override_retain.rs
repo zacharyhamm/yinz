@@ -16,7 +16,11 @@ fn test_override_tiled_retain_terminal_panes_partial_match() {
     "#;
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(1, None), (2, None), (3, None)];
+    let terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
 
     let size = Size {
         cols: 120,
@@ -79,7 +83,7 @@ fn test_override_tiled_retain_terminal_panes_partial_match() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -101,7 +105,7 @@ fn test_override_tiled_retain_terminal_panes_partial_match() {
             &mut HashMap::new(),
             true, // retain_existing_terminal_panes
             false,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -150,7 +154,11 @@ fn test_override_tiled_retain_terminal_panes_no_matches() {
     "#;
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(1, None), (2, None), (3, None)];
+    let terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
 
     let size = Size {
         cols: 120,
@@ -213,7 +221,7 @@ fn test_override_tiled_retain_terminal_panes_no_matches() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -227,7 +235,11 @@ fn test_override_tiled_retain_terminal_panes_no_matches() {
     "#;
 
     let (override_tiled, _) = parse_kdl_layout(override_kdl);
-    let new_terminal_ids = vec![(4, None), (5, None), (6, None)];
+    let new_terminal_ids = vec![
+        (TerminalId(4), None),
+        (TerminalId(5), None),
+        (TerminalId(6), None),
+    ];
 
     // Override with retain_existing_terminal_panes = true
     applier
@@ -237,7 +249,7 @@ fn test_override_tiled_retain_terminal_panes_no_matches() {
             &mut HashMap::new(),
             true, // retain_existing_terminal_panes
             false,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -298,8 +310,8 @@ fn test_override_floating_retain_terminal_panes_partial_match() {
     "#;
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(1, None)];
-    let floating_terminal_ids = vec![(2, None), (3, None)];
+    let terminal_ids = vec![(TerminalId(1), None)];
+    let floating_terminal_ids = vec![(TerminalId(2), None), (TerminalId(3), None)];
 
     let size = Size {
         cols: 120,
@@ -362,7 +374,7 @@ fn test_override_floating_retain_terminal_panes_partial_match() {
             terminal_ids,
             floating_terminal_ids,
             HashMap::new(),
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -457,8 +469,8 @@ fn test_override_floating_retain_terminal_panes_no_matches() {
     "#;
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(1, None)];
-    let floating_terminal_ids = vec![(2, None), (3, None)];
+    let terminal_ids = vec![(TerminalId(1), None)];
+    let floating_terminal_ids = vec![(TerminalId(2), None), (TerminalId(3), None)];
 
     let size = Size {
         cols: 120,
@@ -521,7 +533,7 @@ fn test_override_floating_retain_terminal_panes_no_matches() {
             terminal_ids,
             floating_terminal_ids,
             HashMap::new(),
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -549,7 +561,7 @@ fn test_override_floating_retain_terminal_panes_no_matches() {
     "#;
 
     let (_, override_floating) = parse_kdl_layout(override_kdl);
-    let new_floating_terminal_ids = vec![(4, None), (5, None)];
+    let new_floating_terminal_ids = vec![(TerminalId(4), None), (TerminalId(5), None)];
 
     // Override with retain_existing_terminal_panes = true
     applier
@@ -622,8 +634,12 @@ fn test_override_mixed_retain_terminal_panes_both_tiled_and_floating() {
     "#;
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(1, None), (2, None), (3, None)];
-    let floating_terminal_ids = vec![(4, None)];
+    let terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
+    let floating_terminal_ids = vec![(TerminalId(4), None)];
 
     let size = Size {
         cols: 120,
@@ -686,7 +702,7 @@ fn test_override_mixed_retain_terminal_panes_both_tiled_and_floating() {
             terminal_ids,
             floating_terminal_ids,
             HashMap::new(),
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -709,8 +725,8 @@ fn test_override_mixed_retain_terminal_panes_both_tiled_and_floating() {
     "#;
 
     let (override_tiled, override_floating) = parse_kdl_layout(override_kdl);
-    let new_terminal_ids = vec![(5, None)];
-    let new_floating_terminal_ids = vec![(6, None)];
+    let new_terminal_ids = vec![(TerminalId(5), None)];
+    let new_floating_terminal_ids = vec![(TerminalId(6), None)];
 
     let retain_existing_terminal_panes = true;
     let retain_existing_plugin_panes = false;
@@ -723,7 +739,7 @@ fn test_override_mixed_retain_terminal_panes_both_tiled_and_floating() {
             HashMap::new(),
             retain_existing_terminal_panes,
             retain_existing_plugin_panes,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -781,11 +797,14 @@ fn test_override_retain_terminal_but_close_plugin_panes() {
     "#;
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(1, None), (2, None)];
+    let terminal_ids = vec![(TerminalId(1), None), (TerminalId(2), None)];
 
     let mut initial_plugin_ids = HashMap::new();
     let tab_bar_plugin = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
-    initial_plugin_ids.insert(tab_bar_plugin.clone(), vec![100]);
+    initial_plugin_ids.insert(
+        tab_bar_plugin.clone(),
+        vec![zellij_utils::internal_ids::PluginId(100)],
+    );
 
     let size = Size {
         cols: 120,
@@ -848,7 +867,7 @@ fn test_override_retain_terminal_but_close_plugin_panes() {
             terminal_ids,
             vec![],
             initial_plugin_ids,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -869,7 +888,7 @@ fn test_override_retain_terminal_but_close_plugin_panes() {
             &mut HashMap::new(),
             true, // retain_existing_terminal_panes
             false,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -894,7 +913,7 @@ fn test_override_retain_terminal_but_close_plugin_panes() {
         "Plugin pane should be unloaded even with retain_existing_terminal_panes"
     );
     assert!(
-        unloaded_plugins.contains(&100),
+        unloaded_plugins.contains(&zellij_utils::internal_ids::PluginId(100)),
         "Tab-bar plugin (100) should be unloaded"
     );
 
@@ -935,16 +954,16 @@ fn test_override_tiled_retain_plugin_panes_partial_match() {
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
 
-    let terminal_ids = vec![(1, None)];
+    let terminal_ids = vec![(TerminalId(1), None)];
 
     let mut initial_plugin_ids = HashMap::new();
     let tab_bar = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
     let status_bar = RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap();
     let custom =
         RunPluginOrAlias::from_url("file:///path/to/custom.wasm", &None, None, None).unwrap();
-    initial_plugin_ids.insert(tab_bar, vec![100]);
-    initial_plugin_ids.insert(status_bar, vec![101]);
-    initial_plugin_ids.insert(custom, vec![102]);
+    initial_plugin_ids.insert(tab_bar, vec![zellij_utils::internal_ids::PluginId(100)]);
+    initial_plugin_ids.insert(status_bar, vec![zellij_utils::internal_ids::PluginId(101)]);
+    initial_plugin_ids.insert(custom, vec![zellij_utils::internal_ids::PluginId(102)]);
 
     let size = Size {
         cols: 120,
@@ -1007,7 +1026,7 @@ fn test_override_tiled_retain_plugin_panes_partial_match() {
             terminal_ids,
             vec![],
             initial_plugin_ids,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -1032,7 +1051,7 @@ fn test_override_tiled_retain_plugin_panes_partial_match() {
             &mut HashMap::new(),
             false,
             true,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -1076,15 +1095,15 @@ fn test_override_tiled_retain_plugin_panes_no_matches() {
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
 
-    let terminal_ids = vec![(1, None)];
+    let terminal_ids = vec![(TerminalId(1), None)];
 
     let mut initial_plugin_ids = HashMap::new();
     let tab_bar = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
     let status_bar = RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap();
     let compact_bar = RunPluginOrAlias::from_url("zellij:compact-bar", &None, None, None).unwrap();
-    initial_plugin_ids.insert(tab_bar, vec![100]);
-    initial_plugin_ids.insert(status_bar, vec![101]);
-    initial_plugin_ids.insert(compact_bar, vec![102]);
+    initial_plugin_ids.insert(tab_bar, vec![zellij_utils::internal_ids::PluginId(100)]);
+    initial_plugin_ids.insert(status_bar, vec![zellij_utils::internal_ids::PluginId(101)]);
+    initial_plugin_ids.insert(compact_bar, vec![zellij_utils::internal_ids::PluginId(102)]);
 
     let size = Size {
         cols: 120,
@@ -1147,7 +1166,7 @@ fn test_override_tiled_retain_plugin_panes_no_matches() {
             terminal_ids,
             vec![],
             initial_plugin_ids,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -1175,9 +1194,9 @@ fn test_override_tiled_retain_plugin_panes_no_matches() {
         RunPluginOrAlias::from_url("file:///path/to/plugin2.wasm", &None, None, None).unwrap();
     let plugin3 =
         RunPluginOrAlias::from_url("file:///path/to/plugin3.wasm", &None, None, None).unwrap();
-    override_plugin_ids.insert(plugin1, vec![103]);
-    override_plugin_ids.insert(plugin2, vec![104]);
-    override_plugin_ids.insert(plugin3, vec![105]);
+    override_plugin_ids.insert(plugin1, vec![zellij_utils::internal_ids::PluginId(103)]);
+    override_plugin_ids.insert(plugin2, vec![zellij_utils::internal_ids::PluginId(104)]);
+    override_plugin_ids.insert(plugin3, vec![zellij_utils::internal_ids::PluginId(105)]);
 
     applier
         .override_tiled_panes_layout_for_existing_panes(
@@ -1186,7 +1205,7 @@ fn test_override_tiled_retain_plugin_panes_no_matches() {
             &mut override_plugin_ids,
             false,
             true,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -1233,13 +1252,13 @@ fn test_override_floating_retain_plugin_panes_partial_match() {
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
 
-    let terminal_ids = vec![(1, None)];
+    let terminal_ids = vec![(TerminalId(1), None)];
 
     let mut initial_plugin_ids = HashMap::new();
     let tab_bar = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
     let status_bar = RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap();
-    initial_plugin_ids.insert(tab_bar, vec![100]);
-    initial_plugin_ids.insert(status_bar, vec![101]);
+    initial_plugin_ids.insert(tab_bar, vec![zellij_utils::internal_ids::PluginId(100)]);
+    initial_plugin_ids.insert(status_bar, vec![zellij_utils::internal_ids::PluginId(101)]);
 
     let size = Size {
         cols: 120,
@@ -1302,7 +1321,7 @@ fn test_override_floating_retain_plugin_panes_partial_match() {
             terminal_ids,
             vec![],
             initial_plugin_ids,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -1383,13 +1402,13 @@ fn test_override_floating_retain_plugin_panes_no_matches() {
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
 
-    let terminal_ids = vec![(1, None)];
+    let terminal_ids = vec![(TerminalId(1), None)];
 
     let mut initial_plugin_ids = HashMap::new();
     let tab_bar = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
     let status_bar = RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap();
-    initial_plugin_ids.insert(tab_bar, vec![100]);
-    initial_plugin_ids.insert(status_bar, vec![101]);
+    initial_plugin_ids.insert(tab_bar, vec![zellij_utils::internal_ids::PluginId(100)]);
+    initial_plugin_ids.insert(status_bar, vec![zellij_utils::internal_ids::PluginId(101)]);
 
     let size = Size {
         cols: 120,
@@ -1452,7 +1471,7 @@ fn test_override_floating_retain_plugin_panes_no_matches() {
             terminal_ids,
             vec![],
             initial_plugin_ids,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -1485,8 +1504,8 @@ fn test_override_floating_retain_plugin_panes_no_matches() {
         RunPluginOrAlias::from_url("file:///path/to/plugin1.wasm", &None, None, None).unwrap();
     let plugin2 =
         RunPluginOrAlias::from_url("file:///path/to/plugin2.wasm", &None, None, None).unwrap();
-    override_plugin_ids.insert(plugin1, vec![102]);
-    override_plugin_ids.insert(plugin2, vec![103]);
+    override_plugin_ids.insert(plugin1, vec![zellij_utils::internal_ids::PluginId(102)]);
+    override_plugin_ids.insert(plugin2, vec![zellij_utils::internal_ids::PluginId(103)]);
 
     applier
         .override_floating_panes_layout_for_existing_panes(
@@ -1541,13 +1560,13 @@ fn test_override_mixed_retain_plugin_panes_both_tiled_and_floating() {
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
 
-    let terminal_ids = vec![(1, None), (2, None)];
+    let terminal_ids = vec![(TerminalId(1), None), (TerminalId(2), None)];
 
     let mut initial_plugin_ids = HashMap::new();
     let tab_bar = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
     let status_bar = RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap();
-    initial_plugin_ids.insert(tab_bar, vec![100]);
-    initial_plugin_ids.insert(status_bar, vec![101]);
+    initial_plugin_ids.insert(tab_bar, vec![zellij_utils::internal_ids::PluginId(100)]);
+    initial_plugin_ids.insert(status_bar, vec![zellij_utils::internal_ids::PluginId(101)]);
 
     let size = Size {
         cols: 120,
@@ -1610,7 +1629,7 @@ fn test_override_mixed_retain_plugin_panes_both_tiled_and_floating() {
             terminal_ids,
             vec![],
             initial_plugin_ids,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -1641,8 +1660,8 @@ fn test_override_mixed_retain_plugin_panes_both_tiled_and_floating() {
     let compact_bar = RunPluginOrAlias::from_url("zellij:compact-bar", &None, None, None).unwrap();
     let custom =
         RunPluginOrAlias::from_url("file:///path/to/custom.wasm", &None, None, None).unwrap();
-    override_plugin_ids.insert(compact_bar, vec![102]);
-    override_plugin_ids.insert(custom, vec![103]);
+    override_plugin_ids.insert(compact_bar, vec![zellij_utils::internal_ids::PluginId(102)]);
+    override_plugin_ids.insert(custom, vec![zellij_utils::internal_ids::PluginId(103)]);
 
     let retain_existing_terminal_panes = false;
     let retain_existing_plugin_panes = true;
@@ -1655,7 +1674,7 @@ fn test_override_mixed_retain_plugin_panes_both_tiled_and_floating() {
             override_plugin_ids,
             retain_existing_terminal_panes,
             retain_existing_plugin_panes,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -1671,7 +1690,7 @@ fn test_override_mixed_retain_plugin_panes_both_tiled_and_floating() {
     let closed_panes = collect_close_pane_messages(&pty_receiver);
     assert_eq!(closed_panes.len(), 1, "vim terminal should be closed");
     assert!(
-        closed_panes.contains(&PaneId::Terminal(2)),
+        closed_panes.contains(&PaneId::Terminal(crate::TerminalId(2))),
         "Terminal(2) (vim) should be closed"
     );
 
@@ -1701,11 +1720,11 @@ fn test_override_retain_plugin_but_close_terminal_panes() {
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
 
-    let terminal_ids = vec![(1, None), (2, None)];
+    let terminal_ids = vec![(TerminalId(1), None), (TerminalId(2), None)];
 
     let mut initial_plugin_ids = HashMap::new();
     let tab_bar = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
-    initial_plugin_ids.insert(tab_bar, vec![100]);
+    initial_plugin_ids.insert(tab_bar, vec![zellij_utils::internal_ids::PluginId(100)]);
 
     let size = Size {
         cols: 120,
@@ -1768,7 +1787,7 @@ fn test_override_retain_plugin_but_close_terminal_panes() {
             terminal_ids,
             vec![],
             initial_plugin_ids,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -1787,7 +1806,7 @@ fn test_override_retain_plugin_but_close_terminal_panes() {
             &mut HashMap::new(),
             false,
             true,
-            1,
+            crate::ClientId(1),
         )
         .unwrap();
 
@@ -1799,7 +1818,7 @@ fn test_override_retain_plugin_but_close_terminal_panes() {
         "Terminal pane should be closed even with retain_existing_plugin_panes"
     );
     assert!(
-        closed_panes.contains(&PaneId::Terminal(2)),
+        closed_panes.contains(&PaneId::Terminal(crate::TerminalId(2))),
         "vim (Terminal(2)) should be closed"
     );
 

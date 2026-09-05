@@ -29,7 +29,7 @@ fn screen_with_a_client_for_notifications(
         create_new_screen_with_capture(size, true, true, true, true);
     new_tab(&mut screen, 1, 0);
     screen.set_host_notification_protocol(host_notification_protocol);
-    screen.set_client_host_terminal_env(1, host_terminal_env);
+    screen.set_client_host_terminal_env(crate::ClientId(1), host_terminal_env);
     while server_receiver.try_recv().is_ok() {}
     (screen, server_receiver)
 }
@@ -49,7 +49,7 @@ fn an_osc_9_notification_is_translated_for_an_osc_99_host() {
         vec![PendingNotification::Osc9 {
             body: "the build finished".to_owned(),
         }],
-        1,
+        crate::TerminalId(1),
     );
 
     assert!(
@@ -71,7 +71,7 @@ fn an_osc_99_notification_reaching_an_osc_9_host_is_translated_down() {
             wants_report: false,
             display: Some(("the build finished".to_owned(), String::new())),
         }],
-        1,
+        crate::TerminalId(1),
     );
 
     assert!(
@@ -101,7 +101,7 @@ fn an_osc_99_request_with_nothing_to_show_is_not_sent_to_an_osc_9_host() {
                 display: None,
             },
         ],
-        1,
+        crate::TerminalId(1),
     );
 
     assert_eq!(
@@ -123,7 +123,7 @@ fn an_osc_99_notification_reaching_an_osc_99_host_keeps_its_namespaced_identifie
             wants_report: false,
             display: Some(("the build finished".to_owned(), String::new())),
         }],
-        7,
+        crate::TerminalId(7),
     );
 
     let output = collect_forwarded_notifications(&server_receiver);
@@ -143,7 +143,7 @@ fn the_configured_protocol_overrides_host_detection() {
         vec![PendingNotification::Osc9 {
             body: "the build finished".to_owned(),
         }],
-        1,
+        crate::TerminalId(1),
     );
 
     let output = collect_forwarded_notifications(&server_receiver);
@@ -164,7 +164,7 @@ fn a_host_configured_to_bell_gets_a_bell_instead_of_a_notification() {
             title: "the title".to_owned(),
             body: "the body".to_owned(),
         }],
-        1,
+        crate::TerminalId(1),
     );
 
     let output = collect_forwarded_notifications(&server_receiver);
@@ -184,7 +184,7 @@ fn a_host_configured_to_off_is_not_sent_anything() {
         vec![PendingNotification::Osc9 {
             body: "the build finished".to_owned(),
         }],
-        1,
+        crate::TerminalId(1),
     );
 
     assert_eq!(
@@ -199,14 +199,14 @@ fn changing_the_configured_protocol_at_runtime_re_resolves_connected_clients() {
     let (mut screen, server_receiver) =
         screen_with_a_client_for_notifications(HostNotificationProtocol::Auto, kitty_env());
     assert_eq!(
-        screen.notification_protocol_for_client(&1),
+        screen.notification_protocol_for_client(&ClientId(1)),
         NotificationProtocol::Osc99,
         "the kitty host is detected on connect"
     );
 
     screen.set_host_notification_protocol(HostNotificationProtocol::Bell);
     assert_eq!(
-        screen.notification_protocol_for_client(&1),
+        screen.notification_protocol_for_client(&ClientId(1)),
         NotificationProtocol::Bell,
         "an already connected client picks up the new configuration"
     );
@@ -215,7 +215,7 @@ fn changing_the_configured_protocol_at_runtime_re_resolves_connected_clients() {
         vec![PendingNotification::Osc9 {
             body: "the build finished".to_owned(),
         }],
-        1,
+        crate::TerminalId(1),
     );
     let output = collect_forwarded_notifications(&server_receiver);
     assert!(
@@ -226,7 +226,7 @@ fn changing_the_configured_protocol_at_runtime_re_resolves_connected_clients() {
 
     screen.set_host_notification_protocol(HostNotificationProtocol::Auto);
     assert_eq!(
-        screen.notification_protocol_for_client(&1),
+        screen.notification_protocol_for_client(&ClientId(1)),
         NotificationProtocol::Osc99,
         "returning to auto restores detection from the stored host environment"
     );
@@ -241,17 +241,17 @@ fn each_client_is_spoken_to_in_the_protocol_of_its_own_host() {
     let (mut screen, _tty_stdin_bytes, server_receiver) =
         create_new_screen_with_capture(size, true, true, true, true);
     new_tab(&mut screen, 1, 0);
-    screen.set_client_size(2, size);
-    screen.add_client(2).unwrap();
-    screen.set_client_host_terminal_env(1, kitty_env());
-    screen.set_client_host_terminal_env(2, BTreeMap::new());
+    screen.set_client_size(crate::ClientId(2), size);
+    screen.add_client(crate::ClientId(2)).unwrap();
+    screen.set_client_host_terminal_env(crate::ClientId(1), kitty_env());
+    screen.set_client_host_terminal_env(crate::ClientId(2), BTreeMap::new());
     while server_receiver.try_recv().is_ok() {}
 
     screen.forward_desktop_notifications(
         vec![PendingNotification::Osc9 {
             body: "the build finished".to_owned(),
         }],
-        1,
+        crate::TerminalId(1),
     );
 
     let output = collect_forwarded_notifications(&server_receiver);
@@ -278,14 +278,14 @@ fn a_client_that_never_reported_its_host_env_gets_the_configured_protocol() {
     new_tab(&mut screen, 1, 0);
 
     assert_eq!(
-        screen.notification_protocol_for_client(&1),
+        screen.notification_protocol_for_client(&ClientId(1)),
         NotificationProtocol::Osc9,
         "an unknown host defaults to the legacy protocol"
     );
 
     screen.set_host_notification_protocol(HostNotificationProtocol::Off);
     assert_eq!(
-        screen.notification_protocol_for_client(&1),
+        screen.notification_protocol_for_client(&ClientId(1)),
         NotificationProtocol::Off,
         "the configured protocol still applies without a reported host env"
     );
@@ -300,20 +300,24 @@ fn a_departing_client_leaves_no_host_notification_state_behind() {
     let (mut screen, _tty_stdin_bytes, _server_receiver) =
         create_new_screen_with_capture(size, true, true, true, true);
     new_tab(&mut screen, 1, 0);
-    screen.set_client_size(2, size);
-    screen.add_client(2).unwrap();
-    screen.set_client_host_terminal_env(2, kitty_env());
-    assert!(screen.client_notification_protocols.contains_key(&2));
-    assert!(screen.client_host_terminal_env.contains_key(&2));
+    screen.set_client_size(crate::ClientId(2), size);
+    screen.add_client(crate::ClientId(2)).unwrap();
+    screen.set_client_host_terminal_env(crate::ClientId(2), kitty_env());
+    assert!(screen
+        .client_notification_protocols
+        .contains_key(&ClientId(2)));
+    assert!(screen.client_host_terminal_env.contains_key(&ClientId(2)));
 
-    screen.remove_client(2).unwrap();
+    screen.remove_client(crate::ClientId(2)).unwrap();
 
     assert!(
-        !screen.client_notification_protocols.contains_key(&2),
+        !screen
+            .client_notification_protocols
+            .contains_key(&ClientId(2)),
         "the resolved notification protocol is forgotten"
     );
     assert!(
-        !screen.client_host_terminal_env.contains_key(&2),
+        !screen.client_host_terminal_env.contains_key(&ClientId(2)),
         "the reported host environment is forgotten"
     );
 }

@@ -22,6 +22,7 @@ use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use zellij_utils::internal_ids::TerminalId;
 
 use zellij_utils::{
     consts::{VERSION, ZELLIJ_SOCK_DIR},
@@ -144,7 +145,7 @@ pub fn serve_connection(
             failover_cmd,
             initial_size,
             env,
-            terminal_id,
+            TerminalId(terminal_id),
         )?,
         ServerToBrokerMsg::Resume {
             pane_token,
@@ -396,7 +397,7 @@ fn start_pane(
     failover_cmd: Option<zellij_utils::input::command::RunCommand>,
     initial_size: Option<WireWinsize>,
     carried_env: Vec<(String, String)>,
-    terminal_id: u32,
+    terminal_id: TerminalId,
 ) -> Result<(Arc<PaneSession>, u64)> {
     // One passwd lookup answers two different questions: which shell this user
     // has, and what a login on this machine is handed for an environment. They

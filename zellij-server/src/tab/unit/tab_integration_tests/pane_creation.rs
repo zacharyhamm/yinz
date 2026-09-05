@@ -26,7 +26,7 @@ fn create(
             run,
             suppressed,
             focus,
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
             Some(borderless),
         ),
@@ -36,7 +36,7 @@ fn create(
             run,
             suppressed,
             focus,
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
             Some(borderless),
         ),
@@ -46,8 +46,8 @@ fn create(
             run,
             suppressed,
             focus,
-            Some(PaneId::Terminal(1)),
-            Some(1),
+            Some(PaneId::Terminal(crate::TerminalId(1))),
+            Some(crate::ClientId(1)),
             None,
             Some(borderless),
         ),
@@ -61,7 +61,10 @@ fn pane_creation_characterization() {
         Placement::Tiled,
         Placement::Stacked,
     ] {
-        for pid in [PaneId::Terminal(2), PaneId::Plugin(2)] {
+        for pid in [
+            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Plugin(crate::PluginId(2)),
+        ] {
             for suppressed in [false, true] {
                 for focus in [false, true] {
                     for borderless in [false, true] {
@@ -88,11 +91,11 @@ fn pane_creation_characterization() {
                         assert_eq!(tab.tiled_panes.get_pane(pid).is_some(), !suppressed);
                         assert!(!tab.floating_panes.panes_contain(&pid));
                         assert_eq!(
-                            tab.get_active_pane_id(1),
+                            tab.get_active_pane_id(crate::ClientId(1)),
                             Some(if focus && !suppressed {
                                 pid
                             } else {
-                                PaneId::Terminal(1)
+                                PaneId::Terminal(crate::TerminalId(1))
                             })
                         );
                         let pane = if suppressed {
@@ -121,12 +124,17 @@ fn pane_creation_characterization() {
                             plugin_rx.try_iter().map(|(msg, _)| msg).collect();
                         // Named-stack insertion only reapplies frames when focused.
                         if placement == Placement::Stacked && !suppressed && !focus {
-                            assert!(!pty_messages
-                                .iter()
-                                .any(|msg| matches!(msg, PtyWriteInstruction::ResizePty(2, ..))));
-                            assert!(!plugin_messages
-                                .iter()
-                                .any(|msg| matches!(msg, PluginInstruction::Resize(2, ..))));
+                            assert!(!pty_messages.iter().any(|msg| matches!(
+                                msg,
+                                PtyWriteInstruction::ResizePty(TerminalId(2), ..)
+                            )));
+                            assert!(!plugin_messages.iter().any(|msg| matches!(
+                                msg,
+                                PluginInstruction::Resize(
+                                    zellij_utils::internal_ids::PluginId(2),
+                                    ..
+                                )
+                            )));
                             continue;
                         }
                         match pid {
@@ -147,7 +155,10 @@ fn pane_creation_failed_resize_does_not_park() {
         Placement::Tiled,
         Placement::Stacked,
     ] {
-        for pid in [PaneId::Terminal(2), PaneId::Plugin(2)] {
+        for pid in [
+            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Plugin(crate::PluginId(2)),
+        ] {
             let (mut tab, plugin_rx) = create_new_tab_with_plugin_receiver(
                 Size {
                     cols: 120,
@@ -166,7 +177,10 @@ fn pane_creation_failed_resize_does_not_park() {
             assert!(!tab.suppressed_panes.contains_key(&pid));
             assert!(tab.tiled_panes.get_pane(pid).is_none());
             assert!(!tab.floating_panes.panes_contain(&pid));
-            assert_eq!(tab.get_active_pane_id(1), Some(PaneId::Terminal(1)));
+            assert_eq!(
+                tab.get_active_pane_id(crate::ClientId(1)),
+                Some(PaneId::Terminal(crate::TerminalId(1)))
+            );
         }
     }
 }

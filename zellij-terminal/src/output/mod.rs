@@ -422,8 +422,8 @@ pub struct KittyFrameInput<'a> {
 
 fn pane_sort_key(pane_id: PaneId) -> (u8, u32) {
     match pane_id {
-        PaneId::Terminal(id) => (0, id),
-        PaneId::Plugin(id) => (1, id),
+        PaneId::Terminal(id) => (0, id.0),
+        PaneId::Plugin(id) => (1, id.0),
     }
 }
 
@@ -1185,8 +1185,11 @@ impl Output {
         pane_id: PaneId,
         pane_contents: PaneContents,
     ) {
-        self.pane_render_report
-            .add_pane_contents(client_ids, pane_id.into(), pane_contents);
+        self.pane_render_report.add_pane_contents(
+            &client_ids.iter().map(|id| id.0).collect::<Vec<_>>(),
+            pane_id.into(),
+            pane_contents,
+        );
     }
     pub fn add_pane_contents_with_ansi(
         &mut self,
@@ -1195,7 +1198,7 @@ impl Output {
         pane_contents: PaneContents,
     ) {
         self.pane_render_report.add_pane_contents_with_ansi(
-            client_ids,
+            &client_ids.iter().map(|id| id.0).collect::<Vec<_>>(),
             pane_id.into(),
             pane_contents,
         );

@@ -1,4 +1,5 @@
 use super::*;
+use zellij_utils::internal_ids::PluginId;
 
 #[test]
 fn set_plugin_regex_highlights_basic_match() {
@@ -14,8 +15,8 @@ fn set_plugin_regex_highlights_basic_match() {
         underline: true,
         tooltip_text: None,
     }];
-    grid.set_plugin_regex_highlights(1, highlights, &Style::default());
-    let slot = grid.plugin_highlights.get(&1);
+    grid.set_plugin_regex_highlights(PluginId(1), highlights, &Style::default());
+    let slot = grid.plugin_highlights.get(&PluginId(1));
     assert!(slot.is_some());
     let entries = slot.unwrap();
     assert_eq!(entries.len(), 1);
@@ -33,7 +34,7 @@ fn set_plugin_regex_highlights_no_match() {
         false,
         HighlightLayer::Hint,
     )];
-    grid.set_plugin_regex_highlights(1, highlights, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), highlights, &Style::default());
 
     // No position in the viewport should match
     for col in 0..15 {
@@ -52,11 +53,11 @@ fn clear_plugin_highlights_removes_highlights() {
         true,
         HighlightLayer::Hint,
     )];
-    grid.set_plugin_regex_highlights(1, highlights, &Style::default());
-    assert!(grid.plugin_highlights.contains_key(&1));
+    grid.set_plugin_regex_highlights(PluginId(1), highlights, &Style::default());
+    assert!(grid.plugin_highlights.contains_key(&PluginId(1)));
 
-    grid.clear_plugin_highlights(1);
-    assert!(!grid.plugin_highlights.contains_key(&1));
+    grid.clear_plugin_highlights(PluginId(1));
+    assert!(!grid.plugin_highlights.contains_key(&PluginId(1)));
 }
 
 #[test]
@@ -78,15 +79,15 @@ fn multiple_plugins_highlights_independent() {
         false,
         HighlightLayer::Hint,
     )];
-    grid.set_plugin_regex_highlights(1, h1, &Style::default());
-    grid.set_plugin_regex_highlights(2, h2, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), h1, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(2), h2, &Style::default());
 
-    assert!(grid.plugin_highlights.contains_key(&1));
-    assert!(grid.plugin_highlights.contains_key(&2));
+    assert!(grid.plugin_highlights.contains_key(&PluginId(1)));
+    assert!(grid.plugin_highlights.contains_key(&PluginId(2)));
 
-    grid.clear_plugin_highlights(1);
-    assert!(!grid.plugin_highlights.contains_key(&1));
-    assert!(grid.plugin_highlights.contains_key(&2));
+    grid.clear_plugin_highlights(PluginId(1));
+    assert!(!grid.plugin_highlights.contains_key(&PluginId(1)));
+    assert!(grid.plugin_highlights.contains_key(&PluginId(2)));
 }
 
 #[test]
@@ -103,7 +104,7 @@ fn upsert_replaces_same_pattern() {
         underline: true,
         tooltip_text: None,
     }];
-    grid.set_plugin_regex_highlights(1, h1, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), h1, &Style::default());
 
     let h2 = vec![RegexHighlight {
         pattern: "foo".into(),
@@ -116,9 +117,9 @@ fn upsert_replaces_same_pattern() {
         underline: false,
         tooltip_text: None,
     }];
-    grid.set_plugin_regex_highlights(1, h2, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), h2, &Style::default());
 
-    let entries = grid.plugin_highlights.get(&1).unwrap();
+    let entries = grid.plugin_highlights.get(&PluginId(1)).unwrap();
     assert_eq!(entries.len(), 1);
     assert!(!entries[0].1.underline);
 }
@@ -134,9 +135,9 @@ fn invalid_regex_does_not_crash() {
         false,
         HighlightLayer::Hint,
     )];
-    grid.set_plugin_regex_highlights(1, highlights, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), highlights, &Style::default());
     // Invalid regex should be skipped
-    let slot = grid.plugin_highlights.get(&1);
+    let slot = grid.plugin_highlights.get(&PluginId(1));
     match slot {
         None => {}, // acceptable
         Some(entries) => assert_eq!(entries.len(), 0),
@@ -159,13 +160,13 @@ fn plugin_highlight_at_returns_match() {
         underline: true,
         tooltip_text: None,
     }];
-    grid.set_plugin_regex_highlights(1, highlights, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), highlights, &Style::default());
 
     // "foo" starts at column 6 in "hello foo bar"
     let result = grid.plugin_highlight_at(&Position::new(0, 6));
     assert!(result.is_some());
     let (plugin_id, pattern, matched_string, ctx) = result.unwrap();
-    assert_eq!(plugin_id, 1);
+    assert_eq!(plugin_id, PluginId(1));
     assert_eq!(pattern, "foo");
     assert_eq!(matched_string, "foo");
     assert_eq!(ctx.get("key").unwrap(), "value");
@@ -182,7 +183,7 @@ fn plugin_highlight_at_returns_none_on_miss() {
         true,
         HighlightLayer::Hint,
     )];
-    grid.set_plugin_regex_highlights(1, highlights, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), highlights, &Style::default());
 
     // Position 0 is in "hello", not "foo"
     let result = grid.plugin_highlight_at(&Position::new(0, 0));
@@ -224,14 +225,14 @@ fn plugin_highlight_at_wrapped_line() {
         true,
         HighlightLayer::Hint,
     )];
-    grid.set_plugin_regex_highlights(1, highlights, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), highlights, &Style::default());
 
     // "jklm" spans row 0 col 9 through row 1 col 3
     // Position in the wrapped portion (row 1, col 1 = 'k')
     let result = grid.plugin_highlight_at(&Position::new(1, 1));
     assert!(result.is_some());
     let (plugin_id, _pattern, matched_string, _ctx) = result.unwrap();
-    assert_eq!(plugin_id, 1);
+    assert_eq!(plugin_id, PluginId(1));
     assert_eq!(matched_string, "jklm");
 }
 
@@ -246,7 +247,7 @@ fn hover_position_triggers_on_hover_highlight() {
         true,
         HighlightLayer::Hint,
     )];
-    grid.set_plugin_regex_highlights(1, highlights, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), highlights, &Style::default());
 
     // Set hover position inside "link_text" (starts at col 6)
     grid.set_hover_position(Some(Position::new(0, 8)));
@@ -254,7 +255,7 @@ fn hover_position_triggers_on_hover_highlight() {
     assert_eq!(grid.hover_position.unwrap(), Position::new(0, 8));
 
     // The on_hover entry should exist in plugin_highlights
-    let entries = grid.plugin_highlights.get(&1).unwrap();
+    let entries = grid.plugin_highlights.get(&PluginId(1)).unwrap();
     assert_eq!(entries.len(), 1);
     assert!(entries[0].1.on_hover);
 }
@@ -270,7 +271,7 @@ fn hover_suppressed_when_mouse_tracking_on() {
         true,
         HighlightLayer::Hint,
     )];
-    grid.set_plugin_regex_highlights(1, highlights, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), highlights, &Style::default());
 
     // Enable mouse tracking — the render path should skip hover highlights
     grid.mouse_tracking = MouseTracking::Normal;
@@ -294,13 +295,13 @@ fn wide_char_display_column_mapping() {
         true,
         HighlightLayer::Hint,
     )];
-    grid.set_plugin_regex_highlights(1, highlights, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), highlights, &Style::default());
 
     // "你好" occupies display cols 0-3, "world" starts at display col 4
     let result = grid.plugin_highlight_at(&Position::new(0, 4));
     assert!(result.is_some());
     let (plugin_id, _pattern, matched_string, _ctx) = result.unwrap();
-    assert_eq!(plugin_id, 1);
+    assert_eq!(plugin_id, PluginId(1));
     assert_eq!(matched_string, "world");
 
     // Position 2 should be inside "你好", not "world"
@@ -528,14 +529,18 @@ fn higher_layer_wins_plugin_highlight_at() {
         underline: false,
         tooltip_text: None,
     }];
-    grid.set_plugin_regex_highlights(1, h1, &Style::default());
-    grid.set_plugin_regex_highlights(2, h2, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), h1, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(2), h2, &Style::default());
 
     // "foo" starts at column 6
     let result = grid.plugin_highlight_at(&Position::new(0, 6));
     assert!(result.is_some());
     let (plugin_id, _, _, _) = result.unwrap();
-    assert_eq!(plugin_id, 2, "Tool layer plugin should win over Hint layer");
+    assert_eq!(
+        plugin_id,
+        PluginId(2),
+        "Tool layer plugin should win over Hint layer"
+    );
 }
 
 #[test]
@@ -563,8 +568,8 @@ fn same_layer_both_returned_deterministically() {
         underline: false,
         tooltip_text: None,
     }];
-    grid.set_plugin_regex_highlights(1, h1, &Style::default());
-    grid.set_plugin_regex_highlights(2, h2, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), h1, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(2), h2, &Style::default());
 
     let result = grid.plugin_highlight_at(&Position::new(0, 6));
     assert!(
@@ -598,18 +603,18 @@ fn lower_layer_wins_when_higher_layer_absent() {
         underline: false,
         tooltip_text: None,
     }];
-    grid.set_plugin_regex_highlights(1, h1, &Style::default());
-    grid.set_plugin_regex_highlights(2, h2, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), h1, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(2), h2, &Style::default());
 
     // "foo" at col 0 — only Hint layer matches here
     let result_foo = grid.plugin_highlight_at(&Position::new(0, 0));
     assert!(result_foo.is_some());
-    assert_eq!(result_foo.unwrap().0, 1);
+    assert_eq!(result_foo.unwrap().0, PluginId(1));
 
     // "bar" at col 4 — only ActionFeedback layer matches here
     let result_bar = grid.plugin_highlight_at(&Position::new(0, 4));
     assert!(result_bar.is_some());
-    assert_eq!(result_bar.unwrap().0, 2);
+    assert_eq!(result_bar.unwrap().0, PluginId(2));
 }
 
 #[test]
@@ -637,8 +642,8 @@ fn tooltip_from_higher_layer_wins() {
         underline: false,
         tooltip_text: Some("tool tooltip".to_string()),
     }];
-    grid.set_plugin_regex_highlights(1, h1, &Style::default());
-    grid.set_plugin_regex_highlights(2, h2, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), h1, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(2), h2, &Style::default());
 
     // Set hover position inside "foo" (starts at col 6)
     grid.set_hover_position(Some(Position::new(0, 6)));
@@ -674,8 +679,8 @@ fn tooltip_from_lower_layer_when_higher_has_none() {
         underline: false,
         tooltip_text: None,
     }];
-    grid.set_plugin_regex_highlights(1, h1, &Style::default());
-    grid.set_plugin_regex_highlights(2, h2, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), h1, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(2), h2, &Style::default());
 
     grid.set_hover_position(Some(Position::new(0, 6)));
     assert_eq!(
@@ -699,9 +704,9 @@ fn layer_field_stored_in_compiled_highlight() {
         underline: false,
         tooltip_text: None,
     }];
-    grid.set_plugin_regex_highlights(1, highlights, &Style::default());
+    grid.set_plugin_regex_highlights(PluginId(1), highlights, &Style::default());
     assert_eq!(
-        grid.plugin_highlights.get(&1).unwrap()[0].1.layer,
+        grid.plugin_highlights.get(&PluginId(1)).unwrap()[0].1.layer,
         HighlightLayer::ActionFeedback,
         "Layer field should be propagated through compilation"
     );

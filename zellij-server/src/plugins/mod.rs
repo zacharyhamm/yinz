@@ -5,6 +5,7 @@
 #![allow(clippy::manual_inspect)]
 #![allow(clippy::useless_format)]
 #![allow(clippy::redundant_pattern_matching)]
+use zellij_utils::internal_ids::TerminalId;
 mod lua;
 pub use lua::check_lua_plugin;
 mod pinned_executor;
@@ -62,7 +63,7 @@ use zellij_utils::{
     session_serialization,
 };
 
-pub type PluginId = u32;
+pub use zellij_utils::internal_ids::PluginId;
 
 #[derive(Clone, Debug)]
 pub struct DumpSessionLayoutResponse {
@@ -72,7 +73,7 @@ pub struct DumpSessionLayoutResponse {
 /// The plugin id a state report is addressed to when no plugin wants it but a `zellij events`
 /// client does. No plugin ever has this id, so the plugin thread loads nothing for it and the
 /// report reaches the CLI subscribers alone. See `WasmBridge::forward_events_to_cli_subscribers`.
-pub const CLI_EVENTS_ONLY_TARGET: PluginId = u32::MAX;
+pub const CLI_EVENTS_ONLY_TARGET: PluginId = PluginId(u32::MAX);
 
 #[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PluginInstruction {
@@ -134,7 +135,7 @@ pub enum PluginInstruction {
         Size,
         Option<NotificationEnd>,
     ),
-    ReloadPluginWithId(u32),
+    ReloadPluginWithId(PluginId),
     /// Reload every running instance at a location in place; nothing if none is running.
     ReloadPluginByUrl(RunPluginOrAlias),
     Resize(PluginId, usize, usize), // plugin_id, columns, rows
@@ -230,14 +231,14 @@ pub enum PluginInstruction {
         cwd: Option<PathBuf>,
         skip_cache: bool,
         cli_client_id: ClientId,
-        plugin_and_client_id: Option<(u32, ClientId)>,
+        plugin_and_client_id: Option<(PluginId, ClientId)>,
         notification_end: Option<NotificationEnd>,
     },
     CachePluginEvents {
         plugin_id: PluginId,
     },
     MessageFromPlugin {
-        source_plugin_id: u32,
+        source_plugin_id: PluginId,
         message: MessageToPlugin,
     },
     UnblockCliPipes(Vec<PluginRenderAsset>),
@@ -268,7 +269,7 @@ pub enum PluginInstruction {
     UserInput {
         client_id: ClientId,
         action: Action,
-        terminal_id: Option<u32>,
+        terminal_id: Option<TerminalId>,
         cli_client_id: Option<ClientId>,
     },
     LayoutListUpdate(Vec<LayoutInfo>, Vec<LayoutWithError>),
@@ -314,7 +315,7 @@ pub enum PluginInstruction {
         failed_to_load: bool,
     },
     HighlightClicked {
-        plugin_id: u32,
+        plugin_id: PluginId,
         client_id: ClientId,
         pane_id: PaneId,
         pattern: String,
@@ -1091,7 +1092,7 @@ pub(crate) fn plugin_thread_main(
                 for (client_metadata_id, client_metadata) in clients_metadata.iter_mut() {
                     let is_current_client = client_metadata_id == &client_id;
                     client_list_for_plugin.push(ClientInfo::new(
-                        *client_metadata_id,
+                        client_metadata_id.0,
                         client_metadata.get_pane_id().into(),
                         client_metadata.stringify_command(&default_editor),
                         is_current_client,
@@ -1171,8 +1172,8 @@ pub(crate) fn plugin_thread_main(
                     },
                 }
                 let source_pane_id = source_pane_id.map(|pane_id| match pane_id {
-                    PaneId::Terminal(id) => zellij_utils::data::PaneId::Terminal(id),
-                    PaneId::Plugin(id) => zellij_utils::data::PaneId::Plugin(id),
+                    PaneId::Terminal(id) => zellij_utils::data::PaneId::Terminal(id.0),
+                    PaneId::Plugin(id) => zellij_utils::data::PaneId::Plugin(id.0),
                 });
                 for (_, _, message) in pipe_messages.iter_mut() {
                     message.pane_id = source_pane_id.clone();
@@ -1279,7 +1280,7 @@ pub(crate) fn plugin_thread_main(
                     (Some(plugin_url), None) => {
                         // send to specific plugin(s)
                         pipe_to_specific_plugins(
-                            PipeSource::Plugin(source_plugin_id),
+                            PipeSource::Plugin(source_plugin_id.0),
                             &plugin_url,
                             &Some(message.plugin_config),
                             &None,
@@ -1302,10 +1303,10 @@ pub(crate) fn plugin_thread_main(
                     (None, Some(destination_plugin_id)) => {
                         let is_private = true;
                         pipe_messages.push((
-                            Some(destination_plugin_id),
+                            Some(PluginId(destination_plugin_id)),
                             None,
                             PipeMessage::new(
-                                PipeSource::Plugin(source_plugin_id),
+                                PipeSource::Plugin(source_plugin_id.0),
                                 message.message_name,
                                 &message.message_payload,
                                 &Some(message.message_args),
@@ -1317,10 +1318,10 @@ pub(crate) fn plugin_thread_main(
                         log::warn!("Message contains both a destination plugin url: {plugin_url} and a destination plugin id: {destination_plugin_id}, ignoring the url and prioritizing the id");
                         let is_private = true;
                         pipe_messages.push((
-                            Some(destination_plugin_id),
+                            Some(PluginId(destination_plugin_id)),
                             None,
                             PipeMessage::new(
-                                PipeSource::Plugin(source_plugin_id),
+                                PipeSource::Plugin(source_plugin_id.0),
                                 message.message_name,
                                 &message.message_payload,
                                 &Some(message.message_args),
@@ -1331,7 +1332,7 @@ pub(crate) fn plugin_thread_main(
                     (None, None) => {
                         // send to all plugins
                         pipe_to_all_plugins(
-                            PipeSource::Plugin(source_plugin_id),
+                            PipeSource::Plugin(source_plugin_id.0),
                             &message.message_name,
                             &message.message_payload,
                             &Some(message.message_args),
@@ -1431,7 +1432,12 @@ pub(crate) fn plugin_thread_main(
                 let updates = vec![(
                     None,
                     None,
-                    Event::UserAction(action, client_id, terminal_id, cli_client_id),
+                    Event::UserAction(
+                        action,
+                        client_id.0,
+                        terminal_id.map(|id| id.0),
+                        cli_client_id.map(|id| id.0),
+                    ),
                 )];
                 wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
             },
@@ -1564,7 +1570,7 @@ fn populate_session_layout_metadata(
     session_layout_metadata: &mut SessionLayoutMetadata,
     wasm_bridge: &WasmBridge,
     plugin_aliases: &PluginAliases,
-    exclude_plugin_id: Option<u32>,
+    exclude_plugin_id: Option<PluginId>,
 ) {
     // Remove the requesting plugin from the layout to prevent deadlock
     if let Some(plugin_id) = exclude_plugin_id {
@@ -1572,7 +1578,7 @@ fn populate_session_layout_metadata(
     }
 
     let plugin_ids = session_layout_metadata.all_plugin_ids();
-    let mut plugin_ids_to_cmds: HashMap<u32, RunPlugin> = HashMap::new();
+    let mut plugin_ids_to_cmds: HashMap<PluginId, RunPlugin> = HashMap::new();
     for plugin_id in plugin_ids {
         let plugin_cmd = wasm_bridge.run_plugin_of_plugin_id(plugin_id);
         match plugin_cmd {
@@ -1687,7 +1693,7 @@ fn session_start_payload(client_id: ClientId) -> HookFiring {
     // it here beats threading it through the thread's signature for one string.
     HookFiring::Headless(HookPayload::SessionStart {
         session_name: zellij_utils::envs::get_session_name().unwrap_or_default(),
-        client_id,
+        client_id: client_id.0,
     })
 }
 

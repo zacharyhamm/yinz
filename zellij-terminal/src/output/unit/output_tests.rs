@@ -13,6 +13,7 @@ use crate::ClientId;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
+use zellij_utils::internal_ids::TerminalId;
 use zellij_utils::kitty_placeholders::PLACEHOLDER;
 use zellij_utils::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
 
@@ -68,7 +69,7 @@ fn create_character_chunk_from_str(text: &str, x: usize, y: usize) -> CharacterC
 
 /// Helper to create test clients
 fn create_test_clients(count: usize) -> HashSet<ClientId> {
-    (1..=count).map(|i| i as ClientId).collect()
+    (1..=count).map(|i| ClientId(i as u16)).collect()
 }
 
 /// Helper to create PaneGeom for FloatingPanesStack tests
@@ -123,7 +124,7 @@ fn test_is_dirty_with_character_chunks() {
 
     let chunk = create_character_chunk_from_str("Hi", 0, 0);
     output
-        .add_character_chunks_to_client(1, vec![chunk], None)
+        .add_character_chunks_to_client(ClientId(1), vec![chunk], None)
         .unwrap();
 
     assert!(
@@ -139,7 +140,7 @@ fn test_is_dirty_with_pre_vte_instructions() {
     let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
     output.add_clients(&client_ids, link_handler, None);
 
-    output.add_pre_vte_instruction_to_client(1, "\u{1b}[?1049h");
+    output.add_pre_vte_instruction_to_client(ClientId(1), "\u{1b}[?1049h");
 
     assert!(
         output.is_dirty(),
@@ -154,7 +155,7 @@ fn test_is_dirty_with_post_vte_instructions() {
     let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
     output.add_clients(&client_ids, link_handler, None);
 
-    output.add_post_vte_instruction_to_client(1, "\u{1b}[?25h");
+    output.add_post_vte_instruction_to_client(ClientId(1), "\u{1b}[?25h");
 
     assert!(
         output.is_dirty(),
@@ -178,7 +179,7 @@ fn test_is_dirty_with_sixel_chunks() {
         sixel_image_pixel_height: 100,
         sixel_image_id: 1,
     };
-    output.add_sixel_image_chunks_to_client(1, vec![sixel_chunk], None);
+    output.add_sixel_image_chunks_to_client(ClientId(1), vec![sixel_chunk], None);
 
     assert!(
         output.is_dirty(),
@@ -202,8 +203,8 @@ fn test_has_rendered_assets_only_vte_instructions() {
     let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
     output.add_clients(&client_ids, link_handler, None);
 
-    output.add_pre_vte_instruction_to_client(1, "\u{1b}[?25l");
-    output.add_post_vte_instruction_to_client(1, "\u{1b}[?25h");
+    output.add_pre_vte_instruction_to_client(ClientId(1), "\u{1b}[?25l");
+    output.add_post_vte_instruction_to_client(ClientId(1), "\u{1b}[?25h");
 
     assert!(
         !output.has_rendered_assets(),
@@ -220,7 +221,7 @@ fn test_has_rendered_assets_with_character_chunks() {
 
     let chunk = create_character_chunk_from_str("Hello", 0, 0);
     output
-        .add_character_chunks_to_client(1, vec![chunk], None)
+        .add_character_chunks_to_client(ClientId(1), vec![chunk], None)
         .unwrap();
 
     assert!(
@@ -245,7 +246,7 @@ fn test_has_rendered_assets_with_sixel_chunks() {
         sixel_image_pixel_height: 100,
         sixel_image_id: 1,
     };
-    output.add_sixel_image_chunks_to_client(1, vec![sixel_chunk], None);
+    output.add_sixel_image_chunks_to_client(ClientId(1), vec![sixel_chunk], None);
 
     assert!(
         output.has_rendered_assets(),
@@ -272,13 +273,13 @@ fn test_serialize_single_client_simple_text() {
 
     let chunk = create_character_chunk_from_str("Hello", 5, 10);
     output
-        .add_character_chunks_to_client(1, vec![chunk], None)
+        .add_character_chunks_to_client(ClientId(1), vec![chunk], None)
         .unwrap();
 
     let result = output.serialize().unwrap();
     assert_eq!(result.len(), 1, "Should have one client in result");
 
-    let client_output = result.get(&1).unwrap();
+    let client_output = result.get(&ClientId(1)).unwrap();
     // Verify contains goto instruction (y+1, x+1 for 1-indexed VTE)
     assert!(
         client_output.contains("\u{1b}[11;6H"),
@@ -302,24 +303,24 @@ fn test_serialize_multiple_clients() {
 
     let chunk1 = create_character_chunk_from_str("Hello", 0, 0);
     output
-        .add_character_chunks_to_client(1, vec![chunk1], None)
+        .add_character_chunks_to_client(ClientId(1), vec![chunk1], None)
         .unwrap();
 
     let chunk2 = create_character_chunk_from_str("World", 10, 10);
     output
-        .add_character_chunks_to_client(2, vec![chunk2], None)
+        .add_character_chunks_to_client(ClientId(2), vec![chunk2], None)
         .unwrap();
 
     let result = output.serialize().unwrap();
     assert_eq!(result.len(), 2, "Should have two clients in result");
 
-    let client1_output = result.get(&1).unwrap();
+    let client1_output = result.get(&ClientId(1)).unwrap();
     assert!(
         client1_output.contains("Hello"),
         "Client 1 should contain 'Hello'"
     );
 
-    let client2_output = result.get(&2).unwrap();
+    let client2_output = result.get(&ClientId(2)).unwrap();
     assert!(
         client2_output.contains("World"),
         "Client 2 should contain 'World'"
@@ -333,15 +334,15 @@ fn test_serialize_with_pre_and_post_vte_instructions() {
     let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
     output.add_clients(&client_ids, link_handler, None);
 
-    output.add_pre_vte_instruction_to_client(1, "\u{1b}[?1049h");
+    output.add_pre_vte_instruction_to_client(ClientId(1), "\u{1b}[?1049h");
     let chunk = create_character_chunk_from_str("Test", 0, 0);
     output
-        .add_character_chunks_to_client(1, vec![chunk], None)
+        .add_character_chunks_to_client(ClientId(1), vec![chunk], None)
         .unwrap();
-    output.add_post_vte_instruction_to_client(1, "\u{1b}[?25h");
+    output.add_post_vte_instruction_to_client(ClientId(1), "\u{1b}[?25h");
 
     let result = output.serialize().unwrap();
-    let client_output = result.get(&1).unwrap();
+    let client_output = result.get(&ClientId(1)).unwrap();
 
     // Verify correct ordering
     let pre_vte_pos = client_output.find("\u{1b}[?1049h").unwrap();
@@ -363,7 +364,7 @@ fn test_serialize_drains_state() {
 
     let chunk = create_character_chunk_from_str("Hello", 0, 0);
     output
-        .add_character_chunks_to_client(1, vec![chunk], None)
+        .add_character_chunks_to_client(ClientId(1), vec![chunk], None)
         .unwrap();
 
     assert!(output.is_dirty(), "Output should be dirty before serialize");
@@ -392,13 +393,13 @@ fn test_serialize_with_size_no_constraints() {
 
     let chunk = create_character_chunk_from_str("Hello", 0, 0);
     output
-        .add_character_chunks_to_client(1, vec![chunk], None)
+        .add_character_chunks_to_client(ClientId(1), vec![chunk], None)
         .unwrap();
 
     let result = output.serialize_with_size(None, None).unwrap();
     assert_eq!(result.len(), 1, "Should have one client in result");
 
-    let client_output = result.get(&1).unwrap();
+    let client_output = result.get(&ClientId(1)).unwrap();
     assert!(client_output.contains("Hello"), "Should contain the text");
 }
 
@@ -414,17 +415,17 @@ fn test_serialize_with_size_crops_chunks_below_visible_area() {
     // Add chunk below visible area (should be cropped)
     let chunk_below = create_character_chunk_from_str("Hidden", 0, 15);
     output
-        .add_character_chunks_to_client(1, vec![chunk_below], None)
+        .add_character_chunks_to_client(ClientId(1), vec![chunk_below], None)
         .unwrap();
 
     // Add chunk within visible area (should be included)
     let chunk_visible = create_character_chunk_from_str("Visible", 0, 5);
     output
-        .add_character_chunks_to_client(1, vec![chunk_visible], None)
+        .add_character_chunks_to_client(ClientId(1), vec![chunk_visible], None)
         .unwrap();
 
     let result = output.serialize_with_size(max_size, None).unwrap();
-    let client_output = result.get(&1).unwrap();
+    let client_output = result.get(&ClientId(1)).unwrap();
 
     assert!(
         client_output.contains("Visible"),
@@ -448,17 +449,17 @@ fn test_serialize_with_size_crops_chunks_outside_cols() {
     // Add chunk outside visible columns (should be cropped)
     let chunk_outside = create_character_chunk_from_str("Hidden", 25, 5);
     output
-        .add_character_chunks_to_client(1, vec![chunk_outside], None)
+        .add_character_chunks_to_client(ClientId(1), vec![chunk_outside], None)
         .unwrap();
 
     // Add chunk within visible area
     let chunk_visible = create_character_chunk_from_str("Visible", 5, 5);
     output
-        .add_character_chunks_to_client(1, vec![chunk_visible], None)
+        .add_character_chunks_to_client(ClientId(1), vec![chunk_visible], None)
         .unwrap();
 
     let result = output.serialize_with_size(max_size, None).unwrap();
-    let client_output = result.get(&1).unwrap();
+    let client_output = result.get(&ClientId(1)).unwrap();
 
     assert!(
         client_output.contains("Visible"),
@@ -482,11 +483,11 @@ fn test_serialize_with_size_crops_characters_within_chunk() {
     // Add chunk that starts at x=15 and would extend to x=25 (10 chars)
     let chunk = create_character_chunk_from_str("1234567890", 15, 5);
     output
-        .add_character_chunks_to_client(1, vec![chunk], None)
+        .add_character_chunks_to_client(ClientId(1), vec![chunk], None)
         .unwrap();
 
     let result = output.serialize_with_size(max_size, None).unwrap();
-    let client_output = result.get(&1).unwrap();
+    let client_output = result.get(&ClientId(1)).unwrap();
 
     // Should only render first 5 characters (cols 15-19)
     assert!(
@@ -514,11 +515,11 @@ fn test_serialize_with_size_adds_padding_instructions() {
 
     let chunk = create_character_chunk_from_str("Test", 0, 0);
     output
-        .add_character_chunks_to_client(1, vec![chunk], None)
+        .add_character_chunks_to_client(ClientId(1), vec![chunk], None)
         .unwrap();
 
     let result = output.serialize_with_size(max_size, content_size).unwrap();
-    let client_output = result.get(&1).unwrap();
+    let client_output = result.get(&ClientId(1)).unwrap();
 
     // Verify padding/clearing instructions are present
     // Should contain clear line instructions: \u{1b}[y;xH\u{1b}[m\u{1b}[K
@@ -543,15 +544,15 @@ fn test_serialize_with_size_hides_cursor_when_cropped() {
     let max_size = Some(Size { rows: 10, cols: 20 });
 
     // Set cursor outside max_size
-    output.set_cursor_coordinates(1, 25, 5);
+    output.set_cursor_coordinates(ClientId(1), 25, 5);
 
     let chunk = create_character_chunk_from_str("Test", 0, 0);
     output
-        .add_character_chunks_to_client(1, vec![chunk], None)
+        .add_character_chunks_to_client(ClientId(1), vec![chunk], None)
         .unwrap();
 
     let result = output.serialize_with_size(max_size, None).unwrap();
-    let client_output = result.get(&1).unwrap();
+    let client_output = result.get(&ClientId(1)).unwrap();
 
     // Verify hide cursor instruction is added
     assert!(
@@ -576,13 +577,13 @@ fn test_serialize_with_size_crops_each_client_against_its_own_cursor() {
         } else {
             cursors
         } {
-            output.set_cursor_coordinates(client_id, x, y);
+            output.set_cursor_coordinates(ClientId(client_id), x, y);
         }
 
         for client_id in [1, 2] {
             output
                 .add_character_chunks_to_client(
-                    client_id,
+                    ClientId(client_id),
                     vec![create_character_chunk_from_str("Test", 0, 0)],
                     None,
                 )
@@ -593,11 +594,11 @@ fn test_serialize_with_size_crops_each_client_against_its_own_cursor() {
             .serialize_with_size(Some(Size { rows: 10, cols: 20 }), None)
             .unwrap();
         assert!(
-            result.get(&1).unwrap().contains("\u{1b}[?25l"),
+            result.get(&ClientId(1)).unwrap().contains("\u{1b}[?25l"),
             "client 1's cursor is outside its size and must be hidden (reversed: {reversed})"
         );
         assert!(
-            !result.get(&2).unwrap().contains("\u{1b}[?25l"),
+            !result.get(&ClientId(2)).unwrap().contains("\u{1b}[?25l"),
             "client 2's cursor fits and must not be hidden by client 1's (reversed: {reversed})"
         );
     }
@@ -619,7 +620,7 @@ fn test_add_character_chunks_to_multiple_clients() {
     assert_eq!(result.len(), 3, "Should have three clients in result");
 
     for client_id in 1..=3 {
-        let client_output = result.get(&client_id).unwrap();
+        let client_output = result.get(&ClientId(client_id)).unwrap();
         assert!(
             client_output.contains("Test"),
             "Client {} should contain the text",
@@ -952,7 +953,7 @@ fn test_cursor_is_not_visible_under_a_context_menu() {
 
     let mut output = create_test_output();
     output.set_context_menu_rects(HashMap::from([(
-        1,
+        ClientId(1),
         vec![CellRect {
             x: 5,
             y: 5,
@@ -962,19 +963,19 @@ fn test_cursor_is_not_visible_under_a_context_menu() {
     )]));
 
     assert!(
-        !output.cursor_is_visible(7, 6, None, 1),
+        !output.cursor_is_visible(7, 6, None, ClientId(1)),
         "the menu's own client cannot be shown a cursor under it"
     );
     assert!(
-        output.cursor_is_visible(7, 9, None, 1),
+        output.cursor_is_visible(7, 9, None, ClientId(1)),
         "one row below the menu is not covered"
     );
     assert!(
-        output.cursor_is_visible(15, 6, None, 1),
+        output.cursor_is_visible(15, 6, None, ClientId(1)),
         "one column past the menu is not covered"
     );
     assert!(
-        output.cursor_is_visible(7, 6, None, 2),
+        output.cursor_is_visible(7, 6, None, ClientId(2)),
         "a client without this menu sees those cells uncovered"
     );
 }
@@ -1526,7 +1527,7 @@ pub(super) type KittyTestParts = (
 pub(super) fn create_test_kitty_parts() -> KittyTestParts {
     let kitty_image_store = Rc::new(RefCell::new(KittyImageStore::default()));
     let capabilities = Rc::new(RefCell::new(HashMap::new()));
-    capabilities.borrow_mut().insert(1, true);
+    capabilities.borrow_mut().insert(ClientId(1), true);
     let host_state = Rc::new(RefCell::new(HashMap::new()));
     (kitty_image_store, capabilities, host_state)
 }
@@ -1598,8 +1599,17 @@ pub(super) fn run_kitty_frame(
     let client_ids: HashSet<ClientId> = create_test_clients(1);
     let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
     output.add_clients(&client_ids, link_handler, floating_panes_stack);
-    output.add_kitty_image_chunks_to_client(1, PaneId::Terminal(1), chunks, None);
-    output.serialize().unwrap().remove(&1).unwrap_or_default()
+    output.add_kitty_image_chunks_to_client(
+        ClientId(1),
+        PaneId::Terminal(TerminalId(1)),
+        chunks,
+        None,
+    );
+    output
+        .serialize()
+        .unwrap()
+        .remove(&ClientId(1))
+        .unwrap_or_default()
 }
 
 fn run_kitty_frame_for_panes(
@@ -1611,11 +1621,15 @@ fn run_kitty_frame_for_panes(
     let client_ids: HashSet<ClientId> = create_test_clients(1);
     let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
     output.add_clients(&client_ids, link_handler, None);
-    output.set_kitty_visible_panes(1, visible_panes);
+    output.set_kitty_visible_panes(ClientId(1), visible_panes);
     for (pane_id, chunks) in chunks_by_pane {
-        output.add_kitty_image_chunks_to_client(1, pane_id, chunks, None);
+        output.add_kitty_image_chunks_to_client(ClientId(1), pane_id, chunks, None);
     }
-    output.serialize().unwrap().remove(&1).unwrap_or_default()
+    output
+        .serialize()
+        .unwrap()
+        .remove(&ClientId(1))
+        .unwrap_or_default()
 }
 
 fn run_kitty_frame_with_host_clear(parts: &KittyTestParts, chunks: Vec<KittyImageChunk>) -> String {
@@ -1623,10 +1637,19 @@ fn run_kitty_frame_with_host_clear(parts: &KittyTestParts, chunks: Vec<KittyImag
     let client_ids: HashSet<ClientId> = create_test_clients(1);
     let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
     output.add_clients(&client_ids, link_handler, None);
-    output.add_pre_vte_instruction_to_client(1, "\u{1b}[m\u{1b}[2J");
-    output.mark_host_display_cleared_for_clients(std::iter::once(1));
-    output.add_kitty_image_chunks_to_client(1, PaneId::Terminal(1), chunks, None);
-    output.serialize().unwrap().remove(&1).unwrap_or_default()
+    output.add_pre_vte_instruction_to_client(ClientId(1), "\u{1b}[m\u{1b}[2J");
+    output.mark_host_display_cleared_for_clients(std::iter::once(ClientId(1)));
+    output.add_kitty_image_chunks_to_client(
+        ClientId(1),
+        PaneId::Terminal(TerminalId(1)),
+        chunks,
+        None,
+    );
+    output
+        .serialize()
+        .unwrap()
+        .remove(&ClientId(1))
+        .unwrap_or_default()
 }
 
 fn run_kitty_frame_with_unmarked_clear_string(
@@ -1637,9 +1660,18 @@ fn run_kitty_frame_with_unmarked_clear_string(
     let client_ids: HashSet<ClientId> = create_test_clients(1);
     let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
     output.add_clients(&client_ids, link_handler, None);
-    output.add_pre_vte_instruction_to_client(1, "\u{1b}[m\u{1b}[2J");
-    output.add_kitty_image_chunks_to_client(1, PaneId::Terminal(1), chunks, None);
-    output.serialize().unwrap().remove(&1).unwrap_or_default()
+    output.add_pre_vte_instruction_to_client(ClientId(1), "\u{1b}[m\u{1b}[2J");
+    output.add_kitty_image_chunks_to_client(
+        ClientId(1),
+        PaneId::Terminal(TerminalId(1)),
+        chunks,
+        None,
+    );
+    output
+        .serialize()
+        .unwrap()
+        .remove(&ClientId(1))
+        .unwrap_or_default()
 }
 
 fn parse_kitty_placement_crops(output: &str) -> Vec<(usize, usize, usize, usize, usize, usize)> {
@@ -1786,14 +1818,23 @@ fn kitty_diff_move_remove_free_retransmit() {
 fn kitty_placements_of_pane_dropped_from_visible_set_are_deleted() {
     let parts = create_test_kitty_parts();
     let internal = store_test_kitty_image(&parts.0, 30, 40);
-    let both_panes_visible: HashSet<PaneId> = [PaneId::Terminal(1), PaneId::Terminal(2)]
-        .into_iter()
-        .collect();
+    let both_panes_visible: HashSet<PaneId> = [
+        PaneId::Terminal(TerminalId(1)),
+        PaneId::Terminal(TerminalId(2)),
+    ]
+    .into_iter()
+    .collect();
     let frame_1 = run_kitty_frame_for_panes(
         &parts,
         vec![
-            (PaneId::Terminal(1), vec![kitty_chunk(internal, 1, 0, 0)]),
-            (PaneId::Terminal(2), vec![kitty_chunk(internal, 2, 0, 10)]),
+            (
+                PaneId::Terminal(TerminalId(1)),
+                vec![kitty_chunk(internal, 1, 0, 0)],
+            ),
+            (
+                PaneId::Terminal(TerminalId(2)),
+                vec![kitty_chunk(internal, 2, 0, 10)],
+            ),
         ],
         both_panes_visible,
     );
@@ -1802,10 +1843,14 @@ fn kitty_placements_of_pane_dropped_from_visible_set_are_deleted() {
 
     // The first pane collapsed (say, into a stack), so it renders nothing and is no longer in
     // the visible set - its placement has to go even though it was never explicitly removed.
-    let only_second_pane_visible: HashSet<PaneId> = [PaneId::Terminal(2)].into_iter().collect();
+    let only_second_pane_visible: HashSet<PaneId> =
+        [PaneId::Terminal(TerminalId(2))].into_iter().collect();
     let frame_2 = run_kitty_frame_for_panes(
         &parts,
-        vec![(PaneId::Terminal(2), vec![kitty_chunk(internal, 2, 0, 10)])],
+        vec![(
+            PaneId::Terminal(TerminalId(2)),
+            vec![kitty_chunk(internal, 2, 0, 10)],
+        )],
         only_second_pane_visible,
     );
     assert_eq!(
@@ -1867,7 +1912,7 @@ fn kitty_occlusion_crops_exclude_covered_quarter() {
 #[test]
 fn kitty_capability_gating_suppresses_all_apc() {
     let parts_with_false = create_test_kitty_parts();
-    parts_with_false.1.borrow_mut().insert(1, false);
+    parts_with_false.1.borrow_mut().insert(ClientId(1), false);
     let internal = store_test_kitty_image(&parts_with_false.0, 30, 40);
     let output = run_kitty_frame(
         &parts_with_false,
@@ -1875,7 +1920,7 @@ fn kitty_capability_gating_suppresses_all_apc() {
         None,
     );
     assert!(!output.contains("\u{1b}_G"));
-    assert!(!parts_with_false.2.borrow().contains_key(&1));
+    assert!(!parts_with_false.2.borrow().contains_key(&ClientId(1)));
 
     let parts_with_absent = create_test_kitty_parts();
     parts_with_absent.1.borrow_mut().clear();
@@ -1886,7 +1931,7 @@ fn kitty_capability_gating_suppresses_all_apc() {
         None,
     );
     assert!(!output.contains("\u{1b}_G"));
-    assert!(!parts_with_absent.2.borrow().contains_key(&1));
+    assert!(!parts_with_absent.2.borrow().contains_key(&ClientId(1)));
 }
 
 #[test]
@@ -1898,8 +1943,8 @@ fn is_dirty_with_kitty_chunks_and_pending_deletes() {
     let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
     output.add_clients(&client_ids, link_handler, None);
     output.add_kitty_image_chunks_to_client(
-        1,
-        PaneId::Terminal(1),
+        ClientId(1),
+        PaneId::Terminal(TerminalId(1)),
         vec![kitty_chunk(internal, 1, 0, 0)],
         None,
     );
@@ -1910,7 +1955,7 @@ fn is_dirty_with_kitty_chunks_and_pending_deletes() {
     let mut transmitted = HashMap::new();
     transmitted.insert((1 as InternalImageId, None), 2_000_000_000u32);
     pending_parts.2.borrow_mut().insert(
-        1,
+        ClientId(1),
         HostKittyState {
             transmitted,
             ..Default::default()
@@ -2051,14 +2096,14 @@ fn create_placeholder_chunk(cells: usize, x: usize, y: usize) -> CharacterChunk 
 /// its own choosing ends up with a screen that no longer matches its own model of it.
 #[test]
 fn a_client_without_kitty_support_never_receives_placeholder_cells() {
-    let mut output = create_test_output_with_kitty_support(1, false);
+    let mut output = create_test_output_with_kitty_support(ClientId(1), false);
     let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
     output.add_clients(&create_test_clients(1), link_handler, None);
     output
-        .add_character_chunks_to_client(1, vec![create_placeholder_chunk(4, 0, 0)], None)
+        .add_character_chunks_to_client(ClientId(1), vec![create_placeholder_chunk(4, 0, 0)], None)
         .unwrap();
 
-    let rendered = output.serialize().unwrap().remove(&1).unwrap();
+    let rendered = output.serialize().unwrap().remove(&ClientId(1)).unwrap();
     assert!(
         !rendered.contains(PLACEHOLDER),
         "placeholder reached a client with no image: {rendered:?}"
@@ -2070,14 +2115,14 @@ fn a_client_without_kitty_support_never_receives_placeholder_cells() {
 
 #[test]
 fn a_kitty_capable_client_still_receives_placeholder_cells() {
-    let mut output = create_test_output_with_kitty_support(1, true);
+    let mut output = create_test_output_with_kitty_support(ClientId(1), true);
     let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
     output.add_clients(&create_test_clients(1), link_handler, None);
     output
-        .add_character_chunks_to_client(1, vec![create_placeholder_chunk(4, 0, 0)], None)
+        .add_character_chunks_to_client(ClientId(1), vec![create_placeholder_chunk(4, 0, 0)], None)
         .unwrap();
 
-    let rendered = output.serialize().unwrap().remove(&1).unwrap();
+    let rendered = output.serialize().unwrap().remove(&ClientId(1)).unwrap();
     assert_eq!(rendered.matches(PLACEHOLDER).count(), 4, "{rendered:?}");
 }
 
@@ -2089,10 +2134,10 @@ fn a_client_whose_capability_is_unknown_never_receives_placeholder_cells() {
     let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
     output.add_clients(&create_test_clients(1), link_handler, None);
     output
-        .add_character_chunks_to_client(1, vec![create_placeholder_chunk(4, 0, 0)], None)
+        .add_character_chunks_to_client(ClientId(1), vec![create_placeholder_chunk(4, 0, 0)], None)
         .unwrap();
 
-    let rendered = output.serialize().unwrap().remove(&1).unwrap();
+    let rendered = output.serialize().unwrap().remove(&ClientId(1)).unwrap();
     assert!(!rendered.contains(PLACEHOLDER), "{rendered:?}");
 }
 

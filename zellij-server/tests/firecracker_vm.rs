@@ -510,7 +510,13 @@ fn run_in_guest(ensured: &EnsureResponse, script: &str, marker: &str) -> String 
     };
     let hosts = Arc::new(RemoteHosts::new());
     let (conn, reader_socket) = hosts
-        .open_pane_with_ssh_options(&ensured.ssh_host, &command, None, 1, options)
+        .open_pane_with_ssh_options(
+            &ensured.ssh_host,
+            &command,
+            None,
+            zellij_server::TerminalId(1),
+            options,
+        )
         .unwrap();
     let reader = RemoteReader::new(conn.clone(), reader_socket).unwrap();
     let pane = pump(conn, reader);

@@ -5,4 +5,4 @@ mod pane_id;
 pub mod panes;
 pub mod ui;
 pub use pane_id::PaneId;
-pub type ClientId = u16;
+pub use zellij_utils::internal_ids::{ClientId, PluginId, TerminalId};

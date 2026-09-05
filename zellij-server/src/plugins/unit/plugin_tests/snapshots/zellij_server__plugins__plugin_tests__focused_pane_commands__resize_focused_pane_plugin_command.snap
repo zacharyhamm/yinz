@@ -1,10 +1,13 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/focused_pane_commands.rs
+assertion_line: 77
 expression: "format!(\"{:#?}\", new_tab_event)"
 ---
 Some(
     Resize(
-        1,
+        ClientId(
+            1,
+        ),
         ResizeStrategy {
             resize: Increase,
             direction: None,

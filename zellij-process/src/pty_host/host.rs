@@ -40,6 +40,7 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use zellij_utils::internal_ids::TerminalId;
 
 use nix::{
     errno::Errno,
@@ -333,7 +334,7 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
         host_id,
         host_pid,
         label,
-        terminal_id,
+        terminal_id: TerminalId(terminal_id),
         session_name,
         cmd,
         started_at_unix: unix_now(),
@@ -354,7 +355,7 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
     match start_session(
         &ctx.cmd,
         failover_cmd.as_ref(),
-        terminal_id,
+        TerminalId(terminal_id),
         termios.as_ref(),
         initial_size.as_ref(),
         arg0.as_deref(),
@@ -405,7 +406,7 @@ struct HostContext {
     host_id: String,
     host_pid: u32,
     label: String,
-    terminal_id: u32,
+    terminal_id: TerminalId,
     session_name: Option<String>,
     cmd: RunCommand,
     started_at_unix: u64,
@@ -419,7 +420,7 @@ impl HostContext {
         HostStatus {
             host_id: self.host_id.clone(),
             session_name: self.session_name.clone(),
-            terminal_id: self.terminal_id,
+            terminal_id: self.terminal_id.0,
             command: self.cmd.to_string(),
             cwd: self.cmd.cwd.clone(),
             child_pid: self.session.as_ref().map(|s| s.child_pid),
@@ -789,7 +790,13 @@ fn serve_cli_connection(ctx: &mut HostContext, mut stream: UnixStream) -> CliOut
             terminal_id,
             session_name,
             ..
-        })) => attach(ctx, stream, protocol_version, terminal_id, session_name),
+        })) => attach(
+            ctx,
+            stream,
+            protocol_version,
+            TerminalId(terminal_id),
+            session_name,
+        ),
         Ok(Some(_)) => CliOutcome::Done,
         Ok(None) => CliOutcome::Done,
         Err(e) => {
@@ -819,7 +826,7 @@ fn attach(
     ctx: &mut HostContext,
     mut stream: UnixStream,
     protocol_version: u32,
-    terminal_id: u32,
+    terminal_id: TerminalId,
     session_name: Option<String>,
 ) -> CliOutcome {
     if protocol_version != PROTOCOL_VERSION {
@@ -1066,7 +1073,7 @@ struct ChildEnv<'a> {
 fn start_session(
     cmd: &RunCommand,
     failover_cmd: Option<&RunCommand>,
-    terminal_id: u32,
+    terminal_id: TerminalId,
     termios: Option<&WireTermios>,
     initial_size: Option<&WireWinsize>,
     arg0: Option<&str>,
@@ -1099,7 +1106,7 @@ fn start_session(
     .is_none()
     {
         return Err(ZellijError::CommandNotFound {
-            terminal_id,
+            terminal_id: terminal_id.0,
             command: cmd.command.to_string_lossy().to_string(),
         })
         .with_context(err_context);

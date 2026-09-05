@@ -38,6 +38,7 @@ use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::RunCommand;
 use zellij_utils::input::mouse::MouseEvent;
 use zellij_utils::input::options::DEFAULT_WORD_SEPARATORS;
+use zellij_utils::internal_ids::TerminalId;
 use zellij_utils::position::Position;
 use zellij_utils::position::{Column, Line};
 use zellij_utils::shared::clean_string_from_control_and_linebreak;
@@ -275,7 +276,7 @@ pub(crate) enum ExtractedPanePlacement {
 
 enum BufferedTabInstruction {
     SetPaneSelectable(PaneId, bool),
-    HandlePtyBytes(u32, VteBytes),
+    HandlePtyBytes(TerminalId, VteBytes),
     HoldPane(PaneId, Option<i32>, bool, RunCommand), // Option<i32> is the exit status, bool is is_first_run
 }
 
@@ -315,7 +316,7 @@ pub(crate) struct Tab {
     connected_clients: Rc<RefCell<HashSet<ClientId>>>,
     pane_frame_style: PaneFrameStyle,
     auto_layout: bool,
-    pending_vte_events: HashMap<u32, Vec<VteBytes>>,
+    pending_vte_events: HashMap<TerminalId, Vec<VteBytes>>,
     pub selecting_with_mouse_in_pane: Option<PaneId>, // this is only pub for the tests
     pane_being_resized_with_mouse: Option<PaneResizeState>,
     link_handler: Rc<RefCell<LinkHandler>>,
@@ -326,7 +327,7 @@ pub(crate) struct Tab {
     copy_on_select: bool,
     terminal_emulator_colors: Rc<RefCell<Palette>>,
     terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
-    pids_waiting_resize: HashSet<u32>, // u32 is the terminal_id
+    pids_waiting_resize: HashSet<TerminalId>, // TerminalId is the terminal_id
     // Replacement commands for panes whose current command is still running: a
     // `RunCommandInPane` that raced the pane's own exit waits here and is started by
     // `hold_pane` (last write wins). bool is keep_scrollback.
@@ -975,12 +976,12 @@ pub trait Pane {
     fn update_exit_status(&mut self, _exit_status: i32) {}
     fn set_plugin_regex_highlights(
         &mut self,
-        _plugin_id: u32,
+        _plugin_id: PluginId,
         _highlights: Vec<RegexHighlight>,
         _style: &Style,
     ) {
     }
-    fn clear_plugin_highlights(&mut self, _plugin_id: u32) {}
+    fn clear_plugin_highlights(&mut self, _plugin_id: PluginId) {}
     fn set_hover_position(&mut self, _position: Option<Position>) -> bool {
         false
     }
@@ -990,7 +991,7 @@ pub trait Pane {
     fn plugin_highlight_at(
         &self,
         _position: &Position,
-    ) -> Option<(u32, String, String, BTreeMap<String, String>)> {
+    ) -> Option<(PluginId, String, String, BTreeMap<String, String>)> {
         None
     }
     fn terminal_emulator_wants_mouse(&self) -> bool {
@@ -2038,11 +2039,11 @@ impl Tab {
         &mut self,
         layout: TiledPaneLayout,
         floating_panes_layout: Vec<FloatingPaneLayout>,
-        new_terminal_ids: Vec<(u32, HoldForCommand)>,
-        new_floating_terminal_ids: Vec<(u32, HoldForCommand)>,
-        new_plugin_ids: HashMap<RunPluginOrAlias, Vec<u32>>,
+        new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        new_floating_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        new_plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
         client_id: ClientId,
-        blocking_terminal: Option<(u32, NotificationEnd)>,
+        blocking_terminal: Option<(TerminalId, NotificationEnd)>,
     ) -> Result<()> {
         self.swap_layouts
             .set_base_layout((layout.clone(), floating_panes_layout.clone()));
@@ -2123,13 +2124,13 @@ impl Tab {
         floating_panes_layout: Vec<FloatingPaneLayout>,
         mut new_swap_tiled_layouts: Option<Vec<SwapTiledLayout>>,
         mut new_swap_floating_layouts: Option<Vec<SwapFloatingLayout>>,
-        new_terminal_ids: Vec<(u32, HoldForCommand)>,
-        new_floating_terminal_ids: Vec<(u32, HoldForCommand)>,
-        new_plugin_ids: HashMap<RunPluginOrAlias, Vec<u32>>,
+        new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        new_floating_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        new_plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
         retain_existing_terminal_panes: bool,
         retain_existing_plugin_panes: bool,
         client_id: ClientId,
-        blocking_terminal: Option<(u32, NotificationEnd)>,
+        blocking_terminal: Option<(TerminalId, NotificationEnd)>,
     ) -> Result<()> {
         let new_swap_tiled_layouts = new_swap_tiled_layouts.take().unwrap_or_default();
         let new_swap_floating_layouts = new_swap_floating_layouts.take().unwrap_or_default();
@@ -4111,7 +4112,7 @@ impl Tab {
             })
             .or_else(|| self.tiled_panes.get_active_pane_id(client_id))
     }
-    fn get_active_terminal_id(&self, client_id: ClientId) -> Option<u32> {
+    fn get_active_terminal_id(&self, client_id: ClientId) -> Option<TerminalId> {
         if let Some(PaneId::Terminal(pid)) = self.get_active_pane_id(client_id) {
             Some(pid)
         } else {
@@ -4224,13 +4225,13 @@ impl Tab {
         }
         had_bell
     }
-    pub fn has_terminal_pid(&self, pid: u32) -> bool {
+    pub fn has_terminal_pid(&self, pid: TerminalId) -> bool {
         self.tiled_panes.panes_contain(&PaneId::Terminal(pid))
             || self.floating_panes.panes_contain(&PaneId::Terminal(pid))
             || self.overlay_panes.panes_contain(&PaneId::Terminal(pid))
             || self.suppressed_panes.contains_key(&PaneId::Terminal(pid))
     }
-    pub fn has_plugin(&self, plugin_id: u32) -> bool {
+    pub fn has_plugin(&self, plugin_id: PluginId) -> bool {
         self.tiled_panes.panes_contain(&PaneId::Plugin(plugin_id))
             || self
                 .floating_panes
@@ -4511,7 +4512,7 @@ impl Tab {
             pane.set_guest_modal_shortcuts(shortcuts);
         }
     }
-    pub fn handle_pty_bytes(&mut self, pid: u32, bytes: VteBytes) -> Result<()> {
+    pub fn handle_pty_bytes(&mut self, pid: TerminalId, bytes: VteBytes) -> Result<()> {
         if self.is_pending {
             self.pending_instructions
                 .push(BufferedTabInstruction::HandlePtyBytes(pid, bytes));
@@ -4545,7 +4546,7 @@ impl Tab {
         }
         self.process_pty_bytes(pid, bytes).with_context(err_context)
     }
-    pub fn remote_pane_ready(&mut self, pid: u32) -> Result<()> {
+    pub fn remote_pane_ready(&mut self, pid: TerminalId) -> Result<()> {
         // Anything buffered for this pane is loading-screen progress the clear
         // below erases. A user who scrolled the loading pane left it marked
         // scrolled with those frames queued; replaying them later would paint the
@@ -4560,7 +4561,7 @@ impl Tab {
     }
     pub fn handle_plugin_bytes(
         &mut self,
-        pid: u32,
+        pid: PluginId,
         client_id: ClientId,
         bytes: VteBytes,
     ) -> Result<()> {
@@ -4579,7 +4580,7 @@ impl Tab {
         }
         Ok(())
     }
-    pub fn process_pending_vte_events(&mut self, pid: u32) -> Result<()> {
+    pub fn process_pending_vte_events(&mut self, pid: TerminalId) -> Result<()> {
         if let Some(pending_vte_events) = self.pending_vte_events.get_mut(&pid) {
             let vte_events: Vec<VteBytes> = std::mem::take(pending_vte_events);
             for vte_event in vte_events {
@@ -4598,7 +4599,11 @@ impl Tab {
     /// paused are re-fed through vte. The re-feed itself may produce
     /// another forward and re-arm the pause; the cycle bounds at the
     /// buffered byte count.
-    pub fn resume_pane_after_forward(&mut self, pid: u32, reply_bytes: Vec<u8>) -> Result<()> {
+    pub fn resume_pane_after_forward(
+        &mut self,
+        pid: TerminalId,
+        reply_bytes: Vec<u8>,
+    ) -> Result<()> {
         let err_context = || format!("failed to resume pane {pid} after forward");
         // Write the reply first so the app sees it on stdin before
         // any subsequent (sync or async) reply that follows in the
@@ -4631,7 +4636,7 @@ impl Tab {
         }
         Ok(())
     }
-    fn process_pty_bytes(&mut self, pid: u32, bytes: VteBytes) -> Result<()> {
+    fn process_pty_bytes(&mut self, pid: TerminalId, bytes: VteBytes) -> Result<()> {
         let err_context = || format!("failed to process pty bytes from pid {pid}");
 
         if let Some(terminal_output) = self
@@ -5977,9 +5982,9 @@ impl Tab {
                         let mut pane_ids_to_error = vec![];
                         for (id, is_terminal) in pane_ids {
                             if *is_terminal {
-                                pane_ids_to_error.push(PaneId::Terminal(*id));
+                                pane_ids_to_error.push(PaneId::Terminal(TerminalId(*id)));
                             } else {
-                                pane_ids_to_error.push(PaneId::Plugin(*id));
+                                pane_ids_to_error.push(PaneId::Plugin(PluginId(*id)));
                             };
                         }
                         self.senders
@@ -6808,7 +6813,7 @@ impl Tab {
         exit_status: Option<i32>,
         is_first_run: bool,
         run_command: RunCommand,
-    ) -> Option<(u32, RunCommand, bool)> {
+    ) -> Option<(TerminalId, RunCommand, bool)> {
         if self.is_pending {
             self.pending_instructions
                 .push(BufferedTabInstruction::HoldPane(
@@ -7152,10 +7157,10 @@ impl Tab {
         }
     }
 
-    pub fn scroll_terminal_up(&mut self, terminal_pane_id: u32) -> Result<()> {
+    pub fn scroll_terminal_up(&mut self, terminal_pane_id: TerminalId) -> Result<()> {
         let pane_id = PaneId::Terminal(terminal_pane_id);
         let err_context = || format!("failed to scroll up pane {pane_id:?}");
-        let fictitious_client_id = 1;
+        let fictitious_client_id = ClientId(1);
         let synthetic_position = Position::new(0, 0);
         let (mouse_sgr, is_alt) = match self.get_pane_with_id(pane_id) {
             Some(pane) => (
@@ -7191,10 +7196,10 @@ impl Tab {
         Ok(())
     }
 
-    pub fn scroll_terminal_down(&mut self, terminal_pane_id: u32) -> Result<()> {
+    pub fn scroll_terminal_down(&mut self, terminal_pane_id: TerminalId) -> Result<()> {
         let pane_id = PaneId::Terminal(terminal_pane_id);
         let err_context = || format!("failed to scroll down pane {pane_id:?}");
-        let fictitious_client_id = 1;
+        let fictitious_client_id = ClientId(1);
         let synthetic_position = Position::new(0, 0);
         let (mouse_sgr, is_alt) = match self.get_pane_with_id(pane_id) {
             Some(pane) => (
@@ -7232,12 +7237,12 @@ impl Tab {
         }
     }
 
-    pub fn scroll_terminal_page_up(&mut self, terminal_pane_id: u32) {
+    pub fn scroll_terminal_page_up(&mut self, terminal_pane_id: TerminalId) {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
-            let fictitious_client_id = 1; // this is not checked for terminal panes and we
-                                          // don't have an actual client id here
-                                          // TODO: traits were a mistake
-                                          // prevent overflow when row == 0
+            let fictitious_client_id = ClientId(1); // this is not checked for terminal panes and we
+                                                    // don't have an actual client id here
+                                                    // TODO: traits were a mistake
+                                                    // prevent overflow when row == 0
             let scroll_rows = terminal_pane.rows().max(1).saturating_sub(1);
             terminal_pane.scroll_up(scroll_rows, fictitious_client_id);
         }
@@ -7260,11 +7265,11 @@ impl Tab {
         Ok(())
     }
 
-    pub fn scroll_terminal_page_down(&mut self, terminal_pane_id: u32) {
+    pub fn scroll_terminal_page_down(&mut self, terminal_pane_id: TerminalId) {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
-            let fictitious_client_id = 1; // this is not checked for terminal panes and we
-                                          // don't have an actual client id here
-                                          // TODO: traits were a mistake
+            let fictitious_client_id = ClientId(1); // this is not checked for terminal panes and we
+                                                    // don't have an actual client id here
+                                                    // TODO: traits were a mistake
             let scroll_rows = terminal_pane.get_content_rows();
             terminal_pane.scroll_down(scroll_rows, fictitious_client_id);
             if !terminal_pane.is_scrolled() {
@@ -7316,7 +7321,7 @@ impl Tab {
         Ok(())
     }
 
-    pub fn scroll_terminal_to_bottom(&mut self, terminal_pane_id: u32) {
+    pub fn scroll_terminal_to_bottom(&mut self, terminal_pane_id: TerminalId) {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
             terminal_pane.clear_scroll();
             if !terminal_pane.is_scrolled() {
@@ -7424,13 +7429,13 @@ impl Tab {
         Ok(())
     }
 
-    pub fn scroll_terminal_to_top(&mut self, terminal_pane_id: u32) {
+    pub fn scroll_terminal_to_top(&mut self, terminal_pane_id: TerminalId) {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
             terminal_pane.clear_scroll();
             if let Some(size) = terminal_pane.get_line_number() {
-                let fictitious_client_id = 1; // this is not checked for terminal panes and we
-                                              // don't have an actual client id here
-                                              // TODO: traits were a mistake
+                let fictitious_client_id = ClientId(1); // this is not checked for terminal panes and we
+                                                        // don't have an actual client id here
+                                                        // TODO: traits were a mistake
                 terminal_pane.scroll_up(size, fictitious_client_id);
             }
         }
@@ -7958,7 +7963,7 @@ impl Tab {
     pub fn set_plugin_regex_highlights_for_pane(
         &mut self,
         pane_id: PaneId,
-        plugin_id: u32,
+        plugin_id: PluginId,
         highlights: Vec<RegexHighlight>,
         style: &Style,
     ) {
@@ -7967,7 +7972,7 @@ impl Tab {
         }
     }
 
-    pub fn clear_all_plugin_highlights(&mut self, plugin_id: u32) {
+    pub fn clear_all_plugin_highlights(&mut self, plugin_id: PluginId) {
         for pane_id in self.get_all_pane_ids() {
             if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
                 pane.clear_plugin_highlights(plugin_id);
@@ -7975,13 +7980,17 @@ impl Tab {
         }
     }
 
-    pub fn clear_plugin_highlights_for_pane(&mut self, pane_id: PaneId, plugin_id: u32) {
+    pub fn clear_plugin_highlights_for_pane(&mut self, pane_id: PaneId, plugin_id: PluginId) {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.clear_plugin_highlights(plugin_id);
         }
     }
 
-    pub fn update_plugin_loading_stage(&mut self, pid: u32, loading_indication: LoadingIndication) {
+    pub fn update_plugin_loading_stage(
+        &mut self,
+        pid: PluginId,
+        loading_indication: LoadingIndication,
+    ) {
         if let Some(plugin_pane) = self
             .tiled_panes
             .get_pane_mut(PaneId::Plugin(pid))
@@ -7998,7 +8007,7 @@ impl Tab {
     }
     pub fn show_plugin_cursor(
         &mut self,
-        pid: u32,
+        pid: PluginId,
         client_id: ClientId,
         cursor_position: Option<(usize, usize)>,
     ) {
@@ -8018,7 +8027,7 @@ impl Tab {
     }
     pub fn start_plugin_loading_indication(
         &mut self,
-        pid: u32,
+        pid: PluginId,
         loading_indication: LoadingIndication,
     ) {
         if let Some(plugin_pane) = self
@@ -8035,7 +8044,7 @@ impl Tab {
             plugin_pane.start_loading_indication(loading_indication);
         }
     }
-    pub fn progress_plugin_loading_offset(&mut self, pid: u32) {
+    pub fn progress_plugin_loading_offset(&mut self, pid: PluginId) {
         if let Some(plugin_pane) = self
             .tiled_panes
             .get_pane_mut(PaneId::Plugin(pid))
@@ -8714,7 +8723,11 @@ impl Tab {
         self.swap_layouts.set_is_tiled_damaged();
         Ok(())
     }
-    pub fn request_plugin_permissions(&mut self, pid: u32, permissions: Option<PluginPermission>) {
+    pub fn request_plugin_permissions(
+        &mut self,
+        pid: PluginId,
+        permissions: Option<PluginPermission>,
+    ) {
         let mut should_focus_pane = false;
         if let Some(plugin_pane) = self
             .tiled_panes
@@ -8748,7 +8761,7 @@ impl Tab {
     }
     pub fn rerun_terminal_pane_with_id(
         &mut self,
-        terminal_pane_id: u32,
+        terminal_pane_id: TerminalId,
         completion_tx: Option<NotificationEnd>,
     ) {
         let pane_id = PaneId::Terminal(terminal_pane_id);
@@ -8785,7 +8798,7 @@ impl Tab {
     /// pane's hold — the replacement is stashed and started by `hold_pane` (last write wins).
     pub fn run_command_in_pane_with_id(
         &mut self,
-        terminal_pane_id: u32,
+        terminal_pane_id: TerminalId,
         run_command: RunCommand,
         keep_scrollback: bool,
     ) {
@@ -8857,9 +8870,9 @@ impl Tab {
                         let mut pane_ids_to_error = vec![];
                         for (id, is_terminal) in pane_ids {
                             if *is_terminal {
-                                pane_ids_to_error.push(PaneId::Terminal(*id));
+                                pane_ids_to_error.push(PaneId::Terminal(TerminalId(*id)));
                             } else {
-                                pane_ids_to_error.push(PaneId::Plugin(*id));
+                                pane_ids_to_error.push(PaneId::Plugin(PluginId(*id)));
                             };
                         }
                         self.senders
@@ -9318,7 +9331,7 @@ impl Tab {
     pub fn query_mouse_hover_pane_id(&self) -> HashMap<ClientId, PaneId> {
         self.mouse_hover_pane_id.clone()
     }
-    fn new_scrollback_editor_pane(&self, pid: u32) -> TerminalPane {
+    fn new_scrollback_editor_pane(&self, pid: TerminalId) -> TerminalPane {
         let next_terminal_position = self.get_next_terminal_position();
         let mut new_pane = TerminalPane::new(
             pid,
@@ -9355,7 +9368,7 @@ impl Tab {
     fn insert_scrollback_editor_replaced_pane(
         &mut self,
         replaced_pane: Box<dyn Pane>,
-        terminal_pane_id: u32,
+        terminal_pane_id: TerminalId,
     ) {
         let is_scrollback_editor = true;
         self.suppress_pane_behind(
@@ -9371,13 +9384,13 @@ impl Tab {
     }
     // --- Pane-targeting CLI methods ---
     pub fn scroll_up_by_pane_id(&mut self, pane_id: PaneId) {
-        let fictitious_client_id = 1;
+        let fictitious_client_id = ClientId(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.scroll_up(1, fictitious_client_id);
         }
     }
     pub fn scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = 1;
+        let fictitious_client_id = ClientId(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.scroll_down(1, fictitious_client_id);
             if !pane.is_scrolled() {
@@ -9389,7 +9402,7 @@ impl Tab {
         Ok(())
     }
     pub fn scroll_to_top_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = 1;
+        let fictitious_client_id = ClientId(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.clear_scroll();
             if let Some(size) = pane.get_line_number() {
@@ -9410,14 +9423,14 @@ impl Tab {
         Ok(())
     }
     pub fn page_scroll_up_by_pane_id(&mut self, pane_id: PaneId) {
-        let fictitious_client_id = 1;
+        let fictitious_client_id = ClientId(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = pane.rows().max(1).saturating_sub(1);
             pane.scroll_up(scroll_rows, fictitious_client_id);
         }
     }
     pub fn page_scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = 1;
+        let fictitious_client_id = ClientId(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = pane.get_content_rows();
             pane.scroll_down(scroll_rows, fictitious_client_id);
@@ -9430,14 +9443,14 @@ impl Tab {
         Ok(())
     }
     pub fn half_page_scroll_up_by_pane_id(&mut self, pane_id: PaneId) {
-        let fictitious_client_id = 1;
+        let fictitious_client_id = ClientId(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = (pane.rows().max(1).saturating_sub(1)) / 2;
             pane.scroll_up(scroll_rows, fictitious_client_id);
         }
     }
     pub fn half_page_scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = 1;
+        let fictitious_client_id = ClientId(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = (pane.rows().max(1).saturating_sub(1)) / 2;
             pane.scroll_down(scroll_rows, fictitious_client_id);
@@ -9594,7 +9607,10 @@ pub fn pane_info_for_pane(
                 .map(|position| (*client_id, position))
         })
         .collect();
-    pane_info.index_in_pane_group = index_in_pane_group;
+    pane_info.index_in_pane_group = index_in_pane_group
+        .into_iter()
+        .map(|(id, index)| (id.0, index))
+        .collect();
 
     let (default_fg, default_bg) = pane.get_pane_default_colors();
     pane_info.default_fg = default_fg;
@@ -9603,7 +9619,7 @@ pub fn pane_info_for_pane(
 
     match pane_id {
         PaneId::Terminal(terminal_id) => {
-            pane_info.id = *terminal_id;
+            pane_info.id = terminal_id.0;
             pane_info.is_plugin = false;
             if let Some(Run::Command(command)) = pane.invoked_with() {
                 pane_info.target = command.target.clone();
@@ -9614,7 +9630,7 @@ pub fn pane_info_for_pane(
             });
         },
         PaneId::Plugin(plugin_id) => {
-            pane_info.id = *plugin_id;
+            pane_info.id = plugin_id.0;
             pane_info.is_plugin = true;
             pane_info.plugin_url = pane.invoked_with().as_ref().and_then(|c| match c {
                 Run::Plugin(run_plugin_or_alias) => Some(run_plugin_or_alias.location_string()),

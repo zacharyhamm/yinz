@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use zellij_utils::internal_ids::TerminalId;
 
 use serde::Deserialize;
 use zellij_utils::{consts::ZELLIJ_SOCK_DIR, errors::prelude::*, input::command::RunCommand};
@@ -330,7 +331,7 @@ impl RemoteHosts {
         host: &str,
         cmd: &RunCommand,
         initial_size: Option<WireWinsize>,
-        terminal_id: u32,
+        terminal_id: TerminalId,
     ) -> Result<(Arc<RemoteConn>, UnixStream)> {
         self.open_pane_with_ssh_options(host, cmd, initial_size, terminal_id, SshOptions::default())
     }
@@ -340,7 +341,7 @@ impl RemoteHosts {
         host: &str,
         cmd: &RunCommand,
         initial_size: Option<WireWinsize>,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         ssh_options: SshOptions,
     ) -> Result<(Arc<RemoteConn>, UnixStream)> {
         // Sampled here, per pane, rather than once when the host table was built:
@@ -363,7 +364,7 @@ impl RemoteHosts {
         host: &str,
         cmd: &RunCommand,
         initial_size: Option<WireWinsize>,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         env: Vec<(String, String)>,
     ) -> Result<(Arc<RemoteConn>, UnixStream)> {
         self.open_pane_with_target_and_env(
@@ -380,7 +381,7 @@ impl RemoteHosts {
         target: SshTarget,
         cmd: &RunCommand,
         initial_size: Option<WireWinsize>,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         env: Vec<(String, String)>,
     ) -> Result<(Arc<RemoteConn>, UnixStream)> {
         // Sampled before the attempt: a forward this call built itself failing is
@@ -405,7 +406,7 @@ impl RemoteHosts {
         target: &SshTarget,
         cmd: &RunCommand,
         initial_size: Option<WireWinsize>,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         env: &[(String, String)],
     ) -> Result<(Arc<RemoteConn>, UnixStream)> {
         let socket = self.connect(target)?;
@@ -882,7 +883,7 @@ fn handshake_and_spawn(
     host: &str,
     cmd: &RunCommand,
     initial_size: Option<WireWinsize>,
-    terminal_id: u32,
+    terminal_id: TerminalId,
     env: &[(String, String)],
 ) -> Result<String> {
     let mut write_half = socket
@@ -901,7 +902,7 @@ fn handshake_and_spawn(
             failover_cmd: None,
             initial_size,
             env: env.to_vec(),
-            terminal_id,
+            terminal_id: terminal_id.0,
         },
     )?;
     match read_broker_msg(&mut read_half)? {

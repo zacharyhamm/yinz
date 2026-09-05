@@ -1,12 +1,16 @@
 ---
 source: zellij-server/src/plugins/./unit/plugin_tests/run_and_pipe_commands.rs
-assertion_line: 168
+assertion_line: 167
 expression: "format!(\"{:#?}\", new_tab_event)"
 ---
 Some(
     RunCommand(
-        0,
-        1,
+        PluginId(
+            0,
+        ),
+        ClientId(
+            1,
+        ),
         "ls",
         [
             "-l",

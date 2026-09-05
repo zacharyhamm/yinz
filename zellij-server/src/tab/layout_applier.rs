@@ -7,6 +7,8 @@
 #![allow(clippy::needless_return)]
 #![allow(clippy::question_mark)]
 use zellij_utils::errors::prelude::*;
+use zellij_utils::internal_ids::PluginId;
+use zellij_utils::internal_ids::TerminalId;
 
 use crate::resize_pty;
 use crate::tab::{get_next_terminal_position, HoldForCommand, Pane};
@@ -54,7 +56,7 @@ pub struct LayoutApplier<'a> {
     styled_underlines: bool,
     osc8_hyperlinks: bool,
     explicitly_disable_kitty_keyboard_protocol: bool,
-    blocking_terminal: Option<(u32, NotificationEnd)>,
+    blocking_terminal: Option<(TerminalId, NotificationEnd)>,
 }
 
 impl<'a> LayoutApplier<'a> {
@@ -80,7 +82,7 @@ impl<'a> LayoutApplier<'a> {
         styled_underlines: bool,
         osc8_hyperlinks: bool,
         explicitly_disable_kitty_keyboard_protocol: bool,
-        blocking_terminal: Option<(u32, NotificationEnd)>,
+        blocking_terminal: Option<(TerminalId, NotificationEnd)>,
     ) -> Self {
         let viewport = viewport.clone();
         let senders = senders.clone();
@@ -123,9 +125,9 @@ impl<'a> LayoutApplier<'a> {
         &mut self,
         layout: TiledPaneLayout,
         floating_panes_layout: Vec<FloatingPaneLayout>,
-        new_terminal_ids: Vec<(u32, HoldForCommand)>,
-        new_floating_terminal_ids: Vec<(u32, HoldForCommand)>,
-        mut new_plugin_ids: HashMap<RunPluginOrAlias, Vec<u32>>,
+        new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        new_floating_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        mut new_plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
         client_id: ClientId,
     ) -> Result<bool> {
         // true => should_show_floating_panes
@@ -143,9 +145,9 @@ impl<'a> LayoutApplier<'a> {
         &mut self,
         tiled_panes_layout: TiledPaneLayout,
         floating_panes_layout: Vec<FloatingPaneLayout>,
-        new_terminal_ids: Vec<(u32, HoldForCommand)>,
-        new_floating_terminal_ids: Vec<(u32, HoldForCommand)>,
-        mut new_plugin_ids: HashMap<RunPluginOrAlias, Vec<u32>>,
+        new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        new_floating_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        mut new_plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
         retain_existing_terminal_panes: bool,
         retain_existing_plugin_panes: bool,
         client_id: ClientId,
@@ -249,8 +251,8 @@ impl<'a> LayoutApplier<'a> {
     pub fn override_tiled_panes_layout_for_existing_panes(
         &mut self,
         tiled_panes_layout: &TiledPaneLayout,
-        mut new_terminal_ids: Vec<(u32, HoldForCommand)>,
-        mut new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<u32>>,
+        mut new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        mut new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
         retain_existing_terminal_panes: bool,
         retain_existing_plugin_panes: bool,
         client_id: ClientId,
@@ -410,8 +412,8 @@ impl<'a> LayoutApplier<'a> {
     fn apply_tiled_panes_layout(
         &mut self,
         layout: TiledPaneLayout,
-        mut new_terminal_ids: Vec<(u32, HoldForCommand)>,
-        mut new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<u32>>,
+        mut new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        mut new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
         client_id: ClientId,
     ) -> Result<()> {
         let err_context = || "failed to apply tiled panes layout".to_string();
@@ -467,8 +469,8 @@ impl<'a> LayoutApplier<'a> {
     }
     fn position_new_panes(
         &mut self,
-        new_terminal_ids: &mut Vec<(u32, HoldForCommand)>,
-        new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<u32>>,
+        new_terminal_ids: &mut Vec<(TerminalId, HoldForCommand)>,
+        new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
         positions_in_layout: &mut Vec<(TiledPaneLayout, PaneGeom)>,
     ) -> Result<(Option<PaneId>, Vec<PaneId>)> {
         // returns: optional pane id to focus, pane ids
@@ -487,7 +489,7 @@ impl<'a> LayoutApplier<'a> {
                 let pid =
                     self.new_tiled_plugin_pane(run, new_plugin_ids, &position_and_size, &layout)?;
                 if layout.is_expanded_in_stack {
-                    pane_ids_expanded_in_stack.push(PaneId::Terminal(pid));
+                    pane_ids_expanded_in_stack.push(PaneId::Plugin(pid));
                 }
                 set_focus_pane_id(&layout, PaneId::Plugin(pid));
             } else if !new_terminal_ids.is_empty() {
@@ -505,7 +507,7 @@ impl<'a> LayoutApplier<'a> {
     fn handle_run_instructions_without_a_location(
         &mut self,
         run_instructions_without_a_location: Vec<Option<Run>>,
-        new_terminal_ids: &mut Vec<(u32, HoldForCommand)>,
+        new_terminal_ids: &mut Vec<(TerminalId, HoldForCommand)>,
     ) {
         for run_instruction in run_instructions_without_a_location {
             self.tiled_panes
@@ -521,10 +523,10 @@ impl<'a> LayoutApplier<'a> {
     fn new_tiled_plugin_pane(
         &mut self,
         run: RunPluginOrAlias,
-        new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<u32>>,
+        new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
         position_and_size: &PaneGeom,
         layout: &TiledPaneLayout,
-    ) -> Result<u32> {
+    ) -> Result<PluginId> {
         let err_context = || "Failed to start new plugin pane".to_string();
         let pane_title = run.location_string();
         let pid = new_plugin_ids
@@ -570,7 +572,7 @@ impl<'a> LayoutApplier<'a> {
     fn new_floating_plugin_pane(
         &mut self,
         run: RunPluginOrAlias,
-        new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<u32>>,
+        new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
         position_and_size: PaneGeom,
         floating_pane_layout: &FloatingPaneLayout,
     ) -> Result<Option<PaneId>> {
@@ -628,7 +630,7 @@ impl<'a> LayoutApplier<'a> {
     }
     fn new_floating_terminal_pane(
         &mut self,
-        pid: &u32,
+        pid: &TerminalId,
         hold_for_command: &HoldForCommand,
         position_and_size: PaneGeom,
         floating_pane_layout: &FloatingPaneLayout,
@@ -694,7 +696,7 @@ impl<'a> LayoutApplier<'a> {
     }
     fn new_terminal_pane(
         &mut self,
-        pid: u32,
+        pid: TerminalId,
         hold_for_command: &HoldForCommand,
         position_and_size: &PaneGeom,
         layout: &TiledPaneLayout,
@@ -800,8 +802,8 @@ impl<'a> LayoutApplier<'a> {
     fn apply_floating_panes_layout(
         &mut self,
         mut floating_panes_layout: Vec<FloatingPaneLayout>,
-        new_floating_terminal_ids: Vec<(u32, HoldForCommand)>,
-        mut new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<u32>>,
+        new_floating_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        mut new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
     ) -> Result<bool> {
         let layout_has_floating_panes = !floating_panes_layout.is_empty();
 
@@ -929,8 +931,8 @@ impl<'a> LayoutApplier<'a> {
     pub fn override_floating_panes_layout_for_existing_panes(
         &mut self,
         floating_panes_layout: &Vec<FloatingPaneLayout>,
-        new_terminal_ids: Vec<(u32, HoldForCommand)>,
-        mut new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<u32>>,
+        new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        mut new_plugin_ids: &mut HashMap<RunPluginOrAlias, Vec<PluginId>>,
         retain_existing_terminal_panes: bool,
         retain_existing_plugin_panes: bool,
     ) -> Result<bool> {

@@ -1,6 +1,7 @@
 #![allow(clippy::result_large_err)]
 #![allow(clippy::type_complexity)]
 use crate::{panes::PaneId, ClientId};
+use zellij_utils::internal_ids::TerminalId;
 
 use interprocess::local_socket::Stream as LocalSocketStream;
 
@@ -51,7 +52,7 @@ pub use async_trait::async_trait;
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct ResolvedSpawn {
-    pub terminal_id: u32,
+    pub terminal_id: TerminalId,
     pub command: RunCommand,
     pub rerun_command: RunCommand,
     pub endpoint: RemoteEndpoint,
@@ -471,7 +472,7 @@ impl ClientSender {
                     self.client_id
                 );
                 Err(ZellijError::ClientTooSlow {
-                    client_id: self.client_id,
+                    client_id: self.client_id.0,
                 })
                 .with_context(err_context)
             },
@@ -591,7 +592,7 @@ pub struct ServerOsInputOutput {
     client_senders: Arc<Mutex<HashMap<ClientId, ClientSender>>>,
     /// Writer threads that have not finished draining yet. See `LiveWriters`.
     live_writers: Arc<LiveWriters>,
-    cached_resizes: Arc<Mutex<Option<BTreeMap<u32, (u16, u16, Option<u16>, Option<u16>)>>>>,
+    cached_resizes: Arc<Mutex<Option<BTreeMap<TerminalId, (u16, u16, Option<u16>, Option<u16>)>>>>,
     /// ssh forwards to the machines this session has remote panes on. One per
     /// host and option set, shared by every matching pane.
     remote_hosts: Arc<RemoteHosts>,
@@ -731,7 +732,7 @@ impl ServerOsInputOutput {
 
     fn resolve_spawn(
         &self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         terminal_action: TerminalAction,
         default_editor: Option<PathBuf>,
         report_progress: &mut dyn FnMut(&str),
@@ -760,7 +761,7 @@ impl ServerOsInputOutput {
         &self,
         resolved: ResolvedSpawn,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
         let terminal_id = resolved.terminal_id;
         let reader = self.open_remote(resolved, quit_cb)?;
         // Deliberately no pid. The child's pid is meaningful only on its own
@@ -796,7 +797,7 @@ impl ServerOsInputOutput {
 
     fn resolve_rerun(
         &self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         command: RunCommand,
         report_progress: &mut dyn FnMut(&str),
     ) -> Result<ResolvedSpawn> {
@@ -843,7 +844,7 @@ impl ServerOsInputOutput {
     /// and `adopt_into_terminal_id` are split for the local case.
     fn resume_remote_pane(
         &self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         handoff: &RemotePaneHandoff,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<AdoptedTerminal> {
@@ -920,16 +921,16 @@ fn warp_replay_notice(dropped: u64) -> Vec<u8> {
 /// (the far machine has never heard of ours), and everything else arrives as
 /// plain `anyhow`, which the pty thread treats as fatal. Both become a
 /// `ZellijError` naming the pane the message belongs in.
-fn pane_start_failed(terminal_id: u32, host: &str, err: anyhow::Error) -> anyhow::Error {
+fn pane_start_failed(terminal_id: TerminalId, host: &str, err: anyhow::Error) -> anyhow::Error {
     if let Some(ZellijError::CommandNotFound { command, .. }) = err.downcast_ref::<ZellijError>() {
         return ZellijError::CommandNotFound {
-            terminal_id,
+            terminal_id: terminal_id.0,
             command: command.clone(),
         }
         .into();
     }
     ZellijError::PaneStartFailed {
-        terminal_id,
+        terminal_id: terminal_id.0,
         message: format!("could not open a pane on {host}: {err:#}"),
     }
     .into()
@@ -952,7 +953,7 @@ impl AsyncReader for NullAsyncReader {
 pub trait ServerOsApi: Send + Sync {
     fn set_terminal_size_using_terminal_id(
         &self,
-        id: u32,
+        id: TerminalId,
         cols: u16,
         rows: u16,
         width_in_pixels: Option<u16>,
@@ -967,10 +968,10 @@ pub trait ServerOsApi: Send + Sync {
         terminal_action: TerminalAction,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         default_editor: Option<PathBuf>,
-    ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)>;
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)>;
     fn resolve_spawn(
         &self,
-        _terminal_id: u32,
+        _terminal_id: TerminalId,
         _terminal_action: TerminalAction,
         _default_editor: Option<PathBuf>,
         _report_progress: &mut dyn FnMut(&str),
@@ -981,17 +982,17 @@ pub trait ServerOsApi: Send + Sync {
         &self,
         _resolved: ResolvedSpawn,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
         Err(anyhow!("this backend does not support remote panes"))
     }
     // reserves a terminal id without actually opening a terminal
-    fn reserve_terminal_id(&self) -> Result<u32> {
+    fn reserve_terminal_id(&self) -> Result<TerminalId> {
         unimplemented!()
     }
     /// Write bytes to the standard input of the virtual terminal referred to by `terminal_id`.
-    fn write_to_tty_stdin(&self, terminal_id: u32, buf: &[u8]) -> Result<usize>;
+    fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize>;
     /// Wait until all output written to the terminal has been transmitted.
-    fn tcdrain(&self, terminal_id: u32) -> Result<()>;
+    fn tcdrain(&self, terminal_id: TerminalId) -> Result<()>;
     /// Terminate the process with process ID `pid`. (SIGHUP)
     fn kill(&self, pid: u32) -> Result<()>;
     /// Terminate the process with process ID `pid`. (SIGKILL)
@@ -1034,9 +1035,9 @@ pub trait ServerOsApi: Send + Sync {
     /// controlling terminal, keyed by `terminal_id`.
     fn get_foreground_cmds(
         &self,
-        _panes: &[(u32, u32)],
+        _panes: &[(TerminalId, u32)],
         _post_hook: &Option<String>,
-    ) -> HashMap<u32, Vec<String>> {
+    ) -> HashMap<TerminalId, Vec<String>> {
         HashMap::new()
     }
     /// Writes the given buffer to a string
@@ -1044,13 +1045,13 @@ pub trait ServerOsApi: Send + Sync {
 
     fn re_run_command_in_terminal(
         &self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         run_command: RunCommand,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)>;
     fn resolve_rerun(
         &self,
-        _terminal_id: u32,
+        _terminal_id: TerminalId,
         _run_command: RunCommand,
         _report_progress: &mut dyn FnMut(&str),
     ) -> Result<ResolvedSpawn> {
@@ -1063,7 +1064,7 @@ pub trait ServerOsApi: Send + Sync {
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
         Err(anyhow!("this backend does not support remote panes"))
     }
-    fn clear_terminal_id(&self, terminal_id: u32) -> Result<()>;
+    fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()>;
     /// Whether new panes get a detachable pty-host supervisor. Config only
     /// arrives with the first client, long after the backend is built, so this is
     /// set once at session init. Defaulted so mock implementations are unaffected.
@@ -1098,7 +1099,7 @@ pub trait ServerOsApi: Send + Sync {
     /// holds nothing usable for a remote pane, and a pid from another machine is
     /// worse than no pid: it will happily name an unrelated *local* process, so
     /// a `kill` meant for a pane lands somewhere else entirely.
-    fn is_remote_pane(&self, _terminal_id: u32) -> bool {
+    fn is_remote_pane(&self, _terminal_id: TerminalId) -> bool {
         false
     }
     /// Whether this pane runs in a Firecracker guest the provider started.
@@ -1107,23 +1108,23 @@ pub trait ServerOsApi: Send + Sync {
     /// as a control sequence on the pane's own byte stream. That channel is
     /// trusted for these panes only: a program in an ordinary ssh pane could
     /// otherwise forge agent records and hook events for the plugins.
-    fn is_firecracker_pane(&self, _terminal_id: u32) -> bool {
+    fn is_firecracker_pane(&self, _terminal_id: TerminalId) -> bool {
         false
     }
     /// What the far side last reported about a remote pane: the cwd and
     /// foreground command the local `sysinfo` and `tcgetpgrp` cannot see.
-    fn remote_pane_status(&self, _terminal_id: u32) -> Option<RemoteStatus> {
+    fn remote_pane_status(&self, _terminal_id: TerminalId) -> Option<RemoteStatus> {
         None
     }
     /// Signal a remote pane's child, by name rather than by pid.
-    fn signal_remote_child(&self, _terminal_id: u32, _signal: ChildSignal) -> Result<()> {
+    fn signal_remote_child(&self, _terminal_id: TerminalId, _signal: ChildSignal) -> Result<()> {
         Err(anyhow!("this backend does not support remote panes"))
     }
     /// Every pane whose process lives on another machine.
     ///
     /// The backend's transport table is the one place that knows, so this is the
     /// single source of truth rather than a second list kept in step by hand.
-    fn remote_pane_ids(&self) -> Vec<u32> {
+    fn remote_pane_ids(&self) -> Vec<TerminalId> {
         Vec::new()
     }
     /// What git last said about a remote pane's working directory, unparsed.
@@ -1132,11 +1133,11 @@ pub trait ServerOsApi: Send + Sync {
     /// this into a checkout identity, including the awkward part where a
     /// repository with no commits writes its identity to stdout and *then* exits
     /// 128. Parsing here would duplicate that and drift from it.
-    fn remote_pane_git_probe(&self, _terminal_id: u32) -> Option<RemoteGitProbe> {
+    fn remote_pane_git_probe(&self, _terminal_id: TerminalId) -> Option<RemoteGitProbe> {
         None
     }
     /// The machine a pane runs on, or `None` if it runs on this one.
-    fn remote_pane_host(&self, _terminal_id: u32) -> Option<String> {
+    fn remote_pane_host(&self, _terminal_id: TerminalId) -> Option<String> {
         None
     }
     /// The host worktree a Firecracker pane's VM mirrors, as the VM was actually
@@ -1145,7 +1146,7 @@ pub trait ServerOsApi: Send + Sync {
     /// Read off the transport's own command for the reason `remote_pane_host` is: a pane
     /// that joined a VM somebody else named the worktree for asked for none, and the
     /// answer is the one `resolve_target` adopted from the provider.
-    fn remote_pane_worktree(&self, _terminal_id: u32) -> Option<PathBuf> {
+    fn remote_pane_worktree(&self, _terminal_id: TerminalId) -> Option<PathBuf> {
         None
     }
     /// Hand a pane's supervisor over without killing it, so another session can
@@ -1160,7 +1161,7 @@ pub trait ServerOsApi: Send + Sync {
     /// budget must return an error saying so rather than take longer.
     fn release_terminal_for_warp(
         &self,
-        _terminal_id: u32,
+        _terminal_id: TerminalId,
         _budget: Duration,
     ) -> Result<ReleasedPane> {
         Err(anyhow!(
@@ -1176,7 +1177,7 @@ pub trait ServerOsApi: Send + Sync {
     /// refusal after that point leaves a pane on screen that no longer has a
     /// process to talk to. Must not change anything — it is asked precisely so
     /// that a "no" costs the user nothing.
-    fn check_terminal_can_be_warped(&self, _terminal_id: u32) -> Result<()> {
+    fn check_terminal_can_be_warped(&self, _terminal_id: TerminalId) -> Result<()> {
         Err(anyhow!(
             "this backend does not support moving panes between sessions"
         ))
@@ -1203,7 +1204,7 @@ pub trait ServerOsApi: Send + Sync {
         ))
     }
     fn cache_resizes(&mut self) {}
-    fn apply_cached_resizes(&mut self) -> Vec<(u32, u16, u16)> {
+    fn apply_cached_resizes(&mut self) -> Vec<(TerminalId, u16, u16)> {
         Vec::new()
     }
 }
@@ -1211,7 +1212,7 @@ pub trait ServerOsApi: Send + Sync {
 impl ServerOsApi for ServerOsInputOutput {
     fn set_terminal_size_using_terminal_id(
         &self,
-        id: u32,
+        id: TerminalId,
         cols: u16,
         rows: u16,
         width_in_pixels: Option<u16>,
@@ -1229,7 +1230,7 @@ impl ServerOsApi for ServerOsInputOutput {
         terminal_action: TerminalAction,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         default_editor: Option<PathBuf>,
-    ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
         let err_context = || "failed to spawn terminal".to_string();
 
         let terminal_id = self
@@ -1271,7 +1272,7 @@ impl ServerOsApi for ServerOsInputOutput {
     }
     fn resolve_spawn(
         &self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         terminal_action: TerminalAction,
         default_editor: Option<PathBuf>,
         report_progress: &mut dyn FnMut(&str),
@@ -1288,10 +1289,10 @@ impl ServerOsApi for ServerOsInputOutput {
         &self,
         resolved: ResolvedSpawn,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
         ServerOsInputOutput::spawn_resolved(self, resolved, quit_cb)
     }
-    fn reserve_terminal_id(&self) -> Result<u32> {
+    fn reserve_terminal_id(&self) -> Result<TerminalId> {
         let terminal_id = self
             .pty_backend
             .next_terminal_id()
@@ -1299,34 +1300,34 @@ impl ServerOsApi for ServerOsInputOutput {
         self.pty_backend.reserve_terminal_id(terminal_id);
         Ok(terminal_id)
     }
-    fn write_to_tty_stdin(&self, terminal_id: u32, buf: &[u8]) -> Result<usize> {
+    fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize> {
         self.pty_backend.write_to_tty_stdin(terminal_id, buf)
     }
-    fn tcdrain(&self, terminal_id: u32) -> Result<()> {
+    fn tcdrain(&self, terminal_id: TerminalId) -> Result<()> {
         self.pty_backend.tcdrain(terminal_id)
     }
-    fn is_remote_pane(&self, terminal_id: u32) -> bool {
+    fn is_remote_pane(&self, terminal_id: TerminalId) -> bool {
         self.pty_backend.is_remote(terminal_id)
     }
-    fn is_firecracker_pane(&self, terminal_id: u32) -> bool {
+    fn is_firecracker_pane(&self, terminal_id: TerminalId) -> bool {
         self.pty_backend.is_firecracker(terminal_id)
     }
-    fn remote_pane_status(&self, terminal_id: u32) -> Option<RemoteStatus> {
+    fn remote_pane_status(&self, terminal_id: TerminalId) -> Option<RemoteStatus> {
         self.pty_backend.remote_status(terminal_id)
     }
-    fn signal_remote_child(&self, terminal_id: u32, signal: ChildSignal) -> Result<()> {
+    fn signal_remote_child(&self, terminal_id: TerminalId, signal: ChildSignal) -> Result<()> {
         self.pty_backend.signal_remote_child(terminal_id, signal)
     }
-    fn remote_pane_ids(&self) -> Vec<u32> {
+    fn remote_pane_ids(&self) -> Vec<TerminalId> {
         self.pty_backend.remote_pane_ids()
     }
-    fn remote_pane_git_probe(&self, terminal_id: u32) -> Option<RemoteGitProbe> {
+    fn remote_pane_git_probe(&self, terminal_id: TerminalId) -> Option<RemoteGitProbe> {
         self.pty_backend.remote_git_probe(terminal_id)
     }
-    fn remote_pane_host(&self, terminal_id: u32) -> Option<String> {
+    fn remote_pane_host(&self, terminal_id: TerminalId) -> Option<String> {
         self.pty_backend.remote_host(terminal_id)
     }
-    fn remote_pane_worktree(&self, terminal_id: u32) -> Option<PathBuf> {
+    fn remote_pane_worktree(&self, terminal_id: TerminalId) -> Option<PathBuf> {
         self.pty_backend.remote_worktree(terminal_id)
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
@@ -1472,10 +1473,10 @@ impl ServerOsApi for ServerOsInputOutput {
     }
     fn get_foreground_cmds(
         &self,
-        panes: &[(u32, u32)],
+        panes: &[(TerminalId, u32)],
         post_hook: &Option<String>,
-    ) -> HashMap<u32, Vec<String>> {
-        let mut terminal_to_fg_pid: HashMap<u32, u32> = HashMap::new();
+    ) -> HashMap<TerminalId, Vec<String>> {
+        let mut terminal_to_fg_pid: HashMap<TerminalId, u32> = HashMap::new();
         for &(terminal_id, shell_pid) in panes {
             if let Some(fpgid) = self.pty_backend.tcgetpgrp(terminal_id) {
                 if fpgid > 0 && fpgid as u32 != shell_pid {
@@ -1530,7 +1531,7 @@ impl ServerOsApi for ServerOsInputOutput {
 
     fn re_run_command_in_terminal(
         &self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         run_command: RunCommand,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
@@ -1566,7 +1567,7 @@ impl ServerOsApi for ServerOsInputOutput {
     }
     fn resolve_rerun(
         &self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         run_command: RunCommand,
         report_progress: &mut dyn FnMut(&str),
     ) -> Result<ResolvedSpawn> {
@@ -1579,7 +1580,7 @@ impl ServerOsApi for ServerOsInputOutput {
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
         ServerOsInputOutput::rerun_resolved(self, resolved, quit_cb)
     }
-    fn clear_terminal_id(&self, terminal_id: u32) -> Result<()> {
+    fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()> {
         self.pty_backend.clear_terminal_id(terminal_id)
     }
     #[cfg(not(windows))]
@@ -1657,14 +1658,14 @@ impl ServerOsApi for ServerOsInputOutput {
     #[cfg(not(windows))]
     fn release_terminal_for_warp(
         &self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         budget: Duration,
     ) -> Result<ReleasedPane> {
         self.pty_backend
             .release_terminal_for_warp(terminal_id, budget)
     }
     #[cfg(not(windows))]
-    fn check_terminal_can_be_warped(&self, terminal_id: u32) -> Result<()> {
+    fn check_terminal_can_be_warped(&self, terminal_id: TerminalId) -> Result<()> {
         self.pty_backend.check_terminal_can_be_warped(terminal_id)
     }
     #[cfg(not(windows))]
@@ -1714,7 +1715,7 @@ impl ServerOsApi for ServerOsInputOutput {
             *self.cached_resizes.lock().unwrap() = Some(BTreeMap::new());
         }
     }
-    fn apply_cached_resizes(&mut self) -> Vec<(u32, u16, u16)> {
+    fn apply_cached_resizes(&mut self) -> Vec<(TerminalId, u16, u16)> {
         let mut applied = Vec::new();
         let mut cached_resizes = self.cached_resizes.lock().unwrap().take();
         if let Some(cached_resizes) = cached_resizes.as_mut() {

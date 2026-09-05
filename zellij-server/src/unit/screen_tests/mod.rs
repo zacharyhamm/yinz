@@ -7,6 +7,7 @@ use crate::{
     thread_bus::Bus, ClientId, ServerInstruction, SessionMetaData, ThreadSenders,
 };
 use zellij_test_support::Watched;
+use zellij_utils::internal_ids::TerminalId;
 
 use insta::assert_snapshot;
 use std::path::PathBuf;
@@ -106,7 +107,7 @@ fn take_snapshots_and_cursor_coordinates_from_render_events<'a>(
                 ServerInstruction::Render(output) => {
                     if let Some(output) = output {
                         // note this only takes a snapshot of the first client!
-                        let raw_snapshot = output.get(&1).unwrap();
+                        let raw_snapshot = output.get(&ClientId(1)).unwrap();
                         let snapshot =
                             take_snapshot_and_cursor_coordinates(raw_snapshot, &mut grid);
                         Some(snapshot)
@@ -243,7 +244,7 @@ fn route_arbitrary_action_to_server(
 }
 
 /// Everything the screen wrote to each terminal's stdin, keyed by terminal id.
-type TtyStdinBytes = Arc<Mutex<BTreeMap<u32, Vec<u8>>>>;
+type TtyStdinBytes = Arc<Mutex<BTreeMap<TerminalId, Vec<u8>>>>;
 type ServerReceiver = Receiver<(ServerInstruction, ErrorContext)>;
 
 #[derive(Clone, Default)]
@@ -256,7 +257,7 @@ struct FakeInputOutput {
 impl ServerOsApi for FakeInputOutput {
     fn set_terminal_size_using_terminal_id(
         &self,
-        _terminal_id: u32,
+        _terminal_id: TerminalId,
         _cols: u16,
         _rows: u16,
         _width_in_pixels: Option<u16>,
@@ -270,10 +271,10 @@ impl ServerOsApi for FakeInputOutput {
         _file_to_open: TerminalAction,
         _quit_db: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
-    ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
-        Ok((42, Box::new(NullAsyncReader), None))
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+        Ok((crate::TerminalId(42), Box::new(NullAsyncReader), None))
     }
-    fn write_to_tty_stdin(&self, id: u32, buf: &[u8]) -> Result<usize> {
+    fn write_to_tty_stdin(&self, id: TerminalId, buf: &[u8]) -> Result<usize> {
         self.tty_stdin_bytes
             .lock()
             .unwrap()
@@ -282,7 +283,7 @@ impl ServerOsApi for FakeInputOutput {
             .extend_from_slice(buf);
         Ok(buf.len())
     }
-    fn tcdrain(&self, _id: u32) -> Result<()> {
+    fn tcdrain(&self, _id: TerminalId) -> Result<()> {
         unimplemented!()
     }
     fn kill(&self, _pid: u32) -> Result<()> {
@@ -330,13 +331,13 @@ impl ServerOsApi for FakeInputOutput {
     }
     fn re_run_command_in_terminal(
         &self,
-        _terminal_id: u32,
+        _terminal_id: TerminalId,
         _run_command: RunCommand,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
         unimplemented!()
     }
-    fn clear_terminal_id(&self, _terminal_id: u32) -> Result<()> {
+    fn clear_terminal_id(&self, _terminal_id: TerminalId) -> Result<()> {
         unimplemented!()
     }
     fn send_sigint(&self, _pid: u32) -> Result<()> {
@@ -463,12 +464,12 @@ fn create_new_screen_with_capture(
 }
 
 fn seed_first_client_size(mut screen: Screen, size: Size) -> Screen {
-    screen.set_client_size(1, size);
+    screen.set_client_size(crate::ClientId(1), size);
     screen
 }
 
 struct MockScreen {
-    pub main_client_id: u16,
+    pub main_client_id: ClientId,
     pub pty_receiver: Option<Receiver<(PtyInstruction, ErrorContext)>>,
     pub pty_writer_receiver: Option<Receiver<(PtyWriteInstruction, ErrorContext)>>,
     #[allow(dead_code)]
@@ -549,13 +550,13 @@ impl MockScreen {
         let mut plugin_ids = HashMap::new();
         plugin_ids.insert(
             RunPluginOrAlias::from_url("file:/path/to/fake/plugin", &None, None, None).unwrap(),
-            vec![1],
+            vec![zellij_utils::internal_ids::PluginId(1)],
         );
         for i in 0..pane_count {
-            pane_ids.push((i as u32, None));
+            pane_ids.push((TerminalId(i as u32), None));
         }
         for i in 0..floating_pane_count {
-            floating_pane_ids.push((i as u32, None));
+            floating_pane_ids.push((TerminalId(i as u32), None));
         }
         let default_shell = None;
         let tab_name = None;
@@ -649,13 +650,13 @@ impl MockScreen {
                 }),
                 ..Default::default()
             }),
-            vec![1],
+            vec![zellij_utils::internal_ids::PluginId(1)],
         );
         for i in 0..pane_count {
-            pane_ids.push((i as u32, None));
+            pane_ids.push((TerminalId(i as u32), None));
         }
         for i in 0..floating_pane_count {
-            floating_pane_ids.push((i as u32, None));
+            floating_pane_ids.push((TerminalId(i as u32), None));
         }
         let default_shell = None;
         let tab_name = None;
@@ -698,7 +699,7 @@ impl MockScreen {
         let tab_name = None;
         let tab_index = self.last_opened_tab_index.map(|l| l + 1).unwrap_or(0);
         for i in 0..pane_count {
-            pane_ids.push((i as u32, None));
+            pane_ids.push((TerminalId(i as u32), None));
         }
         let should_change_focus_to_new_tab = true;
         let _ = self.to_screen.send(ScreenInstruction::NewTab(
@@ -729,7 +730,10 @@ impl MockScreen {
         ));
         self.last_opened_tab_index = Some(tab_index);
     }
-    pub fn new_tab_with_plugins(&mut self, plugin_pane_ids: Vec<u32>) {
+    pub fn new_tab_with_plugins(
+        &mut self,
+        plugin_pane_ids: Vec<zellij_utils::internal_ids::PluginId>,
+    ) {
         // Build a layout where each child is a plugin pane
         let fake_plugin_url = "file:/path/to/fake/plugin";
         let run_plugin = RunPluginOrAlias::from_url(fake_plugin_url, &None, None, None).unwrap();
@@ -882,7 +886,7 @@ impl MockScreen {
         let mut config = Config::default();
         config.options.pane_frame_style = Some(PaneFrameStyle::Full);
         config.options.stacked_pane_list = Some(false);
-        let main_client_id = 1;
+        let main_client_id = ClientId(1);
 
         let _ = to_screen.send(ScreenInstruction::RecomputeTabSize(main_client_id, size));
 
@@ -991,8 +995,8 @@ macro_rules! log_actions_in_thread {
 }
 
 fn new_tab(screen: &mut Screen, pid: u32, tab_index: usize) {
-    let client_id = 1;
-    let new_terminal_ids = vec![(pid, None)];
+    let client_id = ClientId(1);
+    let new_terminal_ids = vec![(TerminalId(pid), None)];
     let new_plugin_ids = HashMap::new();
     screen
         .new_tab(tab_index, (vec![], vec![]), None, Some(client_id))
@@ -1145,7 +1149,7 @@ impl ForwardCapture {
 
     /// Drain every pending `PtyWriteInstruction::Write`, returning
     /// `(bytes, terminal_id)` — the two fields the reply path sets.
-    fn drain_pty_writes(&self) -> Vec<(Vec<u8>, u32)> {
+    fn drain_pty_writes(&self) -> Vec<(Vec<u8>, TerminalId)> {
         let mut out = Vec::new();
         while let Ok((instr, _ctx)) = self.pty_writer_rx.try_recv() {
             if let PtyWriteInstruction::Write(bytes, terminal_id, _) = instr {
@@ -1303,7 +1307,13 @@ struct ThemeCapture {
 }
 
 impl ThemeCapture {
-    fn drain_plugin_updates(&self) -> Vec<(Option<u32>, Option<ClientId>, Event)> {
+    fn drain_plugin_updates(
+        &self,
+    ) -> Vec<(
+        Option<zellij_utils::internal_ids::PluginId>,
+        Option<ClientId>,
+        Event,
+    )> {
         let mut out = Vec::new();
         while let Ok((instr, _ctx)) = self.plugin_rx.try_recv() {
             if let PluginInstruction::Update(updates) = instr {
@@ -1319,7 +1329,7 @@ impl ThemeCapture {
             .map(|(_, _, event)| event)
             .collect()
     }
-    fn drain_pty_writes(&self) -> Vec<(Vec<u8>, u32)> {
+    fn drain_pty_writes(&self) -> Vec<(Vec<u8>, TerminalId)> {
         let mut out = Vec::new();
         while let Ok((instr, _ctx)) = self.pty_writer_rx.try_recv() {
             if let PtyWriteInstruction::Write(bytes, terminal_id, _) = instr {
@@ -1431,7 +1441,7 @@ fn new_terminal_pane_for_pause_test(pid: u32) -> TerminalPane {
     geom.cols.set_inner(20);
     geom.rows.set_inner(10);
     TerminalPane::new(
-        pid,
+        crate::TerminalId(pid),
         geom,
         Style::default(),
         0,
@@ -1568,17 +1578,17 @@ fn open_floating_pane(
     };
     let tab = screen.tabs.get_mut(&tab_index).expect("TEST");
     tab.new_pane(
-        PaneId::Terminal(pane_id),
+        PaneId::Terminal(crate::TerminalId(pane_id)),
         None,
         None,
         false,
         true,
         placement,
-        Some(1),
+        Some(crate::ClientId(1)),
         None,
     )
     .expect("TEST");
-    tab.handle_pty_bytes(pane_id, contents.as_bytes().to_vec())
+    tab.handle_pty_bytes(crate::TerminalId(pane_id), contents.as_bytes().to_vec())
         .expect("TEST");
 }
 
@@ -1654,7 +1664,7 @@ fn fill_pane_zero(mock_screen: &MockScreen) {
         pane_contents.push_str(&format!("fill pane up with something {}\n\r", i));
     }
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        0,
+        crate::TerminalId(0),
         pane_contents.as_bytes().to_vec(),
     ));
 }
@@ -1819,7 +1829,7 @@ fn adopted_pane_new_pane(
     screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
     screen
         .place_adopted_pane(
-            50,
+            crate::TerminalId(50),
             WarpedPane::default(),
             placement,
             client_id,
@@ -1850,7 +1860,10 @@ fn screen_with_a_scrollback_editor_open() -> Screen {
         .tabs
         .get_mut(&0)
         .expect("TEST")
-        .replace_pane_with_editor_pane(PaneId::Terminal(9), PaneId::Terminal(1))
+        .replace_pane_with_editor_pane(
+            PaneId::Terminal(crate::TerminalId(9)),
+            PaneId::Terminal(crate::TerminalId(1)),
+        )
         .expect("TEST");
     screen
 }
@@ -1867,8 +1880,8 @@ fn screen_with_a_pane_replaced_in_place() -> Screen {
         .get_mut(&0)
         .expect("TEST")
         .suppress_pane_and_replace_with_pid(
-            PaneId::Terminal(1),
-            PaneId::Terminal(9),
+            PaneId::Terminal(crate::TerminalId(1)),
+            PaneId::Terminal(crate::TerminalId(9)),
             false,
             None,
             None,
@@ -1883,7 +1896,7 @@ fn screen_with_a_pane_replaced_in_place() -> Screen {
 fn released_pane_for_warp(screen: &mut Screen, terminal_id: u32) -> Box<WarpedPane> {
     screen
         .take_released_pane_for_warp(
-            terminal_id,
+            crate::TerminalId(terminal_id),
             Ok(ReleasedPane::Local(ReleasedPtyHost {
                 host_id: format!("host-{terminal_id}"),
                 host_pid: 1,
@@ -1901,7 +1914,7 @@ fn released_pane_for_warp(screen: &mut Screen, terminal_id: u32) -> Box<WarpedPa
 fn released_remote_pane_for_warp(screen: &mut Screen, terminal_id: u32) -> Box<WarpedPane> {
     screen
         .take_released_pane_for_warp(
-            terminal_id,
+            crate::TerminalId(terminal_id),
             Ok(ReleasedPane::Remote(ReleasedRemotePane {
                 host: "build-box".to_owned(),
                 pane_token: format!("token-{terminal_id}"),
@@ -1943,7 +1956,10 @@ fn screen_with_a_stack_list() -> Screen {
     new_tab(&mut screen, 9, 1);
     *screen.stacked_pane_list.borrow_mut() = true;
     let tab = screen.tabs.get_mut(&0).expect("TEST");
-    for pane_id in [PaneId::Terminal(2), PaneId::Terminal(3)] {
+    for pane_id in [
+        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId(3)),
+    ] {
         tab.new_pane(
             pane_id,
             None,
@@ -1954,7 +1970,7 @@ fn screen_with_a_stack_list() -> Screen {
                 pane_id_to_stack_under: None,
                 borderless: None,
             },
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
         )
         .expect("TEST");
@@ -1973,7 +1989,10 @@ fn screen_with_only_a_stack_list() -> Screen {
     new_tab(&mut screen, 1, 0);
     *screen.stacked_pane_list.borrow_mut() = true;
     let tab = screen.tabs.get_mut(&0).expect("TEST");
-    for pane_id in [PaneId::Terminal(2), PaneId::Terminal(3)] {
+    for pane_id in [
+        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId(3)),
+    ] {
         tab.new_pane(
             pane_id,
             None,
@@ -1984,7 +2003,7 @@ fn screen_with_only_a_stack_list() -> Screen {
                 pane_id_to_stack_under: None,
                 borderless: None,
             },
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
         )
         .expect("TEST");
@@ -1998,9 +2017,12 @@ fn screen_with_only_a_stack_list() -> Screen {
 fn screen_with_an_editor_on_a_hidden_stack_list_member() -> Screen {
     let mut screen = screen_with_a_stack_list();
     let tab = screen.tabs.get_mut(&0).expect("TEST");
-    tab.replace_pane_with_editor_pane(PaneId::Terminal(8), PaneId::Terminal(3))
-        .expect("TEST");
-    tab.focus_hidden_stack_list_member(PaneId::Terminal(1), 1);
+    tab.replace_pane_with_editor_pane(
+        PaneId::Terminal(crate::TerminalId(8)),
+        PaneId::Terminal(crate::TerminalId(3)),
+    )
+    .expect("TEST");
+    tab.focus_hidden_stack_list_member(PaneId::Terminal(crate::TerminalId(1)), crate::ClientId(1));
     screen
 }
 
@@ -2056,7 +2078,16 @@ fn add_pane_to_tab(screen: &mut Screen, tab_id: usize, pane_id: PaneId, floating
         .tabs
         .get_mut(&tab_id)
         .expect("TEST")
-        .new_pane(pane_id, None, None, false, false, placement, Some(1), None)
+        .new_pane(
+            pane_id,
+            None,
+            None,
+            false,
+            false,
+            placement,
+            Some(crate::ClientId(1)),
+            None,
+        )
         .expect("TEST");
 }
 

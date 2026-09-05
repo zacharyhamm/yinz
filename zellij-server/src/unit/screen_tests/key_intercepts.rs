@@ -48,10 +48,10 @@ fn clearing_another_plugins_intercept_leaves_this_ones_in_place() {
     let (intercepting, other) = (2, 1);
 
     for step in [
-        ScreenInstruction::InterceptKeyPresses(intercepting, client_id),
-        ScreenInstruction::ClearKeyPressesIntercepts(other, client_id),
+        ScreenInstruction::InterceptKeyPresses(crate::PluginId(intercepting), client_id),
+        ScreenInstruction::ClearKeyPressesIntercepts(crate::PluginId(other), client_id),
         typed('x', client_id),
-        ScreenInstruction::ClearKeyPressesIntercepts(intercepting, client_id),
+        ScreenInstruction::ClearKeyPressesIntercepts(crate::PluginId(intercepting), client_id),
         typed('y', client_id),
     ] {
         let _ = mock_screen.to_screen.send(step);
@@ -61,7 +61,7 @@ fn clearing_another_plugins_intercept_leaves_this_ones_in_place() {
         zellij_test_support::default_timeout(),
         |instructions| {
             intercepted_keys(instructions)
-                .contains(&(intercepting, 'x'))
+                .contains(&(crate::PluginId(intercepting), 'x'))
                 .then_some(())
         },
     );
@@ -69,7 +69,7 @@ fn clearing_another_plugins_intercept_leaves_this_ones_in_place() {
 
     assert_eq!(
         intercepted_keys(&received.lock()),
-        vec![(intercepting, 'x')],
+        vec![(zellij_utils::internal_ids::PluginId(intercepting), 'x')],
         "the other plugin's clear left the intercept standing; the plugin's own ended it"
     );
 }

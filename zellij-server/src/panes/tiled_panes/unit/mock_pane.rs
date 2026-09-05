@@ -58,7 +58,7 @@ pub fn dim_fixed(size: usize) -> Dimension {
 
 pub fn spec(id: u32, x: usize, y: usize, cols: Dimension, rows: Dimension) -> PaneSpec {
     PaneSpec {
-        id: PaneId::Terminal(id),
+        id: PaneId::Terminal(crate::TerminalId(id)),
         x,
         y,
         cols,
@@ -78,7 +78,7 @@ pub fn spec_stacked(
     stack_id: usize,
 ) -> PaneSpec {
     PaneSpec {
-        id: PaneId::Terminal(id),
+        id: PaneId::Terminal(crate::TerminalId(id)),
         x,
         y,
         cols,
