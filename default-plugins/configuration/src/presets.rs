@@ -1,8 +1,26 @@
-fn agent_keybinds(entry_key: &str, exit_mode: &str, unlock_first: bool) -> String {
-    let excluded_modes = if unlock_first {
-        r#""agent" "locked" "renametab" "renamepane" "entersearch""#
+/// The Agent-mode fragment shared by every preset. A plain (unmodified) entry key would
+/// swallow typed text, so it is not bound in the mode keys are typed in - the exit mode,
+/// which is Locked for the unlock-first preset and Normal for the presets without a primary
+/// modifier - nor in the text-entry modes.
+fn agent_keybinds(entry_key: &str, exit_mode: &str, plain_entry: bool) -> String {
+    let excluded_modes = if plain_entry {
+        let typing_mode = exit_mode.to_lowercase();
+        let mut excluded = vec!["agent".to_owned(), "locked".to_owned()];
+        if typing_mode != "locked" {
+            excluded.push(typing_mode);
+        }
+        excluded.extend(
+            ["renametab", "renamepane", "entersearch"]
+                .into_iter()
+                .map(str::to_owned),
+        );
+        excluded
+            .iter()
+            .map(|mode| format!("{mode:?}"))
+            .collect::<Vec<_>>()
+            .join(" ")
     } else {
-        r#""agent" "locked""#
+        r#""agent" "locked""#.to_owned()
     };
     format!(
         r#"
@@ -546,7 +564,7 @@ keybinds clear-defaults=true {{
 }
 
 pub fn default_keybinds_no_primary_modifier(secondary_modifier: String) -> String {
-    let agent_keybinds = agent_keybinds("Ctrl e", "Normal", false);
+    let agent_keybinds = agent_keybinds("e", "Normal", true);
     format!(
         r#"
 default_mode "normal"
@@ -998,7 +1016,7 @@ pub fn default_keybinds_no_modifiers() -> String {
 default_mode "normal"
 keybinds clear-defaults=true {
 "#,
-        &agent_keybinds("Ctrl e", "Normal", false),
+        &agent_keybinds("e", "Normal", true),
         r#"    normal {}
     locked {}
     resize {
@@ -1498,7 +1516,7 @@ mod tests {
             ),
             (
                 default_keybinds("".into(), "Alt".into()),
-                "Ctrl e",
+                "e",
                 InputMode::Normal,
             ),
             (
@@ -1508,7 +1526,7 @@ mod tests {
             ),
             (
                 default_keybinds("".into(), "".into()),
-                "Ctrl e",
+                "e",
                 InputMode::Normal,
             ),
             (
@@ -1535,19 +1553,37 @@ mod tests {
             );
             for config in [&config, &reparsed] {
                 let key: KeyWithModifier = entry.parse().unwrap();
+                let plain_entry = key.has_no_modifiers();
                 assert_eq!(config.options.default_mode, Some(exit_mode));
+                // A plain entry key must stay out of the mode keys are typed in (the exit
+                // mode) and enter Agent mode from the others; a modified one enters from
+                // Normal as well.
+                let entry_mode = if plain_entry && exit_mode == InputMode::Normal {
+                    InputMode::Tab
+                } else {
+                    InputMode::Normal
+                };
                 assert_eq!(
-                    config.keybinds.0[&InputMode::Normal][&key],
+                    config.keybinds.0[&entry_mode][&key],
                     vec![Action::SwitchToMode {
                         input_mode: InputMode::Agent
                     }]
                 );
-                assert!(config
-                    .keybinds
-                    .0
-                    .get(&InputMode::Locked)
-                    .and_then(|bindings| bindings.get(&key))
-                    .is_none());
+                let mut typing_modes = vec![InputMode::Locked];
+                if plain_entry {
+                    typing_modes.push(exit_mode);
+                }
+                for mode in typing_modes {
+                    assert!(
+                        config
+                            .keybinds
+                            .0
+                            .get(&mode)
+                            .and_then(|bindings| bindings.get(&key))
+                            .is_none(),
+                        "{entry} bound in {mode:?}"
+                    );
+                }
                 let agent = &config.keybinds.0[&InputMode::Agent];
                 assert_eq!(
                     agent[&key],
@@ -1575,7 +1611,7 @@ mod tests {
                         }
                     );
                 }
-                if exit_mode == InputMode::Locked {
+                if plain_entry {
                     for mode in [
                         InputMode::RenameTab,
                         InputMode::RenamePane,
@@ -1583,11 +1619,16 @@ mod tests {
                     ] {
                         assert!(!config.keybinds.0[&mode].contains_key(&key));
                     }
-                    // The shared plain-e entry must not replace Pane mode's embed action.
+                    // The shared plain-e entry must not replace Pane mode's embed action
+                    // or Scroll mode's scrollback editor.
                     assert_eq!(
                         config.keybinds.0[&InputMode::Pane][&key][0],
                         Action::TogglePaneEmbedOrFloating
                     );
+                    assert!(matches!(
+                        config.keybinds.0[&InputMode::Scroll][&key][0],
+                        Action::EditScrollback { .. }
+                    ));
                 }
             }
         }
