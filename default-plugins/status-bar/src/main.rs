@@ -2,6 +2,7 @@ mod first_line;
 mod keybind_hints;
 mod one_line_ui;
 mod second_line;
+mod status_block;
 mod tip;
 
 use ansi_term::{
@@ -17,12 +18,13 @@ use zellij_tile::prelude::*;
 use zellij_tile_utils::{palette_match, style};
 
 use first_line::first_line;
-use one_line_ui::one_line_ui;
+use one_line_ui::{one_line_ui, SecondaryInfo};
 use second_line::{
     ascended_to_host_session_hint, descended_into_nested_session_hint, floating_panes_are_visible,
     fullscreen_panes_to_hide, keybinds, locked_floating_panes_are_visible,
     locked_fullscreen_panes_to_hide, system_clipboard_error, text_copied_hint,
 };
+use status_block::{AgentCounts, Clock};
 use tip::utils::get_cached_tip_name;
 
 // for more of these, copy paste from: https://en.wikipedia.org/wiki/Box-drawing_character
@@ -47,6 +49,17 @@ struct State {
     floating_ribbon_range: Option<(usize, usize)>,
     new_pane_ribbon_hovered: bool,
     floating_ribbon_hovered: bool,
+    /// What the bottom-right draws when the Alt hint is not covering it.
+    agent_counts: AgentCounts,
+    clock: Clock,
+    /// Seconds east of UTC. Only the host can say (`get_local_utc_offset`), and it is a
+    /// synchronous round trip, so it is asked for on load and then only when the hour it was
+    /// taken in has passed - which is the granularity a DST change moves at.
+    utc_offset_secs: i32,
+    utc_offset_taken_at_ms: i64,
+    /// While this is in the future, the Alt hint has the right-hand slot instead of the clock.
+    /// Set by `Event::ModifiersHeld`; see `alt_hint_revealed`.
+    alt_hint_until_ms: i64,
 }
 
 register_plugin!(State);
@@ -239,7 +252,10 @@ impl ZellijPlugin for State {
             .map(|c| c == "true")
             .unwrap_or(false);
         set_selectable(false);
+        self.refresh_clock();
         subscribe(&[
+            EventType::Timer,
+            EventType::ModifiersHeld,
             EventType::ModeUpdate,
             EventType::TabUpdate,
             EventType::PaneUpdate,
@@ -278,6 +294,46 @@ impl ZellijPlugin for State {
                     should_render = true;
                 }
                 self.tabs = tabs;
+            },
+            Event::PaneUpdate(manifest) => {
+                let agent_counts = AgentCounts::from_manifest(&manifest);
+                if self.agent_counts != agent_counts {
+                    self.agent_counts = agent_counts;
+                    should_render = true;
+                }
+            },
+            Event::ModifiersHeld { modifiers, is_live } => {
+                let alt_is_down = modifiers.contains(&KeyModifier::Alt);
+                let was_revealed = self.alt_hint_revealed();
+                self.alt_hint_until_ms = match (alt_is_down, is_live) {
+                    // A terminal that reports the key itself will report it coming back up, so
+                    // this only needs a safety net against a release that never arrives - a
+                    // window stolen mid-hold, say. Long enough not to blink out under a hold.
+                    (true, true) => now_ms() + LIVE_ALT_HINT_SAFETY_MS,
+                    // Inferred from a chord: nothing will say when Alt came up, so the window
+                    // is the whole of the reveal, and every further chord pushes it out.
+                    (true, false) => now_ms() + ALT_HINT_WINDOW_MS,
+                    // An empty live set is the release. An empty inferred set never arrives -
+                    // the server only sends a chord that had modifiers on it.
+                    (false, true) => 0,
+                    (false, false) => self.alt_hint_until_ms,
+                };
+                if self.alt_hint_revealed() != was_revealed {
+                    // Re-aim the tick: it is what takes an inferred hold back down.
+                    self.refresh_clock();
+                    should_render = true;
+                }
+            },
+            Event::Timer(_) => {
+                // The tick does two jobs, and either can want a frame: it advances the clock,
+                // and it is what takes the Alt hint back down. Both are re-armed here because
+                // `set_timeout` is one-shot.
+                let clock_changed = self.refresh_clock();
+                let hint_expired = self.alt_hint_until_ms != 0 && !self.alt_hint_revealed();
+                if hint_expired {
+                    self.alt_hint_until_ms = 0;
+                }
+                should_render = clock_changed || hint_expired;
             },
             Event::CopyToClipboard(copy_destination) => {
                 match self.text_copy_destination {
@@ -356,6 +412,11 @@ impl ZellijPlugin for State {
                 self.display_system_clipboard_failure,
                 self.new_pane_ribbon_hovered,
                 self.floating_ribbon_hovered,
+                &SecondaryInfo {
+                    alt_hint_revealed: self.alt_hint_revealed(),
+                    agent_counts: self.agent_counts,
+                    clock: self.clock.clone(),
+                },
             );
             self.new_pane_ribbon_range = new_pane_ribbon_range;
             self.floating_ribbon_range = floating_ribbon_range;
@@ -409,7 +470,52 @@ impl ZellijPlugin for State {
     }
 }
 
+/// How long the Alt hint stays up after an Alt chord, on a terminal that cannot tell us when
+/// the key came back up. Long enough to read the hint, short enough not to sit on the clock.
+const ALT_HINT_WINDOW_MS: i64 = 3000;
+
+/// The safety net under a *live* hold, where the terminal does report the release. Kitty makes
+/// no promise about a release for a window that loses focus mid-hold, and without this a
+/// dropped release would pin the hint up for the rest of the session.
+const LIVE_ALT_HINT_SAFETY_MS: i64 = 30_000;
+
+/// How often the host is re-asked for the session's UTC offset. Only a daylight-saving change
+/// moves it, and that happens on an hour boundary, so an hour is as often as it can matter.
+const UTC_OFFSET_TTL_MS: i64 = 60 * 60 * 1000;
+
 impl State {
+    /// Whether the Alt hint currently owns the right-hand slot.
+    fn alt_hint_revealed(&self) -> bool {
+        now_ms() < self.alt_hint_until_ms
+    }
+
+    /// Re-read the clock, re-arm the tick, and say whether anything visible moved.
+    ///
+    /// The tick is aimed at the next minute boundary rather than set to a flat 60s, so the
+    /// displayed minute turns over when the real one does instead of drifting away from it by
+    /// however long the plugin took to get scheduled. It is also capped so a hint waiting to
+    /// expire is not left up until the next minute.
+    fn refresh_clock(&mut self) -> bool {
+        let now = now_ms();
+        if now.saturating_sub(self.utc_offset_taken_at_ms) >= UTC_OFFSET_TTL_MS {
+            // An offset the host would not give us is `0` - UTC, stated as such, which is a
+            // better answer than refusing to draw a clock.
+            self.utc_offset_secs = get_local_utc_offset(now).unwrap_or(0);
+            self.utc_offset_taken_at_ms = now;
+        }
+        let clock = Clock::at(now, self.utc_offset_secs);
+        let changed = self.clock != clock;
+        self.clock = clock;
+
+        let to_next_minute = 60.0 - (now.rem_euclid(60_000) as f64 / 1000.0);
+        let to_hint_expiry = match self.alt_hint_until_ms > now {
+            true => (self.alt_hint_until_ms - now) as f64 / 1000.0,
+            false => f64::MAX,
+        };
+        set_timeout(to_next_minute.min(to_hint_expiry).max(0.1));
+        changed
+    }
+
     fn second_line(&self, cols: usize) -> LinePart {
         let active_tab = self.tabs.iter().find(|t| t.active);
 

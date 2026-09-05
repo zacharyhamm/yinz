@@ -1,3 +1,6 @@
+pub use crate::clock::{
+    civil_from_days, civil_from_epoch_ms, now_ms, wall_clock, CivilTime, MONTH_NAMES, WEEKDAY_NAMES,
+};
 pub use crate::shim::*;
 pub use crate::*;
 pub use zellij_utils::consts::VERSION;

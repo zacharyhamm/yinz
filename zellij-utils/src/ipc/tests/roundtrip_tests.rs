@@ -631,6 +631,7 @@ fn test_client_messages() {
                 serialization_interval: Some(1),
                 disable_session_metadata: Some(true),
                 support_kitty_keyboard_protocol: Some(true),
+                report_modifier_keys: Some(true),
                 support_kitty_graphics_protocol: Some(false),
                 stacked_resize: Some(true),
                 agent_pane_min_columns: Some(100),
@@ -3960,6 +3961,12 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::RequestSessionList);
     test_client_roundtrip!(ClientToServerMsg::HostTerminalFocusChanged { focused: true });
     test_client_roundtrip!(ClientToServerMsg::HostTerminalFocusChanged { focused: false });
+    test_client_roundtrip!(ClientToServerMsg::ModifiersHeld {
+        modifiers: BTreeSet::new(),
+    });
+    test_client_roundtrip!(ClientToServerMsg::ModifiersHeld {
+        modifiers: [KeyModifier::Alt, KeyModifier::Ctrl].into_iter().collect(),
+    });
     test_client_roundtrip!(ClientToServerMsg::SubscribeToPaneRenders {
         pane_ids: vec![PaneId::Terminal(1), PaneId::Plugin(2)],
         scrollback: Some(100),

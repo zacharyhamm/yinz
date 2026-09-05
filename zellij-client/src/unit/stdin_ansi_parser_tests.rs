@@ -1331,7 +1331,7 @@ fn kitty_ctrl_a_trace_yields_one_event_not_a_literal_u() {
 
     let mut kitty = KittyKeyboardParser::new();
     match kitty.feed(&r2.residue) {
-        KittyParseOutcome::Complete(key) => {
+        KittyParseOutcome::Complete(key, _) => {
             assert!(
                 key.is_key_with_ctrl_modifier(BareKey::Char('a')),
                 "expected Ctrl-a, got {:?}",

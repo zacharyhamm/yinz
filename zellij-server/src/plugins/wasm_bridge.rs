@@ -3090,7 +3090,11 @@ fn check_event_permission(
         | EventType::HighlightClicked
         | EventType::HintText
         | EventType::ActivePaneScroll
-        | EventType::InputReceived => PermissionType::ReadApplicationState,
+        | EventType::InputReceived
+        // Which modifier keys are down says something about what the person at the keyboard is
+        // doing, which is more than `InputReceived`'s bare "something happened" - so it sits
+        // with the rest of the session state rather than with the ungated group below.
+        | EventType::ModifiersHeld => PermissionType::ReadApplicationState,
         EventType::PluginDataChanged => PermissionType::PluginData,
         // What an agent said and was asked is session state, and more of it than the manifest
         // carries: a plugin that may read the panes may read this.

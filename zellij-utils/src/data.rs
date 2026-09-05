@@ -1136,6 +1136,21 @@ pub enum Event {
     /// `PaneUpdate`; this carries what the record cannot, the prompt and the agent's last
     /// message above all. Needs `ReadApplicationState`.
     AgentEvent(crate::agent::AgentEvent),
+    /// Which modifier keys the client believes are held down right now, so a plugin can show
+    /// something for as long as one is - the status bar swaps its `Alt + ...` hint in this way.
+    ///
+    /// `is_live` says which of two very different things this is. `true` means the terminal
+    /// actually reported the modifier key going down, and a matching event with an empty set
+    /// will report it coming back up. `false` means it was *inferred* from a chorded keystroke
+    /// (`Alt+n` says Alt was down when it was pressed and nothing more), and no release will
+    /// follow. A plugin must time out an inferred hold itself, and should time out a live one
+    /// too: a terminal that loses focus mid-hold is not obliged to send the release.
+    ///
+    /// Needs `ReadApplicationState`.
+    ModifiersHeld {
+        modifiers: BTreeSet<KeyModifier>,
+        is_live: bool,
+    },
 }
 
 impl EventType {

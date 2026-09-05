@@ -10,7 +10,7 @@ pub struct EventNameList {
 pub struct Event {
     #[prost(enumeration="EventType", tag="1")]
     pub name: i32,
-    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52")]
+    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53")]
     pub payload: ::core::option::Option<event::Payload>,
 }
 /// Nested message and enum types in `Event`.
@@ -112,7 +112,19 @@ pub mod event {
         HookPayload(super::HookPayload),
         #[prost(message, tag="52")]
         AgentEventPayload(super::AgentEventPayload),
+        #[prost(message, tag="53")]
+        ModifiersHeldPayload(super::ModifiersHeldPayload),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ModifiersHeldPayload {
+    #[prost(enumeration="super::key::key::KeyModifier", repeated, tag="1")]
+    pub modifiers: ::prost::alloc::vec::Vec<i32>,
+    /// Whether the terminal reported the modifier key itself going down (and will report it
+    /// coming back up), or this was inferred from a chorded keystroke and no release will follow.
+    #[prost(bool, tag="2")]
+    pub is_live: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1193,6 +1205,8 @@ pub enum EventType {
     /// / A headless hook point was reached; sent to the plugin bound to it
     Hook = 57,
     AgentEvent = 58,
+    /// / Which modifier keys the client believes are held right now
+    ModifiersHeld = 59,
 }
 impl EventType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1255,6 +1269,7 @@ impl EventType {
             EventType::ContextMenuItemSelected => "ContextMenuItemSelected",
             EventType::Hook => "Hook",
             EventType::AgentEvent => "AgentEvent",
+            EventType::ModifiersHeld => "ModifiersHeld",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1314,6 +1329,7 @@ impl EventType {
             "ContextMenuItemSelected" => Some(Self::ContextMenuItemSelected),
             "Hook" => Some(Self::Hook),
             "AgentEvent" => Some(Self::AgentEvent),
+            "ModifiersHeld" => Some(Self::ModifiersHeld),
             _ => None,
         }
     }

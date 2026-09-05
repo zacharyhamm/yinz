@@ -13,9 +13,9 @@ use crate::{
         HostTerminalFocusChangedMsg, HostTerminalThemeChangedMsg,
         HostTerminalThemeIndication as ProtoHostTerminalThemeIndication,
         InputMode as ProtoInputMode, KeyMsg, KillSessionMsg, KittyGraphicsSupportMsg,
-        LayoutMetadata as ProtoLayoutMetadata, LogErrorMsg, LogMsg, NestedSessionFrameFromHostMsg,
-        PaneMetadata as ProtoPaneMetadata, PaneRenderUpdateMsg, QueryTerminalSizeMsg,
-        RenamedSessionMsg, RenderMsg, RequestSessionListMsg,
+        LayoutMetadata as ProtoLayoutMetadata, LogErrorMsg, LogMsg, ModifiersHeldMsg,
+        NestedSessionFrameFromHostMsg, PaneMetadata as ProtoPaneMetadata, PaneRenderUpdateMsg,
+        QueryTerminalSizeMsg, RenamedSessionMsg, RenderMsg, RequestSessionListMsg,
         ServerToClientMsg as ProtoServerToClientMsg, SixelSupportMsg, SubscribeToEventsMsg,
         SubscribeToPaneRendersMsg, SubscribedPaneClosedMsg, SwitchSessionMsg,
         TabMetadata as ProtoTabMetadata, TerminalPixelDimensionsMsg, TerminalResizeMsg,
@@ -186,6 +186,14 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                 client_to_server_msg::Message::HostTerminalFocusChanged(
                     HostTerminalFocusChangedMsg { focused },
                 )
+            },
+            ClientToServerMsg::ModifiersHeld { modifiers } => {
+                client_to_server_msg::Message::ModifiersHeld(ModifiersHeldMsg {
+                    modifiers: modifiers
+                        .into_iter()
+                        .map(crate::ipc::enum_conversions::key_modifier_to_proto_i32)
+                        .collect(),
+                })
             },
         };
 
@@ -364,6 +372,15 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
             Some(client_to_server_msg::Message::HostTerminalFocusChanged(msg)) => {
                 Ok(ClientToServerMsg::HostTerminalFocusChanged {
                     focused: msg.focused,
+                })
+            },
+            Some(client_to_server_msg::Message::ModifiersHeld(msg)) => {
+                Ok(ClientToServerMsg::ModifiersHeld {
+                    modifiers: msg
+                        .modifiers
+                        .into_iter()
+                        .map(crate::ipc::enum_conversions::key_modifier_from_proto_i32)
+                        .collect::<Result<_>>()?,
                 })
             },
             None => Err(anyhow!("Empty ClientToServerMsg message")),
@@ -830,6 +847,7 @@ impl From<crate::input::options::Options>
             serialization_interval: options.serialization_interval,
             disable_session_metadata: options.disable_session_metadata,
             support_kitty_keyboard_protocol: options.support_kitty_keyboard_protocol,
+            report_modifier_keys: options.report_modifier_keys,
             support_kitty_graphics_protocol: options.support_kitty_graphics_protocol,
             stacked_resize: options.stacked_resize,
             agent_pane_min_columns: options.agent_pane_min_columns.map(|c| c as u32),
@@ -973,6 +991,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             serialization_interval: options.serialization_interval,
             disable_session_metadata: options.disable_session_metadata,
             support_kitty_keyboard_protocol: options.support_kitty_keyboard_protocol,
+            report_modifier_keys: options.report_modifier_keys,
             support_kitty_graphics_protocol: options.support_kitty_graphics_protocol,
             stacked_resize: options.stacked_resize,
             agent_pane_min_columns: options.agent_pane_min_columns.map(|c| c as usize),

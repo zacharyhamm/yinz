@@ -24,7 +24,20 @@ pub const ENABLE_FOCUS_REPORTING: &str = "\u{1b}[?1004h";
 pub const DISABLE_FOCUS_REPORTING: &str = "\u{1b}[?1004l";
 pub const RESET_STYLE: &str = "\u{1b}[m";
 pub const SHOW_CURSOR: &str = "\u{1b}[?25h";
+/// Push kitty keyboard flag 1 - `DISAMBIGUATE_ESCAPE_CODES` - which is what lets a modified
+/// key be told from the legacy escape sequence that happens to spell the same bytes.
 pub const ENTER_KITTY_KEYBOARD_MODE: &str = "\u{1b}[>1u";
+/// Push flags 1|2|8: disambiguate, plus `REPORT_EVENT_TYPES` and
+/// `REPORT_ALL_KEYS_AS_ESCAPE_CODES`. The latter two are the only way a terminal ever reports a
+/// modifier key on its own, and so the only way anything can know that Alt is being *held*.
+///
+/// Off by default and gated behind `report_modifier_keys`, because flag 8 is not a free
+/// upgrade: under it every printable key arrives as `CSI <codepoint> u` rather than as text.
+/// US-ASCII survives that round trip, but AltGr glyphs, dead keys and IME commits are text the
+/// terminal now refuses to send, and no flag brings them back - a multi-codepoint commit does
+/// not map onto a key event at all. Nobody should get that without asking for it.
+pub const ENTER_KITTY_KEYBOARD_MODE_WITH_MODIFIERS: &str = "\u{1b}[>11u";
+/// Pop one entry off the flag stack, whichever of the two above pushed it.
 pub const EXIT_KITTY_KEYBOARD_MODE: &str = "\u{1b}[<1u";
 pub const CLEAR_CLIENT_TERMINAL_ATTRIBUTES: &str = "\u{1b}[?1l\u{1b}=\u{1b}[r\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1003l\u{1b}[?1005l\u{1b}[?1006l\u{1b}[?12l";
 /// Subscribe to host color-palette theme notifications (CSI 2031). Hosts
@@ -60,10 +73,17 @@ pub fn write_seqs<O: StdioAccess + ?Sized>(os_input: &O, seqs: &[&str]) {
 /// `ENABLE_HOST_THEME_NOTIFY` and `QUERY_HOST_THEME` are sent directly after
 /// `CLEAR_CLIENT_TERMINAL_ATTRIBUTES` so there is no window in which the host
 /// is unsubscribed. Hosts that don't support CSI 2031 ignore both.
-pub fn enter_terminal<O: StdioAccess + ?Sized>(os_input: &O, kitty_keyboard: bool) {
+pub fn enter_terminal<O: StdioAccess + ?Sized>(
+    os_input: &O,
+    kitty_keyboard: bool,
+    report_modifier_keys: bool,
+) {
     let mut seqs = vec![ENTER_ALTERNATE_SCREEN, CLEAR_CLIENT_TERMINAL_ATTRIBUTES];
     if kitty_keyboard {
-        seqs.push(ENTER_KITTY_KEYBOARD_MODE);
+        seqs.push(match report_modifier_keys {
+            true => ENTER_KITTY_KEYBOARD_MODE_WITH_MODIFIERS,
+            false => ENTER_KITTY_KEYBOARD_MODE,
+        });
     }
     seqs.push(ENABLE_HOST_THEME_NOTIFY);
     seqs.push(QUERY_HOST_THEME);
@@ -87,8 +107,12 @@ pub fn enter_terminal<O: StdioAccess + ?Sized>(os_input: &O, kitty_keyboard: boo
 /// `is_a_reconnect` skips the escape ribbon: the controlling terminal already has the attributes
 /// we want, and some terminals do not treat these atomically. It does not skip the raw-mode
 /// switch, because the previous pass left focus reporting on and those reports echo the same way.
-pub fn claim_terminal<O>(os_input: &mut O, kitty_keyboard: bool, is_a_reconnect: bool)
-where
+pub fn claim_terminal<O>(
+    os_input: &mut O,
+    kitty_keyboard: bool,
+    report_modifier_keys: bool,
+    is_a_reconnect: bool,
+) where
     O: TtyControl + StdioAccess + ?Sized,
 {
     // Normalises the terminal when a reconnect brings us through here a second time; a no-op on
@@ -98,7 +122,7 @@ where
     }
     os_input.set_raw_mode_keeping_signals();
     if !is_a_reconnect {
-        enter_terminal(os_input, kitty_keyboard);
+        enter_terminal(os_input, kitty_keyboard, report_modifier_keys);
     }
 }
 

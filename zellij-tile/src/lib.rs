@@ -15,6 +15,7 @@
 //! For a working plugin example as well as a development environment, please see:
 //! [https://github.com/zellij-org/rust-plugin-example](https://github.com/zellij-org/rust-plugin-example)
 //!
+pub mod clock;
 pub mod prelude;
 pub mod shim;
 pub mod ui_components;
