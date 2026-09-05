@@ -183,28 +183,53 @@ pub enum ConversionError {
 }
 
 /// Merge `fragment`'s top-level nodes into `managed`: a node replaces the one of the same
-/// name, unless both have children, in which case the children are merged by name, one level
-/// deep. See `Config::write_managed_fragment`.
+/// name, unless both have children, in which case the children are merged one level deep. A
+/// child replaces the one with the same name - `agent_exit ""` replaces `agent_exit
+/// "file:a.lua"` - except under `keybinds`, where the positional arguments are part of a
+/// block's identity: `shared_except "locked"` and `shared_except "normal" "locked"` are
+/// different blocks, and one `keybinds` holds several of each, while `normal
+/// clear-defaults=true` replaces `normal`. The loaders read children in document
+/// order, so a replaced child moves to the end: the newest write always wins. A node declaring
+/// `clear-defaults=true` is complete by its own account and replaces its namesake whole, so
+/// stale blocks from an earlier fragment do not survive under it. See
+/// `Config::write_managed_fragment`.
 pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDocument) {
+    fn clears_defaults(node: &kdl::KdlNode) -> bool {
+        // Lenient on purpose: a non-bool value is rejected when the merged file is parsed.
+        node.get("clear-defaults")
+            .and_then(|entry| entry.value().as_bool())
+            .unwrap_or(false)
+    }
+    // `KdlEntry`'s own equality includes its whitespace and spelling, so compare the values.
+    fn same_arguments(a: &kdl::KdlNode, b: &kdl::KdlNode) -> bool {
+        fn arguments(node: &kdl::KdlNode) -> impl Iterator<Item = &kdl::KdlValue> {
+            node.entries()
+                .iter()
+                .filter(|entry| entry.name().is_none())
+                .map(kdl::KdlEntry::value)
+        }
+        arguments(a).eq(arguments(b))
+    }
     for node in fragment.nodes() {
         let name = node.name().value();
+        let arguments_are_identity = name == "keybinds";
         let existing = managed
             .nodes_mut()
             .iter_mut()
             .find(|candidate| candidate.name().value() == name);
         match existing {
-            Some(target) if node.children().is_some() && target.children().is_some() => {
-                let target_children = target.ensure_children();
+            Some(target)
+                if node.children().is_some()
+                    && target.children().is_some()
+                    && !clears_defaults(node) =>
+            {
+                let target_children = target.ensure_children().nodes_mut();
                 for child in node.children().map(|c| c.nodes()).unwrap_or_default() {
-                    let child_name = child.name().value();
-                    match target_children
-                        .nodes_mut()
-                        .iter_mut()
-                        .find(|candidate| candidate.name().value() == child_name)
-                    {
-                        Some(slot) => *slot = child.clone(),
-                        None => target_children.nodes_mut().push(child.clone()),
-                    }
+                    target_children.retain(|candidate| {
+                        candidate.name().value() != child.name().value()
+                            || (arguments_are_identity && !same_arguments(candidate, child))
+                    });
+                    target_children.push(child.clone());
                 }
             },
             Some(target) => *target = node.clone(),
@@ -307,7 +332,9 @@ impl Config {
     /// replaces the one of the same name - `mouse_mode false` sets that one option - except
     /// that where both have children the children are merged by name, one level deep, so
     /// `hooks { agent_exit "" }` unbinds one point and leaves the others. A `keybinds` mode
-    /// block is a child, so it is replaced whole. The merged file is parsed over the
+    /// block is a child, so it is replaced whole (a `shared_except` block by its name and
+    /// arguments); a `keybinds clear-defaults=true` block is a complete keymap and replaces
+    /// the whole block. See `merge_kdl_fragment`. The merged file is parsed over the
     /// defaults before anything is written, and the write is atomic, so the file on disk is
     /// always one the loader accepts.
     pub fn write_managed_fragment(overlay_dir: &Path, fragment: &str) -> Result<PathBuf, String> {
@@ -527,7 +554,28 @@ impl Config {
             layout.default_bg = None;
         }
 
-        fn normalized(action: &Action) -> Action {
+        // A binding built over the plugin wire can carry a name or cwd and no layout at all;
+        // it loads the default layout when it runs, which is exactly what its saved text
+        // (`NewTab { name "x" }`) does, except that parsing that text loads the layout eagerly.
+        fn implicit_default(action: &Action) -> bool {
+            match action {
+                Action::NewTab {
+                    layout_source: None,
+                    tiled_layout: None,
+                    floating_layouts,
+                    swap_tiled_layouts,
+                    swap_floating_layouts,
+                    ..
+                } => {
+                    floating_layouts.is_empty()
+                        && swap_tiled_layouts.as_ref().is_none_or(Vec::is_empty)
+                        && swap_floating_layouts.as_ref().is_none_or(Vec::is_empty)
+                },
+                _ => false,
+            }
+        }
+
+        fn normalized(action: &Action, strip_layout: bool) -> Action {
             let mut action = action.clone();
             if let Action::NewTab {
                 layout_source,
@@ -538,7 +586,7 @@ impl Config {
                 ..
             } = &mut action
             {
-                if layout_source.is_some() {
+                if layout_source.is_some() || strip_layout {
                     // Only the reference is written; the file it names is the layout's
                     // source of truth, so its current contents are not the binding's state.
                     *tiled_layout = None;
@@ -581,15 +629,19 @@ impl Config {
             for (mode, bindings) in &source.keybinds.0 {
                 for (key, actions) in bindings {
                     for (index, action) in actions.iter().enumerate() {
-                        if matches!(action, Action::NewTab { .. })
-                            && destination
-                                .keybinds
-                                .0
-                                .get(mode)
-                                .and_then(|bindings| bindings.get(key))
-                                .and_then(|actions| actions.get(index))
-                                .map(normalized)
-                                != Some(normalized(action))
+                        if !matches!(action, Action::NewTab { .. }) {
+                            continue;
+                        }
+                        let counterpart = destination
+                            .keybinds
+                            .0
+                            .get(mode)
+                            .and_then(|bindings| bindings.get(key))
+                            .and_then(|actions| actions.get(index));
+                        let strip_layout =
+                            implicit_default(action) || counterpart.is_some_and(implicit_default);
+                        if counterpart.map(|a| normalized(a, strip_layout))
+                            != Some(normalized(action, strip_layout))
                         {
                             return false;
                         }
@@ -2015,6 +2067,101 @@ mod overlay_tests {
             text.contains("load_plugins"),
             "a new block is appended: {text}"
         );
+    }
+
+    fn loaded(managed: &KdlDocument) -> Config {
+        let defaults = Config::from_default_assets().unwrap();
+        Config::from_kdl(&managed.to_string(), Some(defaults)).unwrap()
+    }
+
+    /// A hook point is keyed by its name: writing `agent_exit ""` over `agent_exit "file:a.lua"`
+    /// replaces the binding rather than leaving both for the loader to reconcile.
+    #[test]
+    fn a_child_with_new_arguments_replaces_its_namesake() {
+        let mut managed = doc("hooks {\n    agent_exit \"file:a.lua\"\n}\n");
+        merge_kdl_fragment(&mut managed, &doc("hooks {\n    agent_exit \"\"\n}\n"));
+        let text = managed.to_string();
+        assert_eq!(text.matches("agent_exit").count(), 1, "{text}");
+        assert!(
+            loaded(&managed)
+                .hooks
+                .get(crate::input::hooks::HookPoint::AgentExit)
+                .is_none(),
+            "{text}"
+        );
+    }
+
+    /// Under `keybinds` the positional arguments are the block's identity: `shared_except`
+    /// blocks with different mode lists coexist, and only one with the same list replaces it.
+    /// A property is not identity: `normal clear-defaults=true` replaces `normal`.
+    #[test]
+    fn keybinds_blocks_are_keyed_by_name_and_arguments() {
+        let mut managed =
+            doc("keybinds {\n    normal {\n        bind \"Ctrl y\" { NewPane; }\n    }\n}\n");
+        merge_kdl_fragment(
+            &mut managed,
+            &doc("keybinds {\n    normal clear-defaults=true {\n        bind \"Ctrl u\" { NewPane; }\n    }\n}\n"),
+        );
+        let text = managed.to_string();
+        assert_eq!(text.matches("normal").count(), 1, "{text}");
+        assert!(!text.contains("Ctrl y"), "{text}");
+
+        let mut managed = doc(
+            "keybinds {\n    shared_except \"locked\" {\n        bind \"Ctrl y\" { NewPane; }\n    }\n}\n",
+        );
+        merge_kdl_fragment(
+            &mut managed,
+            &doc("keybinds {\n    shared_except \"normal\" \"locked\" {\n        bind \"Ctrl u\" { NewPane; }\n    }\n}\n"),
+        );
+        merge_kdl_fragment(
+            &mut managed,
+            &doc("keybinds {\n    shared_except \"locked\" {\n        bind \"Ctrl i\" { NewPane; }\n    }\n}\n"),
+        );
+        let text = managed.to_string();
+        assert_eq!(text.matches("shared_except").count(), 2, "{text}");
+        assert!(!text.contains("Ctrl y"), "{text}");
+        assert!(text.contains("Ctrl u") && text.contains("Ctrl i"), "{text}");
+    }
+
+    /// The loaders read children in order, so a replaced block moves to the end and the most
+    /// recent write wins: restating a mode block after a `clear-defaults=true` one must not
+    /// slide it back in front of the clear.
+    #[test]
+    fn a_replaced_child_moves_to_the_end() {
+        let bind_y = "keybinds {\n    normal {\n        bind \"Ctrl y\" { NewPane; }\n    }\n}\n";
+        let mut managed = doc(bind_y);
+        merge_kdl_fragment(
+            &mut managed,
+            &doc("keybinds {\n    normal clear-defaults=true {\n        bind \"Ctrl u\" { NewPane; }\n    }\n}\n"),
+        );
+        merge_kdl_fragment(&mut managed, &doc(bind_y));
+        let config = loaded(&managed);
+        let normal = config
+            .keybinds
+            .0
+            .get(&crate::data::InputMode::Normal)
+            .unwrap();
+        let keys: Vec<String> = normal.keys().map(|key| key.to_string()).collect();
+        assert!(
+            keys.iter().any(|key| key == "Ctrl y"),
+            "{keys:?}\n{managed}"
+        );
+    }
+
+    /// A `clear-defaults=true` block is a complete keymap: nothing from the earlier block
+    /// survives under it.
+    #[test]
+    fn a_clear_defaults_block_replaces_its_namesake_whole() {
+        let mut managed = doc(
+            "keybinds {\n    shared_except \"locked\" {\n        bind \"Ctrl y\" { NewPane; }\n    }\n}\n",
+        );
+        merge_kdl_fragment(
+            &mut managed,
+            &doc("keybinds clear-defaults=true {\n    normal {\n        bind \"Ctrl u\" { NewPane; }\n    }\n}\n"),
+        );
+        let text = managed.to_string();
+        assert!(!text.contains("shared_except"), "{text}");
+        assert!(text.contains("clear-defaults=true"), "{text}");
     }
 
     #[test]

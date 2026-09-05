@@ -131,6 +131,64 @@ fn new_tab_bare_implicit_default_and_focus_round_trip() {
     }
 }
 
+/// A binding built over the plugin wire with a name and no layout means "the default layout,
+/// chosen when it runs", which is what its saved text `NewTab { name "work" }` means too, even
+/// though parsing that text loads the layout eagerly. One that carries a layout the saved text
+/// cannot express is still refused.
+#[test]
+fn new_tab_wire_binding_without_a_layout_can_be_saved() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("custom.kdl"), NEW_TAB_LAYOUT).unwrap();
+    let mut config = new_tab_config(r#"{ name "work"; }"#, dir.path());
+    let key = KeyWithModifier::new(BareKey::Char('t')).with_ctrl_modifier();
+    let binding = config
+        .keybinds
+        .0
+        .get_mut(&InputMode::Normal)
+        .unwrap()
+        .get_mut(&key)
+        .unwrap();
+    let Action::NewTab {
+        tiled_layout,
+        floating_layouts,
+        swap_tiled_layouts,
+        swap_floating_layouts,
+        ..
+    } = &mut binding[0]
+    else {
+        panic!("not a NewTab binding");
+    };
+    let floating = floating_layouts.clone();
+    *tiled_layout = None;
+    floating_layouts.clear();
+    *swap_tiled_layouts = None;
+    *swap_floating_layouts = None;
+    config
+        .write_config_to_disk(config.to_string(false), &dir.path().join("config.kdl"))
+        .expect("an implicit default layout is what the saved text loads");
+
+    let binding = config
+        .keybinds
+        .0
+        .get_mut(&InputMode::Normal)
+        .unwrap()
+        .get_mut(&key)
+        .unwrap();
+    let Action::NewTab {
+        floating_layouts, ..
+    } = &mut binding[0]
+    else {
+        panic!("not a NewTab binding");
+    };
+    *floating_layouts = floating;
+    assert!(
+        config
+            .write_config_to_disk(config.to_string(false), &dir.path().join("config.kdl"))
+            .is_err(),
+        "the saved text drops the floating layout"
+    );
+}
+
 #[test]
 fn new_tab_explicit_focus_overrides_layout_focus() {
     let dir = tempfile::tempdir().unwrap();
