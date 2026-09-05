@@ -20,6 +20,7 @@ pub mod plugin_api;
 pub mod plugin_authoring;
 pub mod plugin_data;
 pub mod position;
+pub mod project_config;
 pub mod session_serialization;
 pub mod setup;
 pub mod shared;

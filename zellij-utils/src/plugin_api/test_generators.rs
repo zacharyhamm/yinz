@@ -74,6 +74,7 @@ pub(crate) fn agent_spawn_specs(tc: &hegel::TestCase) -> AgentSpawnSpec {
         command: optional_strings(tc),
         args: up_to(tc, 3, strings),
         model: optional_strings(tc),
+        effort: optional_strings(tc),
         prompt: optional_strings(tc),
         branch: optional_strings(tc),
         base: optional_strings(tc),
@@ -1535,6 +1536,14 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::SetPaneAgentRun => PluginCommand::SetPaneAgentRun {
             pane_id: pane_id(tc),
             run_id: optional_strings(tc),
+        },
+        CommandType::ProjectConfigRead => PluginCommand::ProjectConfigRead {
+            directory: strings(tc).into(),
+        },
+        CommandType::ProjectConfigWrite => PluginCommand::ProjectConfigWrite {
+            directory: strings(tc).into(),
+            source: strings(tc),
+            expected: optional_strings(tc),
         },
         CommandType::SpawnAgent => PluginCommand::SpawnAgent {
             spec: agent_spawn_specs(tc),

@@ -99,3 +99,9 @@ Reading the folders is a `sh` loop run on the host (`head -c` is used, so GNU, B
 coreutils are all fine); a wasm plugin cannot open a file outside its own sandbox. A folder that
 does not exist is simply empty. One that cannot be read leaves what was loaded in place and is
 listed under "errors" in `/skills`.
+
+Hocus installs `/project-setup` in its user skill directory when it first scans that directory.
+An existing copy or symlink is preserved. The skill reads repository instructions and proposes
+`.zellij.kdl` workflow settings. It uses `project_config_read` and `project_config_write` from the
+plugin tool family. The write tool shows the proposed source for confirmation and rejects stale writes.
+The skill does not run CI, commit changes, or merge branches.

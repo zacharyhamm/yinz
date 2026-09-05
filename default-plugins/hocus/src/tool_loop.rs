@@ -163,6 +163,28 @@ impl State {
     /// Dispatch the head. Returns whether the queue advanced — `false` means the
     /// result is deferred and `pump_tools` must stop and wait.
     pub(crate) fn run_head(&mut self, call: &ToolCall) -> bool {
+        if matches!(
+            call.name.as_str(),
+            "project_config_read" | "project_config_write"
+        ) {
+            let result = (|| {
+                let args = tools::Args::parse(&call.arguments)?;
+                let root = self.project_target()?.root.clone();
+                let snapshot = if call.name == "project_config_write" {
+                    zellij_tile::shim::project_config_write(
+                        root.into(),
+                        args.source.ok_or("source is required")?,
+                        args.expected,
+                    )
+                } else {
+                    zellij_tile::shim::project_config_read(root.into())
+                }?;
+                serde_json::to_string(&snapshot).map_err(|e| e.to_string())
+            })();
+            self.finish_head(result.unwrap_or_else(|e: String| e));
+            return true;
+        }
+
         if self.extensions.tool(&call.name).is_some() {
             return self.start_extension_tool(call);
         }

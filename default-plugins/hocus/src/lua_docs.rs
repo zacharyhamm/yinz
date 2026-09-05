@@ -71,7 +71,7 @@ fn prelude_part(index: usize) -> &'static str {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 43] = [
+pub const SECTIONS: [&str; 44] = [
     "index",
     "quickstart",
     "contract",
@@ -89,6 +89,7 @@ pub const SECTIONS: [&str; 43] = [
     "queues",
     "hocus_extensions",
     "hooks",
+    "hooks_workflow",
     "hooks_headless",
     "hooks_context_menu",
     "files",
@@ -133,7 +134,7 @@ fn heading(section: &str) -> Option<&'static str> {
         "hocus_data" => "Hocus data",
         "queues" => "Work queues",
         "hocus_extensions" => "Hocus extensions",
-        "hooks" | "hooks_headless" | "hooks_context_menu" => "Hooks",
+        "hooks" | "hooks_workflow" | "hooks_headless" | "hooks_context_menu" => "Hooks",
         "files" => "Files",
         "errors" => "Errors",
         "restrictions" => "What Lua plugins may not do",
@@ -166,7 +167,8 @@ fn cut(section: &str) -> Cut {
         "commands" => Cut::Until("Pane workflows"),
         "commands_workflows" => Cut::Only("Pane workflows"),
         "permissions" => Cut::Only("Permissions"),
-        "hooks" => Cut::Until("Headless hooks"),
+        "hooks" => Cut::Until("Agent exit workflow"),
+        "hooks_workflow" => Cut::Only("Agent exit workflow"),
         "hooks_headless" => Cut::Only("Headless hooks"),
         "hooks_context_menu" => Cut::Only("The `context_menu` hook"),
         _ => Cut::Whole,
@@ -279,6 +281,7 @@ fn index() -> String {
             "permissions" => "every permission a plugin can request, and what each allows"
                 .to_owned(),
             "hooks" => "the guide's \"Hooks\", and the agent_exit one".to_owned(),
+            "hooks_workflow" => "agent-exit review, commit, CI and merge".to_owned(),
             "hooks_headless" => "hooks that run with no pane".to_owned(),
             "hooks_context_menu" => "the context_menu hook".to_owned(),
             other => match heading(other) {

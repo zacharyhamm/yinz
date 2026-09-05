@@ -1146,6 +1146,9 @@ empty:
 | `agent_cwd` | where the agent was working |
 | `agent_exit_code` | absent if the command was killed by a signal |
 | `agent_command` | the command that exited, for display |
+| `agent_kind` | the last recognized agent kind |
+| `agent_target` | `local`, `ssh`, or `firecracker` |
+| `agent_workflow_owner`, `agent_workflow_run`, `agent_workflow_role` | helper handoff context, when present |
 | `agent_firecracker_vm` | VM name, for a worktree-backed Firecracker pane only |
 | `agent_firecracker_worktree` | host worktree, for a worktree-backed Firecracker pane only |
 | `agent_session` | owning session, for a worktree-backed Firecracker pane only |
@@ -1154,9 +1157,68 @@ empty:
 | `agent_zellij_config_dir` | selected config directory, forwarded as `ZELLIJ_CONFIG_DIR` |
 
 For a worktree-backed Firecracker pane, the shipped hook checks the guest against its last sync
-baseline. It adds `<S> sync` only when guest paths changed, including the file results of commits
-as well as uncommitted edits. A sync leaves the hook open and reports completion or merge warnings;
-Enter and Esc remain available while the check or sync runs.
+baseline. Select `<S> sync` to sync before the host workflow starts. Changes include committed
+and uncommitted file results. Sync failures remain on the hook with diagnostics. Restart is
+disabled while sync runs.
+
+
+### Agent exit workflow
+
+The builtin `agent-exit` hook starts a local Git workflow after an agent exits, at any exit status.
+For a Firecracker checkout, select **S** to sync first. Remaining guest changes block host work.
+Sync warnings require **R** to review them and confirmation that the conflicts are resolved.
+SSH checkouts retain restart and close controls.
+
+Use **R** to review branch commits, staged changes, unstaged changes, and untracked files.
+Use the arrow keys or page keys to scroll. Enter returns to the choices.
+**C** edits a commit message and asks for approval before staging all non-ignored changes.
+**G** asks a helper agent for a draft. A generated draft does not authorize a commit.
+After a commit, the hook attempts a rebase onto the local default branch. It never fetches or pushes.
+Conflicts offer a repair agent, continuation, and abort. Other failures show diagnostics.
+
+Configure the workflow at the Git worktree root in `.zellij.kdl`:
+
+```kdl
+agent_exit {
+    ci "cargo" "x" "ci" "check"
+    // default_branch "main"
+    // agent kind="codex" model="..." effort="medium"
+}
+```
+
+CI is an argument vector. To use shell syntax, configure an explicit shell, such as
+`ci "sh" "-c" "make lint && make test"`. Reading configuration does not execute it.
+Without a default-branch override, the hook uses remote HEAD metadata or asks for a local branch.
+Without agent settings, helpers use the exiting agent's kind and CLI defaults.
+Unknown kinds require an explicit supported kind: `codex`, `claude`, or `cursor`.
+
+`zellij.project_config.read(host_directory)` returns `{ root, source, config }` and needs `ReadFiles`.
+`zellij.project_config.write(host_directory, source, expected)` validates before writing and needs `WriteFiles`.
+Pass the exact previous source as `expected`, or nil for an absent file. Stale writes fail.
+These directories are host paths. Access outside the plugin directory also needs `FullHdAccess`.
+Use Hocus `/project-setup` to propose and confirm settings. Missing CI configuration blocks CI and merge.
+
+`zellij.agent.spawn` accepts optional `effort`. Codex uses `model_reasoning_effort`, Claude uses
+`--effort`, and Cursor uses a model bracket override. Cursor requires an explicit model without
+existing bracket overrides. Unsupported effort values fail before the pane opens.
+Workflow helpers carry `agent_workflow_run` and `agent_workflow_role` (`message` or `repair`) in
+context. The host supplies `agent_workflow_owner`. Their absolute cwd is a host path.
+Exit-hook configuration includes these fields, `agent_kind`, and `agent_target`.
+The owner receives the command-pane exit event. The helper hook also sends `agent_exit_helper_finished`.
+
+CI runs in a command pane. Closing it does not count as success. Complete command logs and generated
+messages remain in an external temporary directory, whose path appears in the workflow.
+A successful gate permits a local fast-forward merge only while HEAD, checkout contents, target branch,
+and gate configuration still match. The target checkout must be clean.
+After merge, choose to keep both, remove the linked worktree, delete the branch, or remove both.
+Cleanup uses non-force Git operations and refuses the primary checkout or dirty worktrees.
+A branch-only deletion first detaches the clean linked checkout.
+
+Each canonical worktree has one owner under its Git metadata in `agent-exit.lock`.
+Duplicate hooks identify the owner. Recovery checks the owner and outstanding operations before proceeding.
+Recovered workflows start at repository inspection and never reuse a previous CI pass.
+Escape leaves a prompt. During an operation, closing the plugin leaves ownership information for recovery.
+
 
 ### Headless hooks
 
@@ -1320,7 +1382,7 @@ hooks {
 which leaves the pane simply holding, as any other command pane does.
 
 The shipped `agent_exit` hook is itself a Lua plugin - `zellij-utils/assets/plugins/agent-exit.lua`
-in the source tree, and `example-plugins/agent-commit.lua` is that file with one more key
+in the source tree. `example-plugins/agent-commit.lua` is a small commit-only example
 (`plugin_docs section=example_agent_commit`). Read them; do not copy them. Your own hook is a
 plugin you write: `plugin_write name=my-agent-exit`, then bind it. Add
 `zellij.request_permission { "change_application_state" }` to its `load` - the shipped one is a

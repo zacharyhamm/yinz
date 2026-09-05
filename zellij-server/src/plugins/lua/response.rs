@@ -554,6 +554,17 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
                 None => Err(anyhow!("zellij answered with nothing")),
             })
         },
+        CommandType::ProjectConfigRead | CommandType::ProjectConfigWrite => {
+            decode(bytes).and_then(|r: ProtobufFsReadResponse| match r.result {
+                Some(fs_read_response::Result::Contents(contents)) => {
+                    let snapshot: serde_json::Value = serde_json::from_slice(&contents)
+                        .context("invalid project configuration reply")?;
+                    value(lua, snapshot)
+                },
+                Some(fs_read_response::Result::Error(e)) => Err(anyhow!("{}", e)),
+                None => Err(anyhow!("zellij answered with nothing")),
+            })
+        },
         CommandType::FsRead => decode(bytes).and_then(|r: ProtobufFsReadResponse| match r.result {
             Some(fs_read_response::Result::Contents(contents)) => lua
                 .create_string(&contents)

@@ -14,6 +14,303 @@ use crate::plugins::plugin_limits::PluginResourceLimits;
 use crate::plugins::plugin_map::{PluginEnv, ResponseSink};
 use crate::thread_bus::ThreadSenders;
 
+/// Real Git operations, with pane exits delivered while helper-ID writes await their results.
+#[test]
+fn agent_exit_workflow_merges_and_cleans_real_worktrees() {
+    use mlua::LuaSerdeExt;
+    use std::process::Command;
+    for (scenario, cleanup) in [
+        ("manual", "k"),
+        ("manual", "w"),
+        ("manual", "d"),
+        ("manual", "b"),
+        ("generated", "k"),
+        ("spawn_failed", "k"),
+        ("ci_repair", "k"),
+        ("ci_closed", "k"),
+        ("dirty_target", "k"),
+        ("target_moved", "k"),
+        ("head_changed", "k"),
+        ("commit_failed", "k"),
+        ("missing_ci", "k"),
+        ("recovery", "k"),
+        ("duplicate", "k"),
+        ("outstanding", "k"),
+        ("config_changed", "k"),
+        ("conflict_repair", "k"),
+        ("conflict_abort", "k"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = dir.path().join("primary");
+        let linked = dir.path().join("topic ' $; checkout");
+        let git = |cwd: &std::path::Path, args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).unwrap()
+        };
+        std::fs::create_dir(&primary).unwrap();
+        git(&primary, &["init", "-b", "trunk"]);
+        git(&primary, &["config", "user.name", "Workflow Test"]);
+        git(
+            &primary,
+            &["config", "user.email", "workflow@example.invalid"],
+        );
+        std::fs::write(primary.join(".zellij.kdl"), "agent_exit { ci \"sh\" \"-c\" \"test ! -f fail && test -f 'new $; file'\"; default_branch \"trunk\"; }\n").unwrap();
+        if scenario == "missing_ci" {
+            std::fs::write(
+                primary.join(".zellij.kdl"),
+                "agent_exit { default_branch \"trunk\"; }\n",
+            )
+            .unwrap();
+        }
+        if scenario == "config_changed" {
+            std::fs::write(primary.join(".gitignore"), ".zellij.kdl\n").unwrap();
+        }
+        std::fs::write(primary.join("shared"), "base\n").unwrap();
+        git(&primary, &["add", "."]);
+        git(&primary, &["commit", "-m", "initial"]);
+        git(
+            &primary,
+            &["worktree", "add", "-b", "topic", linked.to_str().unwrap()],
+        );
+        if scenario == "config_changed" {
+            std::fs::copy(primary.join(".zellij.kdl"), linked.join(".zellij.kdl")).unwrap();
+        }
+        std::fs::write(linked.join("new $; file"), "new content\n").unwrap();
+        if scenario == "ci_repair" {
+            std::fs::write(linked.join("fail"), "fail").unwrap();
+        }
+        if scenario == "commit_failed" {
+            git(&primary, &["config", "user.name", ""]);
+        }
+        if scenario.starts_with("conflict_") {
+            std::fs::write(primary.join("shared"), "target\n").unwrap();
+            git(&primary, &["commit", "-am", "target moves"]);
+            std::fs::write(linked.join("shared"), "topic\n").unwrap();
+        }
+
+        let source = zellij_utils::consts::builtin_lua_plugin("agent-exit")
+            .unwrap()
+            .replace(
+                "function M.load(config)",
+                "M.test_workflow = { state = W, run = workflow }\nfunction M.load(config)",
+            );
+        let plugin = load(&source).unwrap();
+        plugin
+            .lua
+            .globals()
+            .set(
+                "T",
+                plugin.plugin.get::<mlua::Table>("test_workflow").unwrap(),
+            )
+            .unwrap();
+        plugin
+            .lua
+            .globals()
+            .set("M", plugin.plugin.clone())
+            .unwrap();
+        plugin
+            .lua
+            .globals()
+            .set("checkout", linked.to_str().unwrap())
+            .unwrap();
+        plugin.lua.globals().set("cleanup", cleanup).unwrap();
+        plugin.lua.globals().set("scenario", scenario).unwrap();
+        plugin
+            .lua
+            .globals()
+            .set("primary", primary.to_str().unwrap())
+            .unwrap();
+        plugin
+            .lua
+            .globals()
+            .set("test_pid", std::process::id())
+            .unwrap();
+        plugin.lua.globals().set("__run", plugin.lua.create_function(|lua, argv: Vec<String>| {
+            let out = Command::new(&argv[0]).args(&argv[1..])
+                .env("GIT_EDITOR", "true").env("GIT_TERMINAL_PROMPT", "0").output()
+                .map_err(mlua::Error::external)?;
+            lua.to_value(&serde_json::json!({"exit_code":out.status.code(), "stdout":String::from_utf8_lossy(&out.stdout), "stderr":String::from_utf8_lossy(&out.stderr)}))
+        }).unwrap()).unwrap();
+        plugin
+            .lua
+            .globals()
+            .set(
+                "__config",
+                plugin
+                    .lua
+                    .create_function(|lua, root: String| {
+                        let snapshot =
+                            zellij_utils::project_config::access(std::path::Path::new(&root), None)
+                                .map_err(mlua::Error::external)?;
+                        super::to_lua_value(lua, &snapshot).map_err(mlua::Error::external)
+                    })
+                    .unwrap(),
+            )
+            .unwrap();
+        plugin
+            .lua
+            .load(
+                r#"
+local z = require('zellij')
+local function ready(value) return { done=true, value=value, on_settle={} } end
+z.subscribe = function() end
+local event = z.async.event
+local pending_exit, pending_write
+z.async.run_command = function(opts)
+  local result = __run(opts.command)
+  if pending_exit and opts.command[5] == T.state.lock .. '/helper' and opts.command[6] then
+    assert(result.exit_code == 0)
+    pending_write = true
+    return event('run_command_result')
+  end
+  return ready(result)
+end
+z.project_config.read = __config
+z.get_plugin_ids = function() return {plugin_id=41, zellij_pid=test_pid} end
+z.get_pane_info = function() return nil end
+local keys = {'r', 'Enter', 'c', 'f', 'i', 'x', 'Enter', 'y', 'y', 'y', cleanup}
+local expected_merge = true
+local expected_error
+if scenario == 'generated' then keys = {'g', 'Enter', 'c', 'Enter', 'y', 'y', 'y', cleanup}
+elseif scenario == 'spawn_failed' then keys = {'g', 'q'}; expected_merge = false
+elseif scenario == 'ci_repair' then keys = {'c', 'f', 'Enter', 'y', 'y', 's', 'c', 'r', 'Enter', 'y', 'y', 'y', cleanup}
+elseif scenario == 'ci_closed' then keys = {'c', 'f', 'Enter', 'y', 'y', 'q'}; expected_merge = false
+elseif scenario == 'dirty_target' or scenario == 'target_moved' or scenario == 'head_changed' or scenario == 'config_changed' then
+  keys = {'c', 'f', 'Enter', 'y', 'y', 'y', 'q'}; expected_merge = false
+elseif scenario == 'commit_failed' then keys = {'c', 'f', 'Enter', 'y', 'q'}; expected_merge = false
+elseif scenario == 'missing_ci' then keys = {'c', 'f', 'Enter', 'y', 'q'}; expected_merge = false
+elseif scenario == 'conflict_repair' then keys = {'c', 'f', 'Enter', 'y', 's', 'n', 'y', 'y', cleanup}
+elseif scenario == 'conflict_abort' then keys = {'c', 'f', 'Enter', 'y', 'a', 'q'}; expected_merge = false
+elseif scenario == 'recovery' or scenario == 'duplicate' or scenario == 'outstanding' then
+  local out = __run({'git', '-C', checkout, 'rev-parse', '--absolute-git-dir'})
+  local lock = out.stdout:gsub('\n$', '') .. '/agent-exit.lock'
+  assert(__run({'mkdir', lock}).exit_code == 0)
+  assert(__run({'sh', '-c', 'printf "%s\\n" "$2" > "$1/owner"', 'test', lock, test_pid .. ' 99 abandoned'}).exit_code == 0)
+  if scenario == 'duplicate' then
+    z.get_pane_info = function() return {exited=false} end
+    keys = {}; expected_merge = false; expected_error = 'Another workflow owns'
+  elseif scenario == 'outstanding' then
+    assert(__run({'sh', '-c', 'printf "%s\\n" "$2" > "$1/operation"', 'test', lock, tostring(test_pid)}).exit_code == 0)
+    keys = {}; expected_merge = false; expected_error = 'outstanding Git/CI operation'
+  else table.insert(keys, 1, 'y') end
+end
+z.async.event = function(name)
+  assert(name == 'key')
+  local key = table.remove(keys, 1)
+  assert(key, scenario .. ': unexpected prompt: ' .. tostring(T.state.title) .. '\n' .. tostring(T.state.detail))
+  if scenario == 'spawn_failed' and key == 'q' then
+    assert(T.state.title == 'Operation failed' and T.state.detail == 'helper spawn failed')
+    assert(__run({'test', '!', '-e', T.state.lock .. '/helper'}).exit_code == 0)
+  end
+  return ready({key=key})
+end
+z.open_command_pane = function(opts)
+  local argv = {opts[1].path}
+  for _, arg in ipairs(opts[1].args) do table.insert(argv, arg) end
+  pane_result = __run(argv)
+  if scenario == 'ci_closed' then pane_result.closed = true
+  elseif scenario == 'dirty_target' then assert(__run({'sh', '-c', 'touch "$1/dirty"', 'test', primary}).exit_code == 0)
+  elseif scenario == 'target_moved' then assert(__run({'git', '-C', primary, 'commit', '--allow-empty', '-m', 'moved'}).exit_code == 0)
+  elseif scenario == 'config_changed' then assert(__run({'sh', '-c', 'printf "\\n" >> "$1/.zellij.kdl"', 'test', checkout}).exit_code == 0)
+  elseif scenario == 'head_changed' then assert(__run({'git', '-C', checkout, 'commit', '--allow-empty', '-m', 'changed'}).exit_code == 0) end
+  pending_exit = pane_result.closed and {PaneClosed={Terminal=55}} or
+    {CommandPaneExited={55, pane_result.exit_code, {}}}
+  return {Terminal=55}
+end
+z.agent.spawn = function(opts)
+  assert(opts.cwd == checkout and opts.source_directory == checkout)
+  assert(opts.kind == 'codex')
+  assert(opts.context.agent_workflow_run == T.state.run)
+  if scenario == 'spawn_failed' then error('helper spawn failed', 0) end
+  if opts.context.agent_workflow_role == 'message' then
+    local file = assert(opts.prompt:match('this file: ([^\n]+)'))
+    assert(__run({'sh', '-c', 'printf "%s" "generated message" > "$1"', 'test', file}).exit_code == 0)
+  else
+    assert(opts.context.agent_workflow_role == 'repair')
+    if scenario == 'ci_repair' then assert(__run({'rm', '--', checkout .. '/fail'}).exit_code == 0)
+    elseif scenario == 'conflict_repair' then
+      assert(__run({'sh', '-c', 'printf resolved > "$1/shared"', 'test', checkout}).exit_code == 0)
+      assert(__run({'git', '-C', checkout, 'add', 'shared'}).exit_code == 0)
+      assert(__run({'git', '-C', checkout, 'rebase', '--continue'}).exit_code == 0)
+    end
+  end
+  pending_exit = {CommandPaneExited={56, 0, {}}}
+  return {Terminal=56}
+end
+M.cwd = checkout
+M.kind = 'codex'
+local finished = false
+z.task(function()
+  if expected_error then
+    local ok, err = pcall(T.run)
+    assert(not ok and tostring(err):find(expected_error, 1, true), tostring(err))
+  else T.run() end
+  finished = true
+end)
+while pending_write do
+  local exited = pending_exit
+  pending_write, pending_exit = nil, nil
+  -- The exit is not replayed: it must settle a waiter before the marker write completes.
+  z.__update(M, exited)
+  z.__update(M, {RunCommandResult={0, {}, {}, {}}})
+end
+assert(finished, scenario .. ': workflow missed a pane exit: ' .. tostring(T.state.title))
+assert(#keys == 0, 'workflow stopped early: ' .. tostring(T.state.detail))
+assert((T.state.merged ~= nil) == expected_merge, scenario .. ': incorrect merge outcome: ' .. tostring(T.state.detail))
+assert(not T.state.owns, 'ownership was retained')
+if not expected_error then
+  assert(__run({'test', '!', '-e', T.state.gitdir .. '/agent-exit.lock'}).exit_code == 0,
+    scenario .. ': ownership lock was retained')
+end
+"#,
+            )
+            .exec()
+            .unwrap();
+        if ![
+            "manual",
+            "generated",
+            "ci_repair",
+            "recovery",
+            "conflict_repair",
+        ]
+        .contains(&scenario)
+        {
+            assert!(
+                !primary.join("new $; file").exists(),
+                "{scenario}: merged without a valid gate"
+            );
+            continue;
+        }
+        assert_eq!(
+            std::fs::read_to_string(primary.join("new $; file")).unwrap(),
+            "new content\n"
+        );
+        assert_eq!(linked.exists(), matches!(cleanup, "k" | "d"));
+        let branches = git(&primary, &["branch", "--list", "topic"]);
+        assert_eq!(!branches.trim().is_empty(), matches!(cleanup, "k" | "w"));
+        if cleanup == "d" {
+            assert!(!Command::new("git")
+                .arg("-C")
+                .arg(&linked)
+                .args(["symbolic-ref", "HEAD"])
+                .output()
+                .unwrap()
+                .status
+                .success());
+        }
+    }
+}
+
 /// A `PluginEnv` with no wasm behind it and no channels wired up. Enough to load a Lua plugin and
 /// run its entrypoints; commands that talk to other threads silently fail, which is what
 /// `ThreadSenders::default()` does.
@@ -1203,8 +1500,32 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
         ))
         .unwrap();
     let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
-    assert!(rendered.contains("VM worktree synced."), "got: {rendered}");
-    assert!(!rendered.contains("<S> sync"), "got: {rendered}");
+    assert!(
+        rendered.contains("Sync conflicts require resolution"),
+        "got: {rendered}"
+    );
+    plugin
+        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('r'))))
+        .unwrap();
+    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    assert!(rendered.contains("kept guest copy"), "got: {rendered}");
+    plugin
+        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('y'))))
+        .unwrap();
+    let (_, _, context) = next_command();
+    plugin
+        .update(&Event::RunCommandResult(
+            Some(0),
+            b"0\n".to_vec(),
+            vec![],
+            context,
+        ))
+        .unwrap();
+    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    assert!(
+        rendered.contains("Inspecting repository..."),
+        "got: {rendered}"
+    );
 }
 
 #[test]
@@ -3643,6 +3964,8 @@ const REPLYING_COMMANDS: &[CommandType] = &[
     CommandType::OpenPluginPaneFloating,
     CommandType::OpenCommandPaneInGitCheckoutNearPlugin,
     CommandType::SpawnAgent,
+    CommandType::ProjectConfigRead,
+    CommandType::ProjectConfigWrite,
     CommandType::OpenCommandPaneInNewTab,
     CommandType::OpenPluginPaneInNewTab,
     CommandType::OpenEditorPaneInNewTab,

@@ -2994,7 +2994,44 @@ impl Screen {
                 .map(|cwd| cwd.display().to_string())
                 .unwrap_or_default(),
         );
+        if let Some(cwd) = self
+            .tab_containing_pane(pane_id)
+            .and_then(|tab| tab.pane_last_agent_cwd(pane_id))
+        {
+            payload.insert("agent_cwd".to_owned(), cwd);
+        }
         payload.insert("agent_command".to_owned(), run_command.to_string());
+        let kind = self
+            .tab_containing_pane(pane_id)
+            .and_then(|tab| tab.pane_last_agent_kind(pane_id))
+            .or_else(|| {
+                originating_plugin
+                    .and_then(|plugin| plugin.context.get(HOCUS_AGENT_PANE_CONTEXT).cloned())
+            });
+        if let Some(kind) = kind {
+            payload.insert("agent_kind".to_owned(), kind);
+        }
+        payload.insert(
+            "agent_target".to_owned(),
+            match &run_command.target {
+                zellij_utils::data::PaneTarget::Local => "local",
+                zellij_utils::data::PaneTarget::Ssh { .. } => "ssh",
+                zellij_utils::data::PaneTarget::Firecracker { .. } => "firecracker",
+            }
+            .to_owned(),
+        );
+        if let Some(plugin) = originating_plugin {
+            for key in [
+                "agent_workflow_owner",
+                "agent_workflow_run",
+                "agent_workflow_role",
+            ] {
+                if let Some(value) = plugin.context.get(key) {
+                    payload.insert(key.to_owned(), value.clone());
+                }
+            }
+        }
+
         if let (Some(vm), Some(worktree)) = (
             run_command.target.firecracker_vm(),
             run_command.target.firecracker_worktree(),

@@ -92,3 +92,22 @@ mod slack;
 mod tab_moves;
 mod typed_calls;
 mod vm;
+
+#[test]
+fn project_config_write_is_validated_and_shown_before_confirmation() {
+    let call = call(
+        "project_config_write",
+        r#"{"source":"agent_exit { ci \"cargo\" \"x\" \"ci\" \"check\"; }","expected":null}"#,
+    );
+    assert!(call_needs_confirmation(&call));
+    assert!(uncompilable_write(&call).is_none());
+    assert!(confirmation_detail(&call).join("\n").contains("cargo"));
+    assert!(consequence(&call).unwrap().contains("stale"));
+    let invalid = super::tools_tests::call(
+        "project_config_write",
+        r#"{"source":"agent_exit { ci; }","expected":null}"#,
+    );
+    assert!(uncompilable_write(&invalid).unwrap().contains("invalid ci"));
+    assert!(READ_ONLY.contains(&"project_config_read"));
+    assert!(!READ_ONLY.contains(&"project_config_write"));
+}

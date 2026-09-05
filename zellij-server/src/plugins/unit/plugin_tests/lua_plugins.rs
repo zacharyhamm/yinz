@@ -772,7 +772,9 @@ fn agent_exit_hook(payload: BTreeMap<String, String>) -> RunPluginOrAlias {
 }
 
 fn agent_exit_payload() -> BTreeMap<String, String> {
+    // Restart/close fallback; local Git transitions use a real-repository harness.
     BTreeMap::from([
+        ("agent_target".to_owned(), "ssh".to_owned()),
         ("agent_pane_id".to_owned(), "7".to_owned()),
         ("agent_cwd".to_owned(), "/work/.worktrees/topic".to_owned()),
         ("agent_exit_code".to_owned(), "0".to_owned()),

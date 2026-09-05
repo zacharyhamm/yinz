@@ -151,7 +151,7 @@ pub use super::generated_api::api::{
         PaneGitProbe as ProtobufPaneGitProbe, PaneId as ProtobufPaneId,
         PaneIdAndFloatingPaneCoordinates, PaneType as ProtobufPaneType, ParseLayoutPayload,
         ParseLayoutResponse as ProtobufParseLayoutResponse, PluginCommand as ProtobufPluginCommand,
-        PluginMessagePayload, QueueStatusPayload,
+        PluginMessagePayload, ProjectConfigWritePayload, QueueStatusPayload,
         QueueStatusResponse as ProtobufQueueStatusResponse, ReadPluginLogPayload,
         ReadPluginLogResponse as ProtobufReadPluginLogResponse, RebindKeysPayload,
         ReconfigurePayload, RecordingSummary as ProtobufRecordingSummary,
@@ -2799,6 +2799,24 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for SetPaneAgentRun"),
             },
+            Some(CommandName::ProjectConfigRead) => match protobuf_plugin_command.payload {
+                Some(Payload::ProjectConfigReadPayload(directory)) => {
+                    Ok(PluginCommand::ProjectConfigRead {
+                        directory: directory.into(),
+                    })
+                },
+                _ => Err("Mismatched payload for ProjectConfigRead"),
+            },
+            Some(CommandName::ProjectConfigWrite) => match protobuf_plugin_command.payload {
+                Some(Payload::ProjectConfigWritePayload(p)) => {
+                    Ok(PluginCommand::ProjectConfigWrite {
+                        directory: p.directory.into(),
+                        source: p.source,
+                        expected: p.expected,
+                    })
+                },
+                _ => Err("Mismatched payload for ProjectConfigWrite"),
+            },
             Some(CommandName::SpawnAgent) => match protobuf_plugin_command.payload {
                 Some(Payload::SpawnAgentPayload(payload)) => Ok(PluginCommand::SpawnAgent {
                     spec: payload.spec.ok_or("SpawnAgent must have a spec")?.into(),
@@ -5035,6 +5053,26 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     run_id,
                 })),
             }),
+            PluginCommand::ProjectConfigRead { directory } => Ok(ProtobufPluginCommand {
+                name: CommandName::ProjectConfigRead as i32,
+                payload: Some(Payload::ProjectConfigReadPayload(
+                    directory.to_string_lossy().into_owned(),
+                )),
+            }),
+            PluginCommand::ProjectConfigWrite {
+                directory,
+                source,
+                expected,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::ProjectConfigWrite as i32,
+                payload: Some(Payload::ProjectConfigWritePayload(
+                    ProjectConfigWritePayload {
+                        directory: directory.to_string_lossy().into_owned(),
+                        source,
+                        expected,
+                    },
+                )),
+            }),
             PluginCommand::SpawnAgent {
                 spec,
                 source_directory,
@@ -6345,6 +6383,7 @@ impl From<AgentSpawnSpec> for ProtobufAgentSpawnSpec {
             command: spec.command,
             args: spec.args,
             model: spec.model,
+            effort: spec.effort,
             prompt: spec.prompt,
             branch: spec.branch,
             base: spec.base,
@@ -6371,6 +6410,7 @@ impl From<ProtobufAgentSpawnSpec> for AgentSpawnSpec {
             command: spec.command,
             args: spec.args,
             model: spec.model,
+            effort: spec.effort,
             prompt: spec.prompt,
             branch: spec.branch,
             base: spec.base,
@@ -6808,6 +6848,7 @@ mod tests {
                 command: Some("claude".to_owned()),
                 args: vec!["--verbose".to_owned()],
                 model: Some("opus".to_owned()),
+                effort: Some("high".to_owned()),
                 prompt: Some("fix the parser".to_owned()),
                 branch: Some("fix-parser".to_owned()),
                 base: Some("main".to_owned()),
@@ -7311,6 +7352,8 @@ mod tests {
                 | PluginCommand::SetPaneAgent { .. }
                 | PluginCommand::SetPaneAgentRun { .. }
                 | PluginCommand::SpawnAgent { .. }
+                | PluginCommand::ProjectConfigRead { .. }
+                | PluginCommand::ProjectConfigWrite { .. }
                 | PluginCommand::SetQuitNotice { .. }
                 | PluginCommand::ReloadPluginByUrl(_)
                 | PluginCommand::ReadPluginLog { .. }

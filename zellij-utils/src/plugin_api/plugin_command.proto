@@ -258,6 +258,8 @@ enum CommandName {
   SetQuitNotice = 279;
   GetLocalUtcOffset = 280;
   SpawnAgent = 281;
+  ProjectConfigRead = 282;
+  ProjectConfigWrite = 283;
 }
 
 message PluginCommand {
@@ -463,6 +465,8 @@ message PluginCommand {
     SetQuitNoticePayload set_quit_notice_payload = 220;
     GetLocalUtcOffsetPayload get_local_utc_offset_payload = 221;
     SpawnAgentPayload spawn_agent_payload = 222;
+    string project_config_read_payload = 223;
+    ProjectConfigWritePayload project_config_write_payload = 224;
   }
 }
 
@@ -648,6 +652,7 @@ message AgentSpawnSpec {
   optional bool hooks = 13;
   optional string firecracker = 14;
   optional string firecracker_image = 15;
+  optional string effort = 16;
 }
 
 message SpawnAgentPayload {
@@ -1983,4 +1988,10 @@ message DeleteDeadSessionResponse {
 
 message DeleteAllDeadSessionsResponse {
   optional string error = 1; // absent => success
+}
+
+message ProjectConfigWritePayload {
+  string directory = 1;
+  string source = 2;
+  optional string expected = 3;
 }
