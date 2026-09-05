@@ -4,6 +4,7 @@ use crate::panes::nested_session_modal::GuestModalShortcuts;
 use crate::panes::PaneId;
 use crate::pty_writer::PtyWriteInstruction;
 use crate::tab::GuestChoiceIndicator;
+use crate::TerminalId;
 use crate::{ClientId, ServerInstruction};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -705,7 +706,7 @@ impl Screen {
         let _ = self.render(None);
     }
 
-    fn nested_guest_terminal_ids(&self) -> Vec<u32> {
+    fn nested_guest_terminal_ids(&self) -> Vec<TerminalId> {
         let mut terminal_ids = vec![];
         for tab in self.tabs.values() {
             for pane_id in tab.nested_guest_pane_ids() {
@@ -795,7 +796,7 @@ impl Screen {
                 actual.insert(pane_id, is_fullscreen);
             }
         }
-        let mut updates: Vec<(u32, bool)> = vec![];
+        let mut updates: Vec<(TerminalId, bool)> = vec![];
         for (pane_id, is_fullscreen) in actual.iter() {
             let previously = self.reported_guest_fullscreen.get(pane_id).copied();
             if previously != Some(*is_fullscreen) {

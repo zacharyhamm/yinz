@@ -6,7 +6,7 @@ fn layout_with_plugins_and_commands_swaped_properly() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -55,16 +55,20 @@ fn layout_with_plugins_and_commands_swaped_properly() {
     let mut command_2 = RunCommand::default();
     command_2.command = PathBuf::from("command2");
     command_2.hold_on_close = true;
-    let new_terminal_ids = vec![(1, Some(command_1)), (2, None), (3, Some(command_2))];
+    let new_terminal_ids = vec![
+        (TerminalId(1), Some(command_1)),
+        (TerminalId(2), None),
+        (TerminalId(3), Some(command_2)),
+    ];
     let new_floating_terminal_ids = vec![];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![1],
+        vec![zellij_utils::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![2],
+        vec![zellij_utils::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -86,8 +90,16 @@ fn layout_with_plugins_and_commands_swaped_properly() {
         true,
         stacked_resize,
     );
-    let _ = tab.handle_plugin_bytes(1, 1, "I am a tab bar".as_bytes().to_vec());
-    let _ = tab.handle_plugin_bytes(2, 1, "I am a\n\rstatus bar".as_bytes().to_vec());
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(1),
+        crate::ClientId(1),
+        "I am a tab bar".as_bytes().to_vec(),
+    );
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(2),
+        crate::ClientId(1),
+        "I am a\n\rstatus bar".as_bytes().to_vec(),
+    );
     tab.next_swap_layout().unwrap();
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
@@ -106,7 +118,7 @@ fn base_layout_is_included_in_swap_layouts() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -153,16 +165,20 @@ fn base_layout_is_included_in_swap_layouts() {
     command_1.command = PathBuf::from("command1");
     let mut command_2 = RunCommand::default();
     command_2.command = PathBuf::from("command2");
-    let new_terminal_ids = vec![(1, Some(command_1)), (2, None), (3, Some(command_2))];
+    let new_terminal_ids = vec![
+        (TerminalId(1), Some(command_1)),
+        (TerminalId(2), None),
+        (TerminalId(3), Some(command_2)),
+    ];
     let new_floating_terminal_ids = vec![];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![1],
+        vec![zellij_utils::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![2],
+        vec![zellij_utils::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -184,8 +200,16 @@ fn base_layout_is_included_in_swap_layouts() {
         true,
         stacked_resize,
     );
-    let _ = tab.handle_plugin_bytes(1, 1, "I am a tab bar".as_bytes().to_vec());
-    let _ = tab.handle_plugin_bytes(2, 1, "I am a\n\rstatus bar".as_bytes().to_vec());
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(1),
+        crate::ClientId(1),
+        "I am a tab bar".as_bytes().to_vec(),
+    );
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(2),
+        crate::ClientId(1),
+        "I am a\n\rstatus bar".as_bytes().to_vec(),
+    );
     tab.next_swap_layout().unwrap();
     tab.previous_swap_layout().unwrap(); // move back to the base layout
     tab.render(&mut output, None).unwrap();
@@ -205,7 +229,7 @@ fn swap_layouts_including_command_panes_absent_from_existing_layout() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -248,16 +272,20 @@ fn swap_layouts_including_command_panes_absent_from_existing_layout() {
             .template
             .unwrap();
 
-    let new_terminal_ids = vec![(1, None), (2, None), (3, None)];
+    let new_terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
     let new_floating_terminal_ids = vec![];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![1],
+        vec![zellij_utils::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![2],
+        vec![zellij_utils::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -279,8 +307,16 @@ fn swap_layouts_including_command_panes_absent_from_existing_layout() {
         true,
         stacked_resize,
     );
-    let _ = tab.handle_plugin_bytes(1, 1, "I am a tab bar".as_bytes().to_vec());
-    let _ = tab.handle_plugin_bytes(2, 1, "I am a\n\rstatus bar".as_bytes().to_vec());
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(1),
+        crate::ClientId(1),
+        "I am a tab bar".as_bytes().to_vec(),
+    );
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(2),
+        crate::ClientId(1),
+        "I am a\n\rstatus bar".as_bytes().to_vec(),
+    );
     tab.next_swap_layout().unwrap();
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
@@ -299,7 +335,7 @@ fn swap_layouts_not_including_command_panes_present_in_existing_layout() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -346,16 +382,20 @@ fn swap_layouts_not_including_command_panes_present_in_existing_layout() {
     command_1.command = PathBuf::from("command1");
     let mut command_2 = RunCommand::default();
     command_2.command = PathBuf::from("command2");
-    let new_terminal_ids = vec![(1, Some(command_1)), (2, None), (3, Some(command_2))];
+    let new_terminal_ids = vec![
+        (TerminalId(1), Some(command_1)),
+        (TerminalId(2), None),
+        (TerminalId(3), Some(command_2)),
+    ];
     let new_floating_terminal_ids = vec![];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![1],
+        vec![zellij_utils::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![2],
+        vec![zellij_utils::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -377,8 +417,16 @@ fn swap_layouts_not_including_command_panes_present_in_existing_layout() {
         true,
         stacked_resize,
     );
-    let _ = tab.handle_plugin_bytes(1, 1, "I am a tab bar".as_bytes().to_vec());
-    let _ = tab.handle_plugin_bytes(2, 1, "I am a\n\rstatus bar".as_bytes().to_vec());
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(1),
+        crate::ClientId(1),
+        "I am a tab bar".as_bytes().to_vec(),
+    );
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(2),
+        crate::ClientId(1),
+        "I am a\n\rstatus bar".as_bytes().to_vec(),
+    );
     tab.next_swap_layout().unwrap();
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
@@ -397,7 +445,7 @@ fn swap_layouts_including_plugin_panes_absent_from_existing_layout() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -436,7 +484,11 @@ fn swap_layouts_including_plugin_panes_absent_from_existing_layout() {
             .template
             .unwrap();
 
-    let new_terminal_ids = vec![(1, None), (2, None), (3, None)];
+    let new_terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
     let new_floating_terminal_ids = vec![];
     let new_plugin_ids = HashMap::new();
 
@@ -477,7 +529,7 @@ fn swap_layouts_not_including_plugin_panes_present_in_existing_layout() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -524,16 +576,20 @@ fn swap_layouts_not_including_plugin_panes_present_in_existing_layout() {
     command_1.command = PathBuf::from("command1");
     let mut command_2 = RunCommand::default();
     command_2.command = PathBuf::from("command2");
-    let new_terminal_ids = vec![(1, Some(command_1)), (2, None), (3, Some(command_2))];
+    let new_terminal_ids = vec![
+        (TerminalId(1), Some(command_1)),
+        (TerminalId(2), None),
+        (TerminalId(3), Some(command_2)),
+    ];
     let new_floating_terminal_ids = vec![];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![1],
+        vec![zellij_utils::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![2],
+        vec![zellij_utils::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -555,8 +611,16 @@ fn swap_layouts_not_including_plugin_panes_present_in_existing_layout() {
         true,
         stacked_resize,
     );
-    let _ = tab.handle_plugin_bytes(1, 1, "I am a tab bar".as_bytes().to_vec());
-    let _ = tab.handle_plugin_bytes(2, 1, "I am a\n\rstatus bar".as_bytes().to_vec());
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(1),
+        crate::ClientId(1),
+        "I am a tab bar".as_bytes().to_vec(),
+    );
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(2),
+        crate::ClientId(1),
+        "I am a\n\rstatus bar".as_bytes().to_vec(),
+    );
     tab.next_swap_layout().unwrap();
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
@@ -575,7 +639,7 @@ fn new_pane_in_auto_layout() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout
@@ -604,7 +668,11 @@ fn new_pane_in_auto_layout() {
             .template
             .unwrap();
 
-    let new_terminal_ids = vec![(1, None), (2, None), (3, None)];
+    let new_terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
     let new_floating_terminal_ids = vec![];
     let new_plugin_ids = HashMap::new();
 
@@ -640,7 +708,7 @@ fn new_pane_in_auto_layout() {
     for i in 0..7 {
         let new_pane_id = i + 2;
         tab.new_pane(
-            PaneId::Terminal(new_pane_id),
+            PaneId::Terminal(crate::TerminalId(new_pane_id)),
             None,
             None,
             false,
@@ -674,7 +742,7 @@ fn new_pane_in_stacked_resizes() {
         cols: 200,
         rows: 40,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout
@@ -685,7 +753,11 @@ fn new_pane_in_stacked_resizes() {
             .template
             .unwrap();
 
-    let new_terminal_ids = vec![(1, None), (2, None), (3, None)];
+    let new_terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
     let new_floating_terminal_ids = vec![];
     let new_plugin_ids = HashMap::new();
 
@@ -711,7 +783,7 @@ fn new_pane_in_stacked_resizes() {
     for i in 0..4 {
         let new_pane_id = i + 2;
         tab.new_pane(
-            PaneId::Terminal(new_pane_id),
+            PaneId::Terminal(crate::TerminalId(new_pane_id)),
             None,
             None,
             false,
@@ -745,7 +817,7 @@ fn when_swapping_tiled_layouts_in_a_damaged_state_layout_and_pane_focus_are_unch
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -773,7 +845,11 @@ fn when_swapping_tiled_layouts_in_a_damaged_state_layout_and_pane_focus_are_unch
             .template
             .unwrap();
 
-    let new_terminal_ids = vec![(1, None), (2, None), (3, None)];
+    let new_terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
     let new_floating_terminal_ids = vec![];
     let new_plugin_ids = HashMap::new();
 
@@ -826,7 +902,7 @@ fn when_swapping_tiled_layouts_in_an_undamaged_state_pane_focuses_on_focused_nod
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -854,7 +930,11 @@ fn when_swapping_tiled_layouts_in_an_undamaged_state_pane_focuses_on_focused_nod
             .template
             .unwrap();
 
-    let new_terminal_ids = vec![(1, None), (2, None), (3, None)];
+    let new_terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
     let new_floating_terminal_ids = vec![];
     let new_plugin_ids = HashMap::new();
 
@@ -903,7 +983,7 @@ fn when_swapping_tiled_layouts_in_an_undamaged_state_with_no_focus_node_pane_foc
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -931,7 +1011,11 @@ fn when_swapping_tiled_layouts_in_an_undamaged_state_with_no_focus_node_pane_foc
             .template
             .unwrap();
 
-    let new_terminal_ids = vec![(1, None), (2, None), (3, None)];
+    let new_terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
     let new_floating_terminal_ids = vec![];
     let new_plugin_ids = HashMap::new();
 
@@ -980,7 +1064,7 @@ fn when_closing_a_pane_in_auto_layout_the_focus_goes_to_last_focused_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -1008,7 +1092,11 @@ fn when_closing_a_pane_in_auto_layout_the_focus_goes_to_last_focused_pane() {
             .template
             .unwrap();
 
-    let new_terminal_ids = vec![(1, None), (2, None), (3, None)];
+    let new_terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
     let new_floating_terminal_ids = vec![];
     let new_plugin_ids = HashMap::new();
 
@@ -1033,7 +1121,7 @@ fn when_closing_a_pane_in_auto_layout_the_focus_goes_to_last_focused_pane() {
     );
     let _ = tab.move_focus_down(client_id);
     let _ = tab.move_focus_down(client_id);
-    tab.close_pane(PaneId::Terminal(3), false, None);
+    tab.close_pane(PaneId::Terminal(crate::TerminalId(3)), false, None);
     tab.render(&mut output, None).unwrap();
 
     let (snapshot, cursor_coordinates) = take_snapshot_and_cursor_position(
@@ -1056,7 +1144,7 @@ fn floating_layout_with_plugins_and_commands_swaped_properly() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -1101,16 +1189,20 @@ fn floating_layout_with_plugins_and_commands_swaped_properly() {
     command_1.command = PathBuf::from("command1");
     let mut command_2 = RunCommand::default();
     command_2.command = PathBuf::from("command2");
-    let new_floating_terminal_ids = vec![(1, Some(command_1)), (2, None), (3, Some(command_2))];
-    let new_terminal_ids = vec![(4, None)];
+    let new_floating_terminal_ids = vec![
+        (TerminalId(1), Some(command_1)),
+        (TerminalId(2), None),
+        (TerminalId(3), Some(command_2)),
+    ];
+    let new_terminal_ids = vec![(TerminalId(4), None)];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![1],
+        vec![zellij_utils::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![2],
+        vec![zellij_utils::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -1132,8 +1224,16 @@ fn floating_layout_with_plugins_and_commands_swaped_properly() {
         true,
         stacked_resize,
     );
-    let _ = tab.handle_plugin_bytes(1, 1, "I am a tab bar".as_bytes().to_vec());
-    let _ = tab.handle_plugin_bytes(2, 1, "I am a\n\rstatus bar".as_bytes().to_vec());
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(1),
+        crate::ClientId(1),
+        "I am a tab bar".as_bytes().to_vec(),
+    );
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(2),
+        crate::ClientId(1),
+        "I am a\n\rstatus bar".as_bytes().to_vec(),
+    );
     tab.next_swap_layout().unwrap();
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
@@ -1152,7 +1252,7 @@ fn base_floating_layout_is_included_in_swap_layouts() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -1197,16 +1297,20 @@ fn base_floating_layout_is_included_in_swap_layouts() {
     command_1.command = PathBuf::from("command1");
     let mut command_2 = RunCommand::default();
     command_2.command = PathBuf::from("command2");
-    let new_floating_terminal_ids = vec![(1, Some(command_1)), (2, None), (3, Some(command_2))];
-    let new_terminal_ids = vec![(4, None)];
+    let new_floating_terminal_ids = vec![
+        (TerminalId(1), Some(command_1)),
+        (TerminalId(2), None),
+        (TerminalId(3), Some(command_2)),
+    ];
+    let new_terminal_ids = vec![(TerminalId(4), None)];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![1],
+        vec![zellij_utils::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![2],
+        vec![zellij_utils::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -1228,8 +1332,16 @@ fn base_floating_layout_is_included_in_swap_layouts() {
         true,
         stacked_resize,
     );
-    let _ = tab.handle_plugin_bytes(1, 1, "I am a tab bar".as_bytes().to_vec());
-    let _ = tab.handle_plugin_bytes(2, 1, "I am a\n\rstatus bar".as_bytes().to_vec());
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(1),
+        crate::ClientId(1),
+        "I am a tab bar".as_bytes().to_vec(),
+    );
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(2),
+        crate::ClientId(1),
+        "I am a\n\rstatus bar".as_bytes().to_vec(),
+    );
     tab.next_swap_layout().unwrap();
     tab.previous_swap_layout().unwrap(); // move back to the base layout
     tab.render(&mut output, None).unwrap();
@@ -1249,7 +1361,7 @@ fn swap_floating_layouts_including_command_panes_absent_from_existing_layout() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -1292,16 +1404,20 @@ fn swap_floating_layouts_including_command_panes_absent_from_existing_layout() {
             .template
             .unwrap();
 
-    let new_floating_terminal_ids = vec![(1, None), (2, None), (3, None)];
-    let new_terminal_ids = vec![(4, None)];
+    let new_floating_terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
+    let new_terminal_ids = vec![(TerminalId(4), None)];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![1],
+        vec![zellij_utils::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![2],
+        vec![zellij_utils::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -1323,8 +1439,16 @@ fn swap_floating_layouts_including_command_panes_absent_from_existing_layout() {
         true,
         stacked_resize,
     );
-    let _ = tab.handle_plugin_bytes(1, 1, "I am a tab bar".as_bytes().to_vec());
-    let _ = tab.handle_plugin_bytes(2, 1, "I am a\n\rstatus bar".as_bytes().to_vec());
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(1),
+        crate::ClientId(1),
+        "I am a tab bar".as_bytes().to_vec(),
+    );
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(2),
+        crate::ClientId(1),
+        "I am a\n\rstatus bar".as_bytes().to_vec(),
+    );
     tab.next_swap_layout().unwrap();
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
@@ -1343,7 +1467,7 @@ fn swap_floating_layouts_not_including_command_panes_present_in_existing_layout(
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -1390,16 +1514,20 @@ fn swap_floating_layouts_not_including_command_panes_present_in_existing_layout(
     command_1.command = PathBuf::from("command1");
     let mut command_2 = RunCommand::default();
     command_2.command = PathBuf::from("command2");
-    let new_floating_terminal_ids = vec![(1, Some(command_1)), (2, None), (3, Some(command_2))];
-    let new_terminal_ids = vec![(4, None)];
+    let new_floating_terminal_ids = vec![
+        (TerminalId(1), Some(command_1)),
+        (TerminalId(2), None),
+        (TerminalId(3), Some(command_2)),
+    ];
+    let new_terminal_ids = vec![(TerminalId(4), None)];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![1],
+        vec![zellij_utils::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![2],
+        vec![zellij_utils::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -1421,8 +1549,16 @@ fn swap_floating_layouts_not_including_command_panes_present_in_existing_layout(
         true,
         stacked_resize,
     );
-    let _ = tab.handle_plugin_bytes(1, 1, "I am a tab bar".as_bytes().to_vec());
-    let _ = tab.handle_plugin_bytes(2, 1, "I am a\n\rstatus bar".as_bytes().to_vec());
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(1),
+        crate::ClientId(1),
+        "I am a tab bar".as_bytes().to_vec(),
+    );
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(2),
+        crate::ClientId(1),
+        "I am a\n\rstatus bar".as_bytes().to_vec(),
+    );
     tab.next_swap_layout().unwrap();
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
@@ -1441,7 +1577,7 @@ fn swap_floating_layouts_including_plugin_panes_absent_from_existing_layout() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -1473,8 +1609,12 @@ fn swap_floating_layouts_including_plugin_panes_absent_from_existing_layout() {
             .template
             .unwrap();
 
-    let new_floating_terminal_ids = vec![(1, None), (2, None), (3, None)];
-    let new_terminal_ids = vec![(4, None)];
+    let new_floating_terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
+    let new_terminal_ids = vec![(TerminalId(4), None)];
     let new_plugin_ids = HashMap::new();
 
     let swap_layout =
@@ -1514,7 +1654,7 @@ fn swap_floating_layouts_not_including_plugin_panes_present_in_existing_layout()
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -1553,16 +1693,20 @@ fn swap_floating_layouts_not_including_plugin_panes_present_in_existing_layout()
     command_1.command = PathBuf::from("command1");
     let mut command_2 = RunCommand::default();
     command_2.command = PathBuf::from("command2");
-    let new_floating_terminal_ids = vec![(1, Some(command_1)), (2, None), (3, Some(command_2))];
-    let new_terminal_ids = vec![(4, None)];
+    let new_floating_terminal_ids = vec![
+        (TerminalId(1), Some(command_1)),
+        (TerminalId(2), None),
+        (TerminalId(3), Some(command_2)),
+    ];
+    let new_terminal_ids = vec![(TerminalId(4), None)];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![1],
+        vec![zellij_utils::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![2],
+        vec![zellij_utils::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -1584,8 +1728,16 @@ fn swap_floating_layouts_not_including_plugin_panes_present_in_existing_layout()
         true,
         stacked_resize,
     );
-    let _ = tab.handle_plugin_bytes(1, 1, "I am a tab bar".as_bytes().to_vec());
-    let _ = tab.handle_plugin_bytes(2, 1, "I am a\n\rstatus bar".as_bytes().to_vec());
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(1),
+        crate::ClientId(1),
+        "I am a tab bar".as_bytes().to_vec(),
+    );
+    let _ = tab.handle_plugin_bytes(
+        crate::PluginId(2),
+        crate::ClientId(1),
+        "I am a\n\rstatus bar".as_bytes().to_vec(),
+    );
     tab.next_swap_layout().unwrap();
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
@@ -1604,7 +1756,7 @@ fn new_floating_pane_in_auto_layout() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout
@@ -1633,7 +1785,7 @@ fn new_floating_pane_in_auto_layout() {
             .template
             .unwrap();
 
-    let new_terminal_ids = vec![(1, None)];
+    let new_terminal_ids = vec![(TerminalId(1), None)];
     let new_floating_terminal_ids = vec![];
     let new_plugin_ids = HashMap::new();
 
@@ -1661,7 +1813,7 @@ fn new_floating_pane_in_auto_layout() {
     for i in 0..3 {
         let new_pane_id = i + 2;
         tab.new_pane(
-            PaneId::Terminal(new_pane_id),
+            PaneId::Terminal(crate::TerminalId(new_pane_id)),
             None,
             None,
             false,
@@ -1695,7 +1847,7 @@ fn when_swapping_floating_layouts_in_a_damaged_state_layout_and_pane_focus_are_u
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -1723,8 +1875,12 @@ fn when_swapping_floating_layouts_in_a_damaged_state_layout_and_pane_focus_are_u
             .template
             .unwrap();
 
-    let new_floating_terminal_ids = vec![(1, None), (2, None), (3, None)];
-    let new_terminal_ids = vec![(4, None)];
+    let new_floating_terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
+    let new_terminal_ids = vec![(TerminalId(4), None)];
     let new_plugin_ids = HashMap::new();
 
     let swap_layout =
@@ -1775,7 +1931,7 @@ fn when_swapping_floating_layouts_in_an_undamaged_state_pane_focuses_on_focused_
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -1803,8 +1959,12 @@ fn when_swapping_floating_layouts_in_an_undamaged_state_pane_focuses_on_focused_
             .template
             .unwrap();
 
-    let new_floating_terminal_ids = vec![(1, None), (2, None), (3, None)];
-    let new_terminal_ids = vec![(4, None)];
+    let new_floating_terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
+    let new_terminal_ids = vec![(TerminalId(4), None)];
     let new_plugin_ids = HashMap::new();
 
     let swap_layout =
@@ -1851,7 +2011,7 @@ fn when_swapping_floating_layouts_in_an_undamaged_state_with_no_focus_node_pane_
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -1879,8 +2039,12 @@ fn when_swapping_floating_layouts_in_an_undamaged_state_with_no_focus_node_pane_
             .template
             .unwrap();
 
-    let new_floating_terminal_ids = vec![(1, None), (2, None), (3, None)];
-    let new_terminal_ids = vec![(4, None)];
+    let new_floating_terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
+    let new_terminal_ids = vec![(TerminalId(4), None)];
     let new_plugin_ids = HashMap::new();
 
     let swap_layout =
@@ -1926,7 +2090,7 @@ fn when_closing_a_floating_pane_in_auto_layout_the_focus_goes_to_last_focused_pa
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -1954,8 +2118,12 @@ fn when_closing_a_floating_pane_in_auto_layout_the_focus_goes_to_last_focused_pa
             .template
             .unwrap();
 
-    let new_floating_terminal_ids = vec![(1, None), (2, None), (3, None)];
-    let new_terminal_ids = vec![(4, None)];
+    let new_floating_terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
+    let new_terminal_ids = vec![(TerminalId(4), None)];
     let new_plugin_ids = HashMap::new();
 
     let swap_layout =
@@ -1979,7 +2147,7 @@ fn when_closing_a_floating_pane_in_auto_layout_the_focus_goes_to_last_focused_pa
     );
     let _ = tab.move_focus_up(client_id);
     let _ = tab.move_focus_up(client_id);
-    tab.close_pane(PaneId::Terminal(1), false, None);
+    tab.close_pane(PaneId::Terminal(crate::TerminalId(1)), false, None);
     tab.render(&mut output, None).unwrap();
 
     let (snapshot, cursor_coordinates) = take_snapshot_and_cursor_position(
@@ -2002,7 +2170,7 @@ fn when_resizing_whole_tab_with_auto_layout_and_floating_panes_the_layout_is_mai
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut output = Output::default();
     let base_layout = r#"
         layout {
@@ -2022,8 +2190,12 @@ fn when_resizing_whole_tab_with_auto_layout_and_floating_panes_the_layout_is_mai
             .template
             .unwrap();
 
-    let new_floating_terminal_ids = vec![(1, None), (2, None), (3, None)];
-    let new_terminal_ids = vec![(4, None)];
+    let new_floating_terminal_ids = vec![
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+    ];
+    let new_terminal_ids = vec![(TerminalId(4), None)];
     let new_plugin_ids = HashMap::new();
 
     let swap_layout =
@@ -2082,7 +2254,7 @@ fn when_applying_a_truncated_swap_layout_child_attributes_are_not_ignored() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut tab = create_new_tab_with_layout(size, ModeInfo::default(), layout);
     let mut output = Output::default();
     let new_size = Size {
@@ -2119,7 +2291,7 @@ fn can_define_expanded_pane_in_stack() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut tab = create_new_tab_with_layout(size, ModeInfo::default(), layout);
     let mut output = Output::default();
     tab.render(&mut output, None).unwrap();

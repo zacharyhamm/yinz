@@ -1,5 +1,6 @@
 ---
-source: zellij-server/src/./unit/screen_tests.rs
+source: zellij-server/src/screen/../unit/screen_tests/cli_actions.rs
+assertion_line: 1168
 expression: "format!(\"{:?}\", received_write_instructions)"
 ---
-[Write([102, 111, 111], 0, None), Write([102, 111, 111], 1, None)]
+[Write([102, 111, 111], TerminalId(0), None), Write([102, 111, 111], TerminalId(1), None)]

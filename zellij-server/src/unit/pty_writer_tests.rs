@@ -28,14 +28,14 @@ enum WriteBehavior {
 }
 
 /// Log of (terminal_id, bytes) for each successful write, shared with the test thread.
-type WriteLog = Arc<Mutex<Vec<(u32, Vec<u8>)>>>;
+type WriteLog = Arc<Mutex<Vec<(TerminalId, Vec<u8>)>>>;
 /// The last resize each terminal was told about, shared with the test thread.
-type CachedResizes = Arc<Mutex<Option<BTreeMap<u32, (u16, u16)>>>>;
+type CachedResizes = Arc<Mutex<Option<BTreeMap<TerminalId, (u16, u16)>>>>;
 
 #[derive(Clone)]
 struct MockServerOsApi {
     /// Controls how each terminal behaves on write.
-    write_behavior: Arc<Mutex<HashMap<u32, WriteBehavior>>>,
+    write_behavior: Arc<Mutex<HashMap<TerminalId, WriteBehavior>>>,
     /// Log of (terminal_id, bytes) for each successful write.
     write_log: WriteLog,
     cached_resizes: CachedResizes,
@@ -49,13 +49,13 @@ impl MockServerOsApi {
             cached_resizes: Arc::new(Mutex::new(None)),
         }
     }
-    fn set_behavior(&self, terminal_id: u32, behavior: WriteBehavior) {
+    fn set_behavior(&self, terminal_id: TerminalId, behavior: WriteBehavior) {
         self.write_behavior
             .lock()
             .unwrap()
             .insert(terminal_id, behavior);
     }
-    fn get_written_bytes(&self, terminal_id: u32) -> Vec<u8> {
+    fn get_written_bytes(&self, terminal_id: TerminalId) -> Vec<u8> {
         self.write_log
             .lock()
             .unwrap()
@@ -69,7 +69,7 @@ impl MockServerOsApi {
 impl ServerOsApi for MockServerOsApi {
     fn set_terminal_size_using_terminal_id(
         &self,
-        id: u32,
+        id: TerminalId,
         cols: u16,
         rows: u16,
         _width_in_pixels: Option<u16>,
@@ -83,7 +83,7 @@ impl ServerOsApi for MockServerOsApi {
     fn cache_resizes(&mut self) {
         *self.cached_resizes.lock().unwrap() = Some(BTreeMap::new());
     }
-    fn apply_cached_resizes(&mut self) -> Vec<(u32, u16, u16)> {
+    fn apply_cached_resizes(&mut self) -> Vec<(TerminalId, u16, u16)> {
         self.cached_resizes
             .lock()
             .unwrap()
@@ -98,10 +98,10 @@ impl ServerOsApi for MockServerOsApi {
         _terminal_action: zellij_utils::input::command::TerminalAction,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
-    ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
         unimplemented!()
     }
-    fn write_to_tty_stdin(&self, terminal_id: u32, buf: &[u8]) -> Result<usize> {
+    fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize> {
         let behavior = self
             .write_behavior
             .lock()
@@ -134,7 +134,7 @@ impl ServerOsApi for MockServerOsApi {
             )),
         }
     }
-    fn tcdrain(&self, _id: u32) -> Result<()> {
+    fn tcdrain(&self, _id: TerminalId) -> Result<()> {
         Ok(())
     }
     fn kill(&self, _pid: u32) -> Result<()> {
@@ -176,13 +176,13 @@ impl ServerOsApi for MockServerOsApi {
     }
     fn re_run_command_in_terminal(
         &self,
-        _terminal_id: u32,
+        _terminal_id: TerminalId,
         _run_command: RunCommand,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
         unimplemented!()
     }
-    fn clear_terminal_id(&self, _terminal_id: u32) -> Result<()> {
+    fn clear_terminal_id(&self, _terminal_id: TerminalId) -> Result<()> {
         Ok(())
     }
 }
@@ -227,17 +227,21 @@ fn run_pty_writer(
 #[test]
 fn full_write_completes_immediately() {
     let mock = MockServerOsApi::new();
-    mock.set_behavior(1, WriteBehavior::AcceptAll);
+    mock.set_behavior(crate::TerminalId(1), WriteBehavior::AcceptAll);
     let mock_clone = mock.clone();
 
     let (bus, sender) = make_test_bus(mock);
     run_pty_writer(
         bus,
         sender,
-        vec![PtyWriteInstruction::Write(b"hello world".to_vec(), 1, None)],
+        vec![PtyWriteInstruction::Write(
+            b"hello world".to_vec(),
+            crate::TerminalId(1),
+            None,
+        )],
     );
 
-    let written = mock_clone.get_written_bytes(1);
+    let written = mock_clone.get_written_bytes(crate::TerminalId(1));
     assert_eq!(written, b"hello world");
 }
 
@@ -245,17 +249,21 @@ fn full_write_completes_immediately() {
 fn partial_write_is_buffered_and_drained() {
     let mock = MockServerOsApi::new();
     // Accept only 3 bytes at a time
-    mock.set_behavior(1, WriteBehavior::AcceptAtMost(3));
+    mock.set_behavior(crate::TerminalId(1), WriteBehavior::AcceptAtMost(3));
     let mock_clone = mock.clone();
 
     let (bus, sender) = make_test_bus(mock);
     run_pty_writer(
         bus,
         sender,
-        vec![PtyWriteInstruction::Write(b"abcdefghij".to_vec(), 1, None)],
+        vec![PtyWriteInstruction::Write(
+            b"abcdefghij".to_vec(),
+            crate::TerminalId(1),
+            None,
+        )],
     );
 
-    let written = mock_clone.get_written_bytes(1);
+    let written = mock_clone.get_written_bytes(crate::TerminalId(1));
     assert_eq!(
         written, b"abcdefghij",
         "all bytes should eventually be written"
@@ -266,9 +274,9 @@ fn partial_write_is_buffered_and_drained() {
 fn eagain_on_one_terminal_does_not_block_another() {
     let mock = MockServerOsApi::new();
     // Terminal 1 is stuck (EAGAIN)
-    mock.set_behavior(1, WriteBehavior::AcceptNone);
+    mock.set_behavior(crate::TerminalId(1), WriteBehavior::AcceptNone);
     // Terminal 2 accepts everything
-    mock.set_behavior(2, WriteBehavior::AcceptAll);
+    mock.set_behavior(crate::TerminalId(2), WriteBehavior::AcceptAll);
     let mock_clone = mock.clone();
 
     let (bus, sender) = make_test_bus(mock);
@@ -276,13 +284,13 @@ fn eagain_on_one_terminal_does_not_block_another() {
         bus,
         sender,
         vec![
-            PtyWriteInstruction::Write(b"stuck data".to_vec(), 1, None),
-            PtyWriteInstruction::Write(b"good data".to_vec(), 2, None),
+            PtyWriteInstruction::Write(b"stuck data".to_vec(), crate::TerminalId(1), None),
+            PtyWriteInstruction::Write(b"good data".to_vec(), crate::TerminalId(2), None),
         ],
     );
 
     // Terminal 2 should have received its bytes despite terminal 1 being stuck
-    let written_2 = mock_clone.get_written_bytes(2);
+    let written_2 = mock_clone.get_written_bytes(crate::TerminalId(2));
     assert_eq!(written_2, b"good data");
 
     // Terminal 1 data is lost (stuck until Exit, then dropped)
@@ -293,7 +301,7 @@ fn eagain_on_one_terminal_does_not_block_another() {
 fn writes_to_same_terminal_preserve_order() {
     let mock = MockServerOsApi::new();
     // Accept only 4 bytes at a time — forces buffering
-    mock.set_behavior(1, WriteBehavior::AcceptAtMost(4));
+    mock.set_behavior(crate::TerminalId(1), WriteBehavior::AcceptAtMost(4));
     let mock_clone = mock.clone();
 
     let (bus, sender) = make_test_bus(mock);
@@ -301,13 +309,13 @@ fn writes_to_same_terminal_preserve_order() {
         bus,
         sender,
         vec![
-            PtyWriteInstruction::Write(b"AAAA".to_vec(), 1, None),
-            PtyWriteInstruction::Write(b"BBBB".to_vec(), 1, None),
-            PtyWriteInstruction::Write(b"CCCC".to_vec(), 1, None),
+            PtyWriteInstruction::Write(b"AAAA".to_vec(), crate::TerminalId(1), None),
+            PtyWriteInstruction::Write(b"BBBB".to_vec(), crate::TerminalId(1), None),
+            PtyWriteInstruction::Write(b"CCCC".to_vec(), crate::TerminalId(1), None),
         ],
     );
 
-    let written = mock_clone.get_written_bytes(1);
+    let written = mock_clone.get_written_bytes(crate::TerminalId(1));
     assert_eq!(
         written, b"AAAABBBBCCCC",
         "writes must be delivered in order"
@@ -318,7 +326,7 @@ fn writes_to_same_terminal_preserve_order() {
 fn memory_cap_drops_buffer_when_exceeded() {
     let mock = MockServerOsApi::new();
     // Terminal is stuck — nothing drains
-    mock.set_behavior(1, WriteBehavior::AcceptNone);
+    mock.set_behavior(crate::TerminalId(1), WriteBehavior::AcceptNone);
     let mock_clone = mock.clone();
 
     let (bus, sender) = make_test_bus(mock);
@@ -327,16 +335,24 @@ fn memory_cap_drops_buffer_when_exceeded() {
     let chunk_size = 1024 * 1024; // 1 MB
     let mut instructions = Vec::new();
     for _ in 0..(MAX_PENDING_BYTES / chunk_size + 1) {
-        instructions.push(PtyWriteInstruction::Write(vec![0x42; chunk_size], 1, None));
+        instructions.push(PtyWriteInstruction::Write(
+            vec![0x42; chunk_size],
+            crate::TerminalId(1),
+            None,
+        ));
     }
     // After the cap is exceeded, send a write to terminal 2 to verify
     // the writer thread is still functional
-    instructions.push(PtyWriteInstruction::Write(b"still alive".to_vec(), 2, None));
-    mock_clone.set_behavior(2, WriteBehavior::AcceptAll);
+    instructions.push(PtyWriteInstruction::Write(
+        b"still alive".to_vec(),
+        crate::TerminalId(2),
+        None,
+    ));
+    mock_clone.set_behavior(crate::TerminalId(2), WriteBehavior::AcceptAll);
 
     run_pty_writer(bus, sender, instructions);
 
-    let written_2 = mock_clone.get_written_bytes(2);
+    let written_2 = mock_clone.get_written_bytes(crate::TerminalId(2));
     assert_eq!(
         written_2, b"still alive",
         "writer thread should continue functioning after dropping a buffer"
@@ -346,8 +362,8 @@ fn memory_cap_drops_buffer_when_exceeded() {
 #[test]
 fn write_error_clears_terminal_queue() {
     let mock = MockServerOsApi::new();
-    mock.set_behavior(1, WriteBehavior::Error);
-    mock.set_behavior(2, WriteBehavior::AcceptAll);
+    mock.set_behavior(crate::TerminalId(1), WriteBehavior::Error);
+    mock.set_behavior(crate::TerminalId(2), WriteBehavior::AcceptAll);
     let mock_clone = mock.clone();
 
     let (bus, sender) = make_test_bus(mock);
@@ -355,21 +371,21 @@ fn write_error_clears_terminal_queue() {
         bus,
         sender,
         vec![
-            PtyWriteInstruction::Write(b"will fail".to_vec(), 1, None),
-            PtyWriteInstruction::Write(b"also queued".to_vec(), 1, None),
-            PtyWriteInstruction::Write(b"should work".to_vec(), 2, None),
+            PtyWriteInstruction::Write(b"will fail".to_vec(), crate::TerminalId(1), None),
+            PtyWriteInstruction::Write(b"also queued".to_vec(), crate::TerminalId(1), None),
+            PtyWriteInstruction::Write(b"should work".to_vec(), crate::TerminalId(2), None),
         ],
     );
 
     // Terminal 1 should have nothing written (error cleared queue)
-    let written_1 = mock_clone.get_written_bytes(1);
+    let written_1 = mock_clone.get_written_bytes(crate::TerminalId(1));
     assert!(
         written_1.is_empty(),
         "errored terminal should have no written bytes"
     );
 
     // Terminal 2 should be unaffected
-    let written_2 = mock_clone.get_written_bytes(2);
+    let written_2 = mock_clone.get_written_bytes(crate::TerminalId(2));
     assert_eq!(written_2, b"should work");
 }
 
@@ -377,7 +393,7 @@ fn write_error_clears_terminal_queue() {
 fn pty_writer_records_successful_input() {
     // Mock with AcceptAtMost(2) to cause two partial writes of "abcd" -> "ab" + "cd"
     let mock = MockServerOsApi::new();
-    mock.set_behavior(1, WriteBehavior::AcceptAtMost(2));
+    mock.set_behavior(crate::TerminalId(1), WriteBehavior::AcceptAtMost(2));
     let mock_clone = mock.clone();
 
     // Create recorder channel
@@ -399,7 +415,11 @@ fn pty_writer_records_successful_input() {
     run_pty_writer(
         bus,
         sender,
-        vec![PtyWriteInstruction::Write(b"abcd".to_vec(), 1, None)],
+        vec![PtyWriteInstruction::Write(
+            b"abcd".to_vec(),
+            crate::TerminalId(1),
+            None,
+        )],
     );
 
     // Collect recorded input events
@@ -442,7 +462,13 @@ fn pty_writer_records_successful_resize() {
     run_pty_writer(
         bus,
         sender,
-        vec![PtyWriteInstruction::ResizePty(1, 80, 24, None, None)],
+        vec![PtyWriteInstruction::ResizePty(
+            crate::TerminalId(1),
+            80,
+            24,
+            None,
+            None,
+        )],
     );
     let mut resize_events = Vec::new();
     while let Ok(instr) = rec_receiver.try_recv() {
@@ -478,8 +504,8 @@ fn pty_writer_records_successful_resize() {
         sender,
         vec![
             PtyWriteInstruction::StartCachingResizes,
-            PtyWriteInstruction::ResizePty(1, 80, 24, None, None),
-            PtyWriteInstruction::ResizePty(1, 100, 30, None, None),
+            PtyWriteInstruction::ResizePty(crate::TerminalId(1), 80, 24, None, None),
+            PtyWriteInstruction::ResizePty(crate::TerminalId(1), 100, 30, None, None),
             PtyWriteInstruction::ApplyCachedResizes,
         ],
     );
@@ -510,7 +536,7 @@ fn pty_writer_records_successful_resize() {
     impl crate::os_input_output::ServerOsApi for FailingResizeMock {
         fn set_terminal_size_using_terminal_id(
             &self,
-            _id: u32,
+            _id: TerminalId,
             _cols: u16,
             _rows: u16,
             _w: Option<u16>,
@@ -526,17 +552,13 @@ fn pty_writer_records_successful_resize() {
                     + Send,
             >,
             _c: Option<std::path::PathBuf>,
-        ) -> anyhow::Result<(
-            u32,
-            Box<dyn crate::os_input_output::AsyncReader>,
-            Option<u32>,
-        )> {
+        ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
             unimplemented!()
         }
-        fn write_to_tty_stdin(&self, _id: u32, _buf: &[u8]) -> anyhow::Result<usize> {
+        fn write_to_tty_stdin(&self, _id: TerminalId, _buf: &[u8]) -> anyhow::Result<usize> {
             Ok(0)
         }
-        fn tcdrain(&self, _id: u32) -> anyhow::Result<()> {
+        fn tcdrain(&self, _id: TerminalId) -> anyhow::Result<()> {
             Ok(())
         }
         fn kill(&self, _pid: u32) -> anyhow::Result<()> {
@@ -584,7 +606,7 @@ fn pty_writer_records_successful_resize() {
         }
         fn re_run_command_in_terminal(
             &self,
-            _id: u32,
+            _id: TerminalId,
             _c: zellij_utils::input::command::RunCommand,
             _q: Box<
                 dyn Fn(crate::panes::PaneId, Option<i32>, zellij_utils::input::command::RunCommand)
@@ -593,7 +615,7 @@ fn pty_writer_records_successful_resize() {
         ) -> anyhow::Result<(Box<dyn crate::os_input_output::AsyncReader>, Option<u32>)> {
             unimplemented!()
         }
-        fn clear_terminal_id(&self, _id: u32) -> anyhow::Result<()> {
+        fn clear_terminal_id(&self, _id: TerminalId) -> anyhow::Result<()> {
             Ok(())
         }
     }
@@ -624,7 +646,13 @@ fn pty_writer_records_successful_resize() {
     bus2.senders.session_recorder = Some(handle2);
     // send resize then exit
     sender2_ctx
-        .send(PtyWriteInstruction::ResizePty(2, 100, 30, None, None))
+        .send(PtyWriteInstruction::ResizePty(
+            crate::TerminalId(2),
+            100,
+            30,
+            None,
+            None,
+        ))
         .unwrap();
     sender2_ctx.send(PtyWriteInstruction::Exit).unwrap();
     crate::pty_writer::pty_writer_main(bus2).unwrap();

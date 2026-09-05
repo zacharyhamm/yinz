@@ -1,6 +1,6 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
-assertion_line: 7056
+source: zellij-server/src/plugins/./unit/plugin_tests/pane_id_commands.rs
+assertion_line: 392
 expression: "format!(\"{:#?}\", rerun_command_pane_event)"
 ---
 Some(
@@ -13,7 +13,9 @@ Some(
             invert_on_boundaries: false,
         },
         Terminal(
-            2,
+            TerminalId(
+                2,
+            ),
         ),
     ),
 )

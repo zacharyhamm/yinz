@@ -130,7 +130,8 @@ fn a_plugin_pane_cannot_be_warped() {
     new_tab(&mut screen, 2, 1);
 
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Plugin(1)), 1),
+        screen
+            .check_pane_can_be_warped(Some(PaneId::Plugin(crate::PluginId(1))), crate::ClientId(1)),
         Err("this is a plugin pane; it has no process, so there is nothing to move".to_owned())
     );
 }
@@ -142,7 +143,10 @@ fn a_pane_from_another_session_cannot_be_warped() {
     new_tab(&mut screen, 2, 1);
 
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(99)), 1),
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(99))),
+            crate::ClientId(1)
+        ),
         Err("there is no pane 99 in this session".to_owned())
     );
 }
@@ -152,7 +156,7 @@ fn an_adopted_pane_still_follows_a_client_looking_at_a_tab() {
     // The pane arrives in the tab the client is looking at when it is adopted,
     // not the one they started in - and that tab is named, so nothing between
     // here and the pane's creation can second-guess the placement.
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
@@ -176,13 +180,15 @@ fn an_adopted_pane_from_a_client_with_no_screen_goes_to_the_attached_clients_tab
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
-    screen.go_to_tab(2, attached).expect("TEST");
+    screen
+        .go_to_tab(2, crate::ClientId(attached))
+        .expect("TEST");
 
     assert_eq!(
         adopted_pane_placement_target(
             &mut screen,
             zellij_utils::data::WarpPlacement::FocusedTab,
-            requester
+            crate::ClientId(requester)
         ),
         ClientTabIndexOrPaneId::TabIndex(1),
     );
@@ -219,10 +225,10 @@ fn an_adopted_focused_tab_pane_gets_focus_and_leaves_scroll_mode() {
             mock_screen
                 .to_screen
                 .send(ScreenInstruction::AdoptedPaneReady {
-                    terminal_id: 50,
+                    terminal_id: crate::TerminalId(50),
                     payload: Box::default(),
                     placement: zellij_utils::data::WarpPlacement::FocusedTab,
-                    client_id: requester,
+                    client_id: crate::ClientId(requester),
                     cmd: RunCommand {
                         command: PathBuf::from("claude"),
                         ..Default::default()
@@ -273,16 +279,16 @@ fn an_adopted_focused_tab_pane_gets_focus_and_leaves_scroll_mode() {
 fn an_adopted_focused_tab_pane_without_attached_clients_is_placed_without_focus() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
     new_tab(&mut screen, 1, 0);
-    screen.remove_client(1).expect("TEST");
-    assert_eq!(screen.connected_client_to_act_for(7), None);
+    screen.remove_client(crate::ClientId(1)).expect("TEST");
+    assert_eq!(screen.connected_client_to_act_for(crate::ClientId(7)), None);
     let (to_screen, receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
     screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
     screen
         .place_adopted_pane(
-            50,
+            crate::TerminalId(50),
             WarpedPane::default(),
             zellij_utils::data::WarpPlacement::FocusedTab,
-            7,
+            crate::ClientId(7),
             RunCommand::default(),
             vec![],
             None,
@@ -295,7 +301,7 @@ fn an_adopted_focused_tab_pane_without_attached_clients_is_placed_without_focus(
     assert!(matches!(
         instructions.as_slice(),
         [ScreenInstruction::NewPane(
-            PaneId::Terminal(50),
+            PaneId::Terminal(TerminalId(50)),
             _,
             _,
             _,
@@ -313,12 +319,17 @@ fn an_adopted_agent_pane_lands_in_the_focused_tab_however_crowded_it_is() {
     // The user asked for the focused tab. `agent_pane_target` moves a
     // client-relative agent pane out of a tab whose share would fall below the
     // floor; a warp's placement is not its to change.
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
     screen.agent_pane_min_size = Size { cols: 40, rows: 10 };
     new_tab(&mut screen, 1, 0);
     for pid in 2..5 {
-        add_pane_to_tab(&mut screen, 0, PaneId::Terminal(pid), false);
+        add_pane_to_tab(
+            &mut screen,
+            0,
+            PaneId::Terminal(crate::TerminalId(pid)),
+            false,
+        );
     }
     let (to_plugin, plugin_receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
@@ -351,8 +362,11 @@ fn the_visible_half_of_a_scrollback_editor_pair_can_be_warped() {
     // what closing the editor would have done anyway.
     let mut screen = screen_with_a_scrollback_editor_open();
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(9)), 1),
-        Ok(9)
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(9))),
+            crate::ClientId(1)
+        ),
+        Ok(TerminalId(9))
     );
 
     released_pane_for_warp(&mut screen, 9);
@@ -360,7 +374,7 @@ fn the_visible_half_of_a_scrollback_editor_pair_can_be_warped() {
     let tab = screen.tabs.get(&0).expect("TEST");
     assert!(
         tab.get_static_and_floating_pane_ids()
-            .contains(&PaneId::Terminal(1)),
+            .contains(&PaneId::Terminal(crate::TerminalId(1))),
         "the pane being edited is back in the grid",
     );
     assert_eq!(
@@ -381,8 +395,10 @@ fn a_release_that_failed_leaves_the_pane_where_it_was() {
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
 
-    let result =
-        screen.take_released_pane_for_warp(1, Err("pane 1 has no pty-host supervisor".to_owned()));
+    let result = screen.take_released_pane_for_warp(
+        crate::TerminalId(1),
+        Err("pane 1 has no pty-host supervisor".to_owned()),
+    );
 
     assert_eq!(
         result.expect_err("a pane that was not released cannot be serialized"),
@@ -390,10 +406,9 @@ fn a_release_that_failed_leaves_the_pane_where_it_was() {
         "the reason has to reach the caller unreworded",
     );
     assert!(
-        screen
-            .tabs
-            .values()
-            .any(|tab| tab.get_pane_with_id(PaneId::Terminal(1)).is_some()),
+        screen.tabs.values().any(|tab| tab
+            .get_pane_with_id(PaneId::Terminal(crate::TerminalId(1)))
+            .is_some()),
         "the pane was taken out of its tab by a warp that never happened",
     );
 }
@@ -405,8 +420,11 @@ fn the_hidden_half_of_a_scrollback_editor_pair_can_be_warped() {
     // is a dump of a pane that no longer exists.
     let mut screen = screen_with_a_scrollback_editor_open();
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
-        Ok(1)
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(1))),
+            crate::ClientId(1)
+        ),
+        Ok(TerminalId(1))
     );
 
     released_pane_for_warp(&mut screen, 1);
@@ -432,12 +450,12 @@ fn a_replacement_for_a_pane_that_is_gone_is_closed_on_the_pty_thread() {
 
     screen
         .replace_pane(
-            PaneId::Terminal(50),
+            PaneId::Terminal(crate::TerminalId(50)),
             None,
             None,
             None,
             false,
-            ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(999)),
+            ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(crate::TerminalId(999))),
         )
         .expect("TEST");
 
@@ -448,7 +466,7 @@ fn a_replacement_for_a_pane_that_is_gone_is_closed_on_the_pty_thread() {
             _ => None,
         })
         .collect();
-    assert_eq!(closed_by_pty, vec![PaneId::Terminal(50)]);
+    assert_eq!(closed_by_pty, vec![PaneId::Terminal(crate::TerminalId(50))]);
 }
 
 #[test]
@@ -471,7 +489,7 @@ fn warping_a_pane_being_edited_closes_the_editor_on_the_pty_thread_too() {
         .collect();
     assert_eq!(
         closed_by_pty,
-        vec![PaneId::Terminal(9)],
+        vec![PaneId::Terminal(crate::TerminalId(9))],
         "the editor is closed; the warped pane is handed over, never closed",
     );
 }
@@ -482,8 +500,11 @@ fn warping_a_pane_replaced_in_place_leaves_the_pane_that_replaced_it() {
     // be on screen. It stays, and simply stops restoring anything.
     let mut screen = screen_with_a_pane_replaced_in_place();
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
-        Ok(1)
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(1))),
+            crate::ClientId(1)
+        ),
+        Ok(TerminalId(1))
     );
 
     released_pane_for_warp(&mut screen, 1);
@@ -491,7 +512,7 @@ fn warping_a_pane_replaced_in_place_leaves_the_pane_that_replaced_it() {
     let tab = screen.tabs.get(&0).expect("TEST");
     assert_eq!(
         tab.get_all_pane_ids(),
-        vec![PaneId::Terminal(9)],
+        vec![PaneId::Terminal(crate::TerminalId(9))],
         "the pane that replaced it is still here, and nothing is suppressed behind it",
     );
 }
@@ -507,10 +528,13 @@ fn a_pane_a_plugin_hid_can_be_warped() {
         .tabs
         .get_mut(&1)
         .expect("TEST")
-        .suppress_pane(PaneId::Terminal(2), None);
+        .suppress_pane(PaneId::Terminal(crate::TerminalId(2)), None);
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(2)), 1),
-        Ok(2)
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(2))),
+            crate::ClientId(1)
+        ),
+        Ok(TerminalId(2))
     );
 
     released_pane_for_warp(&mut screen, 2);
@@ -531,11 +555,17 @@ fn a_pane_and_the_editor_open_on_it_cannot_be_the_last_two_panes_warped() {
         .tabs
         .get_mut(&0)
         .expect("TEST")
-        .replace_pane_with_editor_pane(PaneId::Terminal(9), PaneId::Terminal(1))
+        .replace_pane_with_editor_pane(
+            PaneId::Terminal(crate::TerminalId(9)),
+            PaneId::Terminal(crate::TerminalId(1)),
+        )
         .expect("TEST");
 
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(1))),
+            crate::ClientId(1)
+        ),
         Err(
             "this pane and the scrollback editor open on it are the session's last panes; \
              moving it would close the session"
@@ -543,8 +573,11 @@ fn a_pane_and_the_editor_open_on_it_cannot_be_the_last_two_panes_warped() {
         )
     );
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(9)), 1),
-        Ok(9),
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(9))),
+            crate::ClientId(1)
+        ),
+        Ok(TerminalId(9)),
         "the editor alone can still go: the pane it was editing is left behind",
     );
 }
@@ -555,7 +588,10 @@ fn the_sessions_only_pane_cannot_be_warped() {
     new_tab(&mut screen, 1, 0);
 
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(1))),
+            crate::ClientId(1)
+        ),
         Err("this is the session's only pane; moving it would close the session".to_owned())
     );
 }
@@ -567,8 +603,11 @@ fn a_terminal_pane_with_somewhere_to_leave_behind_can_be_warped() {
     new_tab(&mut screen, 2, 1);
 
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
-        Ok(1)
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(1))),
+            crate::ClientId(1)
+        ),
+        Ok(TerminalId(1))
     );
 }
 
@@ -585,8 +624,11 @@ fn a_tabs_last_pane_can_still_be_warped() {
         1
     );
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(2)), 1),
-        Ok(2)
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(2))),
+            crate::ClientId(1)
+        ),
+        Ok(TerminalId(2))
     );
 }
 
@@ -604,7 +646,7 @@ fn a_tabs_last_pane_can_still_be_warped() {
 fn released_remote_pane(screen: &mut Screen, terminal_id: u32) -> Box<WarpedPane> {
     screen
         .take_released_pane_for_warp(
-            terminal_id,
+            crate::TerminalId(terminal_id),
             Ok(ReleasedPane::Remote(ReleasedRemotePane {
                 host: "build-box".to_owned(),
                 pane_token: format!("token-{terminal_id}"),
@@ -660,10 +702,10 @@ fn a_remote_pane_leaves_its_tab_like_any_other() {
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
     let somewhere = |screen: &Screen| {
-        screen
-            .tabs
-            .values()
-            .any(|tab| tab.get_pane_with_id(PaneId::Terminal(1)).is_some())
+        screen.tabs.values().any(|tab| {
+            tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId(1)))
+                .is_some()
+        })
     };
     assert!(somewhere(&screen));
 
@@ -868,7 +910,7 @@ fn a_pane_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
     mock_screen
         .to_screen
         .send(ScreenInstruction::WarpPane {
-            pane_id: Some(PaneId::Terminal(1)),
+            pane_id: Some(PaneId::Terminal(crate::TerminalId(1))),
             to_session: "elsewhere".to_owned(),
             placement: zellij_utils::data::WarpPlacement::NewTab,
             client_id,
@@ -891,7 +933,7 @@ fn a_pane_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
             break (terminal_id, to_session, placement);
         }
     };
-    assert_eq!(terminal_id, 1);
+    assert_eq!(terminal_id, crate::TerminalId(1));
 
     // The supervisor really was handed over: this is the window under test,
     // not a release that failed.
@@ -923,7 +965,7 @@ fn a_pane_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
             break (terminal_id, recovery);
         }
     };
-    assert_eq!(stranded.0, 1);
+    assert_eq!(stranded.0, crate::TerminalId(1));
     assert!(
         stranded.1.is_some(),
         "a pane whose supervisor is gone must be told how to get it back"
@@ -970,7 +1012,10 @@ fn a_refused_duplicate_tab_warp_does_not_strand_the_still_attached_panes() {
         }
     }
 
-    let refused = vec![(0, Err("the tab's pane cannot be moved".to_owned()))];
+    let refused = vec![(
+        TerminalId(0),
+        Err("the tab's pane cannot be moved".to_owned()),
+    )];
     mock_screen
         .to_screen
         .send(ScreenInstruction::TabReleasedForWarp {
@@ -1022,7 +1067,9 @@ fn a_tab_that_does_not_exist_cannot_be_warped() {
     new_tab(&mut screen, 1, 0);
 
     assert_eq!(
-        screen.check_tab_can_be_warped(Some(99), 1).err(),
+        screen
+            .check_tab_can_be_warped(Some(99), crate::ClientId(1))
+            .err(),
         Some("there is no tab 99 in this session".to_owned())
     );
 }
@@ -1035,7 +1082,9 @@ fn a_tab_with_a_scrollback_editor_open_cannot_be_warped() {
     let mut screen = screen_with_a_scrollback_editor_open();
 
     assert_eq!(
-        screen.check_tab_can_be_warped(Some(0), 1).err(),
+        screen
+            .check_tab_can_be_warped(Some(0), crate::ClientId(1))
+            .err(),
         Some(
             "this tab has a pane hidden behind another one; close it before moving the tab"
                 .to_owned()
@@ -1055,20 +1104,22 @@ fn a_tab_holding_a_pane_a_plugin_hid_cannot_be_warped() {
     new_tab(&mut screen, 2, 1);
     let tab = screen.tabs.get_mut(&0).expect("TEST");
     tab.new_pane(
-        PaneId::Terminal(3),
+        PaneId::Terminal(crate::TerminalId(3)),
         None,
         None,
         false,
         true,
         NewPanePlacement::default(),
-        Some(1),
+        Some(crate::ClientId(1)),
         None,
     )
     .expect("TEST");
-    tab.suppress_pane(PaneId::Terminal(3), None);
+    tab.suppress_pane(PaneId::Terminal(crate::TerminalId(3)), None);
 
     assert_eq!(
-        screen.check_tab_can_be_warped(Some(0), 1).err(),
+        screen
+            .check_tab_can_be_warped(Some(0), crate::ClientId(1))
+            .err(),
         Some(
             "this tab has a pane hidden behind another one; close it before moving the tab"
                 .to_owned()
@@ -1086,24 +1137,26 @@ fn a_tab_holding_a_hidden_floating_pane_cannot_be_warped() {
     new_tab(&mut screen, 2, 1);
     let tab = screen.tabs.get_mut(&0).expect("TEST");
     tab.new_pane(
-        PaneId::Terminal(3),
+        PaneId::Terminal(crate::TerminalId(3)),
         None,
         None,
         false,
         true,
         NewPanePlacement::Floating(None),
-        Some(1),
+        Some(crate::ClientId(1)),
         None,
     )
     .expect("TEST");
-    tab.suppress_pane(PaneId::Terminal(3), None);
+    tab.suppress_pane(PaneId::Terminal(crate::TerminalId(3)), None);
     assert!(
-        !tab.pane_is_stack_list_member(&PaneId::Terminal(3)),
+        !tab.pane_is_stack_list_member(&PaneId::Terminal(crate::TerminalId(3))),
         "a floating pane is not a stack-list member, whatever else it is",
     );
 
     assert_eq!(
-        screen.check_tab_can_be_warped(Some(0), 1).err(),
+        screen
+            .check_tab_can_be_warped(Some(0), crate::ClientId(1))
+            .err(),
         Some(
             "this tab has a pane hidden behind another one; close it before moving the tab"
                 .to_owned()
@@ -1121,9 +1174,9 @@ fn the_sessions_only_tab_can_be_warped() {
 
     assert_eq!(screen.tabs.len(), 1);
     let (tab_index, terminal_ids, _) = screen
-        .check_tab_can_be_warped(Some(0), 1)
+        .check_tab_can_be_warped(Some(0), crate::ClientId(1))
         .expect("the only tab should still be movable");
-    assert_eq!((tab_index, terminal_ids), (0, vec![1]));
+    assert_eq!((tab_index, terminal_ids), (0, vec![TerminalId(1)]));
 }
 
 #[test]
@@ -1133,10 +1186,10 @@ fn warping_a_tab_takes_every_pane_that_has_a_process() {
     new_tab(&mut screen, 2, 1);
 
     let (tab_index, terminal_ids, _) = screen
-        .check_tab_can_be_warped(Some(1), 1)
+        .check_tab_can_be_warped(Some(1), crate::ClientId(1))
         .expect("the tab should be movable");
     assert_eq!(tab_index, 1);
-    assert_eq!(terminal_ids, vec![2]);
+    assert_eq!(terminal_ids, vec![TerminalId(2)]);
 }
 
 #[test]
@@ -1144,12 +1197,12 @@ fn a_tab_warp_defaults_to_the_focused_tab() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
-    screen.go_to_tab(1, 1).expect("TEST");
+    screen.go_to_tab(1, crate::ClientId(1)).expect("TEST");
 
     let (tab_index, terminal_ids, _) = screen
-        .check_tab_can_be_warped(None, 1)
+        .check_tab_can_be_warped(None, crate::ClientId(1))
         .expect("the focused tab should be movable");
-    assert_eq!((tab_index, terminal_ids), (0, vec![1]));
+    assert_eq!((tab_index, terminal_ids), (0, vec![TerminalId(1)]));
 }
 
 #[test]
@@ -1163,7 +1216,7 @@ fn a_tab_that_can_be_warped_has_already_had_its_arrangement_worked_out() {
     new_tab(&mut screen, 2, 1);
 
     let (_, terminal_ids, prepared) = screen
-        .check_tab_can_be_warped(Some(1), 1)
+        .check_tab_can_be_warped(Some(1), crate::ClientId(1))
         .expect("the tab should be movable");
     assert_eq!(
         prepared.tiled_panes.len(),
@@ -1180,10 +1233,12 @@ fn a_tab_of_nothing_but_plugin_panes_has_nothing_to_warp() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, 0);
     let tab = screen.tabs.get_mut(&0).expect("TEST");
-    tab.close_pane(PaneId::Terminal(1), false, None);
+    tab.close_pane(PaneId::Terminal(crate::TerminalId(1)), false, None);
 
     assert_eq!(
-        screen.check_tab_can_be_warped(Some(0), 1).err(),
+        screen
+            .check_tab_can_be_warped(Some(0), crate::ClientId(1))
+            .err(),
         Some("this tab has no panes with a process to move".to_owned())
     );
 }
@@ -1199,13 +1254,13 @@ fn a_tab_whose_ui_strip_reaches_past_it_can_be_warped() {
     let tab = screen.tabs.get_mut(&0).expect("TEST");
     for pane_id in [2, 3] {
         tab.new_pane(
-            PaneId::Terminal(pane_id),
+            PaneId::Terminal(crate::TerminalId(pane_id)),
             None,
             None,
             false,
             true,
             NewPanePlacement::default(),
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
         )
         .expect("TEST");
@@ -1214,8 +1269,10 @@ fn a_tab_whose_ui_strip_reaches_past_it_can_be_warped() {
     // pane's eight columns the way `expand_ui_panes_over_global_strips` widens a
     // ui pane - written here rather than driven through a render, because what is
     // being tested is what a tab in that shape does, not when the shape appears.
-    tab.set_pane_selectable(PaneId::Terminal(2), false);
-    let strip = tab.get_pane_with_id_mut(PaneId::Terminal(2)).expect("TEST");
+    tab.set_pane_selectable(PaneId::Terminal(crate::TerminalId(2)), false);
+    let strip = tab
+        .get_pane_with_id_mut(PaneId::Terminal(crate::TerminalId(2)))
+        .expect("TEST");
     let mut widened = strip.position_and_size();
     let reached_over = 8;
     assert_eq!(
@@ -1225,7 +1282,10 @@ fn a_tab_whose_ui_strip_reaches_past_it_can_be_warped() {
     let cols = widened.cols.as_usize() + reached_over;
     widened.cols.set_inner(cols);
     strip.set_geom(widened);
-    for pane_id in [PaneId::Terminal(1), PaneId::Terminal(3)] {
+    for pane_id in [
+        PaneId::Terminal(crate::TerminalId(1)),
+        PaneId::Terminal(crate::TerminalId(3)),
+    ] {
         let pane = tab.get_pane_with_id_mut(pane_id).expect("TEST");
         let mut inset = pane.position_and_size();
         inset.x += reached_over;
@@ -1236,12 +1296,12 @@ fn a_tab_whose_ui_strip_reaches_past_it_can_be_warped() {
     // not a rectangle and no layout describes it
     let tab = screen.tabs.get(&0).expect("TEST");
     let strip = tab
-        .get_pane_with_id(PaneId::Terminal(2))
+        .get_pane_with_id(PaneId::Terminal(crate::TerminalId(2)))
         .expect("TEST")
         .position_and_size();
     let leftmost_pane_under_it = tab
         .get_tiled_panes()
-        .filter(|(pane_id, _)| **pane_id != PaneId::Terminal(2))
+        .filter(|(pane_id, _)| **pane_id != PaneId::Terminal(crate::TerminalId(2)))
         .map(|(_, pane)| pane.position_and_size().x)
         .min()
         .expect("TEST");
@@ -1253,13 +1313,13 @@ fn a_tab_whose_ui_strip_reaches_past_it_can_be_warped() {
     );
 
     let (tab_index, mut terminal_ids, prepared) = screen
-        .check_tab_can_be_warped(Some(0), 1)
+        .check_tab_can_be_warped(Some(0), crate::ClientId(1))
         .expect("a tab whose ui strip reaches past it should still be movable");
     assert_eq!(tab_index, 0);
     terminal_ids.sort_unstable();
     assert_eq!(
         terminal_ids,
-        vec![1, 2, 3],
+        vec![TerminalId(1), TerminalId(2), TerminalId(3)],
         "every pane in the tab should travel",
     );
     assert_eq!(
@@ -1275,24 +1335,27 @@ fn a_hidden_stack_list_member_can_be_warped() {
     // closing it would, and the members that stay are undisturbed.
     let mut screen = screen_with_a_stack_list();
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
-        Ok(1)
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(1))),
+            crate::ClientId(1)
+        ),
+        Ok(TerminalId(1))
     );
 
     released_pane_for_warp(&mut screen, 1);
 
     let tab = screen.tabs.get(&0).expect("TEST");
     assert!(
-        !tab.pane_is_stack_list_member(&PaneId::Terminal(1)),
+        !tab.pane_is_stack_list_member(&PaneId::Terminal(crate::TerminalId(1))),
         "the warped member is out of the list",
     );
     assert!(
-        tab.pane_is_stack_list_member(&PaneId::Terminal(2))
-            && tab.pane_is_stack_list_member(&PaneId::Terminal(3)),
+        tab.pane_is_stack_list_member(&PaneId::Terminal(crate::TerminalId(2)))
+            && tab.pane_is_stack_list_member(&PaneId::Terminal(crate::TerminalId(3))),
         "the other two are still a list",
     );
     assert!(
-        tab.pane_is_hidden_stack_list_member(&PaneId::Terminal(2)),
+        tab.pane_is_hidden_stack_list_member(&PaneId::Terminal(crate::TerminalId(2))),
         "and the member that was visible still is",
     );
 }
@@ -1303,8 +1366,11 @@ fn warping_the_visible_stack_list_member_promotes_a_hidden_one() {
     // put there - the same promotion closing the visible member does.
     let mut screen = screen_with_a_stack_list();
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(3)), 1),
-        Ok(3)
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(3))),
+            crate::ClientId(1)
+        ),
+        Ok(TerminalId(3))
     );
 
     released_pane_for_warp(&mut screen, 3);
@@ -1312,11 +1378,11 @@ fn warping_the_visible_stack_list_member_promotes_a_hidden_one() {
     let tab = screen.tabs.get(&0).expect("TEST");
     assert!(
         tab.get_static_and_floating_pane_ids()
-            .contains(&PaneId::Terminal(2)),
+            .contains(&PaneId::Terminal(crate::TerminalId(2))),
         "a hidden member was promoted into the grid",
     );
     assert!(
-        !tab.pane_is_stack_list_member(&PaneId::Terminal(3)),
+        !tab.pane_is_stack_list_member(&PaneId::Terminal(crate::TerminalId(3))),
         "and the warped member is out of the list",
     );
 }
@@ -1329,18 +1395,27 @@ fn a_stack_list_can_be_warped_away_a_member_at_a_time_until_one_is_left() {
     let mut screen = screen_with_only_a_stack_list();
 
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(1)), 1),
-        Ok(1)
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(1))),
+            crate::ClientId(1)
+        ),
+        Ok(TerminalId(1))
     );
     released_pane_for_warp(&mut screen, 1);
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(2)), 1),
-        Ok(2)
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(2))),
+            crate::ClientId(1)
+        ),
+        Ok(TerminalId(2))
     );
     released_pane_for_warp(&mut screen, 2);
 
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(3)), 1),
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(3))),
+            crate::ClientId(1)
+        ),
         Err("this is the session's only pane; moving it would close the session".to_owned()),
         "the last member is the last pane",
     );
@@ -1354,25 +1429,30 @@ fn warping_a_hidden_member_that_is_an_editor_hands_its_place_to_the_pane_it_was_
     // instead, which is what closing the editor there does.
     let mut screen = screen_with_an_editor_on_a_hidden_stack_list_member();
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(8)), 1),
-        Ok(8)
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(8))),
+            crate::ClientId(1)
+        ),
+        Ok(TerminalId(8))
     );
 
     released_pane_for_warp(&mut screen, 8);
 
     let tab = screen.tabs.get(&0).expect("TEST");
     assert!(
-        tab.pane_is_stack_list_member(&PaneId::Terminal(3)),
+        tab.pane_is_stack_list_member(&PaneId::Terminal(crate::TerminalId(3))),
         "the pane that was being edited is a member of the list now",
     );
     assert!(
         tab.get_suppressed_panes()
-            .any(|(pane_id, suppressed)| *pane_id == PaneId::Terminal(3)
-                && suppressed.restored_by.is_none()),
+            .any(
+                |(pane_id, suppressed)| *pane_id == PaneId::Terminal(crate::TerminalId(3))
+                    && suppressed.restored_by.is_none()
+            ),
         "and it is parked in its own right, with nothing standing in for it",
     );
     assert!(
-        !tab.pane_is_stack_list_member(&PaneId::Terminal(8)),
+        !tab.pane_is_stack_list_member(&PaneId::Terminal(crate::TerminalId(8))),
         "while the editor has gone",
     );
 }
@@ -1384,21 +1464,24 @@ fn warping_a_pane_edited_by_a_hidden_member_takes_that_member_with_it() {
     // rather than be left pointing at a pane that has gone.
     let mut screen = screen_with_an_editor_on_a_hidden_stack_list_member();
     assert_eq!(
-        screen.check_pane_can_be_warped(Some(PaneId::Terminal(3)), 1),
-        Ok(3)
+        screen.check_pane_can_be_warped(
+            Some(PaneId::Terminal(crate::TerminalId(3))),
+            crate::ClientId(1)
+        ),
+        Ok(TerminalId(3))
     );
 
     released_pane_for_warp(&mut screen, 3);
 
     let tab = screen.tabs.get(&0).expect("TEST");
     assert!(
-        !tab.pane_is_stack_list_member(&PaneId::Terminal(8))
-            && !tab.pane_is_stack_list_member(&PaneId::Terminal(3)),
+        !tab.pane_is_stack_list_member(&PaneId::Terminal(crate::TerminalId(8)))
+            && !tab.pane_is_stack_list_member(&PaneId::Terminal(crate::TerminalId(3))),
         "neither half of the pair is in the list",
     );
     assert!(
-        tab.pane_is_stack_list_member(&PaneId::Terminal(1))
-            && tab.pane_is_stack_list_member(&PaneId::Terminal(2)),
+        tab.pane_is_stack_list_member(&PaneId::Terminal(crate::TerminalId(1)))
+            && tab.pane_is_stack_list_member(&PaneId::Terminal(crate::TerminalId(2))),
         "the members that had nothing to do with it are untouched",
     );
 }
@@ -1413,9 +1496,12 @@ fn a_stack_list_member_and_the_pane_it_stands_in_for_are_each_keyed_by_themselve
     // has to be re-keyed when either of them moves.
     let mut screen = screen_with_a_stack_list();
     let tab = screen.tabs.get_mut(&0).expect("TEST");
-    tab.replace_pane_with_editor_pane(PaneId::Terminal(8), PaneId::Terminal(3))
-        .expect("TEST");
-    tab.focus_hidden_stack_list_member(PaneId::Terminal(1), 1);
+    tab.replace_pane_with_editor_pane(
+        PaneId::Terminal(crate::TerminalId(8)),
+        PaneId::Terminal(crate::TerminalId(3)),
+    )
+    .expect("TEST");
+    tab.focus_hidden_stack_list_member(PaneId::Terminal(crate::TerminalId(1)), crate::ClientId(1));
 
     let suppressed: HashMap<PaneId, Option<PaneId>> = tab
         .get_suppressed_panes()
@@ -1433,18 +1519,18 @@ fn a_stack_list_member_and_the_pane_it_stands_in_for_are_each_keyed_by_themselve
         .collect();
 
     assert_eq!(
-        suppressed.get(&PaneId::Terminal(8)),
+        suppressed.get(&PaneId::Terminal(crate::TerminalId(8))),
         Some(&None),
         "the editor took the member's place in the list and is parked as a member",
     );
     assert_eq!(
-        suppressed.get(&PaneId::Terminal(3)),
-        Some(&Some(PaneId::Terminal(8))),
+        suppressed.get(&PaneId::Terminal(crate::TerminalId(3))),
+        Some(&Some(PaneId::Terminal(crate::TerminalId(8)))),
         "the pane being edited is suppressed behind the editor, wherever the editor is",
     );
     assert!(
-        tab.pane_is_stack_list_member(&PaneId::Terminal(8))
-            && !tab.pane_is_stack_list_member(&PaneId::Terminal(3)),
+        tab.pane_is_stack_list_member(&PaneId::Terminal(crate::TerminalId(8)))
+            && !tab.pane_is_stack_list_member(&PaneId::Terminal(crate::TerminalId(3))),
         "the editor is the member; the pane behind it is not",
     );
 }
@@ -1454,12 +1540,12 @@ fn a_tab_with_a_stack_list_can_be_warped() {
     let mut screen = screen_with_a_stack_list();
 
     let (tab_index, mut terminal_ids, _) = screen
-        .check_tab_can_be_warped(Some(0), 1)
+        .check_tab_can_be_warped(Some(0), crate::ClientId(1))
         .expect("a tab holding a stack list should be movable");
     terminal_ids.sort_unstable();
     assert_eq!(
         (tab_index, terminal_ids),
-        (0, vec![1, 2, 3]),
+        (0, vec![TerminalId(1), TerminalId(2), TerminalId(3)]),
         "every member travels, including the ones hidden behind the visible one",
     );
 }
@@ -1474,7 +1560,9 @@ fn a_tab_whose_stack_list_member_is_being_edited_cannot_be_warped() {
     let mut screen = screen_with_an_editor_on_a_hidden_stack_list_member();
 
     assert_eq!(
-        screen.check_tab_can_be_warped(Some(0), 1).err(),
+        screen
+            .check_tab_can_be_warped(Some(0), crate::ClientId(1))
+            .err(),
         Some(
             "this tab has a pane hidden behind another one; close it before moving the tab"
                 .to_owned()
@@ -1494,7 +1582,7 @@ fn a_stack_lists_synthetic_geoms_describe_one_stack_filling_the_visible_panes_re
     let in_the_grid: Vec<PaneId> = tab.get_tiled_panes().map(|(pane_id, _)| *pane_id).collect();
     assert_eq!(
         in_the_grid,
-        vec![PaneId::Terminal(3)],
+        vec![PaneId::Terminal(crate::TerminalId(3))],
         "the open member is the only one holding the list's slot",
     );
     let full_rect = tab
@@ -1506,9 +1594,9 @@ fn a_stack_lists_synthetic_geoms_describe_one_stack_filling_the_visible_panes_re
 
     let geoms = tab.stack_list_serialization_geoms();
     let members = [
-        PaneId::Terminal(1),
-        PaneId::Terminal(2),
-        PaneId::Terminal(3),
+        PaneId::Terminal(crate::TerminalId(1)),
+        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId(3)),
     ];
     assert_eq!(geoms.len(), members.len(), "every member gets a geom");
     let stack_id = geoms[&members[0]].stacked;
@@ -1526,7 +1614,7 @@ fn a_stack_lists_synthetic_geoms_describe_one_stack_filling_the_visible_panes_re
             geom.y, expected_y,
             "{member:?} does not start where the member above it ended",
         );
-        if member == PaneId::Terminal(3) {
+        if member == PaneId::Terminal(crate::TerminalId(3)) {
             assert_eq!(
                 geom.rows.as_usize(),
                 full_rect.rows.as_usize() - 2,
@@ -1558,7 +1646,7 @@ fn a_warped_tab_carries_its_hidden_stack_list_members_in_its_layout() {
     let mut screen = screen_with_a_stack_list();
 
     let (_, terminal_ids, prepared) = screen
-        .check_tab_can_be_warped(Some(0), 1)
+        .check_tab_can_be_warped(Some(0), crate::ClientId(1))
         .expect("a tab holding a stack list should be movable");
     assert_eq!(
         prepared.tiled_panes.len(),
@@ -1571,9 +1659,9 @@ fn a_warped_tab_carries_its_hidden_stack_list_members_in_its_layout() {
     assert_eq!(
         prepared.tiled_panes,
         vec![
-            PaneId::Terminal(1),
-            PaneId::Terminal(2),
-            PaneId::Terminal(3),
+            PaneId::Terminal(crate::TerminalId(1)),
+            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId(3)),
         ],
         "the members should have slots in the order they were stacked",
     );
@@ -1639,13 +1727,13 @@ fn screen_with_an_overlay_over_a_tab() -> Screen {
         .get_mut(&0)
         .expect("TEST")
         .new_pane(
-            PaneId::Terminal(9),
+            PaneId::Terminal(crate::TerminalId(9)),
             None,
             None,
             false,
             true,
             NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
         )
         .expect("TEST");
@@ -1661,11 +1749,11 @@ fn a_warped_tab_leaves_its_overlay_behind() {
     let mut screen = screen_with_an_overlay_over_a_tab();
 
     let (_, terminal_ids, prepared) = screen
-        .check_tab_can_be_warped(Some(0), 1)
+        .check_tab_can_be_warped(Some(0), crate::ClientId(1))
         .expect("a tab with an overlay over it should still be movable");
 
     assert!(
-        !terminal_ids.contains(&9),
+        !terminal_ids.contains(&TerminalId(9)),
         "the overlay's supervisor must not be released, since nobody at the far \
          end would be holding it: {terminal_ids:?}",
     );
@@ -1674,7 +1762,7 @@ fn a_warped_tab_leaves_its_overlay_behind() {
             .tiled_panes
             .iter()
             .chain(prepared.floating_panes.iter())
-            .any(|pane_id| *pane_id == PaneId::Terminal(9)),
+            .any(|pane_id| *pane_id == PaneId::Terminal(crate::TerminalId(9))),
         "and it has no slot in the arrangement either",
     );
     assert_eq!(
@@ -1718,7 +1806,7 @@ fn warping_a_tab_re_homes_the_overlay_it_leaves_behind() {
             .tabs
             .get(&1)
             .expect("TEST")
-            .pane_is_overlay(PaneId::Terminal(9)),
+            .pane_is_overlay(PaneId::Terminal(crate::TerminalId(9))),
         "and it is still an overlay in the tab it landed in",
     );
 }
@@ -1745,7 +1833,7 @@ fn warping_the_last_tab_closes_its_overlay() {
         .collect();
     assert_eq!(
         closed_by_pty,
-        vec![PaneId::Terminal(9)],
+        vec![PaneId::Terminal(crate::TerminalId(9))],
         "with no tab left to re-home it into, the overlay is torn down like everything else",
     );
 }
@@ -1756,14 +1844,16 @@ fn a_tab_whose_only_process_is_an_overlay_has_nothing_to_warp() {
     // them. Asked of all of them, a tab like this passes - and then warps with an
     // empty payload, which is an elaborate way of opening a new tab.
     let mut screen = screen_with_an_overlay_over_a_tab();
-    screen
-        .tabs
-        .get_mut(&0)
-        .expect("TEST")
-        .close_pane(PaneId::Terminal(1), false, None);
+    screen.tabs.get_mut(&0).expect("TEST").close_pane(
+        PaneId::Terminal(crate::TerminalId(1)),
+        false,
+        None,
+    );
 
     assert_eq!(
-        screen.check_tab_can_be_warped(Some(0), 1).err(),
+        screen
+            .check_tab_can_be_warped(Some(0), crate::ClientId(1))
+            .err(),
         Some("this tab has no panes with a process to move".to_owned())
     );
 }
@@ -1783,8 +1873,8 @@ fn a_tab_with_a_pane_replaced_in_place_still_cannot_be_warped() {
         .get_mut(&0)
         .expect("TEST")
         .suppress_pane_and_replace_with_pid(
-            PaneId::Terminal(1),
-            PaneId::Terminal(9),
+            PaneId::Terminal(crate::TerminalId(1)),
+            PaneId::Terminal(crate::TerminalId(9)),
             false,
             None,
             None,
@@ -1793,7 +1883,9 @@ fn a_tab_with_a_pane_replaced_in_place_still_cannot_be_warped() {
         .expect("TEST");
 
     assert_eq!(
-        screen.check_tab_can_be_warped(Some(0), 1).err(),
+        screen
+            .check_tab_can_be_warped(Some(0), crate::ClientId(1))
+            .err(),
         Some(
             "this tab has a pane hidden behind another one; close it before moving the tab"
                 .to_owned()

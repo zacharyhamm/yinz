@@ -125,10 +125,10 @@ struct WebRequestStreamState {
 )]
 pub enum BackgroundJob {
     DisplayPaneError(Vec<PaneId>, String),
-    AnimatePluginLoading(u32),                            // u32 - plugin_id
-    StopPluginLoadingAnimation(u32),                      // u32 - plugin_id
-    ReportSessionInfo(String, SessionInfo),               // String - session name
-    ReportPluginList(BTreeMap<PluginId, RunPlugin>),      // String - session name
+    AnimatePluginLoading(PluginId),                  // u32 - plugin_id
+    StopPluginLoadingAnimation(PluginId),            // u32 - plugin_id
+    ReportSessionInfo(String, SessionInfo),          // String - session name
+    ReportPluginList(BTreeMap<PluginId, RunPlugin>), // String - session name
     ReportLayoutInfo((String, BTreeMap<String, String>)), // BTreeMap<file_name, pane_contents>
     RunCommand(
         PluginId,
@@ -1346,7 +1346,13 @@ pub fn scan_session_list(
     );
     for (name, info) in session_infos_on_machine.iter_mut() {
         if name == current_session_name {
-            info.populate_plugin_list(current_session_plugin_list.clone());
+            info.populate_plugin_list(
+                current_session_plugin_list
+                    .clone()
+                    .into_iter()
+                    .map(|(id, plugin)| (id.0, plugin))
+                    .collect(),
+            );
             info.available_layouts = available_layouts.to_vec();
         }
     }
@@ -1561,8 +1567,8 @@ mod web_request_stream_tests {
     use zellij_utils::channels::{unbounded, Receiver, SenderWithContext};
     use zellij_utils::errors::ErrorContext;
 
-    const PLUGIN_ID: PluginId = 1;
-    const CLIENT_ID: ClientId = 2;
+    const PLUGIN_ID: PluginId = PluginId(1);
+    const CLIENT_ID: ClientId = ClientId(2);
     const GENERATION: u64 = 7;
 
     type PluginRx = Receiver<(PluginInstruction, ErrorContext)>;

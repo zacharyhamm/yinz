@@ -361,3 +361,22 @@ fn a_remote_spawn_carries_the_asking_sides_terminal_but_not_its_filesystem() {
         );
     }
 }
+
+#[test]
+fn legacy_spawn_frame_preserves_numeric_ids() {
+    let payload = br#"{"Spawn":{"cmd":{"command":"/bin/sh","args":[],"cwd":null,"hold_on_close":false,"hold_on_start":false,"originating_plugin":{"plugin_id":4294967295,"client_id":65535,"context":{}},"use_terminal_title":false,"target":"Local","remote_default_shell":false},"failover_cmd":null,"initial_size":null,"env":[],"terminal_id":0}}"#;
+    let mut frame = (payload.len() as u32 + 1).to_le_bytes().to_vec();
+    frame.push(KIND_CONTROL);
+    frame.extend_from_slice(payload);
+    let Frame::Control(body) = read_frame(&mut Cursor::new(&frame)).unwrap().unwrap() else {
+        panic!("expected a control frame");
+    };
+    let message: ServerToBrokerMsg = serde_json::from_slice(&body).unwrap();
+    assert!(matches!(
+        message,
+        ServerToBrokerMsg::Spawn { terminal_id: 0, .. }
+    ));
+    let mut encoded = Vec::new();
+    write_control(&mut encoded, &message).unwrap();
+    assert_eq!(encoded, frame);
+}

@@ -1,5 +1,6 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/tab_commands.rs
+assertion_line: 457
 expression: "format!(\"{:#?}\", new_tab_event)"
 ---
 Some(
@@ -8,7 +9,9 @@ Some(
         None,
         false,
         Some(
-            1,
+            ClientId(
+                1,
+            ),
         ),
         Some(
             NotificationEnd {

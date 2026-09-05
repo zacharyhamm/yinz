@@ -19,7 +19,7 @@ pub fn start_or_reload_plugin() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -95,7 +95,7 @@ pub fn quit_zellij_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -178,7 +178,7 @@ pub fn detach_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -261,7 +261,7 @@ pub fn open_file_floating_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -348,7 +348,7 @@ pub fn open_file_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -435,7 +435,7 @@ pub fn open_file_with_line_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -523,7 +523,7 @@ pub fn open_file_with_line_floating_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -610,7 +610,7 @@ pub fn open_terminal_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -693,7 +693,7 @@ pub fn open_terminal_floating_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -776,7 +776,7 @@ pub fn open_command_pane_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -859,7 +859,7 @@ pub fn open_command_pane_floating_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,

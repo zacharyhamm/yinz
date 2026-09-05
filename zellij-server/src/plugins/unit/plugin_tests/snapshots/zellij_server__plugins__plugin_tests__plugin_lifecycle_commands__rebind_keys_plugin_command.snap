@@ -1,10 +1,13 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/plugin_lifecycle_commands.rs
+assertion_line: 227
 expression: "format!(\"{:#?}\", rebind_event)"
 ---
 Some(
     RebindKeys {
-        client_id: 1,
+        client_id: ClientId(
+            1,
+        ),
         keys_to_rebind: [
             (
                 Locked,

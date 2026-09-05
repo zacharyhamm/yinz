@@ -183,7 +183,7 @@ impl Harness {
         let cache_path = plugin_host_folder.join("permissions_test.kdl");
         let (to_plugin, screen_receiver, teardown) =
             create_plugin_thread(Some(plugin_host_folder), None);
-        let client_id = 1;
+        let client_id = ClientId(1);
         let log = Watched::new(vec![]);
         let screen_thread = std::thread::Builder::new()
             .name("fake_screen_thread".to_string())
@@ -275,7 +275,7 @@ impl Harness {
     /// Pipe a message straight to one job plugin, the way another plugin would.
     fn pipe_to(&self, plugin_id: u32, name: &str) {
         let _ = self.to_plugin.send(PluginInstruction::MessageFromPlugin {
-            source_plugin_id: 0,
+            source_plugin_id: crate::PluginId(0),
             message: MessageToPlugin {
                 destination_plugin_id: Some(plugin_id),
                 ..MessageToPlugin::new(name)
@@ -318,7 +318,7 @@ impl Harness {
             .collect()
     }
 
-    fn suppressed_add_plugin_instructions(&self) -> Vec<u32> {
+    fn suppressed_add_plugin_instructions(&self) -> Vec<zellij_utils::internal_ids::PluginId> {
         self.log
             .lock()
             .iter()
@@ -394,13 +394,13 @@ pub fn a_job_runs_headless_and_reports_back() {
 
     assert_eq!(
         harness.suppressed_add_plugin_instructions(),
-        vec![job_plugin_id],
+        vec![zellij_utils::internal_ids::PluginId(job_plugin_id)],
         "the job got a suppressed pane and nothing else"
     );
     harness.log.wait_until("the job's pane to be closed", WAIT, |instructions| {
         instructions
             .iter()
-            .any(|i| matches!(i, ScreenInstruction::ClosePane(PaneId::Plugin(id), ..) if *id == job_plugin_id))
+            .any(|i| matches!(i, ScreenInstruction::ClosePane(PaneId::Plugin(id), ..) if *id == crate::PluginId(job_plugin_id)))
             .then_some(())
     });
 }
@@ -496,7 +496,7 @@ pub fn cancelling_a_running_job_unloads_it_and_starts_the_next() {
     let second = harness.wait_for_started(2);
     assert!(harness
         .close_pane_instructions()
-        .contains(&PaneId::Plugin(first)));
+        .contains(&PaneId::Plugin(crate::PluginId(first))));
 
     harness.pipe_to(second, "finish");
     harness.wait_for("finished 2 Failed");
@@ -513,12 +513,12 @@ pub fn a_job_is_one_instance_no_matter_how_many_clients_are_attached() {
     let enqueuer = harness.write_plugin("enqueuer.lua", &enqueuer_source(&job));
     harness.load_with_configuration(&enqueuer, &[("shared", "true")]);
     harness.wait_for("ready");
-    harness.add_client(2);
+    harness.add_client(crate::ClientId(2));
     harness.key(ENQUEUE);
 
     let job_plugin_id = harness.wait_for_started(1);
     harness.wait_for("pipe job_loaded");
-    harness.add_client(3);
+    harness.add_client(crate::ClientId(3));
     harness.pipe_to(job_plugin_id, "finish");
     let frame = harness.wait_for("finished 1 Succeeded");
     assert_eq!(
@@ -711,7 +711,7 @@ pub fn a_wasm_plugin_can_enqueue_and_be_a_job() {
         .suppressed_add_plugin_instructions()
         .last()
         .expect("the job was launched headless");
-    harness.pipe_to(job_plugin_id, "finish_queue_job");
+    harness.pipe_to(job_plugin_id.0, "finish_queue_job");
     let frame = harness.wait_for("QueueJobFinished");
     assert!(frame.contains("Succeeded"), "{frame}");
 }

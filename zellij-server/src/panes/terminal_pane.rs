@@ -28,6 +28,8 @@ use zellij_utils::data::PaneContents;
 use zellij_utils::data::{AgentInfo, AgentSource, AgentState, HOCUS_AGENT_PANE_CONTEXT};
 use zellij_utils::input::command::RunCommand;
 use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
+use zellij_utils::internal_ids::PluginId;
+use zellij_utils::internal_ids::TerminalId;
 use zellij_utils::pane_size::Offset;
 use zellij_utils::{
     data::{
@@ -105,7 +107,7 @@ type IsFirstRun = bool;
 #[allow(clippy::too_many_arguments)]
 pub struct TerminalPane {
     pub grid: Grid,
-    pub pid: u32,
+    pub pid: TerminalId,
     pub selectable: bool,
     pub geom: PaneGeom,
     pub geom_override: Option<PaneGeom>,
@@ -1590,7 +1592,7 @@ impl Pane for TerminalPane {
     }
     fn set_plugin_regex_highlights(
         &mut self,
-        plugin_id: u32,
+        plugin_id: PluginId,
         highlights: Vec<RegexHighlight>,
         style: &Style,
     ) {
@@ -1598,7 +1600,7 @@ impl Pane for TerminalPane {
             .set_plugin_regex_highlights(plugin_id, highlights, style);
         self.set_should_render(true);
     }
-    fn clear_plugin_highlights(&mut self, plugin_id: u32) {
+    fn clear_plugin_highlights(&mut self, plugin_id: PluginId) {
         self.grid.clear_plugin_highlights(plugin_id);
         self.set_should_render(true);
     }
@@ -1616,7 +1618,7 @@ impl Pane for TerminalPane {
         &self,
         position: &Position,
     ) -> Option<(
-        u32,
+        PluginId,
         String,
         String,
         std::collections::BTreeMap<String, String>,
@@ -1698,7 +1700,7 @@ impl TerminalPane {
     }
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        pid: u32,
+        pid: TerminalId,
         position_and_size: PaneGeom,
         style: Style,
         pane_index: usize,

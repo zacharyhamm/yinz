@@ -10,6 +10,7 @@ use zellij_utils::channels::{unbounded, Receiver, SenderWithContext};
 use zellij_utils::data::{Direction, NewPanePlacement, OverlayPlacement, Resize, ResizeStrategy};
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::layout::{SplitDirection, SplitSize, TiledPaneLayout};
+use zellij_utils::internal_ids::TerminalId;
 
 use crate::os_input_output::AsyncReader;
 use interprocess::local_socket::Stream as LocalSocketStream;
@@ -31,7 +32,7 @@ struct FakeInputOutput {}
 impl ServerOsApi for FakeInputOutput {
     fn set_terminal_size_using_terminal_id(
         &self,
-        _id: u32,
+        _id: TerminalId,
         _cols: u16,
         _rows: u16,
         _width_in_pixels: Option<u16>,
@@ -45,13 +46,13 @@ impl ServerOsApi for FakeInputOutput {
         _file_to_open: TerminalAction,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
-    ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
         unimplemented!()
     }
-    fn write_to_tty_stdin(&self, _id: u32, _buf: &[u8]) -> Result<usize> {
+    fn write_to_tty_stdin(&self, _id: TerminalId, _buf: &[u8]) -> Result<usize> {
         unimplemented!()
     }
-    fn tcdrain(&self, _id: u32) -> Result<()> {
+    fn tcdrain(&self, _id: TerminalId) -> Result<()> {
         unimplemented!()
     }
     fn kill(&self, _pid: u32) -> Result<()> {
@@ -88,13 +89,13 @@ impl ServerOsApi for FakeInputOutput {
     }
     fn re_run_command_in_terminal(
         &self,
-        _terminal_id: u32,
+        _terminal_id: TerminalId,
         _run_command: RunCommand,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
         unimplemented!()
     }
-    fn clear_terminal_id(&self, _terminal_id: u32) -> Result<()> {
+    fn clear_terminal_id(&self, _terminal_id: TerminalId) -> Result<()> {
         unimplemented!()
     }
     fn send_sigint(&self, _pid: u32) -> Result<()> {
@@ -153,7 +154,7 @@ fn create_new_tab(size: Size, stacked_resize: bool) -> Tab {
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     let character_cell_info = Rc::new(RefCell::new(None));
@@ -216,7 +217,7 @@ fn create_new_tab(size: Size, stacked_resize: bool) -> Tab {
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(1, None)],
+        vec![(crate::TerminalId(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -237,7 +238,7 @@ fn create_new_tab_with_layout(size: Size, layout: TiledPaneLayout) -> Tab {
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     let character_cell_info = Rc::new(RefCell::new(None));
@@ -299,7 +300,7 @@ fn create_new_tab_with_layout(size: Size, layout: TiledPaneLayout) -> Tab {
     );
     let mut new_terminal_ids = vec![];
     for i in 0..layout.extract_run_instructions().len() {
-        new_terminal_ids.push((i as u32, None));
+        new_terminal_ids.push((TerminalId(i as u32), None));
     }
     tab.apply_layout(
         layout,
@@ -328,7 +329,7 @@ fn create_new_tab_with_cell_size(
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -390,7 +391,7 @@ fn create_new_tab_with_cell_size(
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(1, None)],
+        vec![(crate::TerminalId(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -407,10 +408,26 @@ fn create_tab_with_two_floating_panes() -> Tab {
     };
     let stacked_resize = false;
     let mut tab = create_new_tab(size, stacked_resize);
-    tab.new_floating_pane(PaneId::Terminal(2), None, None, false, true, None, None)
-        .unwrap();
-    tab.new_floating_pane(PaneId::Terminal(3), None, None, false, true, None, None)
-        .unwrap();
+    tab.new_floating_pane(
+        PaneId::Terminal(crate::TerminalId(2)),
+        None,
+        None,
+        false,
+        true,
+        None,
+        None,
+    )
+    .unwrap();
+    tab.new_floating_pane(
+        PaneId::Terminal(crate::TerminalId(3)),
+        None,
+        None,
+        false,
+        true,
+        None,
+        None,
+    )
+    .unwrap();
     tab
 }
 
@@ -429,7 +446,7 @@ fn create_tab_with_four_panes() -> Tab {
     let stacked_resize = false;
     let mut tab = create_new_tab(size, stacked_resize);
     for i in 2..5 {
-        let new_pane_id = PaneId::Terminal(i);
+        let new_pane_id = PaneId::Terminal(crate::TerminalId(i));
         tab.new_pane(
             new_pane_id,
             None,
@@ -437,7 +454,7 @@ fn create_tab_with_four_panes() -> Tab {
             false,
             true,
             NewPanePlacement::default(),
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
         )
         .unwrap();
@@ -455,13 +472,13 @@ fn tiled_pane_geoms(tab: &Tab) -> Vec<(PaneId, PaneGeom)> {
 
 fn open_pane_five(tab: &mut Tab) {
     tab.new_pane(
-        PaneId::Terminal(5),
+        PaneId::Terminal(crate::TerminalId(5)),
         None,
         None,
         false,
         true,
         NewPanePlacement::default(),
-        Some(1),
+        Some(crate::ClientId(1)),
         None,
     )
     .unwrap();

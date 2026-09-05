@@ -4,6 +4,7 @@
 //! of what is asserted here was ever about it.
 
 use super::*;
+use zellij_utils::internal_ids::PluginId;
 
 /// `CwdChanged` announces a move once. The manifest says where every pane is
 /// every time, which is what puts right a plugin that was not listening yet.
@@ -11,9 +12,10 @@ use super::*;
 fn a_pane_manifest_carries_the_pane_cwd() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     new_tab(&mut screen, 1, 0);
-    screen
-        .terminal_cwds
-        .insert(1, std::path::PathBuf::from("/work/hocus"));
+    screen.terminal_cwds.insert(
+        crate::TerminalId(1),
+        std::path::PathBuf::from("/work/hocus"),
+    );
 
     let manifest = screen.generate_and_report_pane_state().expect("TEST");
 
@@ -46,7 +48,9 @@ fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
         },
         ..Default::default()
     };
-    screen.new_tab(0, (vec![], vec![]), None, Some(1)).unwrap();
+    screen
+        .new_tab(0, (vec![], vec![]), None, Some(crate::ClientId(1)))
+        .unwrap();
     screen
         .apply_layout(
             TiledPaneLayout {
@@ -54,18 +58,18 @@ fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
                 ..TiledPaneLayout::default()
             },
             vec![],
-            vec![(1, None)],
+            vec![(crate::TerminalId(1), None)],
             vec![],
             HashMap::new(),
             0,
             true,
-            1,
+            crate::ClientId(1),
             None,
         )
         .expect("TEST");
     screen
         .set_pane_host(
-            1,
+            crate::TerminalId(1),
             Some("firecracker:review".to_owned()),
             Some(std::path::PathBuf::from("/work/hocus")),
         )
@@ -91,9 +95,10 @@ fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
 fn a_plugin_pane_has_no_cwd() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     new_tab(&mut screen, 1, 0);
-    screen
-        .terminal_cwds
-        .insert(1, std::path::PathBuf::from("/work/hocus"));
+    screen.terminal_cwds.insert(
+        crate::TerminalId(1),
+        std::path::PathBuf::from("/work/hocus"),
+    );
 
     let manifest = screen.generate_and_report_pane_state().expect("TEST");
 
@@ -174,7 +179,11 @@ fn plugin_bytes_with_no_pane_still_unblock_cli_pipes() {
     mock_screen
         .to_screen
         .send(ScreenInstruction::PluginBytes(vec![
-            PluginRenderAsset::new(99, 1, b"ORPHAN_BYTES".to_vec()),
+            PluginRenderAsset::new(
+                crate::PluginId(99),
+                crate::ClientId(1),
+                b"ORPHAN_BYTES".to_vec(),
+            ),
         ]))
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -195,7 +204,7 @@ fn plugin_bytes_with_no_pane_still_unblock_cli_pipes() {
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
     assert!(
-        unblocked_plugin_ids.contains(&99),
+        unblocked_plugin_ids.contains(&PluginId(99)),
         "a plugin that rendered without a pane must still unblock, got {unblocked_plugin_ids:?}"
     );
 }

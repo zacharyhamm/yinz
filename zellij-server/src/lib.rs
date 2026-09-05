@@ -167,7 +167,7 @@ use zellij_utils::{
     shared::default_palette,
 };
 
-pub use zellij_terminal::ClientId;
+pub use zellij_utils::internal_ids::{ClientId, PluginId, TerminalId};
 
 /// Instructions related to server-side application
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
@@ -182,8 +182,8 @@ pub enum ServerInstruction {
     DetachSession(Vec<ClientId>, Option<NotificationEnd>),
     AttachClient(
         CliAssets,
-        Option<usize>,       // tab position to focus
-        Option<(u32, bool)>, // (pane_id, is_plugin) => pane_id to focus
+        Option<usize>,  // tab position to focus
+        Option<PaneId>, // pane to focus
         ClientId,
     ),
     AttachWatcherClient(ClientId, Size),
@@ -222,7 +222,7 @@ pub enum ServerInstruction {
         keys_to_rebind: Vec<(InputMode, KeyWithModifier, Vec<Action>)>,
         keys_to_unbind: Vec<(InputMode, KeyWithModifier)>,
         write_config_to_disk: bool,
-        plugin_id: Option<u32>,
+        plugin_id: Option<PluginId>,
     },
     ClearMouseHelpText(ClientId),
     ClearCommandOutputFlash(PaneId),
@@ -262,7 +262,7 @@ impl ErrorInstruction for ServerInstruction {
 pub(crate) struct SessionConfiguration {
     runtime_config: HashMap<ClientId, Config>, // if present, overrides the saved_config
     effective_keybinds: HashMap<ClientId, Keybinds>,
-    plugin_default_keybinds: BTreeMap<u32, Keybinds>,
+    plugin_default_keybinds: BTreeMap<PluginId, Keybinds>,
     saved_config: Config, // the config as it is on disk (not guaranteed),
                           // when changed, this resets the runtime config to
                           // be identical to it and override any previous
@@ -403,7 +403,7 @@ impl SessionConfiguration {
 
     pub fn register_plugin_default_keybinds(
         &mut self,
-        plugin_id: u32,
+        plugin_id: PluginId,
         keybinds: Keybinds,
     ) -> Vec<(ClientId, Config)> {
         if keybinds.0.is_empty() {
@@ -841,14 +841,14 @@ impl SessionState {
 
         let mut next_client_id = 1;
         loop {
-            if all_ids.contains(&next_client_id) {
+            if all_ids.contains(&ClientId(next_client_id)) {
                 next_client_id += 1;
             } else {
                 break;
             }
         }
-        self.clients.insert(next_client_id);
-        next_client_id
+        self.clients.insert(ClientId(next_client_id));
+        ClientId(next_client_id)
     }
     pub fn associate_pipe_with_client(&mut self, pipe_id: String, client_id: ClientId) {
         self.pipes.insert(pipe_id, client_id);
@@ -3044,10 +3044,10 @@ mod session_state_tests {
     #[test]
     fn pick_forward_target_prefers_last_active_when_still_connected() {
         let mut s = SessionState::new();
-        s.clients.insert(1);
-        s.clients.insert(2);
-        s.set_last_active_client(2);
-        assert_eq!(s.pick_forward_target(), Some(2));
+        s.clients.insert(crate::ClientId(1));
+        s.clients.insert(crate::ClientId(2));
+        s.set_last_active_client(crate::ClientId(2));
+        assert_eq!(s.pick_forward_target(), Some(ClientId(2)));
     }
 
     #[test]
@@ -3061,7 +3061,7 @@ mod session_state_tests {
             .insert(key.clone(), vec![Action::Quit]);
         let mut configuration = SessionConfiguration::default();
         configuration.set_saved_configuration(base.clone());
-        configuration.set_client_runtime_configuration(1, base);
+        configuration.set_client_runtime_configuration(crate::ClientId(1), base);
 
         let mut defaults = Keybinds::default();
         defaults.0.entry(InputMode::Normal).or_default().insert(
@@ -3072,20 +3072,20 @@ mod session_state_tests {
                 start_suppressed: false,
             }],
         );
-        configuration.register_plugin_default_keybinds(2, defaults);
+        configuration.register_plugin_default_keybinds(crate::PluginId(2), defaults);
         assert_eq!(
             configuration
-                .get_client_keybinds(&1)
+                .get_client_keybinds(&ClientId(1))
                 .get_actions_for_key_in_mode(&InputMode::Normal, &key),
             Some(&vec![Action::Quit])
         );
 
         let (_, changed) =
-            configuration.rebind_keys(&1, vec![], vec![(InputMode::Normal, key.clone())]);
+            configuration.rebind_keys(&ClientId(1), vec![], vec![(InputMode::Normal, key.clone())]);
         assert!(changed);
         assert_eq!(
             configuration
-                .get_client_keybinds(&1)
+                .get_client_keybinds(&ClientId(1))
                 .get_actions_for_key_in_mode(&InputMode::Normal, &key),
             Some(&vec![Action::NewPane {
                 direction: None,
@@ -3099,7 +3099,7 @@ mod session_state_tests {
     fn lower_plugin_id_wins_default_keybind_conflicts_until_it_unloads() {
         let key = KeyWithModifier::from_str("Alt x").unwrap();
         let mut configuration = SessionConfiguration::default();
-        configuration.set_client_runtime_configuration(1, Config::default());
+        configuration.set_client_runtime_configuration(crate::ClientId(1), Config::default());
         for (plugin_id, action) in [(9, Action::Quit), (3, Action::NoOp)] {
             let mut defaults = Keybinds::default();
             defaults
@@ -3107,19 +3107,19 @@ mod session_state_tests {
                 .entry(InputMode::Normal)
                 .or_default()
                 .insert(key.clone(), vec![action]);
-            configuration.register_plugin_default_keybinds(plugin_id, defaults);
+            configuration.register_plugin_default_keybinds(crate::PluginId(plugin_id), defaults);
         }
         assert_eq!(
             configuration
-                .get_client_keybinds(&1)
+                .get_client_keybinds(&ClientId(1))
                 .get_actions_for_key_in_mode(&InputMode::Normal, &key),
             Some(&vec![Action::NoOp])
         );
 
-        configuration.register_plugin_default_keybinds(3, Keybinds::default());
+        configuration.register_plugin_default_keybinds(crate::PluginId(3), Keybinds::default());
         assert_eq!(
             configuration
-                .get_client_keybinds(&1)
+                .get_client_keybinds(&ClientId(1))
                 .get_actions_for_key_in_mode(&InputMode::Normal, &key),
             Some(&vec![Action::Quit])
         );
@@ -3128,16 +3128,16 @@ mod session_state_tests {
     #[test]
     fn pick_forward_target_falls_back_when_last_active_disconnected() {
         let mut s = SessionState::new();
-        s.clients.insert(1);
-        s.clients.insert(2);
+        s.clients.insert(crate::ClientId(1));
+        s.clients.insert(crate::ClientId(2));
         // Client 3 was last active but has since disconnected — not in
         // `clients` map anymore. Must fall through to any connected
         // client rather than returning None.
-        s.last_active_client = Some(3);
+        s.last_active_client = Some(crate::ClientId(3));
         let picked = s
             .pick_forward_target()
             .expect("some client still connected");
-        assert!(picked == 1 || picked == 2);
+        assert!(picked == crate::ClientId(1) || picked == crate::ClientId(2));
     }
 
     #[test]
@@ -3148,32 +3148,32 @@ mod session_state_tests {
 
     #[test]
     fn remove_client_returns_stuck_forward_tokens() {
-        let mut s = with_client(1);
-        s.mark_forward_in_flight(10, 1);
-        s.mark_forward_in_flight(11, 1);
+        let mut s = with_client(crate::ClientId(1));
+        s.mark_forward_in_flight(10, crate::ClientId(1));
+        s.mark_forward_in_flight(11, crate::ClientId(1));
         // A forward dispatched to a *different* client — must not be
         // returned when we remove client 1.
-        s.clients.insert(2);
-        s.mark_forward_in_flight(12, 2);
+        s.clients.insert(crate::ClientId(2));
+        s.mark_forward_in_flight(12, crate::ClientId(2));
 
-        let mut stuck = s.remove_client(1);
+        let mut stuck = s.remove_client(crate::ClientId(1));
         stuck.sort_unstable();
         assert_eq!(stuck, vec![10, 11]);
-        assert_eq!(s.forwards_in_flight.get(&12), Some(&2));
+        assert_eq!(s.forwards_in_flight.get(&12), Some(&ClientId(2)));
     }
 
     #[test]
     fn remove_client_returns_empty_when_no_forwards_in_flight() {
-        let mut s = with_client(1);
-        assert!(s.remove_client(1).is_empty());
+        let mut s = with_client(crate::ClientId(1));
+        assert!(s.remove_client(crate::ClientId(1)).is_empty());
     }
 
     #[test]
     fn clear_forward_in_flight_removes_entry() {
-        let mut s = with_client(1);
-        s.mark_forward_in_flight(42, 1);
+        let mut s = with_client(crate::ClientId(1));
+        s.mark_forward_in_flight(42, crate::ClientId(1));
         s.clear_forward_in_flight(42);
         // After clear, removing the client yields no stuck tokens.
-        assert!(s.remove_client(1).is_empty());
+        assert!(s.remove_client(crate::ClientId(1)).is_empty());
     }
 }

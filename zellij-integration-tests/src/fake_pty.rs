@@ -418,7 +418,11 @@ impl SharedPtys {
             Some((fake_pty_state.quit_cb.take(), fake_pty_state.run_command()))
         });
         if let Some((Some(quit_cb), run_command)) = newly_exited {
-            quit_cb(PaneId::Terminal(terminal_id), exit_status, run_command);
+            quit_cb(
+                PaneId::Terminal(zellij_server::TerminalId(terminal_id)),
+                exit_status,
+                run_command,
+            );
         }
     }
 

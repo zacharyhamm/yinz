@@ -16,7 +16,7 @@ pub fn generate_random_name_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -29,7 +29,7 @@ pub fn generate_random_name_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -109,7 +109,7 @@ pub fn dump_layout_success_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -122,7 +122,7 @@ pub fn dump_layout_success_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -207,7 +207,7 @@ pub fn data_store_plugin_commands() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -220,7 +220,7 @@ pub fn data_store_plugin_commands() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -299,7 +299,7 @@ pub fn dump_layout_not_found_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -312,7 +312,7 @@ pub fn dump_layout_not_found_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -392,7 +392,7 @@ pub fn get_layout_dir_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -405,7 +405,7 @@ pub fn get_layout_dir_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -485,7 +485,7 @@ pub fn get_focused_pane_info_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -498,7 +498,7 @@ pub fn get_focused_pane_info_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -572,7 +572,7 @@ pub fn dump_session_layout_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -585,7 +585,7 @@ pub fn dump_session_layout_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -658,7 +658,7 @@ pub fn dump_session_layout_for_tab_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -671,7 +671,7 @@ pub fn dump_session_layout_for_tab_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -744,7 +744,7 @@ pub fn parse_layout_success_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -757,7 +757,7 @@ pub fn parse_layout_success_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -837,7 +837,7 @@ pub fn parse_layout_error_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -850,7 +850,7 @@ pub fn parse_layout_error_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -930,7 +930,7 @@ pub fn save_layout_success_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -943,7 +943,7 @@ pub fn save_layout_success_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1023,7 +1023,7 @@ pub fn save_layout_already_exists_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -1036,7 +1036,7 @@ pub fn save_layout_already_exists_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1129,7 +1129,7 @@ pub fn save_layout_with_overwrite_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -1142,7 +1142,7 @@ pub fn save_layout_with_overwrite_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1222,7 +1222,7 @@ pub fn save_layout_invalid_kdl_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -1235,7 +1235,7 @@ pub fn save_layout_invalid_kdl_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1315,7 +1315,7 @@ pub fn rename_layout_success_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -1328,7 +1328,7 @@ pub fn rename_layout_success_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1421,7 +1421,7 @@ pub fn rename_layout_not_found_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -1434,7 +1434,7 @@ pub fn rename_layout_not_found_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1519,7 +1519,7 @@ pub fn delete_layout_success_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -1532,7 +1532,7 @@ pub fn delete_layout_success_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1642,7 +1642,7 @@ pub fn delete_layout_not_found_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -1655,7 +1655,7 @@ pub fn delete_layout_not_found_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1735,7 +1735,7 @@ pub fn save_layout_path_traversal_blocked_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -1748,7 +1748,7 @@ pub fn save_layout_path_traversal_blocked_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1836,7 +1836,7 @@ pub fn edit_layout_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -1849,7 +1849,7 @@ pub fn edit_layout_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1929,7 +1929,7 @@ pub fn override_layout_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        1,
+        crate::ClientId(1),
         PermissionStatus::Granted,
     );
 
@@ -1942,7 +1942,7 @@ pub fn override_layout_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,

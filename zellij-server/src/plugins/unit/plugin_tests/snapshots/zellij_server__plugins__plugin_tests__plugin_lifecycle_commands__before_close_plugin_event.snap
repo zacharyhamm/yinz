@@ -1,17 +1,24 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/plugin_lifecycle_commands.rs
+assertion_line: 379
 expression: "format!(\"{:#?}\", sent_instruction)"
 ---
 HighlightAndUnhighlightPanes(
     [
         Terminal(
-            1,
+            TerminalId(
+                1,
+            ),
         ),
     ],
     [
         Plugin(
-            1,
+            PluginId(
+                1,
+            ),
         ),
     ],
-    1,
+    ClientId(
+        1,
+    ),
 )

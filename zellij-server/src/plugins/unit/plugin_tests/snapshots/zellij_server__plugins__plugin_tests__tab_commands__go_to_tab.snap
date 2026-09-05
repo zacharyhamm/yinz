@@ -1,12 +1,15 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/tab_commands.rs
+assertion_line: 609
 expression: "format!(\"{:#?}\", new_tab_event)"
 ---
 Some(
     GoToTab(
         3,
         Some(
-            1,
+            ClientId(
+                1,
+            ),
         ),
         Some(
             NotificationEnd {

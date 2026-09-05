@@ -142,7 +142,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread {
                             if plugin_permission.permissions.contains($permission_type) {
                                 let _ = plugin_thread_sender.send(
                                     PluginInstruction::PermissionRequestResult(
-                                        0,
+                                        crate::PluginId(0),
                                         Some($client_id),
                                         plugin_permission.permissions,
                                         PermissionStatus::Granted,
@@ -152,7 +152,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread {
                             } else {
                                 let _ = plugin_thread_sender.send(
                                     PluginInstruction::PermissionRequestResult(
-                                        0,
+                                        crate::PluginId(0),
                                         Some($client_id),
                                         plugin_permission.permissions,
                                         PermissionStatus::Denied,
@@ -387,7 +387,7 @@ fn wait_for_plugin_to_handle(
                 matches!(
                     instruction,
                     ScreenInstruction::UpdatePluginLoadingStage(id, indication)
-                        if *id == plugin_id && indication.is_error()
+                        if *id == crate::PluginId(plugin_id) && indication.is_error()
                 )
             });
             (rendered || crashed).then_some(())
@@ -420,7 +420,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread_naked_variant {
                             if plugin_permission.permissions.contains($permission_type) {
                                 let _ = plugin_thread_sender.send(
                                     PluginInstruction::PermissionRequestResult(
-                                        0,
+                                        crate::PluginId(0),
                                         Some($client_id),
                                         plugin_permission.permissions,
                                         PermissionStatus::Granted,
@@ -430,7 +430,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread_naked_variant {
                             } else {
                                 let _ = plugin_thread_sender.send(
                                     PluginInstruction::PermissionRequestResult(
-                                        0,
+                                        crate::PluginId(0),
                                         Some($client_id),
                                         plugin_permission.permissions,
                                         PermissionStatus::Denied,
@@ -473,7 +473,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread_struct_variant {
                             if plugin_permission.permissions.contains($permission_type) {
                                 let _ = plugin_thread_sender.send(
                                     PluginInstruction::PermissionRequestResult(
-                                        0,
+                                        crate::PluginId(0),
                                         Some($client_id),
                                         plugin_permission.permissions,
                                         PermissionStatus::Granted,
@@ -483,7 +483,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread_struct_variant {
                             } else {
                                 let _ = plugin_thread_sender.send(
                                     PluginInstruction::PermissionRequestResult(
-                                        0,
+                                        crate::PluginId(0),
                                         Some($client_id),
                                         plugin_permission.permissions,
                                         PermissionStatus::Denied,
@@ -549,7 +549,7 @@ fn create_plugin_thread_with_hooks(
 ) -> PluginThreadHarness {
     let zellij_cwd = zellij_cwd.unwrap_or_else(|| PathBuf::from("."));
     let session_env_vars = session_env_vars.unwrap_or_else(|| std::env::vars().collect());
-    let initiating_client_id = 1;
+    let initiating_client_id = ClientId(1);
     let (to_server, _server_receiver): ChannelWithContext<ServerInstruction> =
         channels::bounded(50);
     let to_server = SenderWithContext::new(to_server);
@@ -690,7 +690,7 @@ fn create_plugin_thread_with_server_receiver(
     let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let default_shell = PathBuf::from(".");
     let default_shell_action = None; // TODO: change me
-    let initiating_client_id = 1;
+    let initiating_client_id = ClientId(1);
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())
         .spawn(move || {
@@ -788,7 +788,7 @@ fn create_plugin_thread_with_pty_receiver(
     let user_plugin_dir = PathBuf::from(tempdir().unwrap().path());
     let default_shell = PathBuf::from(".");
     let default_shell_action = None; // TODO: change me
-    let initiating_client_id = 1;
+    let initiating_client_id = ClientId(1);
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())
         .spawn(move || {
@@ -878,7 +878,7 @@ fn create_plugin_thread_with_background_jobs_receiver(
     let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let default_shell = PathBuf::from(".");
     let default_shell_action = None; // TODO: change me
-    let initiating_client_id = 1;
+    let initiating_client_id = ClientId(1);
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())
         .spawn(move || {

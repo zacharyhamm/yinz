@@ -108,7 +108,11 @@ It is in charge of actions such as:
 
 `zellij-terminal` owns the grid and rows, terminal characters, selection and search, hyperlinks, ANSI helpers, Sixel, and Kitty graphics.
 It also owns output serialization, host-query types, component parsing, and damage geometry.
-`PaneId` and `ClientId` live here. The server re-exports them and the existing public terminal module paths.
+`PaneId` lives here, with `TerminalId` and `PluginId` payloads. The shared internal IDs
+(`TerminalId(u32)`, `PluginId(u32)`, and `ClientId(u16)`) live in `zellij-utils::internal_ids`
+and are re-exported by the consuming crates. The server retains its existing re-export paths.
+Public plugin IDs, IPC, supervisor messages, and persistence records keep primitive numbers;
+internal code wraps incoming IDs and unwraps them when constructing boundary payloads.
 Neither `zellij-terminal` nor `zellij-process` depends on the server or on the other extracted crate.
 
 `TerminalPane`, `PluginPane`, pane managers, frames, tabs, screen coordination, and plugin hosting remain in `zellij-server`.
@@ -161,7 +165,7 @@ Anything drawn *over* a pane — currently just toasts — needs one more thing.
 
 `zellij-process` owns pane supervisors, local and remote protocols, SSH transport, the broker, and the Firecracker provider.
 It also defines `AsyncReader` and the command-resolution helpers. It depends on shared utilities, not on the server.
-Supervisor exit callbacks carry a terminal ID (`u32`). The server converts it to `PaneId::Terminal` before calling its existing callback.
+Supervisor exit callbacks carry a `TerminalId`. The server converts it to `PaneId::Terminal` before calling its existing callback.
 The server retains OS implementations, PTY scheduling, session coordination, and its existing public module paths through re-exports.
 The `zellij-firecracker` binary calls the process crate directly.
 

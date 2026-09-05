@@ -37,14 +37,22 @@ pub fn a_cli_subscriber_gets_the_events_it_asked_for_once_each() {
         3
     );
 
-    let client_id: ClientId = 7;
+    let client_id: ClientId = ClientId(7);
     let _ = plugin_thread_sender.send(PluginInstruction::SubscribeCliClientToEvents {
         client_id,
         event_types: vec!["pane_update".to_owned(), "CwdChanged".to_owned()],
     });
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![
-        (Some(1), Some(1), Event::PaneUpdate(PaneManifest::default())),
-        (Some(2), Some(1), Event::PaneUpdate(PaneManifest::default())),
+        (
+            Some(crate::PluginId(1)),
+            Some(crate::ClientId(1)),
+            Event::PaneUpdate(PaneManifest::default()),
+        ),
+        (
+            Some(crate::PluginId(2)),
+            Some(crate::ClientId(1)),
+            Event::PaneUpdate(PaneManifest::default()),
+        ),
         (
             Some(CLI_EVENTS_ONLY_TARGET),
             None,
@@ -56,7 +64,7 @@ pub fn a_cli_subscriber_gets_the_events_it_asked_for_once_each() {
             None,
             Event::CommandPaneExited(3, Some(0), Default::default()),
         ),
-        (None, Some(1), Event::InputReceived),
+        (None, Some(crate::ClientId(1)), Event::InputReceived),
     ]));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
@@ -104,17 +112,29 @@ pub fn state_reports_collapse_per_run_without_reordering_other_events() {
         })
     };
 
-    let client_id: ClientId = 7;
+    let client_id: ClientId = ClientId(7);
     let _ = plugin_thread_sender.send(PluginInstruction::SubscribeCliClientToEvents {
         client_id,
         event_types: vec!["mode_update".to_owned(), "cwd_changed".to_owned()],
     });
     // one batch, as the plugin thread would merge two `Update`s waiting on its bus into anyway
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![
-        (Some(1), Some(1), mode(InputMode::Locked)),
+        (
+            Some(crate::PluginId(1)),
+            Some(crate::ClientId(1)),
+            mode(InputMode::Locked),
+        ),
         (None, None, cwd_changed(3)),
-        (Some(1), Some(1), mode(InputMode::Locked)),
-        (Some(2), Some(1), mode(InputMode::Normal)),
+        (
+            Some(crate::PluginId(1)),
+            Some(crate::ClientId(1)),
+            mode(InputMode::Locked),
+        ),
+        (
+            Some(crate::PluginId(2)),
+            Some(crate::ClientId(1)),
+            mode(InputMode::Normal),
+        ),
         (None, None, cwd_changed(4)),
     ]));
 
@@ -165,11 +185,11 @@ pub fn a_departed_cli_subscriber_stops_receiving_events() {
 
     for client_id in [7, 8] {
         let _ = plugin_thread_sender.send(PluginInstruction::SubscribeCliClientToEvents {
-            client_id,
+            client_id: crate::ClientId(client_id),
             event_types: vec![],
         });
     }
-    let _ = plugin_thread_sender.send(PluginInstruction::RemoveClient(7));
+    let _ = plugin_thread_sender.send(PluginInstruction::RemoveClient(crate::ClientId(7)));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         None,
@@ -184,7 +204,11 @@ pub fn a_departed_cli_subscriber_stops_receiving_events() {
     server_thread.join().unwrap();
 
     assert_eq!(events.len(), 1, "{events:?}");
-    assert_eq!(events[0].0, 8, "only the remaining subscriber hears it");
+    assert_eq!(
+        events[0].0,
+        crate::ClientId(8),
+        "only the remaining subscriber hears it"
+    );
 }
 
 /// A name that is no streamable event refuses the subscription and says what would have been.
@@ -198,7 +222,7 @@ pub fn an_unknown_event_type_is_refused_with_the_streamable_ones() {
         log_actions_in_thread!(received, ServerInstruction::LogError, server_receiver, 1);
 
     let _ = plugin_thread_sender.send(PluginInstruction::SubscribeCliClientToEvents {
-        client_id: 7,
+        client_id: crate::ClientId(7),
         event_types: vec!["Key".to_owned()],
     });
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -216,7 +240,7 @@ pub fn an_unknown_event_type_is_refused_with_the_streamable_ones() {
     teardown();
     server_thread.join().unwrap();
 
-    assert_eq!(refusal.1, 7);
+    assert_eq!(refusal.1, crate::ClientId(7));
     assert!(refusal.0[0].contains("'Key'"), "{:?}", refusal.0);
     assert!(refusal.0[0].contains("PaneUpdate"), "{:?}", refusal.0);
     assert!(

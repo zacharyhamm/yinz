@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use zellij_utils::data::{Palette, Style};
+use zellij_utils::internal_ids::ClientId;
 use zellij_utils::pane_size::PaneGeom;
 
 fn read_fixture() -> Vec<u8> {
@@ -35,7 +36,7 @@ fn create_pane() -> TerminalPane {
     let osc8_hyperlinks = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let mut terminal_pane = TerminalPane::new(
-        pid,
+        crate::TerminalId(pid),
         fake_win_size,
         style,
         0,
@@ -238,7 +239,7 @@ pub fn searching_case_insensitive() {
 
 #[test]
 pub fn searching_inside_and_scroll() {
-    let fake_client_id = 1;
+    let fake_client_id = ClientId(1);
     let mut terminal_pane = create_pane();
     terminal_pane.update_search_term("quam");
     terminal_pane.search_up();

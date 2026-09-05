@@ -1,15 +1,20 @@
 ---
 source: zellij-server/src/plugins/./unit/plugin_tests/break_panes_commands.rs
+assertion_line: 153
 expression: "format!(\"{:#?}\", screen_instruction)"
 ---
 Some(
     BreakPanesToNewTab {
         pane_ids: [
             Terminal(
-                1,
+                TerminalId(
+                    1,
+                ),
             ),
             Plugin(
-                2,
+                PluginId(
+                    2,
+                ),
             ),
         ],
         default_shell: Some(
@@ -31,7 +36,9 @@ Some(
         new_tab_name: Some(
             "new_tab_name",
         ),
-        client_id: 1,
+        client_id: ClientId(
+            1,
+        ),
         completion_tx: Some(
             NotificationEnd {
                 channel: None,

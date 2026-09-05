@@ -1,15 +1,20 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/pane_id_commands.rs
+assertion_line: 153
 expression: "format!(\"{:#?}\", focus_pane_event)"
 ---
 Some(
     FocusPaneWithId(
         Terminal(
-            1,
+            TerminalId(
+                1,
+            ),
         ),
         true,
         false,
-        1,
+        ClientId(
+            1,
+        ),
         None,
     ),
 )

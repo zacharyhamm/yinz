@@ -1,3 +1,4 @@
+use crate::TerminalId;
 use unicode_width::UnicodeWidthStr;
 use zellij_tile_utils::ellipsize;
 use zellij_utils::errors::prelude::*;
@@ -42,7 +43,7 @@ impl Screen {
                 is_fullscreen_active: tab.is_fullscreen_active(),
                 is_sync_panes_active: tab.is_sync_panes_active(),
                 are_floating_panes_visible: tab.are_floating_panes_visible(),
-                other_focused_clients: all_focused_clients,
+                other_focused_clients: all_focused_clients.into_iter().map(|id| id.0).collect(),
                 active_swap_layout_name,
                 is_swap_layout_dirty,
                 viewport_rows: tab_viewport.rows,
@@ -91,7 +92,10 @@ impl Screen {
                     is_fullscreen_active: tab.is_fullscreen_active(),
                     is_sync_panes_active: tab.is_sync_panes_active(),
                     are_floating_panes_visible: tab.are_floating_panes_visible(),
-                    other_focused_clients,
+                    other_focused_clients: other_focused_clients
+                        .into_iter()
+                        .map(|id| id.0)
+                        .collect(),
                     active_swap_layout_name,
                     is_swap_layout_dirty,
                     viewport_rows: tab_viewport.rows,
@@ -143,9 +147,9 @@ impl Screen {
         {
             pane_info.cwd = self
                 .terminal_cwds
-                .get(&pane_info.id)
+                .get(&TerminalId(pane_info.id))
                 .map(|cwd| cwd.to_string_lossy().into_owned());
-            pane_info.host = self.terminal_hosts.get(&pane_info.id).cloned();
+            pane_info.host = self.terminal_hosts.get(&TerminalId(pane_info.id)).cloned();
             // The worktree the pane's VM actually mirrors, for a pane that named none of
             // its own: `pane_info.target` is what the pane was *asked* for, and a pane
             // that joined an existing VM asked for a VM by name and nothing else. Only
@@ -157,7 +161,8 @@ impl Screen {
                     worktree: named, ..
                 },
             ) = (
-                self.terminal_firecracker_worktrees.get(&pane_info.id),
+                self.terminal_firecracker_worktrees
+                    .get(&TerminalId(pane_info.id)),
                 &mut pane_info.target,
             ) {
                 if named.is_none() {
@@ -462,11 +467,15 @@ impl Screen {
             is_current_session: true,
             available_layouts,
             plugins: Default::default(), // these are filled in by the wasm thread
-            tab_history: self.tab_history.clone(),
+            tab_history: self
+                .tab_history
+                .iter()
+                .map(|(id, history)| (id.0, history.clone()))
+                .collect(),
             pane_history: self
                 .pane_history
                 .iter()
-                .map(|(k, v)| (*k, v.iter().map(|v| (*v).into()).collect()))
+                .map(|(k, v)| (k.0, v.iter().map(|v| (*v).into()).collect()))
                 .collect(),
             creation_time,
         };

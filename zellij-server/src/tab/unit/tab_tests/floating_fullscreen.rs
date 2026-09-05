@@ -6,10 +6,10 @@ pub fn toggle_floating_pane_fullscreen_expands_over_viewport() {
     let viewport = *tab.viewport.borrow();
     let active_pane_id = tab
         .floating_panes
-        .active_pane_id(1)
+        .active_pane_id(crate::ClientId(1))
         .expect("a floating pane is focused");
 
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
 
     assert!(tab.is_fullscreen_active(), "Floating fullscreen is active");
     assert!(
@@ -42,10 +42,10 @@ pub fn toggle_floating_pane_no_ui_fullscreen_covers_whole_display() {
     let display_area = *tab.display_area.borrow();
     let active_pane_id = tab
         .floating_panes
-        .active_pane_id(1)
+        .active_pane_id(crate::ClientId(1))
         .expect("a floating pane is focused");
 
-    tab.toggle_active_pane_no_ui_fullscreen(1);
+    tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId(1));
 
     assert!(
         tab.is_fullscreen_active(),
@@ -75,13 +75,13 @@ pub fn toggle_floating_pane_fullscreen_off_restores_geometry() {
     let mut tab = create_tab_with_two_floating_panes();
     let active_pane_id = tab
         .floating_panes
-        .active_pane_id(1)
+        .active_pane_id(crate::ClientId(1))
         .expect("a floating pane is focused");
     let geom_before = floating_pane_geom(&tab, active_pane_id);
 
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert!(tab.is_fullscreen_active(), "Fullscreen active after toggle");
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
 
     assert!(
         !tab.is_fullscreen_active(),
@@ -97,13 +97,13 @@ pub fn toggle_floating_pane_fullscreen_off_restores_geometry() {
 #[test]
 pub fn regular_floating_fullscreen_switches_to_no_ui() {
     let mut tab = create_tab_with_two_floating_panes();
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert!(
         tab.is_fullscreen_active() && !tab.fullscreen_covers_ui(),
         "Regular floating fullscreen active"
     );
 
-    tab.toggle_active_pane_no_ui_fullscreen(1);
+    tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId(1));
     assert!(
         tab.is_fullscreen_active(),
         "Fullscreen stays active when switching kinds"
@@ -113,7 +113,7 @@ pub fn regular_floating_fullscreen_switches_to_no_ui() {
         "Fullscreen switched to covering the UI rows"
     );
 
-    tab.toggle_active_pane_no_ui_fullscreen(1);
+    tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId(1));
     assert!(
         !tab.is_fullscreen_active(),
         "Fullscreen toggled off entirely"
@@ -126,15 +126,15 @@ pub fn floating_no_ui_fullscreen_downgrades_to_regular_fullscreen() {
     let viewport = *tab.viewport.borrow();
     let active_pane_id = tab
         .floating_panes
-        .active_pane_id(1)
+        .active_pane_id(crate::ClientId(1))
         .expect("a floating pane is focused");
-    tab.toggle_active_pane_no_ui_fullscreen(1);
+    tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId(1));
     assert!(
         tab.is_fullscreen_active() && tab.fullscreen_covers_ui(),
         "Floating no-ui fullscreen is active"
     );
 
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
 
     assert!(
         tab.is_fullscreen_active(),
@@ -158,7 +158,7 @@ pub fn floating_no_ui_fullscreen_downgrades_to_regular_fullscreen() {
         "Pane rows match the viewport rows"
     );
 
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert!(
         !tab.is_fullscreen_active(),
         "The next regular toggle leaves fullscreen entirely"
@@ -173,17 +173,25 @@ pub fn floating_fullscreen_on_lone_floating_pane() {
     };
     let stacked_resize = false;
     let mut tab = create_new_tab(size, stacked_resize);
-    tab.new_floating_pane(PaneId::Terminal(2), None, None, false, true, None, None)
-        .unwrap();
+    tab.new_floating_pane(
+        PaneId::Terminal(crate::TerminalId(2)),
+        None,
+        None,
+        false,
+        true,
+        None,
+        None,
+    )
+    .unwrap();
     let viewport = *tab.viewport.borrow();
 
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
 
     assert!(
         tab.is_fullscreen_active(),
         "A lone floating pane still enters fullscreen"
     );
-    let geom = floating_pane_geom(&tab, PaneId::Terminal(2));
+    let geom = floating_pane_geom(&tab, PaneId::Terminal(crate::TerminalId(2)));
     assert_eq!(
         geom.cols.as_usize(),
         viewport.cols,
@@ -205,23 +213,31 @@ pub fn floating_and_tiled_fullscreen_are_mutually_exclusive() {
     let stacked_resize = false;
     let mut tab = create_new_tab(size, stacked_resize);
     tab.new_pane(
-        PaneId::Terminal(2),
+        PaneId::Terminal(crate::TerminalId(2)),
         None,
         None,
         false,
         true,
         NewPanePlacement::default(),
-        Some(1),
+        Some(crate::ClientId(1)),
         None,
     )
     .unwrap();
-    tab.new_floating_pane(PaneId::Terminal(3), None, None, false, true, None, None)
-        .unwrap();
+    tab.new_floating_pane(
+        PaneId::Terminal(crate::TerminalId(3)),
+        None,
+        None,
+        false,
+        true,
+        None,
+        None,
+    )
+    .unwrap();
 
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert_eq!(
         tab.fullscreen_pane_id(),
-        Some(PaneId::Terminal(3)),
+        Some(PaneId::Terminal(crate::TerminalId(3))),
         "The focused floating pane is fullscreen"
     );
     assert!(
@@ -230,7 +246,7 @@ pub fn floating_and_tiled_fullscreen_are_mutually_exclusive() {
     );
 
     tab.hide_floating_panes();
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert!(
         tab.tiled_panes.fullscreen_is_active(),
         "A tiled pane can be fullscreen after floating is hidden"
@@ -246,17 +262,17 @@ pub fn move_focus_while_floating_fullscreen_transfers_fullscreen() {
     let mut tab = create_tab_with_two_floating_panes();
     let first = tab
         .floating_panes
-        .active_pane_id(1)
+        .active_pane_id(crate::ClientId(1))
         .expect("a floating pane is focused");
 
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert_eq!(
         tab.fullscreen_pane_id(),
         Some(first),
         "Fullscreen starts on the focused floating pane"
     );
 
-    let _ = tab.move_focus_left(1);
+    let _ = tab.move_focus_left(crate::ClientId(1));
 
     assert!(
         tab.is_fullscreen_active(),
@@ -264,7 +280,7 @@ pub fn move_focus_while_floating_fullscreen_transfers_fullscreen() {
     );
     let new_active = tab
         .floating_panes
-        .active_pane_id(1)
+        .active_pane_id(crate::ClientId(1))
         .expect("a floating pane is focused after the move");
     assert_eq!(
         tab.fullscreen_pane_id(),
@@ -278,13 +294,16 @@ pub fn resize_while_floating_fullscreen_is_noop() {
     let mut tab = create_tab_with_two_floating_panes();
     let active_pane_id = tab
         .floating_panes
-        .active_pane_id(1)
+        .active_pane_id(crate::ClientId(1))
         .expect("a floating pane is focused");
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     let geom_before = floating_pane_geom(&tab, active_pane_id);
 
-    tab.resize(1, ResizeStrategy::new(Resize::Increase, None))
-        .unwrap();
+    tab.resize(
+        crate::ClientId(1),
+        ResizeStrategy::new(Resize::Increase, None),
+    )
+    .unwrap();
 
     assert_eq!(
         floating_pane_geom(&tab, active_pane_id),
@@ -298,15 +317,15 @@ pub fn move_pane_while_floating_fullscreen_is_noop() {
     let mut tab = create_tab_with_two_floating_panes();
     let active_pane_id = tab
         .floating_panes
-        .active_pane_id(1)
+        .active_pane_id(crate::ClientId(1))
         .expect("a floating pane is focused");
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     let geom_before = floating_pane_geom(&tab, active_pane_id);
 
-    tab.move_active_pane_down(1);
-    tab.move_active_pane_up(1);
-    tab.move_active_pane_left(1);
-    tab.move_active_pane_right(1);
+    tab.move_active_pane_down(crate::ClientId(1));
+    tab.move_active_pane_up(crate::ClientId(1));
+    tab.move_active_pane_left(crate::ClientId(1));
+    tab.move_active_pane_right(crate::ClientId(1));
 
     assert_eq!(
         floating_pane_geom(&tab, active_pane_id),
@@ -320,9 +339,9 @@ pub fn closing_floating_fullscreen_pane_clears_state() {
     let mut tab = create_tab_with_two_floating_panes();
     let active_pane_id = tab
         .floating_panes
-        .active_pane_id(1)
+        .active_pane_id(crate::ClientId(1))
         .expect("a floating pane is focused");
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert!(tab.is_fullscreen_active(), "Fullscreen active before close");
 
     tab.close_pane(active_pane_id, false, None);
@@ -336,11 +355,19 @@ pub fn closing_floating_fullscreen_pane_clears_state() {
 #[test]
 pub fn adding_floating_pane_while_fullscreen_unsets_fullscreen() {
     let mut tab = create_tab_with_two_floating_panes();
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert!(tab.is_fullscreen_active(), "Fullscreen active before add");
 
-    tab.new_floating_pane(PaneId::Terminal(4), None, None, false, true, None, None)
-        .unwrap();
+    tab.new_floating_pane(
+        PaneId::Terminal(crate::TerminalId(4)),
+        None,
+        None,
+        false,
+        true,
+        None,
+        None,
+    )
+    .unwrap();
 
     assert!(
         !tab.floating_panes.fullscreen_is_active(),
@@ -351,7 +378,7 @@ pub fn adding_floating_pane_while_fullscreen_unsets_fullscreen() {
 #[test]
 pub fn hiding_floating_layer_while_fullscreen_unsets_fullscreen() {
     let mut tab = create_tab_with_two_floating_panes();
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert!(tab.is_fullscreen_active(), "Fullscreen active before hide");
 
     tab.hide_floating_panes();
@@ -367,12 +394,13 @@ pub fn embed_floating_fullscreen_pane_unsets_and_embeds() {
     let mut tab = create_tab_with_two_floating_panes();
     let active_pane_id = tab
         .floating_panes
-        .active_pane_id(1)
+        .active_pane_id(crate::ClientId(1))
         .expect("a floating pane is focused");
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert!(tab.is_fullscreen_active(), "Fullscreen active before embed");
 
-    tab.toggle_pane_embed_or_floating(1).unwrap();
+    tab.toggle_pane_embed_or_floating(crate::ClientId(1))
+        .unwrap();
 
     assert!(
         !tab.floating_panes.fullscreen_is_active(),
@@ -389,9 +417,9 @@ pub fn resize_whole_tab_while_floating_fullscreen_preserves_regular() {
     let mut tab = create_tab_with_two_floating_panes();
     let active_pane_id = tab
         .floating_panes
-        .active_pane_id(1)
+        .active_pane_id(crate::ClientId(1))
         .expect("a floating pane is focused");
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
 
     let new_size = Size { cols: 80, rows: 30 };
     tab.resize_whole_tab(new_size).unwrap();
@@ -419,9 +447,9 @@ pub fn resize_whole_tab_while_floating_no_ui_fullscreen_preserves_no_ui() {
     let mut tab = create_tab_with_two_floating_panes();
     let active_pane_id = tab
         .floating_panes
-        .active_pane_id(1)
+        .active_pane_id(crate::ClientId(1))
         .expect("a floating pane is focused");
-    tab.toggle_active_pane_no_ui_fullscreen(1);
+    tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId(1));
 
     let new_size = Size { cols: 80, rows: 30 };
     tab.resize_whole_tab(new_size).unwrap();
@@ -448,9 +476,9 @@ pub fn pane_info_reports_floating_fullscreen() {
     let mut tab = create_tab_with_two_floating_panes();
     let active_pane_id = tab
         .floating_panes
-        .active_pane_id(1)
+        .active_pane_id(crate::ClientId(1))
         .expect("a floating pane is focused");
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
 
     let fullscreen_info = tab
         .get_pane_info(active_pane_id)
@@ -464,10 +492,10 @@ pub fn pane_info_reports_floating_fullscreen() {
         "The fullscreen pane still reports is_floating"
     );
 
-    let other_pane_id = if active_pane_id == PaneId::Terminal(2) {
-        PaneId::Terminal(3)
+    let other_pane_id = if active_pane_id == PaneId::Terminal(crate::TerminalId(2)) {
+        PaneId::Terminal(crate::TerminalId(3))
     } else {
-        PaneId::Terminal(2)
+        PaneId::Terminal(crate::TerminalId(2))
     };
     let other_info = tab
         .get_pane_info(other_pane_id)
@@ -482,14 +510,14 @@ pub fn pane_info_reports_floating_fullscreen() {
 pub fn toggle_floating_fullscreen_by_pane_id() {
     let mut tab = create_tab_with_two_floating_panes();
 
-    tab.toggle_pane_fullscreen(PaneId::Terminal(2));
+    tab.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId(2)));
     assert_eq!(
         tab.fullscreen_pane_id(),
-        Some(PaneId::Terminal(2)),
+        Some(PaneId::Terminal(crate::TerminalId(2))),
         "By-id fullscreen targets the requested floating pane"
     );
 
-    tab.toggle_pane_fullscreen(PaneId::Terminal(2));
+    tab.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId(2)));
     assert!(
         !tab.is_fullscreen_active(),
         "By-id toggle off clears floating fullscreen"
@@ -503,7 +531,7 @@ pub fn opening_scrollback_editor_on_fullscreen_floating_pane_retargets_fullscree
     // geom_override, so the fullscreen bookkeeping must follow the swap onto
     // the editor's pane id, and the editor must keep the replaced pane's base
     // geometry to fall back to when fullscreen is toggled off.
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut tab = create_tab_with_two_floating_panes();
     let viewport = *tab.viewport.borrow();
     let active_pane_id = tab
@@ -523,7 +551,7 @@ pub fn opening_scrollback_editor_on_fullscreen_floating_pane_retargets_fullscree
         "fullscreen tracks the original floating pane",
     );
 
-    let editor_pane_id = PaneId::Terminal(99);
+    let editor_pane_id = PaneId::Terminal(crate::TerminalId(99));
     tab.replace_active_pane_with_editor_pane(editor_pane_id, client_id)
         .unwrap();
     assert_eq!(
@@ -568,7 +596,7 @@ pub fn closing_fullscreen_floating_scrollback_editor_restores_geometry() {
     // The other order: open the editor, fullscreen it, then close it. Closing
     // swaps the suppressed pane back in through the same replace path, so the
     // fullscreen bookkeeping and the override must travel back with it.
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut tab = create_tab_with_two_floating_panes();
     let active_pane_id = tab
         .floating_panes
@@ -580,7 +608,7 @@ pub fn closing_fullscreen_floating_scrollback_editor_restores_geometry() {
         .expect("focused floating pane exists")
         .position_and_size();
 
-    let editor_pane_id = PaneId::Terminal(99);
+    let editor_pane_id = PaneId::Terminal(crate::TerminalId(99));
     tab.replace_active_pane_with_editor_pane(editor_pane_id, client_id)
         .unwrap();
     tab.toggle_active_pane_fullscreen(client_id);

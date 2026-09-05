@@ -3,6 +3,7 @@ use crate::{
     ClientId,
 };
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use zellij_utils::internal_ids::{PluginId, TerminalId};
 use zellij_utils::{
     data::{Palette, Style},
     input::layout::Run,
@@ -16,7 +17,7 @@ pub(crate) struct PaneFactory;
 impl PaneFactory {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn terminal(
-        pid: u32,
+        pid: TerminalId,
         position_and_size: PaneGeom,
         style: Style,
         terminal_position: usize,
@@ -61,7 +62,7 @@ impl PaneFactory {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn plugin(
-        pid: u32,
+        pid: PluginId,
         position_and_size: PaneGeom,
         send_plugin_instructions: SenderWithContext<PluginInstruction>,
         title: String,

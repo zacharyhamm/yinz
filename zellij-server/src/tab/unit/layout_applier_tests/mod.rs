@@ -15,6 +15,7 @@ use std::fmt::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
 use zellij_utils::input::options::PaneFrameStyle;
+use zellij_utils::internal_ids::TerminalId;
 use zellij_utils::{
     channels::{self, ChannelWithContext, Receiver, SenderWithContext},
     data::{ModeInfo, Palette, Style},
@@ -32,7 +33,7 @@ struct FakeInputOutput {}
 impl ServerOsApi for FakeInputOutput {
     fn set_terminal_size_using_terminal_id(
         &self,
-        _id: u32,
+        _id: TerminalId,
         _cols: u16,
         _rows: u16,
         _width_in_pixels: Option<u16>,
@@ -46,15 +47,15 @@ impl ServerOsApi for FakeInputOutput {
         _file_to_open: TerminalAction,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
-    ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
         unimplemented!()
     }
 
-    fn write_to_tty_stdin(&self, _id: u32, _buf: &[u8]) -> Result<usize> {
+    fn write_to_tty_stdin(&self, _id: TerminalId, _buf: &[u8]) -> Result<usize> {
         unimplemented!()
     }
 
-    fn tcdrain(&self, _id: u32) -> Result<()> {
+    fn tcdrain(&self, _id: TerminalId) -> Result<()> {
         unimplemented!()
     }
 
@@ -99,14 +100,14 @@ impl ServerOsApi for FakeInputOutput {
 
     fn re_run_command_in_terminal(
         &self,
-        _terminal_id: u32,
+        _terminal_id: TerminalId,
         _run_command: RunCommand,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
         unimplemented!()
     }
 
-    fn clear_terminal_id(&self, _terminal_id: u32) -> Result<()> {
+    fn clear_terminal_id(&self, _terminal_id: TerminalId) -> Result<()> {
         unimplemented!()
     }
 
@@ -167,7 +168,7 @@ fn create_layout_applier_fixtures(
     let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
     let character_cell_size = Rc::new(RefCell::new(None));
 
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut connected_clients_map = HashSet::new();
     connected_clients_map.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients_map));
@@ -303,7 +304,7 @@ fn create_layout_applier_fixtures_with_receivers(
     let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
     let character_cell_size = Rc::new(RefCell::new(None));
 
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut connected_clients_map = HashSet::new();
     connected_clients_map.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients_map));
@@ -543,7 +544,7 @@ fn collect_close_pane_messages(
 /// Collect all unload plugin messages from the plugin receiver
 fn collect_unload_plugin_messages(
     plugin_receiver: &Receiver<(PluginInstruction, zellij_utils::errors::ErrorContext)>,
-) -> Vec<u32> {
+) -> Vec<zellij_utils::internal_ids::PluginId> {
     let mut unloaded_plugins = Vec::new();
     while let Ok((instruction, _)) = plugin_receiver.try_recv() {
         if let PluginInstruction::Unload(plugin_id) = instruction {

@@ -8,6 +8,7 @@
 #![allow(clippy::redundant_closure)]
 #![allow(clippy::option_as_ref_deref)]
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use crate::{PluginId, TerminalId};
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 
@@ -1742,7 +1743,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::ClosePane(
-                    PaneId::Terminal(terminal_pane_id),
+                    PaneId::Terminal(TerminalId(terminal_pane_id)),
                     None, // we send None here so that the terminal pane would be closed anywhere
                     // in the app, not just in the client's tab
                     Some(NotificationEnd::new(completion_tx)),
@@ -1755,7 +1756,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::ClosePane(
-                    PaneId::Plugin(plugin_pane_id),
+                    PaneId::Plugin(PluginId(plugin_pane_id)),
                     None, // we send None here so that the terminal pane would be closed anywhere
                     // in the app, not just in the client's tab
                     Some(NotificationEnd::new(completion_tx)),
@@ -1770,7 +1771,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::FocusPaneWithId(
-                    PaneId::Terminal(pane_id),
+                    PaneId::Terminal(TerminalId(pane_id)),
                     should_float_if_hidden,
                     should_be_in_place_if_hidden,
                     client_id,
@@ -1785,7 +1786,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::FocusPaneWithId(
-                    PaneId::Plugin(pane_id),
+                    PaneId::Plugin(PluginId(pane_id)),
                     should_float_if_hidden,
                     should_be_in_place_if_hidden,
                     client_id,
@@ -1799,7 +1800,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::RenamePane(
-                    PaneId::Terminal(pane_id),
+                    PaneId::Terminal(TerminalId(pane_id)),
                     name_bytes,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -1811,7 +1812,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::RenamePane(
-                    PaneId::Plugin(pane_id),
+                    PaneId::Plugin(PluginId(pane_id)),
                     name_bytes,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -1987,7 +1988,8 @@ pub(crate) fn route_action(
                         pane_title,
                         skip_cache,
                         cli_client_id: client_id,
-                        plugin_and_client_id: plugin_id.map(|plugin_id| (plugin_id, client_id)),
+                        plugin_and_client_id: plugin_id
+                            .map(|plugin_id| (PluginId(plugin_id), client_id)),
                         notification_end: Some(NotificationEnd::new(completion_tx)),
                     })
                     .with_context(err_context)?;
@@ -2875,6 +2877,8 @@ pub(crate) fn route_thread_main(
                             client_id: maybe_client_id,
                             is_cli_client,
                         } => {
+                            let maybe_pane_id = maybe_pane_id.map(TerminalId);
+                            let maybe_client_id = maybe_client_id.map(ClientId);
                             let cli_client_id = client_id;
                             let client_id = if is_cli_client {
                                 // for cli clients, we want to default to the last active client
@@ -3063,7 +3067,7 @@ pub(crate) fn route_thread_main(
                             let attach_client_instruction = ServerInstruction::AttachClient(
                                 cli_assets,
                                 tab_position_to_focus,
-                                pane_id_to_focus.map(|p| (p.pane_id, p.is_plugin)),
+                                pane_id_to_focus.map(|p| if p.is_plugin { PaneId::Plugin(PluginId(p.pane_id)) } else { PaneId::Terminal(TerminalId(p.pane_id)) }),
                                 client_id,
                             );
                             to_server
@@ -3105,7 +3109,7 @@ pub(crate) fn route_thread_main(
                         },
                         ClientToServerMsg::DetachSession { client_ids } => {
                             let _ =
-                                to_server.send(ServerInstruction::DetachSession(client_ids, None));
+                                to_server.send(ServerInstruction::DetachSession(client_ids.into_iter().map(ClientId).collect(), None));
                             should_break = true;
                         },
                         ClientToServerMsg::DesktopNotificationResponse { ref raw_bytes } => {
@@ -3472,7 +3476,7 @@ fn enrich_panes_with_pty_data(
 ) -> Result<()> {
     for entry in pane_entries.iter_mut() {
         if !entry.pane_info.is_plugin {
-            let pane_id = PaneId::Terminal(entry.pane_info.id);
+            let pane_id = PaneId::Terminal(TerminalId(entry.pane_info.id));
             enrich_pane_with_running_command(entry, pane_id, senders)?;
             enrich_pane_with_cwd(entry, pane_id, senders)?;
         }
@@ -4025,13 +4029,16 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         let mut notification_end = NotificationEnd::new(tx);
 
-        notification_end.set_affected_pane_id(PaneId::Terminal(10));
+        notification_end.set_affected_pane_id(PaneId::Terminal(TerminalId(10)));
         notification_end.set_affected_tab_id(5);
 
         drop(notification_end);
 
         let result = rx.blocking_recv().unwrap();
-        assert_eq!(result.affected_pane_id, Some(PaneId::Terminal(10)));
+        assert_eq!(
+            result.affected_pane_id,
+            Some(PaneId::Terminal(TerminalId(10)))
+        );
         assert_eq!(result.affected_tab_id, Some(5));
     }
 

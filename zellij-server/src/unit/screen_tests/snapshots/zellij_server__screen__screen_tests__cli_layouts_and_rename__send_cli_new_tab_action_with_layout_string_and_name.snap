@@ -102,7 +102,9 @@ NewTab(
     None,
     false,
     true,
-    10,
+    ClientId(
+        10,
+    ),
     Some(
         NotificationEnd {
             channel: None,

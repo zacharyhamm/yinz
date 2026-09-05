@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::str::FromStr;
 use std::time::Duration;
+use zellij_utils::internal_ids::TerminalId;
 
 use zellij_utils::channels;
 use zellij_utils::errors::{prelude::*, ContextType, PtyWriteContext};
@@ -14,8 +15,8 @@ use crate::thread_bus::Bus;
 // here anyway, so
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PtyWriteInstruction {
-    Write(Vec<u8>, u32, Option<NotificationEnd>),
-    ResizePty(u32, u16, u16, Option<u16>, Option<u16>),
+    Write(Vec<u8>, TerminalId, Option<NotificationEnd>),
+    ResizePty(TerminalId, u16, u16, Option<u16>, Option<u16>),
     StartCachingResizes,
     ApplyCachedResizes,
     Exit,
@@ -53,7 +54,7 @@ struct PendingWrite {
 
 pub(crate) fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
-    let mut pending: HashMap<u32, VecDeque<PendingWrite>> = HashMap::new();
+    let mut pending: HashMap<TerminalId, VecDeque<PendingWrite>> = HashMap::new();
     let mut caching_resizes = false;
 
     loop {
@@ -156,7 +157,7 @@ pub(crate) fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
         // Drain pending writes — one pass across all terminals.
         // For each terminal, write as much as the kernel accepts without
         // blocking, then move on to the next terminal.
-        let terminal_ids: Vec<u32> = pending.keys().copied().collect();
+        let terminal_ids: Vec<TerminalId> = pending.keys().copied().collect();
         for tid in terminal_ids {
             let queue = match pending.get_mut(&tid) {
                 Some(q) if !q.is_empty() => q,

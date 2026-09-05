@@ -4,6 +4,7 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
+use zellij_utils::internal_ids::TerminalId;
 
 use zellij_utils::data_access::{DataAccess, RecordingSession};
 use zellij_utils::errors::prelude::*;
@@ -17,7 +18,7 @@ pub enum RecorderInstruction {
         panes: Vec<PaneMetadata>,
     },
     PaneClosed {
-        terminal_id: u32,
+        terminal_id: TerminalId,
         elapsed_us: i64,
     },
     Stop,
@@ -33,12 +34,12 @@ pub struct SessionRecorderHandle {
 }
 
 impl SessionRecorderHandle {
-    pub fn output(&self, terminal_id: u32, data: Vec<u8>) {
+    pub fn output(&self, terminal_id: TerminalId, data: Vec<u8>) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
         let elapsed_us = self.started_at.elapsed().as_micros() as i64;
-        let event = RecordedEvent::output(terminal_id, elapsed_us, data);
+        let event = RecordedEvent::output(terminal_id.0, elapsed_us, data);
         if let Err(e) = self
             .sender
             .try_send(RecorderInstruction::Events(vec![event]))
@@ -56,7 +57,7 @@ impl SessionRecorderHandle {
         }
     }
 
-    pub fn input(&self, terminal_id: u32, data: Vec<u8>) {
+    pub fn input(&self, terminal_id: TerminalId, data: Vec<u8>) {
         if !self.capture_input {
             return;
         }
@@ -64,7 +65,7 @@ impl SessionRecorderHandle {
             return;
         }
         let elapsed_us = self.started_at.elapsed().as_micros() as i64;
-        let event = RecordedEvent::input(terminal_id, elapsed_us, data);
+        let event = RecordedEvent::input(terminal_id.0, elapsed_us, data);
         if let Err(e) = self
             .sender
             .try_send(RecorderInstruction::Events(vec![event]))
@@ -82,12 +83,12 @@ impl SessionRecorderHandle {
         }
     }
 
-    pub fn resize(&self, terminal_id: u32, cols: u16, rows: u16) {
+    pub fn resize(&self, terminal_id: TerminalId, cols: u16, rows: u16) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
         let elapsed_us = self.started_at.elapsed().as_micros() as i64;
-        let event = RecordedEvent::resize(terminal_id, elapsed_us, cols, rows);
+        let event = RecordedEvent::resize(terminal_id.0, elapsed_us, cols, rows);
         if let Err(e) = self
             .sender
             .try_send(RecorderInstruction::Events(vec![event]))
@@ -127,7 +128,7 @@ impl SessionRecorderHandle {
         }
     }
 
-    pub fn pane_closed(&self, terminal_id: u32) {
+    pub fn pane_closed(&self, terminal_id: TerminalId) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
@@ -417,7 +418,7 @@ fn recorder_thread(
                 recording.flush();
                 let result = recording
                     .store
-                    .finish_pane(terminal_id, elapsed_us)
+                    .finish_pane(terminal_id.0, elapsed_us)
                     .with_context(|| format!("failed to finish pane {terminal_id}"));
                 recording.remember_and_save(result);
             },
@@ -600,7 +601,7 @@ mod tests {
             panes: Vec::new(),
         })?;
         sender.send(RecorderInstruction::PaneClosed {
-            terminal_id: 1,
+            terminal_id: crate::TerminalId(1),
             elapsed_us: 3,
         })?;
         sender.send(RecorderInstruction::Stop)?;
@@ -643,7 +644,7 @@ mod tests {
                 sender
                     .send(RecorderInstruction::PaneClosed {
                         elapsed_us: 3,
-                        terminal_id: 1,
+                        terminal_id: crate::TerminalId(1),
                     })
                     .unwrap();
                 sender
@@ -766,7 +767,7 @@ mod tests {
             .unwrap();
         sender
             .send(RecorderInstruction::PaneClosed {
-                terminal_id: 1,
+                terminal_id: crate::TerminalId(1),
                 elapsed_us: 2,
             })
             .unwrap();
@@ -886,9 +887,9 @@ mod tests {
             rows: 24,
         };
         handle.pane_metadata(vec![metadata]);
-        handle.output(1, b"hello".to_vec());
-        handle.input(1, b"input".to_vec());
-        handle.resize(1, 100, 30);
+        handle.output(crate::TerminalId(1), b"hello".to_vec());
+        handle.input(crate::TerminalId(1), b"input".to_vec());
+        handle.resize(crate::TerminalId(1), 100, 30);
         handle.stop();
         thread.join().unwrap();
         // open DB and assert
@@ -941,7 +942,7 @@ mod tests {
         };
         // this should not block, should drop and metric increment, but not disable
         let start = Instant::now();
-        handle.output(1, b"y".to_vec());
+        handle.output(crate::TerminalId(1), b"y".to_vec());
         let elapsed = start.elapsed();
         assert!(elapsed < Duration::from_millis(100), "should not block");
         assert!(
@@ -950,7 +951,7 @@ mod tests {
         );
         assert_eq!(dropped.load(Ordering::Relaxed), 1);
         // second call should also try and drop, not be no-op due to disabled
-        handle.output(1, b"z".to_vec());
+        handle.output(crate::TerminalId(1), b"z".to_vec());
         assert_eq!(sender.len(), 1); // still full, not increased
         assert_eq!(dropped.load(Ordering::Relaxed), 2);
         assert!(enabled.load(Ordering::Relaxed));
@@ -966,7 +967,7 @@ mod tests {
             enabled: enabled2.clone(),
             dropped: dropped2.clone(),
         };
-        handle2.output(1, b"a".to_vec());
+        handle2.output(crate::TerminalId(1), b"a".to_vec());
         assert!(
             !enabled2.load(Ordering::Relaxed),
             "disconnected should disable"
@@ -1021,13 +1022,13 @@ mod tests {
             enabled: enabled.clone(),
             dropped: dropped.clone(),
         };
-        handle.input(1, b"secret".to_vec());
+        handle.input(crate::TerminalId(1), b"secret".to_vec());
         assert!(
             receiver.is_empty(),
             "input should be ignored when capture_input false"
         );
         // output should still work
-        handle.output(1, b"hello".to_vec());
+        handle.output(crate::TerminalId(1), b"hello".to_vec());
         assert_eq!(receiver.len(), 1);
     }
 }

@@ -15,9 +15,9 @@ fn wait_for_plugin_to_load(log: &Watched<Vec<ScreenInstruction>>, plugin_id: u32
             instructions
                 .iter()
                 .any(|instruction| match instruction {
-                    ScreenInstruction::PluginBytes(assets) => {
-                        assets.iter().any(|asset| asset.plugin_id == plugin_id)
-                    },
+                    ScreenInstruction::PluginBytes(assets) => assets
+                        .iter()
+                        .any(|asset| asset.plugin_id == crate::PluginId(plugin_id)),
                     _ => false,
                 })
                 .then_some(())
@@ -33,8 +33,10 @@ fn wait_for_plugin_to_load(log: &Watched<Vec<ScreenInstruction>>, plugin_id: u32
     )
 }
 
-fn plugin_render_ids(instructions: &[ScreenInstruction]) -> Vec<u32> {
-    let mut ids: Vec<u32> = instructions
+fn plugin_render_ids(
+    instructions: &[ScreenInstruction],
+) -> Vec<zellij_utils::internal_ids::PluginId> {
+    let mut ids: Vec<zellij_utils::internal_ids::PluginId> = instructions
         .iter()
         .filter_map(|instruction| match instruction {
             ScreenInstruction::PluginBytes(assets) => Some(assets.iter().map(|a| a.plugin_id)),
@@ -59,7 +61,7 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         create_plugin_thread(Some(plugin_host_folder), None);
     let plugin_should_float = Some(false);
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -278,7 +280,7 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         create_plugin_thread(Some(plugin_host_folder), None);
     let plugin_should_float = Some(false);
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,

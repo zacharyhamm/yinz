@@ -27,6 +27,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
 };
+use zellij_utils::internal_ids::TerminalId;
 
 use crate::pty_host::client::{ChildRunState, ReleasedPane};
 use crate::pty_host::remote::protocol::ChildSignal;
@@ -98,7 +99,7 @@ fn new_terminal_screen_instruction(
 fn finish_terminal_spawn(
     pty: &mut Pty,
     pending: PendingTerminalSpawn,
-    result: Result<(u32, bool)>,
+    result: Result<(TerminalId, bool)>,
 ) -> Result<()> {
     let err_context = || {
         format!(
@@ -122,9 +123,9 @@ fn finish_terminal_spawn(
                 pty.bus
                     .senders
                     .send_to_plugin(PluginInstruction::Update(vec![(
-                        Some(originating_plugin.plugin_id),
-                        Some(originating_plugin.client_id),
-                        Event::CommandPaneOpened(pid, originating_plugin.context),
+                        Some(PluginId(originating_plugin.plugin_id)),
+                        Some(ClientId(originating_plugin.client_id)),
+                        Event::CommandPaneOpened(pid.0, originating_plugin.context),
                     )]))
                     .with_context(err_context)?;
             }
@@ -135,9 +136,9 @@ fn finish_terminal_spawn(
                 pty.bus
                     .senders
                     .send_to_plugin(PluginInstruction::Update(vec![(
-                        Some(originating_plugin.plugin_id),
-                        Some(originating_plugin.client_id),
-                        Event::EditPaneOpened(pid, originating_plugin.context),
+                        Some(PluginId(originating_plugin.plugin_id)),
+                        Some(ClientId(originating_plugin.client_id)),
+                        Event::EditPaneOpened(pid.0, originating_plugin.context),
                     )]))
                     .with_context(err_context)?;
             }
@@ -177,10 +178,10 @@ fn finish_terminal_spawn(
                         pty.bus
                             .senders
                             .send_to_plugin(PluginInstruction::Update(vec![(
-                                Some(originating_plugin.plugin_id),
-                                Some(originating_plugin.client_id),
+                                Some(PluginId(originating_plugin.plugin_id)),
+                                Some(ClientId(originating_plugin.client_id)),
                                 Event::CommandPaneExited(
-                                    terminal_id,
+                                    terminal_id.0,
                                     Some(2),
                                     originating_plugin.context,
                                 ),
@@ -212,7 +213,7 @@ fn finish_terminal_spawn(
 fn finish_in_place_spawn(
     pty: &mut Pty,
     pending: PendingInPlaceSpawn,
-    result: Result<(u32, bool)>,
+    result: Result<(TerminalId, bool)>,
 ) -> Result<()> {
     let err_context = || {
         format!(
@@ -289,10 +290,10 @@ fn finish_command_rerun(
                     pty.bus
                         .senders
                         .send_to_plugin(PluginInstruction::Update(vec![(
-                            Some(originating_plugin.plugin_id),
-                            Some(originating_plugin.client_id),
+                            Some(PluginId(originating_plugin.plugin_id)),
+                            Some(ClientId(originating_plugin.client_id)),
                             Event::CommandPaneExited(
-                                terminal_id,
+                                terminal_id.0,
                                 Some(2),
                                 originating_plugin.context,
                             ),
@@ -317,7 +318,7 @@ fn finish_command_rerun(
 /// What `Pty::adopt_terminal` hands back so Screen can build the pane.
 #[derive(Debug, Clone)]
 pub struct AdoptedPane {
-    pub terminal_id: u32,
+    pub terminal_id: TerminalId,
     pub cmd: RunCommand,
     /// Output the supervisor caught while nobody was attached. Replayed into the
     /// pane after the transferred screen and before any live bytes, so the
@@ -344,7 +345,7 @@ pub struct AdoptedTabPanes {
 /// One adopted terminal, waiting for the tab that will hold it.
 #[derive(Debug, Clone)]
 pub struct AdoptedTabTerminal {
-    pub terminal_id: u32,
+    pub terminal_id: TerminalId,
     pub cmd: RunCommand,
     pub agent: Option<AgentInfo>,
     /// `Some` when the child has already exited, so the pane arrives held
@@ -404,7 +405,7 @@ pub struct PendingLayoutSpawn {
     layout: TiledPaneLayout,
     floating_panes_layout: Vec<FloatingPaneLayout>,
     default_shell: TerminalAction,
-    plugin_ids: HashMap<RunPluginOrAlias, Vec<u32>>,
+    plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
     adopted_panes: Option<AdoptedTabTerminals>,
     run_instructions: Vec<Option<Run>>,
     floating_run_instructions: Vec<Option<Run>>,
@@ -420,7 +421,7 @@ pub struct PendingLayoutSpawn {
 pub struct PendingLayoutOverride {
     cwd: Option<PathBuf>,
     default_shell: Option<TerminalAction>,
-    tabs: Vec<(TabLayoutInfo, HashMap<RunPluginOrAlias, Vec<u32>>)>,
+    tabs: Vec<(TabLayoutInfo, HashMap<RunPluginOrAlias, Vec<PluginId>>)>,
     retain_existing_terminal_panes: bool,
     retain_existing_plugin_panes: bool,
     client_id: ClientId,
@@ -429,7 +430,7 @@ pub struct PendingLayoutOverride {
 
 #[doc(hidden)]
 pub struct SpawnedTerminal {
-    terminal_id: u32,
+    terminal_id: TerminalId,
     reader: Box<dyn AsyncReader>,
     child_pid: Option<u32>,
 }
@@ -507,7 +508,7 @@ pub struct PendingRerun {
 
 #[derive(Clone, Debug)]
 pub struct PendingRemoteSpawn {
-    terminal_id: u32,
+    terminal_id: TerminalId,
     terminal_action: TerminalAction,
 }
 
@@ -515,7 +516,7 @@ pub struct PendingRemoteSpawn {
 /// whether it starts held, the command it holds for, and the reader its bytes
 /// will arrive on (`None` for a pane whose spawn was deferred).
 type SpawnedPane = (
-    u32,
+    TerminalId,
     bool,
     Option<RunCommand>,
     Option<Result<Box<dyn AsyncReader>>>,
@@ -551,7 +552,7 @@ struct RerunState {
 /// for a local pane, and hands the event to the plugins on the hook pipe.
 fn handle_remote_agent_report(
     senders: &ThreadSenders,
-    terminal_id: u32,
+    terminal_id: TerminalId,
     kind: &str,
     json: String,
 ) -> Result<()> {
@@ -579,7 +580,7 @@ fn handle_remote_agent_report(
         None,
         Event::AgentEvent(agent::AgentEvent::from_hook(
             kind,
-            terminal_id,
+            terminal_id.0,
             &event,
             json,
         )),
@@ -625,7 +626,7 @@ fn remote_loading_screen(command: &RunCommand, status: &str) -> Vec<u8> {
 
 fn send_remote_status(
     senders: &ThreadSenders,
-    terminal_id: u32,
+    terminal_id: TerminalId,
     command: &RunCommand,
     status: &str,
 ) -> Result<()> {
@@ -685,7 +686,7 @@ fn run_spawn_job(
     senders: &ThreadSenders,
     job: SpawnJob,
     default_editor: Option<PathBuf>,
-) -> (PendingSpawn, Vec<u32>) {
+) -> (PendingSpawn, Vec<TerminalId>) {
     match job {
         SpawnJob::Terminal(pending) => {
             let spawned = spawn_remote_terminal(os_input, senders, &pending, default_editor);
@@ -755,9 +756,9 @@ fn terminal_quit_callback(
         if let PaneId::Terminal(terminal_id) = pane_id {
             if let Some(plugin) = edit_plugin.as_ref() {
                 let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                    Some(plugin.plugin_id),
-                    Some(plugin.client_id),
-                    Event::EditPaneExited(terminal_id, exit_status, plugin.context.clone()),
+                    Some(PluginId(plugin.plugin_id)),
+                    Some(ClientId(plugin.client_id)),
+                    Event::EditPaneExited(terminal_id.0, exit_status, plugin.context.clone()),
                 )]));
             }
         }
@@ -775,9 +776,9 @@ fn terminal_quit_callback(
         if let PaneId::Terminal(terminal_id) = pane_id {
             if let Some(plugin) = command_plugin.as_ref() {
                 let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                    Some(plugin.plugin_id),
-                    Some(plugin.client_id),
-                    Event::CommandPaneExited(terminal_id, exit_status, plugin.context.clone()),
+                    Some(PluginId(plugin.plugin_id)),
+                    Some(ClientId(plugin.client_id)),
+                    Event::CommandPaneExited(terminal_id.0, exit_status, plugin.context.clone()),
                 )]));
             }
         }
@@ -814,20 +815,20 @@ pub enum PtyInstruction {
         Option<TerminalAction>,
         Option<TiledPaneLayout>,
         Vec<FloatingPaneLayout>,
-        usize,                               // tab_index
-        HashMap<RunPluginOrAlias, Vec<u32>>, // plugin_ids
-        Option<Vec<CommandOrPlugin>>,        // initial_panes
-        bool,                                // block_on_first_terminal
-        bool,                                // should change focus to new tab
+        usize,                                    // tab_index
+        HashMap<RunPluginOrAlias, Vec<PluginId>>, // plugin_ids
+        Option<Vec<CommandOrPlugin>>,             // initial_panes
+        bool,                                     // block_on_first_terminal
+        bool,                                     // should change focus to new tab
         ClientId,
         Option<NotificationEnd>, // completion signal
     ), // the String is the tab name
     OverrideLayout(
-        Option<PathBuf>,                                           // CWD
-        Option<TerminalAction>,                                    // Default Shell
-        Vec<(TabLayoutInfo, HashMap<RunPluginOrAlias, Vec<u32>>)>, // (layout, plugin_ids) per tab
-        bool,                                                      // retain_existing_terminal_panes
-        bool,                                                      // retain_existing_plugin_panes
+        Option<PathBuf>,                                                // CWD
+        Option<TerminalAction>,                                         // Default Shell
+        Vec<(TabLayoutInfo, HashMap<RunPluginOrAlias, Vec<PluginId>>)>, // (layout, plugin_ids) per tab
+        bool, // retain_existing_terminal_panes
+        bool, // retain_existing_plugin_panes
         ClientId,
         Option<NotificationEnd>,
     ),
@@ -842,7 +843,7 @@ pub enum PtyInstruction {
     /// every `PtyBytes` it ever emitted is already queued ahead of it, so what
     /// Screen serializes next is exactly what the user was looking at.
     ReleaseTerminalForWarp {
-        terminal_id: u32,
+        terminal_id: TerminalId,
         to_session: String,
         placement: WarpPlacement,
         client_id: ClientId,
@@ -864,7 +865,7 @@ pub enum PtyInstruction {
     /// chances to serialize a tab that is only half released.
     ReleaseTerminalsForWarp {
         tab_index: usize,
-        terminal_ids: Vec<u32>,
+        terminal_ids: Vec<TerminalId>,
         /// The moment the warp's caller stops waiting for an answer.
         ///
         /// Carried rather than re-derived because a release that outlives the
@@ -885,7 +886,7 @@ pub enum PtyInstruction {
     /// and that is one of the things Screen hands *to* the pty thread rather
     /// than one of the things it keeps.
     StrandPaneAfterWarp {
-        terminal_id: u32,
+        terminal_id: TerminalId,
         why: String,
         recovery: Option<String>,
     },
@@ -980,7 +981,7 @@ pub enum PtyInstruction {
         response_channel: crossbeam::channel::Sender<GetPaneGitProbeResponse>,
     },
     UpdateAndReportCwds,
-    NotifyCwdFromOsc7(u32, PathBuf),
+    NotifyCwdFromOsc7(TerminalId, PathBuf),
     Exit,
 }
 
@@ -999,17 +1000,17 @@ impl From<&PtyInstruction> for PtyContext {
 pub(crate) struct Pty {
     pub active_panes: HashMap<ClientId, PaneId>,
     pub bus: Bus<PtyInstruction>,
-    pub id_to_child_pid: HashMap<u32, u32>, // terminal_id => child pid
-    originating_plugins: HashMap<u32, OriginatingPlugin>,
+    pub id_to_child_pid: HashMap<TerminalId, u32>, // terminal_id => child pid
+    originating_plugins: HashMap<TerminalId, OriginatingPlugin>,
     debug_to_file: bool,
-    task_handles: HashMap<u32, JoinHandle<()>>, // terminal_id to join-handle
+    task_handles: HashMap<TerminalId, JoinHandle<()>>, // terminal_id to join-handle
     default_editor: Option<PathBuf>,
     post_command_discovery_hook: Option<String>,
-    plugin_cwds: HashMap<u32, PathBuf>,   // plugin_id -> cwd
-    terminal_cwds: HashMap<u32, PathBuf>, // terminal_id -> cwd
-    pane_activity_flags: HashMap<u32, std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    terminal_cmds: HashMap<u32, Vec<String>>,
-    terminal_foreground_cmds: HashMap<u32, Vec<String>>,
+    plugin_cwds: HashMap<PluginId, PathBuf>, // plugin_id -> cwd
+    terminal_cwds: HashMap<TerminalId, PathBuf>, // terminal_id -> cwd
+    pane_activity_flags: HashMap<TerminalId, std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    terminal_cmds: HashMap<TerminalId, Vec<String>>,
+    terminal_foreground_cmds: HashMap<TerminalId, Vec<String>>,
     /// Terminals adopted for a tab that is about to be built, waiting for the
     /// `NewTab` that will place them, keyed by the tab they belong to.
     ///
@@ -1029,9 +1030,9 @@ pub(crate) struct Pty {
     /// Remote panes already placed on screen whose worker has not handed a
     /// transport back yet. Closing the pane removes its id, so a late result
     /// can only be torn down, never bring the pane back.
-    pending_remote_spawns: HashSet<u32>,
+    pending_remote_spawns: HashSet<TerminalId>,
     /// Per pane, the rerun off-thread now and the ones waiting behind it.
-    reruns: HashMap<u32, RerunState>,
+    reruns: HashMap<TerminalId, RerunState>,
     next_rerun_generation: u64,
 }
 
@@ -1839,7 +1840,7 @@ impl Pty {
         &mut self,
         terminal_action: Option<TerminalAction>,
         client_or_tab_index: ClientTabIndexOrPaneId,
-    ) -> Result<(u32, bool)> {
+    ) -> Result<(TerminalId, bool)> {
         let terminal_action = self.prepare_terminal_action(terminal_action, client_or_tab_index);
         self.spawn_prepared_terminal(terminal_action, client_or_tab_index)
     }
@@ -2027,10 +2028,10 @@ impl Pty {
                     self.bus
                         .senders
                         .send_to_plugin(PluginInstruction::Update(vec![(
-                            Some(originating_plugin.plugin_id),
-                            Some(originating_plugin.client_id),
+                            Some(PluginId(originating_plugin.plugin_id)),
+                            Some(ClientId(originating_plugin.client_id)),
                             Event::CommandPaneExited(
-                                terminal_id,
+                                terminal_id.0,
                                 Some(2),
                                 originating_plugin.context.clone(),
                             ),
@@ -2160,7 +2161,7 @@ impl Pty {
         self.spawn_workers = pending;
     }
 
-    fn reserve_terminal_id(&mut self) -> Result<u32> {
+    fn reserve_terminal_id(&mut self) -> Result<TerminalId> {
         self.bus
             .os_input
             .as_mut()
@@ -2188,7 +2189,7 @@ impl Pty {
     /// still owns every child it started, and no `ClosePane` will ever arrive for
     /// them, so they must be closed here or they outlive the layout that asked
     /// for them.
-    fn discard_layout_panes(&mut self, terminal_ids: impl IntoIterator<Item = u32>) {
+    fn discard_layout_panes(&mut self, terminal_ids: impl IntoIterator<Item = TerminalId>) {
         for terminal_id in terminal_ids {
             self.close_pane(PaneId::Terminal(terminal_id))
                 .with_context(|| format!("failed to close pane {terminal_id} of a failed layout"))
@@ -2206,8 +2207,9 @@ impl Pty {
     ) {
         // A deferred pane holds a slot in both lists - close it once, through the
         // deferred path, which names it in its own error context.
-        let deferred_ids: HashSet<u32> = deferred.iter().map(|spawn| spawn.terminal_id).collect();
-        let spawned: Vec<u32> = tiled
+        let deferred_ids: HashSet<TerminalId> =
+            deferred.iter().map(|spawn| spawn.terminal_id).collect();
+        let spawned: Vec<TerminalId> = tiled
             .iter()
             .chain(floating)
             .map(|(terminal_id, ..)| *terminal_id)
@@ -2221,7 +2223,7 @@ impl Pty {
         &mut self,
         terminal_action: TerminalAction,
         client_or_tab_index: ClientTabIndexOrPaneId,
-    ) -> Result<(u32, bool)> {
+    ) -> Result<(TerminalId, bool)> {
         // bool is starts_held
         let err_context = || format!("failed to spawn terminal for {:?}", client_or_tab_index);
         let hold_on_start = matches!(
@@ -2283,8 +2285,9 @@ impl Pty {
         } = spawned;
         let activity_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let terminal_bytes = async_runtime().spawn({
-            let err_context =
-                |terminal_id: u32| format!("failed to run async task for terminal {terminal_id}");
+            let err_context = |terminal_id: TerminalId| {
+                format!("failed to run async task for terminal {terminal_id}")
+            };
             let senders = self.bus.senders.clone();
             let debug_to_file = self.debug_to_file;
             let activity_flag = activity_flag.clone();
@@ -2311,7 +2314,7 @@ impl Pty {
         layout: TiledPaneLayout,
         floating_panes_layout: Vec<FloatingPaneLayout>,
         default_shell: Option<TerminalAction>,
-        plugin_ids: HashMap<RunPluginOrAlias, Vec<u32>>,
+        plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
         initial_panes: Option<Vec<CommandOrPlugin>>,
         tab_index: usize,
         block_on_first_terminal: bool,
@@ -2404,14 +2407,14 @@ impl Pty {
             completion_tx,
         } = pending;
         let mut new_pane_pids: Vec<(
-            u32,
+            TerminalId,
             bool,
             Option<RunCommand>,
             Option<Result<Box<dyn AsyncReader>>>,
         )> = vec![];
 
         let mut new_floating_panes_pids: Vec<(
-            u32,
+            TerminalId,
             bool,
             Option<RunCommand>,
             Option<Result<Box<dyn AsyncReader>>>,
@@ -2481,7 +2484,7 @@ impl Pty {
 
         // Option<RunCommand> should only be Some if the pane starts held
         let spawned_ids = |pids: &Vec<(
-            u32,
+            TerminalId,
             bool,
             Option<RunCommand>,
             Option<Result<Box<dyn AsyncReader>>>,
@@ -2695,7 +2698,7 @@ impl Pty {
         // The results carry the panes away with them, so note the ids while they
         // are still here: if the send fails, Screen never hears of these panes and
         // this is the last chance to close them.
-        let spawned_ids: Vec<u32> = all_tab_results
+        let spawned_ids: Vec<TerminalId> = all_tab_results
             .iter()
             .flat_map(|tab_result| {
                 tab_result
@@ -2716,7 +2719,7 @@ impl Pty {
                     pending.completion_tx,
                 ))
         {
-            let deferred_ids: HashSet<u32> = deferred_spawns
+            let deferred_ids: HashSet<TerminalId> = deferred_spawns
                 .iter()
                 .map(|spawn| spawn.terminal_id)
                 .collect();
@@ -2740,7 +2743,7 @@ impl Pty {
         layout: TiledPaneLayout,
         floating_panes_layout: Vec<FloatingPaneLayout>,
         default_shell: Option<TerminalAction>,
-        plugin_ids: HashMap<RunPluginOrAlias, Vec<u32>>,
+        plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
         tab_index: usize,
         tab_name: Option<String>,
         client_id: ClientId,
@@ -2761,14 +2764,14 @@ impl Pty {
             .filter(|f| !f.already_running)
             .map(|f| f.run.clone());
         let mut new_pane_pids: Vec<(
-            u32,
+            TerminalId,
             bool,
             Option<RunCommand>,
             Option<Result<Box<dyn AsyncReader>>>,
         )> = vec![];
 
         let mut new_floating_panes_pids: Vec<(
-            u32,
+            TerminalId,
             bool,
             Option<RunCommand>,
             Option<Result<Box<dyn AsyncReader>>>,
@@ -2837,7 +2840,7 @@ impl Pty {
         }
 
         // Option<RunCommand> should only be Some if the pane starts held
-        let new_tab_pane_ids: Vec<(u32, Option<RunCommand>)> = new_pane_pids
+        let new_tab_pane_ids: Vec<(TerminalId, Option<RunCommand>)> = new_pane_pids
             .iter()
             .map(|(terminal_id, starts_held, run_command, _)| {
                 if *starts_held {
@@ -2847,16 +2850,17 @@ impl Pty {
                 }
             })
             .collect();
-        let new_tab_floating_pane_ids: Vec<(u32, Option<RunCommand>)> = new_floating_panes_pids
-            .iter()
-            .map(|(terminal_id, starts_held, run_command, _)| {
-                if *starts_held {
-                    (*terminal_id, run_command.clone())
-                } else {
-                    (*terminal_id, None)
-                }
-            })
-            .collect();
+        let new_tab_floating_pane_ids: Vec<(TerminalId, Option<RunCommand>)> =
+            new_floating_panes_pids
+                .iter()
+                .map(|(terminal_id, starts_held, run_command, _)| {
+                    if *starts_held {
+                        (*terminal_id, run_command.clone())
+                    } else {
+                        (*terminal_id, None)
+                    }
+                })
+                .collect();
 
         let tab_result = TabOverrideResult {
             tab_index,
@@ -2940,18 +2944,18 @@ impl Pty {
     }
     fn inform_originating_plugin_of_open(
         &mut self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         originating_plugin: OriginatingPlugin,
     ) {
         self.originating_plugins
             .insert(terminal_id, originating_plugin.clone());
-        let update_event = Event::CommandPaneOpened(terminal_id, originating_plugin.context);
+        let update_event = Event::CommandPaneOpened(terminal_id.0, originating_plugin.context);
         let _ = self
             .bus
             .senders
             .send_to_plugin(PluginInstruction::Update(vec![(
-                Some(originating_plugin.plugin_id),
-                Some(originating_plugin.client_id),
+                Some(PluginId(originating_plugin.plugin_id)),
+                Some(ClientId(originating_plugin.client_id)),
                 update_event,
             )]));
     }
@@ -2963,7 +2967,7 @@ impl Pty {
         deferred_spawns: &mut Vec<PendingRemoteSpawn>,
     ) -> Result<
         Option<(
-            u32,
+            TerminalId,
             bool,
             Option<RunCommand>,
             Option<Result<Box<dyn AsyncReader>>>,
@@ -3172,7 +3176,7 @@ impl Pty {
     /// unrelated *local* process, and a `SIGKILL` meant for a pane lands on it.
     /// Asking "is this pane remote" before "what is its pid" is what keeps that
     /// from being possible.
-    fn signal_pane_child(&self, terminal_id: u32, signal: ChildSignal) {
+    fn signal_pane_child(&self, terminal_id: TerminalId, signal: ChildSignal) {
         let err_context = || format!("failed to send {signal:?} to pane {terminal_id}");
         let os_input = match self.bus.os_input.as_ref() {
             Some(os_input) => os_input,
@@ -3254,7 +3258,7 @@ impl Pty {
     /// Separate from the release so a whole tab can be asked before any of it is
     /// let go — the panes ahead of a refusal would otherwise already be gone by
     /// the time it arrived.
-    pub fn check_terminal_can_be_warped(&self, terminal_id: u32) -> Result<()> {
+    pub fn check_terminal_can_be_warped(&self, terminal_id: TerminalId) -> Result<()> {
         self.bus
             .os_input
             .as_ref()
@@ -3289,7 +3293,7 @@ impl Pty {
     /// the other end. Everything knowable is therefore knowable *before*.
     pub fn release_terminal_for_warp(
         &mut self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         deadline: Instant,
     ) -> Result<ReleasedPane> {
         let err_context = || format!("failed to release pane {terminal_id} for a warp");
@@ -3324,8 +3328,8 @@ impl Pty {
     /// Every abort is issued before any join, so a tab's readers stop in
     /// parallel rather than one 500ms window after another. See
     /// [`wait_for_reader_to_stop`] for why the join has to happen at all.
-    fn stop_readers_for_warp(&mut self, terminal_ids: &[u32]) {
-        let handles: Vec<(u32, JoinHandle<()>)> = terminal_ids
+    fn stop_readers_for_warp(&mut self, terminal_ids: &[TerminalId]) {
+        let handles: Vec<(TerminalId, JoinHandle<()>)> = terminal_ids
             .iter()
             .filter_map(|terminal_id| {
                 self.task_handles
@@ -3344,7 +3348,7 @@ impl Pty {
     /// Forget everything this session knew about a pane it has handed away.
     ///
     /// Removed, emphatically not killed: the process is the point.
-    fn forget_released_terminal(&mut self, terminal_id: u32) {
+    fn forget_released_terminal(&mut self, terminal_id: TerminalId) {
         let _ = self.id_to_child_pid.remove(&terminal_id);
         self.pane_activity_flags.remove(&terminal_id);
         self.forget_terminal_cwd(terminal_id);
@@ -3422,8 +3426,9 @@ impl Pty {
         let child_pid = adopted.child_pid;
         let activity_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let terminal_bytes = async_runtime().spawn({
-            let err_context =
-                |terminal_id: u32| format!("failed to run async task for terminal {terminal_id}");
+            let err_context = |terminal_id: TerminalId| {
+                format!("failed to run async task for terminal {terminal_id}")
+            };
             let senders = self.bus.senders.clone();
             let debug_to_file = self.debug_to_file;
             let activity_flag = activity_flag.clone();
@@ -3621,9 +3626,9 @@ impl Pty {
             self.bus
                 .senders
                 .send_to_plugin(PluginInstruction::Update(vec![(
-                    Some(plugin.plugin_id),
-                    Some(plugin.client_id),
-                    Event::CommandPaneReRun(id, plugin.context.clone()),
+                    Some(PluginId(plugin.plugin_id)),
+                    Some(ClientId(plugin.client_id)),
+                    Event::CommandPaneReRun(id.0, plugin.context.clone()),
                 )]))?;
         }
         Ok(())
@@ -3633,8 +3638,8 @@ impl Pty {
         session_layout_metadata: &mut SessionLayoutMetadata,
     ) {
         let terminal_ids = session_layout_metadata.all_terminal_ids();
-        let mut terminal_ids_to_commands: HashMap<u32, Vec<String>> = HashMap::new();
-        let mut terminal_ids_to_cwds: HashMap<u32, PathBuf> = HashMap::new();
+        let mut terminal_ids_to_commands: HashMap<TerminalId, Vec<String>> = HashMap::new();
+        let mut terminal_ids_to_cwds: HashMap<TerminalId, PathBuf> = HashMap::new();
 
         let pids: Vec<_> = terminal_ids
             .iter()
@@ -3647,7 +3652,7 @@ impl Pty {
             .as_ref()
             .map(|os_input| os_input.get_cwds(pids))
             .unwrap_or_default();
-        let panes: Vec<(u32, u32)> = terminal_ids
+        let panes: Vec<(TerminalId, u32)> = terminal_ids
             .iter()
             .filter_map(|id| self.id_to_child_pid.get(id).map(|pid| (*id, *pid)))
             .collect();
@@ -3735,7 +3740,7 @@ impl Pty {
                     PaneId::Terminal(id) => Some(*id),
                     PaneId::Plugin(_) => None,
                 });
-            alias.set_caller_terminal_pane_id_if_not_set(pane_id);
+            alias.set_caller_terminal_pane_id_if_not_set(pane_id.map(|id| id.0));
         }
         self.bus.senders.send_to_plugin(PluginInstruction::Load(
             should_float,
@@ -3781,7 +3786,7 @@ impl Pty {
     /// folder — the initial capture, the ticker, OSC 7 — goes through here, so
     /// there is one place that decides a change has happened and one place that
     /// announces it.
-    fn set_terminal_cwd(&mut self, terminal_id: u32, cwd: PathBuf) {
+    fn set_terminal_cwd(&mut self, terminal_id: TerminalId, cwd: PathBuf) {
         if self.terminal_cwds.get(&terminal_id) == Some(&cwd) {
             return;
         }
@@ -3793,7 +3798,11 @@ impl Pty {
             .send_to_plugin(PluginInstruction::Update(vec![(
                 None,
                 None,
-                Event::CwdChanged(pane_id.into(), cwd.clone(), focused_client_ids),
+                Event::CwdChanged(
+                    pane_id.into(),
+                    cwd.clone(),
+                    focused_client_ids.into_iter().map(|id| id.0).collect(),
+                ),
             )]));
         let _ = self
             .bus
@@ -3814,7 +3823,7 @@ impl Pty {
     /// that decide what a pane *is* — two panes in the same folder on different
     /// machines are in different folders, and anything keying on the path alone
     /// would merge them.
-    fn report_terminal_host(&mut self, terminal_id: u32) {
+    fn report_terminal_host(&mut self, terminal_id: TerminalId) {
         let host = self
             .bus
             .os_input
@@ -3837,7 +3846,7 @@ impl Pty {
         }
     }
 
-    fn remote_worktree(&self, terminal_id: u32) -> Option<std::path::PathBuf> {
+    fn remote_worktree(&self, terminal_id: TerminalId) -> Option<std::path::PathBuf> {
         self.bus
             .os_input
             .as_ref()
@@ -3850,7 +3859,7 @@ impl Pty {
     /// remote-to-local rerun leaves the pane's reported host stale. One update rather than a
     /// `forget` followed by a `report`, so a plugin watching pane hosts never sees a spurious
     /// host-less pane in between.
-    fn re_report_terminal_host(&mut self, terminal_id: u32) {
+    fn re_report_terminal_host(&mut self, terminal_id: TerminalId) {
         let host = self
             .bus
             .os_input
@@ -3867,14 +3876,14 @@ impl Pty {
             ));
     }
 
-    fn forget_terminal_host(&mut self, terminal_id: u32) {
+    fn forget_terminal_host(&mut self, terminal_id: TerminalId) {
         let _ = self
             .bus
             .senders
             .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, None, None));
     }
 
-    fn forget_terminal_cwd(&mut self, terminal_id: u32) {
+    fn forget_terminal_cwd(&mut self, terminal_id: TerminalId) {
         if self.terminal_cwds.remove(&terminal_id).is_some() {
             let _ = self
                 .bus
@@ -3894,7 +3903,7 @@ impl Pty {
     /// caller has already resolved it, and it is better than nothing to go on.
     fn capture_initial_cwd(
         &mut self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         child_pid: u32,
         requested_cwd: Option<PathBuf>,
     ) {
@@ -3918,7 +3927,7 @@ impl Pty {
         // already sitting in a local cache, so re-reading it costs nothing —
         // which also means a silent remote agent, one sitting at its prompt
         // producing nothing, stays visible where a local one would go stale.
-        let active_local: Vec<u32> = self
+        let active_local: Vec<TerminalId> = self
             .id_to_child_pid
             .keys()
             .copied()
@@ -3929,7 +3938,7 @@ impl Pty {
                     .unwrap_or(false)
             })
             .collect();
-        let remote_ids: Vec<u32> = self
+        let remote_ids: Vec<TerminalId> = self
             .bus
             .os_input
             .as_ref()
@@ -3966,7 +3975,7 @@ impl Pty {
             }
         }
 
-        let panes: Vec<(u32, u32)> = active_local
+        let panes: Vec<(TerminalId, u32)> = active_local
             .iter()
             .filter_map(|id| self.id_to_child_pid.get(id).map(|pid| (*id, *pid)))
             .collect();
@@ -4002,7 +4011,7 @@ impl Pty {
             }
         }
 
-        let active_terminal_ids: Vec<u32> = active_local
+        let active_terminal_ids: Vec<TerminalId> = active_local
             .iter()
             .copied()
             .chain(remote_ids.iter().copied())
@@ -4042,7 +4051,7 @@ impl Pty {
                             pane_id.into(),
                             command,
                             is_foreground,
-                            focused_client_ids,
+                            focused_client_ids.into_iter().map(|id| id.0).collect(),
                         ),
                     )]));
                 self.terminal_foreground_cmds
@@ -4060,7 +4069,7 @@ impl Pty {
         self.post_command_discovery_hook = post_command_discovery_hook;
     }
 
-    pub fn notify_cwd_from_osc7(&mut self, terminal_id: u32, path: PathBuf) {
+    pub fn notify_cwd_from_osc7(&mut self, terminal_id: TerminalId, path: PathBuf) {
         use std::sync::atomic::Ordering;
 
         self.set_terminal_cwd(terminal_id, path);
@@ -4336,10 +4345,10 @@ impl Drop for Pty {
                     .remote_pane_ids()
                     .into_iter()
                     .filter(|id| os_input.is_firecracker_pane(*id))
-                    .collect::<Vec<u32>>()
+                    .collect::<Vec<TerminalId>>()
             })
             .unwrap_or_default();
-        let child_ids: HashSet<u32> = self
+        let child_ids: HashSet<TerminalId> = self
             .id_to_child_pid
             .keys()
             .copied()
@@ -4360,13 +4369,13 @@ impl Drop for Pty {
 /// here: a command that is not there, and a pane on another machine that could
 /// not be opened at all. Both name the terminal id they were reserved under, and
 /// anything else is a failure this thread has no pane to blame it on.
-fn pane_start_failure(err: &anyhow::Error) -> Option<(u32, String)> {
+fn pane_start_failure(err: &anyhow::Error) -> Option<(TerminalId, String)> {
     match err.downcast_ref::<ZellijError>()? {
         ZellijError::CommandNotFound {
             terminal_id,
             command,
         } => Some((
-            *terminal_id,
+            TerminalId(*terminal_id),
             format!(
                 "Command not found: {command}\n\rIf you were including arguments as part of \
                  the command, try including them as 'args' instead."
@@ -4375,7 +4384,7 @@ fn pane_start_failure(err: &anyhow::Error) -> Option<(u32, String)> {
         ZellijError::PaneStartFailed {
             terminal_id,
             message,
-        } => Some((*terminal_id, message.clone())),
+        } => Some((TerminalId(*terminal_id), message.clone())),
         _ => None,
     }
 }
@@ -4391,7 +4400,7 @@ fn pane_start_failure(err: &anyhow::Error) -> Option<(u32, String)> {
 /// looking live.
 fn release_pane_for_warp(
     pty: &mut Pty,
-    terminal_id: u32,
+    terminal_id: TerminalId,
     to_session: &str,
     deadline: Instant,
 ) -> std::result::Result<ReleasedPane, String> {
@@ -4461,7 +4470,7 @@ const READER_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 ///
 /// The real ssh tests get this right by construction: `release_for_warp` there
 /// joins the pump thread before releasing. This is that join, in production.
-fn wait_for_reader_to_stop(terminal_id: u32, handle: JoinHandle<()>) {
+fn wait_for_reader_to_stop(terminal_id: TerminalId, handle: JoinHandle<()>) {
     let joined = async_runtime()
         .block_on(async { tokio::time::timeout(READER_SHUTDOWN_TIMEOUT, handle).await });
     // A cancelled task reports `JoinError::is_cancelled`, which is the expected
@@ -4494,9 +4503,9 @@ fn wait_for_reader_to_stop(terminal_id: u32, handle: JoinHandle<()>) {
 /// `deadline` rather than to a budget of its own.
 fn release_tab_for_warp(
     pty: &mut Pty,
-    terminal_ids: Vec<u32>,
+    terminal_ids: Vec<TerminalId>,
     deadline: Instant,
-) -> Vec<(u32, std::result::Result<ReleasedPane, String>)> {
+) -> Vec<(TerminalId, std::result::Result<ReleasedPane, String>)> {
     let refusal = terminal_ids.iter().find_map(|terminal_id| {
         pty.check_terminal_can_be_warped(*terminal_id)
             .err()
@@ -4521,7 +4530,7 @@ fn release_tab_for_warp(
     pty.stop_readers_for_warp(&terminal_ids);
 
     let budget = deadline.saturating_duration_since(Instant::now());
-    let released: Vec<(u32, std::result::Result<ReleasedPane, String>)> = {
+    let released: Vec<(TerminalId, std::result::Result<ReleasedPane, String>)> = {
         let Some(os_input) = pty.bus.os_input.as_deref() else {
             return terminal_ids
                 .iter()
@@ -4603,7 +4612,7 @@ fn release_tab_for_warp(
 /// the other end any more — and it comes with the way out already wired up:
 /// `<ENTER>` re-runs, `<Ctrl-c>` closes. `recovery` names the still-running
 /// process for the user who would rather have *that* one back than a fresh one.
-fn strand_pane_after_warp(pty: &Pty, terminal_id: u32, why: &str, recovery: Option<String>) {
+fn strand_pane_after_warp(pty: &Pty, terminal_id: TerminalId, why: &str, recovery: Option<String>) {
     let mut message = format!("\r\n\u{1b}[31m── {why} ──\u{1b}[0m\r\n");
     if let Some(recovery) = recovery {
         message.push_str(&format!(
@@ -4634,7 +4643,7 @@ fn strand_pane_after_warp(pty: &Pty, terminal_id: u32, why: &str, recovery: Opti
 
 fn send_pane_error_to_screen(
     senders: ThreadSenders,
-    terminal_id: u32,
+    terminal_id: TerminalId,
     message: String,
     run_command: RunCommand,
 ) -> Result<()> {

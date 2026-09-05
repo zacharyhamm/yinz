@@ -11,7 +11,7 @@ pub fn generate_random_name_permission_denied() {
         create_plugin_thread(Some(plugin_host_folder), None);
 
     let received_screen_instructions = Watched::new(vec![]);
-    let client_id = 1;
+    let client_id = ClientId(1);
 
     // The permission is denied, so the fixture must never get a name to print.
     let screen_thread = deny_permissions_and_log_until_disconnect(
@@ -111,7 +111,7 @@ pub fn save_layout_permission_denied() {
         create_plugin_thread(Some(plugin_host_folder), None);
 
     let received_screen_instructions = Watched::new(vec![]);
-    let client_id = 1;
+    let client_id = ClientId(1);
 
     // The permission is denied, so the save must fail rather than succeed.
     let screen_thread = deny_permissions_and_log_until_disconnect(
@@ -230,7 +230,7 @@ pub fn plugin_receives_config_change_event() {
     });
 
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -350,7 +350,7 @@ pub fn plugin_does_not_receive_event_when_config_unchanged() {
     });
 
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -466,7 +466,7 @@ pub fn get_session_environment_variables_plugin_command() {
         &PermissionType::ReadSessionEnvironmentVariables,
         cache_path,
         plugin_thread_sender,
-        1
+        crate::ClientId(1)
     );
 
     let plugin_should_float = Some(false);
@@ -478,7 +478,7 @@ pub fn get_session_environment_variables_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -548,7 +548,7 @@ pub fn a_reload_replaces_the_hooks_and_the_configured_context_menu() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
-    let client_id = 1;
+    let client_id = ClientId(1);
 
     let reloaded = ContextMenu::from_items(vec![ContextMenuItem::new(
         "Only this",
@@ -571,7 +571,7 @@ pub fn a_reload_replaces_the_hooks_and_the_configured_context_menu() {
     let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
         context: Box::new(ContextMenuContext {
             request_id: 7,
-            client_id,
+            client_id: client_id.0,
             ..Default::default()
         }),
         client_id,
@@ -626,7 +626,7 @@ pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
         RunPlugin::from_url(&format!("file:{}", *PLUGIN_FIXTURE)).unwrap(),
     );
     let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
-        client_id: 1,
+        client_id: crate::ClientId(1),
         keybinds: None,
         default_mode: None,
         default_shell: None,
@@ -637,7 +637,7 @@ pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
         context_menu: Default::default(),
         was_written_to_disk: false,
     });
-    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(1));
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(crate::ClientId(1)));
 
     let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
         context: Box::new(ContextMenuContext {
@@ -645,7 +645,7 @@ pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
             client_id: 1,
             ..Default::default()
         }),
-        client_id: 1,
+        client_id: crate::ClientId(1),
     });
 
     let mut plugin_ids_loaded = std::collections::HashSet::new();
@@ -659,7 +659,7 @@ pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
                 continue;
             };
             if let ScreenInstruction::AddPlugin(_, _, _, _, _, _, plugin_id, ..) = instruction {
-                plugin_ids_loaded.insert(plugin_id);
+                plugin_ids_loaded.insert(plugin_id.0);
             }
         }
     };
@@ -678,7 +678,7 @@ pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
             client_id: 2,
             ..Default::default()
         }),
-        client_id: 2,
+        client_id: crate::ClientId(2),
     });
     collect_loads_for(&mut plugin_ids_loaded, 2);
     teardown();
@@ -713,7 +713,7 @@ pub fn a_shared_context_menu_hook_is_loaded_on_the_first_request() {
             .with_configuration(BTreeMap::from([("shared".to_owned(), "true".to_owned())])),
     );
     let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
-        client_id: 1,
+        client_id: crate::ClientId(1),
         keybinds: None,
         default_mode: None,
         default_shell: None,
@@ -724,7 +724,7 @@ pub fn a_shared_context_menu_hook_is_loaded_on_the_first_request() {
         context_menu: Default::default(),
         was_written_to_disk: false,
     });
-    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(1));
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(crate::ClientId(1)));
 
     let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
         context: Box::new(ContextMenuContext {
@@ -732,7 +732,7 @@ pub fn a_shared_context_menu_hook_is_loaded_on_the_first_request() {
             client_id: 1,
             ..Default::default()
         }),
-        client_id: 1,
+        client_id: crate::ClientId(1),
     });
 
     let mut plugin_ids_loaded = std::collections::HashSet::new();

@@ -2493,14 +2493,7 @@ pub(crate) fn screen_thread_main(
                     attach_traces_waiting_for_first_render.remove(&client_id);
                     continue;
                 }
-                let pane_id = pane_id_to_focus.map(|(pane_id, is_plugin)| {
-                    if is_plugin {
-                        PaneId::Plugin(pane_id)
-                    } else {
-                        PaneId::Terminal(pane_id)
-                    }
-                });
-                if let Some(pane_id) = pane_id {
+                if let Some(pane_id) = pane_id_to_focus {
                     log::info!(
                         "attach trace: screen client_id={client_id} restoring pane focus {pane_id:?}"
                     );
@@ -4077,11 +4070,15 @@ pub(crate) fn screen_thread_main(
                     is_current_session: true,
                     available_layouts,
                     plugins: Default::default(),
-                    tab_history: screen.tab_history.clone(),
+                    tab_history: screen
+                        .tab_history
+                        .iter()
+                        .map(|(id, history)| (id.0, history.clone()))
+                        .collect(),
                     pane_history: screen
                         .pane_history
                         .iter()
-                        .map(|(k, v)| (*k, v.iter().map(|v| (*v).into()).collect()))
+                        .map(|(k, v)| (k.0, v.iter().map(|v| (*v).into()).collect()))
                         .collect(),
                     creation_time,
                 };

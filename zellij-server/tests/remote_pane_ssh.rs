@@ -500,7 +500,13 @@ fn open_pane_with(
         ..Default::default()
     };
     let (conn, reader_socket) = hosts
-        .open_pane_with_env(HOST, &cmd, None, terminal_id, env)
+        .open_pane_with_env(
+            HOST,
+            &cmd,
+            None,
+            zellij_server::TerminalId(terminal_id),
+            env,
+        )
         .unwrap_or_else(|e| panic!("failed to open a pane on {HOST}: {e:#}"));
     let reader = RemoteReader::new(conn.clone(), reader_socket)
         .expect("failed to build a reader for a remote pane");
@@ -532,7 +538,13 @@ fn open_default_shell_pane_with(
         ..Default::default()
     };
     let (conn, reader_socket) = hosts
-        .open_pane_with_env(HOST, &cmd, None, terminal_id, env)
+        .open_pane_with_env(
+            HOST,
+            &cmd,
+            None,
+            zellij_server::TerminalId(terminal_id),
+            env,
+        )
         .unwrap_or_else(|e| panic!("failed to open a shell pane on {HOST}: {e:#}"));
     let reader = RemoteReader::new(conn.clone(), reader_socket)
         .expect("failed to build a reader for a remote pane");

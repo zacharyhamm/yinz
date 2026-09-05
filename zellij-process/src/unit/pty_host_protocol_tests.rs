@@ -704,3 +704,21 @@ fn a_full_ring_fits_in_one_frame() {
         buf.len()
     );
 }
+
+#[test]
+fn legacy_attach_frame_preserves_numeric_terminal_id() {
+    let payload = br#"{"Attach":{"protocol_version":1,"zellij_version":"legacy","terminal_id":4294967295,"session_name":null}}"#;
+    let mut frame = (payload.len() as u32).to_le_bytes().to_vec();
+    frame.extend_from_slice(payload);
+    let message: ServerToHostMsg = read_msg(&mut Cursor::new(&frame)).unwrap().unwrap();
+    assert!(matches!(
+        message,
+        ServerToHostMsg::Attach {
+            terminal_id: u32::MAX,
+            ..
+        }
+    ));
+    let mut encoded = Vec::new();
+    write_msg(&mut encoded, &message).unwrap();
+    assert_eq!(encoded, frame);
+}

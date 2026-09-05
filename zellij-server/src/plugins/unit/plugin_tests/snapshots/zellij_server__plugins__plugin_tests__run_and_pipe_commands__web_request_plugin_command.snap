@@ -1,11 +1,16 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/run_and_pipe_commands.rs
+assertion_line: 250
 expression: "format!(\"{:#?}\", new_tab_event)"
 ---
 Some(
     WebRequest(
-        0,
-        1,
+        PluginId(
+            0,
+        ),
+        ClientId(
+            1,
+        ),
         "https://example.com/foo?arg1=val1&arg2=val2",
         Post,
         {

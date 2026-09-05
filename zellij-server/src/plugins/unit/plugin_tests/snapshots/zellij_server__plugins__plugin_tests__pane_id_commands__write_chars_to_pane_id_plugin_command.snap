@@ -1,5 +1,6 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/pane_id_commands.rs
+assertion_line: 620
 expression: "format!(\"{:#?}\", rerun_command_pane_event)"
 ---
 Some(
@@ -11,7 +12,9 @@ Some(
             10,
         ],
         Terminal(
-            2,
+            TerminalId(
+                2,
+            ),
         ),
         Some(
             NotificationEnd {

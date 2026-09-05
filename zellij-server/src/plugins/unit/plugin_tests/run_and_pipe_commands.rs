@@ -19,7 +19,7 @@ pub fn run_command_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -102,7 +102,7 @@ pub fn run_command_with_env_vars_and_cwd_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -185,7 +185,7 @@ pub fn web_request_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -268,7 +268,7 @@ pub fn unblock_input_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -356,7 +356,7 @@ pub fn block_input_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -445,7 +445,7 @@ pub fn pipe_output_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -541,7 +541,7 @@ pub fn pipe_message_to_plugin_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -631,7 +631,7 @@ pub fn switch_session_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -720,7 +720,7 @@ pub fn switch_session_with_layout_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -809,7 +809,7 @@ pub fn switch_session_with_layout_and_cwd_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -895,7 +895,7 @@ pub fn disconnect_other_clients_plugins_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -981,7 +981,7 @@ pub fn reconfigure_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1072,7 +1072,7 @@ pub fn run_plugin_in_specific_cwd() {
         relative_path: None,
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1162,7 +1162,7 @@ pub fn cli_pipe_is_released_when_plugin_panics_while_handling_it() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let size = Size {
         cols: 121,
         rows: 20,

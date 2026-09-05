@@ -1,5 +1,6 @@
 ---
-source: zellij-server/src/tab/./unit/layout_applier_tests.rs
+source: zellij-server/src/tab/./unit/layout_applier_tests/apply.rs
+assertion_line: 1066
 expression: "take_pane_state_snapshot(&tiled_panes, &floating_panes, &focus_pane_id,\n&viewport, &display_area,)"
 ---
 VIEWPORT: x=0, y=0, cols=100, rows=50
@@ -7,7 +8,7 @@ DISPLAY: cols=100, rows=50
 FOCUS: None
 
 TILED PANES (1)
-  Terminal(1):
+  Terminal(TerminalId(1)):
     geom: x=0, y=0, cols=100, rows=50
     logical_position: 0
     run: None
@@ -16,7 +17,7 @@ TILED PANES (1)
     borderless: false
 
 FLOATING PANES (1)
-  Terminal(2):
+  Terminal(TerminalId(2)):
     geom: x=10, y=10, cols=50, rows=25
     logical_position: 0
     run: Command(htop)

@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use zellij_utils::internal_ids::{PluginId, TerminalId};
 
 use zellij_utils::data::FloatingPaneCoordinates;
 use zellij_utils::input::layout::{PercentOrFixed, RunPluginOrAlias};
@@ -218,8 +220,8 @@ mod tests {
     #[test]
     fn clone_inner_returns_copy_of_internal_map() {
         let mut pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 1;
-        let pane_id = PaneId::Terminal(10);
+        let client_id: ClientId = ClientId(1);
+        let pane_id = PaneId::Terminal(TerminalId(10));
         let screen_size = create_test_screen_size();
 
         pane_groups.add_pane_id_to_group(pane_id, screen_size, &client_id);
@@ -233,7 +235,7 @@ mod tests {
     #[test]
     fn get_client_pane_group_returns_empty_set_for_nonexistent_client() {
         let pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 999;
+        let client_id: ClientId = ClientId(999);
 
         let result = pane_groups.get_client_pane_group(&client_id);
         assert!(result.is_empty());
@@ -242,11 +244,11 @@ mod tests {
     #[test]
     fn get_client_pane_group_returns_correct_panes() {
         let mut pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 1;
+        let client_id: ClientId = ClientId(1);
         let pane_ids = vec![
-            PaneId::Terminal(10),
-            PaneId::Plugin(20),
-            PaneId::Terminal(30),
+            PaneId::Terminal(TerminalId(10)),
+            PaneId::Plugin(PluginId(20)),
+            PaneId::Terminal(TerminalId(30)),
         ];
         let screen_size = create_test_screen_size();
 
@@ -264,11 +266,11 @@ mod tests {
     #[test]
     fn clear_pane_group_clears_existing_group() {
         let mut pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 1;
+        let client_id: ClientId = ClientId(1);
         let pane_ids = vec![
-            PaneId::Terminal(10),
-            PaneId::Plugin(20),
-            PaneId::Terminal(30),
+            PaneId::Terminal(TerminalId(10)),
+            PaneId::Plugin(PluginId(20)),
+            PaneId::Terminal(TerminalId(30)),
         ];
         let screen_size = create_test_screen_size();
 
@@ -286,7 +288,7 @@ mod tests {
     #[test]
     fn clear_pane_group_handles_nonexistent_client() {
         let mut pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 999;
+        let client_id: ClientId = ClientId(999);
 
         pane_groups.clear_pane_group(&client_id);
         assert!(pane_groups.get_client_pane_group(&client_id).is_empty());
@@ -295,8 +297,8 @@ mod tests {
     #[test]
     fn toggle_pane_id_adds_new_pane() {
         let mut pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 1;
-        let pane_id = PaneId::Terminal(10);
+        let client_id: ClientId = ClientId(1);
+        let pane_id = PaneId::Terminal(TerminalId(10));
         let screen_size = create_test_screen_size();
 
         pane_groups.toggle_pane_id_in_group(pane_id, screen_size, &client_id);
@@ -308,8 +310,8 @@ mod tests {
     #[test]
     fn toggle_pane_id_removes_existing_pane() {
         let mut pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 1;
-        let pane_id = PaneId::Plugin(10);
+        let client_id: ClientId = ClientId(1);
+        let pane_id = PaneId::Plugin(PluginId(10));
         let screen_size = create_test_screen_size();
 
         pane_groups.add_pane_id_to_group(pane_id, screen_size, &client_id);
@@ -326,8 +328,8 @@ mod tests {
     #[test]
     fn add_pane_id_to_group_adds_new_pane() {
         let mut pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 1;
-        let pane_id = PaneId::Terminal(10);
+        let client_id: ClientId = ClientId(1);
+        let pane_id = PaneId::Terminal(TerminalId(10));
         let screen_size = create_test_screen_size();
 
         pane_groups.add_pane_id_to_group(pane_id, screen_size, &client_id);
@@ -339,8 +341,8 @@ mod tests {
     #[test]
     fn add_pane_id_to_group_does_not_duplicate() {
         let mut pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 1;
-        let pane_id = PaneId::Plugin(10);
+        let client_id: ClientId = ClientId(1);
+        let pane_id = PaneId::Plugin(PluginId(10));
         let screen_size = create_test_screen_size();
 
         pane_groups.add_pane_id_to_group(pane_id, screen_size, &client_id);
@@ -354,79 +356,97 @@ mod tests {
     #[test]
     fn group_and_ungroup_panes_adds_and_removes_correctly() {
         let mut pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 1;
+        let client_id: ClientId = ClientId(1);
         let screen_size = create_test_screen_size();
 
-        let initial_panes = vec![PaneId::Terminal(1), PaneId::Plugin(2), PaneId::Terminal(3)];
+        let initial_panes = vec![
+            PaneId::Terminal(TerminalId(1)),
+            PaneId::Plugin(PluginId(2)),
+            PaneId::Terminal(TerminalId(3)),
+        ];
         for pane_id in &initial_panes {
             pane_groups.add_pane_id_to_group(*pane_id, screen_size, &client_id);
         }
 
-        let panes_to_add = vec![PaneId::Plugin(4), PaneId::Terminal(5)];
-        let panes_to_remove = vec![PaneId::Plugin(2), PaneId::Terminal(3)];
+        let panes_to_add = vec![PaneId::Plugin(PluginId(4)), PaneId::Terminal(TerminalId(5))];
+        let panes_to_remove = vec![PaneId::Plugin(PluginId(2)), PaneId::Terminal(TerminalId(3))];
 
         pane_groups.group_and_ungroup_panes(panes_to_add, panes_to_remove, screen_size, &client_id);
 
         let result = pane_groups.get_client_pane_group(&client_id);
 
-        assert!(result.contains(&PaneId::Terminal(1)));
-        assert!(result.contains(&PaneId::Plugin(4)));
-        assert!(result.contains(&PaneId::Terminal(5)));
-        assert!(!result.contains(&PaneId::Plugin(2)));
-        assert!(!result.contains(&PaneId::Terminal(3)));
+        assert!(result.contains(&PaneId::Terminal(TerminalId(1))));
+        assert!(result.contains(&PaneId::Plugin(PluginId(4))));
+        assert!(result.contains(&PaneId::Terminal(TerminalId(5))));
+        assert!(!result.contains(&PaneId::Plugin(PluginId(2))));
+        assert!(!result.contains(&PaneId::Terminal(TerminalId(3))));
         assert_eq!(result.len(), 3);
     }
 
     #[test]
     fn override_groups_with_replaces_all_groups() {
         let mut pane_groups = create_test_pane_groups();
-        let client_id1: ClientId = 1;
-        let client_id2: ClientId = 2;
+        let client_id1: ClientId = ClientId(1);
+        let client_id2: ClientId = ClientId(2);
         let screen_size = create_test_screen_size();
 
-        pane_groups.add_pane_id_to_group(PaneId::Terminal(10), screen_size, &client_id1);
+        pane_groups.add_pane_id_to_group(
+            PaneId::Terminal(TerminalId(10)),
+            screen_size,
+            &client_id1,
+        );
 
         let mut new_groups = HashMap::new();
-        new_groups.insert(client_id2, vec![PaneId::Plugin(20), PaneId::Terminal(30)]);
+        new_groups.insert(
+            client_id2,
+            vec![
+                PaneId::Plugin(PluginId(20)),
+                PaneId::Terminal(TerminalId(30)),
+            ],
+        );
 
         pane_groups.override_groups_with(new_groups);
 
         assert!(pane_groups.get_client_pane_group(&client_id1).is_empty());
 
         let result = pane_groups.get_client_pane_group(&client_id2);
-        assert!(result.contains(&PaneId::Plugin(20)));
-        assert!(result.contains(&PaneId::Terminal(30)));
+        assert!(result.contains(&PaneId::Plugin(PluginId(20))));
+        assert!(result.contains(&PaneId::Terminal(TerminalId(30))));
         assert_eq!(result.len(), 2);
     }
 
     #[test]
     fn multiple_clients_independent_groups() {
         let mut pane_groups = create_test_pane_groups();
-        let client_id1: ClientId = 1;
-        let client_id2: ClientId = 2;
+        let client_id1: ClientId = ClientId(1);
+        let client_id2: ClientId = ClientId(2);
         let screen_size = create_test_screen_size();
 
-        pane_groups.add_pane_id_to_group(PaneId::Terminal(10), screen_size, &client_id1);
-        pane_groups.add_pane_id_to_group(PaneId::Plugin(20), screen_size, &client_id2);
+        pane_groups.add_pane_id_to_group(
+            PaneId::Terminal(TerminalId(10)),
+            screen_size,
+            &client_id1,
+        );
+        pane_groups.add_pane_id_to_group(PaneId::Plugin(PluginId(20)), screen_size, &client_id2);
 
         let group1 = pane_groups.get_client_pane_group(&client_id1);
         let group2 = pane_groups.get_client_pane_group(&client_id2);
 
-        assert!(group1.contains(&PaneId::Terminal(10)));
-        assert!(!group1.contains(&PaneId::Plugin(20)));
+        assert!(group1.contains(&PaneId::Terminal(TerminalId(10))));
+        assert!(!group1.contains(&PaneId::Plugin(PluginId(20))));
 
-        assert!(group2.contains(&PaneId::Plugin(20)));
-        assert!(!group2.contains(&PaneId::Terminal(10)));
+        assert!(group2.contains(&PaneId::Plugin(PluginId(20))));
+        assert!(!group2.contains(&PaneId::Terminal(TerminalId(10))));
     }
 
     #[test]
     fn pane_id_variants_work_correctly() {
         let mut pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 1;
+        let client_id: ClientId = ClientId(1);
         let screen_size = create_test_screen_size();
 
-        let terminal_pane = PaneId::Terminal(100);
-        let plugin_pane = PaneId::Plugin(200);
+        let terminal_pane = PaneId::Terminal(TerminalId(100));
+        let plugin_pane = PaneId::Plugin(PluginId(200));
 
         pane_groups.add_pane_id_to_group(terminal_pane, screen_size, &client_id);
         pane_groups.add_pane_id_to_group(plugin_pane, screen_size, &client_id);
@@ -436,14 +456,14 @@ mod tests {
         assert!(result.contains(&plugin_pane));
         assert_eq!(result.len(), 2);
 
-        let another_terminal = PaneId::Terminal(200);
+        let another_terminal = PaneId::Terminal(TerminalId(200));
         assert!(!result.contains(&another_terminal));
     }
 
     #[test]
     fn should_launch_plugin_returns_true_when_first_pane_added() {
         let pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 1;
+        let client_id: ClientId = ClientId(1);
         let previous_groups = HashMap::new();
 
         assert!(pane_groups.should_launch_plugin(&previous_groups, &client_id));
@@ -452,13 +472,13 @@ mod tests {
     #[test]
     fn should_launch_plugin_returns_true_when_empty_to_non_empty() {
         let mut pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 1;
+        let client_id: ClientId = ClientId(1);
         let screen_size = create_test_screen_size();
 
         let mut previous_groups = HashMap::new();
         previous_groups.insert(client_id, vec![]);
 
-        pane_groups.add_pane_id_to_group(PaneId::Terminal(10), screen_size, &client_id);
+        pane_groups.add_pane_id_to_group(PaneId::Terminal(TerminalId(10)), screen_size, &client_id);
 
         assert!(pane_groups.should_launch_plugin(&previous_groups, &client_id));
     }
@@ -466,13 +486,13 @@ mod tests {
     #[test]
     fn should_launch_plugin_returns_false_when_non_empty_to_non_empty() {
         let mut pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 1;
+        let client_id: ClientId = ClientId(1);
         let screen_size = create_test_screen_size();
 
-        pane_groups.add_pane_id_to_group(PaneId::Terminal(10), screen_size, &client_id);
+        pane_groups.add_pane_id_to_group(PaneId::Terminal(TerminalId(10)), screen_size, &client_id);
         let previous_groups = pane_groups.clone_inner();
 
-        pane_groups.add_pane_id_to_group(PaneId::Plugin(20), screen_size, &client_id);
+        pane_groups.add_pane_id_to_group(PaneId::Plugin(PluginId(20)), screen_size, &client_id);
 
         assert!(!pane_groups.should_launch_plugin(&previous_groups, &client_id));
     }
@@ -480,10 +500,10 @@ mod tests {
     #[test]
     fn should_launch_plugin_returns_false_when_non_empty_to_empty() {
         let pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 1;
+        let client_id: ClientId = ClientId(1);
 
         let mut previous_groups = HashMap::new();
-        previous_groups.insert(client_id, vec![PaneId::Terminal(10)]);
+        previous_groups.insert(client_id, vec![PaneId::Terminal(TerminalId(10))]);
 
         assert!(!pane_groups.should_launch_plugin(&previous_groups, &client_id));
     }
@@ -491,7 +511,7 @@ mod tests {
     #[test]
     fn should_launch_plugin_returns_false_when_empty_to_empty() {
         let pane_groups = create_test_pane_groups();
-        let client_id: ClientId = 1;
+        let client_id: ClientId = ClientId(1);
 
         let mut previous_groups = HashMap::new();
         previous_groups.insert(client_id, vec![]);
@@ -508,16 +528,16 @@ mod tests {
     /// same ids keep coming back.
     #[hegel::composite]
     fn any_client_id(tc: &hegel::TestCase) -> ClientId {
-        tc.draw(generators::integers::<ClientId>().max_value(3))
+        ClientId(tc.draw(generators::integers::<u16>().max_value(3)))
     }
 
     #[hegel::composite]
     fn any_pane_id(tc: &hegel::TestCase) -> PaneId {
         let n = tc.draw(generators::integers::<u32>().max_value(4));
         if tc.draw(generators::booleans()) {
-            PaneId::Terminal(n)
+            PaneId::Terminal(TerminalId(n))
         } else {
-            PaneId::Plugin(n)
+            PaneId::Plugin(PluginId(n))
         }
     }
 

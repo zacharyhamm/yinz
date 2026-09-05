@@ -1,15 +1,20 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/self_and_pane_commands.rs
+assertion_line: 228
 expression: "format!(\"{:#?}\", new_tab_event)"
 ---
 Some(
     FocusPaneWithId(
         Plugin(
-            0,
+            PluginId(
+                0,
+            ),
         ),
         false,
         false,
-        1,
+        ClientId(
+            1,
+        ),
         Some(
             NotificationEnd {
                 channel: None,

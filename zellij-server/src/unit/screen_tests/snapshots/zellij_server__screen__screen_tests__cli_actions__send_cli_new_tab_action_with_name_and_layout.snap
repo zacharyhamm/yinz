@@ -1,6 +1,6 @@
 ---
 source: zellij-server/src/screen/../unit/screen_tests/cli_actions.rs
-assertion_line: 1749
+assertion_line: 1892
 expression: output
 ---
 NewTab(
@@ -102,7 +102,9 @@ NewTab(
     None,
     false,
     true,
-    10,
+    ClientId(
+        10,
+    ),
     Some(
         NotificationEnd {
             channel: None,

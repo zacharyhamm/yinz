@@ -342,7 +342,7 @@ impl PluginMap {
             .into_iter()
             .map(|(plugin_id, _client_id)| plugin_id)
             .collect();
-        let mut plugin_ids_to_cmds: BTreeMap<u32, RunPlugin> = BTreeMap::new();
+        let mut plugin_ids_to_cmds: BTreeMap<PluginId, RunPlugin> = BTreeMap::new();
         for plugin_id in all_plugin_ids {
             let plugin_cmd = self.run_plugin_of_plugin_id(plugin_id);
             match plugin_cmd {

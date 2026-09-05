@@ -1,4 +1,5 @@
 use zellij_utils::errors::prelude::*;
+use zellij_utils::internal_ids::TerminalId;
 
 use super::{PreparedTabWarp, Screen, ScreenInstruction, WarpAddress};
 use crate::panes::PaneId;
@@ -103,7 +104,7 @@ impl Screen {
         &mut self,
         pane_id: Option<PaneId>,
         client_id: ClientId,
-    ) -> Result<u32, String> {
+    ) -> Result<TerminalId, String> {
         let pane_id = match pane_id {
             Some(pane_id) => pane_id,
             None => self
@@ -228,7 +229,7 @@ impl Screen {
     /// the way anything else is.
     pub(super) fn take_released_pane_for_warp(
         &mut self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         released: Result<ReleasedPane, String>,
     ) -> Result<Box<WarpedPane>, String> {
         let address = Self::warp_address(released?)?;
@@ -308,7 +309,7 @@ impl Screen {
         &mut self,
         tab_index: Option<usize>,
         client_id: ClientId,
-    ) -> Result<(usize, Vec<u32>, PreparedTabWarp), String> {
+    ) -> Result<(usize, Vec<TerminalId>, PreparedTabWarp), String> {
         let tab_index = match tab_index {
             Some(tab_index) => tab_index,
             None => self
@@ -417,7 +418,7 @@ impl Screen {
         // Plugin panes have no slot here on purpose. They have no process to hand
         // over, but they do have a `Run::Plugin` in the layout, so the receiving
         // session builds the same tab by starting them afresh.
-        let terminal_ids: Vec<u32> = tiled_panes
+        let terminal_ids: Vec<TerminalId> = tiled_panes
             .iter()
             .chain(floating_panes.iter())
             .filter_map(|pane_id| match pane_id {
@@ -456,10 +457,10 @@ impl Screen {
     pub(super) fn take_released_tab_for_warp(
         &mut self,
         tab_index: usize,
-        released: Vec<(u32, Result<ReleasedPane, String>)>,
+        released: Vec<(TerminalId, Result<ReleasedPane, String>)>,
         prepared: PreparedTabWarp,
     ) -> Result<Box<WarpedTab>, String> {
-        let mut addresses: HashMap<u32, WarpAddress> = HashMap::new();
+        let mut addresses: HashMap<TerminalId, WarpAddress> = HashMap::new();
         for (terminal_id, released) in released {
             // The refusal `warp_address` can produce is worded for one pane, and
             // a tab is refused whole for it. Reaching it at all means the pty
@@ -581,7 +582,7 @@ impl Screen {
     /// `NewPane` already knows how to place one.
     pub(super) fn place_adopted_pane(
         &mut self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         payload: WarpedPane,
         placement: WarpPlacement,
         client_id: ClientId,

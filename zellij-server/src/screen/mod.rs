@@ -65,6 +65,7 @@ use std::rc::Rc;
 use std::str;
 use std::time::{Duration, Instant};
 use zellij_utils::animation::{Tween, BLINK_TICK, FRAME_PERIOD};
+use zellij_utils::internal_ids::TerminalId;
 
 use crate::route::NotificationEnd;
 
@@ -148,7 +149,7 @@ pub(crate) use thread_main::screen_thread_main;
 /// What the screen does with a host terminal's answer to a forwarded OSC 99 notification.
 pub(crate) struct NotificationResponse {
     /// The terminal pane that sent the notification.
-    pub terminal_id: u32,
+    pub terminal_id: TerminalId,
     /// Whether the answer is written to that pane's pty: control requests (`p=?`, `close`,
     /// `alive`) are always answered, an activation report only if the app asked for one.
     pub forward_to_pane: bool,
@@ -234,7 +235,7 @@ pub(crate) fn denormalize_notification_response(payload: &[u8]) -> Option<Notifi
     let restored_metadata = restored_parts.join(":");
     let full_response = format!("\x1b]99;{}{}\x1b\\", restored_metadata, response_payload);
     Some(NotificationResponse {
-        terminal_id,
+        terminal_id: TerminalId(terminal_id),
         forward_to_pane: app_wants_report || payload_type.is_control_request(),
         focus_pane: !payload_type.is_control_request(),
         bytes: full_response.into_bytes(),
@@ -390,9 +391,9 @@ pub struct TabOverrideResult {
     pub floating_layouts: Vec<FloatingPaneLayout>,
     pub swap_tiled_layouts: Option<Vec<SwapTiledLayout>>,
     pub swap_floating_layouts: Option<Vec<SwapFloatingLayout>>,
-    pub new_terminal_pids: Vec<(u32, HoldForCommand)>,
-    pub new_floating_pane_pids: Vec<(u32, HoldForCommand)>,
-    pub plugin_ids: HashMap<RunPluginOrAlias, Vec<u32>>,
+    pub new_terminal_pids: Vec<(TerminalId, HoldForCommand)>,
+    pub new_floating_pane_pids: Vec<(TerminalId, HoldForCommand)>,
+    pub plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
 }
 
 #[derive(Debug, Clone)]
@@ -430,7 +431,7 @@ impl CopyOptions {
 // a sensible timeout of 100ms)
 #[derive(Debug, Clone)]
 pub struct RenderBlocker {
-    blocking_plugins: HashMap<u32, Instant>,
+    blocking_plugins: HashMap<PluginId, Instant>,
     #[cfg_attr(test, allow(dead_code))]
     timeout_ms: u64,
 }
@@ -443,11 +444,11 @@ impl RenderBlocker {
         }
     }
 
-    pub fn register_blocking_plugin(&mut self, plugin_id: u32) {
+    pub fn register_blocking_plugin(&mut self, plugin_id: PluginId) {
         self.blocking_plugins.insert(plugin_id, Instant::now());
     }
 
-    pub fn remove_blocking_plugin(&mut self, plugin_id: u32) {
+    pub fn remove_blocking_plugin(&mut self, plugin_id: PluginId) {
         self.blocking_plugins.remove(&plugin_id);
     }
 
@@ -665,13 +666,13 @@ pub(crate) struct Screen {
     /// Where each terminal pane's process is, as pty last reported it. Stamped
     /// onto every pane manifest so a plugin that missed the announcement — or
     /// loaded after it — is put right by the next update rather than never.
-    terminal_cwds: HashMap<u32, PathBuf>,
+    terminal_cwds: HashMap<TerminalId, PathBuf>,
     /// The machine each remote pane runs on. Absent for local panes, which is
     /// nearly all of them.
-    terminal_hosts: HashMap<u32, String>,
+    terminal_hosts: HashMap<TerminalId, String>,
     /// The host worktree each Firecracker pane's VM mirrors. See [`Screen::set_pane_host`],
     /// which fills it, and `generate_and_report_pane_state`, which puts it on the manifest.
-    terminal_firecracker_worktrees: HashMap<u32, PathBuf>,
+    terminal_firecracker_worktrees: HashMap<TerminalId, PathBuf>,
     /// The name each tab last showed a plugin, so a change to one that no other
     /// event reports — a lone pane retitling itself, a project arriving, a
     /// collision forming or clearing — still redraws the tab bar.
@@ -727,7 +728,7 @@ pub(crate) struct Screen {
     /// Plugins whose loading indicator is taking frames from the shared clock. The dots themselves
     /// are derived from how long the load has been running, so this only records *which* plugins
     /// are still loading.
-    animating_plugin_loads: HashSet<u32>,
+    animating_plugin_loads: HashSet<PluginId>,
     /// The period last requested of the shared animation clock, `None` while it is stopped. Kept
     /// so `sync_animation_clock` is a no-op on the overwhelming majority of ticks rather than a
     /// message on the bus sixty times a second.
@@ -784,7 +785,7 @@ pub(crate) struct Screen {
     /// listening, the pane is already gone and its process unwatched. Comparing
     /// against this before starting is the only chance to notice in time.
     pending_warps: HashMap<
-        u32,
+        TerminalId,
         (
             crossbeam::channel::Sender<Result<Box<WarpedPane>, String>>,
             std::time::Instant,
@@ -1140,7 +1141,7 @@ pub(crate) struct ContextMenuState {
     context: ContextMenuContext,
     /// The plugin whose answer this menu is showing, if one answered. An item's echoed context is
     /// addressed to it alone - a menu's items are that plugin's business and nobody else's.
-    plugin_id: Option<u32>,
+    plugin_id: Option<PluginId>,
     items: ContextMenuItems,
     /// Index into `items`, once they are `Ready`. Separators and disabled rows are never here.
     selected: Option<usize>,
@@ -1784,13 +1785,13 @@ impl Screen {
         &mut self,
         layout: TiledPaneLayout,
         floating_panes_layout: Vec<FloatingPaneLayout>,
-        new_terminal_ids: Vec<(u32, HoldForCommand)>,
-        new_floating_terminal_ids: Vec<(u32, HoldForCommand)>,
-        new_plugin_ids: HashMap<RunPluginOrAlias, Vec<u32>>,
+        new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        new_floating_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        new_plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
         tab_id: usize,
         should_change_client_focus: bool,
         client_id: ClientId,
-        blocking_terminal: Option<(u32, NotificationEnd)>,
+        blocking_terminal: Option<(TerminalId, NotificationEnd)>,
     ) -> Result<()> {
         if !self.tabs.contains_key(&tab_id) {
             // TODO: we should prevent this situation with a UI - eg. cannot close tabs with a
@@ -2248,7 +2249,7 @@ impl Screen {
         Ok(())
     }
 
-    fn client_id(&mut self, client_id: ClientId) -> Option<u16> {
+    fn client_id(&mut self, client_id: ClientId) -> Option<ClientId> {
         if self.get_active_tab(client_id).is_ok() {
             Some(client_id)
         } else {
@@ -2935,7 +2936,7 @@ impl Screen {
     fn hook_client_id(&self, run_command: Option<&RunCommand>) -> Option<ClientId> {
         run_command
             .and_then(|run_command| run_command.originating_plugin.as_ref())
-            .map(|plugin| plugin.client_id)
+            .map(|plugin| ClientId(plugin.client_id))
             .or_else(|| self.get_first_client_id())
     }
     /// Hand an exited agent pane to the `agent_exit` hook.
@@ -3087,7 +3088,7 @@ impl Screen {
             return;
         };
         let payload = HookPayload::PaneExit {
-            pane_id: terminal_pane_id,
+            pane_id: terminal_pane_id.0,
             exit_code: exit_status,
             cwd: run_command.cwd.clone(),
             command: Some(run_command.to_string()),
@@ -3135,7 +3136,7 @@ impl Screen {
                 .map(|cwd| cwd.display().to_string());
         }
         let payload = HookPayload::Agent {
-            pane_id: terminal_pane_id,
+            pane_id: terminal_pane_id.0,
             agent,
             previous_state: previous.map(|previous| previous.state),
             command: run_command
@@ -3162,7 +3163,7 @@ impl Screen {
     }
     pub fn rerun_command_pane_with_id(
         &mut self,
-        terminal_pane_id: u32,
+        terminal_pane_id: TerminalId,
         completion_tx: Option<NotificationEnd>,
     ) {
         let pane_id = PaneId::Terminal(terminal_pane_id);
@@ -3189,7 +3190,7 @@ impl Screen {
     /// Run a *different* command in an existing command pane, reusing its pane id.
     pub fn run_command_in_pane_with_id(
         &mut self,
-        terminal_pane_id: u32,
+        terminal_pane_id: TerminalId,
         run_command: RunCommand,
         keep_scrollback: bool,
     ) {
@@ -3577,7 +3578,7 @@ impl Screen {
             .with_context(err_context)?;
 
         // forward DSR to opted-in terminal panes
-        let mut pty_writes: Vec<(Vec<u8>, u32)> = vec![];
+        let mut pty_writes: Vec<(Vec<u8>, TerminalId)> = vec![];
         for tab in self.tabs.values_mut() {
             for pane_id in tab.get_all_pane_ids() {
                 if let PaneId::Terminal(terminal_id) = pane_id {
@@ -3922,7 +3923,7 @@ impl Screen {
     /// it, because it is a fact about the same transport.
     pub fn set_pane_host(
         &mut self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         host: Option<String>,
         worktree: Option<PathBuf>,
     ) -> Result<()> {
@@ -4224,7 +4225,7 @@ impl Screen {
     }
     fn show_plugin_cursor(
         &mut self,
-        plugin_id: u32,
+        plugin_id: PluginId,
         client_id: ClientId,
         cursor_position: Option<(usize, usize)>,
     ) -> bool {
@@ -4238,7 +4239,7 @@ impl Screen {
     }
     fn update_plugin_loading_stage(
         &mut self,
-        pid: u32,
+        pid: PluginId,
         loading_indication: LoadingIndication,
     ) -> bool {
         let all_tabs = self.get_tabs_mut();
@@ -4254,7 +4255,7 @@ impl Screen {
     }
     fn start_plugin_loading_indication(
         &mut self,
-        plugin_id: u32,
+        plugin_id: PluginId,
         loading_indication: LoadingIndication,
     ) -> bool {
         for tab in self.tabs.values_mut() {
@@ -4265,7 +4266,7 @@ impl Screen {
         }
         false
     }
-    fn progress_plugin_loading_offset(&mut self, plugin_id: u32) -> bool {
+    fn progress_plugin_loading_offset(&mut self, plugin_id: PluginId) -> bool {
         for tab in self.tabs.values_mut() {
             if tab.has_plugin(plugin_id) {
                 tab.progress_plugin_loading_offset(plugin_id);
@@ -4420,7 +4421,7 @@ impl Screen {
     fn forward_desktop_notifications(
         &mut self,
         notifications: Vec<PendingNotification>,
-        pane_id: u32,
+        pane_id: TerminalId,
     ) {
         let all_clients: Vec<ClientId> = self.connected_clients.borrow().iter().copied().collect();
         if all_clients.is_empty() || notifications.is_empty() {
@@ -4528,7 +4529,7 @@ impl Screen {
                 is_fullscreen_active: tab.is_fullscreen_active(),
                 is_sync_panes_active: tab.is_sync_panes_active(),
                 are_floating_panes_visible: tab.are_floating_panes_visible(),
-                other_focused_clients: all_focused_clients,
+                other_focused_clients: all_focused_clients.into_iter().map(|id| id.0).collect(),
                 active_swap_layout_name,
                 is_swap_layout_dirty,
                 viewport_rows: tab_viewport.rows,

@@ -22,6 +22,7 @@ use zellij_utils::data::{
     HighlightLayer, HighlightStyle, HostTerminalThemeMode, RegexHighlight, Style,
 };
 use zellij_utils::errors::prelude::*;
+use zellij_utils::internal_ids::{PluginId, TerminalId};
 
 use std::{
     cmp::Ordering,
@@ -255,7 +256,11 @@ impl NotificationTracker {
 ///    activation response back to Zellij (needed for pane focus routing). An escape without an
 ///    `a=` gets the protocol's default `a=focus,report`; control requests (`p=?`, `close`,
 ///    `alive`) are left without one, as they are not something the host reports on.
-pub fn namespace_notification_id(metadata: &str, pane_id: u32, wants_report: bool) -> String {
+pub fn namespace_notification_id(
+    metadata: &str,
+    pane_id: TerminalId,
+    wants_report: bool,
+) -> String {
     let flags = if wants_report { "r" } else { "" };
     let mut found_id = false;
     let mut found_action = false;
@@ -918,7 +923,7 @@ pub struct Grid {
     /// Pane-scoped override for the default background colour. Same
     /// invariant as `pane_default_fg`.
     pub pane_default_bg: Option<(u8, u8, u8)>,
-    pub plugin_highlights: HashMap<u32, Vec<(String, CompiledHighlight)>>,
+    pub plugin_highlights: HashMap<PluginId, Vec<(String, CompiledHighlight)>>,
     // key: plugin_id (u32), inner vec: (pattern, compiled) pairs
     pub hover_position: Option<Position>, // pane-relative cursor cell; None when outside pane
     pub cached_hover_tooltip: Option<String>,
@@ -3190,7 +3195,7 @@ impl Grid {
     /// Upserts highlights keyed by pattern string for the given plugin.
     pub fn set_plugin_regex_highlights(
         &mut self,
-        plugin_id: u32,
+        plugin_id: PluginId,
         highlights: Vec<RegexHighlight>,
         style: &Style,
     ) {
@@ -3246,7 +3251,7 @@ impl Grid {
     }
 
     /// Called by the server-side handler for ClearPaneHighlights.
-    pub fn clear_plugin_highlights(&mut self, plugin_id: u32) {
+    pub fn clear_plugin_highlights(&mut self, plugin_id: PluginId) {
         if self.plugin_highlights.remove(&plugin_id).is_some() {
             self.output_buffer.update_all_lines();
             self.recompute_hover_tooltip();
@@ -3259,7 +3264,7 @@ impl Grid {
     pub fn plugin_highlight_at(
         &self,
         position: &Position,
-    ) -> Option<(u32, String, String, BTreeMap<String, String>)> {
+    ) -> Option<(PluginId, String, String, BTreeMap<String, String>)> {
         let click_row = position.line.0 as usize;
         let click_col = position.column.0;
 
@@ -3268,7 +3273,7 @@ impl Grid {
 
         let mut best: Option<(
             HighlightLayer,
-            u32,
+            PluginId,
             String,
             String,
             BTreeMap<String, String>,

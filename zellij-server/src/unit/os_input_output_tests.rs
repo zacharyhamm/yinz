@@ -320,7 +320,7 @@ fn failed_firecracker_pane_termination_does_not_skip_provider_shutdown() {
     let _reader = server
         .pty_backend
         .register_remote_terminal(
-            7,
+            crate::TerminalId(7),
             connection.clone(),
             read_socket,
             Box::new(|_, _, _| {}),
@@ -329,7 +329,7 @@ fn failed_firecracker_pane_termination_does_not_skip_provider_shutdown() {
         .unwrap();
     connection.mark_transport_lost();
 
-    assert!(server.clear_terminal_id(7).is_err());
+    assert!(server.clear_terminal_id(crate::TerminalId(7)).is_err());
     server.stop_firecracker_session().unwrap();
     assert!(dir.path().join("called").exists());
 }
@@ -553,7 +553,7 @@ fn a_local_rerun_terminates_the_previous_remote_transport() {
     let _remote_reader = server
         .pty_backend
         .register_remote_terminal(
-            7,
+            crate::TerminalId(7),
             connection,
             read_socket,
             Box::new(|_, _, _| {}),
@@ -563,7 +563,7 @@ fn a_local_rerun_terminates_the_previous_remote_transport() {
 
     let (_local_reader, child_pid) = server
         .re_run_command_in_terminal(
-            7,
+            crate::TerminalId(7),
             RunCommand {
                 command: PathBuf::from("sleep"),
                 args: vec!["60".to_owned()],
@@ -585,7 +585,7 @@ fn a_local_rerun_terminates_the_previous_remote_transport() {
     if let Some(child_pid) = child_pid {
         server.force_kill(child_pid).unwrap();
     }
-    server.clear_terminal_id(7).unwrap();
+    server.clear_terminal_id(crate::TerminalId(7)).unwrap();
 }
 
 #[cfg(unix)]
@@ -618,7 +618,7 @@ fn a_dead_remote_transport_does_not_prevent_a_local_rerun() {
     let _remote_reader = server
         .pty_backend
         .register_remote_terminal(
-            7,
+            crate::TerminalId(7),
             connection,
             read_socket,
             Box::new(|_, _, _| {}),
@@ -628,7 +628,7 @@ fn a_dead_remote_transport_does_not_prevent_a_local_rerun() {
 
     let (_reader, child_pid) = server
         .re_run_command_in_terminal(
-            7,
+            crate::TerminalId(7),
             RunCommand {
                 command: PathBuf::from("sleep"),
                 args: vec!["60".to_owned()],
@@ -639,7 +639,7 @@ fn a_dead_remote_transport_does_not_prevent_a_local_rerun() {
         .unwrap();
 
     server.force_kill(child_pid.unwrap()).unwrap();
-    server.clear_terminal_id(7).unwrap();
+    server.clear_terminal_id(crate::TerminalId(7)).unwrap();
 }
 
 /// A Firecracker pane is refused a warp before the release is attempted — the
@@ -672,7 +672,7 @@ fn firecracker_panes_are_refused_a_warp_and_remote_panes_are_not() {
         server
             .pty_backend
             .register_remote_terminal(
-                terminal_id,
+                crate::TerminalId(terminal_id),
                 connection,
                 read_socket,
                 Box::new(|_, _, _| {}),
@@ -704,14 +704,16 @@ fn firecracker_panes_are_refused_a_warp_and_remote_panes_are_not() {
     );
 
     let error = server
-        .check_terminal_can_be_warped(7)
+        .check_terminal_can_be_warped(crate::TerminalId(7))
         .unwrap_err()
         .to_string();
     assert!(error.contains("Firecracker panes"), "{error}");
-    server.check_terminal_can_be_warped(8).unwrap();
+    server
+        .check_terminal_can_be_warped(crate::TerminalId(8))
+        .unwrap();
 
-    server.clear_terminal_id(7).unwrap();
-    server.clear_terminal_id(8).unwrap();
+    server.clear_terminal_id(crate::TerminalId(7)).unwrap();
+    server.clear_terminal_id(crate::TerminalId(8)).unwrap();
 }
 
 #[cfg(unix)]
@@ -761,7 +763,10 @@ fn tcgetpgrp_returns_foreground_group() {
     }
 
     // An unknown terminal id has no fd and must not panic.
-    assert_eq!(server.pty_backend.tcgetpgrp(u32::MAX), None);
+    assert_eq!(
+        server.pty_backend.tcgetpgrp(crate::TerminalId(u32::MAX)),
+        None
+    );
 
     if let Some(child_pid) = child_pid {
         let _ = server.force_kill(child_pid);
@@ -896,8 +901,8 @@ mod coalescing_send_queue {
     #[test]
     fn pane_renders_coalesce_per_pane() {
         let queue = CoalescingSendQueue::new();
-        let pane_a = DataPaneId::Terminal(1);
-        let pane_b = DataPaneId::Terminal(2);
+        let pane_a = DataPaneId::Terminal(TerminalId(1).0);
+        let pane_b = DataPaneId::Terminal(TerminalId(2).0);
         assert!(matches!(
             queue.push(pane_render(pane_a, "a1")),
             SendQueuePush::Queued
@@ -923,7 +928,7 @@ mod coalescing_send_queue {
         // of repaints - they take the FIFO path, so they precede coalesced
         // updates for the same pane
         let queue = CoalescingSendQueue::new();
-        let pane = DataPaneId::Terminal(1);
+        let pane = DataPaneId::Terminal(TerminalId(1).0);
         let initial = ServerToClientMsg::PaneRenderUpdate {
             pane_id: pane,
             viewport: vec!["initial".to_owned()],
@@ -1158,7 +1163,7 @@ mod client_writer_flush {
             }
         };
         let sender = ClientSender::new(
-            1,
+            crate::ClientId(1),
             IpcSenderWithContext::<ServerToClientMsg>::new(server_end),
             live_writers.clone(),
             server_fd,
@@ -1269,7 +1274,12 @@ mod client_writer_flush {
         // stream and the sender is a clone of it.
         let mut receiver: IpcReceiverWithContext<ClientToServerMsg> =
             IpcReceiverWithContext::new(server_end);
-        let sender = ClientSender::new(1, receiver.get_sender(), live_writers.clone(), server_fd);
+        let sender = ClientSender::new(
+            crate::ClientId(1),
+            receiver.get_sender(),
+            live_writers.clone(),
+            server_fd,
+        );
 
         // The client is deliberately kept alive for the whole test: a peer that
         // hangs up would produce the EOF on its own, which is the case that

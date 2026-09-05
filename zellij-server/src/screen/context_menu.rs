@@ -26,6 +26,7 @@
 
 use std::collections::HashMap;
 use std::thread;
+use zellij_utils::internal_ids::PluginId;
 
 use zellij_utils::data::{ContextMenuContext, ContextMenuItem, Event, KeyWithModifier};
 use zellij_utils::errors::prelude::*;
@@ -96,7 +97,7 @@ impl Screen {
         let request_id = self.next_context_menu_request_id;
         self.next_context_menu_request_id += 1;
         context.request_id = request_id;
-        context.client_id = client_id;
+        context.client_id = client_id.0;
 
         let anchor = Position::new(context.click.1 as i32, context.click.0 as u16);
         // The one place the configured items enter a menu. The tab that fired this knows the pane
@@ -168,7 +169,7 @@ impl Screen {
         &mut self,
         request_id: u64,
         items: Vec<ContextMenuItem>,
-        plugin_id: Option<u32>,
+        plugin_id: Option<PluginId>,
         client_id: ClientId,
     ) {
         let Some(menu) = self.context_menus.get_mut(&client_id) else {

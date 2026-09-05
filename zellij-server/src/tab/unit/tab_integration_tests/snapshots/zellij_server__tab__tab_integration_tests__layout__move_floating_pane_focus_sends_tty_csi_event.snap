@@ -1,5 +1,6 @@
 ---
 source: zellij-server/src/tab/./unit/tab_integration_tests/layout.rs
+assertion_line: 404
 expression: "format!(\"{:?}\", *tty_stdin_bytes.lock().unwrap())"
 ---
-{2: [27, 91, 73, 27, 91, 79, 27, 91, 73], 3: [27, 91, 79]}
+{TerminalId(2): [27, 91, 73, 27, 91, 79, 27, 91, 73], TerminalId(3): [27, 91, 79]}

@@ -20,7 +20,7 @@ pub fn nested_guest_announce_gets_announce_ack_with_ancestry() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::NestedSessionMessageFromPane {
-            pane_id: PaneId::Terminal(0),
+            pane_id: PaneId::Terminal(crate::TerminalId(0)),
             message: guest_announce_message(),
         });
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -29,7 +29,7 @@ pub fn nested_guest_announce_gets_announce_ack_with_ancestry() {
         .lock()
         .iter()
         .find_map(|instruction| match instruction {
-            PtyWriteInstruction::Write(bytes, 0, None) => decode_nested_frame(bytes),
+            PtyWriteInstruction::Write(bytes, TerminalId(0), None) => decode_nested_frame(bytes),
             _ => None,
         })
         .expect("an announce_ack frame written to the guest pane");
@@ -45,7 +45,7 @@ pub fn nested_guest_announce_gets_announce_ack_with_ancestry() {
     );
     assert!(received_background_jobs.lock().iter().any(|job| matches!(
         job,
-        BackgroundJob::StartNestedGuestPing(PaneId::Terminal(0))
+        BackgroundJob::StartNestedGuestPing(PaneId::Terminal(TerminalId(0)))
     )));
 }
 
@@ -69,7 +69,7 @@ pub fn nested_guest_announce_in_never_mode_still_completes_handshake() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::NestedSessionMessageFromPane {
-            pane_id: PaneId::Terminal(0),
+            pane_id: PaneId::Terminal(crate::TerminalId(0)),
             message: guest_announce_message(),
         });
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -78,7 +78,7 @@ pub fn nested_guest_announce_in_never_mode_still_completes_handshake() {
         .lock()
         .iter()
         .find_map(|instruction| match instruction {
-            PtyWriteInstruction::Write(bytes, 0, None) => decode_nested_frame(bytes),
+            PtyWriteInstruction::Write(bytes, TerminalId(0), None) => decode_nested_frame(bytes),
             _ => None,
         })
         .expect("an announce_ack frame written to the guest pane even in never mode");
@@ -88,7 +88,7 @@ pub fn nested_guest_announce_in_never_mode_still_completes_handshake() {
     ));
     assert!(received_background_jobs.lock().iter().any(|job| matches!(
         job,
-        BackgroundJob::StartNestedGuestPing(PaneId::Terminal(0))
+        BackgroundJob::StartNestedGuestPing(PaneId::Terminal(TerminalId(0)))
     )));
 }
 
@@ -111,19 +111,19 @@ pub fn nested_guest_bye_stops_liveness_pings() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::NestedSessionMessageFromPane {
-            pane_id: PaneId::Terminal(0),
+            pane_id: PaneId::Terminal(crate::TerminalId(0)),
             message: guest_announce_message(),
         });
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::NestedSessionMessageFromPane {
-            pane_id: PaneId::Terminal(0),
+            pane_id: PaneId::Terminal(crate::TerminalId(0)),
             message: zellij_utils::nested_session::NestedSessionMessage::Bye,
         });
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::NestedGuestPingTick {
-            pane_id: PaneId::Terminal(0),
+            pane_id: PaneId::Terminal(crate::TerminalId(0)),
         });
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![pty_writer_thread, screen_thread]);
@@ -131,7 +131,7 @@ pub fn nested_guest_bye_stops_liveness_pings() {
         .lock()
         .iter()
         .filter(|instruction| match instruction {
-            PtyWriteInstruction::Write(bytes, 0, None) => matches!(
+            PtyWriteInstruction::Write(bytes, TerminalId(0), None) => matches!(
                 decode_nested_frame(bytes),
                 Some(zellij_utils::nested_session::NestedSessionMessage::Ping)
             ),
@@ -139,8 +139,8 @@ pub fn nested_guest_bye_stops_liveness_pings() {
         })
         .count();
     assert_eq!(ping_frames_written, 0);
-    assert!(received_background_jobs
-        .lock()
-        .iter()
-        .any(|job| matches!(job, BackgroundJob::StopNestedGuestPing(PaneId::Terminal(0)))));
+    assert!(received_background_jobs.lock().iter().any(|job| matches!(
+        job,
+        BackgroundJob::StopNestedGuestPing(PaneId::Terminal(TerminalId(0)))
+    )));
 }

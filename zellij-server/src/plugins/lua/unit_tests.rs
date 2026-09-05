@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use zellij_utils::internal_ids::TerminalId;
 
 use strum::IntoEnumIterator;
 use zellij_utils::data::{BareKey, CommandType, Event, KeyWithModifier, PermissionType};
@@ -487,10 +488,10 @@ end
 fn test_env() -> PluginEnv {
     PluginEnv {
         response_sink: ResponseSink::WasiStdin,
-        plugin_id: 1,
+        plugin_id: crate::PluginId(1),
         cancel: Default::default(),
-        client_id: 1,
-        owner_client_id: 1,
+        client_id: crate::ClientId(1),
+        owner_client_id: crate::ClientId(1),
         plugin: PluginConfig {
             path: PathBuf::from("test.lua"),
             _allow_exec_host_cmd: false,
@@ -525,7 +526,7 @@ fn test_env() -> PluginEnv {
         cancel_tripped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         stdin_pipe: Arc::new(Mutex::new(VecDeque::new())),
         stdout_pipe: Arc::new(Mutex::new(VecDeque::new())),
-        store_limits: PluginResourceLimits::new(1),
+        store_limits: PluginResourceLimits::new(crate::PluginId(1)),
     }
 }
 
@@ -2018,7 +2019,7 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
         notifications(&screen_receiver),
         vec![(
             "claude in pane 7: Allow Bash(cargo test)?".to_owned(),
-            Some(PaneId::Terminal(7)),
+            Some(PaneId::Terminal(crate::TerminalId(7))),
         )],
         "a waiting agent is announced, and the toast focuses its pane"
     );
@@ -2033,7 +2034,7 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
         notifications(&screen_receiver),
         vec![(
             "claude in pane 7: is waiting for you".to_owned(),
-            Some(PaneId::Terminal(7)),
+            Some(PaneId::Terminal(crate::TerminalId(7))),
         )],
         "a wait with no detail still says who is waiting"
     );
@@ -2906,7 +2907,7 @@ fn a_cli_pipes_pane_reaches_lua_on_the_message() {
         &None,
         false,
     );
-    message.pane_id = Some(PaneId::Terminal(7));
+    message.pane_id = Some(PaneId::Terminal(TerminalId(7).0));
     assert!(plugin.pipe(&message).unwrap());
     assert_eq!(
         String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
@@ -3084,7 +3085,10 @@ fn a_plugin_can_set_a_panes_agent_record() {
         })
         .collect();
     assert_eq!(records.len(), 2, "{records:?}");
-    assert_eq!(records[0].0, crate::panes::PaneId::Terminal(3));
+    assert_eq!(
+        records[0].0,
+        crate::panes::PaneId::Terminal(crate::TerminalId(3))
+    );
     assert_eq!(
         records[0].1,
         Some(AgentInfo {
@@ -3118,10 +3122,10 @@ fn a_plugin_can_set_a_panes_agent_record() {
         runs,
         vec![
             (
-                crate::panes::PaneId::Terminal(3),
+                crate::panes::PaneId::Terminal(crate::TerminalId(3)),
                 Some("codex:s1".to_owned())
             ),
-            (crate::panes::PaneId::Terminal(3), None),
+            (crate::panes::PaneId::Terminal(crate::TerminalId(3)), None),
         ],
         "leaving `run_id` out clears it"
     );
@@ -3871,7 +3875,7 @@ fn a_render_report_can_be_looked_up_by_pane() {
     use zellij_utils::data::{PaneContents, PaneId};
     let mut report = std::collections::HashMap::new();
     report.insert(
-        PaneId::Terminal(3),
+        PaneId::Terminal(TerminalId(3).0),
         PaneContents {
             viewport: vec!["hello".to_owned()],
             ..Default::default()

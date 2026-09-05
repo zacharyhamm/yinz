@@ -10,6 +10,7 @@ use crate::ui::loading_indication::DOT_PERIOD;
 use crate::ui::notification::EXIT_DURATION;
 use std::time::{Duration, Instant};
 use zellij_utils::animation::{Tween, FRAME_PERIOD};
+use zellij_utils::internal_ids::PluginId;
 
 const TEXT: &str = "build finished";
 
@@ -116,7 +117,7 @@ fn a_loading_plugin_wakes_the_clock_at_the_dot_period() {
     let now = Instant::now();
     let (mut screen, background_jobs) = screen_with_background_jobs(size);
 
-    screen.animating_plugin_loads.insert(1);
+    screen.animating_plugin_loads.insert(crate::PluginId(1));
     screen.sync_animation_clock(now).unwrap();
 
     assert_eq!(screen.animation_clock_period(now), Some(DOT_PERIOD));
@@ -141,7 +142,7 @@ fn a_plugin_load_cannot_slow_the_clock_under_a_moving_toast() {
     screen
         .notifications
         .push(Notification::new(0, TEXT.to_owned(), None, start));
-    screen.animating_plugin_loads.insert(1);
+    screen.animating_plugin_loads.insert(crate::PluginId(1));
 
     assert_eq!(
         screen.animation_clock_period(start),
@@ -156,7 +157,7 @@ fn a_plugin_load_cannot_slow_the_clock_under_a_moving_toast() {
         "once it stops moving, only the dots are left"
     );
 
-    screen.animating_plugin_loads.remove(&1);
+    screen.animating_plugin_loads.remove(&PluginId(1));
     assert_eq!(
         screen.animation_clock_period(toast_settled),
         None,
@@ -173,7 +174,7 @@ fn quiet_ticks_put_nothing_but_the_frame_on_the_bus() {
     let (mut screen, background_jobs) = screen_with_background_jobs(size);
     new_tab(&mut screen, 1, 0);
 
-    screen.animating_plugin_loads.insert(1);
+    screen.animating_plugin_loads.insert(crate::PluginId(1));
     screen.sync_animation_clock(start).unwrap();
     let _ = drain_background_jobs(&background_jobs);
 

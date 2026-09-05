@@ -1,5 +1,6 @@
 use crate::os_input_output::{command_exists, AsyncReader};
 use crate::panes::PaneId;
+use zellij_utils::internal_ids::TerminalId;
 
 use nix::{
     fcntl::{fcntl, FcntlArg, OFlag},
@@ -219,7 +220,7 @@ fn handle_command_exit(mut child: Child) -> Result<Option<i32>> {
 /// pane would never learn it had resumed. See that function for the detail.
 fn wait_reporting_stops(
     child_pid: u32,
-    terminal_id: u32,
+    terminal_id: TerminalId,
     child_state_cb: Option<&ChildStateCb>,
 ) -> Option<i32> {
     let pid = unistd::Pid::from_raw(child_pid as i32);
@@ -262,7 +263,7 @@ fn handle_openpty(
     cmd: RunCommand,
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     child_state_cb: Option<ChildStateCb>,
-    terminal_id: u32,
+    terminal_id: TerminalId,
 ) -> Result<(RawFd, RawFd)> {
     let err_context = |cmd: &RunCommand| {
         format!(
@@ -277,7 +278,7 @@ fn handle_openpty(
 
     if !command_exists(&cmd) {
         return Err(ZellijError::CommandNotFound {
-            terminal_id,
+            terminal_id: terminal_id.0,
             command: cmd.command.to_string_lossy().to_string(),
         })
         .with_context(|| err_context(&cmd));
@@ -342,7 +343,7 @@ fn handle_terminal(
     orig_termios: Option<termios::Termios>,
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     child_state_cb: Option<ChildStateCb>,
-    terminal_id: u32,
+    terminal_id: TerminalId,
 ) -> Result<(RawFd, RawFd)> {
     let err_context = || "failed to spawn child terminal".to_string();
 
@@ -414,7 +415,7 @@ impl PaneTransport {
 #[derive(Clone)]
 pub(crate) struct UnixPtyBackend {
     orig_termios: Arc<Mutex<Option<termios::Termios>>>,
-    terminal_id_to_transport: Arc<Mutex<BTreeMap<u32, PaneTransport>>>,
+    terminal_id_to_transport: Arc<Mutex<BTreeMap<TerminalId, PaneTransport>>>,
     next_terminal_id_counter: Arc<AtomicU32>,
     /// Whether panes are spawned under a detachable pty-host supervisor. Set once
     /// per session from config; see `ServerOsApi::set_pty_host_enabled`.
@@ -429,7 +430,7 @@ pub(crate) struct UnixPtyBackend {
     /// controlling terminal — a supervisor could never re-derive them. Converted
     /// once rather than per spawn.
     wire_termios: Option<WireTermios>,
-    terminal_id_to_host: Arc<Mutex<BTreeMap<u32, PtyHostHandle>>>,
+    terminal_id_to_host: Arc<Mutex<BTreeMap<TerminalId, PtyHostHandle>>>,
     /// Told when any pane's root process stops or resumes. Registered once by the
     /// pty thread rather than passed per pane — see `ChildStateCb`.
     child_state_cb: Arc<Mutex<Option<ChildStateCb>>>,
@@ -504,7 +505,7 @@ impl UnixPtyBackend {
     /// The lock is released before `terminate()` runs: that does a blocking write
     /// and we are usually on the pty thread, which must not stall behind another
     /// pane's teardown.
-    fn terminate_host(&self, terminal_id: u32) {
+    fn terminate_host(&self, terminal_id: TerminalId) {
         let handle = self
             .terminal_id_to_host
             .lock()
@@ -533,7 +534,7 @@ impl UnixPtyBackend {
         host_bin: &std::path::Path,
         cmd: &RunCommand,
         failover_cmd: &Option<RunCommand>,
-        terminal_id: u32,
+        terminal_id: TerminalId,
     ) -> Result<pty_host_client::PendingHost> {
         // Kept here rather than left to the supervisor so that a mistyped command
         // still produces a synchronous `ZellijError::CommandNotFound` — which is
@@ -541,7 +542,7 @@ impl UnixPtyBackend {
         // rather than dying on — without paying for a process spawn.
         if !command_exists(cmd) {
             return Err(ZellijError::CommandNotFound {
-                terminal_id,
+                terminal_id: terminal_id.0,
                 command: cmd.command.to_string_lossy().to_string(),
             }
             .into());
@@ -598,7 +599,7 @@ impl UnixPtyBackend {
         cmd: RunCommand,
         failover_cmd: Option<RunCommand>,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-        terminal_id: u32,
+        terminal_id: TerminalId,
     ) -> Result<(Box<dyn AsyncReader>, RawFd)> {
         // A re-run reuses the terminal_id, so an earlier supervisor for it would
         // otherwise be orphaned with nobody left holding its control channel.
@@ -669,7 +670,7 @@ impl UnixPtyBackend {
 
     pub fn set_terminal_size(
         &self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         cols: u16,
         rows: u16,
         width_in_pixels: Option<u16>,
@@ -717,7 +718,7 @@ impl UnixPtyBackend {
         Ok(())
     }
 
-    pub fn write_to_tty_stdin(&self, terminal_id: u32, buf: &[u8]) -> Result<usize> {
+    pub fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize> {
         let err_context = || format!("failed to write to stdin of TTY ID {}", terminal_id);
 
         // Resolved to a target before any I/O so the map lock is not held across
@@ -751,7 +752,7 @@ impl UnixPtyBackend {
         }
     }
 
-    pub fn tcdrain(&self, terminal_id: u32) -> Result<()> {
+    pub fn tcdrain(&self, terminal_id: TerminalId) -> Result<()> {
         let err_context = || format!("failed to tcdrain to TTY ID {}", terminal_id);
 
         match self
@@ -776,7 +777,7 @@ impl UnixPtyBackend {
         }
     }
 
-    pub fn tcgetpgrp(&self, terminal_id: u32) -> Option<i32> {
+    pub fn tcgetpgrp(&self, terminal_id: TerminalId) -> Option<i32> {
         let fd = self
             .terminal_id_to_transport
             .lock()
@@ -826,7 +827,7 @@ impl UnixPtyBackend {
     /// there is no window in which a pane is on screen but unspawned.
     pub fn register_remote_terminal(
         &self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         conn: Arc<RemoteConn>,
         read_socket: std::os::unix::net::UnixStream,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
@@ -853,7 +854,7 @@ impl UnixPtyBackend {
     /// The question every pid-shaped operation has to ask first: `id_to_child_pid`
     /// holds nothing usable for a remote pane, and a pid from another machine
     /// names an unrelated local process rather than nothing at all.
-    pub fn is_remote(&self, terminal_id: u32) -> bool {
+    pub fn is_remote(&self, terminal_id: TerminalId) -> bool {
         self.terminal_id_to_transport
             .lock()
             .ok()
@@ -864,7 +865,7 @@ impl UnixPtyBackend {
     /// Whether a pane runs in a Firecracker guest rather than on an ordinary
     /// remote host. Takes the transport lock, so ask only when the answer is
     /// needed, not on every chunk of output.
-    pub fn is_firecracker(&self, terminal_id: u32) -> bool {
+    pub fn is_firecracker(&self, terminal_id: TerminalId) -> bool {
         self.terminal_id_to_transport
             .lock()
             .ok()
@@ -882,7 +883,7 @@ impl UnixPtyBackend {
     /// Cached rather than queried: the caller is `update_and_report_cwds` on the
     /// pty thread, and a round trip over a link that may be dead is not
     /// something that thread can afford.
-    pub fn remote_status(&self, terminal_id: u32) -> Option<RemoteStatus> {
+    pub fn remote_status(&self, terminal_id: TerminalId) -> Option<RemoteStatus> {
         self.terminal_id_to_transport
             .lock()
             .ok()?
@@ -892,7 +893,7 @@ impl UnixPtyBackend {
     }
 
     /// Every pane whose process lives on another machine.
-    pub fn remote_pane_ids(&self) -> Vec<u32> {
+    pub fn remote_pane_ids(&self) -> Vec<TerminalId> {
         self.terminal_id_to_transport
             .lock()
             .map(|t| {
@@ -905,7 +906,7 @@ impl UnixPtyBackend {
     }
 
     /// What git last said about a remote pane's working directory.
-    pub fn remote_git_probe(&self, terminal_id: u32) -> Option<RemoteGitProbe> {
+    pub fn remote_git_probe(&self, terminal_id: TerminalId) -> Option<RemoteGitProbe> {
         let conn = self
             .terminal_id_to_transport
             .lock()
@@ -921,7 +922,7 @@ impl UnixPtyBackend {
     }
 
     /// The machine a pane runs on, or `None` if it runs on this one.
-    pub fn remote_host(&self, terminal_id: u32) -> Option<String> {
+    pub fn remote_host(&self, terminal_id: TerminalId) -> Option<String> {
         self.terminal_id_to_transport
             .lock()
             .ok()?
@@ -933,7 +934,7 @@ impl UnixPtyBackend {
     /// The host worktree a Firecracker pane's VM mirrors, off the transport's own
     /// command — which is the one `resolve_target` resolved, so it carries the worktree
     /// the provider named even when the caller asked for none.
-    pub fn remote_worktree(&self, terminal_id: u32) -> Option<PathBuf> {
+    pub fn remote_worktree(&self, terminal_id: TerminalId) -> Option<PathBuf> {
         self.terminal_id_to_transport
             .lock()
             .ok()?
@@ -944,7 +945,7 @@ impl UnixPtyBackend {
     }
 
     /// Deliver a signal to a remote pane's child, by name rather than by pid.
-    pub fn signal_remote_child(&self, terminal_id: u32, signal: ChildSignal) -> Result<()> {
+    pub fn signal_remote_child(&self, terminal_id: TerminalId, signal: ChildSignal) -> Result<()> {
         let conn = self
             .terminal_id_to_transport
             .lock()
@@ -955,7 +956,7 @@ impl UnixPtyBackend {
         conn.signal_child(signal)
     }
 
-    pub fn reserve_terminal_id(&self, terminal_id: u32) {
+    pub fn reserve_terminal_id(&self, terminal_id: TerminalId) {
         self.terminal_id_to_transport
             .lock()
             .unwrap()
@@ -968,14 +969,14 @@ impl UnixPtyBackend {
     /// would end whatever the id names. This is for an adoption that failed
     /// before it recorded a transport: the pane it was reaching for is still
     /// running somewhere, and must stay that way for the caller's rollback.
-    pub fn forget_reserved_terminal_id(&self, terminal_id: u32) {
+    pub fn forget_reserved_terminal_id(&self, terminal_id: TerminalId) {
         self.terminal_id_to_transport
             .lock()
             .unwrap()
             .remove(&terminal_id);
     }
 
-    pub fn clear_terminal_id(&self, terminal_id: u32) -> Result<()> {
+    pub fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()> {
         // The single funnel for pane teardown: `Pty::close_pane` calls this, and
         // every path that closes a pane — ClosePane, CloseTab, spawn failures,
         // `Drop for Pty` at session shutdown — goes through it. Terminating here
@@ -996,11 +997,11 @@ impl UnixPtyBackend {
         Ok(())
     }
 
-    pub fn next_terminal_id(&self) -> Option<u32> {
-        Some(
+    pub fn next_terminal_id(&self) -> Option<TerminalId> {
+        Some(TerminalId(
             self.next_terminal_id_counter
                 .fetch_add(1, Ordering::Relaxed),
-        )
+        ))
     }
 
     /// Give a pane's supervisor up without killing it, so another server can take
@@ -1012,7 +1013,7 @@ impl UnixPtyBackend {
     /// a descriptor another pane may by then have been given.
     pub fn release_terminal_for_warp(
         &self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         budget: Duration,
     ) -> Result<ReleasedPane> {
         // A remote pane is asked about first, because the miss below is not the
@@ -1080,7 +1081,7 @@ impl UnixPtyBackend {
     /// broken socket a moment later, leaving the pane stranded. Refusing while
     /// the pane is still whole costs the user a message and a retry; not
     /// refusing costs them the pane.
-    pub fn check_terminal_can_be_warped(&self, terminal_id: u32) -> Result<()> {
+    pub fn check_terminal_can_be_warped(&self, terminal_id: TerminalId) -> Result<()> {
         let remote = self
             .terminal_id_to_transport
             .lock()
@@ -1139,7 +1140,7 @@ impl UnixPtyBackend {
     /// and is not.
     fn release_remote_terminal_for_warp(
         &self,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         conn: Arc<RemoteConn>,
         budget: Duration,
     ) -> Result<ReleasedPane> {
@@ -1194,7 +1195,7 @@ impl UnixPtyBackend {
     fn adopt_into_terminal_id(
         &self,
         control_socket: &std::path::Path,
-        terminal_id: u32,
+        terminal_id: TerminalId,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<AdoptedTerminal> {
         let pending = pty_host_client::attach(pty_host_client::AttachParams {
@@ -1230,7 +1231,7 @@ impl UnixPtyBackend {
 /// A supervisor this server has just taken over, and everything the caller needs
 /// to give it a pane.
 pub struct AdoptedTerminal {
-    pub terminal_id: u32,
+    pub terminal_id: TerminalId,
     pub reader: Box<dyn AsyncReader>,
     /// `None` for a pane adopted from another machine. Its child's pid is
     /// meaningful only there, and recording one here would put it in
@@ -1389,12 +1390,13 @@ mod tests {
             .terminal_id_to_transport
             .lock()
             .unwrap()
-            .insert(7, PaneTransport::Remote(Arc::new(conn)));
+            .insert(TerminalId(7), PaneTransport::Remote(Arc::new(conn)));
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let releasing = backend.clone();
         std::thread::spawn(move || {
-            let outcome = releasing.release_terminal_for_warp(7, Duration::from_secs(1));
+            let outcome =
+                releasing.release_terminal_for_warp(TerminalId(7), Duration::from_secs(1));
             let _ = done_tx.send(outcome.map(|_| ()).map_err(|e| format!("{e:#}")));
         });
 
@@ -1408,7 +1410,7 @@ mod tests {
                 .terminal_id_to_transport
                 .lock()
                 .unwrap()
-                .contains_key(&7),
+                .contains_key(&TerminalId(7)),
             "a released pane leaves the transport table whether or not the broker confirmed"
         );
     }
@@ -1440,10 +1442,10 @@ mod callback_tests {
             ..Default::default()
         };
         for status in [Some(17), None] {
-            callback(42, status, command.clone());
+            callback(TerminalId(42), status, command.clone());
             assert_eq!(
                 receiver.recv().unwrap(),
-                (PaneId::Terminal(42), status, command.clone())
+                (PaneId::Terminal(TerminalId(42)), status, command.clone())
             );
         }
     }

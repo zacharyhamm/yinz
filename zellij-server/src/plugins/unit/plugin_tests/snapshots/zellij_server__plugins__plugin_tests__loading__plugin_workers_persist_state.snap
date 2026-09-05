@@ -1,11 +1,16 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/loading.rs
+assertion_line: 433
 expression: "format!(\"{:#?}\", plugin_bytes_event)"
 ---
 Some(
     (
-        0,
-        1,
+        PluginId(
+            0,
+        ),
+        ClientId(
+            1,
+        ),
         "Payload from worker: \"gimme_back_my_payload, received 2 messages\"\n\r",
     ),
 )

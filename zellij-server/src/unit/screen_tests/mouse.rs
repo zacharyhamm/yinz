@@ -17,7 +17,7 @@ fn settled_notification(id: u64, text: &str, pane_id: PaneId) -> Notification {
 #[test]
 fn clicking_a_pane_notification_focuses_its_pane_and_dismisses_it() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut screen = create_non_mirrored_screen(size);
     let (pty_writer_tx, pty_writer_rx) =
         channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
@@ -28,14 +28,16 @@ fn clicking_a_pane_notification_focuses_its_pane_and_dismisses_it() {
         .tabs
         .get_mut(&0)
         .unwrap()
-        .handle_pty_bytes(1, b"\x1b[?1002h\x1b[?1006h".to_vec())
+        .handle_pty_bytes(crate::TerminalId(1), b"\x1b[?1002h\x1b[?1006h".to_vec())
         .unwrap();
     screen.go_to_tab(2, client_id).expect("TEST");
 
     let text = "agent idle";
-    screen
-        .notifications
-        .push(settled_notification(0, text, PaneId::Terminal(1)));
+    screen.notifications.push(settled_notification(
+        0,
+        text,
+        PaneId::Terminal(crate::TerminalId(1)),
+    ));
     let width = notification_width(text, size.cols).expect("notification fits");
     let x = size.cols - width - 1;
 
@@ -47,7 +49,7 @@ fn clicking_a_pane_notification_focuses_its_pane_and_dismisses_it() {
     assert_eq!(screen.get_active_tab(client_id).unwrap().position, 0);
     assert_eq!(
         screen.get_active_pane_id(&client_id),
-        Some(PaneId::Terminal(1))
+        Some(PaneId::Terminal(crate::TerminalId(1)))
     );
     assert!(screen.notifications[0].is_dismissing());
     pty_writer_rx.try_iter().for_each(drop);
@@ -60,22 +62,24 @@ fn clicking_a_pane_notification_focuses_its_pane_and_dismisses_it() {
     screen.handle_mouse_event(MouseEvent::new_left_press_event(pane_position), client_id);
     assert!(matches!(
         pty_writer_rx.recv().unwrap().0,
-        PtyWriteInstruction::Write(_, 1, None)
+        PtyWriteInstruction::Write(_, TerminalId(1), None)
     ));
 }
 
 #[test]
 fn clicking_a_stale_pane_notification_dismisses_it_without_moving_focus() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
     let focused_before = screen.get_active_pane_id(&client_id);
 
     let text = "gone";
-    screen
-        .notifications
-        .push(settled_notification(0, text, PaneId::Terminal(99)));
+    screen.notifications.push(settled_notification(
+        0,
+        text,
+        PaneId::Terminal(crate::TerminalId(99)),
+    ));
     let width = notification_width(text, size.cols).expect("notification fits");
     let x = size.cols - width - 1;
 
@@ -91,15 +95,15 @@ fn clicking_a_stale_pane_notification_dismisses_it_without_moving_focus() {
 #[test]
 fn clicking_overlapping_pane_notifications_uses_paint_order() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
     screen.go_to_tab(2, client_id).expect("TEST");
 
     let text = "agent idle";
-    let newer = settled_notification(1, text, PaneId::Terminal(2));
-    let mut older = settled_notification(0, text, PaneId::Terminal(1));
+    let newer = settled_notification(1, text, PaneId::Terminal(crate::TerminalId(2)));
+    let mut older = settled_notification(0, text, PaneId::Terminal(crate::TerminalId(1)));
     // mid-glide: the older toast has just been pushed away from the corner and has not yet
     // travelled, so it is still sitting on top of the newer one. Whichever paints last wins the
     // click, and the newer one paints last.
@@ -121,7 +125,7 @@ fn clicking_overlapping_pane_notifications_uses_paint_order() {
 
     assert_eq!(
         screen.get_active_pane_id(&client_id),
-        Some(PaneId::Terminal(1))
+        Some(PaneId::Terminal(crate::TerminalId(1)))
     );
     assert!(!screen.notifications[0].is_dismissing());
     assert!(screen.notifications[1].is_dismissing());
@@ -133,7 +137,7 @@ pub fn mouse_hover_effect() {
         cols: 130,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -173,7 +177,7 @@ pub fn disabled_mouse_hover_effect() {
         cols: 130,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -212,7 +216,7 @@ fn group_panes_with_mouse() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut screen = create_new_screen(size, true, true);
 
     new_tab(&mut screen, 1, 0);
@@ -228,7 +232,7 @@ fn group_panes_with_mouse() {
             .borrow()
             .clone_inner()
             .get(&client_id),
-        Some(&vec![PaneId::Terminal(2)]),
+        Some(&vec![PaneId::Terminal(crate::TerminalId(2))]),
         "Pane Id added to client's pane group"
     );
 
@@ -254,12 +258,12 @@ fn mouse_focus_clears_bell_on_focused_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut screen = create_new_screen(size, true, true);
 
     new_tab(&mut screen, 1, 0);
 
-    let new_pane_id = PaneId::Terminal(2);
+    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
     {
         let active_tab = screen.get_active_tab_mut(client_id).unwrap();
         // Split horizontally: pane 1 on top, pane 2 on bottom; focus moves to pane 2
@@ -269,7 +273,9 @@ fn mouse_focus_clears_bell_on_focused_pane() {
         // Move focus back up to pane 1 so pane 2 is unfocused
         active_tab.move_focus_up(client_id).unwrap();
         // Plant a bell on the unfocused pane 2
-        active_tab.handle_pty_bytes(2, vec![7u8]).unwrap();
+        active_tab
+            .handle_pty_bytes(crate::TerminalId(2), vec![7u8])
+            .unwrap();
         active_tab.check_and_handle_bell_notifications(false);
         assert!(
             active_tab.panes_with_pending_bell.contains(&new_pane_id),
@@ -313,12 +319,12 @@ fn nested_guest_fullscreen_moves_from_one_pane_to_another() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut screen = create_new_screen(size, true, true);
 
     new_tab(&mut screen, 1, 0);
-    let pane_one = PaneId::Terminal(1);
-    let pane_two = PaneId::Terminal(2);
+    let pane_one = PaneId::Terminal(crate::TerminalId(1));
+    let pane_two = PaneId::Terminal(crate::TerminalId(2));
     {
         let active_tab = screen.get_active_tab_mut(client_id).unwrap();
         active_tab
@@ -379,7 +385,7 @@ fn group_panes_with_keyboard() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut screen = create_new_screen(size, true, true);
 
     new_tab(&mut screen, 1, 0);
@@ -392,7 +398,7 @@ fn group_panes_with_keyboard() {
             .borrow()
             .clone_inner()
             .get(&client_id),
-        Some(&vec![PaneId::Terminal(2)]),
+        Some(&vec![PaneId::Terminal(crate::TerminalId(2))]),
         "Pane Id added to client's pane group"
     );
 
@@ -415,7 +421,7 @@ fn group_panes_following_focus() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut screen = create_new_screen(size, true, true);
 
     new_tab(&mut screen, 1, 0);
@@ -425,7 +431,7 @@ fn group_panes_following_focus() {
         for i in 2..5 {
             active_tab
                 .new_pane(
-                    PaneId::Terminal(i),
+                    PaneId::Terminal(crate::TerminalId(i)),
                     None,
                     None,
                     false,
@@ -454,7 +460,10 @@ fn group_panes_following_focus() {
                 .borrow()
                 .clone_inner()
                 .get(&client_id),
-            Some(&vec![PaneId::Terminal(4), PaneId::Terminal(3)]),
+            Some(&vec![
+                PaneId::Terminal(crate::TerminalId(4)),
+                PaneId::Terminal(crate::TerminalId(3))
+            ]),
             "Pane Id of focused pane and newly focused pane above added to pane group"
         );
     }
@@ -466,7 +475,7 @@ fn group_panes_following_focus() {
             .move_focus_up(client_id)
             .unwrap();
         screen.add_active_pane_to_group_if_marking(&client_id);
-        assert_eq!(screen.current_pane_group.borrow().clone_inner().get(&client_id), Some(&vec![PaneId::Terminal(4), PaneId::Terminal(3)]), "Pane Id of newly focused pane not added to group after the group marking was toggled off");
+        assert_eq!(screen.current_pane_group.borrow().clone_inner().get(&client_id), Some(&vec![PaneId::Terminal(crate::TerminalId(4)), PaneId::Terminal(crate::TerminalId(3))]), "Pane Id of newly focused pane not added to group after the group marking was toggled off");
     }
 }
 
@@ -476,7 +485,7 @@ fn break_group_with_mouse() {
         cols: 121,
         rows: 20,
     };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut screen = create_new_screen(size, true, true);
 
     new_tab(&mut screen, 1, 0);
@@ -486,7 +495,7 @@ fn break_group_with_mouse() {
         for i in 2..5 {
             active_tab
                 .new_pane(
-                    PaneId::Terminal(i),
+                    PaneId::Terminal(crate::TerminalId(i)),
                     None,
                     None,
                     false,
@@ -522,9 +531,9 @@ fn break_group_with_mouse() {
                 .clone_inner()
                 .get(&client_id),
             Some(&vec![
-                PaneId::Terminal(4),
-                PaneId::Terminal(3),
-                PaneId::Terminal(2)
+                PaneId::Terminal(crate::TerminalId(4)),
+                PaneId::Terminal(crate::TerminalId(3)),
+                PaneId::Terminal(crate::TerminalId(2))
             ]),
             "Group contains 3 panes"
         );
@@ -550,7 +559,7 @@ fn break_group_with_mouse() {
 #[test]
 fn a_plugin_pane_with_mouse_selection_hears_the_whole_click() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = 1;
+    let client_id = ClientId(1);
     let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let mut screen = create_non_mirrored_screen(size);
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
@@ -563,7 +572,7 @@ fn a_plugin_pane_with_mouse_selection_hears_the_whole_click() {
         .get_active_tab_mut(client_id)
         .unwrap()
         .new_pane(
-            PaneId::Plugin(7),
+            PaneId::Plugin(crate::PluginId(7)),
             Some("dialog".to_owned()),
             Some(dialog),
             false,
@@ -574,12 +583,12 @@ fn a_plugin_pane_with_mouse_selection_hears_the_whole_click() {
         )
         .expect("TEST");
     screen
-        .with_pane(PaneId::Plugin(7), |pane| {
+        .with_pane(PaneId::Plugin(crate::PluginId(7)), |pane| {
             pane.set_mouse_selection_support(true)
         })
         .expect("the dialog is in the tab");
     let (content_x, content_y) = screen
-        .with_pane(PaneId::Plugin(7), |pane| {
+        .with_pane(PaneId::Plugin(crate::PluginId(7)), |pane| {
             (pane.get_content_x(), pane.get_content_y())
         })
         .expect("the dialog is in the tab");
@@ -596,7 +605,9 @@ fn a_plugin_pane_with_mouse_selection_hears_the_whole_click() {
         .flat_map(|(instruction, _)| match instruction {
             PluginInstruction::Update(updates) => updates
                 .into_iter()
-                .filter_map(|(plugin_id, _, event)| (plugin_id == Some(7)).then_some(event))
+                .filter_map(|(plugin_id, _, event)| {
+                    (plugin_id == Some(crate::PluginId(7))).then_some(event)
+                })
                 .collect::<Vec<_>>(),
             _ => vec![],
         })

@@ -4,7 +4,7 @@ use super::*;
 fn forward_host_query_when_idle_dispatches_immediately() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    let pane_id = PaneId::Terminal(42);
+    let pane_id = PaneId::Terminal(crate::TerminalId(42));
     let query = bg_query();
 
     let token = screen.forward_host_query(pane_id, query.clone());
@@ -35,8 +35,8 @@ fn forward_host_query_when_idle_dispatches_immediately() {
 fn forward_host_query_when_busy_queues_instead_of_dispatching() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    let first_pane = PaneId::Terminal(1);
-    let second_pane = PaneId::Terminal(2);
+    let first_pane = PaneId::Terminal(crate::TerminalId(1));
+    let second_pane = PaneId::Terminal(crate::TerminalId(2));
 
     let first_token = screen.forward_host_query(first_pane, bg_query());
     let second_token = screen.forward_host_query(second_pane, fg_query());
@@ -56,7 +56,7 @@ fn forward_host_query_when_busy_queues_instead_of_dispatching() {
 fn handle_reply_writes_to_pane_pty_and_releases_slot() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    let pane_id = PaneId::Terminal(7);
+    let pane_id = PaneId::Terminal(crate::TerminalId(7));
     let token = screen.forward_host_query(pane_id, bg_query());
     let _ = capture.drain_forward_queries(); // discard the dispatch
 
@@ -67,7 +67,7 @@ fn handle_reply_writes_to_pane_pty_and_releases_slot() {
 
     let writes = capture.drain_pty_writes();
     assert_eq!(writes.len(), 1, "one pty write expected");
-    assert_eq!(writes[0], (reply, 7));
+    assert_eq!(writes[0], (reply, TerminalId(7)));
     assert!(
         screen.forward_in_flight_token.is_none(),
         "slot released so the next queued forward can dispatch"
@@ -82,8 +82,8 @@ fn handle_reply_writes_to_pane_pty_and_releases_slot() {
 fn handle_reply_dispatches_next_queued_forward() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    let first_pane = PaneId::Terminal(1);
-    let second_pane = PaneId::Terminal(2);
+    let first_pane = PaneId::Terminal(crate::TerminalId(1));
+    let second_pane = PaneId::Terminal(crate::TerminalId(2));
     let first_token = screen.forward_host_query(first_pane, bg_query());
     let second_token = screen.forward_host_query(second_pane, fg_query());
     // First dispatch already emitted; drop it.
@@ -114,7 +114,7 @@ fn clipboard_read_is_dropped_when_the_option_is_off() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
 
-    screen.forward_host_query(PaneId::Terminal(3), clipboard_query());
+    screen.forward_host_query(PaneId::Terminal(crate::TerminalId(3)), clipboard_query());
 
     assert!(
         capture.drain_forward_queries().is_empty(),
@@ -129,7 +129,7 @@ fn clipboard_read_is_forwarded_asynchronously_when_enabled() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     screen.paste_buffer_read_enabled = true;
-    let pane_id = PaneId::Terminal(5);
+    let pane_id = PaneId::Terminal(crate::TerminalId(5));
 
     let token = screen.forward_host_query(pane_id, clipboard_query());
 
@@ -158,8 +158,10 @@ fn a_pending_clipboard_read_does_not_block_other_host_queries() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     screen.paste_buffer_read_enabled = true;
-    let clipboard_token = screen.forward_host_query(PaneId::Terminal(1), clipboard_query());
-    let colour_token = screen.forward_host_query(PaneId::Terminal(2), bg_query());
+    let clipboard_token =
+        screen.forward_host_query(PaneId::Terminal(crate::TerminalId(1)), clipboard_query());
+    let colour_token =
+        screen.forward_host_query(PaneId::Terminal(crate::TerminalId(2)), bg_query());
 
     let forwards = capture.drain_forward_queries();
     assert_eq!(
@@ -181,7 +183,8 @@ fn a_real_clipboard_reply_is_written_to_the_pane_verbatim() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     screen.paste_buffer_read_enabled = true;
-    let token = screen.forward_host_query(PaneId::Terminal(8), clipboard_query());
+    let token =
+        screen.forward_host_query(PaneId::Terminal(crate::TerminalId(8)), clipboard_query());
     let _ = capture.drain_forward_queries();
 
     let reply = b"\x1b]52;c;aGVsbG8=\x1b\\".to_vec();
@@ -189,7 +192,7 @@ fn a_real_clipboard_reply_is_written_to_the_pane_verbatim() {
         .handle_forwarded_reply_from_host(token, reply.clone())
         .expect("handler must not fail");
 
-    assert_eq!(capture.drain_pty_writes(), vec![(reply, 8)]);
+    assert_eq!(capture.drain_pty_writes(), vec![(reply, TerminalId(8))]);
     assert!(screen.clipboard_forward_in_flight_token.is_none());
     assert!(screen.pending_clipboard_forwards.is_empty());
 }
@@ -199,7 +202,8 @@ fn an_unanswered_clipboard_read_resolves_as_an_empty_clipboard() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     screen.paste_buffer_read_enabled = true;
-    let token = screen.forward_host_query(PaneId::Terminal(9), clipboard_query());
+    let token =
+        screen.forward_host_query(PaneId::Terminal(crate::TerminalId(9)), clipboard_query());
     let _ = capture.drain_forward_queries();
 
     screen
@@ -208,7 +212,7 @@ fn an_unanswered_clipboard_read_resolves_as_an_empty_clipboard() {
 
     assert_eq!(
         capture.drain_pty_writes(),
-        vec![(b"\x1b]52;c;\x1b\\".to_vec(), 9)]
+        vec![(b"\x1b]52;c;\x1b\\".to_vec(), TerminalId(9))]
     );
 }
 
@@ -217,7 +221,8 @@ fn a_late_clipboard_reply_is_discarded() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     screen.paste_buffer_read_enabled = true;
-    let token = screen.forward_host_query(PaneId::Terminal(9), clipboard_query());
+    let token =
+        screen.forward_host_query(PaneId::Terminal(crate::TerminalId(9)), clipboard_query());
     let _ = capture.drain_forward_queries();
     screen
         .handle_forwarded_reply_from_host(token, Vec::new())
@@ -239,8 +244,10 @@ fn a_second_clipboard_read_waits_for_the_first() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     screen.paste_buffer_read_enabled = true;
-    let first_token = screen.forward_host_query(PaneId::Terminal(1), clipboard_query());
-    let second_token = screen.forward_host_query(PaneId::Terminal(2), clipboard_query());
+    let first_token =
+        screen.forward_host_query(PaneId::Terminal(crate::TerminalId(1)), clipboard_query());
+    let second_token =
+        screen.forward_host_query(PaneId::Terminal(crate::TerminalId(2)), clipboard_query());
 
     let forwards = capture.drain_forward_queries();
     assert_eq!(
@@ -258,8 +265,9 @@ fn a_queued_clipboard_read_for_a_closed_pane_is_skipped() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     screen.paste_buffer_read_enabled = true;
-    let first_token = screen.forward_host_query(PaneId::Terminal(1), clipboard_query());
-    screen.forward_host_query(PaneId::Terminal(2), clipboard_query());
+    let first_token =
+        screen.forward_host_query(PaneId::Terminal(crate::TerminalId(1)), clipboard_query());
+    screen.forward_host_query(PaneId::Terminal(crate::TerminalId(2)), clipboard_query());
     let _ = capture.drain_forward_queries();
 
     screen
@@ -278,8 +286,8 @@ fn a_queued_clipboard_read_for_a_closed_pane_is_skipped() {
 fn clear_nested_guest_does_not_notify_guest_focus_lost_on_teardown() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    let pane_id = PaneId::Terminal(7);
-    let client_id = 1;
+    let pane_id = PaneId::Terminal(crate::TerminalId(7));
+    let client_id = ClientId(1);
     screen.nested_guest_choices.insert(
         (client_id, pane_id),
         super::super::NestedGuestChoice::Descend,
@@ -300,8 +308,8 @@ fn clear_nested_guest_does_not_notify_guest_focus_lost_on_teardown() {
 fn remove_client_notifies_guest_focus_lost_on_live_ascend() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    let pane_id = PaneId::Terminal(7);
-    let client_id = 1;
+    let pane_id = PaneId::Terminal(crate::TerminalId(7));
+    let client_id = ClientId(1);
     screen.nested_guest_choices.insert(
         (client_id, pane_id),
         super::super::NestedGuestChoice::Descend,
@@ -322,8 +330,8 @@ fn remove_client_notifies_guest_focus_lost_on_live_ascend() {
 fn suspend_nested_guest_preserves_choices_for_later_revival() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, _capture) = create_new_screen_with_forward_capture(size);
-    let pane_id = PaneId::Terminal(7);
-    let client_id = 1;
+    let pane_id = PaneId::Terminal(crate::TerminalId(7));
+    let client_id = ClientId(1);
     screen.nested_guest_choices.insert(
         (client_id, pane_id),
         super::super::NestedGuestChoice::Descend,
@@ -347,8 +355,8 @@ fn suspend_nested_guest_preserves_choices_for_later_revival() {
 fn clear_nested_guest_discards_choices_unlike_suspend() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, _capture) = create_new_screen_with_forward_capture(size);
-    let pane_id = PaneId::Terminal(7);
-    let client_id = 1;
+    let pane_id = PaneId::Terminal(crate::TerminalId(7));
+    let client_id = ClientId(1);
     screen.nested_guest_choices.insert(
         (client_id, pane_id),
         super::super::NestedGuestChoice::Descend,
@@ -373,8 +381,8 @@ fn handle_reply_with_unknown_token_is_silent_noop() {
     // for the race scenario this guard prevents.)
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    let first_pane = PaneId::Terminal(1);
-    let second_pane = PaneId::Terminal(2);
+    let first_pane = PaneId::Terminal(crate::TerminalId(1));
+    let second_pane = PaneId::Terminal(crate::TerminalId(2));
     let first_token = screen.forward_host_query(first_pane, bg_query());
     let _second_token = screen.forward_host_query(second_pane, fg_query());
     let _ = capture.drain_forward_queries();
@@ -413,9 +421,9 @@ fn late_timeout_after_real_reply_does_not_clobber_next_in_flight() {
     // request. The guard makes the late timeout a no-op.
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    let pane_a = PaneId::Terminal(1);
-    let pane_b = PaneId::Terminal(2);
-    let pane_c = PaneId::Terminal(3);
+    let pane_a = PaneId::Terminal(crate::TerminalId(1));
+    let pane_b = PaneId::Terminal(crate::TerminalId(2));
+    let pane_c = PaneId::Terminal(crate::TerminalId(3));
     let token_a = screen.forward_host_query(pane_a, bg_query());
     let token_b = screen.forward_host_query(pane_b, fg_query());
     let token_c = screen.forward_host_query(pane_c, palette_query(5));
@@ -472,8 +480,8 @@ fn timeout_for_in_flight_token_releases_slot_with_cache_fallback() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     screen.update_terminal_background_color("rgb:1010/2020/3030".to_string());
-    let pane = PaneId::Terminal(11);
-    let queued_pane = PaneId::Terminal(12);
+    let pane = PaneId::Terminal(crate::TerminalId(11));
+    let queued_pane = PaneId::Terminal(crate::TerminalId(12));
     let token = screen.forward_host_query(pane, bg_query());
     let queued_token = screen.forward_host_query(queued_pane, fg_query());
     let _ = capture.drain_forward_queries();
@@ -505,7 +513,7 @@ fn token_counter_wraps_skipping_sentinel() {
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
     screen.next_forward_token = u32::MAX;
 
-    let t1 = screen.forward_host_query(PaneId::Terminal(1), bg_query());
+    let t1 = screen.forward_host_query(PaneId::Terminal(crate::TerminalId(1)), bg_query());
     // Clear the in-flight slot so the next call actually allocates
     // (the queueing branch would still allocate, but we want the
     // dispatch branch here).
@@ -515,7 +523,7 @@ fn token_counter_wraps_skipping_sentinel() {
     let _ = capture.drain_forward_queries();
     let _ = capture.drain_pty_writes();
 
-    let t2 = screen.forward_host_query(PaneId::Terminal(2), fg_query());
+    let t2 = screen.forward_host_query(PaneId::Terminal(crate::TerminalId(2)), fg_query());
     assert_eq!(t1, u32::MAX, "first token should land on u32::MAX");
     assert_eq!(
         t2, 1,
@@ -535,7 +543,7 @@ fn plugin_pane_reply_is_dropped_without_write() {
     screen.pending_forwarded_queries.insert(
         77,
         super::super::PendingForwardEntry {
-            pane_id: PaneId::Plugin(42),
+            pane_id: PaneId::Plugin(crate::PluginId(42)),
             query: bg_query(),
         },
     );
@@ -567,7 +575,7 @@ fn plugin_pane_reply_is_dropped_without_write() {
 fn empty_reply_falls_back_to_cached_background() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    let pane = PaneId::Terminal(9);
+    let pane = PaneId::Terminal(crate::TerminalId(9));
     screen.update_terminal_background_color("rgb:1010/2020/3030".to_string());
     let token = screen.forward_host_query(pane, bg_query());
     let _ = capture.drain_forward_queries();
@@ -580,7 +588,7 @@ fn empty_reply_falls_back_to_cached_background() {
     let writes = capture.drain_pty_writes();
     assert_eq!(writes.len(), 1, "synthesis must write exactly one reply");
     let (bytes, terminal_id) = &writes[0];
-    assert_eq!(*terminal_id, 9);
+    assert_eq!(*terminal_id, crate::TerminalId(9));
     assert_eq!(
         std::str::from_utf8(bytes).unwrap(),
         "\u{1b}]11;rgb:1010/2020/3030\u{1b}\\",
@@ -592,7 +600,7 @@ fn empty_reply_falls_back_to_cached_foreground_with_bel_terminator() {
     // Query used BEL; reply must mirror the same terminator.
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    let pane = PaneId::Terminal(1);
+    let pane = PaneId::Terminal(crate::TerminalId(1));
     screen.update_terminal_foreground_color("rgb:dcdc/dcdc/dcdc".to_string());
     let token = screen.forward_host_query(pane, fg_query_bel());
     let _ = capture.drain_forward_queries();
@@ -613,9 +621,9 @@ fn empty_reply_falls_back_to_cached_foreground_with_bel_terminator() {
 fn empty_reply_falls_back_to_cached_pixel_dimensions() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    let pane = PaneId::Terminal(1);
+    let pane = PaneId::Terminal(crate::TerminalId(1));
     screen.update_pixel_dimensions(
-        1,
+        crate::ClientId(1),
         PixelDimensions {
             character_cell_size: Some(SizeInPixels {
                 height: 19,
@@ -654,7 +662,7 @@ fn empty_reply_falls_back_to_cached_pixel_dimensions() {
 fn empty_reply_falls_back_to_cached_palette_register() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    let pane = PaneId::Terminal(1);
+    let pane = PaneId::Terminal(crate::TerminalId(1));
     screen.update_terminal_color_registers(vec![(42, "rgb:abab/cdcd/efef".to_string())]);
     let token = screen.forward_host_query(pane, palette_query(42));
     let _ = capture.drain_forward_queries();
@@ -678,7 +686,7 @@ fn empty_reply_with_no_cache_writes_empty() {
     // decides what to do with "host declined".
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    let pane = PaneId::Terminal(1);
+    let pane = PaneId::Terminal(crate::TerminalId(1));
 
     // Default Palette::fg is EightBit(0), not Rgb — synthesis refuses.
     let token = screen.forward_host_query(pane, fg_query());
@@ -700,7 +708,7 @@ fn non_empty_reply_bypasses_synthesis() {
     // we must not second-guess it with cached state.
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_forward_capture(size);
-    let pane = PaneId::Terminal(1);
+    let pane = PaneId::Terminal(crate::TerminalId(1));
     screen.update_terminal_background_color("rgb:0000/0000/0000".to_string());
     let token = screen.forward_host_query(pane, bg_query());
     let _ = capture.drain_forward_queries();

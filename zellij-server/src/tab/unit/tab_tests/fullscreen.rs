@@ -9,7 +9,7 @@ pub fn toggle_focused_pane_fullscreen() {
     let stacked_resize = false; // note - this is not the default
     let mut tab = create_new_tab(size, stacked_resize);
     for i in 2..5 {
-        let new_pane_id = PaneId::Terminal(i);
+        let new_pane_id = PaneId::Terminal(crate::TerminalId(i));
         tab.new_pane(
             new_pane_id,
             None,
@@ -17,26 +17,34 @@ pub fn toggle_focused_pane_fullscreen() {
             false,
             true,
             NewPanePlacement::default(),
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
         )
         .unwrap();
     }
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert_eq!(
-        tab.tiled_panes.panes.get(&PaneId::Terminal(4)).unwrap().x(),
+        tab.tiled_panes
+            .panes
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .unwrap()
+            .x(),
         0,
         "Pane x is on screen edge"
     );
     assert_eq!(
-        tab.tiled_panes.panes.get(&PaneId::Terminal(4)).unwrap().y(),
+        tab.tiled_panes
+            .panes
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .unwrap()
+            .y(),
         0,
         "Pane y is on screen edge"
     );
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(4))
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
             .unwrap()
             .cols(),
         121,
@@ -45,27 +53,35 @@ pub fn toggle_focused_pane_fullscreen() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(4))
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
             .unwrap()
             .rows(),
         20,
         "Pane rows match fullscreen rows"
     );
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert_eq!(
-        tab.tiled_panes.panes.get(&PaneId::Terminal(4)).unwrap().x(),
+        tab.tiled_panes
+            .panes
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .unwrap()
+            .x(),
         61,
         "Pane x is on screen edge"
     );
     assert_eq!(
-        tab.tiled_panes.panes.get(&PaneId::Terminal(4)).unwrap().y(),
+        tab.tiled_panes
+            .panes
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .unwrap()
+            .y(),
         10,
         "Pane y is on screen edge"
     );
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(4))
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
             .unwrap()
             .cols(),
         60,
@@ -74,7 +90,7 @@ pub fn toggle_focused_pane_fullscreen() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(4))
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
             .unwrap()
             .rows(),
         10,
@@ -94,7 +110,7 @@ pub fn toggle_focused_pane_fullscreen_with_stacked_resizes() {
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     for i in 2..5 {
-        let new_pane_id = PaneId::Terminal(i);
+        let new_pane_id = PaneId::Terminal(crate::TerminalId(i));
         tab.new_pane(
             new_pane_id,
             None,
@@ -102,26 +118,34 @@ pub fn toggle_focused_pane_fullscreen_with_stacked_resizes() {
             false,
             true,
             NewPanePlacement::default(),
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
         )
         .unwrap();
     }
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert_eq!(
-        tab.tiled_panes.panes.get(&PaneId::Terminal(4)).unwrap().x(),
+        tab.tiled_panes
+            .panes
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .unwrap()
+            .x(),
         0,
         "Pane x is on screen edge"
     );
     assert_eq!(
-        tab.tiled_panes.panes.get(&PaneId::Terminal(4)).unwrap().y(),
+        tab.tiled_panes
+            .panes
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .unwrap()
+            .y(),
         0,
         "Pane y is on screen edge"
     );
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(4))
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
             .unwrap()
             .cols(),
         121,
@@ -130,27 +154,35 @@ pub fn toggle_focused_pane_fullscreen_with_stacked_resizes() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(4))
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
             .unwrap()
             .rows(),
         20,
         "Pane rows match fullscreen rows"
     );
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert_eq!(
-        tab.tiled_panes.panes.get(&PaneId::Terminal(4)).unwrap().x(),
+        tab.tiled_panes
+            .panes
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .unwrap()
+            .x(),
         61,
         "Pane x is back to its original position"
     );
     assert_eq!(
-        tab.tiled_panes.panes.get(&PaneId::Terminal(4)).unwrap().y(),
+        tab.tiled_panes
+            .panes
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .unwrap()
+            .y(),
         2,
         "Pane y is back to its original position"
     );
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(4))
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
             .unwrap()
             .cols(),
         60,
@@ -159,7 +191,7 @@ pub fn toggle_focused_pane_fullscreen_with_stacked_resizes() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(4))
+            .get(&PaneId::Terminal(crate::TerminalId(4)))
             .unwrap()
             .rows(),
         18,
@@ -181,7 +213,7 @@ pub fn resize_whole_tab_while_fullscreen_preserves_fullscreen() {
     let stacked_resize = false;
     let mut tab = create_new_tab(initial_size, stacked_resize);
     for i in 2..5 {
-        let new_pane_id = PaneId::Terminal(i);
+        let new_pane_id = PaneId::Terminal(crate::TerminalId(i));
         tab.new_pane(
             new_pane_id,
             None,
@@ -189,12 +221,12 @@ pub fn resize_whole_tab_while_fullscreen_preserves_fullscreen() {
             false,
             true,
             NewPanePlacement::default(),
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
         )
         .unwrap();
     }
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert!(
         tab.is_fullscreen_active(),
         "Tab is fullscreen before the resize"
@@ -210,7 +242,7 @@ pub fn resize_whole_tab_while_fullscreen_preserves_fullscreen() {
     let active_pane = tab
         .tiled_panes
         .panes
-        .get(&PaneId::Terminal(4))
+        .get(&PaneId::Terminal(crate::TerminalId(4)))
         .expect("Active fullscreen pane is still present");
     assert_eq!(
         active_pane.cols(),
@@ -247,22 +279,22 @@ pub fn resize_while_fullscreen_updates_hidden_pane_geometry() {
     let mut tab = create_new_tab(initial_size, stacked_resize);
     for i in 2..6 {
         tab.new_pane(
-            PaneId::Terminal(i),
+            PaneId::Terminal(crate::TerminalId(i)),
             None,
             None,
             false,
             true,
             NewPanePlacement::default(),
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
         )
         .unwrap();
     }
 
     let active_pane_id = tab
-        .get_active_pane_id(1)
+        .get_active_pane_id(crate::ClientId(1))
         .expect("an active pane exists before fullscreen");
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert!(tab.is_fullscreen_active(), "Fullscreen is active");
 
     tab.resize_whole_tab(new_size).unwrap();
@@ -312,7 +344,7 @@ pub fn toggle_no_ui_fullscreen_covers_whole_display_and_restores() {
     let stacked_resize = false;
     let mut tab = create_new_tab(size, stacked_resize);
     for i in 2..5 {
-        let new_pane_id = PaneId::Terminal(i);
+        let new_pane_id = PaneId::Terminal(crate::TerminalId(i));
         tab.new_pane(
             new_pane_id,
             None,
@@ -320,29 +352,37 @@ pub fn toggle_no_ui_fullscreen_covers_whole_display_and_restores() {
             false,
             true,
             NewPanePlacement::default(),
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
         )
         .unwrap();
     }
-    tab.toggle_active_pane_no_ui_fullscreen(1);
+    tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId(1));
     assert!(tab.is_fullscreen_active(), "NoUi fullscreen is active");
     assert!(
         tab.fullscreen_covers_ui(),
         "NoUi fullscreen covers the UI rows"
     );
-    let active_pane = tab.tiled_panes.panes.get(&PaneId::Terminal(4)).unwrap();
+    let active_pane = tab
+        .tiled_panes
+        .panes
+        .get(&PaneId::Terminal(crate::TerminalId(4)))
+        .unwrap();
     assert_eq!(active_pane.x(), 0, "Pane x is on display edge");
     assert_eq!(active_pane.y(), 0, "Pane y is on display edge");
     assert_eq!(active_pane.cols(), 121, "Pane cols match display cols");
     assert_eq!(active_pane.rows(), 20, "Pane rows match display rows");
-    tab.toggle_active_pane_no_ui_fullscreen(1);
+    tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId(1));
     assert!(!tab.is_fullscreen_active(), "NoUi fullscreen toggled off");
     assert!(
         !tab.fullscreen_covers_ui(),
         "NoUi flag cleared after toggle off"
     );
-    let active_pane = tab.tiled_panes.panes.get(&PaneId::Terminal(4)).unwrap();
+    let active_pane = tab
+        .tiled_panes
+        .panes
+        .get(&PaneId::Terminal(crate::TerminalId(4)))
+        .unwrap();
     assert_eq!(active_pane.x(), 61, "Pane x restored");
     assert_eq!(active_pane.y(), 10, "Pane y restored");
     assert_eq!(active_pane.cols(), 60, "Pane cols restored");
@@ -358,7 +398,7 @@ pub fn regular_fullscreen_switches_to_no_ui_fullscreen() {
     let stacked_resize = false;
     let mut tab = create_new_tab(size, stacked_resize);
     for i in 2..5 {
-        let new_pane_id = PaneId::Terminal(i);
+        let new_pane_id = PaneId::Terminal(crate::TerminalId(i));
         tab.new_pane(
             new_pane_id,
             None,
@@ -366,18 +406,18 @@ pub fn regular_fullscreen_switches_to_no_ui_fullscreen() {
             false,
             true,
             NewPanePlacement::default(),
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
         )
         .unwrap();
     }
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert!(tab.is_fullscreen_active(), "Regular fullscreen is active");
     assert!(
         !tab.fullscreen_covers_ui(),
         "Regular fullscreen leaves the UI rows"
     );
-    tab.toggle_active_pane_no_ui_fullscreen(1);
+    tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId(1));
     assert!(
         tab.is_fullscreen_active(),
         "Fullscreen stays active after switching kinds"
@@ -386,7 +426,7 @@ pub fn regular_fullscreen_switches_to_no_ui_fullscreen() {
         tab.fullscreen_covers_ui(),
         "Fullscreen switched to covering the UI rows"
     );
-    tab.toggle_active_pane_no_ui_fullscreen(1);
+    tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId(1));
     assert!(
         !tab.is_fullscreen_active(),
         "Fullscreen toggled off entirely"
@@ -402,7 +442,7 @@ pub fn no_ui_fullscreen_downgrades_to_regular_fullscreen() {
     let stacked_resize = false;
     let mut tab = create_new_tab(size, stacked_resize);
     for i in 2..5 {
-        let new_pane_id = PaneId::Terminal(i);
+        let new_pane_id = PaneId::Terminal(crate::TerminalId(i));
         tab.new_pane(
             new_pane_id,
             None,
@@ -410,19 +450,19 @@ pub fn no_ui_fullscreen_downgrades_to_regular_fullscreen() {
             false,
             true,
             NewPanePlacement::default(),
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
         )
         .unwrap();
     }
     let viewport = *tab.viewport.borrow();
-    tab.toggle_active_pane_no_ui_fullscreen(1);
+    tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId(1));
     assert!(
         tab.is_fullscreen_active() && tab.fullscreen_covers_ui(),
         "NoUi fullscreen is active"
     );
 
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
 
     assert!(
         tab.is_fullscreen_active(),
@@ -434,10 +474,14 @@ pub fn no_ui_fullscreen_downgrades_to_regular_fullscreen() {
     );
     assert_eq!(
         tab.fullscreen_pane_id(),
-        Some(PaneId::Terminal(4)),
+        Some(PaneId::Terminal(crate::TerminalId(4))),
         "The same pane remains fullscreen"
     );
-    let active_pane = tab.tiled_panes.panes.get(&PaneId::Terminal(4)).unwrap();
+    let active_pane = tab
+        .tiled_panes
+        .panes
+        .get(&PaneId::Terminal(crate::TerminalId(4)))
+        .unwrap();
     assert_eq!(active_pane.x(), viewport.x, "Pane x matches the viewport");
     assert_eq!(active_pane.y(), viewport.y, "Pane y matches the viewport");
     assert_eq!(
@@ -451,7 +495,7 @@ pub fn no_ui_fullscreen_downgrades_to_regular_fullscreen() {
         "Pane rows match the viewport rows"
     );
 
-    tab.toggle_active_pane_fullscreen(1);
+    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
     assert!(
         !tab.is_fullscreen_active(),
         "The next regular toggle leaves fullscreen entirely"
@@ -467,7 +511,7 @@ pub fn resize_whole_tab_while_no_ui_fullscreen_preserves_no_ui() {
     let stacked_resize = false;
     let mut tab = create_new_tab(initial_size, stacked_resize);
     for i in 2..5 {
-        let new_pane_id = PaneId::Terminal(i);
+        let new_pane_id = PaneId::Terminal(crate::TerminalId(i));
         tab.new_pane(
             new_pane_id,
             None,
@@ -475,12 +519,12 @@ pub fn resize_whole_tab_while_no_ui_fullscreen_preserves_no_ui() {
             false,
             true,
             NewPanePlacement::default(),
-            Some(1),
+            Some(crate::ClientId(1)),
             None,
         )
         .unwrap();
     }
-    tab.toggle_active_pane_no_ui_fullscreen(1);
+    tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId(1));
     assert!(
         tab.fullscreen_covers_ui(),
         "NoUi fullscreen is active before the resize"
@@ -500,7 +544,7 @@ pub fn resize_whole_tab_while_no_ui_fullscreen_preserves_no_ui() {
     let active_pane = tab
         .tiled_panes
         .panes
-        .get(&PaneId::Terminal(4))
+        .get(&PaneId::Terminal(crate::TerminalId(4)))
         .expect("Active fullscreen pane is still present");
     assert_eq!(
         active_pane.cols(),

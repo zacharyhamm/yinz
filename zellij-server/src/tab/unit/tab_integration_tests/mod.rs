@@ -8,6 +8,7 @@ use crate::{
     plugins::PluginInstruction, thread_bus::ThreadSenders, ClientId,
 };
 use zellij_utils::input::options::PaneFrameStyle;
+use zellij_utils::internal_ids::TerminalId;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -45,14 +46,14 @@ use zellij_utils::{
 #[derive(Clone, Default)]
 struct FakeInputOutput {
     file_dumps: Arc<Mutex<HashMap<String, String>>>,
-    pub tty_stdin_bytes: Arc<Mutex<BTreeMap<u32, Vec<u8>>>>,
-    remote_panes: Arc<Mutex<HashSet<u32>>>,
+    pub tty_stdin_bytes: Arc<Mutex<BTreeMap<TerminalId, Vec<u8>>>>,
+    remote_panes: Arc<Mutex<HashSet<TerminalId>>>,
 }
 
 impl ServerOsApi for FakeInputOutput {
     fn set_terminal_size_using_terminal_id(
         &self,
-        _id: u32,
+        _id: TerminalId,
         _cols: u16,
         _rows: u16,
         _width_in_pixels: Option<u16>,
@@ -66,10 +67,10 @@ impl ServerOsApi for FakeInputOutput {
         _file_to_open: TerminalAction,
         _quit_db: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
-    ) -> Result<(u32, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
         unimplemented!()
     }
-    fn write_to_tty_stdin(&self, id: u32, buf: &[u8]) -> Result<usize> {
+    fn write_to_tty_stdin(&self, id: TerminalId, buf: &[u8]) -> Result<usize> {
         self.tty_stdin_bytes
             .lock()
             .unwrap()
@@ -78,10 +79,10 @@ impl ServerOsApi for FakeInputOutput {
             .extend_from_slice(buf);
         Ok(buf.len())
     }
-    fn tcdrain(&self, _id: u32) -> Result<()> {
+    fn tcdrain(&self, _id: TerminalId) -> Result<()> {
         unimplemented!()
     }
-    fn is_remote_pane(&self, terminal_id: u32) -> bool {
+    fn is_remote_pane(&self, terminal_id: TerminalId) -> bool {
         self.remote_panes.lock().unwrap().contains(&terminal_id)
     }
     fn kill(&self, _pid: u32) -> Result<()> {
@@ -122,13 +123,13 @@ impl ServerOsApi for FakeInputOutput {
     }
     fn re_run_command_in_terminal(
         &self,
-        _terminal_id: u32,
+        _terminal_id: TerminalId,
         _run_command: RunCommand,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
         unimplemented!()
     }
-    fn clear_terminal_id(&self, _terminal_id: u32) -> Result<()> {
+    fn clear_terminal_id(&self, _terminal_id: TerminalId) -> Result<()> {
         unimplemented!()
     }
     fn send_sigint(&self, _pid: u32) -> Result<()> {
@@ -215,7 +216,7 @@ fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -278,7 +279,7 @@ fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(1, None)],
+        vec![(crate::TerminalId(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -292,7 +293,7 @@ fn create_new_tab_with_stacked_pane_list(
     size: Size,
     default_mode: ModeInfo,
     stacked_pane_list: bool,
-    base_layout_and_ids: Option<(TiledPaneLayout, Vec<(u32, Option<RunCommand>)>)>,
+    base_layout_and_ids: Option<(TiledPaneLayout, Vec<(TerminalId, Option<RunCommand>)>)>,
 ) -> Tab {
     set_session_name("test".into());
     let index = 0;
@@ -305,7 +306,7 @@ fn create_new_tab_with_stacked_pane_list(
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -366,8 +367,12 @@ fn create_new_tab_with_stacked_pane_list(
         false,
         false, // context_menu_on_right_click
     );
-    let (base_layout, new_terminal_ids) =
-        base_layout_and_ids.unwrap_or_else(|| (TiledPaneLayout::default(), vec![(1, None)]));
+    let (base_layout, new_terminal_ids) = base_layout_and_ids.unwrap_or_else(|| {
+        (
+            TiledPaneLayout::default(),
+            vec![(crate::TerminalId(1), None)],
+        )
+    });
     tab.apply_layout(
         base_layout,
         vec![],
@@ -393,7 +398,7 @@ fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::None;
     let auto_layout = true;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -456,7 +461,7 @@ fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(1, None)],
+        vec![(crate::TerminalId(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -473,9 +478,9 @@ fn create_new_tab_with_swap_layouts(
     base_layout_and_ids: Option<(
         TiledPaneLayout,
         Vec<FloatingPaneLayout>,
-        Vec<(u32, Option<RunCommand>)>,
-        Vec<(u32, Option<RunCommand>)>,
-        HashMap<RunPluginOrAlias, Vec<u32>>,
+        Vec<(TerminalId, Option<RunCommand>)>,
+        Vec<(TerminalId, Option<RunCommand>)>,
+        HashMap<RunPluginOrAlias, Vec<zellij_utils::internal_ids::PluginId>>,
     )>,
     draw_pane_frames: bool,
     stacked_resize: bool,
@@ -493,7 +498,7 @@ fn create_new_tab_with_swap_layouts(
     let mode_info = default_mode;
     let style = Style::default();
     let auto_layout = true;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -565,7 +570,7 @@ fn create_new_tab_with_swap_layouts(
         new_plugin_ids,
     ) = base_layout_and_ids.unwrap_or_default();
     let new_terminal_ids = if new_terminal_ids.is_empty() {
-        vec![(1, None)]
+        vec![(TerminalId(1), None)]
     } else {
         new_terminal_ids
     };
@@ -598,7 +603,7 @@ fn create_new_tab_with_os_api(
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -661,7 +666,7 @@ fn create_new_tab_with_os_api(
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(1, None)],
+        vec![(crate::TerminalId(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -683,7 +688,7 @@ fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) 
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -749,12 +754,12 @@ fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) 
         .extract_run_instructions()
         .iter()
         .enumerate()
-        .map(|(i, _)| (i as u32, None))
+        .map(|(i, _)| (TerminalId(i as u32), None))
         .collect();
     let floating_pane_ids = floating_panes_layout
         .iter()
         .enumerate()
-        .map(|(i, _)| (i as u32, None))
+        .map(|(i, _)| (TerminalId(i as u32), None))
         .collect();
     tab.apply_layout(
         tab_layout,
@@ -786,7 +791,7 @@ fn create_new_tab_with_mock_pty_writer(
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -849,7 +854,7 @@ fn create_new_tab_with_mock_pty_writer(
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(1, None)],
+        vec![(crate::TerminalId(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -876,7 +881,7 @@ fn create_new_tab_with_sixel_support(
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -941,7 +946,7 @@ fn create_new_tab_with_sixel_support(
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(1, None)],
+        vec![(crate::TerminalId(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -1085,7 +1090,7 @@ fn setup_tab_with_focused_floating_pane(
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
     tab.new_pane(
-        PaneId::Terminal(2),
+        PaneId::Terminal(crate::TerminalId(2)),
         None,
         None,
         false,
@@ -1096,14 +1101,14 @@ fn setup_tab_with_focused_floating_pane(
     )
     .unwrap();
     tab.handle_pty_bytes(
-        2,
+        crate::TerminalId(2),
         Vec::from("\n\n\n                   I am a floating pane".as_bytes()),
     )
     .unwrap();
     tab
 }
 
-fn two_adjacent_stacks_layout() -> (TiledPaneLayout, Vec<(u32, Option<RunCommand>)>) {
+fn two_adjacent_stacks_layout() -> (TiledPaneLayout, Vec<(TerminalId, Option<RunCommand>)>) {
     let base_layout = r#"
         layout {
             pane split_direction="horizontal" {
@@ -1126,12 +1131,12 @@ fn two_adjacent_stacks_layout() -> (TiledPaneLayout, Vec<(u32, Option<RunCommand
             .template
             .unwrap();
     let new_terminal_ids = vec![
-        (1, None),
-        (2, None),
-        (3, None),
-        (4, None),
-        (5, None),
-        (6, None),
+        (TerminalId(1), None),
+        (TerminalId(2), None),
+        (TerminalId(3), None),
+        (TerminalId(4), None),
+        (TerminalId(5), None),
+        (TerminalId(6), None),
     ];
     (base_layout, new_terminal_ids)
 }
@@ -1174,7 +1179,7 @@ fn create_new_tab_with_plugin_receiver_and_os(
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -1237,7 +1242,7 @@ fn create_new_tab_with_plugin_receiver_and_os(
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(1, None)],
+        vec![(crate::TerminalId(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -1271,7 +1276,7 @@ fn create_new_tab_with_screen_receiver(
     senders.to_screen = Some(screen_sender);
 
     let max_panes = None;
-    let client_id = 1;
+    let client_id = ClientId(1);
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
@@ -1326,7 +1331,7 @@ fn create_new_tab_with_screen_receiver(
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(1, None)],
+        vec![(crate::TerminalId(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -1404,7 +1409,7 @@ struct SuppressedPaneModel {
 }
 
 impl SuppressedPaneModel {
-    const CLIENT_ID: ClientId = 1;
+    const CLIENT_ID: ClientId = crate::ClientId(1);
 
     fn new() -> Self {
         let mut tab = create_new_tab_with_stacked_pane_list(
@@ -1425,7 +1430,7 @@ impl SuppressedPaneModel {
             .replace_to_plugin(SenderWithContext::new(plugin_sender));
         SuppressedPaneModel {
             tab,
-            alive: std::collections::HashSet::from([PaneId::Terminal(1)]),
+            alive: std::collections::HashSet::from([PaneId::Terminal(crate::TerminalId(1))]),
             next_id: 2,
             _plugin_receiver: plugin_receiver,
         }
@@ -1496,9 +1501,9 @@ impl SuppressedPaneModel {
     #[rule]
     fn open_a_pane(&mut self, tc: hegel::TestCase) {
         let pane_id = if tc.draw(hegel::generators::booleans()) {
-            PaneId::Terminal(self.fresh_id())
+            PaneId::Terminal(crate::TerminalId(self.fresh_id()))
         } else {
-            PaneId::Plugin(self.fresh_id())
+            PaneId::Plugin(crate::PluginId(self.fresh_id()))
         };
         let placement = match tc.draw(
             hegel::generators::integers::<usize>()
@@ -1539,7 +1544,7 @@ impl SuppressedPaneModel {
     #[rule]
     fn replace_a_pane_in_place(&mut self, tc: hegel::TestCase) {
         let replaced = Self::pick(&tc, &self.on_screen());
-        let pane_id = PaneId::Terminal(self.fresh_id());
+        let pane_id = PaneId::Terminal(crate::TerminalId(self.fresh_id()));
         self.tab
             .new_pane(
                 pane_id,
@@ -1570,7 +1575,7 @@ impl SuppressedPaneModel {
             .filter(|pane_id| matches!(pane_id, PaneId::Terminal(_)))
             .collect();
         let edited = Self::pick(&tc, &on_screen);
-        let editor = PaneId::Terminal(self.fresh_id());
+        let editor = PaneId::Terminal(crate::TerminalId(self.fresh_id()));
         self.tab
             .replace_pane_with_editor_pane(editor, edited)
             .unwrap();
