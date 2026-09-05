@@ -79,13 +79,15 @@ pub(crate) fn agent_spawn_specs(tc: &hegel::TestCase) -> AgentSpawnSpec {
         branch: optional_strings(tc),
         base: optional_strings(tc),
         worktree: optional_booleans(tc),
-        worktree_path: optional_strings(tc),
+        worktree_dir: optional_strings(tc),
         env: context(tc),
         permission_mode: optional_strings(tc),
         resume: optional_strings(tc),
         hooks: optional_booleans(tc),
         firecracker: optional_strings(tc),
         firecracker_image: optional_strings(tc),
+        reuse: optional_booleans(tc),
+        allow_outside_worktree: optional_booleans(tc),
     }
 }
 

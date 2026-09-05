@@ -391,7 +391,8 @@ fn the_floating_geometry_messages_survive_the_shared_parser() {
 fn agent_spawn_arguments_become_the_spec_the_new_agent_modal_builds() {
     let args = Args::parse(
         r#"{"agent":"cursor","model":"opus","prompt":"fix it","branch":"topic",
-            "base":"develop","worktree":false,"worktree_path":"/elsewhere"}"#,
+            "base":"develop","worktree":true,"worktree_dir":"/elsewhere","reuse":true,
+            "allow_outside_worktree":true}"#,
     )
     .unwrap();
     assert_eq!(
@@ -404,8 +405,10 @@ fn agent_spawn_arguments_become_the_spec_the_new_agent_modal_builds() {
             prompt: Some("fix it".to_owned()),
             branch: Some("topic".to_owned()),
             base: Some("develop".to_owned()),
-            worktree: Some(false),
-            worktree_path: Some("/elsewhere".to_owned()),
+            worktree: Some(true),
+            worktree_dir: Some("/elsewhere".to_owned()),
+            reuse: Some(true),
+            allow_outside_worktree: Some(true),
             ..Default::default()
         }
     );

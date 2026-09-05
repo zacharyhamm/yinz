@@ -24,7 +24,9 @@ function M.load(config)
   zellij.task(function()
     local answer = zellij.await(zellij.async.permissions { "run_commands", "read_application_state", "write_to_stdin" })
     zellij.log("permissions " .. answer)
-    local pane = zellij.agent.spawn { kind = "claude", hooks = false, cwd = "/host" }
+    -- No branch, and the test's cwd is a plain folder rather than a linked worktree, so
+    -- the spawn says out loud that it means to run there.
+    local pane = zellij.agent.spawn { kind = "claude", hooks = false, cwd = "/host", allow_outside_worktree = true }
     zellij.log("spawned pane=" .. pane.Terminal)
     zellij.await(zellij.async.agent_state(pane, "waiting"))
     zellij.log("waiting pane=" .. pane.Terminal)

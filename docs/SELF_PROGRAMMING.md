@@ -173,7 +173,7 @@ hook change: `cargo x integration-test -- -j 16 -E 'test(a_written_hook)'`.
 ## Notes for the next session
 
 **Proto numbers in use** (next free): plugin `CommandName` 281 (`SpawnAgent`) / payload
-field 222 (next 282 / 223); `SpawnAgentPayload` field 6 (`automatic_firecracker_vm`, next 7) - this note had gone stale once already, having missed
+field 222 (next 282 / 223); `SpawnAgentPayload` field 6 (`automatic_firecracker_vm`, next 7); `AgentSpawnSpec` field 18 (`allow_outside_worktree`, next 19); `SpawnAgentResponse` field 4 (`cwd`, next 5) - this note had gone stale once already, having missed
 `DataCatalog` 278 / 219 and `SetQuitNotice` 279 / 220, so read the `.proto` rather than
 trusting it; plugin `EventType` 58 (`AgentEvent`), event payload field 52; IPC `Action`
 oneof 163 (`agent_event`; 161–162 are `main`'s text-selection actions; next 164); IPC

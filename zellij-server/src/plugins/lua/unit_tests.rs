@@ -2738,7 +2738,12 @@ fn zellij_agent_spawn_flattens_the_authors_table() {
     for source in [
         r#"zellij.agent.spawn { kind = "claude", prompt = "fix it", cwd = "/host" }"#,
         r#"zellij.agent.spawn { command = "sh", args = { "-c", "true" }, name = "probe" }"#,
-        r#"zellij.agent.spawn { kind = "codex", branch = "topic", worktree = false, context = { a = "b" } }"#,
+        // `source_directory` names a folder that is no repository, so the host refuses at
+        // `git rev-parse` and this stays a test about the prelude's table. Without it the
+        // branch fields reach real git in whatever checkout the test process is running
+        // from - which is this one - and cut a branch in it.
+        r#"zellij.agent.spawn { kind = "codex", branch = "topic", worktree = false,
+             source_directory = "/nonexistent/not-a-repository", context = { a = "b" } }"#,
     ] {
         if let Some(err) = error_from_load(source) {
             assert!(

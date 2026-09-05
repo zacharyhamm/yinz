@@ -79,9 +79,19 @@ pub fn binary_for(kind: &str) -> &str {
     }
 }
 
-/// Where a branch's worktree goes when the caller does not say.
-pub fn worktree_path_for(branch: &str) -> String {
-    format!("{WORKTREE_PREFIX}{branch}")
+/// Where a branch's worktree goes: `<dir>/<branch>`, with [`WORKTREE_PREFIX`] for a caller
+/// who does not name a directory.
+///
+/// The branch is the whole of the last component, and there is no way to ask for anything
+/// else — a caller chooses where a worktree is *placed*, never what it is called. A worktree
+/// whose name and branch disagree is a folder nobody can identify from either half, and it
+/// used to be one tool call away.
+pub fn worktree_path_in(dir: Option<&str>, branch: &str) -> String {
+    let dir = dir
+        .map(str::trim)
+        .filter(|dir| !dir.is_empty())
+        .unwrap_or(WORKTREE_PREFIX);
+    format!("{}/{branch}", dir.trim_end_matches('/'))
 }
 
 /// The arguments a kind's program takes for what a [`Spec`] asks, as `(leading, flags)`:
@@ -317,6 +327,11 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
         ..Default::default()
     };
 
+    // A directory to put a worktree in, on a spec that will not cut one, is a caller who
+    // means something this cannot do. Answered rather than ignored: the alternative is an
+    // agent somewhere other than where the field says, with nothing said about it.
+    let worktree_dir = trimmed(&spec.worktree_dir);
+
     let Some(branch) = trimmed(&spec.branch) else {
         // A worktree asked for with nothing to put in it. Saying so beats silently
         // running in the current checkout, which is the one thing the caller said
@@ -324,11 +339,17 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
         if spec.worktree == Some(true) {
             return Err("a branch is required to create a worktree".to_owned());
         }
+        if worktree_dir.is_some() {
+            return Err("worktree_dir applies only to a spawn that cuts a worktree".to_owned());
+        }
         return Ok((command, GitCheckout::Current));
     };
 
     let base = trimmed(&spec.base).unwrap_or(DEFAULT_BASE);
     if !spec.worktree.unwrap_or(true) {
+        if worktree_dir.is_some() {
+            return Err("worktree_dir applies only to a spawn that cuts a worktree".to_owned());
+        }
         return Ok((
             command,
             GitCheckout::NewBranch {
@@ -337,9 +358,7 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
             },
         ));
     }
-    let path = trimmed(&spec.worktree_path)
-        .map(str::to_owned)
-        .unwrap_or_else(|| worktree_path_for(branch));
+    let path = worktree_path_in(worktree_dir, branch);
     Ok((
         command,
         GitCheckout::NewWorktree {
@@ -575,19 +594,48 @@ mod tests {
         );
     }
 
-    /// The one place a worktree path is *not* derived: the caller said where.
+    /// The caller says where a worktree is *placed*; what it is called is the branch,
+    /// here and everywhere else. A trailing slash on the directory is not a second one
+    /// in the path.
     #[test]
-    fn a_given_worktree_path_is_used_as_it_stands() {
-        let (_, checkout) = plan(&Spec {
-            branch: Some("topic".to_owned()),
-            worktree_path: Some("/elsewhere/topic".to_owned()),
-            ..spec("claude")
-        })
-        .unwrap();
-        assert!(matches!(
-            checkout,
-            GitCheckout::NewWorktree { path, .. } if path == *"/elsewhere/topic"
-        ));
+    fn a_given_directory_holds_a_worktree_still_named_for_its_branch() {
+        for directory in ["/elsewhere", "/elsewhere/"] {
+            let (_, checkout) = plan(&Spec {
+                branch: Some("topic".to_owned()),
+                worktree_dir: Some(directory.to_owned()),
+                ..spec("claude")
+            })
+            .unwrap();
+            assert!(matches!(
+                checkout,
+                GitCheckout::NewWorktree { path, .. } if path == *"/elsewhere/topic"
+            ));
+        }
+    }
+
+    /// A directory to put a worktree in, on a spec that will not cut one, is a caller
+    /// who means something this cannot do - so it is answered rather than dropped.
+    #[test]
+    fn a_directory_with_no_worktree_to_put_in_it_is_refused() {
+        let refusal = "worktree_dir applies only to a spawn that cuts a worktree";
+        assert_eq!(
+            plan(&Spec {
+                worktree_dir: Some(".worktrees".to_owned()),
+                ..spec("claude")
+            })
+            .unwrap_err(),
+            refusal,
+        );
+        assert_eq!(
+            plan(&Spec {
+                branch: Some("topic".to_owned()),
+                worktree: Some(false),
+                worktree_dir: Some(".worktrees".to_owned()),
+                ..spec("claude")
+            })
+            .unwrap_err(),
+            refusal,
+        );
     }
 
     #[test]

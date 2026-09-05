@@ -645,7 +645,7 @@ message AgentSpawnSpec {
   optional string branch = 6;
   optional string base = 7;
   optional bool worktree = 8;
-  optional string worktree_path = 9;
+  optional string worktree_dir = 9;
   repeated EnvVariable env = 10;
   optional string permission_mode = 11;
   optional string resume = 12;
@@ -653,6 +653,8 @@ message AgentSpawnSpec {
   optional string firecracker = 14;
   optional string firecracker_image = 15;
   optional string effort = 16;
+  optional bool reuse = 17;
+  optional bool allow_outside_worktree = 18;
 }
 
 message SpawnAgentPayload {
@@ -669,6 +671,10 @@ message SpawnAgentResponse {
     PaneId pane_id = 1;
     string error = 2;
   }
+  // What the agent got, which is not always what it asked for: a taken name is cut afresh
+  // with a suffix, and a branch held elsewhere sends the agent to that worktree.
+  optional string branch = 3;
+  optional string cwd = 4;
 }
 
 message NotifyWithPanePayload {

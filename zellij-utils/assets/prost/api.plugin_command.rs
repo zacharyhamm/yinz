@@ -745,7 +745,7 @@ pub struct AgentSpawnSpec {
     #[prost(bool, optional, tag="8")]
     pub worktree: ::core::option::Option<bool>,
     #[prost(string, optional, tag="9")]
-    pub worktree_path: ::core::option::Option<::prost::alloc::string::String>,
+    pub worktree_dir: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, repeated, tag="10")]
     pub env: ::prost::alloc::vec::Vec<EnvVariable>,
     #[prost(string, optional, tag="11")]
@@ -760,6 +760,10 @@ pub struct AgentSpawnSpec {
     pub firecracker_image: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="16")]
     pub effort: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, optional, tag="17")]
+    pub reuse: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag="18")]
+    pub allow_outside_worktree: ::core::option::Option<bool>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -780,6 +784,12 @@ pub struct SpawnAgentPayload {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SpawnAgentResponse {
+    /// What the agent got, which is not always what it asked for: a taken name is cut afresh
+    /// with a suffix, and a branch held elsewhere sends the agent to that worktree.
+    #[prost(string, optional, tag="3")]
+    pub branch: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="4")]
+    pub cwd: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(oneof="spawn_agent_response::Result", tags="1, 2")]
     pub result: ::core::option::Option<spawn_agent_response::Result>,
 }

@@ -1300,8 +1300,9 @@ zellij.agent = {}
 --- The fields of `AgentSpawnSpec`, in `zellij.agent.spawn`'s flat table. Everything else the
 --- author writes (`source_directory`, `cwd`, `name`, `context`) is the command's own.
 local SPAWN_SPEC_FIELDS = {
-  "kind", "command", "args", "model", "effort", "prompt", "branch", "base", "worktree", "worktree_path",
-  "env", "permission_mode", "resume", "hooks", "firecracker", "firecracker_image",
+  "kind", "command", "args", "model", "effort", "prompt", "branch", "base", "worktree", "worktree_dir",
+  "env", "permission_mode", "resume", "hooks", "firecracker", "firecracker_image", "reuse",
+  "allow_outside_worktree",
 }
 
 --- Start a coding agent in a command pane near this plugin:
@@ -1311,8 +1312,12 @@ local SPAWN_SPEC_FIELDS = {
 --- The launch is planned the way hocus plans its own - per-kind flags, `permission_mode`,
 --- `resume`, the inline Claude Code hooks (`hooks = false` to leave them out) - and the pane is
 --- recorded as an agent pane, so its state rides on `pane_update` and its exit fires
---- `agent_exit`. `branch` (with `base`, default `main`) makes a worktree at `worktree_path`
---- (default `.worktrees/<branch>`), or the branch in place with `worktree = false`;
+--- `agent_exit`. `branch` (with `base`, default `main`) makes a worktree named after it in
+--- `worktree_dir` (default `.worktrees/`), or the branch in place with `worktree = false`; a
+--- name already taken is cut afresh as `<branch>-2` unless `reuse = true` says the existing
+--- branch or worktree is the work meant. An agent that would start anywhere but a linked
+--- worktree - the primary checkout, or no repository at all - is refused unless
+--- `allow_outside_worktree = true`;
 --- `source_directory` is the repository that happens in, as a plugin path (`/host` by default);
 --- `cwd` is where the pane runs when no branch is named. `firecracker` names a session VM to
 --- run in, `firecracker_image` its image; with `automatic_firecracker_vm = true` the host names
