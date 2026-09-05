@@ -252,6 +252,26 @@ through coding agents - the goal, what landed where, proto numbers in use, and t
 lessons. Read it before touching agent records, `zellij events`, `config.d`, hooks or plugin
 authoring.
 
+## The plugin data store is shared between servers
+
+One `plugin-data.db` serves every zellij server on the machine; with `plugin_data_url` pointing
+at Postgres, one database serves every machine. Two rules follow, and both bite silently.
+
+- **A row about a running server names it.** `host_id` *and* `zellij_session_name` — the pair
+  `hocus_proto::agents::rows::Owner` carries. Never scope by session alone: two machines can each
+  run a session called `main`, and a pane id means nothing outside the server that allocated it.
+  The id comes from `zellij_utils::host_identity`, resolved once at server startup and read by
+  plugins off `PluginIds.host_id`. Carry it; do not call `get_plugin_ids()` from library code,
+  which reads real stdin in a native test binary.
+- **A write that replaces what it read guards on `rev`.** `expect_rev` on a `Put` or `Update`
+  makes it a compare-and-set, refused with `DataError::Conflict` and rolling the batch back. Use
+  it where a write replaces something composed from an earlier read; do not use it where a write
+  sets a flag, since two writers agreeing is not a conflict.
+
+Not handled: a watch is only re-evaluated by writes from its own server process, so on a shared
+Postgres another machine's write does not wake it. See `docs/ARCHITECTURE.md` ("Sharing a store
+between servers") and `docs/LUA_PLUGINS.md` ("Writing without losing somebody else's write").
+
 ## Agent state from coding-agent hooks
 
 A `claude` or a `codex` running in a pane can report its own busy/waiting/idle state instead of

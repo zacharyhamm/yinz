@@ -21,6 +21,37 @@ ordering, NUL bytes in text — the store picks one behaviour and enforces it on
 store's test suite runs against both (`cargo x postgres-test`). CLI recording commands construct
 the default SQLite provider at their entrypoint.
 
+### Sharing a store between servers
+
+The store has never been per-session: one `plugin-data.db` serves every zellij server on the
+machine, and a Postgres one serves every machine pointed at it. Two things follow, and both are
+in the data rather than in the engine.
+
+**Rows about a running server say which one.** A pane id means nothing outside the server that
+handed it out, and a session name is unique only within a machine — two machines can each run a
+session called `main`. So the entities that are about a live server (`agent_latch`,
+`agent_summary`, `agent_run`, `job`) carry a `host_id` beside `zellij_session_name`, and
+`hocus_proto::agents::rows::Owner` is the pair. The id is resolved once at server startup by
+`zellij_utils::host_identity`: `ZELLIJ_HOST_ID`, then the `host_id` config option, then
+`<data dir>/host-id`, then a newly minted uuid written there. It identifies a *data dir on a
+machine*, which is the granularity that matters — two servers sharing a data dir share the pane
+ids and session names it qualifies. Plugins read it off `PluginIds` beside the hostname, which
+stays the label to show rather than the key to store.
+
+**Writes can say what they expected to find.** Every row carries a `rev`, which the store
+advances on every write that touches it, and a `Put` or `Update` may name the `rev` it expects —
+a compare-and-set, refused with `DataError::Conflict` and rolling the whole batch back. Used
+where a write replaces something composed from an earlier read (a todo's text, a note's body),
+and deliberately not where it sets a flag, since two writers agreeing is not a conflict.
+`ApplyReport.per_mutation` reports rows affected per mutation, for callers guarding by hand.
+
+**What is not handled:** a watch is only re-evaluated by writes made in the same server process
+(`refresh_watches` has one caller, in the local apply path), so on a shared Postgres another
+machine's write does not wake a watcher here. There is no change feed and no polling fallback.
+Recordings are likewise untouched: they stay in SQLite, are written by one owning thread, and
+their `recording_sessions` rows are keyed by a bare local rowid with no host column — that would
+need one before any Postgres backend for them.
+
 ## Screen (zellij-server/src/screen/)
 The Screen is responsible for managing the relationship between the panes currently displayed on screen.
 It is in charge of actions such as: 
@@ -83,7 +114,7 @@ What the split buys is lifetime. The child belongs to the supervisor, so a serve
 
 Because a detached supervisor is still holding a live pane, it can be picked back up. It binds a named socket, and an `Attach` on that socket re-keys it to the attaching server's pane, hands the master over again, and replays whatever the ring caught in the meantime. Two things are built on that one primitive:
 
-  * `zellij action warp-pane --to-session <name>` moves a pane between sessions. The source releases the supervisor without killing it, serializes the pane's screen, scrollback and agent record, and sends the other session an `AdoptPane`; the target attaches and replays them into a new pane. The agent's *history* is not in that payload and does not need to be: it lives in `agent_run` rows in the plugin data store, which is one file per machine rather than per session, so what has to travel is the run's id rather than the run. That rides on the record, as `AgentInfo.run_id` — see `docs/AGENT_HOOKS.md`. The losing session closes the run under a predicate naming itself as its owner, and the gaining session reopens it by id, so whichever write lands second the entries survive. Nothing else about the process changes — same pid, same working directory, same open files. A local child inherits its supervisor id as `ZELLIJ_PANE_REF`; because `Attach` re-keys the supervisor's current session and terminal id, an implicit `agent-report` can resolve that stable id after the move instead of using the stale per-session values in the child's environment.
+  * `zellij action warp-pane --to-session <name>` moves a pane between sessions. The source releases the supervisor without killing it, serializes the pane's screen, scrollback and agent record, and sends the other session an `AdoptPane`; the target attaches and replays them into a new pane. The agent's *history* is not in that payload and does not need to be: it lives in `agent_run` rows in the plugin data store, which is not per session — one file per machine, or one Postgres shared between machines — so what has to travel is the run's id rather than the run. That rides on the record, as `AgentInfo.run_id` — see `docs/AGENT_HOOKS.md`. The losing session closes the run under a predicate naming itself as its owner — the machine and the session both, since a session name alone would match another machine's session of that name — and the gaining session reopens it by id, so whichever write lands second the entries survive. Nothing else about the process changes — same pid, same working directory, same open files. A local child inherits its supervisor id as `ZELLIJ_PANE_REF`; because `Attach` re-keys the supervisor's current session and terminal id, an implicit `agent-report` can resolve that stable id after the move instead of using the stale per-session values in the child's environment.
   * `zellij action warp-tab --to-session <name>` moves a whole tab the same way, releasing every supervisor in it and sending an `AdoptTab`. What travels alongside the panes is a *layout* and each pane's agent record — run id and all, so each pane's history is picked up the same way — rather than their pane sizes, reconstructed from their geometry by the same code session resurrection uses — so the tab re-flows to fit a session whose terminal is a different size instead of arriving clipped. The tab's plugin panes are the one thing that does not survive intact: they have no process to hand over, so they ride along as `Run::Plugin` nodes and the receiving session starts them afresh in the same slots.
   * `zellij pty-host adopt <id>` does the same thing with no source session at all, which is how a pane that outlived a crashed server gets back on screen.
 

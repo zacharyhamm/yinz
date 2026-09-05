@@ -85,7 +85,15 @@ fields on a manifest handed to every plugin on every pane update, and a history 
 list of prompts, plans, questions and results. History lives in `agent_run` rows in the shared
 plugin data store — with the default SQLite backend, one file per *machine*, not per session, so a run written in one
 session is legible in another; with `plugin_data_url` pointing at Postgres, one database per
-however many machines share it. What a warped pane needs is not the history but its *name*, and
+however many machines share it.
+
+A run says which server owns it: `host_id` and `zellij_session_name`, the pair
+`agents::rows::Owner` carries. Both, because a session name is unique only within a machine —
+two machines can each run a session called `main`, and the pane ids those sessions hand out mean
+nothing to each other. The ownership guard that keeps a warped run from being closed by the
+session that lost it matches on both, so `main` here cannot close `main` over there. Reading is
+unscoped by default: "have I had an agent look at this before" is a better question answered
+across every machine, and narrowing to one — or to a session — is the option. What a warped pane needs is not the history but its *name*, and
 that is what travels.
 
 ### Reading it back
