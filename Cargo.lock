@@ -4916,6 +4916,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-postgres",
  "tokio-stream",
  "tokio-util",
  "unicode-width 0.2.2",

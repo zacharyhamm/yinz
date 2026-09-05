@@ -40,6 +40,8 @@ use zellij_tile::prelude::*;
 
 #[derive(Default)]
 struct State {
+    project_watch_id: Option<u64>,
+    latest_snapshot: Option<PollReply>,
     /// The tab names last handed to the host, so an unchanged map costs no host
     /// call. The daemon already drops a snapshot identical to the last one, but
     /// two different snapshots routinely name the tabs the same way — a pane
@@ -51,9 +53,7 @@ register_plugin!(State);
 
 impl ZellijPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
-        // No subscriptions and no permissions. Everything this plugin does is
-        // driven by a pipe, and a builtin is granted the data store without
-        // asking — asking would only strand it, see hocus-agentd.
+        // Builtins already have data-store access; see hocus-agentd.
         let backend = Host::shared();
         // Declared here as well as in hocus, because either may start first and
         // a fetch against an entity nobody has declared is an error. The
@@ -64,6 +64,13 @@ impl ZellijPlugin for State {
             return;
         }
         import_legacy(&backend);
+        match backend.watch(
+            &FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT),
+            WatchMode::Rows,
+        ) {
+            Ok(handle) => self.project_watch_id = Some(handle.watch_id),
+            Err(error) => eprintln!("hocus-store: could not watch projects: {error}"),
+        }
         // Ask hocus-agentd for pane snapshots, which is where discovered
         // projects come from. Broadcast, because addressing it by url would
         // launch a second daemon rather than find the running one — the host
@@ -73,7 +80,17 @@ impl ZellijPlugin for State {
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE));
     }
 
-    fn update(&mut self, _event: Event) -> bool {
+    fn update(&mut self, event: Event) -> bool {
+        if let Event::PluginDataChanged { watch_id, rows, .. } = event {
+            if self.project_watch_id == Some(watch_id) {
+                if let Some(reply) = self.latest_snapshot.take() {
+                    if let Some(panes) = reply.panes.as_deref() {
+                        self.publish_tab_names(&projects::from_rows(&rows), &reply, panes);
+                    }
+                    self.latest_snapshot = Some(reply);
+                }
+            }
+        }
         false
     }
 
@@ -110,6 +127,7 @@ impl State {
         };
         let registry = discover_from(backend, &reply, panes);
         self.publish_tab_names(&registry, &reply, panes);
+        self.latest_snapshot = Some(reply);
     }
 
     /// Name each tab after the project its panes are in, and tell the host.
@@ -526,6 +544,85 @@ mod tests {
         );
 
         assert_eq!(state.published_tab_names[&1], "the-workspace");
+    }
+
+    #[test]
+    fn project_changes_refresh_names_without_another_snapshot() {
+        let backend = backend();
+        let watch = backend
+            .watch(
+                &FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT),
+                WatchMode::Rows,
+            )
+            .expect("watch registered");
+        let mut state = State {
+            project_watch_id: Some(watch.watch_id),
+            ..State::default()
+        };
+        let changed = |rows, watch_id| Event::PluginDataChanged {
+            watch_id,
+            rows,
+            truncated: false,
+        };
+        state.update(changed(watch.rows, watch.watch_id));
+        assert!(state.latest_snapshot.is_none());
+        assert!(state.published_tab_names.is_empty());
+
+        backend
+            .apply(vec![projects::to_mutation(
+                &projects::validate("hocus", "/work/hocus").expect("valid"),
+            )])
+            .expect("initial project");
+        state.on_snapshot(
+            &backend,
+            &snapshot_of_panes(
+                vec![
+                    pane_on_tab(3, "zsh", "/work/hocus", 1),
+                    pane_on_tab(4, "zsh", "/work/hocus", 2),
+                ],
+                BTreeMap::from([(2, "manual".to_owned())]),
+            ),
+        );
+        assert_eq!(state.published_tab_names[&1], "hocus");
+        backend
+            .apply(vec![
+                projects::delete_mutation("hocus"),
+                projects::to_mutation(
+                    &projects::validate("renamed", "/work/hocus").expect("valid"),
+                ),
+            ])
+            .expect("renamed registry record");
+        let rows = backend
+            .fetch(&FetchRequest::entity("project"))
+            .expect("rows");
+        state.update(changed(rows.clone(), watch.watch_id + 1));
+        assert_eq!(state.published_tab_names[&1], "hocus");
+        state.update(changed(rows.clone(), watch.watch_id));
+        assert_eq!(state.published_tab_names[&1], "renamed");
+        assert_eq!(state.published_tab_names[&2], "manual");
+        state.update(changed(rows.clone(), watch.watch_id));
+        assert_eq!(state.published_tab_names[&1], "renamed");
+
+        // Invalid payloads and partial replies must not replace the last full pane snapshot.
+        state.on_snapshot(&backend, "invalid");
+        let mut partial: PollReply = serde_json::from_str(
+            &serde_json::to_string(state.latest_snapshot.as_ref().unwrap()).unwrap(),
+        )
+        .unwrap();
+        partial.panes = None;
+        state.on_snapshot(&backend, &serde_json::to_string(&partial).unwrap());
+        assert!(state.latest_snapshot.as_ref().unwrap().panes.is_some());
+        state.on_snapshot(&backend, &snapshot_of_panes(Vec::new(), BTreeMap::new()));
+        state.update(changed(rows, watch.watch_id));
+        assert!(state.published_tab_names.is_empty());
+        assert!(state
+            .latest_snapshot
+            .as_ref()
+            .unwrap()
+            .panes
+            .as_ref()
+            .unwrap()
+            .is_empty());
     }
 
     /// A folder Git does not claim names nothing. Without this line every `cd`

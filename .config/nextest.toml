@@ -25,3 +25,9 @@ slow-timeout = { period = "15s", terminate-after = 4 }
 [[profile.unit.overrides]]
 filter = 'test(=stdin_ansi_parser::tests::partial_osc_overflow_falls_back_to_residue)'
 slow-timeout = { period = "60s", terminate-after = 5 }
+
+# Bootstrap holds the shared schema advisory lock; its deliberate stall must not time out
+# other Postgres tests that are bootstrapping at the same time.
+[[profile.unit.overrides]]
+filter = 'test(=plugin_data_store::postgres::deadline_tests::blocked_bootstrap_and_query_discard_connections_and_reconnect)'
+threads-required = "num-cpus"

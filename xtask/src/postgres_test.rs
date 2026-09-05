@@ -81,7 +81,7 @@ fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
     crate::status(">> Running the plugin-data store suite against Postgres");
     println!(">> Running the plugin-data store suite against Postgres");
     // Only the Postgres half: the SQLite half of the same files is what `cargo x test` runs.
-    let filter = "test(/plugin_data_store::tests::postgres::/)";
+    let filter = "test(/plugin_data_store::(tests::)?postgres::/)";
     let result = if crate::test::nextest_available(sh, &cargo) {
         cmd!(
             sh,
@@ -97,9 +97,11 @@ fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
         );
         cmd!(
             sh,
-            "{cargo} test -p zellij-utils --features postgres-tests --lib plugin_data_store::tests::postgres"
+            "{cargo} test -p zellij-utils --features postgres-tests --lib postgres"
         )
         .env(URL_ENV, URL)
+        // The bootstrap deadline test deliberately holds the shared schema lock.
+        .env("RUST_TEST_THREADS", "1")
         .args(args)
         .run()
     };

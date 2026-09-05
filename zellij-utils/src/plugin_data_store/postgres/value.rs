@@ -1,12 +1,12 @@
 //! Carrying values across the `postgres` boundary.
 
 use bytes::BytesMut;
-use postgres::types::{to_sql_checked, IsNull, ToSql, Type};
+use tokio_postgres::types::{to_sql_checked, IsNull, ToSql, Type};
 
 use crate::plugin_data::{DataError, DataValue};
 use crate::plugin_data_store::sql::StorageError;
 
-impl StorageError for postgres::Error {}
+impl StorageError for tokio_postgres::Error {}
 
 impl ToSql for DataValue {
     /// Encode for the column's actual type. That is what lets an `Int` go into a `DOUBLE
@@ -40,10 +40,11 @@ impl ToSql for DataValue {
 
 /// Read one column by the type Postgres reports for it. The declared kind is not needed here:
 /// every kind has a column type of its own, so nothing comes back ambiguous.
-pub(super) fn read_value(row: &postgres::Row, index: usize) -> Result<DataValue, DataError> {
+pub(super) fn read_value(row: &tokio_postgres::Row, index: usize) -> Result<DataValue, DataError> {
     let ty = row.columns()[index].type_().clone();
-    let read_err =
-        |e: postgres::Error| DataError::Storage(format!("failed to read a {} value: {}", ty, e));
+    let read_err = |e: tokio_postgres::Error| {
+        DataError::Storage(format!("failed to read a {} value: {}", ty, e))
+    };
     Ok(match ty {
         Type::INT8 => row
             .try_get::<_, Option<i64>>(index)
