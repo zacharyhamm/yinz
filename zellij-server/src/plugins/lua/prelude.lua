@@ -591,6 +591,8 @@ local deadlines = {} -- awaitables with a `deadline`, ascending
 local armed_until = nil -- the earliest deadline a host timer is known to be in flight for
 local async_subscribed = {} -- event name -> true once this layer subscribed to it
 local token_count = 0
+local permission_queue = {} -- async permission requests, dispatched one at a time
+local permission_active = false
 
 local Task = {}
 Task.__index = Task
@@ -1117,16 +1119,32 @@ end
 ---       end)
 ---     end
 ---
---- A permission granted before - by the user, or by hocus when it approved the source - is in
---- force from the request on, and the answer arrives on the next event.
-function zellij.async.permissions(permissions)
-  local aw = awaitable {
-    events = { "permission_request_result" },
-    match = function(_, event)
-      return true, event.value
-    end,
-  }
+--- Requests are dispatched one at a time in FIFO order because answers carry no request id. A
+--- permission granted before - by the user, or by hocus when it approved the source - is in force
+--- from the request on, and the answer still arrives on a later event.
+local function dispatch_permission()
+  if permission_active or #permission_queue == 0 then
+    return
+  end
+  permission_active = true
+  local request = table.remove(permission_queue, 1)
+  local aw, permissions = request[1], request[2]
+  aw.events = { "permission_request_result" }
+  aw.match = function(_, event) return true, event.value end
+  subscribe_once("permission_request_result")
+  waiters.permission_request_result = waiters.permission_request_result or {}
+  table.insert(waiters.permission_request_result, aw)
+  table.insert(aw.on_settle, function()
+    permission_active = false
+    dispatch_permission()
+  end)
   zellij.request_permission(permissions)
+end
+
+function zellij.async.permissions(permissions)
+  local aw = awaitable {}
+  table.insert(permission_queue, { aw, permissions })
+  dispatch_permission()
   return aw
 end
 
@@ -1435,11 +1453,11 @@ end
 
 --- Called from `deliver`: the listeners `zellij.agent.on` registered.
 local function deliver_agent_event(event)
-  for _, listener in ipairs(agent_listeners) do
+  each_guarded(agent_listeners, function(listener)
     if listener(event) then
       zellij.__should_render = true
     end
-  end
+  end)
 end
 
 table.insert(event_intercepts, function(event)
