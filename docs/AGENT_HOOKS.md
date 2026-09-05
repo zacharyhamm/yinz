@@ -222,7 +222,10 @@ its question goes up as an ordinary tool call.
 
 `PermissionRequest` is the primary waiting signal and `Notification` the backstop: the
 notification only fires after ~6s of the prompt going unanswered, which is most of what
-the feed exists to remove. Its `notification_type` is matched against an allowlist —
+the feed exists to remove. That six seconds is a plain timer armed when the dialog goes up,
+not a verdict: under `auto` the classifier is routinely still deciding a `Bash` call when it
+fires, and the notification carries no `permission_mode` of its own. Its `notification_type`
+is matched against an allowlist —
 `permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`,
 `worker_permission_prompt` — so a kind added in a later Claude Code cannot silently start
 drawing a `!`. None of these hooks returns a decision: the script exits 0 with empty stdout,
@@ -586,8 +589,7 @@ agent waiting · 7 · claude◆
 Which library should we use for date formatting?
 ```
 
-Three rules, each the same one the summary toast already keeps — and a fourth this one needs
-on its own:
+Three rules, each the same one the summary toast already keeps:
 
 - **Not over the pane it describes.** If the user is focused there, they can see it.
 - **The edge, on the phase alone.** `PermissionRequest` puts the prompt up and the
@@ -598,20 +600,24 @@ on its own:
   overwrites a `waiting_on` that is already set — it fills a gap, it does not replace.
 - **Not for a prompt the mode answers itself** — and only for those. A mode answers a
   *permission prompt*: `bypassPermissions` and `dontAsk` answer every one, resolving to a
-  blanket allow and a blanket deny, and `acceptEdits` answers only the file-editing tools, so
-  a `Bash` prompt under it blocks exactly as it would under `default` and still interrupts. An
-  `AskUserQuestion`, an `ExitPlanMode`, an MCP `Elicitation` and every waiting `Notification`
-  are never suppressed under any mode: the first three address a person directly, and the last
-  fires only once its prompt has gone six seconds unanswered, which is itself the proof
-  nothing answered it. The row draws the wait either way — it is what the agent said.
-- **`auto` is silenced on the odds, and the backstop is what settles up.** It resolves to a
-  *classifier*, not to an allow: it clears what it judges safe and puts the rest in front of
-  the user exactly as `default` would. Silencing its requests is still right — most of them
-  really are answered — but a request has by then moved the feed to `waiting`, so the
-  `Notification` behind it has no busy→waiting edge left to cross, and a genuinely blocked
-  agent would go unannounced. So a wait drawn but not announced *holds its edge open*
-  (`suppressed_waits` in the daemon) until something spends it: the backstop toasts on the
-  question the request itself worded, or the agent goes back to work and the wait is over.
+  blanket allow and a blanket deny; `auto` answers most of them, through a classifier that
+  clears what it judges safe and puts the rest in front of the user; `acceptEdits` answers only
+  the file-editing tools, so a `Bash` prompt under it blocks exactly as it would under `default`
+  and still interrupts. An `AskUserQuestion`, an `ExitPlanMode` and an MCP `Elicitation` are
+  never suppressed under any mode: they address a person directly. The row draws the wait
+  either way — it is what the agent said.
+
+The `Notification` behind a silenced request is silent too, and that follows from the first
+two rules rather than needing one of its own: the request has already moved the feed to
+`waiting`, so the notification has no edge to cross. This used to be read the other way — a
+notification that fired at all was taken as proof the classifier had refused, and the daemon
+held the suppressed edge open for it — but the notification is a six-second timer Claude Code
+arms when the dialog goes up, the `auto` classifier is routinely still deciding a `Bash` call
+when it fires, and it names no `permission_mode` for anyone to read. Toasting on it meant a
+`Bash cargo` interruption for a prompt that approved itself a moment later. A prompt the
+classifier does refuse is still drawn in the row and marked `!`; it is just not interrupted
+over. A notification with no request before it — a Claude Code without the
+`PermissionRequest` hook — enters the wait itself and is announced as before.
 
 ### And the pane itself says so
 
@@ -630,7 +636,10 @@ its frame blinks a 🔔 in the top-right corner, beside where SCROLL and PIN are
   it. The two roads that are not a hook say it for themselves: `agent-report --state waiting`
   sets it (a script that troubles itself to say `waiting` means a person), and a plugin's
   `set_pane_agent` leaves it `false` unless it names it, because registering a pane *as* an
-  agent is not reporting a prompt anybody is looking at.
+  agent is not reporting a prompt anybody is looking at. One seam remains: the record is
+  written per event by a CLI that keeps no state, and the `Notification` behind a request
+  `auto` silenced names no mode, so its record says a person is needed and the bell can start
+  on it six seconds in. The toast does not, because the daemon has seen the request.
 - **Answering it takes it down, not the agent noticing.** Typing into the pane, or simply
   focusing it, ends the blink at once rather than waiting for the next hook to say `busy`. The
   record is untouched by either — a person answering the prompt is not the agent saying

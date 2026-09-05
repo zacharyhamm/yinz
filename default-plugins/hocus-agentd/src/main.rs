@@ -229,20 +229,6 @@ struct State {
     /// manifest road is for a pane that reports some other way: one hocus spawned, an
     /// `agent-report --state` script, a plugin speaking for an agent.
     event_fed: BTreeSet<u32>,
-    /// The panes now waiting on something nobody was told about.
-    ///
-    /// A `PermissionRequest` under an unattended mode is drawn but not announced, on the
-    /// grounds that the mode is about to answer it. `bypassPermissions` and `dontAsk` really
-    /// do; `auto` runs a classifier and puts whatever it will not clear in front of the user
-    /// exactly as `default` would - see `agent::UNATTENDED_MODES`. That prompt's only other
-    /// signal is the `Notification` six seconds later, and by then the feed is already
-    /// `Waiting`, so there is no busy→waiting edge left for it to cross.
-    ///
-    /// This is that edge, held open. A wait suppressed on the way in leaves its pane here; the
-    /// backstop takes it out again and toasts, which is the right reading of a notification
-    /// that fired at all - a prompt the mode had answered would never have gone six seconds
-    /// unanswered.
-    suppressed_waits: BTreeSet<u32>,
     /// What the user last asked each hook-fed pane for, from its `UserPromptSubmit`.
     ///
     /// Kept so a summary can say what the run was *for*.
@@ -800,7 +786,6 @@ impl State {
             // not ours. The question the last turn answered goes with it either way.
             self.prompts.remove(&pane_id);
             self.event_fed.remove(&pane_id);
-            self.suppressed_waits.remove(&pane_id);
             if self.hooks.remove(&pane_id).is_some() {
                 self.publish();
             }
@@ -965,18 +950,22 @@ impl State {
         // Nothing is lost by that. Between two genuine questions the agent works — it acts
         // on the first answer, and the `PostToolUse` for that is a `busy` — so a real
         // second question crosses this edge on its own.
+        //
+        // The same edge is what keeps a prompt the mode silenced silent all the way through.
+        // A request under `auto` is not announced (`waiting_needs_a_person`), and the
+        // notification behind it arrives with the feed already `Waiting`, so it has no edge
+        // to cross. That is deliberate rather than a gap: the notification is a plain timer
+        // Claude Code arms when the dialog goes up, and under `auto` the classifier is still
+        // deciding a `Bash` call well past it — so a notification that fired proves nothing
+        // about whether a person is needed, and it names no mode of its own for anyone to
+        // read. A prompt the classifier does refuse is still drawn; it is just not
+        // interrupted over. A notification with no request before it — a Claude Code without
+        // the `PermissionRequest` hook — enters the wait itself and is announced as before.
         let entered_wait = phase == agents::HookPhase::Waiting
             && previous
                 .as_ref()
                 .is_none_or(|was| was.phase != agents::HookPhase::Waiting);
-        // The one thing that reopens a spent edge: a wait entered under a mode that was
-        // expected to answer it, and did not. See `suppressed_waits`. Taken out of the set
-        // here whether or not this event announces it, because either way the edge it was
-        // holding has now been used.
-        let held_edge = self.suppressed_waits.remove(&pane_id);
-        let announce = phase == agents::HookPhase::Waiting
-            && agents::waiting_needs_a_person(event)
-            && (entered_wait || held_edge);
+        let announce = entered_wait && agents::waiting_needs_a_person(event);
         // Not over the very pane it describes: the user is looking at the question. The same
         // rule the summary toast keeps — and the reason this is not part of `announce`, which
         // is about the wait having been spoken for rather than about it being seen.
@@ -986,12 +975,6 @@ impl State {
                 pane_id,
                 &agents::waiting_toast(pane_id, kind.as_deref(), &feed),
             );
-        }
-        // A wait still standing that nobody has been told about, whether it started that way
-        // or a second silent event replaced the first. The edge stays open for its backstop;
-        // anything that ends the wait takes it out above and leaves it out.
-        if phase == agents::HookPhase::Waiting && !announce && (entered_wait || held_edge) {
-            self.suppressed_waits.insert(pane_id);
         }
         if changed {
             self.publish();
@@ -1559,7 +1542,6 @@ impl State {
         // otherwise leave its id in both for the life of the daemon, and leave `event_fed`
         // disagreeing with `hooks` about which road the pane is read from.
         self.event_fed.retain(|id| live.contains(id));
-        self.suppressed_waits.retain(|id| live.contains(id));
         self.run_lookups.retain(|id| live.contains(id));
         // A pane that has come back to life is running a new process, and has to
         // earn its latch again rather than inherit the dead one's. `settle_latches`
@@ -1625,7 +1607,6 @@ impl State {
             if agent.state == AgentState::Exited {
                 self.hooks.remove(&pane.pane_id);
                 self.event_fed.remove(&pane.pane_id);
-                self.suppressed_waits.remove(&pane.pane_id);
                 continue;
             }
             // A pane whose events we hear is read from them; see `event_fed`.
@@ -2687,7 +2668,6 @@ impl State {
     fn forget_agent(&mut self, pane_id: u32) {
         self.hooks.remove(&pane_id);
         self.event_fed.remove(&pane_id);
-        self.suppressed_waits.remove(&pane_id);
         self.activity.remove(&pane_id);
         self.summaries.remove(&pane_id);
         self.summary_requests.remove(&pane_id);
@@ -5493,17 +5473,17 @@ mod tests {
         assert_eq!(cell(&state, 7), "waiting · Bash");
     }
 
-    /// …and a mode that turns out not to have answered it says so six seconds later.
+    /// …and stays silent through the notification behind it, too.
     ///
-    /// `auto` is a classifier, not a blanket allow: it clears what it judges safe and puts
-    /// the rest in front of the user exactly as `default` would. Silencing the request is
-    /// still right — most of them really are answered — but the request has by then moved the
-    /// feed to `waiting`, so the `Notification` behind it has no busy→waiting edge left to
-    /// cross, and a genuinely blocked agent goes unannounced. A notification that fired *is*
-    /// the evidence: a prompt the mode had answered would never have gone unanswered long
-    /// enough for one.
+    /// `auto` is a classifier, not a blanket allow, and its request is silenced on the odds:
+    /// most of them really are answered. The `Notification` about six seconds later used to be
+    /// read as the proof that this one was not — but it is a plain timer Claude Code arms when
+    /// the dialog goes up, the classifier is routinely still deciding a `Bash` call when it
+    /// fires, and it names no mode of its own. So it crosses no edge and announces nothing; the
+    /// row keeps drawing the wait in the request's own words. A real question after it still
+    /// interrupts, because the agent working in between re-arms the edge.
     #[test]
-    fn a_wait_the_mode_did_not_answer_is_announced_by_its_backstop() {
+    fn a_permission_prompt_the_mode_is_answering_stays_silent_through_its_backstop() {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
             ..State::default()
@@ -5525,32 +5505,42 @@ mod tests {
         assert!(silent.is_empty(), "the mode is expected to answer it");
         assert_eq!(cell(&state, 7), "waiting · Bash rm");
 
-        let backstop = auto(wire::HookEvent {
+        // The notification carries no `permission_mode`: what keeps it quiet is that the feed
+        // is already waiting, not anything it says for itself.
+        let backstop = wire::HookEvent {
             notification_type: Some("permission_prompt".to_owned()),
             message: Some("Claude needs your permission to use Bash".to_owned()),
             ..hook("Notification")
-        });
-        let (toasts, _) = feed(&mut state, 7, &backstop, None);
+        };
+        let (still_silent, _) = feed(&mut state, 7, &backstop, None);
+        assert!(
+            still_silent.is_empty(),
+            "a timer firing says nothing about whether the classifier has answered"
+        );
         assert_eq!(
-            toasts,
-            vec![(7, "agent waiting · 7 · claude◆\nBash rm".to_owned())],
-            "the classifier refused it after all, and the row's own words are the better ones"
+            cell(&state, 7),
+            "waiting · Bash rm",
+            "the row keeps the request's own account of the prompt"
         );
 
-        // Answered, and then a second prompt the mode does answer: the edge the first one
-        // held is spent, and nothing is owed for the second until its own backstop fires.
+        // Answered, and then a question addressed to a person: the `busy` in between re-armed
+        // the edge, and no mode answers an `AskUserQuestion`.
         feed(&mut state, 7, &auto(hook("PostToolUse")), None);
-        let (again, _) = feed(
+        let (asked, _) = feed(
             &mut state,
             7,
             &auto(tool_hook(
-                "PermissionRequest",
-                "Read",
-                serde_json::json!({ "file_path": "/work/src/main.rs" }),
+                "PreToolUse",
+                "AskUserQuestion",
+                serde_json::json!({ "questions": [{ "question": "Which crate?" }] }),
             )),
             None,
         );
-        assert!(again.is_empty(), "back to the odds on the next prompt");
+        assert_eq!(
+            asked,
+            vec![(7, "agent waiting · 7 · claude◆\nWhich crate?".to_owned())],
+            "a real question after a silenced prompt still interrupts"
+        );
     }
 
     /// But only the prompts that mode actually answers. `acceptEdits` accepts edits;

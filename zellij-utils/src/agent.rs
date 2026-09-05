@@ -238,10 +238,12 @@ pub const WAITING_TOOLS: &[&str] = &["AskUserQuestion", "ExitPlanMode", "request
 /// `bypassPermissions` and `dontAsk` do answer *every* one: Claude Code resolves them to a
 /// blanket allow and a blanket deny. `auto` resolves to a classifier, which clears what it
 /// judges safe and puts the rest in front of the user exactly as `default` would - so a wait
-/// under it is silenced here on the odds, not on a guarantee. What recovers the ones the
-/// classifier refused is the backstop: the `Notification` six seconds later, which by its own
-/// existence proves nothing answered the prompt. The daemon holds the suppressed edge open for
-/// it rather than counting the wait as already announced.
+/// under it is silenced on the odds, not on a guarantee, and silenced outright: the
+/// `Notification` about six seconds later is a plain timer Claude Code arms when the dialog
+/// goes up, the classifier is routinely still deciding a `Bash` call when it fires, and it
+/// carries no `permission_mode` of its own - so it proves nothing about whether a person is
+/// needed, and the daemon does not let it reopen the edge the request was silenced on. A
+/// prompt the classifier does refuse is drawn, in the row and in the pane, but not toasted.
 ///
 /// `acceptEdits` is deliberately not here: it answers one kind of prompt rather than all of
 /// them, which is what [`AUTO_ACCEPTED_EDIT_TOOLS`] names.
@@ -599,11 +601,12 @@ pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
 /// those because the session happens to be in `acceptEdits` leaves a pane blocked with nothing
 /// to say so.
 ///
-/// A waiting `Notification` is never suppressed either, and that is the deliberate half. It is
-/// the backstop, firing only once its prompt has gone about six seconds unanswered — which is
-/// itself the evidence that nothing auto-resolved it — and because an interruption is gated on
-/// the busy→waiting edge it can only ever be the sole signal for that prompt in the first
-/// place.
+/// A waiting `Notification` is never suppressed here either, but for a plainer reason: Claude
+/// Code builds it without a `permission_mode`, so there is no mode to read. Treating it as
+/// attended is what lets it fill a gap - a notification with no `PermissionRequest` before it
+/// is the only word of that prompt. The one behind a request the mode silenced is kept quiet by
+/// the daemon's busy→waiting edge, which the request has already used up, not by this
+/// function; the timer it fires on says nothing about whether the prompt was answered.
 ///
 /// That leaves `PermissionRequest`, where the mode decides: everything under
 /// [`UNATTENDED_MODES`], and only the file-editing tools under `acceptEdits`. A request naming
@@ -1120,8 +1123,9 @@ mod tests {
                 ..event("Elicitation")
             };
             assert!(waiting_needs_a_person(&elicitation), "{mode}");
-            // The backstop fires only once its prompt has gone unanswered, which is itself
-            // the evidence that the mode did not answer it.
+            // A notification is read as attended even when it names a mode, which Claude
+            // Code's never do: it is the only word of a prompt nothing else reported, and the
+            // one behind a silenced request is kept quiet by the daemon's edge, not here.
             for kind in ["permission_prompt", "worker_permission_prompt"] {
                 let backstop = HookEvent {
                     permission_mode: Some(mode.to_owned()),
@@ -1129,7 +1133,7 @@ mod tests {
                 };
                 assert!(
                     waiting_needs_a_person(&backstop),
-                    "{kind} under {mode} went unanswered for six seconds"
+                    "{kind} under {mode} has no request behind it to have been silenced"
                 );
             }
         }
