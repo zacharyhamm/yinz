@@ -133,12 +133,16 @@ message Put {
   string entity = 1;
   optional string uid = 2;
   repeated AttrValue values = 3;
+  // The revision the row must be at for this write to apply. 0 means it must not exist yet.
+  // Absent is an unconditional write, which is what every write was before this field.
+  optional int64 expect_rev = 4;
 }
 
 message Update {
   string entity = 1;
   Pred filter = 2;
   repeated AttrValue values = 3;
+  optional int64 expect_rev = 4;
 }
 
 message Delete {
@@ -182,6 +186,8 @@ message ApplyReport {
   uint64 rows_written = 1;
   uint64 rows_deleted = 2;
   repeated int64 ids = 3;
+  // Rows affected by each mutation of the batch, in order.
+  repeated uint64 per_mutation = 4;
 }
 
 message WatchHandle {

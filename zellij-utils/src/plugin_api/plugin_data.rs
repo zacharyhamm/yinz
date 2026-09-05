@@ -411,9 +411,11 @@ impl TryFrom<Mutation> for ProtobufMutation {
                 entity,
                 uid,
                 values,
+                expect_rev,
             } => ProtobufMutationOneof::Put(ProtobufPut {
                 entity,
                 uid,
+                expect_rev,
                 values: values
                     .into_iter()
                     .map(|(attr, value)| attr_value(attr, value))
@@ -423,9 +425,11 @@ impl TryFrom<Mutation> for ProtobufMutation {
                 entity,
                 filter,
                 values,
+                expect_rev,
             } => ProtobufMutationOneof::Update(ProtobufUpdate {
                 entity,
                 filter: Some(ProtobufPred::try_from(filter)?),
+                expect_rev,
                 values: values
                     .into_iter()
                     .map(|(attr, value)| attr_value(attr, value))
@@ -453,6 +457,7 @@ impl TryFrom<ProtobufMutation> for Mutation {
                 entity: put.entity,
                 uid: put.uid,
                 values: put.values.into_iter().map(split_attr_value).collect(),
+                expect_rev: put.expect_rev,
             },
             ProtobufMutationOneof::Update(update) => Mutation::Update {
                 entity: update.entity,
@@ -462,6 +467,7 @@ impl TryFrom<ProtobufMutation> for Mutation {
                     .transpose()?
                     .ok_or("Update has no filter")?,
                 values: update.values.into_iter().map(split_attr_value).collect(),
+                expect_rev: update.expect_rev,
             },
             ProtobufMutationOneof::Delete(delete) => Mutation::Delete {
                 entity: delete.entity,
@@ -545,6 +551,7 @@ impl From<ApplyReport> for ProtobufApplyReport {
             rows_written: report.rows_written,
             rows_deleted: report.rows_deleted,
             ids: report.ids,
+            per_mutation: report.per_mutation,
         }
     }
 }
@@ -555,6 +562,7 @@ impl From<ProtobufApplyReport> for ApplyReport {
             rows_written: report.rows_written,
             rows_deleted: report.rows_deleted,
             ids: report.ids,
+            per_mutation: report.per_mutation,
         }
     }
 }
@@ -708,11 +716,13 @@ pub(crate) mod tests {
                 entity: tc.draw(generators::text()),
                 uid: tc.draw(generators::optional(generators::text())),
                 values: tc.draw(values),
+                expect_rev: tc.draw(generators::optional(generators::integers::<i64>())),
             },
             1 => Mutation::Update {
                 entity: tc.draw(generators::text()),
                 filter: tc.draw(any_pred(2)),
                 values: tc.draw(values),
+                expect_rev: tc.draw(generators::optional(generators::integers::<i64>())),
             },
             _ => Mutation::Delete {
                 entity: tc.draw(generators::text()),
@@ -1022,6 +1032,7 @@ pub(crate) mod tests {
                 entity: "agent".to_owned(),
                 filter: None,
                 values: vec![],
+                expect_rev: None,
             })),
         };
         assert!(Mutation::try_from(protobuf).is_err());
@@ -1081,6 +1092,7 @@ pub(crate) mod tests {
             rows_written: 3,
             rows_deleted: 1,
             ids: vec![1, 2, 3],
+            per_mutation: vec![2, 1, 1],
         };
         let protobuf = ProtobufApplyReport::from(report.clone());
         assert_eq!(ApplyReport::from(protobuf), report);

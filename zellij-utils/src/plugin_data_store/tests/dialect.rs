@@ -103,7 +103,7 @@ fn sqlite_searches_through_its_fts_table() {
 #[test]
 fn a_put_with_a_uid_is_an_upsert_that_keeps_created_at() {
     let values = vec![("project".to_owned(), DataValue::Text("zellij".into()))];
-    let (sql, params) = build_put(&SQLITE, &schema(), Some("a1"), &values, 5);
+    let (sql, params) = build_put(&SQLITE, &schema(), Some("a1"), &values, 5, None);
     assert_eq!(
         sql,
         "INSERT INTO \"e_7\" (\"uid\", \"created_at\", \"updated_at\", \"project\") \
@@ -120,7 +120,7 @@ fn a_put_with_a_uid_is_an_upsert_that_keeps_created_at() {
             DataValue::Text("zellij".into()),
         ]
     );
-    let (sql, _) = build_put(&SQLITE, &schema(), None, &values, 5);
+    let (sql, _) = build_put(&SQLITE, &schema(), None, &values, 5, None);
     assert!(!sql.contains("ON CONFLICT"), "{}", sql);
 }
 
@@ -128,7 +128,7 @@ fn a_put_with_a_uid_is_an_upsert_that_keeps_created_at() {
 fn updates_and_deletes_bind_their_filters_after_their_assignments() {
     let values = vec![("project".to_owned(), DataValue::Text("x".into()))];
     let (sql, params) =
-        build_update(&SQLITE, &schema(), &Pred::eq("uid", "a1"), &values, 9).unwrap();
+        build_update(&SQLITE, &schema(), &Pred::eq("uid", "a1"), &values, 9, None).unwrap();
     assert_eq!(
         sql,
         "UPDATE \"e_7\" SET \"project\" = ?1, \"updated_at\" = ?2, \"rev\" = \"rev\" + 1 WHERE \"e_7\".\"uid\" = ?3"

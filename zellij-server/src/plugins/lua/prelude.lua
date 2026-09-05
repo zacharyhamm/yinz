@@ -1879,14 +1879,38 @@ local function value_pairs(values)
 end
 
 --- Insert a row, or replace the one with `uid` if it exists. A mutation; hand it to `apply`.
-function zellij.data.put(entity, values, uid)
-  return { Put = { entity = entity, uid = uid, values = value_pairs(values) } }
+---
+--- `expect_rev` makes it a compare-and-set: the write applies only if the row is still at that
+--- `rev`, and the whole `apply` fails otherwise. Needs a `uid`. `zellij.data.REV_ABSENT` (0)
+--- means the row must not exist yet, so the put claims the uid or fails.
+function zellij.data.put(entity, values, uid, expect_rev)
+  return {
+    Put = {
+      entity = entity,
+      uid = uid,
+      values = value_pairs(values),
+      expect_rev = expect_rev,
+    },
+  }
 end
 
 --- Set `values` on every row `filter` matches.
-function zellij.data.update(entity, filter, values)
-  return { Update = { entity = entity, filter = filter, values = value_pairs(values) } }
+---
+--- `expect_rev` narrows the match to rows still at that `rev` and fails the `apply` if none are,
+--- which with a filter naming one row is a compare-and-set on it.
+function zellij.data.update(entity, filter, values, expect_rev)
+  return {
+    Update = {
+      entity = entity,
+      filter = filter,
+      values = value_pairs(values),
+      expect_rev = expect_rev,
+    },
+  }
 end
+
+--- The `expect_rev` meaning "this row must not exist yet". No stored row is ever at revision 0.
+zellij.data.REV_ABSENT = 0
 
 --- Remove every row `filter` matches.
 function zellij.data.delete(entity, filter)
@@ -1894,8 +1918,12 @@ function zellij.data.delete(entity, filter)
 end
 
 --- Apply one mutation or a list of them in one transaction, all or nothing. Answers with
---- `rows_written`, `rows_deleted` and the `ids` of the rows a `put` made. `namespace` is the
---- plugin's own when omitted, or a `"shared:"` one - see `zellij.data.define`.
+--- `rows_written`, `rows_deleted`, the `ids` of the rows a `put` made, and `per_mutation` -
+--- rows affected by each mutation, in order, which is the only way to tell which one matched.
+--- `namespace` is the plugin's own when omitted, or a `"shared:"` one - see `zellij.data.define`.
+---
+--- A mutation carrying `expect_rev` whose row has moved on fails the whole call, rolling the
+--- rest of the batch back: re-read and decide again.
 function zellij.data.apply(mutations, namespace)
   if mutations.Put or mutations.Update or mutations.Delete then
     mutations = { mutations }

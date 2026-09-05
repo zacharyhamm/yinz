@@ -333,3 +333,112 @@ fn a_watch_reports_a_change_exactly_when_the_rows_differ(tc: hegel::TestCase) {
         }
     }
 }
+
+/// Two writers doing read-modify-write against one row, interleaved arbitrarily, and every write
+/// guarded on the revision its writer last read.
+///
+/// The property is the one the guard exists to provide: **no update is silently lost**. Each
+/// writer either lands its value — and can see it in the row afterwards — or is told it
+/// conflicted. What must never happen is a write reporting success while another writer's value
+/// is the one in the row, which is exactly what an unguarded upsert does.
+///
+/// A model rather than an oracle over SQL: the store is compared against what a single-threaded
+/// reading of "compare the revision, then write" would have produced. The writers are simulated
+/// rather than threaded because the interleaving is the interesting part and a scheduler would
+/// make it unrepeatable — the store serializes concurrent callers anyway, so a sequence of
+/// interleaved calls is precisely what two servers produce.
+#[hegel::test(test_cases = 30)]
+fn a_guarded_write_never_loses_an_update(tc: hegel::TestCase) {
+    /// Which of the two writers acts, and whether it re-reads first.
+    #[derive(Debug, Clone)]
+    struct Step {
+        writer: usize,
+        reread: bool,
+    }
+
+    let steps: Vec<Step> = tc.draw(
+        generators::vecs(
+            generators::tuples!(
+                generators::integers::<usize>().max_value(1),
+                generators::booleans(),
+            )
+            .map(|(writer, reread)| Step { writer, reread }),
+        )
+        .min_size(1)
+        .max_size(12),
+    );
+
+    let (store, _dir) = defined();
+    store
+        .apply(
+            NS,
+            &[Mutation::put("agent")
+                .uid("contested")
+                .set("project", "start")
+                .build()],
+        )
+        .unwrap();
+
+    // The row as it stands: its revision and its value.
+    let read = |store: &PluginDataStore| -> (i64, String) {
+        let rows = store.fetch(NS, &FetchRequest::entity("agent")).unwrap();
+        let rev = match column(&rows, "rev")[0] {
+            DataValue::Int(rev) => rev,
+            ref other => panic!("`rev` is {:?}, not an integer", other),
+        };
+        (rev, texts(&rows, "project").remove(0))
+    };
+
+    // What each writer last saw. Both start from the same read, which is the situation two
+    // servers are in after fetching the same row.
+    let start = read(&store);
+    let mut held = [start.clone(), start];
+    // What the store must hold, tracked independently of it.
+    let mut expected = held[0].clone();
+
+    for (n, step) in steps.iter().enumerate() {
+        if step.reread {
+            held[step.writer] = read(&store);
+        }
+        let (seen_rev, _) = held[step.writer].clone();
+        let value = format!("w{}-{}", step.writer, n);
+        let result = store.apply(
+            NS,
+            &[Mutation::put("agent")
+                .uid("contested")
+                .set("project", value.clone())
+                .expect_rev(seen_rev)
+                .build()],
+        );
+
+        // The model: the write lands exactly when the writer's revision is the stored one.
+        let stale = seen_rev != expected.0;
+        match result {
+            Ok(_) => {
+                assert!(
+                    !stale,
+                    "step {n}: a write holding revision {seen_rev} landed while the row was at \
+                     {}",
+                    expected.0
+                );
+                expected = (expected.0 + 1, value);
+                held[step.writer] = expected.clone();
+            },
+            Err(e) => {
+                assert_err!(e, DataError::Conflict(_));
+                assert!(
+                    stale,
+                    "step {n}: a write holding the current revision {seen_rev} was refused"
+                );
+            },
+        }
+
+        // And the store agrees, every step of the way. This is what makes "no update is lost"
+        // an assertion rather than a hope: a write that reported success is the one in the row.
+        assert_eq!(
+            read(&store),
+            expected,
+            "step {n}: the store and the model disagree"
+        );
+    }
+}
