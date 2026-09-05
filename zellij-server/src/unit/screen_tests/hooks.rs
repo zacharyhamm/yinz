@@ -369,6 +369,7 @@ fn an_exiting_agent_pane_fires_the_agent_exit_hook() {
 #[test]
 fn a_firecracker_worktree_agent_exit_identifies_the_vm_to_the_hook() {
     let mut command = agent_command("/workspace");
+    command.cwd = None;
     command.target = zellij_utils::data::PaneTarget::firecracker(
         "review",
         Some("rust-dev"),
@@ -386,6 +387,7 @@ fn a_firecracker_worktree_agent_exit_identifies_the_vm_to_the_hook() {
         .unwrap()
         .2;
 
+    assert_eq!(payload.get("agent_cwd").unwrap(), "");
     assert_eq!(payload.get("agent_firecracker_vm").unwrap(), "review");
     assert_eq!(
         payload.get("agent_firecracker_worktree").unwrap(),

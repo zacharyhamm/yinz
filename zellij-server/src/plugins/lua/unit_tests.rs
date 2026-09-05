@@ -752,7 +752,7 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
         .unwrap();
     let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
     assert!(
-        rendered.contains("VM worktree sync failed: provider unavailable"),
+        rendered.contains("VM worktree could not be synced. See plugin log for details."),
         "got: {rendered}"
     );
     assert!(rendered.contains("<S> sync 2"), "got: {rendered}");
@@ -829,10 +829,24 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
         .unwrap();
     let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
     assert!(
-        rendered.contains("Could not recheck VM changes: provider unavailable"),
+        rendered.contains("VM changes could not be checked. See plugin log for details."),
         "got: {rendered}"
     );
-    assert!(rendered.contains("<S> sync 1"), "got: {rendered}");
+    assert!(!rendered.contains("<S> sync"), "got: {rendered}");
+    assert!(!plugin.plugin.get::<bool>("syncing").unwrap());
+    plugin
+        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('s'))))
+        .unwrap();
+    assert!(background_jobs.try_recv().is_err());
+    // A fresh count permits sync again; the failed recheck must have released the lock.
+    plugin
+        .update(&Event::RunCommandResult(
+            Some(0),
+            b"1\n".to_vec(),
+            vec![],
+            BTreeMap::from([("step".to_owned(), "check".to_owned())]),
+        ))
+        .unwrap();
 
     plugin
         .update(&Event::Key(KeyWithModifier::new(BareKey::Char('s'))))
@@ -858,6 +872,140 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
     let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
     assert!(rendered.contains("VM worktree synced."), "got: {rendered}");
     assert!(!rendered.contains("<S> sync"), "got: {rendered}");
+}
+
+#[test]
+fn agent_exit_handles_missing_metadata_and_unavailable_changes() {
+    let source = zellij_utils::consts::builtin_lua_plugin("agent-exit").unwrap();
+    for cwd in [None, Some(""), Some("/guest")] {
+        for missing in [
+            None,
+            Some("agent_firecracker_vm"),
+            Some("agent_firecracker_worktree"),
+            Some("agent_session"),
+        ] {
+            for empty in [false, true] {
+                let mut plugin = load(source).unwrap();
+                plugin
+                    .lua
+                    .load(
+                        r#"
+                    commands, logs, actions = {}, {}, {}
+                    local z = require("zellij")
+                    z.run_command = function(command) table.insert(commands, command) end
+                    z.log = function(message) table.insert(logs, message) end
+                    z.rerun_command_pane = function(id) table.insert(actions, "restart " .. id) end
+                    z.close_terminal_pane = function(id) table.insert(actions, "close " .. id) end
+                    z.close_self = function() table.insert(actions, "self") end
+                "#,
+                    )
+                    .exec()
+                    .unwrap();
+                let mut config = BTreeMap::from([
+                    ("agent_pane_id".to_owned(), "7".to_owned()),
+                    ("agent_firecracker_vm".to_owned(), "review".to_owned()),
+                    (
+                        "agent_firecracker_worktree".to_owned(),
+                        "/host/topic".to_owned(),
+                    ),
+                    ("agent_session".to_owned(), "work".to_owned()),
+                    ("agent_zellij_executable".to_owned(), "".to_owned()),
+                    ("agent_zellij_config_file".to_owned(), "".to_owned()),
+                    ("agent_zellij_config_dir".to_owned(), "".to_owned()),
+                ]);
+                if let Some(cwd) = cwd {
+                    config.insert("agent_cwd".to_owned(), cwd.to_owned());
+                }
+                if let Some(key) = missing {
+                    if empty {
+                        config.insert(key.to_owned(), "".to_owned());
+                    } else {
+                        config.remove(key);
+                    }
+                }
+                plugin.load(&config).unwrap();
+                let rendered = String::from_utf8(plugin.render(20, 120).unwrap()).unwrap();
+                let directory = if cwd == Some("/guest") {
+                    "/guest"
+                } else if missing == Some("agent_firecracker_worktree") {
+                    "unavailable"
+                } else {
+                    "/host/topic (host worktree)"
+                };
+                assert!(
+                    rendered.contains(&format!("Directory: {directory}")),
+                    "{rendered}"
+                );
+                if missing.is_some() {
+                    assert!(
+                        rendered.contains(
+                            "VM changes not checked: VM or worktree details are unavailable."
+                        ),
+                        "{rendered}"
+                    );
+                    plugin.lua.load("assert(#commands == 0)").exec().unwrap();
+                } else {
+                    plugin.lua.load(r#"
+                        assert(#commands == 1)
+                        assert(commands[1].cwd == "/")
+                        assert(table.concat(commands[1].command, " ") == "zellij firecracker changes review --session work")
+                        assert(next(commands[1].env_variables) == nil)
+                    "#).exec().unwrap();
+                    for (status, stdout, stderr) in [
+                        (None, "", "No such file or directory (os error 2)"),
+                        (Some(1), "", "failed to count changes: provider unavailable"),
+                        (Some(0), "garbage", ""),
+                        (Some(0), "-1", ""),
+                        (Some(0), "1.5", ""),
+                        (Some(0), "1e999", ""),
+                    ] {
+                        plugin
+                            .update(&Event::RunCommandResult(
+                                status,
+                                stdout.as_bytes().to_vec(),
+                                stderr.as_bytes().to_vec(),
+                                BTreeMap::from([("step".to_owned(), "check".to_owned())]),
+                            ))
+                            .unwrap();
+                        let rendered = String::from_utf8(plugin.render(20, 120).unwrap()).unwrap();
+                        assert!(
+                            rendered.contains(
+                                "VM changes could not be checked. See plugin log for details."
+                            ),
+                            "{rendered}"
+                        );
+                        assert!(
+                            !rendered.contains("os error") && !rendered.contains("<S> sync"),
+                            "{rendered}"
+                        );
+                    }
+                    plugin.lua.load(r#"
+                        assert(#logs == 6)
+                        assert(logs[1]:find("VM check failed: vm=review session=work helper=zellij exit_status=nil", 1, true))
+                        assert(logs[1]:find("os error 2", 1, true))
+                        assert(logs[2]:find("provider unavailable", 1, true))
+                        assert(logs[3]:find('stdout="garbage"', 1, true))
+                    "#).exec().unwrap();
+                }
+                for key in [BareKey::Enter, BareKey::Esc] {
+                    plugin
+                        .update(&Event::Key(KeyWithModifier::new(key)))
+                        .unwrap();
+                }
+                plugin
+                    .lua
+                    .load(r#"assert(table.concat(actions, ",") == "restart 7,self,close 7,self")"#)
+                    .exec()
+                    .unwrap();
+            }
+        }
+    }
+    // An ordinary exit has no VM details and does not advertise a VM failure.
+    let mut plugin = load(source).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let rendered = String::from_utf8(plugin.render(20, 120).unwrap()).unwrap();
+    assert!(rendered.contains("Directory: unavailable"));
+    assert!(!rendered.contains("VM changes"));
 }
 
 /// The agent-policy hook is headless: a syntax error in it would surface the first time an agent
