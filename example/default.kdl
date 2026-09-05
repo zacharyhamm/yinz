@@ -726,7 +726,8 @@ context_menu {
 // Ask the host terminal to report the modifier keys themselves, so the UI can show
 // something for as long as eg. Alt is held. Needs Kitty Keyboard flags that also make
 // every printable key arrive as an escape code: AltGr glyphs, dead keys and IME input
-// will stop working. (Requires restart) Default: false
+// will stop working. US-ASCII, shifted punctuation included, keeps working on a terminal
+// that supports reporting alternate keys. (Requires restart) Default: false
 //
 // report_modifier_keys true
 

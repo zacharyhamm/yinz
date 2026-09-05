@@ -27,16 +27,24 @@ pub const SHOW_CURSOR: &str = "\u{1b}[?25h";
 /// Push kitty keyboard flag 1 - `DISAMBIGUATE_ESCAPE_CODES` - which is what lets a modified
 /// key be told from the legacy escape sequence that happens to spell the same bytes.
 pub const ENTER_KITTY_KEYBOARD_MODE: &str = "\u{1b}[>1u";
-/// Push flags 1|2|8: disambiguate, plus `REPORT_EVENT_TYPES` and
-/// `REPORT_ALL_KEYS_AS_ESCAPE_CODES`. The latter two are the only way a terminal ever reports a
-/// modifier key on its own, and so the only way anything can know that Alt is being *held*.
+/// Push flags 1|2|4|8: disambiguate, plus `REPORT_EVENT_TYPES`, `REPORT_ALTERNATE_KEYS` and
+/// `REPORT_ALL_KEYS_AS_ESCAPE_CODES`. Event types and all-keys-as-escape-codes are the only way
+/// a terminal ever reports a modifier key on its own, and so the only way anything can know that
+/// Alt is being *held*.
 ///
-/// Off by default and gated behind `report_modifier_keys`, because flag 8 is not a free
-/// upgrade: under it every printable key arrives as `CSI <codepoint> u` rather than as text.
-/// US-ASCII survives that round trip, but AltGr glyphs, dead keys and IME commits are text the
-/// terminal now refuses to send, and no flag brings them back - a multi-codepoint commit does
-/// not map onto a key event at all. Nobody should get that without asking for it.
-pub const ENTER_KITTY_KEYBOARD_MODE_WITH_MODIFIERS: &str = "\u{1b}[>11u";
+/// Flag 4 is here to pay for flag 8. Under flag 8 every printable key arrives as
+/// `CSI <codepoint> u`, and the codepoint kitty reports is the *unshifted* key on the layout -
+/// so `!` would arrive as `CSI 49;2u`, a `1` with Shift, and be typed into a pane as that. Flag 4
+/// adds the shifted codepoint as a sub-parameter, which is what lets
+/// [`crate::keyboard_parser::KittyKeyboardParser`] resolve the key back to the character a
+/// terminal in the default mode would simply have sent as text.
+///
+/// Off by default and gated behind `report_modifier_keys` all the same, because flag 8 is still
+/// not a free upgrade: US-ASCII survives the round trip now, but AltGr glyphs, dead keys and IME
+/// commits are text the terminal refuses to send and no alternate key brings them back - a
+/// multi-codepoint commit does not map onto a key event at all. Nobody should get that without
+/// asking for it.
+pub const ENTER_KITTY_KEYBOARD_MODE_WITH_MODIFIERS: &str = "\u{1b}[>15u";
 /// Pop one entry off the flag stack, whichever of the two above pushed it.
 pub const EXIT_KITTY_KEYBOARD_MODE: &str = "\u{1b}[<1u";
 pub const CLEAR_CLIENT_TERMINAL_ATTRIBUTES: &str = "\u{1b}[?1l\u{1b}=\u{1b}[r\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1003l\u{1b}[?1005l\u{1b}[?1006l\u{1b}[?12l";
