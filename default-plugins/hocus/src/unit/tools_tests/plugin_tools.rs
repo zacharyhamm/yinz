@@ -1163,9 +1163,7 @@ fn the_single_form_is_a_one_element_batch_and_the_forms_do_not_mix() {
         .edit_batch()
         .unwrap_err();
     assert!(empty.contains("edits is empty"), "{empty}");
-    // Neither form is the single form's own refusal, once it is applied.
-    let neither =
-        apply_edits("a\n", &args(r#"{"name":"keys"}"#).edit_batch().unwrap()).unwrap_err();
+    let neither = args(r#"{"name":"keys"}"#).edit_batch().unwrap_err();
     assert!(neither.contains("old_string is required"), "{neither}");
 }
 
@@ -1221,4 +1219,95 @@ fn a_batch_edit_renders_each_pair_as_its_own_block() {
     assert!(!toast.contains("edit 4 old_string:"), "{toast}");
     assert!(toast.contains("… 2 more edits"), "{toast}");
     assert!(toast.contains("10 more lines"), "{toast}");
+}
+
+#[test]
+fn edit_strings_are_required_but_explicit_deletions_are_valid() {
+    for (arguments, missing) in [
+        (r#"{"old_string":"a"}"#, "new_string"),
+        (r#"{"new_string":""}"#, "old_string"),
+    ] {
+        assert!(args(arguments).edit_batch().unwrap_err().contains(missing));
+        let batch = format!(r#"{{"edits":[{arguments}]}}"#);
+        assert!(Args::parse(&batch).unwrap_err().contains(missing));
+    }
+    for arguments in [
+        r#"{"old_string":"a","new_string":""}"#,
+        r#"{"edits":[{"old_string":"a","new_string":""}]}"#,
+    ] {
+        let edits = args(arguments).edit_batch().unwrap();
+        assert!(!edits[0].replace_all);
+        assert_eq!(apply_edits("ab", &edits).unwrap().source, "b");
+    }
+    for arguments in [
+        r#"{"old_string":"a","edits":[{"old_string":"a","new_string":""}]}"#,
+        r#"{"new_string":"","edits":[{"old_string":"a","new_string":""}]}"#,
+    ] {
+        assert!(args(arguments)
+            .edit_batch()
+            .unwrap_err()
+            .contains("not both"));
+    }
+}
+
+#[test]
+fn later_replacements_remap_changed_span_endpoints() {
+    for (source, edits, expected, changed) in [
+        // A later replacement contains the entire earlier change.
+        (
+            "a\nb\nc\nd\ne\nf\n",
+            vec![pair("c", "C"), pair("a\nb\nC\nd\ne", "x")],
+            "x\nf\n",
+            vec![LineSpan { first: 1, last: 1 }],
+        ),
+        // Only the start or end of an earlier span lies inside the next replacement.
+        (
+            "abcdef",
+            vec![pair("cd", "C\nD"), pair("abC", "x")],
+            "x\nDef",
+            vec![LineSpan { first: 1, last: 2 }],
+        ),
+        (
+            "abcdef",
+            vec![pair("cd", "C\nD"), pair("Def", "x")],
+            "abC\nx",
+            vec![LineSpan { first: 1, last: 2 }],
+        ),
+        // A deletion collapses the earlier span to its deletion point.
+        (
+            "a\nb\nc\n",
+            vec![pair("b", "B"), pair("a\nB\n", "")],
+            "c\n",
+            vec![LineSpan { first: 1, last: 1 }],
+        ),
+        // Every preceding match moves the earlier change, in either direction.
+        (
+            "a\na\nz\n",
+            vec![
+                pair("z", "Z"),
+                EditPair {
+                    replace_all: true,
+                    ..pair("a\n", "a\nb\n")
+                },
+            ],
+            "a\nb\na\nb\nZ\n",
+            vec![LineSpan { first: 1, last: 5 }],
+        ),
+        (
+            "a\na\nz\n",
+            vec![
+                pair("z", "Z"),
+                EditPair {
+                    replace_all: true,
+                    ..pair("a\n", "")
+                },
+            ],
+            "Z\n",
+            vec![LineSpan { first: 1, last: 1 }],
+        ),
+    ] {
+        let edited = apply_edits(source, &edits).unwrap();
+        assert_eq!(edited.source, expected);
+        assert_eq!(edited.changed, changed, "{edits:?}");
+    }
 }

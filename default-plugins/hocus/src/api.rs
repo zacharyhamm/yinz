@@ -1001,7 +1001,7 @@ enum Subject {
     /// A `plugin_outline` of one plugin.
     Outline(String),
     /// A `plugin_docs query=`: the section it was confined to, and the pattern.
-    DocsSearch(Option<String>, String),
+    DocsSearch(Option<String>, String, bool),
     /// One page of one docs section. Its own variant rather than `Page`: a plugin can be called
     /// `data.lua` and a section `data`.
     SectionPage(String, usize, usize),
@@ -1090,7 +1090,11 @@ fn subject_of(name: &str, arguments: &str) -> Option<Subject> {
                 .filter(|section| !section.is_empty())
                 .map(str::to_owned);
             if let Some(query) = trimmed(args.query.as_deref()) {
-                return Some(Subject::DocsSearch(section, query.to_owned()));
+                return Some(Subject::DocsSearch(
+                    section,
+                    query.to_owned(),
+                    args.case_insensitive,
+                ));
             }
             // A page of a section, as `plugin_docs` itself resolves the range. Without a section
             // there is no page, and the refusal it gets is nothing to elide.
