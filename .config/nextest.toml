@@ -16,16 +16,6 @@ threads-required = 4
 fail-fast = false
 slow-timeout = { period = "15s", terminate-after = 4 }
 
-# `PARTIAL_BUFFER_CAP_BYTES` is 100 MB (`zellij-client/src/stdin_ansi_parser/seq_scan.rs`), so the
-# test that proves the cap flushes to residue has to push 110 MB through the parser - at
-# opt-level 0, since workspace crates are not optimized. It takes ~40s on an idle machine, which
-# is close enough to the profile's 60s kill that a loaded one would fail it. Give it room rather
-# than let it become a flake; the real fix is to make the cap injectable so the test can use a
-# small one.
-[[profile.unit.overrides]]
-filter = 'test(=stdin_ansi_parser::tests::partial_osc_overflow_falls_back_to_residue)'
-slow-timeout = { period = "60s", terminate-after = 5 }
-
 # Bootstrap holds the shared schema advisory lock; its deliberate stall must not time out
 # other Postgres tests that are bootstrapping at the same time.
 [[profile.unit.overrides]]

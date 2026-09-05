@@ -7,7 +7,7 @@ use xshell::{cmd, Shell};
 ///
 /// `zellij-integration-tests` belongs to `cargo x integration-test`, which brings the whole-app
 /// fixtures up and runs it under its own nextest profile. Sweeping it in here would silently add
-/// 46 heavyweight binaries to the gate.
+/// the integration binaries to standalone unit-test runs. The gate runs both phases.
 pub const EXCLUDED: &[&str] = &["zellij-integration-tests"];
 
 pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {

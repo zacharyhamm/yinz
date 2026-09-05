@@ -10,7 +10,7 @@ cargo x build            # builds plugins (wasm32-wasip1) then the binary
 cargo x test             # the whole workspace in one run (needs cargo-nextest)
 cargo x lint             # clippy at -D warnings; --fix applies the suggestions
 cargo x format           # rustfmt; --check to verify instead of rewrite
-cargo x ci check         # the pre-handoff gate: format --check, lint, test
+cargo x ci check         # the pre-handoff gate: format --check, lint, test, integration-test
 cargo x run -- -l strider
 cargo x integration-test # whole-app tests (needs cargo-nextest)
 cargo x bench            # render throughput benchmarks (criterion); not part of the gate
@@ -35,12 +35,12 @@ installed by `cargo x install` to `<data dir>/builtins/<version>` (`--builtins-d
 nothing checks a branch unless a person runs it. The gate is:
 
 ```sh
-cargo x ci check     # format --check, lint, test
+cargo x ci check     # format --check, lint, test, integration-test
 ```
 
 Run it before handing off a branch or opening a PR. Every phase runs even if an earlier one
-fails, so one failure does not hide the rest. `cargo x integration-test -- -j 16` is a separate
-run — see "Reading a red run" below for why it is not part of the gate.
+fails, so one failure does not hide the rest. The integration phase uses 16 nextest workers;
+Docker-dependent suites remain separate. See "Reading a red run" below for timeout diagnosis.
 
 ### Passing arguments
 

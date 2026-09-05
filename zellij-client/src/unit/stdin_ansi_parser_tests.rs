@@ -350,22 +350,42 @@ fn fragmented_osc_does_not_finalize_partial() {
 }
 
 #[test]
-fn partial_osc_overflow_falls_back_to_residue() {
-    // An unterminated OSC larger than the cap must not grow memory
-    // unbounded. After the cap is hit the buffered bytes flush to
-    // residue and parsing resumes from a clean state.
-    let mut p = StdinAnsiParser::new();
-    let _ = p.feed(b"\x1b]52;c;");
-    let chunk = vec![b'A'; 1024 * 1024]; // 1 MB
-    let mut total_residue = 0usize;
-    for _ in 0..110 {
-        let out = p.feed(&chunk);
-        total_residue += out.residue.len();
+fn partial_buffer_boundaries_and_recovery() {
+    for prefix in [b"\x1b]52;c;".as_slice(), b"\x1b[?", b"\x1b_G"] {
+        let mut p = StdinAnsiParser::new();
+        p.partial_buffer_limit = 16;
+        p.open_forward(42);
+        let mut bytes = prefix.to_vec();
+        bytes.resize(15, b'1');
+        let below = p.feed(&bytes);
+        assert!(below.residue.is_empty());
+        assert!(below.has_partial_state);
+        let exact = p.feed(b"1");
+        bytes.push(b'1');
+        assert!(exact.residue.is_empty());
+        assert!(exact.has_partial_state);
+        let overflow = p.feed(b"1");
+        bytes.push(b'1');
+        assert_eq!(overflow.residue, bytes);
+        assert!(!overflow.has_partial_state);
+        assert!(p.finalize_force().is_empty());
+        assert_eq!(p.active_forward_token(), Some(42));
+        assert_eq!(p.feed(b"keyboard").residue, b"keyboard");
+        // A late terminator must not complete the abandoned OSC in the decoder.
+        let late = p.feed(b"\x07");
+        assert_eq!(late.residue, b"\x07");
+        assert!(late.replies.is_empty());
+        let reply = p.feed(b"\x1b]11;rgb:0000/0000/0000\x07\x1b[?1;2c");
+        assert!(reply.residue.is_empty());
+        assert!(
+            matches!(reply.replies.as_slice(), [HostReply::BackgroundColor(color), HostReply::SixelSupport(false)] if color == "rgb:0000/0000/0000")
+        );
+        assert_eq!(
+            reply.completed_forward,
+            Some((42, b"\x1b]11;rgb:0000/0000/0000\x1b\\".to_vec()))
+        );
+        assert!(p.finalize_force().is_empty());
     }
-    assert!(
-        total_residue > 0,
-        "overflowed partial buffer should flush to residue, not silently grow"
-    );
 }
 
 #[test]

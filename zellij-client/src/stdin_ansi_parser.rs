@@ -161,12 +161,14 @@ pub struct ParseOutput {
 ///
 /// Past `PARTIAL_BUFFER_CAP_BYTES` we stop believing a terminator is coming
 /// and flush the bytes to residue instead, so a runaway sequence is never
-/// silently swallowed.
-fn buffer_partial(slot: &mut Vec<u8>, tail: Vec<u8>, out: &mut Vec<u8>) {
-    if tail.len() > PARTIAL_BUFFER_CAP_BYTES {
+/// silently swallowed. Returns true when the limit was exceeded.
+fn buffer_partial(slot: &mut Vec<u8>, tail: Vec<u8>, out: &mut Vec<u8>, limit: usize) -> bool {
+    if tail.len() > limit {
         out.extend_from_slice(&tail);
+        true
     } else {
         *slot = tail;
+        false
     }
 }
 
@@ -192,6 +194,7 @@ enum StartupKittyProbe {
 /// Continuous host-reply parser. Lives for the whole client session.
 pub struct StdinAnsiParser {
     inner: InputParser,
+    partial_buffer_limit: usize,
     /// Active forwarding slot: `Some` while a forwarded query is in
     /// flight, `None` otherwise.
     active_forward: Option<ForwardSlot>,
@@ -222,6 +225,7 @@ impl StdinAnsiParser {
     pub fn new() -> Self {
         StdinAnsiParser {
             inner: InputParser::new(),
+            partial_buffer_limit: PARTIAL_BUFFER_CAP_BYTES,
             active_forward: None,
             active_clipboard_forward: None,
             partial_osc: Vec::new(),
@@ -502,7 +506,12 @@ impl StdinAnsiParser {
         // other bytes pass through unchanged. The walk is stateful so
         // an OSC/CSI sequence split across `feed()` calls is buffered
         // rather than leaking into residue.
-        residue.extend(self.strip_replies(&sanitized));
+        let (stripped, overflowed) = self.strip_replies(&sanitized);
+        residue.extend(stripped);
+        if overflowed {
+            // The decoder also buffers unfinished replies. Abandon both copies together.
+            self.inner = InputParser::new();
+        }
         out.residue = residue;
         out.has_partial_state = !self.partial_osc.is_empty()
             || !self.partial_csi.is_empty()
@@ -621,7 +630,7 @@ impl StdinAnsiParser {
                     },
                     SeqStatus::NeedMore => {
                         let tail = rest.to_vec();
-                        if tail.len() > PARTIAL_BUFFER_CAP_BYTES {
+                        if tail.len() > self.partial_buffer_limit {
                             out.extend_from_slice(&tail);
                         } else {
                             self.partial_apc = tail;
@@ -644,14 +653,14 @@ impl StdinAnsiParser {
     /// Walk `bytes` (with any pending partial buffer prepended) and drop
     /// any OSC/whitelisted-CSI sequences, returning the remaining bytes
     /// verbatim (keyboard residue). This is a byte-level scrubber — it
-    /// does not produce events, only bytes.
+    /// does not produce events, only bytes and whether an OSC/CSI partial overflowed.
     ///
     /// If the chunk ends mid-sequence, the unterminated tail is held in
     /// `self.partial_osc` or `self.partial_csi` and prepended to the
     /// next call's input — so the corresponding bytes never reach
     /// residue (and never appear as spurious keypresses) while waiting
     /// for the rest of the sequence.
-    fn strip_replies(&mut self, bytes: &[u8]) -> Vec<u8> {
+    fn strip_replies(&mut self, bytes: &[u8]) -> (Vec<u8>, bool) {
         // Prepend any pending partial. At most one of (partial_osc,
         // partial_csi) is non-empty at any time — the previous walk
         // either completed all sequences or stopped at exactly one
@@ -681,8 +690,13 @@ impl StdinAnsiParser {
                             continue;
                         },
                         MarkerMatch::Prefix => {
-                            buffer_partial(&mut self.partial_paste, rest.to_vec(), &mut out);
-                            return out;
+                            buffer_partial(
+                                &mut self.partial_paste,
+                                rest.to_vec(),
+                                &mut out,
+                                self.partial_buffer_limit,
+                            );
+                            return (out, false);
                         },
                         MarkerMatch::No => {},
                     }
@@ -707,8 +721,13 @@ impl StdinAnsiParser {
                         continue;
                     },
                     SeqStatus::NeedMore => {
-                        buffer_partial(&mut self.partial_osc, rest.to_vec(), &mut out);
-                        return out;
+                        let overflowed = buffer_partial(
+                            &mut self.partial_osc,
+                            rest.to_vec(),
+                            &mut out,
+                            self.partial_buffer_limit,
+                        );
+                        return (out, overflowed);
                     },
                     SeqStatus::Malformed => {
                         out.push(working[i]);
@@ -725,8 +744,13 @@ impl StdinAnsiParser {
                         continue;
                     },
                     SeqStatus::NeedMore => {
-                        buffer_partial(&mut self.partial_csi, rest.to_vec(), &mut out);
-                        return out;
+                        let overflowed = buffer_partial(
+                            &mut self.partial_csi,
+                            rest.to_vec(),
+                            &mut out,
+                            self.partial_buffer_limit,
+                        );
+                        return (out, overflowed);
                     },
                     SeqStatus::Malformed => {
                         out.push(working[i]);
@@ -741,12 +765,12 @@ impl StdinAnsiParser {
             // walker re-routes based on the actual second byte.
             if rest.len() == 1 && rest[0] == 0x1b {
                 self.partial_osc = vec![0x1b];
-                return out;
+                return (out, false);
             }
             out.push(working[i]);
             i += 1;
         }
-        out
+        (out, false)
     }
 }
 
