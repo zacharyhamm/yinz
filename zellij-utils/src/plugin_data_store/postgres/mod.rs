@@ -27,7 +27,7 @@ use crate::plugin_data::{
 use super::dialect::Dialect;
 use super::engine;
 use super::executor::Executor;
-use super::sql::{quote_ident, SqlContext};
+use super::sql::{quote_ident, SqlContext, StorageError};
 
 use self::dialect::POSTGRES;
 use self::value::read_value;
@@ -238,10 +238,9 @@ impl PostgresPluginDataBackend {
             ))
         })?;
         let mut config = Config::from_str(&self.url).map_err(|e| {
-            DataError::Storage(format!(
-                "the plugin data store's Postgres URL {} does not parse: {}",
+            e.into_data_error(&format!(
+                "the plugin data store's Postgres URL {} does not parse",
                 redact_url(&self.url),
-                e
             ))
         })?;
         if config.get_application_name().is_none() {

@@ -321,3 +321,24 @@ fn the_catalog_of_an_unknown_namespace_is_empty() {
     let (store, _dir) = defined();
     assert!(store.catalog(Some("shared:nothing")).unwrap().is_empty());
 }
+
+#[test]
+fn reserved_attributes_cannot_create_or_migrate_an_entity() {
+    let (store, _dir) = defined();
+    put(&store, "zellij", "preserved", 1);
+    let catalog = store.catalog(None).unwrap();
+    let rows = store.fetch(NS, &FetchRequest::entity("agent")).unwrap();
+    for name in ["xmin", "xmax", "cmin", "cmax", "ctid", "tableoid"] {
+        let new = EntityDef::new("invalid", 1).attr(AttrDef::text(name));
+        let migration = EntityDef::new("agent", 2).attr(AttrDef::text(name));
+        for def in [new, migration] {
+            let err = store.define_entity(NS, OWNER, &def, true).unwrap_err();
+            assert_err!(err, DataError::InvalidName(_));
+            assert_eq!(store.catalog(None).unwrap(), catalog);
+            assert_eq!(
+                store.fetch(NS, &FetchRequest::entity("agent")).unwrap(),
+                rows
+            );
+        }
+    }
+}

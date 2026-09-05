@@ -210,3 +210,24 @@ fn from_backends_pairs_postgres_plugin_data_with_sqlite_recordings() {
     );
     drop(access);
 }
+
+#[test]
+fn a_constraint_violation_includes_the_operation_and_server_explanation() {
+    let (store, _guard) = store();
+    let def = EntityDef::new("agent", 1).attr(AttrDef::text("project").unique());
+    store.define_entity(NS, OWNER, &def, false).unwrap();
+    let mutation = Mutation::put("agent").set("project", "duplicate").build();
+    store.apply(NS, std::slice::from_ref(&mutation)).unwrap();
+    let err = store.apply(NS, &[mutation]).unwrap_err();
+    assert_err!(&err, DataError::Storage(_));
+    let message = err.to_string();
+    assert!(
+        message.contains("failed to write a row of `agent`"),
+        "{message}"
+    );
+    assert!(
+        message.contains("duplicate key value violates unique constraint"),
+        "{message}"
+    );
+    assert_eq!(store.count(NS, &FetchRequest::entity("agent")).unwrap(), 1);
+}
