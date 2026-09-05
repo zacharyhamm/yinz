@@ -52,9 +52,17 @@ NULL DEFAULT ''`, so every row already stored came out naming no machine. There 
 machine then, so `""` reads as "this one" — but only where adopting the row is the right answer.
 An `agent_run` is history: `rows::owned_or_unclaimed` accepts it on the read and on the guarded
 close, and `rows::claim_unowned_runs` stamps the machine on so the run's next ordinary write
-narrows the row. An `import_marker` is the same, and `store::import_recorded` goes further and
-drops the legacy row in the same batch as its claim, since a marker naming no machine is one
-every machine sharing the store answers to. An `agent_latch` or `agent_summary` is the opposite:
+narrows the row. `run_history::Filter::pred` accepts it too, but only when the filter names a
+session as well — paired that way it is the same bargain `owned_or_unclaimed` makes, while a
+question about one machine alone cannot be answered by a row naming none. An `import_marker`
+adopts it on the read and stops there: `store::import_recorded` writes this machine's own marker
+but **never deletes the legacy row**. A bare `''` names no machine, so reading one is no evidence
+that this machine wrote it, and deleting it takes away another machine's only record that it has
+already imported — after which that machine reads its whole legacy archive in a second time, with
+nothing to dedupe the result. The cost of keeping it is milder and is accepted: a machine that
+joins a store already carrying a pre-host marker is told the import is done and will not read its
+own files, which is what tolerating the row means in the first place. An `agent_latch` or
+`agent_summary` is the opposite:
 it names a pane in a server that is gone, so `rows::stale_unowned_delete_mutations` deletes it
 rather than adopting it, and `rows::owned_by` stays strict. A `job` is left alone entirely —
 firing a dead server's prompts at whoever upgrades first is worse than dropping them.
@@ -72,7 +80,11 @@ the row already carries the other writer's revision, so the write that should be
 The revision worth guarding on is the one whoever composed the value was looking at, which for a
 model is several turns back — so it travels outward in what the reader is shown and back inward
 as an argument. `todos::items_json` and `notes::note_json` emit it, `todo_edit` and `note_edit`
-take it as `expect_rev`, and `store::guarded_rev` prefers it to the row's own. A caller that
+take it as `expect_rev`, and `store::guarded_rev` prefers it to the row's own. `note_edit`'s
+reaches the tags as well as the text: a tag set is replaced whole, so it is composed from a
+reading like any wording, and `notes::plan_set_tags` adds a guarded update of the note itself to
+a batch that would otherwise touch only the tag rows. One call that edits both guards once —
+two guarded updates of a row in one batch is the second finding the revision the first bumped. A caller that
 supplies none falls back to the fresh read, which is the old behaviour and nearly no guard at
 all. Note that a fetch naming its columns loses the ones the store adds unasked, `rev` among
 them, so a projection can silently turn a guarded write into an unguarded one —

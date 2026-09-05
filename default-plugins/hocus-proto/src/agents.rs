@@ -1619,12 +1619,10 @@ pub mod rows {
     /// needs a database written before the host column existed, and the first ordinary write of
     /// such a run claims it — see [`claim_unowned_runs`].
     fn owned_or_unclaimed(owner: &Owner) -> Pred {
-        Pred::eq("host_id", owner.host_id.clone())
-            .or(Pred::eq("host_id", ""))
-            .and(Pred::eq(
-                "zellij_session_name",
-                owner.zellij_session_name.clone(),
-            ))
+        crate::store::host_or_legacy(&owner.host_id).and(Pred::eq(
+            "zellij_session_name",
+            owner.zellij_session_name.clone(),
+        ))
     }
 
     /// Stamp this machine onto restored runs that name none.

@@ -798,13 +798,44 @@ pub fn plan_edit(
 
 /// Plan replacing a note's tags: every old row goes, every new one is put. One
 /// batch, so a reader never sees the note untagged in between.
+///
+/// Guarded for [`plan_edit`]'s reason, and it is the same kind of write: the caller is not
+/// adding a tag, it is replacing the whole set with one composed from what it read, so landing
+/// that on a note somebody has since retagged silently drops their tags. `expect_rev` is the
+/// revision the author of the set read.
+///
+/// The guard needs somewhere to live. The tag rows are a separate entity, a `Delete` cannot
+/// carry `expect_rev`, and this batch would otherwise not touch the `note` row at all — so it
+/// adds one: an `Update` of the note guarded on that revision. An `Update` that sets no
+/// attributes is refused, and `updated_at` is a column the store assigns itself, so the carrier
+/// is the title, rewritten to exactly what the author read. That is the claim the guard is
+/// making, and it bumps `rev`, which is right: the tags are part of what a reader of a note is
+/// shown, so changing them should stale anyone else's reading of it.
+///
+/// `guard` is the caller's promise that nothing else in the batch already guards this note.
+/// Pass `false` when the same call also edits the title or body: [`plan_edit`] has emitted a
+/// guarded update at that revision already, a second one would find the revision the first just
+/// bumped, and the batch would refuse itself.
 pub fn plan_set_tags(
-    note_id: u64,
+    note: &Note,
     tags: &[String],
+    expect_rev: Option<i64>,
+    guard: bool,
 ) -> Result<(Vec<Mutation>, Vec<String>), String> {
     let tags = normalize_tags(tags)?;
-    let mut mutations = vec![Mutation::delete("note_tag", Pred::eq("note_id", note_id))];
-    mutations.extend(tags.iter().map(|tag| tag_mutation(note_id, tag)));
+    let mut mutations = Vec::new();
+    if guard {
+        if let Some(rev) = crate::store::guarded_rev(expect_rev, note.rev) {
+            mutations.push(
+                Mutation::update("note", Pred::eq("id", note.id))
+                    .expect_rev(rev)
+                    .set("title", note.title.clone())
+                    .build(),
+            );
+        }
+    }
+    mutations.push(Mutation::delete("note_tag", Pred::eq("note_id", note.id)));
+    mutations.extend(tags.iter().map(|tag| tag_mutation(note.id, tag)));
     Ok((mutations, tags))
 }
 
@@ -1366,13 +1397,113 @@ mod tests {
     fn setting_tags_replaces_them() {
         let backend = backend();
         let id = add(&backend, None, "n", "b", &["old"], &[]);
-        let (mutations, tags) = plan_set_tags(id, &strings(&["new", "also"])).unwrap();
+        let note = fetch_note(&backend, id).unwrap().unwrap();
+        let (mutations, tags) =
+            plan_set_tags(&note, &strings(&["new", "also"]), None, true).unwrap();
         assert_eq!(tags, strings(&["also", "new"]));
         backend.apply(mutations).unwrap();
         assert_eq!(
             fetch_note(&backend, id).unwrap().unwrap().tags,
             strings(&["also", "new"])
         );
+    }
+
+    /// A tag set is replaced whole, so it is the kind of write the guard is for: the set on
+    /// offer was composed from a reading, and landing it on a note somebody has since retagged
+    /// drops their tags without saying so. The batch carries no `note` row of its own, which is
+    /// exactly why `plan_set_tags` has to add one.
+    #[test]
+    fn a_tag_replacement_guards_on_the_revision_its_author_read() {
+        let backend = backend();
+        let id = add(&backend, None, "n", "b", &["old"], &[]);
+        let read = fetch_note(&backend, id).unwrap().unwrap();
+        let saw = read.rev;
+        assert!(saw > 0);
+
+        // Somebody else retags it in the meantime.
+        backend
+            .apply(
+                plan_set_tags(&read, &strings(&["theirs"]), None, true)
+                    .unwrap()
+                    .0,
+            )
+            .unwrap();
+
+        // The write re-reads first, as every caller does, so guarding on the row's own revision
+        // would let this through.
+        let fresh = fetch_note(&backend, id).unwrap().unwrap();
+        let error = backend
+            .apply(
+                plan_set_tags(&fresh, &strings(&["mine"]), Some(saw), true)
+                    .unwrap()
+                    .0,
+            )
+            .unwrap_err();
+        assert!(error.is_conflict(), "{error:?}");
+        let now = fetch_note(&backend, id).unwrap().unwrap();
+        assert_eq!(
+            now.tags,
+            strings(&["theirs"]),
+            "the refused write should have changed nothing"
+        );
+
+        // And naming what it actually read gets it through.
+        backend
+            .apply(
+                plan_set_tags(&now, &strings(&["mine"]), Some(now.rev), true)
+                    .unwrap()
+                    .0,
+            )
+            .unwrap();
+        assert_eq!(
+            fetch_note(&backend, id).unwrap().unwrap().tags,
+            strings(&["mine"])
+        );
+    }
+
+    /// One call that edits the text *and* the tags guards once, not twice. Two guarded updates
+    /// of the same row in one batch is the second finding the revision the first just bumped,
+    /// and the batch refusing itself — which would leave `note_edit` reporting a conflict
+    /// nobody caused.
+    #[test]
+    fn a_text_edit_and_a_tag_replacement_in_one_batch_do_not_refuse_each_other() {
+        let backend = backend();
+        let id = add(&backend, None, "n", "b", &["old"], &[]);
+        let read = fetch_note(&backend, id).unwrap().unwrap();
+
+        let mut mutations = plan_edit(&read, Some("renamed"), None, Some(read.rev))
+            .unwrap()
+            .0;
+        mutations.extend(
+            plan_set_tags(&read, &strings(&["new"]), Some(read.rev), false)
+                .unwrap()
+                .0,
+        );
+        backend.apply(mutations).unwrap();
+
+        let now = fetch_note(&backend, id).unwrap().unwrap();
+        assert_eq!(now.title, "renamed");
+        assert_eq!(now.tags, strings(&["new"]));
+
+        // The text edit's own guard still covers the batch: replaying it is refused, and the
+        // tags do not move either.
+        let error = backend
+            .apply({
+                let mut mutations = plan_edit(&read, Some("again"), None, Some(read.rev))
+                    .unwrap()
+                    .0;
+                mutations.extend(
+                    plan_set_tags(&read, &strings(&["later"]), Some(read.rev), false)
+                        .unwrap()
+                        .0,
+                );
+                mutations
+            })
+            .unwrap_err();
+        assert!(error.is_conflict(), "{error:?}");
+        let now = fetch_note(&backend, id).unwrap().unwrap();
+        assert_eq!(now.title, "renamed");
+        assert_eq!(now.tags, strings(&["new"]));
     }
 
     #[test]

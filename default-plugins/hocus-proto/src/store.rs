@@ -174,35 +174,54 @@ pub fn import_marker_mutation(host_id: &str, what: &str) -> Mutation {
 /// default, and this is the default the declaration gives it.
 const LEGACY_HOST: &str = "";
 
+/// This machine's rows, and the ones the `host_id` migration left naming no machine.
+///
+/// Adding the column was an `ALTER TABLE ADD COLUMN ... NOT NULL DEFAULT ''`, so every row
+/// written before it came out of the migration naming nobody. A reader that wants those rows
+/// counted as its own asks with this; one that does not — `agents::rows::owned_by`, `jobs` —
+/// spells the strict equality itself, and says why.
+pub fn host_or_legacy(host_id: &str) -> Pred {
+    Pred::eq("host_id", host_id).or(Pred::eq("host_id", LEGACY_HOST))
+}
+
 /// Markers for the named import that this machine may answer to: its own, and one written
 /// before the key carried a host.
 ///
-/// The tolerance is not decoration. The uid used to be the bare `what`, and adding `host_id` was
-/// an `ALTER TABLE ADD COLUMN ... NOT NULL DEFAULT ''`, so every marker already written came out
-/// of the migration naming no machine. Read strictly, a machine that had imported years ago
-/// would be told it had not on the first launch after the upgrade — and the legacy JSON is never
-/// unlinked, nor is `legacy_id` a dedupe key, so it would read the whole archive in a second
-/// time. Use [`import_recorded`] rather than this directly; it claims what it finds.
+/// The tolerance is not decoration. The uid used to be the bare `what`, so every marker already
+/// written came out of the migration naming no machine. Read strictly, a machine that had
+/// imported years ago would be told it had not on the first launch after the upgrade — and the
+/// legacy JSON is never unlinked, nor is `legacy_id` a dedupe key, so it would read the whole
+/// archive in a second time. Use [`import_recorded`] rather than this directly; it claims a
+/// marker of its own on the way past, without disturbing the one it found.
 pub fn import_marker_request(host_id: &str, what: &str) -> FetchRequest {
-    FetchRequest::entity("import_marker").filter(
-        Pred::eq("host_id", host_id)
-            .or(Pred::eq("host_id", LEGACY_HOST))
-            .and(Pred::eq("what", what)),
-    )
+    FetchRequest::entity("import_marker")
+        .filter(host_or_legacy(host_id).and(Pred::eq("what", what)))
 }
 
-/// Whether this machine has already done the named import — claiming a marker that predates the
-/// host key on the way past.
+/// Whether this machine has already done the named import — writing a marker of its own on the
+/// way past, and leaving alone any marker that predates the host key.
 ///
-/// The claim is the point. A marker naming no machine is one *every* machine sharing the store
-/// answers to, so tolerating it forever would mean a second machine could never import its own
-/// files. Writing this machine's marker and dropping the legacy row bounds the accommodation to
-/// a single launch, which is the same move `agents::rows::stale_unowned_delete_mutations` makes
-/// for latches and summaries.
+/// **A legacy marker is never deleted, and the accommodation is therefore permanent.** A bare
+/// `''` row names no machine, so reading one is not evidence that *this* machine wrote it, and
+/// nothing else in the store can supply the missing attribution: the rows a legacy import
+/// created carry the same backfilled empty host. Deleting it on the strength of having read it
+/// is what the code used to do, and on a shared Postgres it was the whole bug — the machine that
+/// had genuinely imported found no marker on its next launch and read its entire archive in a
+/// second time, with no dedupe key to collapse the duplicates.
 ///
-/// The two go in one batch, and the order matters in one direction only: a claim that landed
-/// without the delete would be redone harmlessly next launch, while a delete that landed without
-/// the claim would re-import. `apply` is all or nothing, so neither happens.
+/// This is why the move is *not* the one `agents::rows::stale_unowned_delete_mutations` makes
+/// for latches and summaries, despite the shape being the same. An unowned latch is litter,
+/// worth nothing to whoever wrote it; an unowned import marker is the only record that somebody
+/// has already done an expensive, non-idempotent thing.
+///
+/// The residual, accepted deliberately: a machine that joins a store already carrying a
+/// pre-host marker is told the import is done and will not read its own legacy files. That is
+/// what today's code does too — it returns `true` for exactly this case — so declining to delete
+/// costs nothing extra, and the files stay on disk either way.
+///
+/// The claim itself still earns its keep. Once this machine's own row exists the fetch answers
+/// from it, so the reasoning above is a single launch's worth of work rather than every
+/// launch's.
 pub fn import_recorded(backend: &impl Backend, host_id: &str, what: &str) -> bool {
     let Ok(rows) = backend.fetch(&import_marker_request(host_id, what)) else {
         // The store is unreachable, and the import would fail too. Claiming it is done is the
@@ -219,13 +238,7 @@ pub fn import_recorded(backend: &impl Backend, host_id: &str, what: &str) -> boo
     // happen, since the host is resolved before a plugin loads, but writing the legacy uid back
     // over the legacy row is not an improvement.
     if !claimed && host_id != LEGACY_HOST {
-        let _ = backend.apply(vec![
-            import_marker_mutation(host_id, what),
-            Mutation::delete(
-                "import_marker",
-                Pred::eq("what", what).and(Pred::eq("host_id", LEGACY_HOST)),
-            ),
-        ]);
+        let _ = backend.apply(vec![import_marker_mutation(host_id, what)]);
     }
     true
 }
@@ -863,12 +876,15 @@ mod tests {
     /// write `host_id` fails a test instead of matching the pre-migration rows.
     const HOST: &str = "test-host";
 
-    /// A marker written before the uid carried a host still counts, and is claimed.
+    /// A marker written before the uid carried a host still counts, and is claimed *beside*
+    /// rather than instead of.
     ///
     /// Without the first half, the launch after the upgrade is told the import has not happened
     /// on every machine at once. The old JSON is never unlinked and nothing dedupes a chat or a
-    /// todo, so the whole archive would double. Without the second, a marker naming no machine
-    /// stays one that every machine sharing the store answers to.
+    /// todo, so the whole archive would double. The second half is the same worry from the other
+    /// end: the legacy row names no machine, so deleting it is deleting somebody else's only
+    /// record that they have already imported — see
+    /// `a_legacy_marker_is_not_deleted_out_from_under_the_machine_that_wrote_it`.
     #[test]
     fn an_import_marker_written_before_the_host_key_still_counts_and_is_claimed() {
         let backend = Local::private("hocus");
@@ -891,27 +907,69 @@ mod tests {
             "the import would have been done a second time"
         );
 
-        // One marker left, and it is ours - so a second machine on a shared store can still be
-        // told to read its own files.
-        let all = backend
-            .fetch(&FetchRequest::entity("import_marker"))
-            .expect("fetched");
-        assert_eq!(all.rows.len(), 1, "the legacy row should have been dropped");
-        assert_eq!(
-            all.get(&all.rows[0], "host_id"),
-            Some(&DataValue::Text(HOST.to_owned()))
-        );
+        // Ours is there now, and the legacy row is still there too: it might be another
+        // machine's, and nothing here can tell.
+        let hosts = marker_hosts(&backend);
+        assert_eq!(hosts, vec![String::new(), HOST.to_owned()]);
 
         // And asking again is a read, not another claim.
         assert!(import_recorded(&backend, HOST, "chats"));
-        assert_eq!(
-            backend
-                .fetch(&FetchRequest::entity("import_marker"))
-                .expect("fetched")
-                .rows
-                .len(),
-            1
+        assert_eq!(marker_hosts(&backend), hosts);
+    }
+
+    /// The bug the claim used to have, and the one that costs a whole archive.
+    ///
+    /// Two machines, one Postgres. Host A imported years ago, before the marker carried a host.
+    /// Host B has never imported. B launches first: it is told the import is done — which is
+    /// the accommodation working as designed, since a bare marker is one every machine answers
+    /// to — and claims a marker of its own. What it must *not* do is take A's row away with it,
+    /// because then A's next launch finds nothing that answers for it and reads its entire
+    /// archive in a second time, with no dedupe key to collapse the result.
+    #[test]
+    fn a_legacy_marker_is_not_deleted_out_from_under_the_machine_that_wrote_it() {
+        let backend = Local::private("hocus");
+        backend
+            .define(&EntityDef::new("import_marker", 1).attr(AttrDef::text("what").required()))
+            .expect("the old definition still declares");
+        backend
+            .apply(vec![Mutation::put("import_marker")
+                .uid("chats")
+                .set("what", "chats")
+                .build()])
+            .expect("host A imported, before the host key");
+        backend.define_all(&private_defs()).expect("migrated");
+
+        assert!(
+            import_recorded(&backend, "host-b", "chats"),
+            "a marker naming no machine answers for every machine"
         );
+        assert_eq!(
+            marker_hosts(&backend),
+            vec![String::new(), "host-b".to_owned()],
+            "host B may claim a row of its own, but not take the legacy one"
+        );
+
+        assert!(
+            import_recorded(&backend, "host-a", "chats"),
+            "host A, which actually did the import, must still be told so"
+        );
+    }
+
+    /// Every marker in the store, by host, sorted — the shape these tests assert on.
+    fn marker_hosts(backend: &Local) -> Vec<String> {
+        let rows = backend
+            .fetch(&FetchRequest::entity("import_marker"))
+            .expect("fetched");
+        let mut hosts: Vec<String> = rows
+            .rows
+            .iter()
+            .map(|row| match rows.get(row, "host_id") {
+                Some(DataValue::Text(host)) => host.clone(),
+                other => panic!("a marker with no host: {other:?}"),
+            })
+            .collect();
+        hosts.sort();
+        hosts
     }
 
     /// The other direction, which the tolerance must not swallow: a machine that has not
@@ -957,18 +1015,20 @@ mod tests {
         backend.define_all(&private_defs()).expect("migrated");
 
         assert!(import_recorded(&backend, HOST, "chats"));
-        let rows = backend
-            .fetch(&FetchRequest::entity("import_marker"))
-            .expect("fetched");
-        assert_eq!(rows.rows.len(), 2, "only `chats` should have been claimed");
+        assert_eq!(
+            marker_hosts(&backend),
+            vec![String::new(), String::new(), HOST.to_owned()],
+            "only `chats` should have been claimed, and neither legacy row touched"
+        );
         assert!(import_recorded(&backend, HOST, "prompts"));
         assert_eq!(
-            backend
-                .fetch(&FetchRequest::entity("import_marker"))
-                .expect("fetched")
-                .rows
-                .len(),
-            2
+            marker_hosts(&backend),
+            vec![
+                String::new(),
+                String::new(),
+                HOST.to_owned(),
+                HOST.to_owned()
+            ]
         );
     }
 

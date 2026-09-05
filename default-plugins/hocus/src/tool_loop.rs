@@ -1959,7 +1959,8 @@ impl State {
                 let id = args.id.ok_or("id is required")?;
                 let note = existing_note(&backend, id)?;
                 let mut mutations = Vec::new();
-                if args.title.is_some() || args.body.is_some() {
+                let edits_text = args.title.is_some() || args.body.is_some();
+                if edits_text {
                     mutations.extend(
                         notes::plan_edit(
                             &note,
@@ -1971,7 +1972,11 @@ impl State {
                     );
                 }
                 if let Some(tags) = &args.tags {
-                    mutations.extend(notes::plan_set_tags(id, tags)?.0);
+                    // Guarded only when the text edit above has not already guarded this note:
+                    // two guards on one row in one batch is the second finding the revision the
+                    // first bumped. See `notes::plan_set_tags`.
+                    mutations
+                        .extend(notes::plan_set_tags(&note, tags, args.expect_rev, !edits_text)?.0);
                 }
                 if mutations.is_empty() {
                     return Err("give a title, a body, tags, or some of each".to_owned());

@@ -169,6 +169,57 @@ fn note_edit_changes_what_was_given_and_keeps_the_rest() {
     );
 }
 
+/// A tags-only edit carries `expect_rev` all the way to the store.
+///
+/// It used not to: the revision only reached `notes::plan_edit`, which only runs when there is a
+/// title or a body to change, so replacing a whole tag set landed unguarded and reported
+/// success over somebody else's retag. The reply carries the revision so a retry can name what
+/// it read, which is the other half of the loop being tested here.
+#[test]
+fn a_tags_only_edit_from_a_stale_read_is_refused_and_can_be_retried() {
+    let mut state = state_with_project();
+    let added = note(
+        &mut state,
+        "note_add",
+        r#"{"title":"t","body":"b","tags":["mine"]}"#,
+    );
+    let id = added["id"].as_u64().unwrap();
+    let saw = added["rev"].as_i64().expect("the reply carries a revision");
+
+    // Somebody else retags it in the meantime.
+    note(
+        &mut state,
+        "note_edit",
+        &format!(r#"{{"id":{id},"tags":["theirs"]}}"#),
+    );
+
+    let refused = note_result(
+        &mut state,
+        "note_edit",
+        &format!(r#"{{"id":{id},"tags":["mine"],"expect_rev":{saw}}}"#),
+    )
+    .expect("answered");
+    assert!(refused.contains("edited by somebody else"), "{refused}");
+    assert_eq!(
+        stored_note(&state, id).expect("still there").tags,
+        vec!["theirs".to_owned()],
+        "the refused write changed nothing"
+    );
+
+    // Reading it again and naming that revision gets the change in.
+    let now = note(&mut state, "note_get", &format!(r#"{{"id":{id}}}"#));
+    let rev = now["rev"].as_i64().unwrap();
+    note(
+        &mut state,
+        "note_edit",
+        &format!(r#"{{"id":{id},"tags":["mine"],"expect_rev":{rev}}}"#),
+    );
+    assert_eq!(
+        stored_note(&state, id).expect("still there").tags,
+        vec!["mine".to_owned()]
+    );
+}
+
 #[test]
 fn note_delete_removes_the_note_with_its_links_and_tags() {
     let mut state = state_with_project();
