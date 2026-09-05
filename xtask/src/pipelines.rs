@@ -99,38 +99,41 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
 
     #[cfg(target_os = "linux")]
     {
-        let provider = crate::target_dir().join("release/zellij-firecracker");
-        // The provider is an implicit bin of the root crate, so a plain build produces it - but
-        // forwarded args (`-- --bin zellij`, `--target ...`) can leave it absent or stale, and
-        // installing a provider from an earlier build would be worse than installing none.
-        let excluded_by_args = flags.args.iter().any(|arg| arg == "--bin")
-            && !flags
-                .args
-                .iter()
-                .any(|arg| arg == "zellij-firecracker" || arg == "--bin=zellij-firecracker");
-        let stale = match (provider.metadata(), binary.metadata()) {
-            (Ok(provider), Ok(binary)) => {
-                matches!((provider.modified(), binary.modified()), (Ok(p), Ok(b)) if p < b)
-            },
-            _ => true,
-        };
-        if excluded_by_args || stale {
+        // The provider is an implicit bin of the root crate, so the build just run produced it -
+        // but cargo links the two bins in whatever order it finishes them (the smaller provider
+        // usually first), so no comparison of what is on disk can say whether the provider there
+        // is this build's or a leftover. Ask cargo instead: building it by name is a no-op after
+        // the root build and current by construction. Only a `--bin` filter the user forwarded
+        // can legitimately leave it out, and then we honour that rather than building a bin they
+        // excluded.
+        if provider_excluded_by_args(&flags.args) {
             println!(
-                "Skipping zellij-firecracker: {} (build it with 'cargo x build --release')",
-                if excluded_by_args {
-                    "not part of this build"
-                } else if provider.exists() {
-                    "older than the zellij binary just built"
-                } else {
-                    "not built"
-                }
+                "Skipping zellij-firecracker: not part of this build \
+                 (build it with 'cargo x build --release')"
             );
         } else {
-            let provider_destination = destination.with_file_name("zellij-firecracker");
-            let provider_tmp = provider_destination.with_extension("xtask-install-tmp");
-            sh.copy_file(&provider, &provider_tmp)
-                .with_context(err_context)?;
-            std::fs::rename(provider_tmp, &provider_destination).with_context(err_context)?;
+            println!();
+            let msg = ">> Building 'zellij-firecracker'";
+            crate::status(msg);
+            println!("{}", msg);
+            let cargo = crate::cargo().with_context(err_context)?;
+            match cmd!(sh, "{cargo} build --release --bin zellij-firecracker")
+                .args(&flags.args)
+                .run()
+            {
+                Ok(()) => {
+                    let provider = crate::target_dir().join("release/zellij-firecracker");
+                    let provider_destination = destination.with_file_name("zellij-firecracker");
+                    let provider_tmp = provider_destination.with_extension("xtask-install-tmp");
+                    sh.copy_file(&provider, &provider_tmp)
+                        .with_context(err_context)?;
+                    std::fs::rename(provider_tmp, &provider_destination)
+                        .with_context(err_context)?;
+                },
+                // The provider is an optional companion: a zellij that built and installed fine
+                // should not be held back by it.
+                Err(err) => println!("Skipping zellij-firecracker: {err}"),
+            }
         }
     }
 
@@ -139,6 +142,32 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Whether forwarded `cargo build` args restrict the build to bins other than the provider.
+///
+/// A `--bin` filter is the only way an `install` can legitimately not want a `zellij-firecracker`
+/// beside its `zellij`: everything else that changes what cargo builds (`--target`, `--profile`)
+/// moves the `zellij` binary too, and copying that fails before this question is asked.
+#[cfg(target_os = "linux")]
+fn provider_excluded_by_args(args: &[std::ffi::OsString]) -> bool {
+    let mut filtered = false;
+    let mut names = Vec::new();
+    let mut expecting_name = false;
+    for arg in args {
+        let arg = arg.to_string_lossy();
+        if expecting_name {
+            expecting_name = false;
+            names.push(arg.into_owned());
+        } else if arg == "--bin" {
+            filtered = true;
+            expecting_name = true;
+        } else if let Some(name) = arg.strip_prefix("--bin=") {
+            filtered = true;
+            names.push(name.to_owned());
+        }
+    }
+    filtered && !names.iter().any(|name| name == "zellij-firecracker")
 }
 
 /// Where the binary at `binary` looks for its installed builtins: `(user, system)`.
@@ -714,5 +743,46 @@ mod tests {
     fn release_git_noop_does_not_claim_a_commit() {
         let (_root, sh) = git_repo();
         assert!(!stage_release_changes(&sh).unwrap());
+    }
+
+    #[cfg(target_os = "linux")]
+    mod provider_args_tests {
+        use std::ffi::OsString;
+
+        fn excluded(args: &[&str]) -> bool {
+            super::super::provider_excluded_by_args(
+                &args.iter().map(OsString::from).collect::<Vec<_>>(),
+            )
+        }
+
+        #[test]
+        fn a_plain_install_builds_the_provider() {
+            assert!(!excluded(&[]));
+            assert!(!excluded(&["--locked", "--features", "foo"]));
+        }
+
+        #[test]
+        fn a_bin_filter_without_the_provider_excludes_it() {
+            assert!(excluded(&["--bin", "zellij"]));
+            assert!(excluded(&["--bin=zellij"]));
+        }
+
+        #[test]
+        fn a_bin_filter_naming_the_provider_does_not() {
+            assert!(!excluded(&["--bin", "zellij-firecracker"]));
+            assert!(!excluded(&["--bin=zellij-firecracker"]));
+            assert!(!excluded(&[
+                "--bin",
+                "zellij",
+                "--bin",
+                "zellij-firecracker"
+            ]));
+            assert!(!excluded(&["--bin=zellij", "--bin=zellij-firecracker"]));
+        }
+
+        #[test]
+        fn building_all_bins_is_not_a_filter() {
+            assert!(!excluded(&["--bins"]));
+        }
     }
 }
