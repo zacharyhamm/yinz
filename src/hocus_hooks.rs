@@ -895,11 +895,20 @@ mod tests {
         let output = command
             .spawn()
             .and_then(|mut child| {
-                child
+                // A script with nothing to report exits without reading stdin, which is the
+                // behaviour half of these cases are here to check - so losing the race to it
+                // and getting EPIPE is a pass, not a failure. On a quiet machine the write
+                // almost always wins, which is why this only ever showed up under load.
+                match child
                     .stdin
                     .take()
                     .unwrap()
-                    .write_all(b"{\"hook_event_name\":\"Stop\"}")?;
+                    .write_all(b"{\"hook_event_name\":\"Stop\"}")
+                {
+                    Ok(()) => {},
+                    Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => {},
+                    Err(err) => return Err(err),
+                }
                 child.wait_with_output()
             })
             .unwrap();
