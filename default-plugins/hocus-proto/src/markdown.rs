@@ -1,1 +1,1 @@
-pub use zellij_tile::markdown::*;
+pub use zellij_tile_markdown::*;

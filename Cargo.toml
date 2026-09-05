@@ -82,6 +82,7 @@ members = [
     "zellij-server",
     "zellij-utils",
     "zellij-tile",
+    "zellij-tile-markdown",
     "zellij-tile-utils",
     "zellij-test-support",
     "xtask",

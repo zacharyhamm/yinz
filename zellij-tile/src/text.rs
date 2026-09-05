@@ -37,8 +37,8 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
 
 /// Text as the wrapper will measure it: tabs expanded, control characters dropped.
 ///
-/// Public because the markdown renderer parses the sanitized string rather than the raw one -
-/// an escape sequence in a reply must not reach the parser either.
+/// Public because the markdown renderer in `zellij-tile-markdown` parses the sanitized string
+/// rather than the raw one - an escape sequence in a reply must not reach the parser either.
 pub fn sanitize(text: &str) -> String {
     // Pushed into one buffer rather than flat_mapped: a Vec per character is a
     // heap allocation per character, and the host interprets this wasm rather

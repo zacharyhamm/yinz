@@ -1475,6 +1475,7 @@ dependencies = [
  "tempfile",
  "unicode-width 0.2.2",
  "zellij-tile",
+ "zellij-tile-markdown",
  "zellij-utils",
 ]
 
@@ -4858,6 +4859,7 @@ dependencies = [
  "zellij-terminal",
  "zellij-test-support",
  "zellij-tile",
+ "zellij-tile-markdown",
  "zellij-tile-utils",
  "zellij-utils",
 ]
@@ -4895,13 +4897,21 @@ dependencies = [
  "fuzzy-matcher",
  "hegeltest",
  "prost",
- "pulldown-cmark",
  "serde",
  "serde_json",
  "strum",
  "strum_macros",
  "unicode-width 0.2.2",
  "zellij-utils",
+]
+
+[[package]]
+name = "zellij-tile-markdown"
+version = "0.45.0"
+dependencies = [
+ "pulldown-cmark",
+ "unicode-width 0.2.2",
+ "zellij-tile",
 ]
 
 [[package]]

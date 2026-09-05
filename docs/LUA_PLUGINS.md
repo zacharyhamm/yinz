@@ -730,7 +730,23 @@ They use Hocus's CommonMark dialect with tables, strikethrough, and task lists.
 Wrapping measures terminal columns. Sanitization removes control characters and expands tabs.
 Markdown does not change the cursor. Render the active form to place or hide it.
 
-Run `example-plugins/forms.lua` for a form, searchable choices, a confirmation dialog, and scrollable Markdown.
+Run the interactive form and Markdown demo from the checkout in a session built from this branch:
+
+```sh
+zellij plugin --floating -- "file:$PWD/example-plugins/forms.lua"
+```
+
+The demo uses every form widget. Preview renders the submitted settings and Markdown description after confirmation.
+All values stay in memory. Reset restores the defaults.
+
+1. Use Tab and Shift-Tab to move between fields. Paste Unicode text into Name or Markdown.
+2. Open Layout with Down. Type to search, or scroll through the options. Try a new Branch value.
+3. Change Mode and Frames with the keyboard and mouse. Click Preview, then Cancel.
+4. Clear Name or Branch and choose Preview. Check that focus returns to the required field.
+5. Enter valid values. Choose Preview, then Confirm. Check the rendered description and settings.
+6. Use PageDown and PageUp to scroll Markdown. Resize below and above 100 columns to test both layouts.
+7. Choose Reset. Check that the original form and document return.
+
 Hocus authors can read it with `plugin_docs(section="example_forms")` and inspect the wrappers with
 `plugin_docs(section="prelude_widgets")`.
 
