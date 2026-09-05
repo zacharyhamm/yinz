@@ -1,6 +1,6 @@
 use crate::terminal_escapes::{
-    ClientTeardown, DISABLE_FOCUS_REPORTING, ENABLE_FOCUS_REPORTING, EXIT_ALTERNATE_SCREEN,
-    EXIT_KITTY_KEYBOARD_MODE,
+    ClientTeardown, DISABLE_FOCUS_REPORTING, ENABLE_FOCUS_REPORTING, ENTER_KITTY_KEYBOARD_MODE,
+    ENTER_KITTY_KEYBOARD_MODE_WITH_MODIFIERS, EXIT_ALTERNATE_SCREEN, EXIT_KITTY_KEYBOARD_MODE,
 };
 
 #[test]
@@ -63,6 +63,34 @@ fn the_teardown_message_cancels_focus_reporting_before_leaving_the_alternate_scr
         "focus reporting is cancelled while we still own the screen, got: {:?}",
         message
     );
+}
+
+/// The flag set `report_modifier_keys` pushes, spelled out. Flag 8 is what the option is for -
+/// nothing else makes a terminal report a modifier key on its own - and flag 4 is what pays for
+/// it: without an alternate key the shifted codepoint is unrecoverable, and `!` reaches a pane
+/// as `\x1b[49;2u`. Dropping either one breaks the other's half of the feature.
+#[test]
+fn the_modifier_reporting_flags_include_the_alternate_keys_that_make_flag_8_survivable() {
+    const DISAMBIGUATE_ESCAPE_CODES: u8 = 1;
+    const REPORT_EVENT_TYPES: u8 = 2;
+    const REPORT_ALTERNATE_KEYS: u8 = 4;
+    const REPORT_ALL_KEYS_AS_ESCAPE_CODES: u8 = 8;
+
+    let flags = ENTER_KITTY_KEYBOARD_MODE_WITH_MODIFIERS
+        .strip_prefix("\u{1b}[>")
+        .and_then(|rest| rest.strip_suffix('u'))
+        .and_then(|digits| digits.parse::<u8>().ok())
+        .expect("not a kitty flag push");
+    assert_eq!(
+        flags,
+        DISAMBIGUATE_ESCAPE_CODES
+            | REPORT_EVENT_TYPES
+            | REPORT_ALTERNATE_KEYS
+            | REPORT_ALL_KEYS_AS_ESCAPE_CODES
+    );
+    // The default push is flag 1 alone, and the two share one pop.
+    assert_eq!(ENTER_KITTY_KEYBOARD_MODE, "\u{1b}[>1u");
+    assert_eq!(EXIT_KITTY_KEYBOARD_MODE, "\u{1b}[<1u");
 }
 
 #[test]

@@ -555,6 +555,13 @@ mod tests {
     };
 
     fn parse_stdin_chunks(chunks: &[&[u8]]) -> Vec<InputInstruction> {
+        parse_stdin_chunks_reporting_modifiers(chunks, false)
+    }
+
+    fn parse_stdin_chunks_reporting_modifiers(
+        chunks: &[&[u8]],
+        report_modifier_keys: bool,
+    ) -> Vec<InputInstruction> {
         use std::collections::BTreeSet;
         let mut ansi_parser = StdinAnsiParser::new();
         let mut input_parser = InputParser::new();
@@ -570,7 +577,7 @@ mod tests {
                 &output.residue,
                 true,
                 true,
-                false,
+                report_modifier_keys,
                 &mut held_modifiers,
             );
             instructions.append(&mut parsed);
@@ -581,7 +588,7 @@ mod tests {
             &[],
             true,
             false,
-            false,
+            report_modifier_keys,
             &mut held_modifiers,
         );
         instructions.append(&mut flushed);
@@ -684,10 +691,55 @@ mod tests {
         }
         match &instructions[1] {
             InputInstruction::KeyWithModifierEvent(key, raw_bytes, true) => {
-                assert!(key.is_key_with_shift_modifier(BareKey::Char('b')));
+                // Shift-b resolves to an unmodified B, the shape the legacy path produces for the
+                // same keypress. The host's own bytes still ride along untouched here, because
+                // `report_modifier_keys` is off for this harness.
+                assert!(key.is_key_without_modifier(BareKey::Char('B')));
                 assert_eq!(raw_bytes, b"\x1b[98;2u");
             },
             other => panic!("expected Kitty Shift-b, got {other:?}"),
+        }
+    }
+
+    /// Under `report_modifier_keys` every printable key arrives as a CSI sequence, and the bytes
+    /// that ride along are re-serialised from the resolved key rather than passed through. They
+    /// have to come out as the text the key types: `screen`'s `WriteCharacter` hands them
+    /// verbatim to `update_active_tab_name`, `update_active_pane_name` and `update_search_term`,
+    /// so anything still escape-shaped is typed into a name as literal characters.
+    #[test]
+    fn under_report_modifier_keys_a_printable_key_carries_the_text_it_types() {
+        for (input, expected_key, expected_bytes) in [
+            (&b"\x1b[97u"[..], BareKey::Char('a'), &b"a"[..]),
+            (&b"\x1b[116:84;2u"[..], BareKey::Char('T'), &b"T"[..]),
+            (&b"\x1b[49:33;2u"[..], BareKey::Char('!'), &b"!"[..]),
+            (&b"\x1b[32u"[..], BareKey::Char(' '), &b" "[..]),
+        ] {
+            let instructions = parse_stdin_chunks_reporting_modifiers(&[input], true);
+            assert_eq!(instructions.len(), 1, "{input:?}: {instructions:?}");
+            match &instructions[0] {
+                InputInstruction::KeyWithModifierEvent(key, raw_bytes, true) => {
+                    assert!(
+                        key.is_key_without_modifier(expected_key),
+                        "{input:?} resolved to {key:?}"
+                    );
+                    assert_eq!(raw_bytes, expected_bytes, "{input:?}");
+                },
+                other => panic!("{input:?}: expected a kitty key, got {other:?}"),
+            }
+        }
+    }
+
+    /// A chord has no text to type, so it keeps an escape encoding - and the `is_typable_text`
+    /// guard on the server side is what keeps that out of a name.
+    #[test]
+    fn under_report_modifier_keys_a_chord_keeps_its_escape_encoding() {
+        let instructions = parse_stdin_chunks_reporting_modifiers(&[b"\x1b[97;3u"], true);
+        match &instructions[0] {
+            InputInstruction::KeyWithModifierEvent(key, raw_bytes, true) => {
+                assert!(key.is_key_with_alt_modifier(BareKey::Char('a')));
+                assert_eq!(raw_bytes, b"\x1b[97;3u");
+            },
+            other => panic!("expected Kitty Alt-a, got {other:?}"),
         }
     }
 

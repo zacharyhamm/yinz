@@ -10,7 +10,6 @@ use super::{
 };
 use crate::background_jobs::BackgroundJob;
 use crate::os_input_output::ResizeCache;
-use crate::panes::terminal_pane::{BRACKETED_PASTE_BEGIN, BRACKETED_PASTE_END};
 use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
 #[cfg(not(test))]
@@ -107,6 +106,22 @@ pub(super) fn replay_pending_pane_event(
         screen.bus.senders.send_to_screen(event)?;
     }
     Ok(())
+}
+
+/// Whether `raw_bytes` is text a tab name, a pane name or a search term can take.
+///
+/// A key that only has an escape encoding is not something anyone means to type into a name:
+/// `clean_string_from_control_and_linebreak` strips the ESC and leaves the rest of the CSI
+/// sequence behind as literal characters, so `Alt+t` in rename mode would append `[116;3u`. Under
+/// the Kitty keyboard flags `report_modifier_keys` pushes, every printable key arrives as a CSI
+/// sequence and is resolved back to a character before it gets here - but a host that ignores
+/// `REPORT_ALTERNATE_KEYS` can still leave one unresolved, and that must not be typed either.
+///
+/// The bracketed-paste markers this used to name explicitly are covered by the same check: both
+/// begin with ESC. Real pastes never reach this path - they arrive as `TabNameInput`,
+/// `PaneNameInput` or `SearchInput` with the pasted text alone.
+fn is_typable_text(raw_bytes: &[u8]) -> bool {
+    !raw_bytes.starts_with(&[0x1b])
 }
 
 pub(crate) fn apply_pane_agent_report(
@@ -806,8 +821,7 @@ pub(crate) fn screen_thread_main(
                 let client_input_mode = screen.get_client_input_mode(client_id);
                 match client_input_mode {
                     Some(InputMode::RenameTab) => {
-                        if !(raw_bytes == BRACKETED_PASTE_BEGIN || raw_bytes == BRACKETED_PASTE_END)
-                        {
+                        if is_typable_text(&raw_bytes) {
                             screen.update_active_tab_name(raw_bytes, client_id)?;
                             state_changed = true;
                         }
@@ -819,17 +833,13 @@ pub(crate) fn screen_thread_main(
                             |tab: &mut Tab, client_id: ClientId| {
                                 match client_input_mode {
                                     Some(InputMode::EnterSearch) => {
-                                        if !(raw_bytes == BRACKETED_PASTE_BEGIN
-                                            || raw_bytes == BRACKETED_PASTE_END)
-                                        {
+                                        if is_typable_text(&raw_bytes) {
                                             tab.update_search_term(raw_bytes, client_id);
                                         }
                                         state_changed = true;
                                     },
                                     Some(InputMode::RenamePane) => {
-                                        if !(raw_bytes == BRACKETED_PASTE_BEGIN
-                                            || raw_bytes == BRACKETED_PASTE_END)
-                                        {
+                                        if is_typable_text(&raw_bytes) {
                                             if let Err(e) =
                                                 tab.update_active_pane_name(raw_bytes, client_id)
                                             {
@@ -5245,4 +5255,41 @@ pub(crate) fn screen_thread_main(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod typable_text_tests {
+    use super::is_typable_text;
+    use crate::panes::terminal_pane::{BRACKETED_PASTE_BEGIN, BRACKETED_PASTE_END};
+
+    #[test]
+    fn text_and_the_editing_keys_a_name_understands_are_typable() {
+        // `\0` clears a name and DEL/BS delete from it; `update_active_tab_name` reads all three.
+        for bytes in [
+            &b"a"[..],
+            b"!",
+            b" ",
+            "\u{e9}".as_bytes(),
+            b"\0",
+            b"\x7f",
+            b"\x08",
+        ] {
+            assert!(is_typable_text(bytes), "{bytes:?} should be typable");
+        }
+    }
+
+    #[test]
+    fn an_escape_sequence_is_not_typable() {
+        for bytes in [
+            // A key with no text of its own, under either kitty flag set.
+            &b"\x1b[97;3u"[..],
+            // A host that ignored REPORT_ALTERNATE_KEYS, leaving a shifted key unresolved.
+            b"\x1b[49;2u",
+            b"\x1b[D",
+            BRACKETED_PASTE_BEGIN,
+            BRACKETED_PASTE_END,
+        ] {
+            assert!(!is_typable_text(bytes), "{bytes:?} should not be typable");
+        }
+    }
 }

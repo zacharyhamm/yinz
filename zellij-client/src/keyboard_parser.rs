@@ -1,16 +1,22 @@
 // for more info, please see: https://sw.kovidgoyal.net/kitty/keyboard-protocol
-use zellij_utils::data::{KeyModifier, KeyWithModifier};
+use zellij_utils::data::{BareKey, KeyModifier, KeyWithModifier};
 
 #[derive(Debug)]
 enum KittyKeysParsingState {
     Ground,
     ReceivedEscapeCharacter,
     ParsingNumber,
-    /// After a `:` in the first field: the shifted and base-layout keys the terminal offers
-    /// under `REPORT_ALTERNATE_KEYS`. Zellij resolves keys from the primary code, so these are
-    /// consumed and dropped - but they have to be *recognised*, or the `:` lands in
-    /// `number_bytes` and the whole sequence stops parsing.
-    ParsingAlternateKeys,
+    /// After the first `:` in the first field: the shifted key the terminal offers under
+    /// `REPORT_ALTERNATE_KEYS` - the codepoint the key actually produces with Shift held. It is
+    /// collected, because under `REPORT_ALL_KEYS_AS_ESCAPE_CODES` it is the only thing that can
+    /// tell `!` from a `1` with Shift. It may be empty (`CSI 97::98u`), which means the terminal
+    /// is reporting only a base-layout key.
+    ParsingShiftedKey,
+    /// After the second `:` in the first field: the base-layout key, i.e. which physical key
+    /// this is regardless of layout. Zellij resolves keys from the primary code, so it is
+    /// consumed and dropped - but it has to be *recognised*, or the `:` lands in a number buffer
+    /// and the whole sequence stops parsing.
+    ParsingBaseLayoutKey,
     ParsingModifiers,
     /// After a `:` in the second field: the press/repeat/release discriminator the terminal
     /// sends under `REPORT_EVENT_TYPES`. Without this state a release would parse as an
@@ -87,10 +93,45 @@ fn modifier_from_keycode(bytes: &[u8]) -> Option<KeyModifier> {
     }
 }
 
+/// Resolve a Shift-only key to the character the terminal says it actually produces.
+///
+/// Under `REPORT_ALL_KEYS_AS_ESCAPE_CODES` a printable key no longer arrives as text, and the
+/// codepoint that arrives instead is the *unshifted* key on the layout: `!` comes through as a
+/// `1` with Shift. `REPORT_ALTERNATE_KEYS` adds the shifted codepoint as a sub-parameter, and
+/// this is where it is spent - producing the same `(bare_key, modifiers)` pair a terminal in the
+/// default flag-1 mode would have produced by simply sending `!` as text.
+///
+/// Only when Shift is the *sole* modifier. A chord keeps the base codepoint and its Shift,
+/// because that is what flag-1 mode reports for it too (`Ctrl+Shift+1` is `CSI 49;6u` either
+/// way), and quietly resolving it to `!` would move the key out from under an existing keybind.
+///
+/// Dropping the Shift is deliberate rather than incidental: it is what makes `serialize_kitty`
+/// emit `T` rather than `\x1b[84;2u` for the passthrough copy, and it is keybind-neutral because
+/// `KeyWithModifier`'s `PartialEq`/`Hash` already fold `Char('F')` and `Char('f') + Shift`
+/// together - which is the only reason `bind "Shift f"` works in the default path today.
+fn resolve_shifted(key: KeyWithModifier, shifted_key_bytes: &[u8]) -> KeyWithModifier {
+    if !key.has_only_modifiers(&[KeyModifier::Shift]) {
+        return key;
+    }
+    let shifted_bare_key = BareKey::from_bytes_with_u(shifted_key_bytes);
+    match (shifted_bare_key, key.bare_key) {
+        (Some(shifted), _) => KeyWithModifier::new(shifted),
+        // The terminal ignored `REPORT_ALTERNATE_KEYS`, or reported an empty shifted field. An
+        // ASCII letter is the one case we can still resolve on our own, and termwiz's own
+        // `normalize_shift_to_upper_case` resolves it the same way for the legacy path.
+        (None, BareKey::Char(c)) if c.is_ascii_lowercase() => {
+            KeyWithModifier::new(BareKey::Char(c.to_ascii_uppercase()))
+        },
+        // Shift+Tab, Shift+Enter, Shift+F3: no character to resolve to, so the chord stands.
+        (None, _) => key,
+    }
+}
+
 #[derive(Debug)]
 pub struct KittyKeyboardParser {
     state: KittyKeysParsingState,
     number_bytes: Vec<u8>,
+    shifted_key_bytes: Vec<u8>,
     modifier_bytes: Vec<u8>,
     event_type_bytes: Vec<u8>,
 }
@@ -109,6 +150,7 @@ impl KittyKeyboardParser {
         KittyKeyboardParser {
             state: KittyKeysParsingState::Ground,
             number_bytes: vec![],
+            shifted_key_bytes: vec![],
             modifier_bytes: vec![],
             event_type_bytes: vec![],
         }
@@ -117,6 +159,7 @@ impl KittyKeyboardParser {
     fn reset(&mut self) {
         self.state = KittyKeysParsingState::Ground;
         self.number_bytes.clear();
+        self.shifted_key_bytes.clear();
         self.modifier_bytes.clear();
         self.event_type_bytes.clear();
     }
@@ -153,7 +196,8 @@ impl KittyKeyboardParser {
                 }
                 let event = self.event_kind();
                 let result =
-                    KeyWithModifier::from_bytes_with_u(&self.number_bytes, &self.modifier_bytes);
+                    KeyWithModifier::from_bytes_with_u(&self.number_bytes, &self.modifier_bytes)
+                        .map(|k| resolve_shifted(k, &self.shifted_key_bytes));
                 self.reset();
                 match result {
                     Some(k) => KittyParseOutcome::Complete(k, event),
@@ -165,7 +209,8 @@ impl KittyKeyboardParser {
                 let result = KeyWithModifier::from_bytes_with_tilde(
                     &self.number_bytes,
                     &self.modifier_bytes,
-                );
+                )
+                .map(|k| resolve_shifted(k, &self.shifted_key_bytes));
                 self.reset();
                 match result {
                     Some(k) => KittyParseOutcome::Complete(k, event),
@@ -235,9 +280,9 @@ impl KittyKeyboardParser {
                     _ => KittyParseOutcome::Incomplete,
                 }
             },
-            KittyKeysParsingState::ParsingAlternateKeys | KittyKeysParsingState::ParsingText => {
-                KittyParseOutcome::Incomplete
-            },
+            KittyKeysParsingState::ParsingShiftedKey
+            | KittyKeysParsingState::ParsingBaseLayoutKey
+            | KittyKeysParsingState::ParsingText => KittyParseOutcome::Incomplete,
             KittyKeysParsingState::ReceivedEscapeCharacter => KittyParseOutcome::Incomplete,
             KittyKeysParsingState::Ground => KittyParseOutcome::NoMatch,
         }
@@ -256,15 +301,21 @@ impl KittyKeyboardParser {
             // at the bottom would otherwise push the colon into a number buffer and the whole
             // sequence would stop parsing.
             (KittyKeysParsingState::ParsingNumber, 58) => {
-                // colon: the alternate keys (shifted, base layout) follow
-                self.state = KittyKeysParsingState::ParsingAlternateKeys;
+                // colon: the shifted key follows, then the base-layout one
+                self.state = KittyKeysParsingState::ParsingShiftedKey;
+            },
+            (KittyKeysParsingState::ParsingShiftedKey, 58) => {
+                // colon: the base-layout key follows
+                self.state = KittyKeysParsingState::ParsingBaseLayoutKey;
             },
             (KittyKeysParsingState::ParsingModifiers, 58) => {
                 // colon: the press/repeat/release discriminator follows
                 self.state = KittyKeysParsingState::ParsingEventType;
             },
             (
-                KittyKeysParsingState::ParsingNumber | KittyKeysParsingState::ParsingAlternateKeys,
+                KittyKeysParsingState::ParsingNumber
+                | KittyKeysParsingState::ParsingShiftedKey
+                | KittyKeysParsingState::ParsingBaseLayoutKey,
                 59,
             ) => {
                 // semicolon
@@ -282,7 +333,8 @@ impl KittyKeyboardParser {
             },
             (
                 KittyKeysParsingState::ParsingNumber
-                | KittyKeysParsingState::ParsingAlternateKeys
+                | KittyKeysParsingState::ParsingShiftedKey
+                | KittyKeysParsingState::ParsingBaseLayoutKey
                 | KittyKeysParsingState::ParsingModifiers
                 | KittyKeysParsingState::ParsingEventType
                 | KittyKeysParsingState::ParsingText,
@@ -293,7 +345,8 @@ impl KittyKeyboardParser {
             },
             (
                 KittyKeysParsingState::ParsingNumber
-                | KittyKeysParsingState::ParsingAlternateKeys
+                | KittyKeysParsingState::ParsingShiftedKey
+                | KittyKeysParsingState::ParsingBaseLayoutKey
                 | KittyKeysParsingState::ParsingModifiers
                 | KittyKeysParsingState::ParsingEventType
                 | KittyKeysParsingState::ParsingText,
@@ -305,17 +358,20 @@ impl KittyKeyboardParser {
             (KittyKeysParsingState::ParsingNumber, _) => {
                 self.number_bytes.push(byte);
             },
+            (KittyKeysParsingState::ParsingShiftedKey, _) => {
+                self.shifted_key_bytes.push(byte);
+            },
             (KittyKeysParsingState::ParsingModifiers, _) => {
                 self.modifier_bytes.push(byte);
             },
             (KittyKeysParsingState::ParsingEventType, _) => {
                 self.event_type_bytes.push(byte);
             },
-            // Collected nowhere: zellij resolves a key from its primary code, and the text
-            // field only matters to a terminal doing its own composition. They still have to be
-            // consumed, or the sequence they are part of fails to parse.
+            // Collected nowhere: which physical key this is says nothing zellij resolves a key
+            // from, and the text field only matters to a terminal doing its own composition.
+            // They still have to be consumed, or the sequence they are part of fails to parse.
             (
-                KittyKeysParsingState::ParsingAlternateKeys | KittyKeysParsingState::ParsingText,
+                KittyKeysParsingState::ParsingBaseLayoutKey | KittyKeysParsingState::ParsingText,
                 _,
             ) => {},
             (_, _) => {
@@ -384,6 +440,12 @@ mod props {
     /// The property behind the ~1800 lines of hand-written
     /// `assert_eq!(parse(b"\x1b[97u"), Some(key))` rows this replaced:
     /// whatever `serialize_kitty` emits, the parser must read back.
+    ///
+    /// "The same key" is `KeyWithModifier`'s own equality, which folds `Char('A')` and
+    /// `Char('a') + Shift` together. It has to be: `serialize_kitty` emits no alternate-key
+    /// sub-field, so a shifted letter comes back through [`resolve_shifted`]'s fallback as the
+    /// upper-case character - the same shape the legacy path produces, and the same key as far
+    /// as anything that looks one up is concerned.
     #[hegel::test]
     fn kitty_serialization_round_trips_through_the_parser(tc: hegel::TestCase) {
         let key = tc.draw(keys_with_modifiers());
@@ -410,12 +472,7 @@ mod props {
         match KittyKeyboardParser::new().feed(serialized.as_bytes()) {
             KittyParseOutcome::Complete(parsed, _) => {
                 assert_eq!(
-                    parsed.bare_key, key.bare_key,
-                    "{:?} serialized to {:?} and parsed back as {:?}",
-                    key, serialized, parsed
-                );
-                assert_eq!(
-                    parsed.key_modifiers, key.key_modifiers,
+                    parsed, key,
                     "{:?} serialized to {:?} and parsed back as {:?}",
                     key, serialized, parsed
                 );
@@ -593,18 +650,142 @@ fn a_sequence_with_no_event_type_is_a_press() {
 }
 
 #[test]
-fn alternate_keys_and_associated_text_are_consumed_and_dropped() {
-    use zellij_utils::data::BareKey;
-    // `CSI key:shifted:base ; mods:event ; text u` - the widest shape kitty sends.
+fn the_widest_shape_kitty_sends_resolves_to_the_shifted_key() {
+    // `CSI key:shifted:base ; mods:event ; text u` - the widest shape kitty sends. The
+    // base-layout key and the associated text are consumed and dropped; the shifted key is what
+    // the character actually is.
     let mut p = KittyKeyboardParser::new();
     match p.feed(b"\x1b[97:65:97;2:1;65u") {
         KittyParseOutcome::Complete(k, KeyEventKind::Press) => {
-            assert_eq!(
-                k,
-                KeyWithModifier::new(BareKey::Char('a')).with_shift_modifier()
+            assert_eq!(k, KeyWithModifier::new(BareKey::Char('A')));
+        },
+        other => panic!("expected an unmodified A, got {:?}", other),
+    }
+}
+
+// =====================================================================
+// Resolving a Shift-only key through the shifted sub-field. Under
+// REPORT_ALL_KEYS_AS_ESCAPE_CODES a printable key arrives as its
+// *unshifted* codepoint, so without this `!` is a `1` with Shift - which
+// a pane is then written as `\x1b[49;2u` and a tab name as `[49;2u`.
+// =====================================================================
+
+#[test]
+fn a_shifted_punctuation_key_resolves_to_the_character_it_types() {
+    let mut p = KittyKeyboardParser::new();
+    // Shift+1 on a US layout: base `1`, shifted `!`.
+    match p.feed(b"\x1b[49:33;2u") {
+        KittyParseOutcome::Complete(k, _) => {
+            assert_eq!(k, KeyWithModifier::new(BareKey::Char('!')));
+        },
+        other => panic!("expected an unmodified !, got {:?}", other),
+    }
+}
+
+#[test]
+fn a_shifted_letter_resolves_to_its_upper_case_without_a_shift_modifier() {
+    let mut p = KittyKeyboardParser::new();
+    match p.feed(b"\x1b[97:65;2u") {
+        KittyParseOutcome::Complete(k, _) => {
+            assert_eq!(k, KeyWithModifier::new(BareKey::Char('A')));
+            assert!(k.has_no_modifiers(), "{k:?} kept a modifier");
+        },
+        other => panic!("expected an unmodified A, got {:?}", other),
+    }
+}
+
+#[test]
+fn a_shifted_letter_is_resolved_even_when_the_host_reports_no_alternate_key() {
+    // A host that ignored REPORT_ALTERNATE_KEYS. An ASCII letter is the one case that can still
+    // be resolved without being told, which is what termwiz does for the legacy path too.
+    let mut p = KittyKeyboardParser::new();
+    match p.feed(b"\x1b[116;2u") {
+        KittyParseOutcome::Complete(k, _) => {
+            assert_eq!(k, KeyWithModifier::new(BareKey::Char('T')));
+        },
+        other => panic!("expected an unmodified T, got {:?}", other),
+    }
+}
+
+#[test]
+fn an_empty_shifted_field_leaves_the_primary_key_alone() {
+    // `CSI 97::98u` - only a base-layout key, which zellij resolves nothing from.
+    let mut p = KittyKeyboardParser::new();
+    match p.feed(b"\x1b[97::98u") {
+        KittyParseOutcome::Complete(k, _) => {
+            assert_eq!(k, KeyWithModifier::new(BareKey::Char('a')));
+        },
+        other => panic!("expected an unmodified a, got {:?}", other),
+    }
+}
+
+#[test]
+fn a_chord_keeps_the_base_key_and_its_shift() {
+    use zellij_utils::data::KeyModifier;
+    // Ctrl+Shift+1. Flag-1 mode reports this as `CSI 49;6u` too, so resolving it to `!` would
+    // move the key out from under any keybind written against it.
+    let mut p = KittyKeyboardParser::new();
+    match p.feed(b"\x1b[49:33;6u") {
+        KittyParseOutcome::Complete(k, _) => {
+            assert_eq!(k.bare_key, BareKey::Char('1'));
+            assert!(
+                k.has_only_modifiers(&[KeyModifier::Ctrl, KeyModifier::Shift]),
+                "{k:?}"
             );
         },
-        other => panic!("expected the primary key, got {:?}", other),
+        other => panic!("expected Ctrl+Shift+1, got {:?}", other),
+    }
+}
+
+#[test]
+fn shift_with_a_key_that_types_nothing_is_left_alone() {
+    let mut p = KittyKeyboardParser::new();
+    for (bytes, expected) in [
+        (&b"\x1b[9;2u"[..], BareKey::Tab),
+        (&b"\x1b[13;2u"[..], BareKey::Enter),
+    ] {
+        match p.feed(bytes) {
+            KittyParseOutcome::Complete(k, _) => {
+                assert_eq!(k, KeyWithModifier::new(expected).with_shift_modifier());
+            },
+            other => panic!("expected a shifted {expected:?}, got {:?}", other),
+        }
+    }
+}
+
+#[test]
+fn a_shifted_key_resolves_the_same_way_when_split_across_chunks() {
+    // The shifted sub-field is buffered across `feed` calls like every other one, and a stale
+    // buffer would resolve the *next* key to the previous key's character.
+    let full = b"\x1b[49:33:49;2:1;33u";
+    for split in 0..=full.len() {
+        let mut p = KittyKeyboardParser::new();
+        let mut outcome = None;
+        for chunk in [&full[..split], &full[split..]] {
+            if let KittyParseOutcome::Complete(k, _) = p.feed(chunk) {
+                outcome = Some(k);
+            }
+        }
+        assert_eq!(
+            outcome,
+            Some(KeyWithModifier::new(BareKey::Char('!'))),
+            "split at {split}"
+        );
+    }
+    // The same parser, reused: the previous sequence's shifted key must not leak into this one.
+    let mut p = KittyKeyboardParser::new();
+    assert!(matches!(
+        p.feed(b"\x1b[49:33;2u"),
+        KittyParseOutcome::Complete(_, _)
+    ));
+    match p.feed(b"\x1b[50;2u") {
+        KittyParseOutcome::Complete(k, _) => {
+            assert_eq!(
+                k,
+                KeyWithModifier::new(BareKey::Char('2')).with_shift_modifier()
+            );
+        },
+        other => panic!("expected a shifted 2, got {:?}", other),
     }
 }
 
