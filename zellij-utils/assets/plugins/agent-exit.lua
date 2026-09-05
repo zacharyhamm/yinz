@@ -67,27 +67,40 @@ local function output(bytes)
   return text
 end
 
+local function nonempty(value)
+  return value ~= "" and value or nil
+end
+
+local function log_failure(step, exit_code, stdout, stderr)
+  zellij.log(("VM %s failed: vm=%s session=%s helper=%s exit_status=%s stdout=%q stderr=%q"):format(
+    step, tostring(M.vm), tostring(M.session), M.zellij, tostring(exit_code),
+    output(stdout), output(stderr)
+  ))
+end
+
 function M.load(config)
   -- Arrives as a string: the payload is a plugin configuration map, which is
   -- `BTreeMap<String, String>` on the host side. The `agent_` prefix is not decoration -
   -- `PluginUserConfiguration::new` drops a reserved word such as a bare `cwd`.
   M.pane_id = tonumber(config.agent_pane_id)
-  M.cwd = config.agent_cwd or ""
-  M.vm = config.agent_firecracker_vm
-  M.worktree = config.agent_firecracker_worktree
-  M.session = config.agent_session
-  M.zellij = config.agent_zellij_executable or "zellij"
+  M.cwd = nonempty(config.agent_cwd)
+  M.vm = nonempty(config.agent_firecracker_vm)
+  M.worktree = nonempty(config.agent_firecracker_worktree)
+  M.session = nonempty(config.agent_session)
+  M.zellij = nonempty(config.agent_zellij_executable) or "zellij"
   M.env_variables = {}
-  if config.agent_zellij_config_file then
+  if nonempty(config.agent_zellij_config_file) then
     M.env_variables.ZELLIJ_CONFIG_FILE = config.agent_zellij_config_file
   end
-  if config.agent_zellij_config_dir then
+  if nonempty(config.agent_zellij_config_dir) then
     M.env_variables.ZELLIJ_CONFIG_DIR = config.agent_zellij_config_dir
   end
   zellij.subscribe { "key", "run_command_result" }
   if M.vm and M.worktree and M.session then
     M.status = "Checking VM worktree for changes..."
     run("check", { M.zellij, "firecracker", "changes", M.vm, "--session", M.session })
+  elseif config.agent_firecracker_vm ~= nil or config.agent_firecracker_worktree ~= nil then
+    M.status = "VM changes not checked: VM or worktree details are unavailable."
   end
 end
 
@@ -120,8 +133,9 @@ zellij.on("run_command_result", function(event)
   local exit_code, stdout, stderr, context = table.unpack(event.value)
   local step = context and context.step
   if step == "check" or step == "recheck" then
-    local changes = exit_code == 0 and tonumber(output(stdout)) or nil
-    if changes then
+    local count = output(stdout)
+    local changes = exit_code == 0 and count:match("^%d+$") and tonumber(count) or nil
+    if changes and math.tointeger(changes) then
       M.changes = changes
       if step == "check" then
         M.status = changes > 0 and ("%d changed %s in the VM."):format(
@@ -135,8 +149,9 @@ zellij.on("run_command_result", function(event)
         )
       end
     else
-      M.status = (step == "recheck" and "Could not recheck VM changes: " or
-        "Could not check VM changes: ") .. output(stderr)
+      M.changes = nil
+      M.status = "VM changes could not be checked. See plugin log for details."
+      log_failure(step, exit_code, stdout, stderr)
     end
     if step == "recheck" then
       M.syncing = false
@@ -149,7 +164,8 @@ zellij.on("run_command_result", function(event)
       run("recheck", { M.zellij, "firecracker", "changes", M.vm, "--session", M.session })
     else
       M.syncing = false
-      M.status = "VM worktree sync failed: " .. output(stderr)
+      M.status = "VM worktree could not be synced. See plugin log for details."
+      log_failure(step, exit_code, stdout, stderr)
     end
     return true
   end
@@ -164,7 +180,8 @@ function M.render(rows, cols)
   local question = M.changes and M.changes > 0 and "Agent exited. What next?" or QUESTION
   table.insert(lines, "\27[1m" .. centered(question, cols) .. "\27[0m")
   table.insert(lines, "")
-  table.insert(lines, centered("Directory: " .. M.cwd, cols))
+  table.insert(lines, centered("Directory: " .. (M.cwd or
+    (M.worktree and M.worktree .. " (host worktree)") or "unavailable"), cols))
   table.insert(lines, centered(zellij.text.truncate(M.status or "", cols), cols))
   table.insert(lines, "")
   local controls = CONTROLS
