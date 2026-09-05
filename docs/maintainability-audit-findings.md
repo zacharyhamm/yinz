@@ -268,8 +268,36 @@ Together with the eight findings above, this inventory contains **20 retained fi
 
 ### Structural maintenance
 
-- [ ] **F.10 — Pane initialization and suppression have multiple authorities.** No-preference, tiled, and stacked creation paths repeat initialization and geometry/PTY parking sequences already represented by `build_pane` and `park_new_pane` for floating/overlay paths. A change to shared pane state or suppression behavior requires coordinated edits across those copies. Confidence is High for the duplication and maintenance burden; no current placement failure is asserted.
-- [ ] **F.11 — Directional hole filling has four copied algorithms.** The routines repeat pane collection, sorting, nearest-pane selection, uncovered-hole handling, and geometry mutation, with axis differences embedded inside long sequences. Changes to common edge behavior have four implementation sites, making intentional directional differences difficult to distinguish from drift. Confidence is High for copied control flow and production callers; no incorrect resulting layout is asserted.
+- [x] **F.10 — Pane initialization and suppression have multiple authorities.** No-preference, tiled, and stacked creation paths repeat initialization and geometry/PTY parking sequences already represented by `build_pane` and `park_new_pane` for floating/overlay paths. A change to shared pane state or suppression behavior requires coordinated edits across those copies. Confidence is High for the duplication and maintenance burden; no current placement failure is asserted.
+  Remediation (2026-09-05): no-preference, tiled, and stacked creation now call
+  `build_pane` and `park_new_pane`, joining the floating and overlay paths.
+  Construction uses the existing forwarding-only `PaneFactory`. Borderless
+  overrides, floating visibility, maximum-pane enforcement, placement, and focus
+  retain their original ordering; parking failures retain pane-ID context.
+  Characterization coverage exercises terminal and plugin creation across all
+  three placements, visible/suppressed, focused/unfocused, and framed/borderless,
+  checking titles, invocation metadata, membership, focus, parked geometry and
+  content offsets, resize messages, and failed resize delivery without parking.
+  Separate follow-up observation: unfocused insertion into a named stack sends
+  no resize to the new pane; focusing it reapplies frames and sends the resize.
+  The tests preserve this existing behavior. No resulting application defect
+  was established, and this refactor does not change it.
+
+- [x] **F.11 — Directional hole filling has four copied algorithms.** The routines repeat pane collection, sorting, nearest-pane selection, uncovered-hole handling, and geometry mutation, with axis differences embedded inside long sequences. Changes to common edge behavior have four implementation sites, making intentional directional differences difficult to distinguish from drift. Confidence is High for copied control flow and production callers; no incorrect resulting layout is asserted.
+  Remediation (2026-09-05): all four stacking callers use the private
+  `fill_geom_holes(..., direction)` helper. Geometry collection, stable sorting,
+  selection from original snapshots, deferred trailing-hole handling, and write
+  order are shared; a local closure applies the existing directional dimension
+  arithmetic. Errors include the direction. Direct tests cover all four
+  directions with unsorted interior/trailing holes, empty holes, missing IDs,
+  empty expansion sets, fixed dimensions, exact coordinates and constraints,
+  and preservation of earlier writes when a later hole fails.
+  Verification for F.10/F.11: all three characterization tests passed before
+  refactoring at `d963c0af3`; 77 focused tests passed afterward, including
+  uneven-pane resizing and stacked-pane snapshots. `cargo x ci check` passed
+  format, lint, 7,084 workspace tests (45 skipped), doctests, and all 344
+  integration tests at 16 workers. Existing snapshots are unchanged.
+
 
 ### Documentation and onboarding
 
