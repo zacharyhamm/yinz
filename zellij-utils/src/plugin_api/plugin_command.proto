@@ -260,6 +260,7 @@ enum CommandName {
   SpawnAgent = 281;
   ProjectConfigRead = 282;
   ProjectConfigWrite = 283;
+  SetRelatedPanes = 284;
 }
 
 message PluginCommand {
@@ -467,6 +468,7 @@ message PluginCommand {
     SpawnAgentPayload spawn_agent_payload = 222;
     string project_config_read_payload = 223;
     ProjectConfigWritePayload project_config_write_payload = 224;
+    SetRelatedPanesPayload set_related_panes_payload = 225;
   }
 }
 
@@ -933,6 +935,13 @@ message FloatMultiplePanesPayload {
 }
 
 message CloseMultiplePanesPayload {
+  repeated PaneId pane_ids = 1;
+}
+
+// The agent panes that share a checkout with the focused one. Replaces the whole
+// set: a plugin that goes away or reloads re-asserts rather than un-marking pane
+// by pane, and a dropped message costs one stale frame rather than a stuck one.
+message SetRelatedPanesPayload {
   repeated PaneId pane_ids = 1;
 }
 

@@ -150,6 +150,9 @@ pub struct TerminalPane {
     /// and taken down the moment somebody types here or focuses the pane - see
     /// `acknowledge_agent_attention`.
     agent_attention_since: Option<Instant>,
+    /// Whether this pane is kin of the focused one - see `Pane::has_related_highlight`.
+    /// Written whole-session at a time by `Tab::set_related_panes`, read by `frame_color`.
+    is_related: bool,
     frame: HashMap<ClientId, PaneFrame>,
     borderless: bool,
     exclude_from_sync: bool,
@@ -1326,6 +1329,20 @@ impl Pane for TerminalPane {
     fn last_agent_kind(&self) -> Option<&str> {
         self.last_agent_kind.as_deref()
     }
+    fn has_related_highlight(&self) -> bool {
+        self.is_related
+    }
+    fn set_related_highlight(&mut self, related: bool) -> bool {
+        if self.is_related == related {
+            return false;
+        }
+        self.is_related = related;
+        // The frame diff in `render_frame` compares colours, and this changes one - but the
+        // pane is idle by definition (its agent is someone else's) and would otherwise
+        // produce no frame at all until it next wrote to its pty.
+        self.set_should_render(true);
+        true
+    }
     fn was_an_agent(&self) -> bool {
         self.was_an_agent
     }
@@ -1766,6 +1783,7 @@ impl TerminalPane {
             // A pane the spawn path opened as an agent pane starts `Busy`, so there is
             // never a wait to draw before the first report arrives.
             agent_attention_since: None,
+            is_related: false,
             borderless: false,
             exclude_from_sync: false,
             fake_cursor_locations: HashSet::new(),

@@ -483,6 +483,7 @@ impl<'a> PaneContentsAndUi<'a> {
                     .get(&client_id)
                     .map(|p| p.contains(&self.pane.pid()))
                     .unwrap_or(false),
+                pane_is_related: self.pane.has_related_highlight(),
                 mouse_is_hovering_over_pane: self
                     .mouse_is_hovering_over_pane_for_clients
                     .contains(&client_id),
@@ -505,15 +506,40 @@ pub struct FrameColorState {
     pub frame_color_override: Option<(PaletteColor, f32)>,
     pub pane_is_focused: bool,
     pub pane_is_in_group: bool,
+    /// This pane is kin of the focused one - see `Pane::has_related_highlight`. The gentlest
+    /// state there is: it loses to focus, to a group, to a hover and to an override, and only
+    /// ever replaces the colour a pane would have had for being nothing in particular.
+    pub pane_is_related: bool,
     pub mouse_is_hovering_over_pane: bool,
     pub multiple_users_exist_in_session: bool,
 }
+
+/// How far a related pane's frame is faded from the focused frame's colour back towards the
+/// theme's background.
+///
+/// The hue is the *focused* frame's, because that is what the tint means: these panes are kin
+/// of the one you are looking at. The fade is what keeps it a hint - at full strength a room
+/// full of sibling agents would read as a room full of focused panes, which is worse than no
+/// hint at all.
+///
+/// Note which two colours are blended, and which one is not: `frame_unselected` is `None` in
+/// the default theme, and a frame with no colour is drawn in the *terminal's* own foreground -
+/// a colour this process does not know. Easing away from a stand-in for it would make a
+/// related pane darker than an unrelated one on some terminals, turning the hint into a
+/// de-emphasis. Both ends here are defined in every theme.
+const RELATED_FADE: f32 = 0.55;
 
 /// The colour a pane's frame and boundary cells are drawn in, and the precedence that colour wins
 /// with where two panes share one boundary cell (see `Boundaries::add_rect` and `combine_symbols`).
 ///
 /// A free function so a caller outside `PaneContentsAndUi` can arrive at the same answer for a
 /// pane it is drawing a boundary for.
+///
+/// The precedences run `0` (nothing in particular) → `1` related → `2` hovered → `3` grouped →
+/// `4` focused → `5` overridden. Only their order matters, never the values: `combine_symbols`
+/// settles a shared cell with `>=`, so the pane whose `add_rect` ran first wins a tie - which is
+/// stable but keyed on pane id, and so means nothing to whoever is looking at it. Two states that
+/// can apply to two neighbouring panes at once must therefore not share a number.
 pub fn frame_color(
     style: &Style,
     state: FrameColorState,
@@ -525,6 +551,7 @@ pub fn frame_color(
         frame_color_override,
         pane_is_focused,
         pane_is_in_group,
+        pane_is_related,
         mouse_is_hovering_over_pane,
         multiple_users_exist_in_session,
     } = state;
@@ -537,6 +564,7 @@ pub fn frame_color(
                 frame_color_override: None,
                 pane_is_focused,
                 pane_is_in_group,
+                pane_is_related,
                 mouse_is_hovering_over_pane,
                 multiple_users_exist_in_session,
             },
@@ -548,27 +576,43 @@ pub fn frame_color(
             .map(|(color, _)| color)
             .or_else(|| style.colors.frame_unselected.map(|frame| frame.base))
             .unwrap_or(style.colors.frame_selected.base);
-        Some((blend(base, override_color, strength), 4))
+        Some((blend(base, override_color, strength), 5))
     } else if pane_is_in_group && !pane_is_focused {
-        Some((style.colors.frame_highlight.emphasis_0, 2))
+        Some((style.colors.frame_highlight.emphasis_0, 3))
     } else if pane_is_in_group && pane_is_focused {
-        Some((style.colors.frame_highlight.emphasis_1, 3))
+        Some((style.colors.frame_highlight.emphasis_1, 4))
     } else if pane_is_focused {
         match mode {
             InputMode::Normal | InputMode::Locked => {
                 if session_is_mirrored || !multiple_users_exist_in_session {
-                    Some((style.colors.frame_selected.base, 3))
+                    Some((style.colors.frame_selected.base, 4))
                 } else {
                     let colors =
                         client_id_to_colors(client_id.0, style.colors.multiplayer_user_colors);
-                    colors.map(|colors| (colors.0, 3))
+                    colors.map(|colors| (colors.0, 4))
                 }
             },
-            _ => Some((style.colors.frame_highlight.base, 3)),
+            _ => Some((style.colors.frame_highlight.base, 4)),
         }
     } else if mouse_is_hovering_over_pane {
-        Some((style.colors.frame_highlight.base, 1))
+        Some((style.colors.frame_highlight.base, 2))
+    } else if pane_is_related {
+        // Kin of the focused pane, and drawn as such: the focused frame's own colour, faded
+        // most of the way back to the background, so it reads as "these belong with that one"
+        // rather than as a second focus competing with the first.
+        Some((
+            blend(
+                style.colors.frame_selected.base,
+                style.colors.text_unselected.background,
+                RELATED_FADE,
+            ),
+            1,
+        ))
     } else {
         style.colors.frame_unselected.map(|frame| (frame.base, 0))
     }
 }
+
+#[cfg(test)]
+#[path = "./unit/frame_color_tests.rs"]
+mod frame_color_tests;

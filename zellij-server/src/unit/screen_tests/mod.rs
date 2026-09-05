@@ -2157,6 +2157,7 @@ mod overlays;
 mod pane_state;
 mod plugin_broadcasts;
 mod quit;
+mod related_panes;
 mod reveal_pane;
 mod scroll_and_warp;
 mod sizing;

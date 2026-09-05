@@ -3799,6 +3799,23 @@ pub fn highlight_and_unhighlight_panes(
     unsafe { host_run_plugin_command() };
 }
 
+/// Mark these panes as kin of the focused one, so the session draws them with a gentle
+/// tint - a hint that they belong together, not a second focus.
+///
+/// The call replaces the whole set: whatever was marked before and is not in `pane_ids`
+/// stops being marked. Pass an empty vector to clear. A plugin therefore says what is
+/// related *now* rather than tracking what the session still believes, and a reload
+/// re-asserts by simply saying it again.
+///
+/// Unlike [`highlight_and_unhighlight_panes`], this does not touch the pane's one frame
+/// override slot, so a bell flash or a failed command still shows through.
+pub fn set_related_panes(pane_ids: Vec<PaneId>) {
+    let plugin_command = PluginCommand::SetRelatedPanes(pane_ids);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
 /// Bring a pane into view for this client and highlight its frame, without
 /// taking keyboard focus - unlike [`focus_pane_with_id`], which does both.
 ///
