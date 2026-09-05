@@ -2658,6 +2658,11 @@ function zellij.pane_workflow(opts)
   end
   wf.abort, wf.resolve_abort = zellij.async.future()
 
+  -- The host can filter startup/exit events while the synchronous pane open is still running.
+  for _, event in ipairs { "command_pane_opened", "command_pane_re_run", "command_pane_exited", "pane_closed" } do
+    subscribe_once(event)
+  end
+
   -- The first step opens the pane, synchronously, so the pane id is known before this returns.
   local step = wf.steps[1]
   local context = step_context(wf, 1)

@@ -4542,6 +4542,72 @@ fn logged(plugin: &mut super::LuaPlugin) -> String {
 }
 
 #[test]
+fn a_workflow_subscribes_before_opening_its_first_pane() {
+    use zellij_utils::data::EventType;
+
+    for floating in [false, true] {
+        let mut plugin = load(
+            r#"
+            local zellij = require("zellij")
+            local M = { log = {} }
+            local function log(entry) table.insert(M.log, entry) end
+            zellij.write_chars_to_pane_id = function(chars) log("stdin:" .. chars) end
+            zellij.set_timeout = function() log("timeout") end
+            function M.load(config) M.floating = config.floating == "true" end
+            function M.update(event)
+              if event.name == "input_received" then
+                M.wf = zellij.pane_workflow {
+                  floating = M.floating,
+                  steps = { { path = "a", stdin = "hello", timeout = 60 } },
+                  on_done = function(r) log("done:" .. r.status) end,
+                }
+              end
+            end
+            function M.render() return table.concat(M.log, " ") end
+            return M
+            "#,
+        )
+        .unwrap();
+        let subscriptions = plugin.env().subscriptions.clone();
+        let open = plugin
+            .lua
+            .create_function(move |lua, _: mlua::Value| {
+                // The host filters events while the synchronous open is still in progress.
+                let subscriptions = subscriptions.lock().unwrap();
+                for event in [
+                    EventType::CommandPaneOpened,
+                    EventType::CommandPaneReRun,
+                    EventType::CommandPaneExited,
+                    EventType::PaneClosed,
+                ] {
+                    assert!(subscriptions.contains(&event), "missing {event:?} at spawn");
+                }
+                let pane = lua.create_table()?;
+                pane.set("Terminal", 7)?;
+                Ok(pane)
+            })
+            .unwrap();
+        let command = if floating {
+            "open_command_pane_floating"
+        } else {
+            "open_command_pane"
+        };
+        plugin.zellij.set(command, open).unwrap();
+        plugin
+            .load(&BTreeMap::from([("floating".into(), floating.to_string())]))
+            .unwrap();
+        plugin.update(&Event::InputReceived).unwrap();
+        assert_eq!(logged(&mut plugin), "");
+        plugin
+            .update(&Event::CommandPaneOpened(7, workflow_context("1")))
+            .unwrap();
+        assert_eq!(logged(&mut plugin), "stdin:hello timeout");
+        plugin.update(&step_exited("1", Some(0))).unwrap();
+        assert_eq!(logged(&mut plugin), "stdin:hello timeout done:success");
+    }
+}
+
+#[test]
 fn a_pane_workflow_runs_each_step_in_the_same_pane() {
     let mut plugin =
         workflow_plugin(r#"steps = { { path = "a" }, { path = "b" }, { path = "c" } },"#);
