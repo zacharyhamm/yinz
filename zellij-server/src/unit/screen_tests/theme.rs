@@ -39,6 +39,7 @@ fn reconfigure_sends_a_plugin_pane_the_updated_client_mode_info_once() {
             NestedSessionHandling::default(),
             false,
             HostNotificationProtocol::default(),
+            Size { rows: 0, cols: 0 },
             1,
         )
         .unwrap();

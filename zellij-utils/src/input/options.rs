@@ -204,6 +204,11 @@ impl FromStr for NotificationPosition {
 
 /// How long a notification stays on screen when `notification_timeout` is unset.
 pub const DEFAULT_NOTIFICATION_TIMEOUT_SECS: u64 = 10;
+/// The floor a spawned agent pane's equal share of a tab must clear, as a terminal size:
+/// `agent_pane_min_columns` by `agent_pane_min_rows`, compared by area. See
+/// `Screen::agent_pane_target` in zellij-server for the rule these feed.
+pub const DEFAULT_AGENT_PANE_MIN_COLUMNS: usize = 80;
+pub const DEFAULT_AGENT_PANE_MIN_ROWS: usize = 24;
 
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, Serialize, Args)]
 /// Options that can be set either through the config file,
@@ -433,6 +438,22 @@ pub struct Options {
     #[serde(default)]
     pub stacked_resize: Option<bool>,
 
+    /// The smallest tiled pane worth giving a newly spawned coding agent, in columns.
+    /// With `agent_pane_min_rows` it names an area: before an agent pane joins a tab, the
+    /// tab's tiled panes and the newcomer are imagined sharing the viewport equally, and a
+    /// tab whose share would fall below columns x rows sends the agent to the roomiest other
+    /// tab that clears it, or to a new tab. 0 in either disables the rule.
+    /// default is 80
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub agent_pane_min_columns: Option<usize>,
+
+    /// The rows half of `agent_pane_min_columns`
+    /// default is 24
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub agent_pane_min_rows: Option<usize>,
+
     #[clap(long, value_parser)]
     #[serde(default)]
     pub stacked_pane_list: Option<bool>,
@@ -632,6 +653,8 @@ impl Options {
             .support_kitty_graphics_protocol
             .or(self.support_kitty_graphics_protocol);
         let stacked_resize = other.stacked_resize.or(self.stacked_resize);
+        let agent_pane_min_columns = other.agent_pane_min_columns.or(self.agent_pane_min_columns);
+        let agent_pane_min_rows = other.agent_pane_min_rows.or(self.agent_pane_min_rows);
         let stacked_pane_list = other.stacked_pane_list.or(self.stacked_pane_list);
         let show_startup_tips = other.show_startup_tips.or(self.show_startup_tips);
         let show_release_notes = other.show_release_notes.or(self.show_release_notes);
@@ -709,6 +732,8 @@ impl Options {
             support_kitty_keyboard_protocol,
             support_kitty_graphics_protocol,
             stacked_resize,
+            agent_pane_min_columns,
+            agent_pane_min_rows,
             stacked_pane_list,
             show_startup_tips,
             show_release_notes,
@@ -817,6 +842,8 @@ impl Options {
             .support_kitty_graphics_protocol
             .or(self.support_kitty_graphics_protocol);
         let stacked_resize = other.stacked_resize.or(self.stacked_resize);
+        let agent_pane_min_columns = other.agent_pane_min_columns.or(self.agent_pane_min_columns);
+        let agent_pane_min_rows = other.agent_pane_min_rows.or(self.agent_pane_min_rows);
         let stacked_pane_list = other.stacked_pane_list.or(self.stacked_pane_list);
         let show_startup_tips = other.show_startup_tips.or(self.show_startup_tips);
         let show_release_notes = other.show_release_notes.or(self.show_release_notes);
@@ -895,6 +922,8 @@ impl Options {
             support_kitty_keyboard_protocol,
             support_kitty_graphics_protocol,
             stacked_resize,
+            agent_pane_min_columns,
+            agent_pane_min_rows,
             stacked_pane_list,
             show_startup_tips,
             show_release_notes,

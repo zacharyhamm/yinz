@@ -3036,6 +3036,28 @@ impl Options {
         .map(|(v, _)| v);
         let stacked_resize =
             kdl_property_first_arg_as_bool_or_error!(kdl_options, "stacked_resize").map(|(v, _)| v);
+        let agent_pane_min_columns =
+            match kdl_property_first_arg_as_i64_or_error!(kdl_options, "agent_pane_min_columns") {
+                Some((value, _)) if value >= 0 => Some(value as usize),
+                Some((value, entry)) => {
+                    return Err(kdl_parsing_error!(
+                        format!("agent_pane_min_columns cannot be negative, got {value}"),
+                        entry
+                    ))
+                },
+                None => None,
+            };
+        let agent_pane_min_rows =
+            match kdl_property_first_arg_as_i64_or_error!(kdl_options, "agent_pane_min_rows") {
+                Some((value, _)) if value >= 0 => Some(value as usize),
+                Some((value, entry)) => {
+                    return Err(kdl_parsing_error!(
+                        format!("agent_pane_min_rows cannot be negative, got {value}"),
+                        entry
+                    ))
+                },
+                None => None,
+            };
         let stacked_pane_list =
             kdl_property_first_arg_as_bool_or_error!(kdl_options, "stacked_pane_list")
                 .map(|(v, _)| v);
@@ -3152,6 +3174,8 @@ impl Options {
             support_kitty_keyboard_protocol,
             support_kitty_graphics_protocol,
             stacked_resize,
+            agent_pane_min_columns,
+            agent_pane_min_rows,
             stacked_pane_list,
             show_startup_tips,
             show_release_notes,
@@ -4403,6 +4427,51 @@ impl Options {
             None
         }
     }
+    fn agent_pane_min_columns_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
+        let comment_text = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            " ",
+            "// The smallest tiled pane worth giving a newly spawned coding agent, as a terminal",
+            "// size. Before an agent pane joins a tab, zellij projects the area each tiled pane",
+            "// would have if the tab's tiled panes (floating ones aside) shared the viewport",
+            "// equally, and compares it with columns x rows. A tab that would fall below it",
+            "// sends the agent to the roomiest other tab that stays above it, or to a new tab.",
+            "// Set either to 0 to always open agents where they were asked for.",
+            "// Default: 80 and 24",
+            "// ",
+            "// "
+        );
+        let create_node = |value: usize| {
+            let mut node = KdlNode::new("agent_pane_min_columns");
+            node.push(value as i64);
+            node
+        };
+        match self.agent_pane_min_columns {
+            Some(value) => Some(create_node(value)),
+            None if add_comments => {
+                let mut node = create_node(80);
+                node.set_leading(comment_text);
+                Some(node)
+            },
+            None => None,
+        }
+    }
+    fn agent_pane_min_rows_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
+        let create_node = |value: usize| {
+            let mut node = KdlNode::new("agent_pane_min_rows");
+            node.push(value as i64);
+            node
+        };
+        match self.agent_pane_min_rows {
+            Some(value) => Some(create_node(value)),
+            None if add_comments => {
+                let mut node = create_node(24);
+                node.set_leading("// ".to_owned());
+                Some(node)
+            },
+            None => None,
+        }
+    }
     fn stacked_resize_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
         let comment_text = format!(
             "{}\n{}\n{}\n{}",
@@ -5024,6 +5093,12 @@ impl Options {
         }
         if let Some(stacked_resize) = self.stacked_resize_to_kdl(add_comments) {
             nodes.push(stacked_resize);
+        }
+        if let Some(agent_pane_min_columns) = self.agent_pane_min_columns_to_kdl(add_comments) {
+            nodes.push(agent_pane_min_columns);
+        }
+        if let Some(agent_pane_min_rows) = self.agent_pane_min_rows_to_kdl(add_comments) {
+            nodes.push(agent_pane_min_rows);
         }
         if let Some(stacked_pane_list) = self.stacked_pane_list_to_kdl(add_comments) {
             nodes.push(stacked_pane_list);

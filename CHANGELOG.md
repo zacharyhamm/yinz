@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
+* feat: a newly spawned coding agent pane (from hocus or `zellij run -- claude`) is placed by the size it would get: when its equal share of the tab's viewport would fall below `agent_pane_min_columns` x `agent_pane_min_rows` (default 80x24, 0 disables), it opens in the roomiest other tab that clears the floor, or in a new tab
 * feat: a `plugins` folder in the config dir for plugins you wrote yourself - a `file:` path that is not there is looked for in it, so `plugin location="file:keys.lua"` is enough; configurable with `user_plugin_dir` and reported by `zellij setup --check`
 * feat: hocus can author Lua plugins - `plugin_docs`, `plugin_list`, `plugin_read`, `plugin_write` and `plugin_reload`, plus a `GetUserPluginDir` plugin API command that Lua plugins get too
 * feat: toast notifications - `zellij action notify "..."`, a `Notify` bindable action and a `notify()` plugin API, configurable with `notification_position` and `notification_timeout`; messages wrap into a taller box, and hocus raises one when a tool is waiting on a y/n

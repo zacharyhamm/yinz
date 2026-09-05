@@ -593,6 +593,8 @@ fn test_client_messages() {
                 support_kitty_keyboard_protocol: Some(true),
                 support_kitty_graphics_protocol: Some(false),
                 stacked_resize: Some(true),
+                agent_pane_min_columns: Some(100),
+                agent_pane_min_rows: Some(30),
                 stacked_pane_list: Some(true),
                 show_startup_tips: Some(true),
                 show_release_notes: Some(true),

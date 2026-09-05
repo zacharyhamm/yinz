@@ -681,6 +681,9 @@ pub enum ScreenInstruction {
         nested_session_handling: NestedSessionHandling,
         dangerously_enable_paste_buffer_read: bool,
         host_notification_protocol: HostNotificationProtocol,
+        /// The floor a spawned agent pane's equal share of a tab must clear, columns by rows;
+        /// zero in either turns the rule off. See `Screen::agent_pane_target`.
+        agent_pane_min_size: Size,
     },
     RerunCommandPane(u32, Option<NotificationEnd>), // u32 - terminal pane id
     RunCommandInPane(u32, RunCommand, bool), // u32 - terminal pane id, bool - keep_scrollback;

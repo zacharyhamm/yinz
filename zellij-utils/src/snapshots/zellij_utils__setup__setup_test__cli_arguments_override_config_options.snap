@@ -50,6 +50,8 @@ Options {
     support_kitty_keyboard_protocol: None,
     support_kitty_graphics_protocol: None,
     stacked_resize: None,
+    agent_pane_min_columns: None,
+    agent_pane_min_rows: None,
     stacked_pane_list: None,
     show_startup_tips: None,
     show_release_notes: None,

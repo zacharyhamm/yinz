@@ -132,12 +132,14 @@ fn a_pane_from_another_session_cannot_be_warped() {
 
 #[test]
 fn an_adopted_pane_still_follows_a_client_looking_at_a_tab() {
-    // Everyone else
-    // keeps the placement they had, which is what makes the pane arrive in the
-    // tab they are actually looking at rather than the one they started in.
+    // The pane arrives in the tab the client is looking at when it is adopted,
+    // not the one they started in - and that tab is named, so nothing between
+    // here and the pane's creation can second-guess the placement.
     let client_id = 1;
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen.go_to_tab(1, client_id).expect("TEST");
 
     assert_eq!(
         adopted_pane_placement_target(
@@ -145,7 +147,63 @@ fn an_adopted_pane_still_follows_a_client_looking_at_a_tab() {
             zellij_utils::data::WarpPlacement::FocusedTab,
             client_id
         ),
-        ClientTabIndexOrPaneId::ClientId(client_id),
+        ClientTabIndexOrPaneId::TabIndex(0),
+    );
+}
+
+#[test]
+fn an_adopted_pane_from_a_client_with_no_screen_goes_to_the_attached_clients_tab() {
+    // A warp request is a client of its own; the tab is the attached client's.
+    let attached = 1;
+    let requester = 7;
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    screen.go_to_tab(2, attached).expect("TEST");
+
+    assert_eq!(
+        adopted_pane_placement_target(
+            &mut screen,
+            zellij_utils::data::WarpPlacement::FocusedTab,
+            requester
+        ),
+        ClientTabIndexOrPaneId::TabIndex(1),
+    );
+}
+
+#[test]
+fn an_adopted_agent_pane_lands_in_the_focused_tab_however_crowded_it_is() {
+    // The user asked for the focused tab. `agent_pane_target` moves a
+    // client-relative agent pane out of a tab whose share would fall below the
+    // floor; a warp's placement is not its to change.
+    let client_id = 1;
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
+    screen.agent_pane_min_size = Size { cols: 40, rows: 10 };
+    new_tab(&mut screen, 1, 0);
+    for pid in 2..5 {
+        add_pane_to_tab(&mut screen, 0, PaneId::Terminal(pid), false);
+    }
+    let (to_plugin, plugin_receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+
+    let (invoked_with, mut placement, target) = adopted_pane_new_pane(
+        &mut screen,
+        zellij_utils::data::WarpPlacement::FocusedTab,
+        client_id,
+        RunCommand {
+            command: PathBuf::from("claude"),
+            ..Default::default()
+        },
+    );
+    assert_eq!(target, ClientTabIndexOrPaneId::TabIndex(0));
+    let placed = screen.agent_pane_target(invoked_with.as_ref(), &mut placement, false, target);
+    assert_eq!(placed.target, ClientTabIndexOrPaneId::TabIndex(0));
+    assert_eq!(placed.focus_after_placing, None);
+    assert!(
+        !plugin_receiver
+            .try_iter()
+            .any(|(instruction, _)| matches!(instruction, PluginInstruction::NewTab(..))),
+        "no tab was opened for the pane"
     );
 }
 

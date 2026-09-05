@@ -1422,6 +1422,8 @@ message Options {
   optional string host_notification_protocol = 67;
   optional string firecracker_provider = 70;
   optional uint64 firecracker_provider_timeout_secs = 71;
+  optional uint32 agent_pane_min_columns = 72;
+  optional uint32 agent_pane_min_rows = 73;
 }
 
 enum OnForceClose {

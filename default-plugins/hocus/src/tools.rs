@@ -4551,6 +4551,13 @@ mod host {
     /// agent marker itself only on the git-checkout call. Without this it would open a pane
     /// the host cannot tell from any other command pane, and the `agent_exit` hook would
     /// never fire for it.
+    ///
+    /// A marked tiled pane opens near the plugin, as the git-checkout call and the resume
+    /// route open theirs, rather than in the caller's focused tab: the host reads the two
+    /// targets differently when it re-routes a crowded agent pane (`agent_placement` on the
+    /// server), following the user to a tab it made for a focused-tab spawn and leaving them
+    /// where they are for one opened near a plugin. Both `agent_spawn` routes should read the
+    /// same way, and neither should pull the user off what they were looking at.
     pub fn new_pane_with_context(args: &Args, context: BTreeMap<String, String>) -> String {
         // Checked here, before anything opens, for the same reason `launch::plan`
         // checks them: a bad name would otherwise reach the host as a pane that
@@ -4560,11 +4567,14 @@ mod host {
             Err(error) => return error,
         };
         let cwd = args.cwd.clone().map(PathBuf::from);
+        let is_agent_pane = context.contains_key(HOCUS_AGENT_PANE_CONTEXT);
         let open = |command: CommandToRun| {
             if args.in_new_tab {
                 open_command_pane_in_new_tab(command, context).1
             } else if args.floating {
                 open_command_pane_floating(command, None, context)
+            } else if is_agent_pane {
+                open_command_pane_near_plugin(command, context)
             } else {
                 open_command_pane(command, context)
             }

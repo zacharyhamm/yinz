@@ -2317,6 +2317,10 @@ pub struct Options {
     pub firecracker_provider: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(uint64, optional, tag="71")]
     pub firecracker_provider_timeout_secs: ::core::option::Option<u64>,
+    #[prost(uint32, optional, tag="72")]
+    pub agent_pane_min_columns: ::core::option::Option<u32>,
+    #[prost(uint32, optional, tag="73")]
+    pub agent_pane_min_rows: ::core::option::Option<u32>,
 }
 /// Pane-targeting action messages
 #[allow(clippy::derive_partial_eq_without_eq)]

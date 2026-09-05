@@ -665,6 +665,17 @@ context_menu {
 // 
 // stacked_resize false
  
+// The smallest tiled pane worth giving a newly spawned coding agent, as a terminal
+// size. Before an agent pane joins a tab, zellij projects the area each tiled pane
+// would have if the tab's tiled panes (floating ones aside) shared the viewport
+// equally, and compares it with columns x rows. A tab that would fall below it
+// sends the agent to the roomiest other tab that stays above it, or to a new tab.
+// Set either to 0 to always open agents where they were asked for.
+// Default: 80 and 24
+// 
+// agent_pane_min_columns 80
+// agent_pane_min_rows 24
+ 
 // Whether stacked panes display as a list with the expanded pane pinned to the bottom
 // Default: true
 // 

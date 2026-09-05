@@ -887,6 +887,7 @@ fn a_reload_replaces_the_configured_menu() {
             NestedSessionHandling::default(),
             false,
             HostNotificationProtocol::default(),
+            Size { rows: 0, cols: 0 },
             1,
         )
         .unwrap();
