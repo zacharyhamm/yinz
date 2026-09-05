@@ -1,3 +1,10 @@
+<p align="center">
+    <em>Blood flows like rivers<br>
+    Humans and machines as one<br>
+Build together fast</em>
+</p>
+
+
 <h1 align="center">
   <br>
   <img src="https://raw.githubusercontent.com/zellij-org/zellij/main/assets/logo.png" alt="logo" width="200">
