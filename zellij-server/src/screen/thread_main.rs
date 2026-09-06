@@ -2756,6 +2756,7 @@ pub(crate) fn screen_thread_main(
             },
             ScreenInstruction::OverrideLayoutComplete(
                 tab_results,
+                failed_tabs,
                 retain_existing_terminal_panes,
                 retain_existing_plugin_panes,
                 client_id,
@@ -2825,6 +2826,12 @@ pub(crate) fn screen_thread_main(
                                 );
                             }
                         }
+                    }
+                }
+
+                for tab_id in failed_tabs {
+                    if screen.tabs.get(&tab_id).is_some_and(Tab::is_pending) {
+                        screen.close_tab_by_id(tab_id)?;
                     }
                 }
 

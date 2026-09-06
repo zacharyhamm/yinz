@@ -413,6 +413,7 @@ pub enum ScreenInstruction {
     ),
     OverrideLayoutComplete(
         Vec<TabOverrideResult>, // results for each tab
+        Vec<TabId>,             // tabs whose terminals could not be spawned
         bool,                   // retain_existing_terminal_panes
         bool,                   // retain_existing_plugin_panes
         ClientId,

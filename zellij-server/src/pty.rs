@@ -2680,6 +2680,7 @@ impl Pty {
     fn finish_layout_override(&mut self, pending: PendingLayoutOverride) -> Result<()> {
         let err_context = || "failed to override layout";
         let mut all_tab_results = vec![];
+        let mut failed_tabs = vec![];
         let mut deferred_spawns = vec![];
         for (tab_index, tab, plugin_ids) in pending.tabs {
             match self.spawn_terminals_for_layout_override(
@@ -2700,9 +2701,12 @@ impl Pty {
                     all_tab_results.push(tab_result);
                     deferred_spawns.append(&mut tab_deferred_spawns);
                 },
-                Err(error) => Err::<(), _>(error)
-                    .with_context(|| format!("failed to spawn terminals for tab {tab_index}"))
-                    .non_fatal(),
+                Err(error) => {
+                    failed_tabs.push(tab_index);
+                    Err::<(), _>(error)
+                        .with_context(|| format!("failed to spawn terminals for tab {tab_index}"))
+                        .non_fatal();
+                },
             }
         }
         // The results carry the panes away with them, so note the ids while they
@@ -2723,6 +2727,7 @@ impl Pty {
                 .senders
                 .send_to_screen(ScreenInstruction::OverrideLayoutComplete(
                     all_tab_results,
+                    failed_tabs,
                     pending.retain_existing_terminal_panes,
                     pending.retain_existing_plugin_panes,
                     pending.client_id,
