@@ -333,8 +333,8 @@ pub fn activity_hash(activity: &Activity, pane_id: u32) -> Option<u64> {
 // ---------------------------------------------------------------------------
 
 pub use zellij_tile::agent::{
-    clean_hint, hook_detail, question_text, suppression_is_a_guarantee, waiting_detail,
-    waiting_needs_a_person, HOOK_DETAIL_CHARS, HOOK_SESSION_END, WAITING_DETAIL_CHARS,
+    clean_hint, hook_detail, question_text, waiting_detail, waiting_needs_a_person,
+    HOOK_DETAIL_CHARS, HOOK_SESSION_END, WAITING_DETAIL_CHARS,
 };
 use zellij_tile::prelude::{AgentInfo, AgentSource, AgentState};
 
@@ -5785,18 +5785,12 @@ mod tests {
             hook_phase(&event("PermissionRequest")),
             Some(HookPhase::Waiting)
         );
-        assert_eq!(
-            hook_phase(&notification("permission_prompt")),
-            Some(HookPhase::Waiting)
-        );
+        assert_eq!(hook_phase(&notification("permission_prompt")), None);
         assert_eq!(
             hook_phase(&notification("agent_needs_input")),
             Some(HookPhase::Waiting)
         );
-        assert_eq!(
-            hook_phase(&notification("worker_permission_prompt")),
-            Some(HookPhase::Waiting)
-        );
+        assert_eq!(hook_phase(&notification("worker_permission_prompt")), None);
 
         // A finished turn nobody has answered yet is idleness, not a question.
         assert_eq!(hook_phase(&notification("idle_prompt")), None);
@@ -5884,23 +5878,21 @@ mod tests {
         }
     }
 
-    /// A permission mode that answers by itself has nobody to interrupt. The phase is
-    /// still whatever the agent said — only the toast is gated on this.
-    ///
-    /// Which prompts a mode answers is `zellij_utils::agent`'s to decide and to test; what is
-    /// worth pinning here is that the row and the `!` are unaffected by the answer.
+    /// Manual approval waits; automatic approval is work on both reporting paths.
     #[test]
-    fn a_wait_under_an_unattended_mode_is_drawn_but_not_announced() {
+    fn permission_phases_distinguish_manual_and_automatic_approval() {
         assert!(waiting_needs_a_person(&request(Some("Bash"), None)));
+        assert_eq!(
+            hook_phase(&request(Some("Bash"), None)),
+            Some(HookPhase::Waiting)
+        );
         assert!(!waiting_needs_a_person(&request(
             Some("Bash"),
             Some("bypassPermissions")
         )));
-
-        // The phase is unaffected either way: the agent said it stopped.
         assert_eq!(
             hook_phase(&request(Some("Bash"), Some("bypassPermissions"))),
-            Some(HookPhase::Waiting)
+            Some(HookPhase::Busy)
         );
     }
 
@@ -6185,6 +6177,52 @@ mod tests {
         let value: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value[0]["awaiting_confirmation"], true);
         assert!(value[0].get("summary").is_none());
+    }
+
+    #[test]
+    fn automatic_permissions_have_no_waiting_marker() {
+        for kind in ["claude", "codex"] {
+            let event = crate::wire::HookEvent {
+                permission_mode: Some("auto".to_owned()),
+                tool_name: Some("Bash".to_owned()),
+                tool_input: Some(json!({"command": "git status"})),
+                ..event("PermissionRequest")
+            };
+            let crate::agent::HookOutcome::Reported(record) =
+                crate::agent::hook_outcome(kind, &event)
+            else {
+                panic!("permission request must report a record");
+            };
+            let hooks = HookFeeds::from([(3, HookFeed::from_agent(&record).unwrap())]);
+            assert_eq!(hook_phase(&event), Some(HookPhase::Busy));
+            assert_eq!(
+                status_cell(AgentStatus::Running, None, hooks.get(&3)),
+                "busy · Bash git"
+            );
+            assert_eq!(
+                waiting_marker(
+                    &Summaries::new(),
+                    &Activity::new(),
+                    &hooks,
+                    AgentStatus::Running,
+                    3
+                ),
+                "  "
+            );
+            let json = list_json(
+                &[pane(3, kind, Some(kind))],
+                &manual(&[]),
+                &Activity::new(),
+                &owners(&[]),
+                &branches(&[]),
+                &Summaries::new(),
+                &hooks,
+                |_| String::new(),
+            );
+            let value: Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(value[0]["state"], "busy · Bash git");
+            assert_eq!(value[0]["awaiting_confirmation"], false);
+        }
     }
 
     #[test]

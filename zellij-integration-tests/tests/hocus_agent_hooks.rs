@@ -15,6 +15,7 @@
 //! it, and the assertion is read off hocus's own `agent_list` on the grid.
 
 use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE};
+use zellij_utils::cli::CliAction;
 use zellij_utils::data::PaneId;
 use zellij_utils::input::actions::hook_report_actions;
 
@@ -95,7 +96,7 @@ fn clear(zellij: &TestSession, gone: &str) {
 }
 
 #[test]
-fn a_hook_from_the_cli_makes_hocus_report_the_agent_as_waiting() {
+fn hooks_keep_the_pane_record_and_hocus_waiting_status_in_agreement() {
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(HOCUS_CONFIG)
         .with_layout(LayoutInfo::Stringified(HOCUS_LAYOUT.to_owned()))
@@ -124,6 +125,46 @@ fn a_hook_from_the_cli_makes_hocus_report_the_agent_as_waiting() {
     );
 
     clear(&zellij, "agents");
+
+    for kind in ["claude", "codex"] {
+        for payload in [
+            r#"{"hook_event_name":"PermissionRequest","permission_mode":"auto","tool_name":"Bash","tool_input":{"command":"git status"}}"#,
+            r#"{"hook_event_name":"Notification","notification_type":"permission_prompt"}"#,
+            r#"{"hook_event_name":"Notification","notification_type":"worker_permission_prompt"}"#,
+        ] {
+            let event = serde_json::from_str(payload).unwrap();
+            let actions =
+                hook_report_actions(kind, PaneId::Terminal(pane_id), &event, payload.to_owned());
+            let (exit_code, output) = zellij.run_actions_reporting(actions);
+            assert_eq!(exit_code, 0, "{output}");
+            let (exit_code, listed) = zellij.run_cli_action_reporting(CliAction::ListPanes {
+                tab: false,
+                command: false,
+                state: true,
+                geometry: false,
+                all: true,
+                json: true,
+            });
+            assert_eq!(exit_code, 0, "{listed}");
+            let panes: serde_json::Value = serde_json::from_str(&listed).unwrap();
+            let pane = panes
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|pane| pane["id"] == pane_id && pane["is_plugin"] == false)
+                .unwrap();
+            assert_eq!(pane["agent"]["state"], "Busy");
+            assert_eq!(pane["agent"]["detail"], "Bash git");
+            assert!(pane["agent"]["waiting_on"].is_null());
+            assert_eq!(pane["agent"]["wait_needs_a_person"], false);
+            submit(&zellij, r#"/agent_list {}"#);
+            zellij.wait_until("hocus agrees that automatic approval is busy", |grid| {
+                grid.contains("busy") && grid.contains("Bash git")
+            });
+            assert!(!zellij.snapshot().to_string().contains("waiting"));
+            clear(&zellij, "agents");
+        }
+    }
 
     // The message the generated hook script sends, and the only thing in this session
     // that can put the word "waiting" on the screen.

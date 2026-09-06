@@ -4219,6 +4219,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn automatic_permission_records_and_broadcasts_are_busy() {
+        for kind in ["claude", "codex"] {
+            for mode in ["auto", "bypassPermissions", "dontAsk", "acceptEdits"] {
+                let tool = if mode == "acceptEdits" {
+                    "Edit"
+                } else {
+                    "Bash"
+                };
+                let json = serde_json::json!({
+                    "hook_event_name": "PermissionRequest", "permission_mode": mode,
+                    "tool_name": tool, "tool_input": {"command": "git status", "file_path": "/work/main.rs"}
+                }).to_string();
+                let event = serde_json::from_str(&json).unwrap();
+                let actions = hook_report_actions(kind, PaneId::Terminal(7), &event, json);
+                match &actions[..] {
+                    [Action::SetPaneAgent {
+                        agent: Some(agent), ..
+                    }, Action::AgentEvent(event)] => {
+                        assert_eq!(agent.kind, kind);
+                        assert_eq!(agent.state, AgentState::Busy);
+                        assert_eq!(agent.waiting_on, None);
+                        assert!(!agent.wait_needs_a_person);
+                        assert_eq!(
+                            agent.detail.as_deref(),
+                            Some(if tool == "Bash" {
+                                "Bash git"
+                            } else {
+                                "Edit main.rs"
+                            })
+                        );
+                        assert_eq!(event.kind, kind);
+                        assert_eq!(event.state, Some(AgentState::Busy));
+                    },
+                    other => panic!("{other:?}"),
+                }
+                for reminder in ["permission_prompt", "worker_permission_prompt"] {
+                    let json = serde_json::json!({"hook_event_name": "Notification", "notification_type": reminder}).to_string();
+                    let event = serde_json::from_str(&json).unwrap();
+                    let actions = hook_report_actions(kind, PaneId::Terminal(7), &event, json);
+                    assert!(
+                        matches!(&actions[..], [Action::AgentEvent(event)] if event.state.is_none())
+                    );
+                }
+            }
+        }
+    }
+
     /// …but not at any size. This payload is copied into every running plugin's memory,
     /// twice per tool call, inside a hook with five seconds to live, and `tool_input` and
     /// `tool_response` have no bound at all in Claude Code's schema. Over the cap the event
