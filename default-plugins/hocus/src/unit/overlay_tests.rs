@@ -1484,7 +1484,7 @@ fn pick_anchor_skips_the_focused_pane() {
     ];
     assert_eq!(
         pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(2))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2)))
     );
 }
 
@@ -1499,7 +1499,7 @@ fn pick_anchor_prefers_the_pane_hocus_is_covering() {
     ];
     assert_eq!(
         pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(1))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(1)))
     );
 }
 
@@ -1513,7 +1513,7 @@ fn pick_anchor_breaks_ties_by_the_larger_pane() {
     ];
     assert_eq!(
         pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(3))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(3)))
     );
 }
 
@@ -1540,7 +1540,7 @@ fn pick_anchor_ignores_floating_suppressed_and_unselectable_panes() {
     ];
     assert_eq!(
         pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(5))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(5)))
     );
 }
 
@@ -1555,19 +1555,26 @@ fn pick_anchor_skips_panes_already_visited() {
     ];
     assert_eq!(
         pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(2)),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2))),
         "the pane the conversation is covering most"
     );
     assert_eq!(
-        pick_anchor(at(3, 14, 60, 33), &panes, &[PaneId::Terminal(2)]),
-        Some(PaneId::Terminal(1)),
+        pick_anchor(
+            at(3, 14, 60, 33),
+            &panes,
+            &[PaneId::Terminal(zellij_tile::prelude::TerminalId(2))]
+        ),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(1))),
         "and then the next one, rather than the same one again"
     );
     assert_eq!(
         pick_anchor(
             at(3, 14, 60, 33),
             &panes,
-            &[PaneId::Terminal(2), PaneId::Terminal(1)]
+            &[
+                PaneId::Terminal(zellij_tile::prelude::TerminalId(2)),
+                PaneId::Terminal(zellij_tile::prelude::TerminalId(1))
+            ]
         ),
         None,
         "every candidate toured: there is no pane left to be sent clear of"
@@ -1584,10 +1591,14 @@ fn pick_anchor_falls_back_to_the_only_tiled_pane() {
     ];
     assert_eq!(
         pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(1))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(1)))
     );
     assert_eq!(
-        pick_anchor(at(3, 14, 60, 33), &panes, &[PaneId::Terminal(1)]),
+        pick_anchor(
+            at(3, 14, 60, 33),
+            &panes,
+            &[PaneId::Terminal(zellij_tile::prelude::TerminalId(1))]
+        ),
         None,
         "and nowhere left once it has been toured - the press walks the corners instead"
     );
@@ -1790,7 +1801,7 @@ fn placed_chat(state: &State) -> (usize, usize, usize, usize) {
     let (placements, _) = state.last_placement.as_ref().expect("a placement");
     let (_, chat) = placements
         .iter()
-        .find(|(id, _)| *id == PaneId::Plugin(7))
+        .find(|(id, _)| *id == PaneId::Plugin(zellij_tile::prelude::PluginId(7)))
         .expect("our own pane");
     rect(chat)
 }
@@ -1801,7 +1812,10 @@ fn ctrl_o_moves_the_conversation_clear_of_the_largest_unfocused_pane() {
 
     assert!(!state.on_key(ctrl_o()));
 
-    assert_eq!(state.panel.anchor, Some(PaneId::Terminal(2)));
+    assert_eq!(
+        state.panel.anchor,
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2)))
+    );
     let (_, is_the_users) = state.last_placement.as_ref().expect("a placement");
     assert!(
         is_the_users,
@@ -1839,7 +1853,7 @@ fn ctrl_o_walks_off_whatever_the_conversation_is_covering() {
     state.on_key(ctrl_o());
     assert_eq!(
         state.panel.anchor,
-        Some(PaneId::Terminal(2)),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2))),
         "the pane it is on"
     );
     let (x, _, w, _) = placed_chat(&state);
@@ -1856,7 +1870,7 @@ fn ctrl_o_walks_off_whatever_the_conversation_is_covering() {
     state.on_key(ctrl_o());
     assert_eq!(
         state.panel.anchor,
-        Some(PaneId::Terminal(3)),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(3))),
         "now it is on pane 3"
     );
     let (x, _, w, _) = placed_chat(&state);
@@ -1879,7 +1893,7 @@ fn ctrl_o_with_one_tiled_pane_moves_to_the_top_right() {
 
     assert_eq!(
         state.panel.anchor,
-        Some(PaneId::Terminal(1)),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(1))),
         "the focused pane is admitted when it is the only one"
     );
     let (w, h) = corner_size();
@@ -1926,7 +1940,7 @@ fn ctrl_o_twice_on_the_same_pane_moves_to_the_next_corner() {
 
     assert_eq!(
         state.panel.anchor,
-        Some(PaneId::Terminal(2)),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2))),
         "the same anchor"
     );
     let second = placed_chat(&state);
@@ -2029,7 +2043,7 @@ fn ctrl_o_tours_every_pane_before_it_cycles_corners() {
         "three presses, three panes: {anchored:?}"
     );
     assert!(
-        !anchored.contains(&PaneId::Terminal(1)),
+        !anchored.contains(&PaneId::Terminal(zellij_tile::prelude::TerminalId(1))),
         "and never the pane the user is working in: {anchored:?}"
     );
 }
@@ -2142,13 +2156,13 @@ fn a_closed_pane_does_not_hold_a_slot_in_the_tour() {
 
     assert_eq!(
         state.panel.warp_visited,
-        vec![PaneId::Terminal(3)],
+        vec![PaneId::Terminal(zellij_tile::prelude::TerminalId(3))],
         "the pane that is gone is out of the tour"
     );
     state.on_key(ctrl_o());
     assert_eq!(
         state.panel.anchor,
-        Some(PaneId::Terminal(3)),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(3))),
         "and it is not offered again"
     );
 }
@@ -2312,10 +2326,16 @@ fn a_hidden_panel_keeps_its_anchor() {
     let anchored = placed_chat(&state);
 
     state.hide_panel();
-    assert_eq!(state.panel.anchor, Some(PaneId::Terminal(2)));
+    assert_eq!(
+        state.panel.anchor,
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2)))
+    );
     state.reveal_panel();
 
-    assert_eq!(state.panel.anchor, Some(PaneId::Terminal(2)));
+    assert_eq!(
+        state.panel.anchor,
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2)))
+    );
     assert_eq!(placed_chat(&state), anchored, "revealed where it was");
 }
 
@@ -2374,7 +2394,7 @@ fn placed_pane(state: &State, plugin_id: u32) -> Option<(usize, usize, usize, us
     let (placements, _) = state.last_placement.as_ref()?;
     placements
         .iter()
-        .find(|(id, _)| *id == PaneId::Plugin(plugin_id))
+        .find(|(id, _)| *id == PaneId::Plugin(zellij_tile::prelude::PluginId(plugin_id)))
         .map(|(_, coordinates)| rect(coordinates))
 }
 
@@ -2398,7 +2418,10 @@ fn a_list_that_opens_is_placed_as_the_left_half_of_the_panel() {
     let (placements, _) = state.last_placement.clone().expect("a placement");
     assert_eq!(
         placements.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-        vec![PaneId::Plugin(7), PaneId::Plugin(9)],
+        vec![
+            PaneId::Plugin(zellij_tile::prelude::PluginId(7)),
+            PaneId::Plugin(zellij_tile::prelude::PluginId(9))
+        ],
         "both halves, in one call"
     );
     assert_eq!(
@@ -2677,7 +2700,7 @@ fn ctrl_o_in_the_list_moves_the_panel_clear_of_the_largest_unfocused_pane() {
 
     assert_eq!(
         state.panel.anchor,
-        Some(PaneId::Terminal(2)),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2))),
         "the largest pane the user is not working in"
     );
     let (_, is_the_users) = state.last_placement.as_ref().expect("a placement");
@@ -2703,7 +2726,10 @@ fn a_press_in_either_half_places_the_whole_panel() {
     let (placements, _) = state.last_placement.clone().expect("a placement");
     assert_eq!(
         placements.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-        vec![PaneId::Plugin(7), PaneId::Plugin(9)],
+        vec![
+            PaneId::Plugin(zellij_tile::prelude::PluginId(7)),
+            PaneId::Plugin(zellij_tile::prelude::PluginId(9))
+        ],
         "both halves, from the list's press"
     );
     let from_the_list = (placed_pane(&state, 7), placed_pane(&state, 9));
@@ -2713,7 +2739,10 @@ fn a_press_in_either_half_places_the_whole_panel() {
     let (placements, _) = state.last_placement.clone().expect("a placement");
     assert_eq!(
         placements.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-        vec![PaneId::Plugin(7), PaneId::Plugin(9)],
+        vec![
+            PaneId::Plugin(zellij_tile::prelude::PluginId(7)),
+            PaneId::Plugin(zellij_tile::prelude::PluginId(9))
+        ],
         "and both halves from the conversation's"
     );
     assert_eq!(
@@ -2897,7 +2926,9 @@ fn a_list_that_arrives_after_the_esc_arrives_hidden() {
     state.pipe(selection(9));
 
     assert!(
-        state.visibility_calls.contains(&(PaneId::Plugin(9), false)),
+        state
+            .visibility_calls
+            .contains(&(PaneId::Plugin(zellij_tile::prelude::PluginId(9)), false)),
         "the half that could not be named at the Esc is named here"
     );
     assert!(!state.agents_visible, "so the panel is down, both halves");
@@ -2922,9 +2953,13 @@ fn a_job_showing_the_conversation_shows_the_whole_panel() {
 
     assert!(!state.hidden, "the intent is flipped at the source");
     assert!(state.hide_pending == 0, "so the hide it replaces is void");
-    assert!(state.visibility_calls.contains(&(PaneId::Plugin(7), true)));
+    assert!(state
+        .visibility_calls
+        .contains(&(PaneId::Plugin(zellij_tile::prelude::PluginId(7)), true)));
     assert!(
-        state.visibility_calls.contains(&(PaneId::Plugin(9), true)),
+        state
+            .visibility_calls
+            .contains(&(PaneId::Plugin(zellij_tile::prelude::PluginId(9)), true)),
         "and the list comes back with it"
     );
 }
@@ -2941,7 +2976,9 @@ fn a_stale_hide_does_not_hold_a_panel_that_came_back() {
     state.on_panes(manifest(0, vec![pane(7, false), pane(9, true)]));
 
     assert!(
-        state.visibility_calls.contains(&(PaneId::Plugin(9), true)),
+        state
+            .visibility_calls
+            .contains(&(PaneId::Plugin(zellij_tile::prelude::PluginId(9)), true)),
         "the list is put back beside us rather than the frame being swallowed"
     );
     assert!(!state.hidden);
@@ -2959,7 +2996,9 @@ fn a_hide_that_landed_on_one_half_is_restated_on_the_other() {
     state.on_panes(manifest(0, vec![pane(7, true), pane(9, false)]));
 
     assert!(
-        state.visibility_calls.contains(&(PaneId::Plugin(9), false)),
+        state
+            .visibility_calls
+            .contains(&(PaneId::Plugin(zellij_tile::prelude::PluginId(9)), false)),
         "the half still standing is asked down again"
     );
     assert!(state.hidden, "and the frame is not read as a reveal");

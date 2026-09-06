@@ -13,6 +13,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+zellij-types = { workspace = true }
+zellij-runtime = { workspace = true }
 zellij-client = { path = "../zellij-client", version = "0.45.0" }
 zellij-server = { path = "../zellij-server", version = "0.45.0" }
 zellij-utils = { workspace = true }

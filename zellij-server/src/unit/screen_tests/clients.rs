@@ -78,7 +78,7 @@ fn reattaching_the_only_client_tells_the_tab_plugins_they_are_visible_again() {
         .drain_plugin_updates()
         .into_iter()
         .filter_map(|(pid, _cid, event)| match (pid, event) {
-            (Some(zellij_utils::internal_ids::PluginId(2)), Event::Visible(is_visible)) => {
+            (Some(zellij_types::internal_ids::PluginId(2)), Event::Visible(is_visible)) => {
                 Some(is_visible)
             },
             _ => None,
@@ -133,7 +133,7 @@ fn reattaching_a_client_restores_floating_pane_visibility_notifications() {
         .unwrap()
         .hide_floating_panes();
 
-    let visibility_events: Vec<(Option<zellij_utils::internal_ids::PluginId>, bool)> = capture
+    let visibility_events: Vec<(Option<zellij_types::internal_ids::PluginId>, bool)> = capture
         .drain_plugin_updates()
         .into_iter()
         .filter_map(|(pid, _cid, event)| match event {
@@ -142,7 +142,7 @@ fn reattaching_a_client_restores_floating_pane_visibility_notifications() {
         })
         .collect();
     assert!(
-        visibility_events.contains(&(Some(zellij_utils::internal_ids::PluginId(2)), false)),
+        visibility_events.contains(&(Some(zellij_types::internal_ids::PluginId(2)), false)),
         "a floating plugin must still be told when its surface is hidden after a reattach, got {visibility_events:?}"
     );
 }

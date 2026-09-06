@@ -22,13 +22,13 @@ use zellij_utils::sessions::{
 use zellij_utils::consts::session_layout_cache_file_name;
 
 use miette::{Report, Result};
+use zellij_runtime::envs;
 use zellij_server::{
     os_input_output::get_server_os_input_from_termios_arg, start_server as start_server_impl,
 };
 use zellij_utils::{
     cli::{CliArgs, Command, SessionCommand, Sessions},
     data::ConnectToSession,
-    envs,
     input::{
         actions::Action,
         config::{Config, ConfigError},
@@ -53,7 +53,7 @@ fn sessions_to_kill(
 pub(crate) fn firecracker(
     command: zellij_utils::cli::Firecracker,
     config: &Config,
-) -> zellij_utils::errors::prelude::Result<()> {
+) -> zellij_runtime::errors::prelude::Result<()> {
     let provider = zellij_server::firecracker::provider_from_options(
         config.options.firecracker_provider.as_deref(),
         config.options.firecracker_provider_timeout_secs,
@@ -120,8 +120,8 @@ pub(crate) fn resolve_firecracker_session(
     explicit: Option<String>,
     env_session: Option<String>,
     active: ActiveSession,
-) -> zellij_utils::errors::prelude::Result<String> {
-    use zellij_utils::errors::prelude::*;
+) -> zellij_runtime::errors::prelude::Result<String> {
+    use zellij_runtime::errors::prelude::*;
 
     explicit
         .or(env_session)
@@ -144,10 +144,12 @@ pub(crate) fn run_firecracker(
     branch_of: &dyn Fn(&Path) -> Option<String>,
     out: &mut impl std::io::Write,
     err: &mut impl std::io::Write,
-) -> zellij_utils::errors::prelude::Result<()> {
+) -> zellij_runtime::errors::prelude::Result<()> {
     use zellij_utils::cli::Firecracker;
 
-    fn selected_session(explicit: Option<String>) -> zellij_utils::errors::prelude::Result<String> {
+    fn selected_session(
+        explicit: Option<String>,
+    ) -> zellij_runtime::errors::prelude::Result<String> {
         // The active-session scan is only worth doing without an explicit choice.
         match explicit {
             Some(session) => Ok(session),
@@ -1259,7 +1261,7 @@ pub(crate) fn pty_host_adopt(
 pub(crate) fn plugins(command: zellij_utils::cli::Plugins, opts: &CliArgs) -> anyhow::Result<()> {
     use zellij_utils::cli::Plugins as PluginsCli;
     let config = Config::try_from(opts).ok();
-    let plugin_dir = zellij_utils::home::user_plugin_dir_or_default(
+    let plugin_dir = zellij_runtime::home::user_plugin_dir_or_default(
         config
             .as_ref()
             .and_then(|config| config.options.user_plugin_dir.clone()),
@@ -1419,7 +1421,7 @@ pub(crate) fn recordings(
     data_dir: PathBuf,
 ) -> anyhow::Result<()> {
     use zellij_utils::cli::Recordings as RecordingsCli;
-    let data_access = zellij_utils::data_access::DataAccess::sqlite(&data_dir);
+    let data_access = zellij_storage::data_access::DataAccess::sqlite(&data_dir);
     match command {
         RecordingsCli::List { json } => {
             let summaries = data_access.recordings().list()?;
@@ -1466,7 +1468,9 @@ pub(crate) fn recordings(
     }
 }
 
-pub(crate) fn format_search_results(hits: &[zellij_utils::session_recording::SearchHit]) -> String {
+pub(crate) fn format_search_results(
+    hits: &[zellij_storage::session_recording::SearchHit],
+) -> String {
     if hits.is_empty() {
         return "No matches.\n".to_string();
     }
@@ -1500,7 +1504,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 }
 
 pub(crate) fn format_recordings_list(
-    summaries: &[zellij_utils::session_recording::RecordingSummary],
+    summaries: &[zellij_storage::session_recording::RecordingSummary],
 ) -> String {
     // Header as specified in plan
     let mut out = String::new();

@@ -1,4 +1,4 @@
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 
 use super::{BreakPanesToTabOutcome, Screen};
 use crate::background_jobs::BackgroundJob;

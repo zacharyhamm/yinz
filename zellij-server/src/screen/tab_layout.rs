@@ -1,4 +1,4 @@
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 
 use super::Screen;
 use zellij_utils::pane_size::{Size, Viewport};

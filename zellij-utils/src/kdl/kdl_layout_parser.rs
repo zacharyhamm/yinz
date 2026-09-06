@@ -442,7 +442,7 @@ impl<'a> KdlLayoutParser<'a> {
         name: &'static str,
     ) -> Result<Option<PathBuf>, ConfigError> {
         match kdl_get_string_property_or_child_value_with_error!(kdl_node, name) {
-            Some(s) => crate::input::expand_path(s)
+            Some(s) => zellij_runtime::shared::expand_path(s)
                 .map(Some)
                 .map_err(|error| kdl_parsing_error!(error, kdl_node)),
             None => Ok(None),

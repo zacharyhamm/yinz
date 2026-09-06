@@ -64,11 +64,11 @@ fn layout_with_plugins_and_commands_swaped_properly() {
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(1)],
+        vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(2)],
+        vec![zellij_types::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -174,11 +174,11 @@ fn base_layout_is_included_in_swap_layouts() {
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(1)],
+        vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(2)],
+        vec![zellij_types::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -281,11 +281,11 @@ fn swap_layouts_including_command_panes_absent_from_existing_layout() {
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(1)],
+        vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(2)],
+        vec![zellij_types::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -391,11 +391,11 @@ fn swap_layouts_not_including_command_panes_present_in_existing_layout() {
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(1)],
+        vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(2)],
+        vec![zellij_types::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -585,11 +585,11 @@ fn swap_layouts_not_including_plugin_panes_present_in_existing_layout() {
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(1)],
+        vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(2)],
+        vec![zellij_types::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -1198,11 +1198,11 @@ fn floating_layout_with_plugins_and_commands_swaped_properly() {
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(1)],
+        vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(2)],
+        vec![zellij_types::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -1306,11 +1306,11 @@ fn base_floating_layout_is_included_in_swap_layouts() {
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(1)],
+        vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(2)],
+        vec![zellij_types::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -1413,11 +1413,11 @@ fn swap_floating_layouts_including_command_panes_absent_from_existing_layout() {
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(1)],
+        vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(2)],
+        vec![zellij_types::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -1523,11 +1523,11 @@ fn swap_floating_layouts_not_including_command_panes_present_in_existing_layout(
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(1)],
+        vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(2)],
+        vec![zellij_types::internal_ids::PluginId(2)],
     );
 
     let swap_layout =
@@ -1702,11 +1702,11 @@ fn swap_floating_layouts_not_including_plugin_panes_present_in_existing_layout()
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(1)],
+        vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
         RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
-        vec![zellij_utils::internal_ids::PluginId(2)],
+        vec![zellij_types::internal_ids::PluginId(2)],
     );
 
     let swap_layout =

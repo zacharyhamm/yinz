@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use super::actions::Action;
-use crate::data::{BareKey, InputMode, KeyWithModifier, KeybindsVec};
+use crate::data::{InputMode, KeybindsVec};
+use zellij_types::keys::{BareKey, KeyWithModifier};
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

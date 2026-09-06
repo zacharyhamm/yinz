@@ -67,7 +67,7 @@ impl State {
         for panes in pane_manifest.panes.values() {
             for pane_info in panes {
                 if !pane_info.is_plugin {
-                    let pane_id = PaneId::Terminal(pane_info.id);
+                    let pane_id = PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_info.id));
                     current_panes.insert(pane_id);
                 }
             }

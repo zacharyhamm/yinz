@@ -11,11 +11,10 @@ use crate::plugins::HookFiring;
 use crate::screen::{agent_hook_edges, apply_pane_agent_report};
 use std::collections::BTreeMap;
 use std::path::Path;
+use zellij_types::keys::{BareKey, KeyWithModifier};
 use zellij_utils::data::OriginatingPlugin;
 use zellij_utils::data::HOCUS_AGENT_PANE_CONTEXT;
-use zellij_utils::data::{
-    AgentInfo, AgentSource, AgentState, BareKey, HookPayload, KeyWithModifier,
-};
+use zellij_utils::data::{AgentInfo, AgentSource, AgentState, HookPayload};
 use zellij_utils::input::hooks::HookPoint;
 
 type Fired = (HookPoint, Option<PaneId>, HookFiring);
@@ -859,8 +858,8 @@ fn enter_in_a_held_agent_pane_fires_agent_start() {
     while reruns == 0 && std::time::Instant::now() < deadline {
         match pty_receiver.recv_timeout(std::time::Duration::from_millis(50)) {
             Ok((instruction, _)) if is_rerun(&instruction) => reruns += 1,
-            Ok(_) | Err(zellij_utils::channels::RecvTimeoutError::Timeout) => {},
-            Err(zellij_utils::channels::RecvTimeoutError::Disconnected) => break,
+            Ok(_) | Err(zellij_runtime::channels::RecvTimeoutError::Timeout) => {},
+            Err(zellij_runtime::channels::RecvTimeoutError::Disconnected) => break,
         }
     }
     mock_screen.teardown(vec![screen_thread]);
@@ -1052,7 +1051,9 @@ fn accepted_hook_reports_keep_events_and_state_in_arrival_order_across_creation(
         ScreenInstruction::AgentReport(
             AgentReport {
                 report_id: "00000000-0000-4000-8000-000000000001".into(),
-                pane_id: zellij_utils::data::PaneId::Terminal(2),
+                pane_id: zellij_utils::data::PaneId::Terminal(
+                    zellij_types::internal_ids::TerminalId(2),
+                ),
                 state,
                 event: Some(zellij_utils::agent::AgentEvent::from_hook(
                     "claude", 2, &event, json,
@@ -1151,7 +1152,7 @@ fn report_router_acknowledges_with_screen_and_plugins_paused_and_no_active_clien
     let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(client);
     let report = AgentReport {
         report_id: "00000000-0000-4000-8000-000000000001".into(),
-        pane_id: zellij_utils::data::PaneId::Terminal(2),
+        pane_id: zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(2)),
         state: AgentReportState::Clear,
         event: None,
         trace: false,

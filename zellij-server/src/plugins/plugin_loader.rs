@@ -27,13 +27,13 @@ use crate::{
     ui::loading_indication::LoadingIndication, ClientId,
 };
 
-use zellij_utils::data_access::DataAccess;
+use zellij_storage::data_access::DataAccess;
 
 use crate::plugins::queues::Queues;
+use zellij_runtime::errors::prelude::*;
 use zellij_utils::{
     consts::ZELLIJ_TMP_DIR,
     data::InputMode,
-    errors::prelude::*,
     input::command::TerminalAction,
     input::keybinds::Keybinds,
     input::plugins::{PluginAliases, PluginConfig, PluginRuntime},
@@ -695,7 +695,7 @@ mod tests {
             &dir.path().to_path_buf(),
             None,
             &plugin_url,
-            zellij_utils::internal_ids::PluginId(1),
+            zellij_types::internal_ids::PluginId(1),
             Arc::new(Mutex::new(VecDeque::new())),
             Arc::new(Mutex::new(VecDeque::new())),
         )

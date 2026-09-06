@@ -32,7 +32,8 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use zellij_server::output::{HostKittyState, Output};
 use zellij_server::panes::{KittyImageStore, LinkHandler, SixelImageStore, TerminalPane};
 use zellij_server::tab::Pane;
-use zellij_utils::data::{Palette, Style};
+
+use zellij_types::style::{Palette, Style};
 use zellij_utils::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
 
 /// The host terminal the pane fleet is tiled over. Large enough that a 16-way split still leaves

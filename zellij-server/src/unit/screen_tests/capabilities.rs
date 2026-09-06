@@ -108,7 +108,7 @@ fn plugins_receive_kitty_support_per_client() {
         .filter_map(
             |(plugin_id, client_id, event)| match (plugin_id, client_id, event) {
                 (
-                    Some(zellij_utils::internal_ids::PluginId(77)),
+                    Some(zellij_types::internal_ids::PluginId(77)),
                     Some(client_id),
                     Event::ModeUpdate(mode_info),
                 ) => Some((client_id, mode_info.capabilities.kitty_graphics)),
@@ -139,7 +139,7 @@ fn plugins_receive_kitty_support_after_a_client_id_is_reused() {
     assert!(capture.drain_plugin_updates().into_iter().any(
         |(plugin_id, client_id, event)| matches!(
             (plugin_id, client_id, event),
-            (Some(zellij_utils::internal_ids::PluginId(77)), Some(ClientId(1)), Event::ModeUpdate(mode_info))
+            (Some(zellij_types::internal_ids::PluginId(77)), Some(ClientId(1)), Event::ModeUpdate(mode_info))
                 if mode_info.capabilities.kitty_graphics
         )
     ));
@@ -209,7 +209,7 @@ fn a_reused_client_id_does_not_inherit_the_previous_clients_kitty_capability() {
         .filter_map(
             |(plugin_id, client_id, event)| match (plugin_id, client_id, event) {
                 (
-                    Some(zellij_utils::internal_ids::PluginId(77)),
+                    Some(zellij_types::internal_ids::PluginId(77)),
                     Some(ClientId(1)),
                     Event::ModeUpdate(mode_info),
                 ) => Some(mode_info.capabilities.kitty_graphics),

@@ -5,7 +5,7 @@ use crate::panes::terminal_character::{TerminalCharacter, EMPTY_TERMINAL_CHARACT
 use crate::tab::Pane;
 use ansi_term::Colour::{Fixed, RGB};
 use std::collections::HashMap;
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 use zellij_utils::{data::PaletteColor, shared::colors};
 
 use std::fmt::{Display, Error, Formatter};

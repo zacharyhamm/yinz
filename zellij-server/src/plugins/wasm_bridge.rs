@@ -29,14 +29,14 @@ use std::{
 use tokio::sync::mpsc::Sender;
 use url::Url;
 use wasmi::{Engine, Module};
+use zellij_runtime::downloader::Downloader;
+use zellij_storage::data_access::DataAccess;
+use zellij_types::style::HostTerminalThemeMode;
 use zellij_utils::consts::{ZELLIJ_CACHE_DIR, ZELLIJ_SESSION_CACHE_DIR, ZELLIJ_TMP_DIR};
 use zellij_utils::data::{
-    FloatingPaneCoordinates, HostTerminalThemeMode, InputMode, KeybindsVec, LayoutInfo,
-    LayoutWithError, PaneContents, PaneRenderReport, PermissionStatus, PermissionType, PipeMessage,
-    PipeSource, QueueJobOutcome,
+    FloatingPaneCoordinates, InputMode, KeybindsVec, LayoutInfo, LayoutWithError, PaneContents,
+    PaneRenderReport, PermissionStatus, PermissionType, PipeMessage, PipeSource, QueueJobOutcome,
 };
-use zellij_utils::data_access::DataAccess;
-use zellij_utils::downloader::Downloader;
 use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::permission::PermissionCache;
 
@@ -46,9 +46,9 @@ use crate::{
     thread_bus::ThreadSenders, ui::loading_indication::LoadingIndication, ClientId,
     ServerInstruction,
 };
+use zellij_runtime::errors::prelude::*;
 use zellij_utils::{
     data::{Event, EventType},
-    errors::prelude::*,
     input::{
         command::TerminalAction,
         layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation, RunPluginOrAlias},
@@ -709,7 +709,7 @@ impl WasmBridge {
             // reuse, so leaving them would send a later plugin someone else's rows.
             self.data_access
                 .plugin_data()
-                .drop_watches_for_plugin(plugin_id.0);
+                .drop_watches_for_plugin(plugin_id);
 
             // Send worker exit messages
             for (_worker_name, worker_sender) in workers {

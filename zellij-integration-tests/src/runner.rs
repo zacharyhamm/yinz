@@ -650,7 +650,7 @@ impl TestSession {
         let deadline = std::time::Instant::now() + crate::default_timeout();
         loop {
             if let Ok(checkpoint) =
-                zellij_utils::session_checkpoint::SessionCheckpoint::read(&session_dir)
+                zellij_runtime::session_checkpoint::SessionCheckpoint::read(&session_dir)
             {
                 let layout_path = checkpoint.layout_path();
                 if let Ok(layout) = std::fs::read_to_string(&layout_path) {
@@ -674,7 +674,7 @@ impl TestSession {
     pub fn resurrect(&mut self, size: Size) {
         let layout_path = zellij_utils::consts::session_layout_cache_file_name(&self.session_name);
         {
-            let checkpoint = zellij_utils::session_checkpoint::SessionCheckpoint::read(
+            let checkpoint = zellij_runtime::session_checkpoint::SessionCheckpoint::read(
                 layout_path.parent().unwrap(),
             )
             .unwrap();

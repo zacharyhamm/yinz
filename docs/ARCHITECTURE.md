@@ -1,10 +1,41 @@
 This document details the different components of the code base in plain English. The intention is to provide a high level description rather than a more detailed drill-down of each internal mechanism.
 
+## Shared library extraction
+
+The extraction from `zellij-utils` is in progress. These crates now own independent parts of the shared library:
+
+| Crate | Current ownership |
+|---|---|
+| `zellij-types` | Canonical pane IDs, terminal, plugin, and client ID wrappers, positions, mouse input, environment models, plugin-data contracts, recording summaries, Kitty placeholders, keys, palettes and styles, animation, text helpers, and diagnostic context payloads |
+| `zellij-runtime` | Error presentation, thread-local context, channels, logging, paths, environment access and host-terminal capture, host identity, downloads, checkpoint publication, terminal key interpretation and encoding, and vendored terminal input parsing |
+| `zellij-storage` | Plugin-data engine, SQLite and Postgres backends, recording storage, and `DataAccess` interfaces |
+
+`zellij-types` has no Zellij dependencies. Runtime depends on types. Storage depends on types, without configuration parsing.
+Consumers import moved modules from their owning crates. Temporary re-exports in `zellij-utils` support the remaining migration.
+Configuration, plugin API, IPC, session, and CLI extraction remain unfinished. Most shared models still reside in `zellij-utils`.
+Public domain scalars also need further migration to semantic newtypes.
+
+`zellij-types::diagnostics::ErrorContext` holds the serializable six-entry instruction stack.
+Its `add_call` method changes only that value. Runtime's `errors::add_call` also publishes the result to the current task or thread.
+Use `errors::update_thread_ctx` to publish a received context and `errors::format_context` to format it for a diagnostic.
+Color KDL parsing and serialization remain parser-owned free functions. Color models and pure conversion helpers reside in types.
+Style KDL serialization also uses parser-owned free functions. Key string forms live in types and serve config and protocol adapters.
+Runtime key interpretation receives a binding predicate, so runtime does not depend on configuration or actions.
+Clap validates theme hue choices in the options adapter. The shared `ThemeHue` model has no Clap dependency.
+
+The checkpoint reader retains its lock while configuration loading reads layout and pane-content files.
+Runtime tests cover publication and lock behavior. Parser tests cover pane-content loading under that lock.
+
+Run `cargo x test -p zellij-types -p zellij-runtime -p zellij-storage` for the extracted crates.
+Run `cargo x postgres-test --build` followed by `cargo x postgres-test --test` for storage against Postgres.
+The full handoff gate remains `cargo x ci check`.
+
+
 ## Data access
 
 The server constructs one host-only `DataAccess` provider and shares it with the plugin runtime
 and session recorder. Plugin data and recordings use backend-neutral synchronous interfaces
-(`zellij-utils/src/data_access.rs`), and `DataAccess::from_backends` takes one backend for each.
+(`zellij-storage/src/data_access.rs`), and `DataAccess::from_backends` takes one backend for each.
 
 Plugin data has two real backends. SQLite is the default: one `plugin-data.db` in the data dir.
 Setting `plugin_data_url` to a `postgres://` URL (config file only, never the CLI or the client
@@ -12,7 +43,7 @@ socket — it may carry a password) points the store at that database instead, i
 named by `plugin_data_schema`, so every machine using it sees the same rows. Recordings stay in
 SQLite either way; `DataAccess::postgres` is the pairing.
 
-The two backends share one SQL engine (`zellij-utils/src/plugin_data_store/`): the predicate
+The two backends share one SQL engine (`zellij-storage/src/plugin_data_store/`): the predicate
 compiler, query builders, migrations and registry are written once against an `Executor`, and a
 `Dialect` names what the engines spell differently — placeholders, column types, `LIKE` versus
 `ILIKE`, and the full-text index (FTS5 with triggers on SQLite, a generated `tsvector` column
@@ -32,7 +63,7 @@ handed it out, and a session name is unique only within a machine — two machin
 session called `main`. So the entities that are about a live server (`agent_latch`,
 `agent_summary`, `agent_run`, `job`) carry a `host_id` beside `zellij_session_name`, and
 `hocus_proto::agents::rows::Owner` is the pair. The id is resolved once at server startup by
-`zellij_utils::host_identity`: `ZELLIJ_HOST_ID`, then the `host_id` config option, then
+`zellij_runtime::host_identity`: `ZELLIJ_HOST_ID`, then the `host_id` config option, then
 `<data dir>/host-id`, then a newly minted uuid written there. It identifies a *data dir on a
 machine*, which is the granularity that matters — two servers sharing a data dir share the pane
 ids and session names it qualifies. Plugins read it off `PluginIds` beside the hostname, which
@@ -108,10 +139,12 @@ It is in charge of actions such as:
 
 `zellij-terminal` owns the grid and rows, terminal characters, selection and search, hyperlinks, ANSI helpers, Sixel, and Kitty graphics.
 It also owns output serialization, host-query types, component parsing, and damage geometry.
-`PaneId` lives here, with `TerminalId` and `PluginId` payloads. The shared internal IDs
-(`TerminalId(u32)`, `PluginId(u32)`, and `ClientId(u16)`) live in `zellij-utils::internal_ids`
+`PaneId` lives in `zellij-types::pane_id`, with `TerminalId` and `PluginId` payloads,
+and is re-exported here. Host code and the plugin SDK use that same enum. The shared internal IDs
+(`TerminalId(u32)`, `PluginId(u32)`, and `ClientId(u16)`) live in `zellij-types::internal_ids`
 and are re-exported by the consuming crates. The server retains its existing re-export paths.
-Public plugin IDs, IPC, supervisor messages, and persistence records keep primitive numbers;
+The pane enum preserves its JSON variants and protobuf values. Other public plugin IDs,
+IPC, supervisor messages, and persistence records still keep primitive numbers;
 internal code wraps incoming IDs and unwraps them when constructing boundary payloads.
 Neither `zellij-terminal` nor `zellij-process` depends on the server or on the other extracted crate.
 
@@ -148,10 +181,10 @@ The Boundaries refer to those lines that are drawn between terminal panes. A few
   * The Rect trait is here so that different panes can implement it, giving boundaries a generic way to calculate the size of the pane and draw boundaries around it.
   * Here we use the [unicode box drawing characters](https://en.wikipedia.org/wiki/Box-drawing_character) in order to draw the borders. There's some logic here about combining them together for all possible combinations of pane locations.
 
-## Animation (zellij-utils/src/animation.rs, zellij-terminal/src/ui/damage.rs)
+## Animation (zellij-types/src/animation.rs, zellij-terminal/src/ui/damage.rs)
 Anything on screen that moves over time — toast notifications sliding in and out, the bell flash easing off a pane frame, the plugin loading dots — is built from the same two pieces.
 
-`zellij-utils/src/animation.rs` holds the pure part: an `Easing` curve, a `Tween` carrying one scalar from where it is to where it is going, and `blend` for interpolating a `PaletteColor`. The rule that makes it work is that **nothing in it reads the clock** — `now` is always a parameter. One frame therefore samples every live animation at a single instant, and a test drives an animation by handing in fabricated `Instant`s rather than by sleeping.
+`zellij-types/src/animation.rs` holds the pure part: an `Easing` curve, a `Tween` carrying one scalar from where it is to where it is going, and `blend` for interpolating a `PaletteColor`. The rule that makes it work is that **nothing in it reads the clock** — `now` is always a parameter. One frame therefore samples every live animation at a single instant, and a test drives an animation by handing in fabricated `Instant`s rather than by sleeping.
 
 The frames themselves come from one shared clock: `BackgroundJob::StartAnimationClock` runs a `tokio::time::interval` that sends `ScreenInstruction::AnimationTick`. That tick advances *nothing*. It only asks for a render, and `Screen::render_to_clients` samples everything at the instant it composites. This is what makes the result frame-rate independent: a tick that arrives late, twice, or not at all costs a frame and never a position, so an animation always takes the wall-clock time it promised even when the screen thread is busy or renders are being held back.
 

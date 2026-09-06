@@ -27,20 +27,21 @@ use std::env::temp_dir;
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TerminalId;
+use zellij_types::keys::KeyWithModifier;
+use zellij_types::mouse::MouseEvent;
+use zellij_types::position::Position;
+use zellij_types::position::{Column, Line};
+use zellij_types::style::Style;
 use zellij_utils::data::AgentInfo;
 use zellij_utils::data::PaneContents;
 use zellij_utils::data::{
-    Direction, KeyWithModifier, NewPanePlacement, OverlayKind, OverlayPlacement, PaneInfo,
-    PermissionStatus, PermissionType, PluginPermission, RegexHighlight, ResizeStrategy, Style,
-    StyledText,
+    Direction, NewPanePlacement, OverlayKind, OverlayPlacement, PaneInfo, PermissionStatus,
+    PermissionType, PluginPermission, RegexHighlight, ResizeStrategy, StyledText,
 };
-use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::RunCommand;
-use zellij_utils::input::mouse::MouseEvent;
 use zellij_utils::input::options::DEFAULT_WORD_SEPARATORS;
-use zellij_utils::internal_ids::TerminalId;
-use zellij_utils::position::Position;
-use zellij_utils::position::{Column, Line};
 use zellij_utils::shared::clean_string_from_control_and_linebreak;
 
 use crate::background_jobs::BackgroundJob;
@@ -82,8 +83,9 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     str,
 };
+use zellij_types::style::{Palette, Styling};
 use zellij_utils::{
-    data::{Event, FloatingPaneCoordinates, InputMode, ModeInfo, Palette, PaletteColor, Styling},
+    data::{Event, FloatingPaneCoordinates, InputMode, ModeInfo, PaletteColor},
     input::{
         command::TerminalAction,
         layout::{
@@ -91,7 +93,6 @@ use zellij_utils::{
             SwapFloatingLayout, SwapTiledLayout, TiledPaneLayout,
         },
         options::PaneFrameStyle,
-        parse_keys,
     },
     nested_session::NestedSessionMessage,
     pane_size::{Dimension, Offset, PaneGeom, Size, SizeInPixels, Viewport},
@@ -699,7 +700,7 @@ pub trait Pane {
     /// underlying app opted in via `CSI ? 2031 h`.
     /// Only relevant to terminal panes, plugin panes receive this through
     /// `Event::HostTerminalThemeChanged`
-    fn push_color_palette_dsr(&mut self, _mode: zellij_utils::data::HostTerminalThemeMode) {}
+    fn push_color_palette_dsr(&mut self, _mode: zellij_types::style::HostTerminalThemeMode) {}
     fn drain_clipboard_update(&mut self) -> Option<String> {
         None
     }
@@ -3045,7 +3046,7 @@ impl Tab {
                 pid,
                 initial_pane_title,
                 invoked_with,
-                pane_id_to_replace.map(|id| id.into()),
+                pane_id_to_replace,
                 close_replaced_pane,
                 client_id,
                 blocking_notification,
@@ -3060,7 +3061,7 @@ impl Tab {
                 invoked_with,
                 start_suppressed,
                 should_focus_pane,
-                pane_id_to_stack_under.map(|id| id.into()),
+                pane_id_to_stack_under,
                 client_id,
                 blocking_notification,
                 borderless,
@@ -3750,13 +3751,11 @@ impl Tab {
             let _ = self.senders.send_to_plugin(PluginInstruction::Update(vec![(
                 None,
                 None,
-                Event::PaneClosed(pane_id.into()),
+                Event::PaneClosed(pane_id),
             )]));
             let _ = self
                 .senders
-                .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers {
-                    pane_id: pane_id.into(),
-                });
+                .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id });
             drop(replaced_pane);
         }
     }
@@ -4970,7 +4969,7 @@ impl Tab {
                 },
                 Some(AdjustedInput::WriteBytesToTerminal(adjusted_input)) => {
                     let mut plugin_updates = vec![];
-                    for key in parse_keys(&adjusted_input) {
+                    for key in zellij_runtime::keys::parse_keys(&adjusted_input) {
                         plugin_updates.push((Some(pid), client_id, Event::Key(key)));
                     }
                     self.senders
@@ -6632,12 +6631,12 @@ impl Tab {
                 let _ = self.senders.send_to_plugin(PluginInstruction::Update(vec![(
                     None,
                     None,
-                    Event::PaneClosed(id.into()),
+                    Event::PaneClosed(id),
                 )]));
                 let _ =
                     self.senders
                         .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers {
-                            pane_id: id.into(),
+                            pane_id: id,
                         });
                 return;
             }
@@ -6714,13 +6713,11 @@ impl Tab {
         let _ = self.senders.send_to_plugin(PluginInstruction::Update(vec![(
             None,
             None,
-            Event::PaneClosed(id.into()),
+            Event::PaneClosed(id),
         )]));
         let _ = self
             .senders
-            .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers {
-                pane_id: id.into(),
-            });
+            .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id: id });
     }
     pub fn extract_pane(
         &mut self,

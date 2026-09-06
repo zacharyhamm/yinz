@@ -6,7 +6,7 @@ use super::*;
 
 use std::collections::BTreeMap;
 use tempfile::tempdir;
-use zellij_utils::channels::{self, SenderWithContext};
+use zellij_runtime::channels::{self, SenderWithContext};
 use zellij_utils::input::layout::RunPluginOrAlias;
 
 /// Senders nothing listens to. The receivers are returned so the channels stay connected for as

@@ -1,6 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
-use zellij_utils::internal_ids::PluginId;
+use zellij_types::internal_ids::PluginId;
 
 #[test]
 #[serial(plugin_tests)]

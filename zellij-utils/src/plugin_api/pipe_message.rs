@@ -38,7 +38,7 @@ impl TryFrom<ProtobufPipeMessage> for PipeMessage {
             is_private,
             pane_id: protobuf_pipe_message
                 .source_terminal_pane_id
-                .map(PaneId::Terminal),
+                .map(|id| PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(id))),
         })
     }
 }
@@ -76,7 +76,7 @@ impl TryFrom<PipeMessage> for ProtobufPipeMessage {
             payload,
             args,
             is_private,
-            source_terminal_pane_id,
+            source_terminal_pane_id: source_terminal_pane_id.map(|id| id.get()),
         })
     }
 }
@@ -90,7 +90,10 @@ mod tests {
     /// was sent from included.
     #[test]
     fn a_pipe_message_round_trips_with_its_pane() {
-        for pane_id in [None, Some(PaneId::Terminal(7))] {
+        for pane_id in [
+            None,
+            Some(PaneId::Terminal(zellij_types::internal_ids::TerminalId(7))),
+        ] {
             let mut message = PipeMessage::new(
                 PipeSource::Cli("pipe-1".to_owned()),
                 "agent_hook",
@@ -104,7 +107,7 @@ mod tests {
         }
         // The wire has a slot for a terminal only: a plugin pane cannot run `zellij pipe`.
         let mut from_plugin_pane = PipeMessage::new(PipeSource::Keybind, "x", &None, &None, true);
-        from_plugin_pane.pane_id = Some(PaneId::Plugin(2));
+        from_plugin_pane.pane_id = Some(PaneId::Plugin(zellij_types::internal_ids::PluginId(2)));
         let protobuf = ProtobufPipeMessage::try_from(from_plugin_pane).unwrap();
         assert_eq!(PipeMessage::try_from(protobuf).unwrap().pane_id, None);
     }

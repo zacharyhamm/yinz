@@ -12,7 +12,7 @@ use zellij_utils::data::{Event, NewPanePlacement};
 
 fn drain_visible_events(
     plugin_receiver: &Receiver<(PluginInstruction, ErrorContext)>,
-) -> Vec<(Option<zellij_utils::internal_ids::PluginId>, bool)> {
+) -> Vec<(Option<zellij_types::internal_ids::PluginId>, bool)> {
     let mut visible_events = vec![];
     while let Ok((instruction, _)) = plugin_receiver.try_recv() {
         if let PluginInstruction::Update(updates) = instruction {
@@ -57,7 +57,7 @@ fn floating_plugin_panes_are_notified_when_the_floating_surface_is_hidden() {
 
     assert_eq!(
         drain_visible_events(&plugin_receiver),
-        vec![(Some(zellij_utils::internal_ids::PluginId(1)), false)],
+        vec![(Some(zellij_types::internal_ids::PluginId(1)), false)],
         "a plugin in a floating pane should be sent Event::Visible(false) when the floating surface is hidden"
     );
 }
@@ -72,7 +72,7 @@ fn floating_plugin_panes_are_notified_when_the_floating_surface_is_shown() {
 
     assert_eq!(
         drain_visible_events(&plugin_receiver),
-        vec![(Some(zellij_utils::internal_ids::PluginId(1)), true)],
+        vec![(Some(zellij_types::internal_ids::PluginId(1)), true)],
         "a plugin in a floating pane should be sent Event::Visible(true) when the floating surface is shown"
     );
 }
@@ -90,8 +90,8 @@ fn toggling_the_floating_surface_twice_does_not_repeat_the_visibility_event() {
     assert_eq!(
         drain_visible_events(&plugin_receiver),
         vec![
-            (Some(zellij_utils::internal_ids::PluginId(1)), false),
-            (Some(zellij_utils::internal_ids::PluginId(1)), true)
+            (Some(zellij_types::internal_ids::PluginId(1)), false),
+            (Some(zellij_types::internal_ids::PluginId(1)), true)
         ],
         "only actual visibility transitions of the floating surface should be reported"
     );

@@ -7,7 +7,7 @@ use std::{
     fmt,
 };
 
-use crate::data::Styling;
+use zellij_types::style::Styling;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub struct UiConfig {

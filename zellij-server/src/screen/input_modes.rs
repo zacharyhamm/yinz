@@ -1,4 +1,4 @@
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 
 use super::{active_tab, Screen};
 use crate::panes::PaneId;

@@ -40,7 +40,7 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
 
 use nix::{
     errno::Errno,
@@ -51,7 +51,8 @@ use nix::{
     sys::wait::{waitpid, WaitPidFlag, WaitStatus},
     unistd::Pid,
 };
-use zellij_utils::{consts::VERSION, errors::prelude::*, input::command::RunCommand};
+use zellij_runtime::errors::prelude::*;
+use zellij_utils::{consts::VERSION, input::command::RunCommand};
 
 use super::fdpass::{self, send_fd};
 use super::protocol::{
@@ -173,7 +174,7 @@ pub fn run_pty_host(label: String) -> ! {
     unsafe {
         close_fds::close_open_fds(protocol::CONTROL_FD + 1, &[]);
     }
-    zellij_utils::logging::configure_logger();
+    zellij_runtime::logging::configure_logger();
 
     // A new session (and therefore a new process group), so a SIGINT/SIGTERM/
     // SIGHUP aimed at the server's group cannot reach us. No double fork: staying

@@ -56,14 +56,15 @@ pub use super::generated_api::api::{
 #[allow(hidden_glob_reexports)]
 use crate::data::{
     AgentInfo, AgentSource, AgentState, ClientId, ClientInfo, ContextMenuContext, ContextMenuItem,
-    ContextMenuLink, CopyDestination, DataRows, Event, EventType, FileMetadata,
-    HostTerminalThemeMode, InputMode, KeyModifier, KeyWithModifier, LayoutInfo, LayoutMetadata,
-    ModeInfo, Mouse, PaneContents, PaneId, PaneInfo, PaneManifest, PaneMetadata,
-    PaneScrollbackResponse, PaneTarget, PermissionStatus, PluginCapabilities, PluginInfo,
-    QueueJobInfo, QueueJobOutcome, QueueJobState, QueueSnapshot, SelectedText, SessionInfo, Style,
-    StyledText, TabInfo, TabMetadata,
+    ContextMenuLink, CopyDestination, DataRows, Event, EventType, FileMetadata, InputMode,
+    LayoutInfo, LayoutMetadata, ModeInfo, Mouse, PaneContents, PaneId, PaneInfo, PaneManifest,
+    PaneMetadata, PaneScrollbackResponse, PaneTarget, PermissionStatus, PluginCapabilities,
+    PluginInfo, QueueJobInfo, QueueJobOutcome, QueueJobState, QueueSnapshot, SelectedText,
+    SessionInfo, StyledText, TabInfo, TabMetadata,
 };
 use crate::plugin_api::plugin_data::ProtobufRows as ProtobufDataRows;
+use zellij_types::keys::{KeyModifier, KeyWithModifier};
+use zellij_types::style::{HostTerminalThemeMode, Style};
 
 use crate::errors::prelude::*;
 use crate::input::actions::Action;
@@ -2467,13 +2468,13 @@ impl TryFrom<ModeInfo> for ProtobufModeUpdatePayload {
         let nested_ascend_keys = mode_info
             .nested_ascend_keys
             .iter()
-            .map(|key| key.to_kdl())
+            .map(|key| key.to_keybind_string())
             .collect();
         let session_ascended = mode_info.session_ascended;
         let nested_descend_keys = mode_info
             .nested_descend_keys
             .iter()
-            .map(|key| key.to_kdl())
+            .map(|key| key.to_keybind_string())
             .collect();
         let mut protobuf_input_mode_keybinds: Vec<ProtobufInputModeKeybinds> = vec![];
         for (input_mode, input_mode_keybinds) in mode_info.keybinds {
@@ -3398,8 +3399,12 @@ impl TryFrom<ProtobufPaneId> for PaneId {
     type Error = &'static str;
     fn try_from(protobuf_pane_id: ProtobufPaneId) -> Result<Self, &'static str> {
         match ProtobufPaneType::try_from(protobuf_pane_id.pane_type) {
-            Ok(ProtobufPaneType::Terminal) => Ok(PaneId::Terminal(protobuf_pane_id.id)),
-            Ok(ProtobufPaneType::Plugin) => Ok(PaneId::Plugin(protobuf_pane_id.id)),
+            Ok(ProtobufPaneType::Terminal) => Ok(PaneId::Terminal(
+                zellij_types::internal_ids::TerminalId(protobuf_pane_id.id),
+            )),
+            Ok(ProtobufPaneType::Plugin) => Ok(PaneId::Plugin(
+                zellij_types::internal_ids::PluginId(protobuf_pane_id.id),
+            )),
             Err(_) => Err("Failed to convert PaneId"),
         }
     }
@@ -3414,11 +3419,11 @@ impl TryFrom<PaneId> for ProtobufPaneId {
         match pane_id {
             PaneId::Terminal(id) => Ok(ProtobufPaneId {
                 pane_type: ProtobufPaneType::Terminal as i32,
-                id,
+                id: id.get(),
             }),
             PaneId::Plugin(id) => Ok(ProtobufPaneId {
                 pane_type: ProtobufPaneType::Plugin as i32,
-                id,
+                id: id.get(),
             }),
         }
     }

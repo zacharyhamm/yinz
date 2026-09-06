@@ -8,9 +8,9 @@ use crate::TerminalId;
 use crate::{ClientId, ServerInstruction};
 use std::collections::HashMap;
 use std::time::Instant;
-use zellij_utils::data::{
-    Direction, HostTerminalThemeMode, InputMode, KeyWithModifier, ModeInfo, PaletteColor,
-};
+use zellij_types::keys::KeyWithModifier;
+use zellij_types::style::HostTerminalThemeMode;
+use zellij_utils::data::{Direction, InputMode, ModeInfo, PaletteColor};
 use zellij_utils::input::actions::Action;
 use zellij_utils::input::keybinds::shortcut_for_action;
 use zellij_utils::input::options::NestedSessionHandling;

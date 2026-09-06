@@ -113,9 +113,9 @@ fn env_vars_to_string() {
             baz "true"
         }"##;
     let document: KdlDocument = fake_config.parse().unwrap();
-    let deserialized = EnvironmentVariables::from_kdl(document.get("env").unwrap()).unwrap();
-    let serialized = EnvironmentVariables::to_kdl(&deserialized).unwrap();
-    let deserialized_from_serialized = EnvironmentVariables::from_kdl(
+    let deserialized = environment_variables_from_kdl(document.get("env").unwrap()).unwrap();
+    let serialized = environment_variables_to_kdl(&deserialized).unwrap();
+    let deserialized_from_serialized = environment_variables_from_kdl(
         serialized
             .to_string()
             .parse::<KdlDocument>()
@@ -137,6 +137,6 @@ fn env_vars_to_string_with_no_env_vars() {
         env {
         }"##;
     let document: KdlDocument = fake_config.parse().unwrap();
-    let deserialized = EnvironmentVariables::from_kdl(document.get("env").unwrap()).unwrap();
-    assert_eq!(EnvironmentVariables::to_kdl(&deserialized), None);
+    let deserialized = environment_variables_from_kdl(document.get("env").unwrap()).unwrap();
+    assert_eq!(environment_variables_to_kdl(&deserialized), None);
 }

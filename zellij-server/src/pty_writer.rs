@@ -1,10 +1,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::str::FromStr;
 use std::time::Duration;
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
 
-use zellij_utils::channels;
-use zellij_utils::errors::{prelude::*, ContextType, PtyWriteContext};
+use zellij_runtime::channels;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::diagnostics::ContextType;
+use zellij_types::diagnostics::PtyWriteContext;
 
 use crate::route::NotificationEnd;
 use crate::thread_bus::Bus;
@@ -79,7 +81,7 @@ pub(crate) fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
 
         // Process the instruction if we received one
         if let Some((event, mut err_ctx)) = event {
-            err_ctx.add_call(ContextType::PtyWrite((&event).into()));
+            zellij_runtime::errors::add_call(&mut err_ctx, ContextType::PtyWrite((&event).into()));
             match event {
                 PtyWriteInstruction::Write(bytes, terminal_id, completion) => {
                     let queue = pending.entry(terminal_id).or_default();

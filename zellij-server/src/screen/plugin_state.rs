@@ -1,7 +1,7 @@
 use crate::TerminalId;
 use unicode_width::UnicodeWidthStr;
+use zellij_runtime::errors::prelude::*;
 use zellij_tile_utils::ellipsize;
-use zellij_utils::errors::prelude::*;
 
 use super::Screen;
 use crate::background_jobs::BackgroundJob;
@@ -373,8 +373,8 @@ impl Screen {
     pub(crate) fn convert_pane_metadata(
         pane_manifest: &PaneManifest,
         tab_infos: &[TabInfo],
-    ) -> Vec<zellij_utils::session_recording::PaneMetadata> {
-        use zellij_utils::session_recording::PaneMetadata;
+    ) -> Vec<zellij_storage::session_recording::PaneMetadata> {
+        use zellij_storage::session_recording::PaneMetadata;
         let mut result = Vec::new();
         // Build a map from tab position to TabInfo for quick lookup
         let tab_by_position: std::collections::HashMap<usize, &TabInfo> =

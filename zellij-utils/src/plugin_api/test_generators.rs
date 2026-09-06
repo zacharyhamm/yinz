@@ -7,14 +7,14 @@
 //! specification, not a way past a failing case.
 
 use crate::data::{
-    AgentInfo, AgentSource, AgentSpawnSpec, AgentState, BareKey, CommandOrPlugin, CommandToRun,
-    CommandType, ConnectToSession, ContextMenuItem, Direction, EntityDef, EventType, FetchRequest,
-    FileMetadata, FileToOpen, FloatingPaneCoordinates, GitCheckout, HighlightLayer, HighlightStyle,
-    HttpVerb, InputMode, KeyModifier, KeyWithModifier, LayoutInfo, LayoutMetadata, MessageToPlugin,
-    Mutation, NewPanePlacement, NewPluginArgs, OriginatingPlugin, OverlayKind, OverlayPlacement,
-    PaneId, PaneMetadata, PaneTarget, PermissionType, PluginCommand, PluginMessage, PluginTag,
-    RegexHighlight, RemotePaneHandoff, Resize, ResizeStrategy, TabMetadata, UnblockCondition,
-    WarpPlacement, WarpedPane, WarpedTab, WatchMode,
+    AgentInfo, AgentSource, AgentSpawnSpec, AgentState, CommandOrPlugin, CommandToRun, CommandType,
+    ConnectToSession, ContextMenuItem, Direction, EntityDef, EventType, FetchRequest, FileMetadata,
+    FileToOpen, FloatingPaneCoordinates, GitCheckout, HighlightLayer, HighlightStyle, HttpVerb,
+    InputMode, LayoutInfo, LayoutMetadata, MessageToPlugin, Mutation, NewPanePlacement,
+    NewPluginArgs, OriginatingPlugin, OverlayKind, OverlayPlacement, PaneId, PaneMetadata,
+    PaneTarget, PermissionType, PluginCommand, PluginMessage, PluginTag, RegexHighlight,
+    RemotePaneHandoff, Resize, ResizeStrategy, TabMetadata, UnblockCondition, WarpPlacement,
+    WarpedPane, WarpedTab, WatchMode,
 };
 use crate::input::actions::{Action, ActionKind, SearchDirection, SearchOption};
 use crate::input::command::{OpenFilePayload, RunCommand, RunCommandAction};
@@ -23,13 +23,14 @@ use crate::input::layout::{
     Run, RunPlugin, RunPluginLocation, RunPluginOrAlias, SplitDirection, SplitSize,
     SwapFloatingLayout, SwapTiledLayout, TabLayoutInfo, TiledPaneLayout,
 };
-use crate::input::mouse::{MouseEvent, MouseEventType};
 use crate::input::options::PaneFrameStyle;
 use crate::position::{Column, Line, Position};
 use hegel::generators;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use strum::IntoEnumIterator;
+use zellij_types::keys::{BareKey, KeyModifier, KeyWithModifier};
+use zellij_types::mouse::{MouseEvent, MouseEventType};
 
 pub(crate) fn strings(tc: &hegel::TestCase) -> String {
     tc.draw(generators::text().max_size(8))
@@ -164,9 +165,9 @@ fn up_to<T>(tc: &hegel::TestCase, max: usize, draw: impl Fn(&hegel::TestCase) ->
 pub(crate) fn pane_id(tc: &hegel::TestCase) -> PaneId {
     let n = tc.draw(generators::integers::<u32>());
     if booleans(tc) {
-        PaneId::Terminal(n)
+        PaneId::Terminal(zellij_types::internal_ids::TerminalId(n))
     } else {
-        PaneId::Plugin(n)
+        PaneId::Plugin(zellij_types::internal_ids::PluginId(n))
     }
 }
 

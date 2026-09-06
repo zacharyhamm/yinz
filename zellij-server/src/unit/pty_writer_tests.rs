@@ -6,8 +6,8 @@ use interprocess::local_socket::Stream as LocalSocketStream;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use zellij_utils::channels::SenderWithContext;
-use zellij_utils::data::Palette;
+use zellij_runtime::channels::SenderWithContext;
+use zellij_types::style::Palette;
 
 use zellij_utils::input::command::RunCommand;
 use zellij_utils::ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg};
@@ -427,7 +427,7 @@ fn pty_writer_records_successful_input() {
     while let Ok(instr) = rec_receiver.try_recv() {
         if let crate::session_recorder::RecorderInstruction::Events(ev) = instr {
             for e in ev {
-                if e.kind == zellij_utils::session_recording::EventKind::Input {
+                if e.kind == zellij_storage::session_recording::EventKind::Input {
                     input_events.push(e);
                 }
             }
@@ -474,7 +474,7 @@ fn pty_writer_records_successful_resize() {
     while let Ok(instr) = rec_receiver.try_recv() {
         if let crate::session_recorder::RecorderInstruction::Events(ev) = instr {
             for e in ev {
-                if e.kind == zellij_utils::session_recording::EventKind::Resize {
+                if e.kind == zellij_storage::session_recording::EventKind::Resize {
                     resize_events.push(e);
                 }
             }
@@ -515,7 +515,7 @@ fn pty_writer_records_successful_resize() {
             crate::session_recorder::RecorderInstruction::Events(events) => events,
             _ => Vec::new(),
         })
-        .filter(|event| event.kind == zellij_utils::session_recording::EventKind::Resize)
+        .filter(|event| event.kind == zellij_storage::session_recording::EventKind::Resize)
         .collect();
     assert_eq!(resize_events.len(), 1);
     assert_eq!(resize_events[0].data, b"100x30");
@@ -595,8 +595,8 @@ fn pty_writer_records_successful_resize() {
         fn remove_client(&mut self, _id: crate::ClientId) -> anyhow::Result<()> {
             Ok(())
         }
-        fn load_palette(&self) -> zellij_utils::data::Palette {
-            zellij_utils::data::Palette::default()
+        fn load_palette(&self) -> zellij_types::style::Palette {
+            zellij_types::style::Palette::default()
         }
         fn get_cwd(&self, _pid: u32) -> Option<std::path::PathBuf> {
             None
@@ -630,8 +630,8 @@ fn pty_writer_records_successful_resize() {
         enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         dropped: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
-    let (sender2, receiver2) = zellij_utils::channels::unbounded();
-    let sender2_ctx = zellij_utils::channels::SenderWithContext::new(sender2);
+    let (sender2, receiver2) = zellij_runtime::channels::unbounded();
+    let sender2_ctx = zellij_runtime::channels::SenderWithContext::new(sender2);
     let bus2 = crate::thread_bus::Bus::new(
         vec![receiver2],
         None,
@@ -660,7 +660,7 @@ fn pty_writer_records_successful_resize() {
     while let Ok(instr) = rec_receiver2.try_recv() {
         if let crate::session_recorder::RecorderInstruction::Events(ev) = instr {
             for e in ev {
-                if e.kind == zellij_utils::session_recording::EventKind::Resize {
+                if e.kind == zellij_storage::session_recording::EventKind::Resize {
                     resize_events2.push(e);
                 }
             }

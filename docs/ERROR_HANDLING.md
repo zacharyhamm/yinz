@@ -33,8 +33,16 @@ remainder of this document by including/adding this in the code you're working
 on:
 
 ```rust
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 ```
+
+## Instruction context
+
+Import context payloads from `zellij_types::diagnostics`. They have no dependency on logging or thread-local state.
+`ErrorContext::add_call` changes only the local value.
+Use `zellij_runtime::errors::add_call` to append a call and publish the result to the current task or thread.
+Use `zellij_runtime::errors::update_thread_ctx` to publish a received context without appending a call.
+Runtime's `format_context` function provides the diagnostic presentation.
 
 ## Displaying panic messages
 
@@ -106,7 +114,7 @@ issue for error handling][3]
 ## Converting a function to return a `Result` type
 
 > **TL;DR**  
-> - Add `use zellij_utils::errors::prelude::*;` to the file
+> - Add `use zellij_runtime::errors::prelude::*;` to the file
 > - Make the function return `Result<T>`, with an appropriate `T` (Often `()`)
 > - Append `.context()` to any `Result` you get with a sensible error description (see below)
 > - Generate ad-hoc errors with `anyhow!(<SOME MESSAGE>)`
@@ -488,7 +496,7 @@ fixed by adding `::<(), _>`.
 ## Adding Concrete Errors, Handling Specific Errors
 
 > **TL;DR**
-> - Add a new variant to `zellij_utils::errors::ZellijError`
+> - Add a new variant to `zellij_runtime::errors::ZellijError`
 > - Use `anyhow::Error::downcast_ref::<ZellijError>()` to recover underlying errors
 
 Sometimes you'll find yourself in a situation where you want to react to very
@@ -507,10 +515,10 @@ distinguish and react upon. But what happens, for example, if we create the
 error we want to react to ourselves?
 
 For this purpose, there is the `ZellijError`, which is contained in
-`zellij_utils::errors`. It is built with the [`thiserror`][thiserror] crate and
+`zellij_runtime::errors`. It is built with the [`thiserror`][thiserror] crate and
 hence easily extensible. If you need a specific error type to act upon, just
 define a new variant in `ZellijError`. It is automatically available in any
-source file that has the `use zellij_utils::errors::prelude::*;` statement in
+source file that has the `use zellij_runtime::errors::prelude::*;` statement in
 it.
 
 Once you have created your error instance, as soon as you wrap a `context`

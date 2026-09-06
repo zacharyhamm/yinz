@@ -20,9 +20,10 @@
 
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
-use zellij_utils::data::{ContextMenuItem, Style};
+use zellij_types::position::Position;
+use zellij_types::style::Style;
+use zellij_utils::data::ContextMenuItem;
 use zellij_utils::pane_size::Viewport;
-use zellij_utils::position::Position;
 
 use crate::output::CharacterChunk;
 use crate::panes::terminal_character::{

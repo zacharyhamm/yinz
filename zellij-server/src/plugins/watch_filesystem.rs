@@ -10,7 +10,8 @@ use notify_debouncer_full::{
     notify::{EventKind, RecommendedWatcher, RecursiveMode},
     DebounceEventResult, DebouncedEvent, Debouncer, RecommendedCache,
 };
-use zellij_utils::{data::Event, errors::prelude::Result};
+use zellij_runtime::errors::prelude::Result;
+use zellij_utils::data::Event;
 
 const DEBOUNCE_DURATION_MS: u64 = 400;
 

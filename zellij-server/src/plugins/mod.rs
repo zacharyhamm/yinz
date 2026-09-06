@@ -5,7 +5,7 @@
 #![allow(clippy::manual_inspect)]
 #![allow(clippy::useless_format)]
 #![allow(clippy::redundant_pattern_matching)]
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
 mod lua;
 pub use lua::check_lua_plugin;
 mod pinned_executor;
@@ -36,8 +36,8 @@ use crate::route::NotificationEnd;
 use crate::screen::ScreenInstruction;
 use crate::session_layout_metadata::SessionLayoutMetadata;
 use crate::{pty::PtyInstruction, thread_bus::Bus, ClientId, ServerInstruction};
+use zellij_storage::data_access::DataAccess;
 use zellij_utils::data::PaneRenderReport;
-use zellij_utils::data_access::DataAccess;
 use zellij_utils::input::context_menu::ContextMenu;
 use zellij_utils::input::hooks::{HookPoint, HookShape, Hooks};
 use zellij_utils::input::layout::TabLayoutInfo;
@@ -45,13 +45,16 @@ use zellij_utils::input::layout::TabLayoutInfo;
 pub use wasm_bridge::PluginRenderAsset;
 use wasm_bridge::WasmBridge;
 
+use zellij_runtime::errors::prelude::*;
+use zellij_types::diagnostics::ContextType;
+use zellij_types::diagnostics::ErrorContext;
+use zellij_types::diagnostics::PluginContext;
 use zellij_utils::{
     data::{
         ClientInfo, CommandOrPlugin, ContextMenuContext, Event, EventType, FloatingPaneCoordinates,
         HookPayload, InputMode, LayoutInfo, LayoutWithError, MessageToPlugin, Mouse,
         OverlayPlacement, PermissionStatus, PermissionType, PipeMessage, PipeSource,
     },
-    errors::{prelude::*, ContextType, ErrorContext, PluginContext},
     input::{
         actions::Action,
         command::TerminalAction,
@@ -63,7 +66,7 @@ use zellij_utils::{
     session_serialization,
 };
 
-pub use zellij_utils::internal_ids::PluginId;
+pub use zellij_types::internal_ids::PluginId;
 
 #[derive(Clone, Debug)]
 pub struct DumpSessionLayoutResponse {
@@ -443,7 +446,7 @@ pub(crate) fn plugin_thread_main(
             },
             other => other,
         };
-        err_ctx.add_call(ContextType::Plugin((&event).into()));
+        zellij_runtime::errors::add_call(&mut err_ctx, ContextType::Plugin((&event).into()));
         match event {
             PluginInstruction::Load(
                 should_float,
@@ -1093,7 +1096,7 @@ pub(crate) fn plugin_thread_main(
                     let is_current_client = client_metadata_id == &client_id;
                     client_list_for_plugin.push(ClientInfo::new(
                         client_metadata_id.0,
-                        client_metadata.get_pane_id().into(),
+                        client_metadata.get_pane_id(),
                         client_metadata.stringify_command(&default_editor),
                         is_current_client,
                     ));
@@ -1171,12 +1174,8 @@ pub(crate) fn plugin_thread_main(
                         );
                     },
                 }
-                let source_pane_id = source_pane_id.map(|pane_id| match pane_id {
-                    PaneId::Terminal(id) => zellij_utils::data::PaneId::Terminal(id.0),
-                    PaneId::Plugin(id) => zellij_utils::data::PaneId::Plugin(id.0),
-                });
                 for (_, _, message) in pipe_messages.iter_mut() {
-                    message.pane_id = source_pane_id.clone();
+                    message.pane_id = source_pane_id;
                 }
                 wasm_bridge.pipe_messages(pipe_messages, shutdown_send.clone(), None)?;
             },
@@ -1286,7 +1285,7 @@ pub(crate) fn plugin_thread_main(
                             &None,
                             skip_cache,
                             should_float,
-                            &pane_id_to_replace.map(|p| p.into()),
+                            &pane_id_to_replace,
                             &pane_title,
                             None,
                             &mut pipe_messages,
@@ -1503,7 +1502,7 @@ pub(crate) fn plugin_thread_main(
                 context,
             } => {
                 let event = Event::HighlightClicked {
-                    pane_id: pane_id.into(),
+                    pane_id,
                     pattern,
                     matched_string,
                     context,
@@ -1692,7 +1691,7 @@ fn session_start_payload(client_id: ClientId) -> HookFiring {
     // The name lives in the server's environment; nothing on the bus carries it, and reading
     // it here beats threading it through the thread's signature for one string.
     HookFiring::Headless(HookPayload::SessionStart {
-        session_name: zellij_utils::envs::get_session_name().unwrap_or_default(),
+        session_name: zellij_runtime::envs::get_session_name().unwrap_or_default(),
         client_id: client_id.0,
     })
 }

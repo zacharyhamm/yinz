@@ -901,8 +901,8 @@ mod coalescing_send_queue {
     #[test]
     fn pane_renders_coalesce_per_pane() {
         let queue = CoalescingSendQueue::new();
-        let pane_a = DataPaneId::Terminal(TerminalId(1).0);
-        let pane_b = DataPaneId::Terminal(TerminalId(2).0);
+        let pane_a = DataPaneId::Terminal(TerminalId(1));
+        let pane_b = DataPaneId::Terminal(TerminalId(2));
         assert!(matches!(
             queue.push(pane_render(pane_a, "a1")),
             SendQueuePush::Queued
@@ -928,7 +928,7 @@ mod coalescing_send_queue {
         // of repaints - they take the FIFO path, so they precede coalesced
         // updates for the same pane
         let queue = CoalescingSendQueue::new();
-        let pane = DataPaneId::Terminal(TerminalId(1).0);
+        let pane = DataPaneId::Terminal(TerminalId(1));
         let initial = ServerToClientMsg::PaneRenderUpdate {
             pane_id: pane,
             viewport: vec!["initial".to_owned()],
@@ -960,7 +960,7 @@ mod coalescing_send_queue {
     #[test]
     fn drain_order_is_control_then_pane_renders_then_full_render() {
         let queue = CoalescingSendQueue::new();
-        let pane = DataPaneId::Plugin(7);
+        let pane = DataPaneId::Plugin(zellij_types::internal_ids::PluginId(7));
         assert!(matches!(queue.push(render("full")), SendQueuePush::Queued));
         assert!(matches!(
             queue.push(pane_render(pane, "pane")),
@@ -984,9 +984,9 @@ mod coalescing_send_queue {
     fn any_data_pane_id(tc: &hegel::TestCase) -> DataPaneId {
         let n = tc.draw(generators::integers::<u32>().max_value(2));
         if tc.draw(generators::booleans()) {
-            DataPaneId::Terminal(n)
+            DataPaneId::Terminal(zellij_types::internal_ids::TerminalId(n))
         } else {
-            DataPaneId::Plugin(n)
+            DataPaneId::Plugin(zellij_types::internal_ids::PluginId(n))
         }
     }
 

@@ -5,20 +5,20 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use interprocess::local_socket::Stream as LocalSocketStream;
+use zellij_runtime::errors::prelude::*;
 use zellij_server::os_input_output::{
     AdoptedTerminal, AsyncReader, RemoteEndpoint, ResolvedSpawn, ServerOsApi,
 };
 use zellij_server::panes::PaneId;
 use zellij_server::pty_host::client::{ReleasedPane, ReleasedPtyHost, ReleasedRemotePane};
 use zellij_server::{ClientId, TerminalId};
-use zellij_utils::data::Palette;
+use zellij_types::style::default_palette;
+use zellij_types::style::Palette;
 use zellij_utils::data::RemotePaneHandoff;
-use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::ipc::{
     ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg,
 };
-use zellij_utils::shared::default_palette;
 
 use crate::fake_pty::{SharedPtys, FAKE_PID_BASE};
 

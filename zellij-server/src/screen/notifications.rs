@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 
 use super::{NotificationLayout, Screen};
 use crate::output::Output;
@@ -13,10 +13,10 @@ use crate::ui::notification::{
     DISPLACE_DURATION, DISPLACE_EASING, DISPLACE_SPAN, EXIT_DURATION, EXIT_EASING,
 };
 use crate::ClientId;
-use zellij_utils::animation::scaled_duration;
-use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
+use zellij_types::animation::scaled_duration;
+use zellij_types::mouse::{MouseEvent, MouseEventType};
+use zellij_types::position::Position;
 use zellij_utils::pane_size::{Size, Viewport};
-use zellij_utils::position::Position;
 
 impl Screen {
     /// Lay out live notifications once for both rendering and mouse hit-testing.

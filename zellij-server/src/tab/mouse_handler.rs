@@ -1,13 +1,13 @@
 #![allow(clippy::collapsible_if)]
 use std::time::Instant;
-use zellij_utils::data::{ContextMenuContext, ContextMenuLink, Direction, Resize, ResizeStrategy};
-use zellij_utils::errors::prelude::*;
-use zellij_utils::input::layout::Run;
-use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
+use zellij_runtime::errors::prelude::*;
 #[cfg(test)]
-use zellij_utils::internal_ids::{PluginId, TerminalId};
+use zellij_types::internal_ids::{PluginId, TerminalId};
+use zellij_types::mouse::{MouseEvent, MouseEventType};
+use zellij_types::position::Position;
+use zellij_utils::data::{ContextMenuContext, ContextMenuLink, Direction, Resize, ResizeStrategy};
+use zellij_utils::input::layout::Run;
 use zellij_utils::pane_size::PaneGeom;
-use zellij_utils::position::Position;
 
 use crate::background_jobs::BackgroundJob;
 use crate::panes::PaneId;
@@ -1210,7 +1210,7 @@ impl MouseHandler {
             // Filled in by `Screen::open_context_menu`, which owns the counter.
             request_id: 0,
             client_id: client_id.0,
-            pane_id: pane_id.into(),
+            pane_id,
             tab_position,
             click: (position.column(), position.line().max(0) as usize),
             click_in_pane: (

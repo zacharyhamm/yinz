@@ -785,8 +785,13 @@ impl State {
                     // waited on, and converges: the next manifest has both halves down and takes
                     // the arm below.
                     if let Some(agents_id) = self.agents_plugin {
-                        hide_pane_with_id(PaneId::Plugin(agents_id));
-                        self.note_visibility(PaneId::Plugin(agents_id), false);
+                        hide_pane_with_id(PaneId::Plugin(zellij_tile::prelude::PluginId(
+                            agents_id,
+                        )));
+                        self.note_visibility(
+                            PaneId::Plugin(zellij_tile::prelude::PluginId(agents_id)),
+                            false,
+                        );
                     }
                 }
             } else if own.is_suppressed && agents_visible {
@@ -817,8 +822,15 @@ impl State {
                 // manifest that reported it closed.
                 match self.agents_plugin {
                     Some(agents_id) => {
-                        show_pane_with_id(PaneId::Plugin(agents_id), false, false);
-                        self.note_visibility(PaneId::Plugin(agents_id), true);
+                        show_pane_with_id(
+                            PaneId::Plugin(zellij_tile::prelude::PluginId(agents_id)),
+                            false,
+                            false,
+                        );
+                        self.note_visibility(
+                            PaneId::Plugin(zellij_tile::prelude::PluginId(agents_id)),
+                            true,
+                        );
                     },
                     None if !self.agents_closed => self.open_agents_pane(),
                     None => {},
@@ -870,7 +882,11 @@ impl State {
             // the user put it and the conversation arrives beside it.
             Some(overlay::Rejoin::Follow(tab_index)) => self.follow_tab(tab_index),
             Some(overlay::Rejoin::Drag(tab_index)) => {
-                break_panes_to_tab_with_index(&[PaneId::Plugin(agents_id)], tab_index, false);
+                break_panes_to_tab_with_index(
+                    &[PaneId::Plugin(zellij_tile::prelude::PluginId(agents_id))],
+                    tab_index,
+                    false,
+                );
                 self.agents_tab_index = Some(tab_index);
                 // The destination resolves coordinates against its own surface, and the list
                 // arrives with whatever the keybinding's launch gave it - the same restatement

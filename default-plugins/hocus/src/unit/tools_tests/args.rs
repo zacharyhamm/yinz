@@ -214,7 +214,10 @@ fn swapping_requires_exactly_two_panes() {
     .unwrap();
     assert_eq!(
         two.swap_pane_ids().unwrap(),
-        [PaneId::Terminal(3), PaneId::Plugin(4)]
+        [
+            PaneId::Terminal(zellij_tile::prelude::TerminalId(3)),
+            PaneId::Plugin(zellij_tile::prelude::PluginId(4))
+        ]
     );
 
     let three = Args::parse(

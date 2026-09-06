@@ -4,8 +4,8 @@ use crate::panes::{Grid, Row};
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::fmt::Debug;
+use zellij_types::position::Position;
 use zellij_utils::input::actions::SearchDirection;
-use zellij_utils::position::Position;
 
 // If char is neither alphanumeric nor an underscore do we consider it a word-boundary
 fn is_word_boundary(x: &Option<char>) -> bool {

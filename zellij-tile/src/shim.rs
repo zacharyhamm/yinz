@@ -4,8 +4,8 @@ use std::{
     io,
     path::{Path, PathBuf},
 };
+use zellij_runtime::errors::prelude::*;
 use zellij_utils::data::*;
-use zellij_utils::errors::prelude::*;
 use zellij_utils::input::actions::Action;
 pub use zellij_utils::input::layout::PercentOrFixed;
 pub use zellij_utils::plugin_api;
@@ -310,7 +310,7 @@ pub fn get_focused_pane_info() -> Result<(usize, PaneId), String> {
 /// use zellij_tile::prelude::*;
 ///
 /// // Query info for a specific pane
-/// let pane_id = PaneId::Terminal(1);
+/// let pane_id = PaneId::Terminal(zellij_types::internal_ids::TerminalId(1));
 /// match get_pane_info(pane_id) {
 ///     Some(info) => {
 ///         println!("Pane title: {}", info.title);
@@ -2813,8 +2813,10 @@ pub fn run_command_in_pane(
 /// Sugar for close_terminal_pane and close_plugin_pane
 pub fn close_pane_with_id(pane_id: PaneId) {
     let plugin_command = match pane_id {
-        PaneId::Terminal(terminal_pane_id) => PluginCommand::CloseTerminalPane(terminal_pane_id),
-        PaneId::Plugin(plugin_pane_id) => PluginCommand::ClosePluginPane(plugin_pane_id),
+        PaneId::Terminal(terminal_pane_id) => {
+            PluginCommand::CloseTerminalPane(terminal_pane_id.get())
+        },
+        PaneId::Plugin(plugin_pane_id) => PluginCommand::ClosePluginPane(plugin_pane_id.get()),
     };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -2837,12 +2839,12 @@ pub fn focus_pane_with_id(
 ) {
     let plugin_command = match pane_id {
         PaneId::Terminal(terminal_pane_id) => PluginCommand::FocusTerminalPane(
-            terminal_pane_id,
+            terminal_pane_id.get(),
             should_float_if_hidden,
             should_be_in_place_if_hidden,
         ),
         PaneId::Plugin(plugin_pane_id) => PluginCommand::FocusPluginPane(
-            plugin_pane_id,
+            plugin_pane_id.get(),
             should_float_if_hidden,
             should_be_in_place_if_hidden,
         ),
@@ -2983,7 +2985,7 @@ pub fn get_pane_pid(pane_id: PaneId) -> Result<i32, String> {
 /// ```no_run
 /// use zellij_tile::prelude::*;
 ///
-/// let pane_id = PaneId::Terminal(1);
+/// let pane_id = PaneId::Terminal(zellij_types::internal_ids::TerminalId(1));
 /// match get_pane_running_command(pane_id) {
 ///     Ok(cmd) => eprintln!("Running: {} {}", cmd[0], cmd[1..].join(" ")),
 ///     Err(e) => eprintln!("Error: {}", e),
@@ -3042,7 +3044,7 @@ pub fn get_session_list() -> Result<SessionListSnapshot, String> {
 /// ```no_run
 /// use zellij_tile::prelude::*;
 ///
-/// let pane_id = PaneId::Terminal(1);
+/// let pane_id = PaneId::Terminal(zellij_types::internal_ids::TerminalId(1));
 /// match get_pane_cwd(pane_id) {
 ///     Ok(cwd) => eprintln!("CWD: {}", cwd.display()),
 ///     Err(e) => eprintln!("Error: {}", e),
@@ -3408,10 +3410,10 @@ where
 {
     let plugin_command = match pane_id {
         PaneId::Terminal(terminal_pane_id) => {
-            PluginCommand::RenameTerminalPane(terminal_pane_id, new_name.to_string())
+            PluginCommand::RenameTerminalPane(terminal_pane_id.get(), new_name.to_string())
         },
         PaneId::Plugin(plugin_pane_id) => {
-            PluginCommand::RenamePluginPane(plugin_pane_id, new_name.to_string())
+            PluginCommand::RenamePluginPane(plugin_pane_id.get(), new_name.to_string())
         },
     };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -4154,7 +4156,7 @@ mod tests {
 
     #[test]
     fn plugin_queries_return_stdin_read_errors() {
-        let pane_id = PaneId::Terminal(1);
+        let pane_id = PaneId::Terminal(zellij_types::internal_ids::TerminalId(1));
 
         fail_next_read();
         assert_eq!(
@@ -4197,9 +4199,11 @@ mod tests {
             .encode_to_vec();
         truncated.pop();
         set_test_command_response(Ok(truncated));
-        assert!(get_pane_running_command(PaneId::Terminal(1))
-            .unwrap_err()
-            .starts_with("Malformed GetPaneRunningCommand response:"));
+        assert!(get_pane_running_command(PaneId::Terminal(
+            zellij_types::internal_ids::TerminalId(1)
+        ))
+        .unwrap_err()
+        .starts_with("Malformed GetPaneRunningCommand response:"));
 
         set_test_command_response(Ok(vec![0xff]));
         assert!(get_session_list()
@@ -4219,7 +4223,7 @@ mod tests {
 
     #[test]
     fn plugin_queries_preserve_server_errors() {
-        let pane_id = PaneId::Terminal(1);
+        let pane_id = PaneId::Terminal(zellij_types::internal_ids::TerminalId(1));
         let expected = "server refused the query".to_owned();
 
         respond(ProtobufGetPaneRunningCommandResponse::from(
@@ -4254,7 +4258,7 @@ mod tests {
 
     #[test]
     fn plugin_queries_decode_valid_responses() {
-        let pane_id = PaneId::Terminal(1);
+        let pane_id = PaneId::Terminal(zellij_types::internal_ids::TerminalId(1));
 
         let command = vec!["sh".to_owned(), "-l".to_owned()];
         respond(ProtobufGetPaneRunningCommandResponse::from(
@@ -4292,10 +4296,13 @@ mod tests {
         respond(ProtobufGetFocusedPaneInfoResponse::from(
             GetFocusedPaneInfoResponse::Ok {
                 tab_index: 7,
-                pane_id: PaneId::Plugin(42),
+                pane_id: PaneId::Plugin(zellij_types::internal_ids::PluginId(42)),
             },
         ));
-        assert_eq!(get_focused_pane_info(), Ok((7, PaneId::Plugin(42))));
+        assert_eq!(
+            get_focused_pane_info(),
+            Ok((7, PaneId::Plugin(zellij_types::internal_ids::PluginId(42))))
+        );
 
         respond(ProtobufEnqueueQueueJobResponse::from(
             EnqueueQueueJobResponse::Ok(99),

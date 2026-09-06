@@ -11,7 +11,8 @@ use super::*;
 use crate::panes::PaneId;
 use crate::ClientId;
 use zellij_test_support::Watched;
-use zellij_utils::data::{BareKey, KeyWithModifier, MessageToPlugin, PermissionStatus};
+use zellij_types::keys::{BareKey, KeyWithModifier};
+use zellij_utils::data::{MessageToPlugin, PermissionStatus};
 
 const WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -318,7 +319,7 @@ impl Harness {
             .collect()
     }
 
-    fn suppressed_add_plugin_instructions(&self) -> Vec<zellij_utils::internal_ids::PluginId> {
+    fn suppressed_add_plugin_instructions(&self) -> Vec<zellij_types::internal_ids::PluginId> {
         self.log
             .lock()
             .iter()
@@ -394,7 +395,7 @@ pub fn a_job_runs_headless_and_reports_back() {
 
     assert_eq!(
         harness.suppressed_add_plugin_instructions(),
-        vec![zellij_utils::internal_ids::PluginId(job_plugin_id)],
+        vec![zellij_types::internal_ids::PluginId(job_plugin_id)],
         "the job got a suppressed pane and nothing else"
     );
     harness.log.wait_until("the job's pane to be closed", WAIT, |instructions| {

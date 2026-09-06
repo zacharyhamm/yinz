@@ -130,7 +130,12 @@ impl ZellijPlugin for State {
                 // The user closed our pane by hand. Without this the plugin would linger
                 // hidden for the rest of the session, and the next keypress would focus
                 // that corpse instead of starting a new search.
-                if Some(pane_id) == self.stage.pane_id().map(PaneId::Terminal) {
+                if Some(pane_id)
+                    == self
+                        .stage
+                        .pane_id()
+                        .map(|id| PaneId::Terminal(TerminalId::new(id)))
+                {
                     self.finish();
                 }
             },
@@ -182,7 +187,9 @@ impl State {
         ) {
             Some(PaneId::Terminal(pane_id)) => {
                 rename_pane_with_id(PaneId::Terminal(pane_id), &title);
-                self.stage = Stage::Finding { pane_id };
+                self.stage = Stage::Finding {
+                    pane_id: pane_id.get(),
+                };
             },
             _ => {
                 // Nothing was opened, so there is no pane to report the failure in.
@@ -199,7 +206,7 @@ impl State {
             },
             Stage::Opened { pane_id: opened } if opened == pane_id => {
                 // The editor or viewer quit. Take the pane with it.
-                close_pane_with_id(PaneId::Terminal(pane_id));
+                close_pane_with_id(PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)));
                 self.finish();
             },
             _ => {},
@@ -215,14 +222,16 @@ impl State {
             Some(selection) => PathBuf::from(selection),
             None => {
                 // Cancelled — Esc, an empty list, or fzf failing to start.
-                close_pane_with_id(PaneId::Terminal(finder_pane_id));
+                close_pane_with_id(PaneId::Terminal(zellij_tile::prelude::TerminalId(
+                    finder_pane_id,
+                )));
                 self.finish();
                 return;
             },
         };
 
         let cwd = selection.parent().map(Path::to_path_buf);
-        let target = PaneId::Terminal(finder_pane_id);
+        let target = PaneId::Terminal(zellij_tile::prelude::TerminalId(finder_pane_id));
 
         // `close_replaced_pane: true` retires the held fzf pane for good; the new pane
         // inherits its floating slot and geometry.
@@ -250,7 +259,9 @@ impl State {
 
         match opened {
             Some(PaneId::Terminal(pane_id)) => {
-                self.stage = Stage::Opened { pane_id };
+                self.stage = Stage::Opened {
+                    pane_id: pane_id.get(),
+                };
                 // These in-place-of-pane-id calls deliberately do not move focus, and
                 // the pane they replaced was the focused one.
                 focus_pane_with_id(PaneId::Terminal(pane_id), true, false);
@@ -291,9 +302,17 @@ impl State {
             return;
         };
         let focused = get_focused_pane_info().ok().map(|(_, pane)| pane);
-        if focused == Some(PaneId::Plugin(self.plugin_id)) {
+        if focused
+            == Some(PaneId::Plugin(zellij_tile::prelude::PluginId(
+                self.plugin_id,
+            )))
+        {
             hide_self();
-            focus_pane_with_id(PaneId::Terminal(driving), true, false);
+            focus_pane_with_id(
+                PaneId::Terminal(zellij_tile::prelude::TerminalId(driving)),
+                true,
+                false,
+            );
         }
     }
 

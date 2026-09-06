@@ -8,8 +8,8 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use zellij_utils::data::Palette;
-use zellij_utils::errors::ErrorContext;
+use zellij_types::diagnostics::ErrorContext;
+use zellij_types::style::Palette;
 use zellij_utils::ipc::{ClientToServerMsg, IpcRecv, ServerToClientMsg};
 use zellij_utils::pane_size::Size;
 

@@ -27,10 +27,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
 
 use serde::Deserialize;
-use zellij_utils::{consts::ZELLIJ_SOCK_DIR, errors::prelude::*, input::command::RunCommand};
+use zellij_runtime::errors::prelude::*;
+use zellij_utils::{consts::ZELLIJ_SOCK_DIR, input::command::RunCommand};
 
 use super::conn::{Reconnected, Reconnector, RemoteConn};
 use super::env;

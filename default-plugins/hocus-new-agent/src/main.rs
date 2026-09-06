@@ -503,7 +503,10 @@ impl State {
             // resizes it where it is; `OverlayPanes` keeps the kind, and keeps the position too
             // once the user has dragged the modal - which is what makes the `None` x and the 20% y
             // an *initial* placement rather than one re-imposed for the life of the pane.
-            change_overlay_coordinates(vec![(PaneId::Plugin(self.plugin_id), coordinates)]);
+            change_overlay_coordinates(vec![(
+                PaneId::Plugin(zellij_tile::prelude::PluginId(self.plugin_id)),
+                coordinates,
+            )]);
             self.requested_size = Some(size);
         }
     }

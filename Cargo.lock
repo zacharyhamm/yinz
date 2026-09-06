@@ -1435,6 +1435,7 @@ dependencies = [
  "serde_json",
  "unicode-width 0.2.2",
  "zellij-tile",
+ "zellij-types",
 ]
 
 [[package]]
@@ -1474,9 +1475,10 @@ dependencies = [
  "serde_json",
  "tempfile",
  "unicode-width 0.2.2",
+ "zellij-storage",
  "zellij-tile",
  "zellij-tile-markdown",
- "zellij-utils",
+ "zellij-types",
 ]
 
 [[package]]
@@ -4730,8 +4732,11 @@ dependencies = [
  "vte 0.15.0",
  "zellij-client",
  "zellij-process",
+ "zellij-runtime",
  "zellij-server",
+ "zellij-storage",
  "zellij-test-support",
+ "zellij-types",
  "zellij-utils",
 ]
 
@@ -4757,6 +4762,8 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+ "zellij-runtime",
+ "zellij-types",
  "zellij-utils",
 ]
 
@@ -4777,7 +4784,9 @@ dependencies = [
  "tokio",
  "vte 0.15.0",
  "zellij-client",
+ "zellij-runtime",
  "zellij-server",
+ "zellij-types",
  "zellij-utils",
 ]
 
@@ -4801,8 +4810,41 @@ dependencies = [
  "tempfile",
  "tokio",
  "uuid",
+ "zellij-runtime",
  "zellij-test-support",
+ "zellij-types",
  "zellij-utils",
+]
+
+[[package]]
+name = "zellij-runtime"
+version = "0.45.0"
+dependencies = [
+ "anyhow",
+ "backtrace",
+ "bitflags 2.11.0",
+ "colored",
+ "crossbeam",
+ "curl-sys",
+ "directories",
+ "hegeltest",
+ "isahc",
+ "lazy_static",
+ "log",
+ "log4rs",
+ "miette 7.6.0",
+ "nix",
+ "openssl-sys",
+ "serde",
+ "shellexpand",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "url",
+ "uuid",
+ "zellij-types",
 ]
 
 [[package]]
@@ -4856,12 +4898,37 @@ dependencies = [
  "wasmi_core",
  "wasmi_wasi",
  "zellij-process",
+ "zellij-runtime",
+ "zellij-storage",
  "zellij-terminal",
  "zellij-test-support",
  "zellij-tile",
  "zellij-tile-markdown",
  "zellij-tile-utils",
+ "zellij-types",
  "zellij-utils",
+]
+
+[[package]]
+name = "zellij-storage"
+version = "0.45.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "hegeltest",
+ "log",
+ "postgres",
+ "rusqlite",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-postgres",
+ "tokio-stream",
+ "url",
+ "uuid",
+ "vte 0.15.0",
+ "zellij-types",
 ]
 
 [[package]]
@@ -4882,6 +4949,8 @@ dependencies = [
  "tempfile",
  "unicode-width 0.2.2",
  "vte 0.15.0",
+ "zellij-runtime",
+ "zellij-types",
  "zellij-utils",
 ]
 
@@ -4902,6 +4971,8 @@ dependencies = [
  "strum",
  "strum_macros",
  "unicode-width 0.2.2",
+ "zellij-runtime",
+ "zellij-types",
  "zellij-utils",
 ]
 
@@ -4923,20 +4994,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "zellij-types"
+version = "0.45.0"
+dependencies = [
+ "colorsys",
+ "hegeltest",
+ "serde",
+ "serde_json",
+ "strip-ansi-escapes",
+ "strum",
+ "strum_macros",
+ "thiserror 2.0.19",
+ "unicode-width 0.2.2",
+]
+
+[[package]]
 name = "zellij-utils"
 version = "0.45.0"
 dependencies = [
  "anyhow",
- "backtrace",
  "base64",
- "bitflags 2.11.0",
- "bytes",
  "clap",
  "clap_complete",
  "colored",
- "colorsys",
- "crossbeam",
- "curl-sys",
  "directories",
  "expect-test",
  "hegeltest",
@@ -4944,25 +5024,18 @@ dependencies = [
  "include_dir",
  "insta",
  "interprocess",
- "isahc",
  "kdl",
  "lazy_static",
  "libc",
  "log",
- "log4rs",
  "miette 7.6.0",
  "mlua",
  "names",
- "nix",
  "notify",
- "openssl-sys",
  "percent-encoding",
- "postgres",
  "prost",
- "rusqlite",
  "serde",
  "serde_json",
- "sha2",
  "shellexpand",
  "strip-ansi-escapes",
  "strum",
@@ -4971,13 +5044,11 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
- "tokio-postgres",
- "tokio-stream",
- "tokio-util",
  "unicode-width 0.2.2",
  "url",
  "uuid",
- "vte 0.15.0",
+ "zellij-runtime",
+ "zellij-types",
 ]
 
 [[package]]

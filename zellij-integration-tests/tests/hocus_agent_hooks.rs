@@ -78,7 +78,7 @@ fn send_hook(zellij: &mut TestSession, pane_id: u32, payload: &str) {
     let event = serde_json::from_str(payload).expect("the test's own hook event parses");
     let actions = hook_report_actions(
         "claude",
-        PaneId::Terminal(pane_id),
+        PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(pane_id)),
         &event,
         payload.to_owned(),
     );

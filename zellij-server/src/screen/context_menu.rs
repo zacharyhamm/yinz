@@ -26,14 +26,15 @@
 
 use std::collections::HashMap;
 use std::thread;
-use zellij_utils::internal_ids::PluginId;
+use zellij_types::internal_ids::PluginId;
 
-use zellij_utils::data::{ContextMenuContext, ContextMenuItem, Event, KeyWithModifier};
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::keys::KeyWithModifier;
+use zellij_types::mouse::{MouseEvent, MouseEventType};
+use zellij_types::position::Position;
+use zellij_utils::data::{ContextMenuContext, ContextMenuItem, Event};
 use zellij_utils::input::actions::Action;
-use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
 use zellij_utils::pane_size::Viewport;
-use zellij_utils::position::Position;
 
 use super::{ContextMenuItems, ContextMenuState, Screen, ScreenInstruction};
 use crate::background_jobs::BackgroundJob;
@@ -404,7 +405,7 @@ impl Screen {
         key: &Option<KeyWithModifier>,
         client_id: ClientId,
     ) -> bool {
-        use zellij_utils::data::BareKey;
+        use zellij_types::keys::BareKey;
         let Some(key) = key else {
             return false;
         };

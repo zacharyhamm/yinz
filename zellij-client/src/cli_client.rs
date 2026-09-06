@@ -8,10 +8,10 @@ use std::{fs, path::PathBuf};
 
 use crate::os_input_output::CliClientOs;
 use uuid::Uuid;
+use zellij_runtime::errors::prelude::*;
 use zellij_utils::{
     cli::{EventsCli, SubscribeCli, SubscribeFormat},
     data::{EventType, PaneId},
-    errors::prelude::*,
     input::actions::Action,
     ipc::{ClientToServerMsg, ExitReason, ServerToClientMsg},
 };

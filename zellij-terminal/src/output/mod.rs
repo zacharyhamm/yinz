@@ -20,9 +20,9 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     str,
 };
+use zellij_runtime::errors::prelude::*;
+use zellij_types::kitty_placeholders::PLACEHOLDER;
 use zellij_utils::data::{HighlightLayer, PaneContents, PaneRenderReport};
-use zellij_utils::errors::prelude::*;
-use zellij_utils::kitty_placeholders::PLACEHOLDER;
 use zellij_utils::pane_size::SizeInPixels;
 use zellij_utils::pane_size::{PaneGeom, Size};
 
@@ -1187,7 +1187,7 @@ impl Output {
     ) {
         self.pane_render_report.add_pane_contents(
             &client_ids.iter().map(|id| id.0).collect::<Vec<_>>(),
-            pane_id.into(),
+            pane_id,
             pane_contents,
         );
     }
@@ -1199,7 +1199,7 @@ impl Output {
     ) {
         self.pane_render_report.add_pane_contents_with_ansi(
             &client_ids.iter().map(|id| id.0).collect::<Vec<_>>(),
-            pane_id.into(),
+            pane_id,
             pane_contents,
         );
     }

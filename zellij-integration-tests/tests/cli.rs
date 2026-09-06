@@ -198,14 +198,18 @@ fn an_agent_report_is_carried_on_the_pane() {
 
     // A hook event - what `--hook-json` reads off stdin - is sent on to `zellij events` typed:
     // the state the session derived and the agent's own words, keyed by the pane's number.
-    let agent_events = zellij.stream_events(&["agent_event"]);
+    let agent_events = zellij.stream_events(&["agent_event", "pane_update"]);
+    // The initial state report confirms the subscription before this one-shot event is sent.
+    agent_events.wait_for_event("PaneUpdate");
     let json =
         r#"{"hook_event_name":"Stop","session_id":"cc-1","last_assistant_message":"all green"}"#;
     let hook: zellij_utils::agent::HookEvent = serde_json::from_str(json).unwrap();
     let (exit_code, reported) =
         zellij.run_actions_reporting(zellij_utils::input::actions::hook_report_actions(
             "claude",
-            zellij_utils::data::PaneId::Terminal(terminal.terminal_id()),
+            zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(
+                terminal.terminal_id(),
+            )),
             &hook,
             json.to_owned(),
         ));

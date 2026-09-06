@@ -11,7 +11,8 @@ use super::*;
 use crate::plugins::{coalesce_hovers, drain_reloads, drain_updates};
 use crate::ClientId;
 use zellij_test_support::Watched;
-use zellij_utils::data::{BareKey, KeyWithModifier, Mouse, PermissionStatus};
+use zellij_types::keys::{BareKey, KeyWithModifier};
+use zellij_utils::data::{Mouse, PermissionStatus};
 
 const WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -884,7 +885,7 @@ pub fn coalescing_hovers_keeps_the_newest_per_client_and_nothing_else_moves() {
         (None, Some(crate::ClientId(1)), scroll_up(3)),
         hover(crate::ClientId(1), 2),
         (
-            Some(zellij_utils::internal_ids::PluginId(4)),
+            Some(zellij_types::internal_ids::PluginId(4)),
             Some(crate::ClientId(1)),
             Event::Mouse(Mouse::Hover(9, 9)),
         ),
@@ -900,7 +901,7 @@ pub fn coalescing_hovers_keeps_the_newest_per_client_and_nothing_else_moves() {
             (None, Some(ClientId(1)), scroll_up(3)),
             hover(crate::ClientId(1), 2),
             (
-                Some(zellij_utils::internal_ids::PluginId(4)),
+                Some(zellij_types::internal_ids::PluginId(4)),
                 Some(ClientId(1)),
                 Event::Mouse(Mouse::Hover(9, 9))
             ),

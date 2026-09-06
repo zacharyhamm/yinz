@@ -23,10 +23,9 @@
 
 use std::time::{Duration, Instant};
 
+use zellij_runtime::{envs, errors::prelude::*};
 use zellij_utils::{
     data::{WarpPlacement, WarpedPane, WarpedTab},
-    envs,
-    errors::prelude::*,
     input::actions::Action,
     ipc::{ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg},
 };
@@ -343,7 +342,7 @@ pub fn warp_pane_from_session(
     sender
         .send_client_msg(ClientToServerMsg::Action {
             action: Action::WarpPane {
-                pane_id: Some(pane_id.into()),
+                pane_id: Some(pane_id),
                 to_session: current_session.to_owned(),
                 placement,
             },

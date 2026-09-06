@@ -9,9 +9,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
-use zellij_utils::channels::{self, SenderWithContext};
-use zellij_utils::data::{Event, Palette};
-use zellij_utils::errors::ErrorContext;
+use zellij_runtime::channels::{self, SenderWithContext};
+use zellij_types::diagnostics::ErrorContext;
+use zellij_types::style::Palette;
+use zellij_utils::data::Event;
 use zellij_utils::input::command::{PaneTarget, RunCommand};
 use zellij_utils::ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg};
 
@@ -548,7 +549,7 @@ fn collect_cwd_changed_events(
         if let PluginInstruction::Update(updates) = instruction {
             for (_, _, event) in updates {
                 if let Event::CwdChanged(pane_id, cwd, _) = event {
-                    events.push((pane_id.into(), cwd));
+                    events.push((pane_id, cwd));
                 }
             }
         }
@@ -564,7 +565,7 @@ fn collect_command_changed_events(
         if let PluginInstruction::Update(updates) = instruction {
             for (_, _, event) in updates {
                 if let Event::CommandChanged(pane_id, cmd, is_foreground, _) = event {
-                    events.push((pane_id.into(), cmd, is_foreground));
+                    events.push((pane_id, cmd, is_foreground));
                 }
             }
         }

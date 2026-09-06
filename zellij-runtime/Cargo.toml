@@ -1,0 +1,47 @@
+[package]
+name = "zellij-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Host facilities for Zellij"
+
+[lints]
+workspace = true
+
+[dependencies]
+shellexpand = { version = "3.0.0", default-features = false, features = ["base-0", "tilde"] }
+miette = { workspace = true }
+zellij-types = { workspace = true }
+tempfile = { workspace = true }
+anyhow = { workspace = true }
+lazy_static = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+backtrace = { version = "0.3.55", default-features = false, features = ["std"] }
+bitflags = { version = "2.5.0", default-features = false }
+colored = { version = "3.1", default-features = false }
+crossbeam = { version = "0.8.1", default-features = false, features = ["alloc", "std"] }
+directories = { version = "6.0", default-features = false }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { workspace = true }
+tokio-stream = { version = "0.1" }
+tokio-util = { version = "0.7", default-features = false, features = ["compat", "io"] }
+log4rs = { version = "1.2.0", default-features = false, features = ["pattern_encoder", "rolling_file_appender", "compound_policy", "fixed_window_roller", "size_trigger"] }
+isahc = { workspace = true }
+openssl-sys = { version = "0.9.93", default-features = false, features = ["vendored"], optional = true }
+curl-sys = { version = "0.4", default-features = false, features = ["force-system-lib-on-osx", "ssl"], optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+hegeltest = "0.29.3"
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+nix = { workspace = true, features = ["user", "term"] }
+
+[features]
+vendored_curl = ["isahc/static-curl", "dep:openssl-sys", "dep:curl-sys"]

@@ -906,7 +906,11 @@ impl State {
     }
     pub fn focus_selected(&self) {
         if let Some(selected_plugin_id) = self.selected_plugin_id() {
-            focus_pane_with_id(PaneId::Plugin(selected_plugin_id), true, false);
+            focus_pane_with_id(
+                PaneId::Plugin(zellij_tile::prelude::PluginId(selected_plugin_id)),
+                true,
+                false,
+            );
         }
     }
     pub fn reload_selected(&self) {

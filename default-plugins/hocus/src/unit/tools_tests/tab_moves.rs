@@ -15,7 +15,7 @@ fn a_tab_move_reports_the_stable_id_the_panes_landed_in() {
 fn moving_panes_to_a_missing_tab_id_names_the_id() {
     let error = check_move_to_tab(
         &MoveDestination::ExistingId(9),
-        &[PaneId::Terminal(2)],
+        &[PaneId::Terminal(zellij_tile::prelude::TerminalId(2))],
         &diverged_session(),
     )
     .unwrap_err();
@@ -28,7 +28,7 @@ fn moving_panes_to_a_missing_tab_id_names_the_id() {
 #[test]
 fn a_display_position_is_refused_where_a_tab_id_is_required() {
     let session = diverged_session();
-    let panes = [PaneId::Terminal(2)];
+    let panes = [PaneId::Terminal(zellij_tile::prelude::TerminalId(2))];
     // ids 2 and 3 are the session's two tabs
     assert!(check_move_to_tab(&MoveDestination::ExistingId(2), &panes, &session).is_ok());
     assert!(check_move_to_tab(&MoveDestination::ExistingId(3), &panes, &session).is_ok());
@@ -43,7 +43,10 @@ fn a_display_position_is_refused_where_a_tab_id_is_required() {
 fn moving_a_pane_that_is_not_in_the_session_names_the_pane() {
     let error = check_move_to_tab(
         &MoveDestination::ExistingId(3),
-        &[PaneId::Terminal(2), PaneId::Terminal(99)],
+        &[
+            PaneId::Terminal(zellij_tile::prelude::TerminalId(2)),
+            PaneId::Terminal(zellij_tile::prelude::TerminalId(99)),
+        ],
         &diverged_session(),
     )
     .unwrap_err();
@@ -54,13 +57,13 @@ fn moving_a_pane_that_is_not_in_the_session_names_the_pane() {
 fn moving_panes_to_a_new_tab_has_no_destination_to_check() {
     assert!(check_move_to_tab(
         &MoveDestination::New(None),
-        &[PaneId::Terminal(2)],
+        &[PaneId::Terminal(zellij_tile::prelude::TerminalId(2))],
         &SessionTabs::default()
     )
     .is_err());
     assert!(check_move_to_tab(
         &MoveDestination::New(None),
-        &[PaneId::Terminal(2)],
+        &[PaneId::Terminal(zellij_tile::prelude::TerminalId(2))],
         &diverged_session()
     )
     .is_ok());

@@ -1,10 +1,9 @@
 use std::fmt::{Display, Error, Formatter};
 use std::time::{Duration, Instant};
 
-use zellij_utils::{
-    data::{PaletteColor, Styling},
-    errors::prelude::*,
-};
+use zellij_runtime::errors::prelude::*;
+use zellij_types::style::Styling;
+use zellij_utils::data::PaletteColor;
 
 /// How long each of the loading indicator's dots stays up.
 ///

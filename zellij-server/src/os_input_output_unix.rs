@@ -1,6 +1,6 @@
 use crate::os_input_output::{command_exists, AsyncReader};
 use crate::panes::PaneId;
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
 
 use nix::{
     fcntl::{fcntl, FcntlArg, OFlag},
@@ -36,7 +36,8 @@ use std::{
     time::Duration,
 };
 
-use zellij_utils::{errors::prelude::*, input::command::RunCommand};
+use zellij_runtime::errors::prelude::*;
+use zellij_utils::input::command::RunCommand;
 
 use crate::pty_host::remote::{
     conn::RemoteGitProbe, protocol::ChildSignal, RemoteConn, RemoteStatus,
@@ -551,7 +552,7 @@ impl UnixPtyBackend {
         pty_host_client::spawn(SpawnParams {
             host_bin,
             terminal_id,
-            session_name: zellij_utils::envs::get_session_name().ok(),
+            session_name: zellij_runtime::envs::get_session_name().ok(),
             cmd: cmd.clone(),
             failover_cmd: failover_cmd.clone(),
             termios: self.wire_termios.clone(),
@@ -1202,7 +1203,7 @@ impl UnixPtyBackend {
         let pending = pty_host_client::attach(pty_host_client::AttachParams {
             control_socket,
             terminal_id,
-            session_name: zellij_utils::envs::get_session_name().ok(),
+            session_name: zellij_runtime::envs::get_session_name().ok(),
         })?;
         let attached = pending.finish(terminal_exit_callback(quit_cb), self.child_state_cb());
         let master_fd = attached.master.into_raw_fd();

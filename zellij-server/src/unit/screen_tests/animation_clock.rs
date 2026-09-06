@@ -9,8 +9,8 @@ use crate::screen::Notification;
 use crate::ui::loading_indication::DOT_PERIOD;
 use crate::ui::notification::EXIT_DURATION;
 use std::time::{Duration, Instant};
-use zellij_utils::animation::{Tween, FRAME_PERIOD};
-use zellij_utils::internal_ids::PluginId;
+use zellij_types::animation::{Tween, FRAME_PERIOD};
+use zellij_types::internal_ids::PluginId;
 
 const TEXT: &str = "build finished";
 

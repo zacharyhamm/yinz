@@ -9,12 +9,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use zellij_utils::internal_ids::ClientId;
+use zellij_types::internal_ids::ClientId;
+use zellij_types::position::Position;
+use zellij_types::style::{Palette, Style};
 use zellij_utils::{
-    data::{AgentInfo, AgentSource, AgentState, InputMode, Palette, Style},
+    data::{AgentInfo, AgentSource, AgentState, InputMode},
     input::command::RunCommand,
     pane_size::{Offset, PaneGeom, SizeInPixels},
-    position::Position,
 };
 
 use std::fmt::Write;
@@ -1044,17 +1045,17 @@ fn create_guest_modal_pane() -> TerminalPane {
 
 fn press_key(
     pane: &mut TerminalPane,
-    bare_key: zellij_utils::data::BareKey,
+    bare_key: zellij_types::keys::BareKey,
     client_id: ClientId,
 ) -> Option<crate::tab::AdjustedInput> {
-    let key = zellij_utils::data::KeyWithModifier::new(bare_key);
+    let key = zellij_types::keys::KeyWithModifier::new(bare_key);
     pane.adjust_input_to_terminal(&Some(key), vec![], false, Some(client_id))
 }
 
 #[test]
 fn an_ordinary_held_command_still_drops_to_a_shell_on_escape() {
     use crate::tab::AdjustedInput;
-    use zellij_utils::data::BareKey;
+    use zellij_types::keys::BareKey;
 
     let mut pane = create_guest_modal_pane();
     pane.hold(
@@ -1074,7 +1075,7 @@ fn an_ordinary_held_command_still_drops_to_a_shell_on_escape() {
 
 #[test]
 pub fn guest_modal_navigation_wraps() {
-    use zellij_utils::data::BareKey;
+    use zellij_types::keys::BareKey;
     let mut pane = create_guest_modal_pane();
     let client_id = ClientId(1);
     pane.set_guest_modal(&[client_id]);
@@ -1105,7 +1106,7 @@ pub fn guest_modal_tab_is_ignored() {
 #[test]
 pub fn guest_modal_enter_confirms_selection() {
     use crate::tab::AdjustedInput;
-    use zellij_utils::data::BareKey;
+    use zellij_types::keys::BareKey;
     let mut pane = create_guest_modal_pane();
     let client_id = ClientId(1);
 
@@ -1122,7 +1123,7 @@ pub fn guest_modal_enter_confirms_selection() {
 #[test]
 pub fn guest_modal_digit_shortcuts() {
     use crate::tab::AdjustedInput;
-    use zellij_utils::data::BareKey;
+    use zellij_types::keys::BareKey;
     let mut pane = create_guest_modal_pane();
     let client_id = ClientId(1);
 
@@ -1138,7 +1139,7 @@ pub fn guest_modal_digit_shortcuts() {
 #[test]
 pub fn guest_modal_esc_descends() {
     use crate::tab::AdjustedInput;
-    use zellij_utils::data::BareKey;
+    use zellij_types::keys::BareKey;
     let mut pane = create_guest_modal_pane();
     let client_id = ClientId(1);
     pane.set_guest_modal(&[client_id]);
@@ -1148,7 +1149,7 @@ pub fn guest_modal_esc_descends() {
 
 #[test]
 pub fn guest_modal_swallows_other_input() {
-    use zellij_utils::data::BareKey;
+    use zellij_types::keys::BareKey;
     let mut pane = create_guest_modal_pane();
     let client_id = ClientId(1);
     pane.set_guest_modal(&[client_id]);
@@ -1159,7 +1160,7 @@ pub fn guest_modal_swallows_other_input() {
 
 #[test]
 pub fn guest_modal_is_per_client() {
-    use zellij_utils::data::BareKey;
+    use zellij_types::keys::BareKey;
     let mut pane = create_guest_modal_pane();
     let client_a = 1;
     let client_b = 2;
@@ -1177,7 +1178,7 @@ pub fn guest_modal_is_per_client() {
 
 #[test]
 pub fn guest_modal_no_modal_passes_input_through() {
-    use zellij_utils::data::BareKey;
+    use zellij_types::keys::BareKey;
     let mut pane = create_guest_modal_pane();
     let client_id = ClientId(1);
     let outcome = press_key(&mut pane, BareKey::Char('x'), client_id);
@@ -1426,7 +1427,7 @@ fn suspended_pane() -> TerminalPane {
 #[test]
 fn a_suspended_pane_resumes_on_enter_and_swallows_everything_else() {
     use crate::tab::AdjustedInput;
-    use zellij_utils::data::BareKey;
+    use zellij_types::keys::BareKey;
 
     let mut pane = suspended_pane();
     assert!(matches!(
@@ -1474,7 +1475,7 @@ fn holding_a_suspended_pane_clears_its_suspension() {
 #[test]
 fn a_resumed_pane_forwards_input_again() {
     use crate::tab::AdjustedInput;
-    use zellij_utils::data::BareKey;
+    use zellij_types::keys::BareKey;
 
     let mut pane = suspended_pane();
     pane.set_suspended(false);

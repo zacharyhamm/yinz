@@ -3,13 +3,13 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
+use zellij_runtime::errors::prelude::*;
 use zellij_utils::{
     agent::report::{
         reporting_watchdog, AgentReport, AgentReportState, ReportTrace, REPORT_DEADLINE,
     },
     cli::CliAction,
     data::PaneId,
-    errors::prelude::*,
     input::actions::Action,
     ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg},
 };
@@ -29,7 +29,7 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
             }
             t.session = session
                 .clone()
-                .or_else(|| zellij_utils::envs::get_session_name().ok())
+                .or_else(|| zellij_runtime::envs::get_session_name().ok())
                 .unwrap_or_default();
             t.enter("pane_owner");
         }
@@ -86,7 +86,7 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
                 kind: t.kind.clone(),
             }
         };
-        let session = session.or_else(|| zellij_utils::envs::get_session_name().ok());
+        let session = session.or_else(|| zellij_runtime::envs::get_session_name().ok());
         let session = match session {
             Some(session) => session,
             None => {
@@ -182,7 +182,9 @@ fn report_parts(
                     .unwrap_or(AgentReportState::Clear);
             },
             Action::AgentEvent(e) => {
-                pane = Some(PaneId::Terminal(e.pane_id));
+                pane = Some(PaneId::Terminal(
+                    zellij_types::internal_ids::TerminalId::new(e.pane_id),
+                ));
                 event = Some(e);
             },
             _ => return Err(anyhow!("unexpected agent report action")),

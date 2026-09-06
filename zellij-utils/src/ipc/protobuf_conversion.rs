@@ -4109,10 +4109,10 @@ impl From<crate::data::PaneId> for crate::client_server_contract::client_server_
         use crate::client_server_contract::client_server_contract::pane_id::PaneType;
         match pane_id {
             crate::data::PaneId::Terminal(id) => Self {
-                pane_type: Some(PaneType::Terminal(id)),
+                pane_type: Some(PaneType::Terminal(id.get())),
             },
             crate::data::PaneId::Plugin(id) => Self {
-                pane_type: Some(PaneType::Plugin(id)),
+                pane_type: Some(PaneType::Plugin(id.get())),
             },
         }
     }
@@ -4131,8 +4131,12 @@ impl TryFrom<crate::client_server_contract::client_server_contract::PaneId>
             .pane_type
             .ok_or_else(|| anyhow!("PaneId missing pane_type"))?
         {
-            PaneType::Terminal(id) => Ok(crate::data::PaneId::Terminal(id)),
-            PaneType::Plugin(id) => Ok(crate::data::PaneId::Plugin(id)),
+            PaneType::Terminal(id) => Ok(crate::data::PaneId::Terminal(
+                zellij_types::internal_ids::TerminalId(id),
+            )),
+            PaneType::Plugin(id) => Ok(crate::data::PaneId::Plugin(
+                zellij_types::internal_ids::PluginId(id),
+            )),
         }
     }
 }
@@ -4410,10 +4414,10 @@ impl TryFrom<crate::client_server_contract::client_server_contract::NewPanePlace
 }
 
 // MouseEvent conversion
-impl From<crate::input::mouse::MouseEvent>
+impl From<zellij_types::mouse::MouseEvent>
     for crate::client_server_contract::client_server_contract::MouseEvent
 {
-    fn from(event: crate::input::mouse::MouseEvent) -> Self {
+    fn from(event: zellij_types::mouse::MouseEvent) -> Self {
         use crate::client_server_contract::client_server_contract::{
             MouseEventType as ProtoMouseEventType, Position,
         };
@@ -4424,9 +4428,9 @@ impl From<crate::input::mouse::MouseEvent>
         };
 
         let event_type = match event.event_type {
-            crate::input::mouse::MouseEventType::Press => ProtoMouseEventType::Press as i32,
-            crate::input::mouse::MouseEventType::Release => ProtoMouseEventType::Release as i32,
-            crate::input::mouse::MouseEventType::Motion => ProtoMouseEventType::Motion as i32,
+            zellij_types::mouse::MouseEventType::Press => ProtoMouseEventType::Press as i32,
+            zellij_types::mouse::MouseEventType::Release => ProtoMouseEventType::Release as i32,
+            zellij_types::mouse::MouseEventType::Motion => ProtoMouseEventType::Motion as i32,
         };
 
         Self {
@@ -4997,7 +5001,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::PercentOrFix
 
 // MouseEvent reverse conversion
 impl TryFrom<crate::client_server_contract::client_server_contract::MouseEvent>
-    for crate::input::mouse::MouseEvent
+    for zellij_types::mouse::MouseEvent
 {
     type Error = anyhow::Error;
 
@@ -5008,13 +5012,13 @@ impl TryFrom<crate::client_server_contract::client_server_contract::MouseEvent>
 
         let event_type = match event.event_type {
             x if x == ProtoMouseEventType::Press as i32 => {
-                crate::input::mouse::MouseEventType::Press
+                zellij_types::mouse::MouseEventType::Press
             },
             x if x == ProtoMouseEventType::Release as i32 => {
-                crate::input::mouse::MouseEventType::Release
+                zellij_types::mouse::MouseEventType::Release
             },
             x if x == ProtoMouseEventType::Motion as i32 => {
-                crate::input::mouse::MouseEventType::Motion
+                zellij_types::mouse::MouseEventType::Motion
             },
             _ => return Err(anyhow!("Invalid MouseEventType: {}", event.event_type)),
         };
@@ -5024,7 +5028,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::MouseEvent>
             .ok_or_else(|| anyhow!("MouseEvent missing position"))?
             .try_into()?;
 
-        Ok(crate::input::mouse::MouseEvent {
+        Ok(zellij_types::mouse::MouseEvent {
             event_type,
             left: event.left,
             right: event.right,

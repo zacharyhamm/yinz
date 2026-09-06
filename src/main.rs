@@ -8,13 +8,12 @@ mod tests;
 compile_error!("Zellij does not support Windows");
 
 use clap::Parser;
+use zellij_runtime::{envs, logging::*};
 use zellij_utils::{
     cli::{CliAction, CliArgs, Command, Sessions},
     consts::create_config_and_cache_folders,
     data::UnblockCondition,
-    envs,
     input::config::Config,
-    logging::*,
     setup::Setup,
 };
 
@@ -40,7 +39,7 @@ fn main() {
             "ensure" => zellij_server::pty_host::remote::broker::ensure(),
             "serve" => zellij_server::pty_host::remote::broker::serve_forever(),
             "report" => zellij_server::pty_host::remote::broker::report_agent_hook(process_started),
-            other => Err(zellij_utils::errors::prelude::anyhow!(
+            other => Err(zellij_runtime::errors::prelude::anyhow!(
                 "unknown --pty-broker mode {other:?}, expected 'ensure', 'serve' or 'report'"
             )),
         };
@@ -121,7 +120,7 @@ fn main() {
         let data_dir = opts
             .data_dir
             .clone()
-            .unwrap_or_else(zellij_utils::home::get_default_data_dir);
+            .unwrap_or_else(zellij_runtime::home::get_default_data_dir);
         if let Err(e) = commands::recordings(rec, data_dir) {
             eprintln!("Error: {}", e);
             std::process::exit(1);

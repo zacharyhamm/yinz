@@ -1,6 +1,8 @@
 use std::collections::{BTreeSet, HashMap};
 use std::time::Instant;
-use zellij_utils::internal_ids::PluginId;
+use zellij_runtime::shared::make_terminal_title;
+use zellij_types::internal_ids::PluginId;
+use zellij_types::mouse::{MouseEvent, MouseEventType};
 
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
 use crate::panes::{
@@ -21,20 +23,17 @@ use crate::ClientId;
 use std::cell::RefCell;
 use std::rc::Rc;
 use vte;
+use zellij_runtime::{channels::SenderWithContext, errors::prelude::*};
+use zellij_types::keys::{BareKey, KeyWithModifier};
+use zellij_types::position::Position;
+use zellij_types::style::{Palette, Style, Styling};
 use zellij_utils::data::PaneContents;
-use zellij_utils::data::{
-    BareKey, Direction, KeyWithModifier, PermissionStatus, PermissionType, PluginPermission,
-};
+use zellij_utils::data::{Direction, PermissionStatus, PermissionType, PluginPermission};
 use zellij_utils::pane_size::{Offset, SizeInPixels};
-use zellij_utils::position::Position;
 use zellij_utils::{
-    channels::SenderWithContext,
-    data::{Event, InputMode, Mouse, Palette, PaletteColor, Style, Styling},
-    errors::prelude::*,
+    data::{Event, InputMode, Mouse, PaletteColor},
     input::layout::Run,
-    input::mouse::{MouseEvent, MouseEventType},
     pane_size::PaneGeom,
-    shared::make_terminal_title,
 };
 
 macro_rules! style {
@@ -1182,8 +1181,8 @@ impl PluginPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zellij_runtime::channels;
     use zellij_tile::ui_components::{image_row, place_image_sequence, png_transmit_sequence};
-    use zellij_utils::channels;
     use zellij_utils::pane_size::Dimension;
 
     fn test_plugin_pane(rows: usize, cols: usize, content_offset: Offset) -> PluginPane {

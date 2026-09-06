@@ -83,9 +83,8 @@ pub use super::generated_api::api::{
     resize::{Resize as ProtobufResize, ResizeDirection as ProtobufResizeDirection},
 };
 use crate::data::{
-    CommandOrPlugin, Direction, FloatingPaneCoordinates, InputMode, KeyWithModifier,
-    NewPanePlacement, OverlayKind, OverlayPlacement, PaneId, PluginTag, ResizeStrategy,
-    UnblockCondition,
+    CommandOrPlugin, Direction, FloatingPaneCoordinates, InputMode, NewPanePlacement, OverlayKind,
+    OverlayPlacement, PaneId, PluginTag, ResizeStrategy, UnblockCondition,
 };
 use crate::errors::prelude::*;
 use crate::input::actions::Action;
@@ -97,8 +96,9 @@ use crate::input::layout::{
     Run, RunPlugin, RunPluginLocation, RunPluginOrAlias, SplitDirection, SwapFloatingLayout,
     SwapTiledLayout, TabLayoutInfo, TiledPaneLayout,
 };
-use crate::input::mouse::{MouseEvent, MouseEventType};
 use crate::position::{Column, Line, Position};
+use zellij_types::keys::KeyWithModifier;
+use zellij_types::mouse::{MouseEvent, MouseEventType};
 
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
@@ -2585,8 +2585,12 @@ impl TryFrom<ProtobufPaneId> for PaneId {
         use super::generated_api::api::action::pane_id::PaneIdVariant;
 
         match protobuf_pane_id.pane_id_variant {
-            Some(PaneIdVariant::Terminal(id)) => Ok(PaneId::Terminal(id)),
-            Some(PaneIdVariant::Plugin(id)) => Ok(PaneId::Plugin(id)),
+            Some(PaneIdVariant::Terminal(id)) => {
+                Ok(PaneId::Terminal(zellij_types::internal_ids::TerminalId(id)))
+            },
+            Some(PaneIdVariant::Plugin(id)) => {
+                Ok(PaneId::Plugin(zellij_types::internal_ids::PluginId(id)))
+            },
             None => Err("PaneId must have either terminal or plugin id"),
         }
     }
@@ -2598,8 +2602,8 @@ impl TryFrom<PaneId> for ProtobufPaneId {
         use super::generated_api::api::action::pane_id::PaneIdVariant;
 
         let pane_id_variant = match pane_id {
-            PaneId::Terminal(id) => Some(PaneIdVariant::Terminal(id)),
-            PaneId::Plugin(id) => Some(PaneIdVariant::Plugin(id)),
+            PaneId::Terminal(id) => Some(PaneIdVariant::Terminal(id.get())),
+            PaneId::Plugin(id) => Some(PaneIdVariant::Plugin(id.get())),
         };
         Ok(ProtobufPaneId { pane_id_variant })
     }
@@ -3514,6 +3518,61 @@ impl TryFrom<SwapFloatingLayout> for ProtobufSwapFloatingLayout {
 pub(crate) mod tests {
     use super::*;
     use crate::input::options::PaneFrameStyle;
+
+    #[test]
+    fn pane_ids_preserve_protobuf_bytes() {
+        use crate::plugin_api::{event, plugin_command};
+        use prost::Message;
+        use zellij_types::internal_ids::{PluginId, TerminalId};
+
+        for (pane, oneof_bytes, enum_bytes) in [
+            (PaneId::Terminal(TerminalId::new(0)), vec![8, 0], vec![]),
+            (PaneId::Plugin(PluginId::new(0)), vec![16, 0], vec![8, 1]),
+            (
+                PaneId::Terminal(TerminalId::new(u32::MAX)),
+                vec![8, 255, 255, 255, 255, 15],
+                vec![16, 255, 255, 255, 255, 15],
+            ),
+            (
+                PaneId::Plugin(PluginId::new(u32::MAX)),
+                vec![16, 255, 255, 255, 255, 15],
+                vec![8, 1, 16, 255, 255, 255, 255, 15],
+            ),
+        ] {
+            let action: ProtobufPaneId = pane.try_into().unwrap();
+            assert_eq!(action.encode_to_vec(), oneof_bytes);
+            assert_eq!(
+                PaneId::try_from(ProtobufPaneId::decode(oneof_bytes.as_slice()).unwrap()).unwrap(),
+                pane
+            );
+            let event: event::ProtobufPaneId = pane.try_into().unwrap();
+            assert_eq!(event.encode_to_vec(), enum_bytes);
+            assert_eq!(
+                PaneId::try_from(event::ProtobufPaneId::decode(enum_bytes.as_slice()).unwrap())
+                    .unwrap(),
+                pane
+            );
+            let command: plugin_command::ProtobufPaneId = pane.try_into().unwrap();
+            assert_eq!(command.encode_to_vec(), enum_bytes);
+            assert_eq!(
+                PaneId::try_from(
+                    plugin_command::ProtobufPaneId::decode(enum_bytes.as_slice()).unwrap()
+                )
+                .unwrap(),
+                pane
+            );
+            #[cfg(not(target_family = "wasm"))]
+            {
+                use crate::client_server_contract::client_server_contract::PaneId as IpcPaneId;
+                let ipc: IpcPaneId = pane.into();
+                assert_eq!(ipc.encode_to_vec(), oneof_bytes);
+                assert_eq!(
+                    PaneId::try_from(IpcPaneId::decode(oneof_bytes.as_slice()).unwrap()).unwrap(),
+                    pane
+                );
+            }
+        }
+    }
 
     /// `RunPlugin`'s `PartialEq` ignores `relative_path`, so an `assert_eq!` on a round-tripped
     /// plugin cannot see the field dropped - and dropping it silently costs a plugin named by a

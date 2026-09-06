@@ -1,5 +1,5 @@
-use zellij_utils::errors::prelude::*;
-use zellij_utils::internal_ids::TerminalId;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TerminalId;
 
 use super::{GuestModalOutcome, HoldForCommand, InitialTitle, TabOverrideResult};
 use crate::panes::grid::PendingNotification;
@@ -14,16 +14,19 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
+use zellij_types::diagnostics::ScreenContext;
+use zellij_types::keys::KeyWithModifier;
+use zellij_types::mouse::MouseEvent;
+use zellij_types::position::Position;
+use zellij_types::style::{HostTerminalThemeMode, Styling, ThemeHue};
 use zellij_utils::data::AgentInfo;
 use zellij_utils::data::{
     CommandOrPlugin, ContextMenuItem, Direction, EventType, FloatingPaneCoordinates,
-    GetFocusedPaneInfoResponse, HostTerminalThemeMode, InputMode, KeyWithModifier, LayoutInfo,
-    LayoutWithError, ListPanesResponse, ListTabsResponse, ModeInfo, NewPanePlacement,
-    NotificationInfo, OverlayPlacement, PaneInfo, PaneScrollbackResponse, PluginPermission,
-    RegexHighlight, Resize, ResizeStrategy, SessionInfo, Styling, TabInfo, ThemeHue, WarpPlacement,
-    WarpedPane, WarpedTab,
+    GetFocusedPaneInfoResponse, InputMode, LayoutInfo, LayoutWithError, ListPanesResponse,
+    ListTabsResponse, ModeInfo, NewPanePlacement, NotificationInfo, OverlayPlacement, PaneInfo,
+    PaneScrollbackResponse, PluginPermission, RegexHighlight, Resize, ResizeStrategy, SessionInfo,
+    TabInfo, WarpPlacement, WarpedPane, WarpedTab,
 };
-use zellij_utils::errors::ScreenContext;
 use zellij_utils::input::actions::Action;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::input::context_menu::ContextMenu;
@@ -32,14 +35,12 @@ use zellij_utils::input::layout::{
     FloatingPaneLayout, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout, TabLayoutInfo,
     TiledPaneLayout,
 };
-use zellij_utils::input::mouse::MouseEvent;
 use zellij_utils::input::options::{
     Clipboard, HostNotificationProtocol, NestedSessionHandling, PaneFrameStyle,
 };
 use zellij_utils::ipc::PixelDimensions;
 use zellij_utils::nested_session::NestedSessionMessage;
 use zellij_utils::pane_size::Size;
-use zellij_utils::position::Position;
 
 /// Instructions that can be sent to the [`Screen`].
 ///

@@ -411,10 +411,14 @@ impl ZellijPlugin for State {
                     );
                 },
                 BareKey::Char('a') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    hide_pane_with_id(PaneId::Terminal(1));
+                    hide_pane_with_id(PaneId::Terminal(zellij_tile::prelude::TerminalId(1)));
                 },
                 BareKey::Char('b') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    show_pane_with_id(PaneId::Terminal(1), true, true);
+                    show_pane_with_id(
+                        PaneId::Terminal(zellij_tile::prelude::TerminalId(1)),
+                        true,
+                        true,
+                    );
                 },
                 BareKey::Char('c') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     open_command_pane_background(
@@ -432,50 +436,71 @@ impl ZellijPlugin for State {
                 BareKey::Char('e') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     resize_pane_with_id(
                         ResizeStrategy::new(Resize::Increase, Some(Direction::Left)),
-                        PaneId::Terminal(2),
+                        PaneId::Terminal(zellij_tile::prelude::TerminalId(2)),
                     );
                 },
                 BareKey::Char('f') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    edit_scrollback_for_pane_with_id(PaneId::Terminal(2));
+                    edit_scrollback_for_pane_with_id(PaneId::Terminal(
+                        zellij_tile::prelude::TerminalId(2),
+                    ));
                 },
                 BareKey::Char('g') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    write_to_pane_id(vec![102, 111, 111], PaneId::Terminal(2));
+                    write_to_pane_id(
+                        vec![102, 111, 111],
+                        PaneId::Terminal(zellij_tile::prelude::TerminalId(2)),
+                    );
                 },
                 BareKey::Char('h') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    write_chars_to_pane_id("foo\n", PaneId::Terminal(2));
+                    write_chars_to_pane_id(
+                        "foo\n",
+                        PaneId::Terminal(zellij_tile::prelude::TerminalId(2)),
+                    );
                 },
                 BareKey::Char('i') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    move_pane_with_pane_id(PaneId::Terminal(2));
+                    move_pane_with_pane_id(PaneId::Terminal(zellij_tile::prelude::TerminalId(2)));
                 },
                 BareKey::Char('j') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    move_pane_with_pane_id_in_direction(PaneId::Terminal(2), Direction::Left);
+                    move_pane_with_pane_id_in_direction(
+                        PaneId::Terminal(zellij_tile::prelude::TerminalId(2)),
+                        Direction::Left,
+                    );
                 },
                 BareKey::Char('k') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    clear_screen_for_pane_id(PaneId::Terminal(2));
+                    clear_screen_for_pane_id(PaneId::Terminal(zellij_tile::prelude::TerminalId(2)));
                 },
                 BareKey::Char('l') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    scroll_up_in_pane_id(PaneId::Terminal(2));
+                    scroll_up_in_pane_id(PaneId::Terminal(zellij_tile::prelude::TerminalId(2)));
                 },
                 BareKey::Char('m') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    scroll_down_in_pane_id(PaneId::Terminal(2));
+                    scroll_down_in_pane_id(PaneId::Terminal(zellij_tile::prelude::TerminalId(2)));
                 },
                 BareKey::Char('n') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    scroll_to_top_in_pane_id(PaneId::Terminal(2));
+                    scroll_to_top_in_pane_id(PaneId::Terminal(zellij_tile::prelude::TerminalId(2)));
                 },
                 BareKey::Char('o') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    scroll_to_bottom_in_pane_id(PaneId::Terminal(2));
+                    scroll_to_bottom_in_pane_id(PaneId::Terminal(
+                        zellij_tile::prelude::TerminalId(2),
+                    ));
                 },
                 BareKey::Char('p') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    page_scroll_up_in_pane_id(PaneId::Terminal(2));
+                    page_scroll_up_in_pane_id(PaneId::Terminal(zellij_tile::prelude::TerminalId(
+                        2,
+                    )));
                 },
                 BareKey::Char('q') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    page_scroll_down_in_pane_id(PaneId::Terminal(2));
+                    page_scroll_down_in_pane_id(PaneId::Terminal(
+                        zellij_tile::prelude::TerminalId(2),
+                    ));
                 },
                 BareKey::Char('r') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    toggle_pane_id_fullscreen(PaneId::Terminal(2));
+                    toggle_pane_id_fullscreen(PaneId::Terminal(zellij_tile::prelude::TerminalId(
+                        2,
+                    )));
                 },
                 BareKey::Char('s') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    toggle_pane_embed_or_eject_for_pane_id(PaneId::Terminal(2));
+                    toggle_pane_embed_or_eject_for_pane_id(PaneId::Terminal(
+                        zellij_tile::prelude::TerminalId(2),
+                    ));
                 },
                 BareKey::Char('t') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     close_tab_with_index(2);
@@ -483,7 +508,10 @@ impl ZellijPlugin for State {
                 BareKey::Char('u') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     let should_change_focus_to_new_tab = true;
                     break_panes_to_new_tab(
-                        &[PaneId::Terminal(1), PaneId::Plugin(2)],
+                        &[
+                            PaneId::Terminal(zellij_tile::prelude::TerminalId(1)),
+                            PaneId::Plugin(zellij_tile::prelude::PluginId(2)),
+                        ],
                         Some("new_tab_name".to_owned()),
                         should_change_focus_to_new_tab,
                     );
@@ -491,7 +519,10 @@ impl ZellijPlugin for State {
                 BareKey::Char('v') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     let should_change_focus_to_target_tab = true;
                     break_panes_to_tab_with_index(
-                        &[PaneId::Terminal(1), PaneId::Plugin(2)],
+                        &[
+                            PaneId::Terminal(zellij_tile::prelude::TerminalId(1)),
+                            PaneId::Plugin(zellij_tile::prelude::PluginId(2)),
+                        ],
                         2,
                         should_change_focus_to_target_tab,
                     );
@@ -634,11 +665,11 @@ impl ZellijPlugin for State {
                 },
                 BareKey::Char('e') if key.has_only_modifiers(&[KeyModifier::Super]) => {
                     // Test send_sigint_to_pane_id
-                    send_sigint_to_pane_id(PaneId::Terminal(1));
+                    send_sigint_to_pane_id(PaneId::Terminal(zellij_tile::prelude::TerminalId(1)));
                 },
                 BareKey::Char('f') if key.has_only_modifiers(&[KeyModifier::Super]) => {
                     // Test send_sigkill_to_pane_id
-                    send_sigkill_to_pane_id(PaneId::Terminal(1));
+                    send_sigkill_to_pane_id(PaneId::Terminal(zellij_tile::prelude::TerminalId(1)));
                 },
                 BareKey::Char('g') if key.has_only_modifiers(&[KeyModifier::Super]) => {
                     // Test set_pane_regex_highlights
@@ -653,11 +684,14 @@ impl ZellijPlugin for State {
                         underline: true,
                         tooltip_text: None,
                     }];
-                    set_pane_regex_highlights(PaneId::Terminal(1), highlights);
+                    set_pane_regex_highlights(
+                        PaneId::Terminal(zellij_tile::prelude::TerminalId(1)),
+                        highlights,
+                    );
                 },
                 BareKey::Char('h') if key.has_only_modifiers(&[KeyModifier::Super]) => {
                     // Test clear_pane_highlights
-                    clear_pane_highlights(PaneId::Terminal(1));
+                    clear_pane_highlights(PaneId::Terminal(zellij_tile::prelude::TerminalId(1)));
                 },
                 BareKey::Char('i') if key.has_only_modifiers(&[KeyModifier::Super]) => {
                     toggle_floating_panes(Some(2));
@@ -1011,7 +1045,10 @@ impl ZellijPlugin for State {
                 {
                     let should_change_focus_to_target_tab = true;
                     break_panes_to_tab_with_id(
-                        &[PaneId::Terminal(1), PaneId::Plugin(2)],
+                        &[
+                            PaneId::Terminal(zellij_tile::prelude::TerminalId(1)),
+                            PaneId::Plugin(zellij_tile::prelude::PluginId(2)),
+                        ],
                         2,
                         should_change_focus_to_target_tab,
                     );
@@ -1025,7 +1062,10 @@ impl ZellijPlugin for State {
             },
             Event::BeforeClose => {
                 // this is just to assert something to make sure this event was triggered
-                highlight_and_unhighlight_panes(vec![PaneId::Terminal(1)], vec![PaneId::Plugin(1)]);
+                highlight_and_unhighlight_panes(
+                    vec![PaneId::Terminal(zellij_tile::prelude::TerminalId(1))],
+                    vec![PaneId::Plugin(zellij_tile::prelude::PluginId(1))],
+                );
             },
             Event::PluginConfigurationChanged(new_config) => {
                 self.configuration = new_config.clone();

@@ -20,7 +20,7 @@ pub fn init() -> &'static Path {
             let test_root = create_test_root();
             isolate_process_environment(&test_root);
             record_background_thread_panics();
-            zellij_utils::logging::configure_logger();
+            zellij_runtime::logging::configure_logger();
             test_root
         })
         .as_path()

@@ -2,7 +2,7 @@ use std::io::prelude::*;
 use std::process::{Child, Command, Stdio};
 use std::thread::JoinHandle;
 
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 
 pub struct CopyCommand {
     command: String,

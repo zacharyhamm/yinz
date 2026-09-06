@@ -14,7 +14,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 use zellij_utils::input::command::validate_firecracker_vm_name;
 
 #[cfg(target_os = "linux")]

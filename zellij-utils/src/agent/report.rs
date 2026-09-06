@@ -39,7 +39,8 @@ impl AgentReport {
             return Err(anyhow!("invalid report id"));
         }
         if let Some(event) = &self.event {
-            if self.pane_id != PaneId::Terminal(event.pane_id)
+            if self.pane_id
+                != PaneId::Terminal(zellij_types::internal_ids::TerminalId(event.pane_id))
                 || event.raw.len() > super::HOOK_BROADCAST_MAX_BYTES
             {
                 return Err(anyhow!("invalid report event target or size"));

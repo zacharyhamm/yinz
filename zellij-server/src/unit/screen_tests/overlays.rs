@@ -1,8 +1,8 @@
 use super::*;
 use crate::panes::OverlayCarry;
 use std::collections::BTreeMap;
+use zellij_types::internal_ids::PluginId;
 use zellij_utils::data::{OverlayKind, OverlayPlacement, Resize, ResizeStrategy};
-use zellij_utils::internal_ids::PluginId;
 
 #[test]
 fn modal_plugin_configuration_requests_overlay() {

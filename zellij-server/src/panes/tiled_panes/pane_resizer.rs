@@ -4,8 +4,8 @@ use kasuari::{Expression, Solver, Strength, Variable, WeightedRelation::EQ};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use zellij_runtime::errors::prelude::*;
 use zellij_utils::{
-    errors::prelude::*,
     input::layout::SplitDirection,
     pane_size::{Constraint, Dimension, PaneGeom},
 };

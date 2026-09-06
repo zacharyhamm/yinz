@@ -1,4 +1,4 @@
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 
 use super::agent_placement::AgentPlacement;
 use super::warp_ops::{PANE_WARP_SCREEN_RESERVE, TAB_WARP_SCREEN_RESERVE};
@@ -22,14 +22,14 @@ use crate::{ClientId, ServerInstruction};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use zellij_runtime::envs::set_session_name;
+use zellij_types::diagnostics::ContextType;
+use zellij_types::style::HostTerminalThemeMode;
 use zellij_utils::consts::{session_info_folder_for_session, ZELLIJ_SOCK_DIR};
 use zellij_utils::data::{
-    AgentInfo, Direction, Event, GetFocusedPaneInfoResponse, HostTerminalThemeMode, InputMode,
-    NewPanePlacement, NotificationInfo, OverlayPlacement, PaneScrollbackResponse,
-    PluginCapabilities, SessionInfo,
+    AgentInfo, Direction, Event, GetFocusedPaneInfoResponse, InputMode, NewPanePlacement,
+    NotificationInfo, OverlayPlacement, PaneScrollbackResponse, PluginCapabilities, SessionInfo,
 };
-use zellij_utils::envs::set_session_name;
-use zellij_utils::errors::ContextType;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::input::config::Config;
 use zellij_utils::input::get_mode_info;
@@ -387,7 +387,7 @@ pub(crate) fn screen_thread_main(
             .bus
             .recv()
             .context("failed to receive event on channel")?;
-        err_ctx.add_call(ContextType::Screen((&event).into()));
+        zellij_runtime::errors::add_call(&mut err_ctx, ContextType::Screen((&event).into()));
         // here we start caching resizes, so that we'll send them in bulk at the end of each event
         // when this cache is Dropped, for more information, see the comments in PtyWriter
         let _resize_cache = ResizeCache::new(thread_senders.clone());

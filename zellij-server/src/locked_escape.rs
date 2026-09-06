@@ -3,10 +3,10 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use uuid::Uuid;
+use zellij_runtime::{channels::SenderWithContext, errors::prelude::*};
+use zellij_types::keys::{BareKey, KeyModifier, KeyWithModifier};
 use zellij_utils::{
-    channels::SenderWithContext,
-    data::{BareKey, Event, InputMode, KeyModifier, KeyWithModifier},
-    errors::prelude::*,
+    data::{Event, InputMode},
     input::actions::Action,
     ipc::ClientToServerMsg,
 };

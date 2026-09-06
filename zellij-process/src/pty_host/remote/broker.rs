@@ -22,12 +22,10 @@ use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
 
-use zellij_utils::{
-    consts::{VERSION, ZELLIJ_SOCK_DIR},
-    errors::prelude::*,
-};
+use zellij_runtime::errors::prelude::*;
+use zellij_utils::consts::{VERSION, ZELLIJ_SOCK_DIR};
 
 use super::protocol::{
     self, BrokerToServerMsg, ChildSignal, Frame, ResumeRefusal, ServerToBrokerMsg,

@@ -10,7 +10,7 @@ use super::*;
 fn a_malformed_hex_color_is_a_config_error_not_a_panic() {
     for bad in ["#é1", "#abcé1", "#12", "#1234567", "#ggg", "#12g", "#"] {
         let doc: KdlDocument = format!(r#"fg "{bad}""#).parse().unwrap();
-        let result = PaletteColor::try_from(("fg", &doc));
+        let result = crate::kdl::palette_color_from_kdl("fg", &doc);
         assert!(
             result.is_err(),
             "expected {bad:?} to be rejected as a config error, got {result:?}"
@@ -29,7 +29,7 @@ fn valid_hex_colors_still_parse_to_rgb() {
     ];
     for (input, (r, g, b)) in cases {
         let doc: KdlDocument = format!(r#"fg "{input}""#).parse().unwrap();
-        let color = PaletteColor::try_from(("fg", &doc)).unwrap();
+        let color = crate::kdl::palette_color_from_kdl("fg", &doc).unwrap();
         assert_eq!(color, PaletteColor::Rgb((r, g, b)), "for {input}");
     }
 }

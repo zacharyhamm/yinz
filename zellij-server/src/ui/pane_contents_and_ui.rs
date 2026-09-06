@@ -8,9 +8,10 @@ use crate::ui::boundaries::Boundaries;
 use crate::ui::pane_boundaries_frame::{FrameParams, StackListEntry};
 use crate::ClientId;
 use std::collections::{HashMap, HashSet};
-use zellij_utils::animation::blend;
-use zellij_utils::data::{client_id_to_colors, InputMode, PaletteColor, Style};
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::animation::blend;
+use zellij_types::style::Style;
+use zellij_utils::data::{client_id_to_colors, InputMode, PaletteColor};
 use zellij_utils::pane_size::PaneGeom;
 
 pub fn dim_character_chunks(character_chunks: &mut Vec<CharacterChunk>) {

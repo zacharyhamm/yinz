@@ -676,14 +676,25 @@ mod setup_test {
     use super::Setup;
     use crate::cli::{CliArgs, Command};
     use crate::data::LayoutInfo;
-    use crate::input::options::Options;
+    use crate::input::{config::Config, options::Options};
     use insta::assert_snapshot;
     use std::path::PathBuf;
+
+    fn from_cli_args(cli_args: &CliArgs) -> (Config, Option<LayoutInfo>, Options, Config, Options) {
+        // Path discovery lives in another crate, so its cfg(test) cannot isolate these tests.
+        // Supply a real empty directory instead of reading the developer's config and overlays.
+        let config_dir = tempfile::tempdir().unwrap();
+        let mut cli_args = cli_args.clone();
+        cli_args
+            .config_dir
+            .get_or_insert_with(|| config_dir.path().to_path_buf());
+        Setup::from_cli_args(&cli_args).unwrap()
+    }
 
     #[test]
     fn default_config_with_no_cli_arguments() {
         let cli_args = CliArgs::default();
-        let (config, layout_info, options, _, _) = Setup::from_cli_args(&cli_args).unwrap();
+        let (config, layout_info, options, _, _) = from_cli_args(&cli_args);
         assert_snapshot!(format!("{:#?}", config));
         assert_snapshot!(format!("{:#?}", layout_info));
         assert_snapshot!(format!("{:#?}", options));
@@ -697,7 +708,7 @@ mod setup_test {
             }))),
             ..Default::default()
         };
-        let (_config, _layout_info, options, _, _) = Setup::from_cli_args(&cli_args).unwrap();
+        let (_config, _layout_info, options, _, _) = from_cli_args(&cli_args);
         assert_snapshot!(format!("{:#?}", options));
     }
     #[test]
@@ -709,7 +720,7 @@ mod setup_test {
             ))),
             ..Default::default()
         };
-        let (_config, layout_info, options, _, _) = Setup::from_cli_args(&cli_args).unwrap();
+        let (_config, layout_info, options, _, _) = from_cli_args(&cli_args);
         assert_snapshot!(format!("{:#?}", options));
         let Some(LayoutInfo::File(layout_path, _)) = layout_info else {
             panic!("layout info doesn't have expected format");
@@ -735,7 +746,7 @@ mod setup_test {
             }))),
             ..Default::default()
         };
-        let (_config, layout_info, options, _, _) = Setup::from_cli_args(&cli_args).unwrap();
+        let (_config, layout_info, options, _, _) = from_cli_args(&cli_args);
         assert_snapshot!(format!("{:#?}", options));
         let Some(LayoutInfo::File(layout_path, _)) = layout_info else {
             panic!("layout info doesn't have expected format");
@@ -761,7 +772,7 @@ mod setup_test {
             ))),
             ..Default::default()
         };
-        let (config, _layout_info, _options, _, _) = Setup::from_cli_args(&cli_args).unwrap();
+        let (config, _layout_info, _options, _, _) = from_cli_args(&cli_args);
         assert_snapshot!(format!("{:#?}", config));
     }
     #[test]
@@ -777,7 +788,7 @@ mod setup_test {
             ))),
             ..Default::default()
         };
-        let (config, _layout_info, _options, _, _) = Setup::from_cli_args(&cli_args).unwrap();
+        let (config, _layout_info, _options, _, _) = from_cli_args(&cli_args);
         assert_snapshot!(format!("{:#?}", config));
     }
     #[test]
@@ -793,7 +804,7 @@ mod setup_test {
             ))),
             ..Default::default()
         };
-        let (config, _layout_info, _options, _, _) = Setup::from_cli_args(&cli_args).unwrap();
+        let (config, _layout_info, _options, _, _) = from_cli_args(&cli_args);
         assert_snapshot!(format!("{:#?}", config));
     }
     #[test]
@@ -809,7 +820,7 @@ mod setup_test {
             ))),
             ..Default::default()
         };
-        let (config, _layout_info, _options, _, _) = Setup::from_cli_args(&cli_args).unwrap();
+        let (config, _layout_info, _options, _, _) = from_cli_args(&cli_args);
         assert_snapshot!(format!("{:#?}", config));
     }
     #[test]
@@ -823,7 +834,7 @@ mod setup_test {
             config_dir: Some(config_dir.clone()),
             ..Default::default()
         };
-        let (_, layout_info, _, _, _) = Setup::from_cli_args(&cli_args).unwrap();
+        let (_, layout_info, _, _, _) = from_cli_args(&cli_args);
         let Some(LayoutInfo::File(layout_path, _)) = layout_info else {
             panic!("layout info has unexpected format");
         };
@@ -845,7 +856,7 @@ mod setup_test {
             config_dir: Some(config_dir.clone()),
             ..Default::default()
         };
-        let (_, layout_info, _, _, _) = Setup::from_cli_args(&cli_args).unwrap();
+        let (_, layout_info, _, _, _) = from_cli_args(&cli_args);
         let Some(LayoutInfo::File(layout_path, _)) = layout_info else {
             panic!("layout info has unexpected format");
         };
@@ -868,7 +879,7 @@ mod setup_test {
             layout: Some(PathBuf::from("assets/layouts/compact.kdl")),
             ..Default::default()
         };
-        let (_, layout_info, _, _, _) = Setup::from_cli_args(&cli_args).unwrap();
+        let (_, layout_info, _, _, _) = from_cli_args(&cli_args);
         let Some(LayoutInfo::File(layout_path, _)) = layout_info else {
             panic!("layout info has unexpected format: {:?}", layout_info);
         };
@@ -887,7 +898,7 @@ mod setup_test {
             layout: Some(PathBuf::from("assets/layouts/compact")),
             ..Default::default()
         };
-        let (_, layout_info, _, _, _) = Setup::from_cli_args(&cli_args).unwrap();
+        let (_, layout_info, _, _, _) = from_cli_args(&cli_args);
         let Some(LayoutInfo::File(layout_path, _)) = layout_info else {
             panic!("layout info has unexpected format");
         };
@@ -902,7 +913,7 @@ mod setup_test {
             layout_string: Some(layout_kdl.clone()),
             ..Default::default()
         };
-        let (_, layout_info, _, _, _) = Setup::from_cli_args(&cli_args).unwrap();
+        let (_, layout_info, _, _, _) = from_cli_args(&cli_args);
         let Some(LayoutInfo::Stringified(content)) = layout_info else {
             panic!(
                 "layout info should be Stringified variant, got: {:#?}",

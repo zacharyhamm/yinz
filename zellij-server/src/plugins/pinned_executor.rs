@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use wasmi::Engine;
-use zellij_utils::internal_ids::PluginId;
+use zellij_types::internal_ids::PluginId;
 
 /// A dynamic thread pool that pins jobs to specific threads based on plugin_id
 /// Starts with 1 thread and expands when threads are busy, shrinks when plugins unload
@@ -682,7 +682,7 @@ mod tests {
         PluginCache,
         Engine,
     ) {
-        use zellij_utils::channels::{self, SenderWithContext};
+        use zellij_runtime::channels::{self, SenderWithContext};
 
         let (send_to_pty, _receive_pty) = channels::bounded(1);
         let (send_to_screen, _receive_screen) = channels::bounded(1);

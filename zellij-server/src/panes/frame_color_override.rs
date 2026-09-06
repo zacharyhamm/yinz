@@ -3,8 +3,8 @@
 use std::time::{Duration, Instant};
 
 use crate::ClientId;
-use zellij_utils::animation::{Easing, Tween};
-use zellij_utils::data::PaletteColor;
+use zellij_types::animation::{Easing, Tween};
+use zellij_types::colors::PaletteColor;
 
 /// How long a bell flash stays at full strength before it starts easing away.
 ///

@@ -7,8 +7,10 @@ use crate::{
     pty::PtyInstruction, pty_writer::PtyWriteInstruction, screen::ScreenInstruction,
     ServerInstruction,
 };
-use zellij_utils::errors::prelude::*;
-use zellij_utils::{channels, channels::SenderWithContext, errors::ErrorContext};
+use zellij_runtime::channels;
+use zellij_runtime::channels::SenderWithContext;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::diagnostics::ErrorContext;
 
 /// A container for senders to the different threads in zellij on the server side
 #[derive(Default, Clone)]

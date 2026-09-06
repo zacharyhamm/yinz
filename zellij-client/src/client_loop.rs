@@ -15,10 +15,10 @@ use crate::{
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use zellij_runtime::channels::SenderWithContext;
+use zellij_types::diagnostics::ContextType;
 use zellij_utils::{
-    channels::SenderWithContext,
     data::ConnectToSession,
-    errors::ContextType,
     ipc::{ClientToServerMsg, ExitReason},
     nested_session,
 };
@@ -52,9 +52,9 @@ impl ClientLoop<'_> {
     /// Run until the server tells us to exit or to switch sessions.
     pub fn run(
         mut self,
-        receive_client_instructions: &zellij_utils::channels::Receiver<(
+        receive_client_instructions: &zellij_runtime::channels::Receiver<(
             ClientInstruction,
-            zellij_utils::errors::ErrorContext,
+            zellij_types::diagnostics::ErrorContext,
         )>,
     ) -> LoopOutcome {
         let mut outcome = LoopOutcome {
@@ -69,7 +69,10 @@ impl ClientLoop<'_> {
                 .recv()
                 .expect("failed to receive app instruction on channel");
 
-            err_ctx.add_call(ContextType::Client((&client_instruction).into()));
+            zellij_runtime::errors::add_call(
+                &mut err_ctx,
+                ContextType::Client((&client_instruction).into()),
+            );
 
             let first_render_bytes = if waiting_for_first_render {
                 match &client_instruction {

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use zellij_types::style::default_palette;
 use zellij_utils::pane_size::Size;
 
 use crate::os_input_output_unix::{
@@ -16,7 +17,6 @@ use zellij_utils::{
     ipc::{
         ClientToServerMsg, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext, ServerToClientMsg,
     },
-    shared::default_palette,
 };
 
 const SIGWINCH_CB_THROTTLE_DURATION: time::Duration = time::Duration::from_millis(50);
@@ -90,7 +90,7 @@ pub struct ClientOsInputOutput {
     receive_instructions_from_server: Arc<Mutex<Option<IpcReceiverWithContext<ServerToClientMsg>>>>,
     reading_from_stdin: Arc<Mutex<Option<Vec<u8>>>>,
     session_name: Arc<Mutex<Option<String>>>,
-    orig_termios: Option<zellij_utils::termios::WireTermios>,
+    orig_termios: Option<zellij_runtime::termios::WireTermios>,
 }
 
 impl std::fmt::Debug for ClientOsInputOutput {
@@ -507,7 +507,7 @@ pub fn get_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> {
         orig_termios: nix::sys::termios::tcgetattr(io::stdin())
             .ok()
             .as_ref()
-            .map(zellij_utils::termios::WireTermios::from_termios),
+            .map(zellij_runtime::termios::WireTermios::from_termios),
     })
 }
 
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn original_termios_survives_startup_raw_mode_and_cloning() {
         use nix::sys::termios::{self, InputFlags, LocalFlags, SetArg, SpecialCharacterIndices};
-        use zellij_utils::termios::WireTermios;
+        use zellij_runtime::termios::WireTermios;
         const CHILD: &str = "ZELLIJ_TEST_CLIENT_TERMIOS";
         if std::env::var_os(CHILD).is_some() {
             let original = termios::tcgetattr(io::stdin()).unwrap();

@@ -15,10 +15,11 @@ use crate::ui::hint_text::{
     suspended_segments, HintExitStatus, HintLevel, HintSegment, HintTier,
 };
 use crate::ClientId;
-use zellij_utils::data::{client_id_to_colors, PaletteColor, Style};
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::position::Position;
+use zellij_types::style::Style;
+use zellij_utils::data::{client_id_to_colors, PaletteColor};
 use zellij_utils::pane_size::{Offset, PaneGeom, Viewport};
-use zellij_utils::position::Position;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -1579,7 +1580,7 @@ impl PaneFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zellij_utils::data::Style;
+    use zellij_types::style::Style;
     use zellij_utils::pane_size::{Offset, Viewport};
 
     fn pane_frame_with(mouse_scroll_resize: bool, is_floating: bool, cols: usize) -> PaneFrame {

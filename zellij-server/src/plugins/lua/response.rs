@@ -23,6 +23,7 @@ use mlua::{Lua, Value as LuaValue};
 use prost::Message;
 use serde::Serialize;
 
+use zellij_runtime::errors::prelude::*;
 use zellij_utils::data::{
     CommandType, DataApplyResponse, DataCatalogResponse, DataCountResponse, DataDefineResponse,
     DataFetchResponse, DataUnwatchResponse, DataWatchResponse, FileMetadata,
@@ -30,7 +31,6 @@ use zellij_utils::data::{
     NotificationInfo, PaneGitProbe, PaneId, PaneScrollbackResponse, PluginIds, QueueStatusResponse,
     RecordingSummary, SearchHit, WarpPaneResponse,
 };
-use zellij_utils::errors::prelude::*;
 use zellij_utils::plugin_api::event::ProtobufPaneScrollbackResponse;
 use zellij_utils::plugin_api::plugin_command::{
     break_panes_to_new_tab_response, break_panes_to_tab_with_id_response,

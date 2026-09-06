@@ -10,14 +10,16 @@ use crate::{
     ClientId, ServerInstruction, SessionMetaData, ThreadSenders,
 };
 use zellij_test_support::Watched;
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
 
 use insta::assert_snapshot;
 use std::path::PathBuf;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::diagnostics::ErrorContext;
+use zellij_types::style::{Style, Styling};
 use zellij_utils::cli::CliAction;
 use zellij_utils::data::WarpedPane;
-use zellij_utils::data::{Event, EventType, Mouse, OverlayPlacement, Resize, Style, Styling};
-use zellij_utils::errors::{prelude::*, ErrorContext};
+use zellij_utils::data::{Event, EventType, Mouse, OverlayPlacement, Resize};
 use zellij_utils::input::actions::Action;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::input::config::Config;
@@ -28,7 +30,7 @@ use zellij_utils::input::layout::{
     RunPlugin, RunPluginLocation, RunPluginOrAlias, SplitDirection, TiledPaneLayout,
 };
 
-use zellij_utils::input::mouse::MouseEvent;
+use zellij_types::mouse::MouseEvent;
 use zellij_utils::input::options::{
     HostNotificationProtocol, NestedSessionHandling, NotificationPosition, Options, PaneFrameStyle,
     DEFAULT_NOTIFICATION_TIMEOUT_SECS, DEFAULT_WORD_SEPARATORS,
@@ -44,15 +46,16 @@ use crate::{
 use std::collections::{BTreeMap, HashSet};
 use std::env::set_var;
 use std::sync::{Arc, Mutex};
+use zellij_types::position::Position;
 use zellij_utils::ipc::IpcReceiverWithContext;
 use zellij_utils::pane_size::{Size, SizeInPixels};
-use zellij_utils::position::Position;
 
 use interprocess::local_socket::Stream as LocalSocketStream;
+use zellij_runtime::channels::{self, ChannelWithContext, Receiver};
+use zellij_types::style::Palette;
 use zellij_utils::ipc::PixelDimensions;
 use zellij_utils::{
-    channels::{self, ChannelWithContext, Receiver},
-    data::{Direction, FloatingPaneCoordinates, InputMode, ModeInfo, NewPanePlacement, Palette},
+    data::{Direction, FloatingPaneCoordinates, InputMode, ModeInfo, NewPanePlacement},
     ipc::{ClientAttributes, ClientToServerMsg, ServerToClientMsg},
 };
 
@@ -556,7 +559,7 @@ impl MockScreen {
         let mut plugin_ids = HashMap::new();
         plugin_ids.insert(
             RunPluginOrAlias::from_url("file:/path/to/fake/plugin", &None, None, None).unwrap(),
-            vec![zellij_utils::internal_ids::PluginId(1)],
+            vec![zellij_types::internal_ids::PluginId(1)],
         );
         for i in 0..pane_count {
             pane_ids.push((TerminalId(i as u32), None));
@@ -656,7 +659,7 @@ impl MockScreen {
                 }),
                 ..Default::default()
             }),
-            vec![zellij_utils::internal_ids::PluginId(1)],
+            vec![zellij_types::internal_ids::PluginId(1)],
         );
         for i in 0..pane_count {
             pane_ids.push((TerminalId(i as u32), None));
@@ -738,7 +741,7 @@ impl MockScreen {
     }
     pub fn new_tab_with_plugins(
         &mut self,
-        plugin_pane_ids: Vec<zellij_utils::internal_ids::PluginId>,
+        plugin_pane_ids: Vec<zellij_types::internal_ids::PluginId>,
     ) {
         // Build a layout where each child is a plugin pane
         let fake_plugin_url = "file:/path/to/fake/plugin";
@@ -1316,7 +1319,7 @@ impl ThemeCapture {
     fn drain_plugin_updates(
         &self,
     ) -> Vec<(
-        Option<zellij_utils::internal_ids::PluginId>,
+        Option<zellij_types::internal_ids::PluginId>,
         Option<ClientId>,
         Event,
     )> {

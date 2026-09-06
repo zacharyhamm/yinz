@@ -1,4 +1,4 @@
-use crate::data::Styling;
+use zellij_types::style::Styling;
 
 #[cfg(not(target_family = "wasm"))]
 use crate::data::{LayoutInfo, LayoutWithError};
@@ -21,8 +21,8 @@ use super::options::Options;
 use super::plugins::{PluginAliases, PluginsConfigError};
 use super::theme::{Themes, UiConfig};
 use crate::cli::{CliArgs, Command};
-use crate::envs::EnvironmentVariables;
 use crate::{home, setup};
+use zellij_types::envs::EnvironmentVariables;
 
 pub const DEFAULT_CONFIG_FILE_NAME: &str = "config.kdl";
 pub const DEFAULT_LUA_CONFIG_FILE_NAME: &str = "config.lua";
@@ -284,7 +284,7 @@ impl TryFrom<&CliArgs> for Config {
 }
 
 /// The drop-in folder under the config dir. See `home::get_config_overlay_dir`.
-pub const CONFIG_OVERLAY_DIR_NAME: &str = "config.d";
+pub use zellij_runtime::consts::CONFIG_OVERLAY_DIR_NAME;
 /// The drop-in zellij writes itself, for anything it is asked to persist: `zellij action
 /// reconfigure --write`, `zellij action set-hook --write`, a plugin's `reconfigure(kdl, true)`.
 /// A person's own config file - KDL or Lua - is never rewritten for those.
@@ -1090,8 +1090,12 @@ mod config_test {
     }
 
     #[test]
-    fn try_from_cli_args_default() {
-        let opts = CliArgs::default();
+    fn try_from_cli_args_with_missing_config_dir_uses_defaults() {
+        let root = tempdir().unwrap();
+        let opts = CliArgs {
+            config_dir: Some(root.path().join("missing")),
+            ..Default::default()
+        };
         let result = Config::try_from(&opts);
         assert_eq!(result.unwrap(), Config::from_default_assets().unwrap());
     }

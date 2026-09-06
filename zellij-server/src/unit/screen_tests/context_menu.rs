@@ -7,7 +7,8 @@
 //! draws nothing at all, and that an answer for a menu that has since closed is ignored.
 
 use super::*;
-use zellij_utils::data::{BareKey, ContextMenuContext, ContextMenuItem, KeyWithModifier};
+use zellij_types::keys::{BareKey, KeyWithModifier};
+use zellij_utils::data::{ContextMenuContext, ContextMenuItem};
 use zellij_utils::input::actions::Action;
 use zellij_utils::input::context_menu::ContextMenu;
 use zellij_utils::pane_size::Viewport;
@@ -817,7 +818,7 @@ fn a_selected_items_context_reaches_only_the_plugin_that_offered_it() {
     assert_eq!(selections.len(), 1, "got: {selections:?}");
     assert_eq!(
         selections[0].0,
-        Some(zellij_utils::internal_ids::PluginId(HOOK_PLUGIN_ID)),
+        Some(zellij_types::internal_ids::PluginId(HOOK_PLUGIN_ID)),
         "addressed to the hook, not broadcast"
     );
     assert_eq!(selections[0].1, Some(client_id));

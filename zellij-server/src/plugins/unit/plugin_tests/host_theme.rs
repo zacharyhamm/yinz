@@ -1,6 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
-use zellij_utils::data::HostTerminalThemeMode;
+use zellij_types::style::HostTerminalThemeMode;
 
 /// The rendered output of every `PluginBytes` asset in `instructions`.
 fn renders(instructions: &[ScreenInstruction]) -> Vec<String> {

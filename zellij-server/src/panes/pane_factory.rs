@@ -3,9 +3,9 @@ use crate::{
     ClientId,
 };
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
-use zellij_utils::internal_ids::{PluginId, TerminalId};
+use zellij_types::internal_ids::{PluginId, TerminalId};
+use zellij_types::style::{Palette, Style};
 use zellij_utils::{
-    data::{Palette, Style},
     input::layout::Run,
     pane_size::{PaneGeom, SizeInPixels},
 };

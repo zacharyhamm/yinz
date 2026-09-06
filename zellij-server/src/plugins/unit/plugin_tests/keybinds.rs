@@ -35,8 +35,8 @@ fn wait_for_plugin_to_load(log: &Watched<Vec<ScreenInstruction>>, plugin_id: u32
 
 fn plugin_render_ids(
     instructions: &[ScreenInstruction],
-) -> Vec<zellij_utils::internal_ids::PluginId> {
-    let mut ids: Vec<zellij_utils::internal_ids::PluginId> = instructions
+) -> Vec<zellij_types::internal_ids::PluginId> {
+    let mut ids: Vec<zellij_types::internal_ids::PluginId> = instructions
         .iter()
         .filter_map(|instruction| match instruction {
             ScreenInstruction::PluginBytes(assets) => Some(assets.iter().map(|a| a.plugin_id)),

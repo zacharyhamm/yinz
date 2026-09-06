@@ -778,7 +778,7 @@ fn click_dispatches_to_higher_layer_plugin() {
     }
     assert_eq!(
         found_plugin_id,
-        Some(zellij_utils::internal_ids::PluginId(20)),
+        Some(zellij_types::internal_ids::PluginId(20)),
         "HighlightClicked should be dispatched to the Tool layer plugin (id: 20)"
     );
 }

@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
 
 use strum::IntoEnumIterator;
-use zellij_utils::data::{BareKey, CommandType, Event, KeyWithModifier, PermissionType};
-use zellij_utils::data_access::DataAccess;
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
+use zellij_storage::data_access::DataAccess;
+use zellij_types::keys::{BareKey, KeyWithModifier};
+use zellij_utils::data::{CommandType, Event, PermissionType};
 use zellij_utils::input::layout::RunPluginLocation;
 use zellij_utils::input::plugins::PluginConfig;
 
@@ -1455,11 +1456,11 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
     // The builtin hook is compiled in rather than read from disk, so nothing else would notice
     // a syntax error in it until an agent exited.
     use crate::background_jobs::BackgroundJob;
-    use zellij_utils::channels::SenderWithContext;
-    use zellij_utils::errors::ErrorContext;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::diagnostics::ErrorContext;
 
     let (to_background_jobs, background_jobs) =
-        zellij_utils::channels::unbounded::<(BackgroundJob, ErrorContext)>();
+        zellij_runtime::channels::unbounded::<(BackgroundJob, ErrorContext)>();
     let mut env = test_env();
     env.senders.to_background_jobs = Some(SenderWithContext::new(to_background_jobs));
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
@@ -1953,14 +1954,14 @@ fn agent_exit_handles_missing_metadata_and_unavailable_changes() {
 fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
     use crate::panes::PaneId;
     use crate::screen::ScreenInstruction;
-    use zellij_utils::channels::SenderWithContext;
-    use zellij_utils::errors::ErrorContext;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::diagnostics::ErrorContext;
     use zellij_utils::input::hooks::HookPoint;
 
     let source =
         zellij_utils::consts::builtin_lua_plugin("agent-policy").expect("the hook is a builtin");
     let (to_screen, screen_receiver) =
-        zellij_utils::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
+        zellij_runtime::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
     let mut env = test_env();
     env.senders.to_screen = Some(SenderWithContext::new(to_screen));
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
@@ -1969,7 +1970,7 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
     plugin.load(&BTreeMap::new()).unwrap();
 
     let notifications =
-        |receiver: &zellij_utils::channels::Receiver<(ScreenInstruction, ErrorContext)>| {
+        |receiver: &zellij_runtime::channels::Receiver<(ScreenInstruction, ErrorContext)>| {
             receiver
                 .try_iter()
                 .filter_map(|(instruction, _)| match instruction {
@@ -2047,9 +2048,9 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
 #[test]
 fn the_shipped_context_menu_hook_filters_the_items_it_is_given() {
     use crate::screen::ScreenInstruction;
-    use zellij_utils::channels::SenderWithContext;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::diagnostics::ErrorContext;
     use zellij_utils::data::{ContextMenuContext, ContextMenuItem, ContextMenuLink};
-    use zellij_utils::errors::ErrorContext;
 
     let source =
         zellij_utils::consts::builtin_lua_plugin("context-menu").expect("the hook is a builtin");
@@ -2063,7 +2064,7 @@ fn the_shipped_context_menu_hook_filters_the_items_it_is_given() {
     // silently-failing default every other test here uses.
     let answer_for = |context: ContextMenuContext| -> Vec<ContextMenuItem> {
         let (to_screen, screen_receiver) =
-            zellij_utils::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
+            zellij_runtime::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
         let mut env = test_env();
         env.senders.to_screen = Some(SenderWithContext::new(to_screen));
         env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
@@ -2158,14 +2159,14 @@ fn the_shipped_context_menu_hook_filters_the_items_it_is_given() {
 #[test]
 fn the_shipped_context_menu_hook_opens_a_link_with_the_opener_the_machine_has() {
     use crate::background_jobs::BackgroundJob;
-    use zellij_utils::channels::SenderWithContext;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::diagnostics::ErrorContext;
     use zellij_utils::data::ContextMenuContext;
-    use zellij_utils::errors::ErrorContext;
 
     let source =
         zellij_utils::consts::builtin_lua_plugin("context-menu").expect("the hook is a builtin");
     let (to_background_jobs, background_jobs) =
-        zellij_utils::channels::unbounded::<(BackgroundJob, ErrorContext)>();
+        zellij_runtime::channels::unbounded::<(BackgroundJob, ErrorContext)>();
     let mut env = test_env();
     env.senders.to_background_jobs = Some(SenderWithContext::new(to_background_jobs));
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
@@ -2173,15 +2174,16 @@ fn the_shipped_context_menu_hook_opens_a_link_with_the_opener_the_machine_has() 
     let mut plugin = load_lua_plugin(source, "context-menu.lua", env).unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
 
-    let commands = |receiver: &zellij_utils::channels::Receiver<(BackgroundJob, ErrorContext)>| {
-        receiver
-            .try_iter()
-            .filter_map(|(job, _)| match job {
-                BackgroundJob::RunCommand(_, _, command, args, ..) => Some((command, args)),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-    };
+    let commands =
+        |receiver: &zellij_runtime::channels::Receiver<(BackgroundJob, ErrorContext)>| {
+            receiver
+                .try_iter()
+                .filter_map(|(job, _)| match job {
+                    BackgroundJob::RunCommand(_, _, command, args, ..) => Some((command, args)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
 
     // Both candidates are probed at load, so the answer is there before the first selection.
     let probes = commands(&background_jobs);
@@ -2912,7 +2914,7 @@ fn a_cli_pipes_pane_reaches_lua_on_the_message() {
         &None,
         false,
     );
-    message.pane_id = Some(PaneId::Terminal(TerminalId(7).0));
+    message.pane_id = Some(PaneId::Terminal(TerminalId(7)));
     assert!(plugin.pipe(&message).unwrap());
     assert_eq!(
         String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
@@ -2974,11 +2976,11 @@ fn the_plugin_folder_is_a_root_that_needs_author_plugins_to_write() {
 #[test]
 fn reloading_a_plugin_by_url_asks_the_plugin_thread() {
     use crate::plugins::PluginInstruction;
-    use zellij_utils::channels::SenderWithContext;
-    use zellij_utils::errors::ErrorContext;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::diagnostics::ErrorContext;
 
     let (to_plugin, plugin_receiver) =
-        zellij_utils::channels::unbounded::<(PluginInstruction, ErrorContext)>();
+        zellij_runtime::channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let mut env = test_env();
     env.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
@@ -3037,12 +3039,12 @@ fn check_lua_plugin_answers_nil_or_the_compile_error() {
 #[test]
 fn a_plugin_can_set_a_panes_agent_record() {
     use crate::screen::ScreenInstruction;
-    use zellij_utils::channels::SenderWithContext;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::diagnostics::ErrorContext;
     use zellij_utils::data::{AgentInfo, AgentSource, AgentState};
-    use zellij_utils::errors::ErrorContext;
 
     let (to_screen, screen_receiver) =
-        zellij_utils::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
+        zellij_runtime::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
     let mut env = test_env();
     env.senders.to_screen = Some(SenderWithContext::new(to_screen));
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
@@ -3880,7 +3882,7 @@ fn a_render_report_can_be_looked_up_by_pane() {
     use zellij_utils::data::{PaneContents, PaneId};
     let mut report = std::collections::HashMap::new();
     report.insert(
-        PaneId::Terminal(TerminalId(3).0),
+        PaneId::Terminal(TerminalId(3)),
         PaneContents {
             viewport: vec!["hello".to_owned()],
             ..Default::default()
@@ -5565,7 +5567,9 @@ fn a_step_pushed_while_running_extends_the_workflow() {
 fn the_workflows_pane_closing_ends_it() {
     let mut plugin = workflow_plugin(r#"steps = { { path = "a" }, { path = "b" } },"#);
     plugin
-        .update(&Event::PaneClosed(zellij_utils::data::PaneId::Terminal(7)))
+        .update(&Event::PaneClosed(zellij_utils::data::PaneId::Terminal(
+            zellij_types::internal_ids::TerminalId(7),
+        )))
         .unwrap();
     assert_eq!(logged(&mut plugin), "open:a done:pane_closed");
 }
@@ -5656,7 +5660,7 @@ fn run_command_in_pane_takes_a_numeric_pane_id() {
 #[test]
 fn a_remote_command_pane_keeps_its_guest_cwd() {
     use crate::pty::PtyInstruction;
-    use zellij_utils::channels::SenderWithContext;
+    use zellij_runtime::channels::SenderWithContext;
     use zellij_utils::input::command::TerminalAction;
 
     let mut plugin = load_permitted(
@@ -5683,7 +5687,7 @@ fn a_remote_command_pane_keeps_its_guest_cwd() {
     )
     .unwrap();
     plugin.env_mut().plugin_cwd = PathBuf::from("/plugin/cwd");
-    let (pty_tx, pty_rx) = zellij_utils::channels::unbounded();
+    let (pty_tx, pty_rx) = zellij_runtime::channels::unbounded();
     plugin.env_mut().senders.to_pty = Some(SenderWithContext::new(pty_tx));
     let spawned = Arc::new(Mutex::new(vec![]));
     let sink = spawned.clone();
@@ -5774,9 +5778,9 @@ fn a_remote_replacement_does_not_inherit_the_plugins_cwd() {
     )
     .unwrap();
     plugin.env_mut().plugin_cwd = PathBuf::from("/plugin/cwd");
-    let (screen_tx, screen_rx) = zellij_utils::channels::unbounded();
+    let (screen_tx, screen_rx) = zellij_runtime::channels::unbounded();
     plugin.env_mut().senders.to_screen =
-        Some(zellij_utils::channels::SenderWithContext::new(screen_tx));
+        Some(zellij_runtime::channels::SenderWithContext::new(screen_tx));
     plugin.load(&BTreeMap::new()).unwrap();
 
     let cwds: Vec<Option<PathBuf>> = screen_rx
@@ -6255,7 +6259,9 @@ fn pane_exit_resolves_on_close_as_well_as_on_exit() {
         .update(&Event::CommandPaneExited(7, Some(3), BTreeMap::new()))
         .unwrap();
     plugin
-        .update(&Event::PaneClosed(zellij_utils::data::PaneId::Terminal(7)))
+        .update(&Event::PaneClosed(zellij_utils::data::PaneId::Terminal(
+            zellij_types::internal_ids::TerminalId(7),
+        )))
         .unwrap();
     assert_eq!(logged(&mut plugin), "exit:3 closed:true");
 }

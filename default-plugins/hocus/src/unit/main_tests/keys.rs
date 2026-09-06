@@ -249,7 +249,10 @@ fn tab_on_a_blank_box_steps_to_the_agent_list() {
 
     assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
 
-    assert_eq!(state.ring_focus_calls, [(PaneId::Plugin(7), "list")]);
+    assert_eq!(
+        state.ring_focus_calls,
+        [(PaneId::Plugin(zellij_tile::prelude::PluginId(7)), "list")]
+    );
 }
 
 /// A draft keeps Tab for what it is for. This is the whole of the conflict, and the reason
@@ -276,7 +279,10 @@ fn tab_from_a_released_box_steps_to_the_agent_list() {
 
     assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
 
-    assert_eq!(state.ring_focus_calls, [(PaneId::Plugin(7), "list")]);
+    assert_eq!(
+        state.ring_focus_calls,
+        [(PaneId::Plugin(zellij_tile::prelude::PluginId(7)), "list")]
+    );
     assert_eq!(
         state.input.get_text(),
         "/hist",

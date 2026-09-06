@@ -14,12 +14,15 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
-use zellij_utils::input::options::PaneFrameStyle;
-use zellij_utils::internal_ids::TerminalId;
-use zellij_utils::{
+use zellij_runtime::{
     channels::{self, ChannelWithContext, Receiver, SenderWithContext},
-    data::{ModeInfo, Palette, Style},
     errors::prelude::*,
+};
+use zellij_types::internal_ids::TerminalId;
+use zellij_types::style::{Palette, Style};
+use zellij_utils::input::options::PaneFrameStyle;
+use zellij_utils::{
+    data::ModeInfo,
     input::command::{RunCommand, TerminalAction},
     input::layout::RunPluginOrAlias,
     input::layout::{FloatingPaneLayout, Layout, Run, TiledPaneLayout},
@@ -279,8 +282,8 @@ fn create_layout_applier_fixtures_with_receivers(
     bool,
     bool,
     bool,
-    Receiver<(PtyInstruction, zellij_utils::errors::ErrorContext)>,
-    Receiver<(PluginInstruction, zellij_utils::errors::ErrorContext)>,
+    Receiver<(PtyInstruction, zellij_types::diagnostics::ErrorContext)>,
+    Receiver<(PluginInstruction, zellij_types::diagnostics::ErrorContext)>,
 ) {
     let viewport = Rc::new(RefCell::new(Viewport {
         x: 0,
@@ -530,7 +533,7 @@ fn format_run_instruction(run: &Option<Run>) -> String {
 
 /// Collect all close pane messages from the pty receiver
 fn collect_close_pane_messages(
-    pty_receiver: &Receiver<(PtyInstruction, zellij_utils::errors::ErrorContext)>,
+    pty_receiver: &Receiver<(PtyInstruction, zellij_types::diagnostics::ErrorContext)>,
 ) -> Vec<PaneId> {
     let mut closed_panes = Vec::new();
     while let Ok((instruction, _)) = pty_receiver.try_recv() {
@@ -543,8 +546,8 @@ fn collect_close_pane_messages(
 
 /// Collect all unload plugin messages from the plugin receiver
 fn collect_unload_plugin_messages(
-    plugin_receiver: &Receiver<(PluginInstruction, zellij_utils::errors::ErrorContext)>,
-) -> Vec<zellij_utils::internal_ids::PluginId> {
+    plugin_receiver: &Receiver<(PluginInstruction, zellij_types::diagnostics::ErrorContext)>,
+) -> Vec<zellij_types::internal_ids::PluginId> {
     let mut unloaded_plugins = Vec::new();
     while let Ok((instruction, _)) = plugin_receiver.try_recv() {
         if let PluginInstruction::Unload(plugin_id) = instruction {

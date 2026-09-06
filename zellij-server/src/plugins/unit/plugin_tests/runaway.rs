@@ -229,7 +229,7 @@ fn a_runaway_plugin_is_stopped_by_its_unload(run_plugin: RunPluginOrAlias) {
             matches!(
                 i,
                 ScreenInstruction::UpdatePluginLoadingStage(
-                    zellij_utils::internal_ids::PluginId(0),
+                    zellij_types::internal_ids::PluginId(0),
                     _
                 )
             )
@@ -319,7 +319,7 @@ pub fn a_lua_plugin_stuck_in_load_is_stopped_by_its_unload() {
                     matches!(
                         i,
                         ScreenInstruction::SetSelectable(
-                            PaneId::Plugin(zellij_utils::internal_ids::PluginId(0)),
+                            PaneId::Plugin(zellij_types::internal_ids::PluginId(0)),
                             false
                         )
                     )

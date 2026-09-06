@@ -1,13 +1,12 @@
 //! IPC stuff for starting to split things into a client and server model.
-use crate::{
-    data::{
-        ClientId, ConnectToSession, HostTerminalThemeMode, KeyModifier, KeyWithModifier, PaneId,
-        Style,
-    },
-    errors::{prelude::*, ErrorContext},
-    input::{actions::Action, cli_assets::CliAssets},
-    pane_size::{Size, SizeInPixels},
-};
+use crate::data::ClientId;
+use crate::data::ConnectToSession;
+use crate::data::PaneId;
+use crate::errors::prelude::*;
+use crate::input::actions::Action;
+use crate::input::cli_assets::CliAssets;
+use crate::pane_size::Size;
+use crate::pane_size::SizeInPixels;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use log::warn;
 use serde::{Deserialize, Serialize};
@@ -17,6 +16,11 @@ use std::{
     io::{self, Read, Write},
     marker::PhantomData,
 };
+use zellij_types::diagnostics::ErrorContext;
+use zellij_types::keys::KeyModifier;
+use zellij_types::keys::KeyWithModifier;
+use zellij_types::style::HostTerminalThemeMode;
+use zellij_types::style::Style;
 
 // Protobuf imports
 use crate::client_server_contract::client_server_contract::{

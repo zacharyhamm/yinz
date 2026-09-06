@@ -11,11 +11,12 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
 
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
-use zellij_utils::{consts::VERSION, errors::prelude::*, input::command::RunCommand};
+use zellij_runtime::errors::prelude::*;
+use zellij_utils::{consts::VERSION, input::command::RunCommand};
 
 use super::fdpass::{clear_cloexec, recv_fd};
 use super::protocol::{

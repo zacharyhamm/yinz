@@ -27,11 +27,14 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
 };
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
 
 use crate::pty_host::client::{ChildRunState, ReleasedPane};
 use crate::pty_host::remote::protocol::ChildSignal;
 use tokio::task::JoinHandle;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::diagnostics::ContextType;
+use zellij_types::diagnostics::PtyContext;
 use zellij_utils::{
     data::{
         AgentInfo, CommandOrPlugin, Event, FloatingPaneCoordinates, GetPaneCwdResponse,
@@ -39,8 +42,6 @@ use zellij_utils::{
         NewPanePlacement, OriginatingPlugin, OverlayPlacement, PaneGitProbe, SessionInfo,
         WarpPlacement, WarpedPane, WarpedTab,
     },
-    errors::prelude::*,
-    errors::{ContextType, PtyContext},
     input::{
         command::{OpenFilePayload, PaneTarget, RunCommand, TerminalAction},
         layout::{
@@ -1041,7 +1042,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
     pty.register_agent_report_callback();
     loop {
         let (event, mut err_ctx) = pty.bus.recv().expect("failed to receive event on channel");
-        err_ctx.add_call(ContextType::Pty((&event).into()));
+        zellij_runtime::errors::add_call(&mut err_ctx, ContextType::Pty((&event).into()));
         match event {
             PtyInstruction::SpawnTerminal(
                 terminal_action,
@@ -3799,7 +3800,7 @@ impl Pty {
                 None,
                 None,
                 Event::CwdChanged(
-                    pane_id.into(),
+                    pane_id,
                     cwd.clone(),
                     focused_client_ids.into_iter().map(|id| id.0).collect(),
                 ),
@@ -4048,7 +4049,7 @@ impl Pty {
                         None,
                         None,
                         Event::CommandChanged(
-                            pane_id.into(),
+                            pane_id,
                             command,
                             is_foreground,
                             focused_client_ids.into_iter().map(|id| id.0).collect(),
