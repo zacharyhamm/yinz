@@ -160,7 +160,7 @@ impl<'a> StartupContext<'a> {
                 (
                     ClientToServerMsg::AttachClient {
                         cli_assets,
-                        tab_position_to_focus: focus.tab_position,
+                        tab_number_to_focus: focus.tab_number,
                         pane_to_focus: focus.pane,
                     },
                     ipc_pipe,
@@ -225,6 +225,6 @@ impl<'a> StartupContext<'a> {
 /// creating a session, so it defaults to "whatever the layout says".
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct AttachFocus {
-    pub tab_position: Option<TabNumber>,
+    pub tab_number: Option<TabNumber>,
     pub pane: Option<zellij_types::pane_id::PaneId>,
 }

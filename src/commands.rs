@@ -988,7 +988,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                 client.set_cwd(new_session_cwd);
             }
 
-            let tab_position_to_focus = reconnect_to_session.as_ref().and_then(|r| r.tab_position);
+            let tab_number_to_focus = reconnect_to_session.as_ref().and_then(|r| r.tab_position);
             let pane_id_to_focus = reconnect_to_session.as_ref().and_then(|r| r.pane_id);
             reconnect_to_session = start_client_impl(
                 Box::new(os_input),
@@ -996,7 +996,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                 config,
                 config_options,
                 client,
-                tab_position_to_focus,
+                tab_number_to_focus,
                 pane_id_to_focus,
                 is_a_reconnect,
                 should_create_detached,
@@ -1187,7 +1187,7 @@ pub(crate) fn watch_session(session_name: Option<String>, opts: CliArgs) {
         config,
         config_options,
         client_info,
-        None,  // tab_position_to_focus
+        None,  // tab_number_to_focus
         None,  // pane_id_to_focus
         false, // is_a_reconnect
         false, // should_create_detached

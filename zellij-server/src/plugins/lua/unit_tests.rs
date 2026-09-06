@@ -4578,6 +4578,26 @@ fn decoded(command: CommandType, bytes: &[u8], describe: &str) -> String {
     lua.load(describe).eval::<String>().unwrap()
 }
 
+#[test]
+fn focused_pane_reply_uses_tab_id() {
+    use prost::Message;
+    use zellij_plugin_api::plugin_command::ProtobufGetFocusedPaneInfoResponse;
+    use zellij_types::data::{GetFocusedPaneInfoResponse, PaneId};
+
+    let reply = ProtobufGetFocusedPaneInfoResponse::from(GetFocusedPaneInfoResponse::Ok {
+        tab_id: TabId::new(7),
+        pane_id: PaneId::Terminal(TerminalId::new(42)),
+    });
+    assert_eq!(
+        decoded(
+            CommandType::GetFocusedPaneInfo,
+            &reply.encode_to_vec(),
+            "assert(v.tab_index == nil); return tostring(v.tab_id)",
+        ),
+        "7",
+    );
+}
+
 /// Decode `bytes` as `command`'s reply and hand back the error it raised.
 fn decode_error(command: CommandType, bytes: &[u8]) -> String {
     let lua = mlua::Lua::new();

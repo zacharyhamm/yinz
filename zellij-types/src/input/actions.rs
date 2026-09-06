@@ -451,7 +451,7 @@ pub enum Action {
     WarpTab {
         /// `None` means whichever tab is focused. This is a tab *id* rather than
         /// a position, matching `Screen::tabs`.
-        tab_index: Option<TabId>,
+        tab_id: Option<TabId>,
         to_session: SessionName,
     },
     /// Take a whole tab over from a session warping it here.
@@ -471,7 +471,7 @@ pub enum Action {
     /// cannot, so it needs the receiving server to do it.
     WarpTabFrom {
         from_session: SessionName,
-        tab_index: TabId,
+        tab_id: TabId,
     },
     /// Returns: Plugin pane ID (format: plugin_<id>) when creating or focusing plugin
     LaunchOrFocusPlugin {

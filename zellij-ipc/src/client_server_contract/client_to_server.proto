@@ -67,7 +67,7 @@ message FirstClientConnectedMsg {
 message AttachClientMsg {
   reserved 4;
   CliAssets cli_assets = 1;
-  optional uint32 tab_position_to_focus = 2;
+  optional uint32 tab_number_to_focus = 2;
   optional PaneReference pane_to_focus = 3;
 }
 

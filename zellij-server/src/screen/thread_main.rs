@@ -1277,9 +1277,9 @@ pub(crate) fn screen_thread_main(
                 response_channel,
             } => {
                 let response = match screen.active_tab_ids.get(&client_id) {
-                    Some(&focused_tab_index) => match screen.get_active_pane_id(&client_id) {
+                    Some(&focused_tab_id) => match screen.get_active_pane_id(&client_id) {
                         Some(focused_pane_id) => GetFocusedPaneInfoResponse::Ok {
-                            tab_index: focused_tab_index,
+                            tab_id: focused_tab_id,
                             pane_id: focused_pane_id.into(),
                         },
                         None => GetFocusedPaneInfoResponse::Err(format!(
@@ -2460,7 +2460,7 @@ pub(crate) fn screen_thread_main(
             ScreenInstruction::AddClient(
                 client_id,
                 client_size,
-                tab_position_to_focus,
+                tab_number_to_focus,
                 pane_id_to_focus,
             ) => {
                 let attach_started_at = Instant::now();
@@ -2514,11 +2514,11 @@ pub(crate) fn screen_thread_main(
                         "attach trace: screen client_id={client_id} restoring pane focus {pane_id:?}"
                     );
                     screen.focus_pane_with_id(pane_id, true, false, client_id)?;
-                } else if let Some(tab_position_to_focus) = tab_position_to_focus {
+                } else if let Some(tab_number_to_focus) = tab_number_to_focus {
                     log::info!(
-                        "attach trace: screen client_id={client_id} restoring tab focus position={tab_position_to_focus}"
+                        "attach trace: screen client_id={client_id} restoring tab focus number={tab_number_to_focus}"
                     );
-                    screen.go_to_tab(tab_position_to_focus, client_id)?;
+                    screen.go_to_tab(tab_number_to_focus, client_id)?;
                 }
                 log::info!(
                     "attach trace: screen client_id={client_id} focus restoration complete after {:?}",
@@ -3819,7 +3819,7 @@ pub(crate) fn screen_thread_main(
                 screen.render(None)?;
             },
             ScreenInstruction::WarpTab {
-                tab_index,
+                tab_id,
                 client_id,
                 response_channel,
                 deadline,
@@ -3827,7 +3827,7 @@ pub(crate) fn screen_thread_main(
                 // Every check that can fail happens before the pty thread is
                 // asked for anything, so a tab whose warp is going to be refused
                 // stays exactly where it was.
-                match screen.check_tab_can_be_warped(tab_index, client_id) {
+                match screen.check_tab_can_be_warped(tab_id, client_id) {
                     Ok((tab_index, terminal_ids, prepared)) => {
                         // The caller's deadline less what this thread will
                         // need afterwards: `take_released_tab_for_warp`

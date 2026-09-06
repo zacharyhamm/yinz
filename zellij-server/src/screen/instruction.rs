@@ -569,7 +569,7 @@ pub enum ScreenInstruction {
     /// session. The tab analogue of `WarpPane`, with the same rule: every
     /// refusal happens here, before a single supervisor is released.
     WarpTab {
-        tab_index: Option<TabId>,
+        tab_id: Option<TabId>,
         client_id: ClientId,
         response_channel: crossbeam::channel::Sender<Result<Box<WarpedTab>, String>>,
         /// The moment the caller stops waiting for `response_channel`.

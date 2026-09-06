@@ -215,6 +215,12 @@ apart by position. Any other tuple command takes the positional form only, and a
 does not know is read as the wrong shape. Fields you leave out are absent, not empty: a command
 with no required arguments can be called with none.
 
+`zellij.get_focused_pane_info()` returns `{ tab_id = ..., pane_id = ... }`.
+Use the stable `tab_id` with `zellij.new_tiled_pane_in_tab { tab_id = ... }`,
+`zellij.warp_tab_to_session { tab_id = ..., to_session = "work" }`, or
+`zellij.warp_tab_from_session { tab_id = ..., from_session = "work" }`.
+For a warp from another session, the ID belongs to that source session.
+
 A tuple command's arguments are counted, though, so an argument that is optional in Rust is
 *nullable* rather than absent: all of them have to be there.
 

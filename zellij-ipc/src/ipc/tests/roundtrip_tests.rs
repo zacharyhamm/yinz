@@ -992,22 +992,22 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
         cli_assets: CliAssets::default(),
-        tab_position_to_focus: None,
+        tab_number_to_focus: None,
         pane_to_focus: None,
     });
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
         cli_assets: CliAssets::default(),
-        tab_position_to_focus: Some(TabNumber::new(0)),
+        tab_number_to_focus: Some(TabNumber::new(0)),
         pane_to_focus: None,
     });
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
         cli_assets: CliAssets::default(),
-        tab_position_to_focus: None,
+        tab_number_to_focus: None,
         pane_to_focus: Some(PaneId::from_legacy(0, false)),
     });
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
         cli_assets: CliAssets::default(),
-        tab_position_to_focus: None,
+        tab_number_to_focus: None,
         pane_to_focus: Some(PaneId::from_legacy(100, true)),
     });
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
@@ -1021,7 +1021,7 @@ fn test_client_messages() {
                 .collect(),
             ..Default::default()
         },
-        tab_position_to_focus: None,
+        tab_number_to_focus: None,
         pane_to_focus: None,
     });
     // TODO: Action
@@ -1156,7 +1156,7 @@ fn test_client_messages() {
     // reordered a repeated field would be silently wrong rather than obviously so.
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::WarpTab {
-            tab_index: None,
+            tab_id: None,
             to_session: "other".to_owned().into(),
         },
         terminal_id: None,
@@ -1165,7 +1165,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::WarpTab {
-            tab_index: Some(TabId::new(2)),
+            tab_id: Some(TabId::new(2)),
             to_session: "other".to_owned().into(),
         },
         terminal_id: None,
@@ -1175,7 +1175,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::WarpTabFrom {
             from_session: "other".to_owned().into(),
-            tab_index: TabId::new(2),
+            tab_id: TabId::new(2),
         },
         terminal_id: None,
         client_id: None,
@@ -4770,7 +4770,7 @@ fn attach_pane_reference_keeps_its_json_object() {
         let pane = PaneId::from_legacy(id, is_plugin);
         let message = ClientToServerMsg::AttachClient {
             cli_assets: CliAssets::default(),
-            tab_position_to_focus: None,
+            tab_number_to_focus: None,
             pane_to_focus: Some(pane),
         };
         let json = serde_json::to_value(&message).unwrap();

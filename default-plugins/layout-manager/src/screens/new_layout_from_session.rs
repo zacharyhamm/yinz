@@ -86,9 +86,9 @@ impl NewLayoutFromCurrentSessionScreen {
             eprintln!("Cannot retrieve focused tab info");
             return None;
         };
-        let focused_tab_index = focused_pane_info.0;
+        let focused_tab_id = focused_pane_info.0;
         if self.save_current_tab_only() {
-            match dump_session_layout_for_tab(focused_tab_index) {
+            match dump_session_layout_for_tab(focused_tab_id) {
                 Ok((session_layout, Some(session_layout_metadata))) => {
                     self.session_layout = session_layout;
                     self.current_layout_metadata = session_layout_metadata;

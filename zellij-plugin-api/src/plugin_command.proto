@@ -834,12 +834,12 @@ message WarpPaneFromSessionPayload {
 
 // A tab has no placement to choose: it arrives as a tab.
 message WarpTabToSessionPayload {
-  uint32 tab_index = 1;
+  uint32 tab_id = 1;
   string to_session = 2;
 }
 
 message WarpTabFromSessionPayload {
-  uint32 tab_index = 1;
+  uint32 tab_id = 1;
   string from_session = 2;
 }
 
@@ -904,7 +904,7 @@ message NewTabUnfocusedPayload {
 }
 
 message NewTiledPaneInTabPayload {
-  uint32 tab_position = 1;
+  uint32 tab_id = 1;
 }
 
 message DumpSessionLayoutPayload {
@@ -1614,7 +1614,7 @@ message GetFocusedPaneInfoResponse {
 }
 
 message FocusedPaneInfo {
-  uint32 focused_tab_index = 1;
+  uint32 focused_tab_id = 1;
   PaneId focused_pane_id = 2;
 }
 

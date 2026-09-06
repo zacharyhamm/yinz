@@ -783,7 +783,7 @@ fn a_tab_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
     mock_screen
         .to_screen
         .send(ScreenInstruction::WarpTab {
-            tab_index: Some(TabId::new(0)),
+            tab_id: Some(TabId::new(0)),
             client_id,
             response_channel: response_tx,
             // Already past. No sleep needed and none wanted: what is being
@@ -873,7 +873,7 @@ fn a_tab_is_not_taken_apart_when_its_release_lands_inside_screens_own_reserve() 
     mock_screen
         .to_screen
         .send(ScreenInstruction::WarpTab {
-            tab_index: Some(TabId::new(0)),
+            tab_id: Some(TabId::new(0)),
             client_id,
             response_channel: response_tx,
             deadline: inside_the_reserve,
@@ -1032,7 +1032,7 @@ fn a_refused_duplicate_tab_warp_does_not_strand_the_still_attached_panes() {
         mock_screen
             .to_screen
             .send(ScreenInstruction::WarpTab {
-                tab_index: Some(TabId::new(0)),
+                tab_id: Some(TabId::new(0)),
                 client_id,
                 response_channel,
                 deadline: warp_deadline(),
@@ -1079,7 +1079,7 @@ fn a_refused_duplicate_tab_warp_does_not_strand_the_still_attached_panes() {
     mock_screen
         .to_screen
         .send(ScreenInstruction::WarpTab {
-            tab_index: Some(TabId::new(0)),
+            tab_id: Some(TabId::new(0)),
             client_id,
             response_channel: crossbeam::channel::unbounded().0,
             deadline: warp_deadline(),

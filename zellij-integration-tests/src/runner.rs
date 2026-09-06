@@ -217,7 +217,7 @@ fn spawn_client_thread(
     std::thread::Builder::new()
         .name("in_process_zellij_client".to_string())
         .spawn(move || {
-            let tab_position_to_focus = None;
+            let tab_number_to_focus = None;
             let pane_id_to_focus = None;
             let is_a_reconnect = false;
             let start_detached_and_exit = false;
@@ -227,7 +227,7 @@ fn spawn_client_thread(
                 config,
                 config_options,
                 client_info,
-                tab_position_to_focus,
+                tab_number_to_focus,
                 pane_id_to_focus,
                 is_a_reconnect,
                 start_detached_and_exit,

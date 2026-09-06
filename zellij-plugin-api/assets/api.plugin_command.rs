@@ -1069,7 +1069,7 @@ pub struct WarpPaneFromSessionPayload {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WarpTabToSessionPayload {
     #[prost(uint32, tag="1")]
-    pub tab_index: u32,
+    pub tab_id: u32,
     #[prost(string, tag="2")]
     pub to_session: ::prost::alloc::string::String,
 }
@@ -1077,7 +1077,7 @@ pub struct WarpTabToSessionPayload {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WarpTabFromSessionPayload {
     #[prost(uint32, tag="1")]
-    pub tab_index: u32,
+    pub tab_id: u32,
     #[prost(string, tag="2")]
     pub from_session: ::prost::alloc::string::String,
 }
@@ -1190,7 +1190,7 @@ pub struct NewTabUnfocusedPayload {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NewTiledPaneInTabPayload {
     #[prost(uint32, tag="1")]
-    pub tab_position: u32,
+    pub tab_id: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2368,7 +2368,7 @@ pub mod get_focused_pane_info_response {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FocusedPaneInfo {
     #[prost(uint32, tag="1")]
-    pub focused_tab_index: u32,
+    pub focused_tab_id: u32,
     #[prost(message, optional, tag="2")]
     pub focused_pane_id: ::core::option::Option<PaneId>,
 }

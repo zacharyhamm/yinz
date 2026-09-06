@@ -627,8 +627,8 @@ impl From<GetPaneGitProbeResponse> for ProtobufGetPaneGitProbeResponse {
 impl From<GetFocusedPaneInfoResponse> for ProtobufGetFocusedPaneInfoResponse {
     fn from(response: GetFocusedPaneInfoResponse) -> Self {
         match response {
-            GetFocusedPaneInfoResponse::Ok { tab_index, pane_id } => {
-                let Ok(tab_index) = u32::try_from(tab_index.get()) else {
+            GetFocusedPaneInfoResponse::Ok { tab_id, pane_id } => {
+                let Ok(tab_id) = u32::try_from(tab_id.get()) else {
                     return GetFocusedPaneInfoResponse::Err(
                         "tab_id is outside u32 range".to_owned(),
                     )
@@ -647,7 +647,7 @@ impl From<GetFocusedPaneInfoResponse> for ProtobufGetFocusedPaneInfoResponse {
                 ProtobufGetFocusedPaneInfoResponse {
                     result: Some(get_focused_pane_info_response::Result::FocusedPaneInfo(
                         FocusedPaneInfo {
-                            focused_tab_index: tab_index,
+                            focused_tab_id: tab_id,
                             focused_pane_id: Some(protobuf_pane_id),
                         },
                     )),
@@ -1139,7 +1139,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::NewTiledPaneInTab) => match protobuf_plugin_command.payload {
                 Some(Payload::NewTiledPaneInTabPayload(payload)) => {
                     Ok(PluginCommand::NewTiledPaneInTab {
-                        tab_position: TabId::new(payload.tab_position as usize),
+                        tab_id: TabId::new(payload.tab_id as usize),
                     })
                 },
                 _ => Err("Mismatched payload for NewTiledPaneInTab"),
@@ -3311,7 +3311,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::WarpTabToSession) => match protobuf_plugin_command.payload {
                 Some(Payload::WarpTabToSessionPayload(payload)) => {
                     Ok(PluginCommand::WarpTabToSession {
-                        tab_index: TabId::new(payload.tab_index as usize),
+                        tab_id: TabId::new(payload.tab_id as usize),
                         to_session: payload.to_session.into(),
                     })
                 },
@@ -3320,7 +3320,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::WarpTabFromSession) => match protobuf_plugin_command.payload {
                 Some(Payload::WarpTabFromSessionPayload(payload)) => {
                     Ok(PluginCommand::WarpTabFromSession {
-                        tab_index: TabId::new(payload.tab_index as usize),
+                        tab_id: TabId::new(payload.tab_id as usize),
                         from_session: payload.from_session.into(),
                     })
                 },
@@ -3731,11 +3731,11 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     cwd,
                 })),
             }),
-            PluginCommand::NewTiledPaneInTab { tab_position } => Ok(ProtobufPluginCommand {
+            PluginCommand::NewTiledPaneInTab { tab_id } => Ok(ProtobufPluginCommand {
                 name: CommandName::NewTiledPaneInTab as i32,
                 payload: Some(Payload::NewTiledPaneInTabPayload(
                     NewTiledPaneInTabPayload {
-                        tab_position: u32::try_from(tab_position.get())
+                        tab_id: u32::try_from(tab_id.get())
                             .map_err(|_| "tab_id is outside u32 range")?,
                     },
                 )),
@@ -5614,25 +5614,22 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     },
                 )),
             }),
-            PluginCommand::WarpTabToSession {
-                tab_index,
-                to_session,
-            } => Ok(ProtobufPluginCommand {
+            PluginCommand::WarpTabToSession { tab_id, to_session } => Ok(ProtobufPluginCommand {
                 name: CommandName::WarpTabToSession as i32,
                 payload: Some(Payload::WarpTabToSessionPayload(WarpTabToSessionPayload {
-                    tab_index: u32::try_from(tab_index.get())
+                    tab_id: u32::try_from(tab_id.get())
                         .map_err(|_| "tab_id is outside u32 range")?,
                     to_session: to_session.to_string(),
                 })),
             }),
             PluginCommand::WarpTabFromSession {
-                tab_index,
+                tab_id,
                 from_session,
             } => Ok(ProtobufPluginCommand {
                 name: CommandName::WarpTabFromSession as i32,
                 payload: Some(Payload::WarpTabFromSessionPayload(
                     WarpTabFromSessionPayload {
-                        tab_index: u32::try_from(tab_index.get())
+                        tab_id: u32::try_from(tab_id.get())
                             .map_err(|_| "tab_id is outside u32 range")?,
                         from_session: from_session.to_string(),
                     },

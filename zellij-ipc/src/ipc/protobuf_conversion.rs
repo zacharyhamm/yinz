@@ -134,11 +134,11 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
             },
             ClientToServerMsg::AttachClient {
                 cli_assets,
-                tab_position_to_focus,
+                tab_number_to_focus,
                 pane_to_focus,
             } => client_to_server_msg::Message::AttachClient(AttachClientMsg {
                 cli_assets: Some(cli_assets.into()),
-                tab_position_to_focus: tab_position_to_focus.map(|pos| pos.get()),
+                tab_number_to_focus: tab_number_to_focus.map(|pos| pos.get()),
                 pane_to_focus: pane_to_focus.map(|p| p.into()),
             }),
             ClientToServerMsg::AttachWatcherClient { terminal_size } => {
@@ -335,7 +335,7 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                         .cli_assets
                         .ok_or_else(|| anyhow!("Missing cli_assets"))?
                         .try_into()?,
-                    tab_position_to_focus: attach.tab_position_to_focus.map(TabNumber::new),
+                    tab_number_to_focus: attach.tab_number_to_focus.map(TabNumber::new),
                     pane_to_focus: attach.pane_to_focus.map(|p| p.try_into()).transpose()?,
                 })
             },
@@ -1913,22 +1913,21 @@ impl TryFrom<zellij_types::input::actions::Action>
                     agent: payload.agent.clone().map(agent_info_to_proto),
                 })
             },
-            zellij_types::input::actions::Action::WarpTab {
-                tab_index,
-                to_session,
-            } => ActionType::WarpTab(WarpTabAction {
-                to_session: to_session.to_string(),
-                tab_index: tab_index
-                    .map(|i| u32::try_from(i.get()))
-                    .transpose()
-                    .context("tab_id is outside u32 range")?,
-            }),
+            zellij_types::input::actions::Action::WarpTab { tab_id, to_session } => {
+                ActionType::WarpTab(WarpTabAction {
+                    to_session: to_session.to_string(),
+                    tab_id: tab_id
+                        .map(|i| u32::try_from(i.get()))
+                        .transpose()
+                        .context("tab_id is outside u32 range")?,
+                })
+            },
             zellij_types::input::actions::Action::WarpTabFrom {
                 from_session,
-                tab_index,
+                tab_id,
             } => ActionType::WarpTabFrom(WarpTabFromAction {
                 from_session: from_session.to_string(),
-                tab_index: u32::try_from(tab_index.get()).context("tab_id is outside u32 range")?,
+                tab_id: u32::try_from(tab_id.get()).context("tab_id is outside u32 range")?,
             }),
             zellij_types::input::actions::Action::AdoptTab { payload } => {
                 ActionType::AdoptTab(AdoptTabAction {
@@ -2991,13 +2990,13 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             ActionType::WarpTab(warp_tab_action) => {
                 Ok(zellij_types::input::actions::Action::WarpTab {
                     to_session: warp_tab_action.to_session.clone().into(),
-                    tab_index: warp_tab_action.tab_index.map(|i| TabId::new(i as usize)),
+                    tab_id: warp_tab_action.tab_id.map(|i| TabId::new(i as usize)),
                 })
             },
             ActionType::WarpTabFrom(warp_tab_from_action) => {
                 Ok(zellij_types::input::actions::Action::WarpTabFrom {
                     from_session: warp_tab_from_action.from_session.clone().into(),
-                    tab_index: TabId::try_from(u64::from(warp_tab_from_action.tab_index))
+                    tab_id: TabId::try_from(u64::from(warp_tab_from_action.tab_id))
                         .context("tab_id is outside usize range")?,
                 })
             },
