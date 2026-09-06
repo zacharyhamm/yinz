@@ -746,9 +746,10 @@ pub fn to_kdl(value: &Action) -> Option<KdlNode> {
             if let Some(pos) = tab_position {
                 node.push(KdlEntry::new_prop("tab_position", *pos as i64));
             }
-            if let Some((id, is_plugin)) = pane_id {
-                node.push(KdlEntry::new_prop("pane_id", *id as i64));
-                if *is_plugin {
+            if let Some(pane_id) = pane_id {
+                let (id, is_plugin) = pane_id.legacy_parts();
+                node.push(KdlEntry::new_prop("pane_id", i64::from(id)));
+                if is_plugin {
                     node.push(KdlEntry::new_prop("is_plugin", true));
                 }
             }
@@ -1138,7 +1139,8 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                 .map(|i| i as u32);
             let is_plugin = crate::kdl_get_bool_property_or_child_value!(kdl_action, "is_plugin")
                 .unwrap_or(false);
-            let pane_id_tuple = pane_id.map(|id| (id, is_plugin));
+            let pane_id =
+                pane_id.map(|id| zellij_types::pane_id::PaneId::from_legacy(id, is_plugin));
 
             // Parse layout
             let layout = if let Some(layout_str) =
@@ -1160,7 +1162,7 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
             Ok(Action::SwitchSession {
                 name,
                 tab_position,
-                pane_id: pane_id_tuple,
+                pane_id,
                 layout,
                 cwd,
             })

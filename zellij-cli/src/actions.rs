@@ -1654,8 +1654,7 @@ pub fn actions_from_cli(
         } => {
             let pane_id = match pane_id {
                 Some(stringified_pane_id) => match PaneId::from_str(&stringified_pane_id) {
-                    Ok(PaneId::Terminal(id)) => Some((id.get(), false)),
-                    Ok(PaneId::Plugin(id)) => Some((id.get(), true)),
+                    Ok(pane_id) => Some(pane_id),
                     Err(_e) => {
                         return Err(format!(
                                 "Malformed pane id: {}, expecting either a bare integer (eg. 1), a terminal pane id (eg. terminal_1) or a plugin pane id (eg. plugin_1)",

@@ -160,9 +160,7 @@ impl<'a> StartupContext<'a> {
                     ClientToServerMsg::AttachClient {
                         cli_assets,
                         tab_position_to_focus: focus.tab_position,
-                        pane_to_focus: focus.pane.map(|(pane_id, is_plugin)| {
-                            zellij_ipc::ipc::PaneReference { pane_id, is_plugin }
-                        }),
+                        pane_to_focus: focus.pane,
                     },
                     ipc_pipe,
                 )
@@ -227,5 +225,5 @@ impl<'a> StartupContext<'a> {
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct AttachFocus {
     pub tab_position: Option<usize>,
-    pub pane: Option<(u32, bool)>,
+    pub pane: Option<zellij_types::pane_id::PaneId>,
 }

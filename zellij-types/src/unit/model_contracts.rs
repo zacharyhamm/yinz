@@ -176,3 +176,28 @@ fn layout_diagnostic_keeps_its_serialized_fields() {
     let error: LayoutParsingError = serde_json::from_str(json).unwrap();
     assert_eq!(serde_json::to_string(&error).unwrap(), json);
 }
+
+#[test]
+fn session_pane_selectors_keep_legacy_tuples() {
+    use crate::data::ConnectToSession;
+    use crate::input::actions::Action;
+    use crate::pane_id::PaneId;
+    for (value, pane) in [
+        ("null", None),
+        ("[0,false]", Some(PaneId::from_legacy(0, false))),
+        (
+            "[4294967295,true]",
+            Some(PaneId::from_legacy(u32::MAX, true)),
+        ),
+    ] {
+        let json = format!(
+            r#"{{"name":"main","tab_position":null,"pane_id":{value},"layout":null,"cwd":null}}"#
+        );
+        let session: ConnectToSession = serde_json::from_str(&json).unwrap();
+        assert_eq!(session.pane_id, pane);
+        assert_eq!(serde_json::to_string(&session).unwrap(), json);
+        let json = format!(r#"{{"SwitchSession":{json}}}"#);
+        let action: Action = serde_json::from_str(&json).unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+    }
+}

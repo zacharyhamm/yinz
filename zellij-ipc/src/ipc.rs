@@ -92,12 +92,6 @@ pub struct PixelDimensions {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
-pub struct PaneReference {
-    pub pane_id: u32,
-    pub is_plugin: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 pub struct ColorRegister {
     pub index: usize,
     pub color: String,
@@ -151,7 +145,8 @@ pub enum ClientToServerMsg {
     AttachClient {
         cli_assets: CliAssets,
         tab_position_to_focus: Option<usize>,
-        pane_to_focus: Option<PaneReference>,
+        #[serde(default, with = "zellij_types::pane_id::legacy_reference")]
+        pane_to_focus: Option<PaneId>,
     },
     AttachWatcherClient {
         terminal_size: Size,

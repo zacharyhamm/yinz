@@ -413,7 +413,8 @@ pub enum Action {
     SwitchSession {
         name: String,
         tab_position: Option<usize>,
-        pane_id: Option<(u32, bool)>, // (id, is_plugin)
+        #[serde(default, with = "crate::pane_id::legacy_tuple")]
+        pane_id: Option<PaneId>,
         layout: Option<LayoutInfo>,
         cwd: Option<PathBuf>,
     },

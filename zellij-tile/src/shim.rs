@@ -1905,7 +1905,7 @@ pub fn switch_session_with_cwd(name: Option<&str>, cwd: Option<PathBuf>) {
 pub fn switch_session_with_focus(
     name: &str,
     tab_position: Option<usize>,
-    pane_id: Option<(u32, bool)>,
+    pane_id: Option<zellij_types::pane_id::PaneId>,
 ) {
     let plugin_command = PluginCommand::SwitchSession(ConnectToSession {
         name: Some(name.to_owned()),

@@ -974,7 +974,8 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         ActionKind::SwitchSession => Action::SwitchSession {
             name: strings(tc),
             tab_position: optional_usize_as_u32(tc),
-            pane_id: booleans(tc).then(|| (tc.draw(generators::integers::<u32>()), booleans(tc))),
+            pane_id: booleans(tc)
+                .then(|| PaneId::from_legacy(tc.draw(generators::integers::<u32>()), booleans(tc))),
             layout: booleans(tc).then(|| layout_infos(tc)),
             cwd: optional_paths(tc),
         },
@@ -1389,7 +1390,7 @@ pub(crate) fn connect_to_sessions(tc: &hegel::TestCase) -> ConnectToSession {
     ConnectToSession {
         name: optional_strings(tc),
         tab_position: optional_usize_as_u32(tc),
-        pane_id: booleans(tc).then(|| (u32s(tc), booleans(tc))),
+        pane_id: booleans(tc).then(|| PaneId::from_legacy(u32s(tc), booleans(tc))),
         layout: booleans(tc).then(|| layout_infos(tc)),
         cwd: optional_paths(tc),
     }
