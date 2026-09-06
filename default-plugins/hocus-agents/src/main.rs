@@ -372,7 +372,7 @@ impl ZellijPlugin for State {
             EventType::PermissionRequestResult,
             EventType::Timer,
         ]);
-        set_timeout(AGE_TICK_SECS);
+        set_timeout(zellij_tile::prelude::FractionalSeconds::new(AGE_TICK_SECS));
         set_selectable(true);
         rename_plugin_pane(get_plugin_ids().plugin_id, "agents");
         // Unconditional, and before there are any rows: what this first one carries
@@ -393,7 +393,7 @@ impl ZellijPlugin for State {
             // column keeps ticking; a redraw only where an age is actually on screen, so a
             // pane showing nothing time-dependent still costs nothing to leave open.
             Event::Timer(_) => {
-                set_timeout(AGE_TICK_SECS);
+                set_timeout(zellij_tile::prelude::FractionalSeconds::new(AGE_TICK_SECS));
                 self.shows_an_age()
             },
             _ => false,
@@ -461,7 +461,10 @@ impl ZellijPlugin for State {
                 // Once per run, here rather than in the draw path. The offset is asked for
                 // the instant the run began, not for now, so a run from before a
                 // daylight-saving change is read back with the offset it started under.
-                self.run_offset_secs = get_local_utc_offset(run.started_at_ms).unwrap_or(0);
+                self.run_offset_secs = get_local_utc_offset(
+                    zellij_tile::prelude::SignedUnixMillis::new(run.started_at_ms),
+                )
+                .unwrap_or(0);
             }
             self.run = Some(run);
             if changed {

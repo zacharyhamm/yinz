@@ -392,7 +392,7 @@ pub fn lua_plugin_is_not_sent_events_it_did_not_subscribe_to() {
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
-        Event::Timer(1.0),
+        Event::Timer(zellij_types::units::FractionalSeconds::new(1.0)),
     )]));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,

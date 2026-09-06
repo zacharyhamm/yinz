@@ -18,6 +18,7 @@ use crate::internal_ids::SupervisorId;
 use crate::internal_ids::TabId;
 use crate::internal_ids::TabNumber;
 use crate::internal_ids::TabPosition;
+use crate::units::{ElapsedMillis, FractionalSeconds, SignedUnixMillis, UnixMillis, UnixSeconds};
 // The data store's types are part of the plugin API, so they belong in the prelude alongside
 // everything else here. They live in their own module because the engine behind them cannot build
 // for wasm and these types must.
@@ -183,7 +184,7 @@ pub enum Event {
     /// A mouse event happened while the user is focused on this plugin's pane
     Mouse(Mouse),
     /// A timer expired set by the `set_timeout` method exported by `zellij-tile`.
-    Timer(f64),
+    Timer(FractionalSeconds),
     /// Text was copied to the clipboard anywhere in the app
     CopyToClipboard(CopyDestination),
     /// Failed to copy text to clipboard anywhere in the app
@@ -1339,7 +1340,7 @@ pub type ListTabsResponse = Vec<TabInfo>;
 pub struct NotificationInfo {
     pub id: NotificationId,
     pub message: String,
-    pub received_at_unix_ms: u64,
+    pub received_at_unix_ms: UnixMillis,
 }
 
 pub use crate::recording::{RecordingSummary, SearchHit};
@@ -1418,7 +1419,7 @@ pub struct PaneContents {
     /// picture moved": scrolling, reflowing and re-rendering all change what a pane
     /// shows without a single byte arriving from the process.
     #[serde(default)]
-    pub last_output_ms_ago: Option<u64>,
+    pub last_output_ms_ago: Option<ElapsedMillis>,
     /// Whether the user has scrolled this pane up out of its live tail.
     ///
     /// A scrolled pane shows old output, so its viewport says nothing about what the
@@ -1687,7 +1688,7 @@ pub struct OrphanedPane {
     pub command: String,
     pub cwd: Option<PathBuf>,
     pub child_pid: Option<ProcessId>,
-    pub started_at_unix: u64,
+    pub started_at_unix: UnixSeconds,
     /// `None` while the child is still running; `Some(None)` once it has been
     /// killed by a signal; `Some(Some(code))` once it has exited.
     pub exit_status: Option<Option<i32>>,
@@ -2540,8 +2541,8 @@ pub enum PluginCommand {
     /// pane carries no plugin configuration, so the placement is the only thing that can say it
     /// is an overlay - and which kind.
     OpenCommandPaneOverlay(CommandToRun, OverlayPlacement, Context),
-    SwitchTabTo(TabNumber), // tab index
-    SetTimeout(f64),        // seconds
+    SwitchTabTo(TabNumber),        // tab index
+    SetTimeout(FractionalSeconds), // seconds
     ExecCmd(Vec<String>),
     PostMessageTo(PluginMessage),
     PostMessageToPlugin(PluginMessage),
@@ -3170,7 +3171,7 @@ pub enum PluginCommand {
     /// before a daylight-saving change is read back long after it: formatting it with today's
     /// offset would put it an hour out for exactly as long as anyone still cares.
     GetLocalUtcOffset {
-        epoch_ms: i64,
+        epoch_ms: SignedUnixMillis,
     },
 }
 

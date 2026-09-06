@@ -512,7 +512,7 @@ impl State {
     /// no cancel_timeout, and a second chain would defeat `timer_armed`.
     pub(crate) fn arm_timer(&mut self, interval: f64) {
         if !self.timer_armed {
-            set_timeout(interval);
+            set_timeout(zellij_tile::prelude::FractionalSeconds::new(interval));
             self.timer_armed = true;
         }
     }

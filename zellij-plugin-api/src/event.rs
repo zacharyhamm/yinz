@@ -149,9 +149,9 @@ impl TryFrom<ProtobufEvent> for Event {
                 _ => Err("Malformed payload for the Mouse Event"),
             },
             Ok(ProtobufEventType::Timer) => match protobuf_event.payload {
-                Some(ProtobufEventPayload::TimerPayload(seconds)) => {
-                    Ok(Event::Timer(seconds as f64))
-                },
+                Some(ProtobufEventPayload::TimerPayload(seconds)) => Ok(Event::Timer(
+                    zellij_types::units::FractionalSeconds::new(seconds as f64),
+                )),
                 _ => Err("Malformed payload for the Timer Event"),
             },
             Ok(ProtobufEventType::CopyToClipboard) => match protobuf_event.payload {
@@ -924,7 +924,7 @@ impl TryFrom<Event> for ProtobufEvent {
             },
             Event::Timer(seconds) => Ok(ProtobufEvent {
                 name: ProtobufEventType::Timer as i32,
-                payload: Some(event::Payload::TimerPayload(seconds as f32)),
+                payload: Some(event::Payload::TimerPayload(seconds.get() as f32)),
             }),
             Event::CopyToClipboard(clipboard_destination) => {
                 let protobuf_copy_destination: ProtobufCopyDestination =
@@ -3222,9 +3222,10 @@ fn serialize_mouse_event_without_position() {
 #[test]
 fn serialize_timer_event() {
     use prost::Message;
-    let timer_event = Event::Timer(1.5);
+    let timer_event = Event::Timer(zellij_types::units::FractionalSeconds::new(1.5));
     let protobuf_event: ProtobufEvent = timer_event.clone().try_into().unwrap();
     let serialized_protobuf_event = protobuf_event.encode_to_vec();
+    assert_eq!(serialized_protobuf_event, vec![8, 5, 61, 0, 0, 192, 63]);
     let deserialized_protobuf_event: ProtobufEvent =
         Message::decode(serialized_protobuf_event.as_slice()).unwrap();
     let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
@@ -3587,7 +3588,9 @@ impl TryFrom<ProtobufPaneContents> for PaneContents {
             lines_above_viewport: protobuf_contents.lines_above_viewport,
             lines_below_viewport: protobuf_contents.lines_below_viewport,
             cursor,
-            last_output_ms_ago: protobuf_contents.last_output_ms_ago,
+            last_output_ms_ago: protobuf_contents
+                .last_output_ms_ago
+                .map(zellij_types::units::ElapsedMillis::new),
             is_scrolled: protobuf_contents.is_scrolled,
         })
     }
@@ -3611,7 +3614,9 @@ impl TryFrom<PaneContents> for ProtobufPaneContents {
             lines_above_viewport: pane_contents.lines_above_viewport,
             lines_below_viewport: pane_contents.lines_below_viewport,
             cursor,
-            last_output_ms_ago: pane_contents.last_output_ms_ago,
+            last_output_ms_ago: pane_contents
+                .last_output_ms_ago
+                .map(zellij_types::units::ElapsedMillis::get),
             is_scrolled: pane_contents.is_scrolled,
         })
     }
@@ -3999,7 +4004,7 @@ mod tests {
         for original in [
             PaneContents {
                 viewport: vec!["waiting for you".to_owned()],
-                last_output_ms_ago: Some(4_200),
+                last_output_ms_ago: Some(zellij_types::units::ElapsedMillis::new(4_200)),
                 is_scrolled: true,
                 ..Default::default()
             },
@@ -4217,13 +4222,13 @@ mod tests {
                 // representable in 32 bits - `Timer(16777217.0)` comes back as
                 // `Timer(16777216.0)`. Drawing through f32 keeps this property
                 // about the encoding rather than about that rounding.
-                0 => Event::Timer(
+                0 => Event::Timer(zellij_types::units::FractionalSeconds::new(
                     tc.draw(
                         generators::floats::<f32>()
                             .min_value(-1.0e9)
                             .max_value(1.0e9),
                     ) as f64,
-                ),
+                )),
                 1 => Event::Visible(tc.draw(generators::booleans())),
                 2 => Event::InputReceived,
                 3 => Event::SystemClipboardFailure,

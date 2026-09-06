@@ -72,7 +72,7 @@ pub struct PaneSample {
     pub is_scrolled: bool,
     /// Milliseconds since the pane's process last wrote to its pty, if it ever has.
     /// `None` means it never wrote anything this session.
-    pub last_output_ms_ago: Option<u64>,
+    pub last_output_ms_ago: Option<zellij_tile::prelude::ElapsedMillis>,
 }
 
 impl PaneSample {

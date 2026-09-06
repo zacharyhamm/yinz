@@ -1621,7 +1621,7 @@ mod tests {
             cwd: Some("/work".into()),
             child_pid: Some(zellij_types::internal_ids::ProcessId::new(10)),
             host_pid: zellij_types::internal_ids::ProcessId::new(11),
-            started_at_unix: 0,
+            started_at_unix: zellij_types::units::UnixSeconds::new(0),
             attached,
             child_exit_status: None,
             buffered_bytes: 0,

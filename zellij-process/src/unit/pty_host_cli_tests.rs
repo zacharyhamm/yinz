@@ -100,7 +100,9 @@ fn humanize_age_reports_an_age_the_rendered_unit_can_account_for(tc: hegel::Test
     // three. There is no upper bound in the code — this is purely to keep every
     // branch reachable in a hundred cases.
     let age = tc.draw(generators::integers::<u64>().max_value(400_000));
-    let rendered = humanize_age(now_unix().saturating_sub(age));
+    let rendered = humanize_age(zellij_types::units::UnixSeconds::new(
+        now_unix().saturating_sub(age),
+    ));
     let (value, unit) = parse_age(&rendered);
 
     assert!(
@@ -129,7 +131,7 @@ fn humanize_age_uses_the_largest_unit_that_fits() {
         (200_000, "2d"),
     ] {
         assert_eq!(
-            humanize_age(now - age),
+            humanize_age(zellij_types::units::UnixSeconds::new(now - age)),
             expected,
             "an age of {age}s should render as {expected:?}"
         );
@@ -141,8 +143,14 @@ fn humanize_age_uses_the_largest_unit_that_fits() {
 /// `saturating_sub` that would underflow.
 #[test]
 fn an_age_from_the_future_is_reported_as_zero_rather_than_underflowing() {
-    assert_eq!(humanize_age(now_unix() + 3600), "0s");
-    assert_eq!(humanize_age(u64::MAX), "0s");
+    assert_eq!(
+        humanize_age(zellij_types::units::UnixSeconds::new(now_unix() + 3600)),
+        "0s"
+    );
+    assert_eq!(
+        humanize_age(zellij_types::units::UnixSeconds::new(u64::MAX)),
+        "0s"
+    );
 }
 
 /// `buffered_bytes` is drawn from a mix that includes a plain zero so the
@@ -167,7 +175,7 @@ fn host_statuses(tc: &hegel::TestCase) -> HostStatus {
         host_pid: ProcessId::new(tc.draw(generators::integers::<u32>())),
         // Recent enough that the age is a small number of seconds, which keeps
         // these tests about the classification rather than about the clock.
-        started_at_unix: now_unix(),
+        started_at_unix: zellij_types::units::UnixSeconds::new(now_unix()),
         attached: tc.draw(generators::booleans()),
         child_exit_status: tc.draw(generators::optional(generators::optional(
             generators::integers::<i32>(),

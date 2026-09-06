@@ -881,7 +881,11 @@ fn update_receives_a_normalized_event_and_reports_whether_to_render() {
 
     // A tuple variant the plugin does not care about still normalizes, and returning nothing
     // from `update` means "no need to re-render".
-    assert!(!plugin.update(&Event::Timer(1.0)).unwrap());
+    assert!(!plugin
+        .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            1.0
+        )))
+        .unwrap());
     assert_eq!(
         String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
         "timer"
@@ -1040,7 +1044,11 @@ fn several_sleeps_arm_one_host_timer_and_wake_in_deadline_order() {
     // behind an armed timer and does not.
     assert_eq!(plugin.render(1, 80).unwrap(), b"arm:5 arm:1");
 
-    plugin.update(&Event::Timer(1.0)).unwrap();
+    plugin
+        .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            1.0,
+        )))
+        .unwrap();
     assert_eq!(
         plugin.render(1, 80).unwrap(),
         b"arm:5 arm:1",
@@ -1052,7 +1060,11 @@ fn several_sleeps_arm_one_host_timer_and_wake_in_deadline_order() {
     plugin
         .update(&Event::CustomMessage("103".to_owned(), String::new()))
         .unwrap();
-    plugin.update(&Event::Timer(1.0)).unwrap();
+    plugin
+        .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            1.0,
+        )))
+        .unwrap();
     // Armed before the tasks run: the sweep settles what is due and arms the next deadline,
     // and only then are the woken tasks resumed.
     assert_eq!(
@@ -1062,7 +1074,11 @@ fn several_sleeps_arm_one_host_timer_and_wake_in_deadline_order() {
     plugin
         .update(&Event::CustomMessage("106".to_owned(), String::new()))
         .unwrap();
-    plugin.update(&Event::Timer(1.0)).unwrap();
+    plugin
+        .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            1.0,
+        )))
+        .unwrap();
     assert_eq!(
         plugin.render(1, 80).unwrap(),
         b"arm:5 arm:1 arm:2 woke:1 woke:3 woke:5"
@@ -1105,7 +1121,11 @@ fn every_ticks_until_cancelled_and_after_fires_once() {
         plugin
             .update(&Event::CustomMessage(now.to_string(), String::new()))
             .unwrap();
-        plugin.update(&Event::Timer(1.0)).unwrap()
+        plugin
+            .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+                1.0,
+            )))
+            .unwrap()
     };
     assert!(tick(&mut plugin, 1), "a truthy tick asks for a render");
     tick(&mut plugin, 2);
@@ -1167,7 +1187,9 @@ fn a_raising_every_callback_re_arms_and_keeps_ticking() {
         plugin
             .update(&Event::CustomMessage(now.to_string(), String::new()))
             .unwrap();
-        plugin.update(&Event::Timer(1.0))
+        plugin.update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            1.0,
+        )))
     };
     let error = tick(&mut plugin, 1).expect_err("the callback's error is the entrypoint's");
     assert!(format!("{error:#}").contains("tick broke"), "{error:#}");
@@ -1211,7 +1233,11 @@ fn a_raising_after_callback_still_settles_the_other_due_deadlines() {
     plugin
         .update(&Event::CustomMessage("1".to_owned(), String::new()))
         .unwrap();
-    let error = plugin.update(&Event::Timer(1.0)).expect_err("reported");
+    let error = plugin
+        .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            1.0,
+        )))
+        .expect_err("reported");
     assert!(format!("{error:#}").contains("first broke"), "{error:#}");
     assert_eq!(plugin.render(1, 80).unwrap(), b"second");
 }
@@ -1248,7 +1274,11 @@ fn a_raising_after_callback_does_not_strand_a_sleeper_due_on_the_same_tick() {
     plugin
         .update(&Event::CustomMessage("1".to_owned(), String::new()))
         .unwrap();
-    let error = plugin.update(&Event::Timer(1.0)).expect_err("reported");
+    let error = plugin
+        .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            1.0,
+        )))
+        .expect_err("reported");
     assert!(format!("{error:#}").contains("broke"), "{error:#}");
     // No further event: the one timer tick both reported the error and woke the sleeper.
     assert_eq!(plugin.render(1, 80).unwrap(), b"woke");
@@ -1317,7 +1347,11 @@ fn a_scalar_payload_arrives_as_value() {
         "#,
     )
     .unwrap();
-    plugin.update(&Event::Timer(4.0)).unwrap();
+    plugin
+        .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            4.0,
+        )))
+        .unwrap();
     assert_eq!(
         String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
         "4.0"
@@ -4882,7 +4916,11 @@ fn the_dashboard_example_loads_renders_components_and_takes_input() {
             BTreeMap::new(),
         ))
         .unwrap();
-    plugin.update(&Event::Timer(0.0)).unwrap();
+    plugin
+        .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            0.0,
+        )))
+        .unwrap();
     for key in ["j", "k", "x"] {
         plugin
             .update(&Event::Key(KeyWithModifier::new(BareKey::Char(
@@ -5780,8 +5818,16 @@ fn a_step_timeout_escalates_from_sigint_to_sigkill() {
             workflow_context("1"),
         ))
         .unwrap();
-    plugin.update(&Event::Timer(1.0)).unwrap();
-    plugin.update(&Event::Timer(1.0)).unwrap();
+    plugin
+        .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            1.0,
+        )))
+        .unwrap();
+    plugin
+        .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            1.0,
+        )))
+        .unwrap();
     assert_eq!(logged(&mut plugin), "open:a sigint sigkill");
     // Even a child that handles the signal and exits zero still timed out.
     plugin.update(&step_exited("1", Some(0))).unwrap();
@@ -5806,7 +5852,11 @@ fn a_queued_steps_timeout_starts_only_when_that_step_does() {
             workflow_context("1"),
         ))
         .unwrap();
-    plugin.update(&Event::Timer(1.0)).unwrap();
+    plugin
+        .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            1.0,
+        )))
+        .unwrap();
     assert_eq!(logged(&mut plugin), "open:a step1=0 run:b:true");
 
     plugin
@@ -5815,7 +5865,11 @@ fn a_queued_steps_timeout_starts_only_when_that_step_does() {
             workflow_context("2"),
         ))
         .unwrap();
-    plugin.update(&Event::Timer(1.0)).unwrap();
+    plugin
+        .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            1.0,
+        )))
+        .unwrap();
     assert_eq!(logged(&mut plugin), "open:a step1=0 run:b:true sigint");
 }
 

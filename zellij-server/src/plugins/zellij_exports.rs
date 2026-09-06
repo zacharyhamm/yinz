@@ -48,6 +48,7 @@ use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::{PluginId, TerminalId};
 use zellij_types::keys::KeyWithModifier;
+use zellij_types::units::{FractionalSeconds, SignedUnixMillis};
 use zellij_types::{
     agent::{AgentInfo, AgentSpawnSpec},
     command::PaneTarget,
@@ -1720,10 +1721,10 @@ fn check_lua_plugin(env: &mut PluginEnv, name: String, source: String) {
 /// instant `chrono` cannot place - out of range, or an hour that a clock change made ambiguous
 /// or skipped - falls back to the offset in force now, which is off by an hour at worst and is
 /// still the right answer for every timestamp taken today.
-fn get_local_utc_offset(env: &mut PluginEnv, epoch_ms: i64) {
+fn get_local_utc_offset(env: &mut PluginEnv, epoch_ms: SignedUnixMillis) {
     use chrono::{Local, Offset, TimeZone};
     let offset_seconds = Local
-        .timestamp_millis_opt(epoch_ms)
+        .timestamp_millis_opt(epoch_ms.get())
         .single()
         .map(|at| at.offset().fix().local_minus_utc())
         .unwrap_or_else(|| Local::now().offset().fix().local_minus_utc());
@@ -3476,11 +3477,11 @@ fn switch_tab_to(env: &PluginEnv, tab_idx: TabNumber) {
         .non_fatal();
 }
 
-fn timeout_duration(secs: f64) -> Result<Duration> {
-    Duration::try_from_secs_f64(secs).map_err(anyError::new)
+fn timeout_duration(secs: FractionalSeconds) -> Result<Duration> {
+    Duration::try_from_secs_f64(secs.get()).map_err(anyError::new)
 }
 
-fn set_timeout(env: &PluginEnv, secs: f64) {
+fn set_timeout(env: &PluginEnv, secs: FractionalSeconds) {
     let duration = match timeout_duration(secs) {
         Ok(duration) => duration,
         Err(e) => {
@@ -3509,7 +3510,7 @@ fn set_timeout(env: &PluginEnv, secs: f64) {
                     .send(PluginInstruction::Update(vec![(
                         update_target,
                         Some(client_id),
-                        Event::Timer(elapsed_time),
+                        Event::Timer(FractionalSeconds::new(elapsed_time)),
                     )]))
                     .to_anyhow()
             })
@@ -5346,9 +5347,15 @@ mod validation_tests {
     #[test]
     fn invalid_plugin_timeouts_are_rejected() {
         for invalid in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::MAX] {
-            assert!(timeout_duration(invalid).is_err(), "{invalid}");
+            assert!(
+                timeout_duration(zellij_types::units::FractionalSeconds::new(invalid)).is_err(),
+                "{invalid}"
+            );
         }
-        assert_eq!(timeout_duration(0.5).unwrap(), Duration::from_millis(500));
+        assert_eq!(
+            timeout_duration(zellij_types::units::FractionalSeconds::new(0.5)).unwrap(),
+            Duration::from_millis(500)
+        );
     }
 }
 

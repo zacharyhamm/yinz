@@ -1428,7 +1428,7 @@ impl State {
             },
             // The payload is the real time the host slept, which is the only
             // clock a plugin gets — there is no wall clock on offer.
-            Event::Timer(elapsed) => self.on_timer(elapsed),
+            Event::Timer(elapsed) => self.on_timer((elapsed).get()),
             // The project rows changed — ours or another plugin's write. The
             // store only sends this when the rows actually differ, so there is
             // no watermark to check and nothing to do when nothing moved.

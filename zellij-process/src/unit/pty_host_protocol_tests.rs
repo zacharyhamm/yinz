@@ -254,7 +254,9 @@ fn host_statuses(tc: &hegel::TestCase) -> HostStatus {
             .draw(generators::optional(generators::integers::<u32>()))
             .map(ProcessId::new),
         host_pid: ProcessId::new(tc.draw(generators::integers::<u32>())),
-        started_at_unix: tc.draw(generators::integers::<u64>()),
+        started_at_unix: zellij_types::units::UnixSeconds::new(
+            tc.draw(generators::integers::<u64>()),
+        ),
         attached: tc.draw(generators::booleans()),
         child_exit_status: tc.draw(generators::optional(generators::optional(
             generators::integers::<i32>(),
@@ -695,7 +697,7 @@ fn a_full_ring_fits_in_one_frame() {
             cwd: Some(PathBuf::from("/home/someone/a/reasonably/deep/directory")),
             child_pid: Some(ProcessId::new(u32::MAX)),
             host_pid: ProcessId::new(u32::MAX),
-            started_at_unix: u64::MAX,
+            started_at_unix: zellij_types::units::UnixSeconds::new(u64::MAX),
             attached: true,
             child_exit_status: None,
             buffered_bytes: 256 * 1024,

@@ -315,12 +315,12 @@ impl ZellijPlugin for State {
                 let agent_counts = AgentCounts::from_manifest(&manifest);
                 if self.agent_counts != agent_counts {
                     self.agent_counts = agent_counts;
-                    self.arm_tick(now_ms());
+                    self.arm_tick(now_ms().get());
                     should_render = true;
                 }
             },
             Event::ModifiersHeld { modifiers, is_live } => {
-                let now = now_ms();
+                let now = now_ms().get();
                 let was_revealed = self.hint_revealed();
                 self.alt_hint_until_ms = next_alt_hint_until(
                     self.alt_hint_until_ms,
@@ -337,7 +337,7 @@ impl ZellijPlugin for State {
             Event::Timer(_) => {
                 // The tick advances the clock and agent animation, and expires hints.
                 // All are re-armed here because `set_timeout` is one-shot.
-                let now = now_ms();
+                let now = now_ms().get();
                 // Only the tick that was actually waited for clears the record. A timer armed
                 // earlier than one already outstanding leaves a straggler behind it, and
                 // letting the straggler clear the record would have every fire arm a
@@ -416,7 +416,7 @@ impl ZellijPlugin for State {
         self.last_render_cols = cols;
         if self.last_render_rows != rows {
             self.last_render_rows = rows;
-            self.arm_tick(now_ms());
+            self.arm_tick(now_ms().get());
         }
         let supports_arrow_fonts = !self.mode_info.capabilities.arrow_fonts;
         let separator = if supports_arrow_fonts {
@@ -447,7 +447,7 @@ impl ZellijPlugin for State {
                     hint_revealed: self.hint_revealed(),
                     agent_counts: self.agent_counts,
                     clock: self.clock.clone(),
-                    now_ms: now_ms(),
+                    now_ms: now_ms().get(),
                 },
             );
             self.new_pane_ribbon_range = new_pane_ribbon_range;
@@ -594,7 +594,7 @@ fn should_arm_tick(pending: Option<i64>, at: i64) -> bool {
 impl State {
     /// Whether the hint currently owns the right-hand slot, by either claim on it.
     fn hint_revealed(&self) -> bool {
-        now_ms() < self.hint_until_ms()
+        now_ms().get() < self.hint_until_ms()
     }
 
     /// The later of the two reveal deadlines - Alt and the pointer claim the same slot, and
@@ -610,7 +610,7 @@ impl State {
     /// `report_modifier_keys false` would leave them unreachable by mouse entirely - an Alt
     /// chord performs its action rather than revealing anything.
     fn note_pointer(&mut self, col: usize) -> bool {
-        let now = now_ms();
+        let now = now_ms().get();
         let was_revealed = self.hint_revealed();
         self.hover_hint_until_ms = match pointer_left_the_bar(self.last_render_cols, col) {
             true => 0,
@@ -622,7 +622,7 @@ impl State {
 
     /// Re-read the clock, re-arm the tick, and say whether anything visible moved.
     fn tick(&mut self) -> bool {
-        let now = now_ms();
+        let now = now_ms().get();
         let changed = self.refresh_clock(now);
         self.arm_tick(now);
         changed
@@ -633,7 +633,7 @@ impl State {
         if now >= self.utc_offset_valid_until_ms {
             // An offset the host would not give us is `0` - UTC, stated as such, which is a
             // better answer than refusing to draw a clock.
-            self.utc_offset_secs = get_local_utc_offset(now).unwrap_or(0);
+            self.utc_offset_secs = get_local_utc_offset(SignedUnixMillis::new(now)).unwrap_or(0);
             self.utc_offset_valid_until_ms = next_utc_hour(now);
         }
         let clock = Clock::at(now, self.utc_offset_secs);
@@ -658,7 +658,9 @@ impl State {
     fn arm_tick(&mut self, now: i64) {
         let at = next_tick_at(now, self.hint_until_ms(), self.animation_interval_ms());
         if should_arm_tick(self.pending_tick_at_ms, at) {
-            set_timeout(((at - now) as f64 / 1000.0).max(0.001));
+            set_timeout(zellij_tile::prelude::FractionalSeconds::new(
+                ((at - now) as f64 / 1000.0).max(0.001),
+            ));
             self.pending_tick_at_ms = Some(at);
         }
     }

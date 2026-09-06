@@ -240,9 +240,12 @@ pub(crate) fn screen_thread_main(
     let scrollback_lines_to_serialize = config_options.scrollback_lines_to_serialize;
     let session_is_mirrored = config_options.mirror_session.unwrap_or(false);
     let notification_position = config_options.notification_position.unwrap_or_default();
-    let notification_timeout_secs = config_options
-        .notification_timeout
-        .unwrap_or(DEFAULT_NOTIFICATION_TIMEOUT_SECS);
+    let notification_timeout_secs =
+        config_options
+            .notification_timeout
+            .unwrap_or(zellij_types::units::ElapsedSeconds::new(
+                DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+            ));
     let agent_pane_min_size = Size {
         cols: config_options
             .agent_pane_min_columns
@@ -1342,10 +1345,12 @@ pub(crate) fn screen_thread_main(
                 get_full_scrollback,
                 response_channel,
             } => {
-                let last_output_ms_ago = screen
-                    .pane_output_activity
-                    .get(&pane_id)
-                    .map(|last| Instant::now().saturating_duration_since(*last).as_millis() as u64);
+                let last_output_ms_ago = screen.pane_output_activity.get(&pane_id).map(|last| {
+                    zellij_types::units::ElapsedMillis::try_from(
+                        Instant::now().saturating_duration_since(*last).as_millis(),
+                    )
+                    .unwrap_or_else(|_| zellij_types::units::ElapsedMillis::new(u64::MAX))
+                });
                 let pane_contents = screen.with_pane(pane_id, |pane| {
                     pane.pane_contents(Some(client_id), get_full_scrollback, None)
                 });
@@ -4053,10 +4058,13 @@ pub(crate) fn screen_thread_main(
                 let id = screen.next_notification_id;
                 screen.next_notification_id =
                     NotificationId::new(screen.next_notification_id.get() + 1);
-                let received_at_unix_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
+                let received_at_unix_ms = zellij_types::units::UnixMillis::try_from(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis(),
+                )
+                .unwrap_or_else(|_| zellij_types::units::UnixMillis::new(u64::MAX));
                 screen.notification_history.push(NotificationInfo {
                     id,
                     message: text.clone(),

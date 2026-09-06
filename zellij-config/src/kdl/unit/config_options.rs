@@ -13,7 +13,10 @@ fn firecracker_provider_options_round_trip() {
         options.firecracker_provider,
         Some(PathBuf::from("/opt/bin/zellij-firecracker"))
     );
-    assert_eq!(options.firecracker_provider_timeout_secs, Some(90));
+    assert_eq!(
+        options.firecracker_provider_timeout_secs,
+        Some(zellij_types::units::ElapsedSeconds::new(90))
+    );
 
     let mut serialized = KdlDocument::new();
     serialized
@@ -46,7 +49,10 @@ fn firecracker_provider_options_round_trip() {
 fn locked_escape_timeout_options_round_trip() {
     let document: KdlDocument = "locked_escape_timeout_ms 400".parse().unwrap();
     let options = crate::kdl::options::from_kdl(&document).unwrap();
-    assert_eq!(options.locked_escape_timeout_ms, Some(400));
+    assert_eq!(
+        options.locked_escape_timeout_ms,
+        Some(zellij_types::units::ElapsedMillis::new(400))
+    );
 
     let mut serialized = KdlDocument::new();
     serialized
@@ -60,7 +66,7 @@ fn locked_escape_timeout_options_round_trip() {
         crate::kdl::options::from_kdl(&disabled)
             .unwrap()
             .locked_escape_timeout_ms,
-        Some(0)
+        Some(zellij_types::units::ElapsedMillis::new(0))
     );
 
     let negative: KdlDocument = "locked_escape_timeout_ms -1".parse().unwrap();

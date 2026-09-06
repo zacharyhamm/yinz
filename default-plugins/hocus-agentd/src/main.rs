@@ -450,7 +450,9 @@ impl ZellijPlugin for State {
         let _ = store::Host::shared().define_all(&store::shared_defs());
 
         self.bootstrap();
-        set_timeout(ACTIVITY_SECONDS);
+        set_timeout(zellij_tile::prelude::FractionalSeconds::new(
+            ACTIVITY_SECONDS,
+        ));
         // A reload drops the in-memory subscriber list. Ask existing watchers
         // to subscribe again instead of silently stopping their snapshots.
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_HELLO));
@@ -517,23 +519,25 @@ impl ZellijPlugin for State {
                 // What "wrote to its pty since the last poll" means for this poll,
                 // measured rather than assumed: a timer that fired late would otherwise
                 // read a pane's real output as too old to explain what it shows.
-                self.poll_window_ms = (elapsed.max(ACTIVITY_SECONDS) * 1500.0) as u64;
+                self.poll_window_ms = (elapsed.get().max(ACTIVITY_SECONDS) * 1500.0) as u64;
                 self.observe_activity();
                 self.repair_commands();
                 self.repair_cwds();
-                self.retry_repositories(elapsed);
+                self.retry_repositories((elapsed).get());
                 // Every tick, not on the Git refresh interval: this reads a
                 // cache the far machine keeps fresh on its own clock, so waiting
                 // a minute would only add latency to an answer already sitting
                 // there. It publishes nothing unless something changed.
                 self.refresh_remote_repositories();
-                self.git_refresh_elapsed += elapsed;
+                self.git_refresh_elapsed += elapsed.get();
                 if self.git_refresh_elapsed >= GIT_REFRESH_SECONDS {
                     self.git_refresh_elapsed %= GIT_REFRESH_SECONDS;
                     self.refresh_repositories();
                 }
                 self.publish();
-                set_timeout(ACTIVITY_SECONDS);
+                set_timeout(zellij_tile::prelude::FractionalSeconds::new(
+                    ACTIVITY_SECONDS,
+                ));
             },
             _ => {},
         }
@@ -2331,7 +2335,7 @@ impl State {
         }
         let wrote_recently = reading
             .last_output_ms_ago
-            .is_some_and(|ms| ms <= self.poll_window());
+            .is_some_and(|ms| ms.get() <= self.poll_window());
         let moved = agents::activity_hash(&self.activity, pane_id)
             .is_some_and(|hash| hash != agents::fingerprint(&reading.text));
         if moved && !wrote_recently {
@@ -5244,7 +5248,7 @@ mod tests {
             text: text.to_owned(),
             readable: true,
             is_scrolled: false,
-            last_output_ms_ago: Some(0),
+            last_output_ms_ago: Some(zellij_tile::prelude::ElapsedMillis::new(0)),
         }
     }
 
@@ -5252,7 +5256,7 @@ mod tests {
     /// or a viewport that moved on its own looks like.
     fn quiet(text: &str) -> poll::PaneSample {
         poll::PaneSample {
-            last_output_ms_ago: Some(600_000),
+            last_output_ms_ago: Some(zellij_tile::prelude::ElapsedMillis::new(600_000)),
             ..sample(text)
         }
     }

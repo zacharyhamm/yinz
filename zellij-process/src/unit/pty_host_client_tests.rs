@@ -630,7 +630,7 @@ fn a_status() -> HostStatus {
         cwd: Some(PathBuf::from("/tmp")),
         child_pid: Some(ProcessId::new(991)),
         host_pid: ProcessId::new(4242),
-        started_at_unix: 1_700_000_000,
+        started_at_unix: zellij_types::units::UnixSeconds::new(1_700_000_000),
         attached: false,
         child_exit_status: None,
         buffered_bytes: 4096,

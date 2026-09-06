@@ -324,8 +324,10 @@ impl SessionConfiguration {
             .get(client_id)
             .or(Some(&self.saved_config))
             .and_then(|c| c.options.locked_escape_timeout_ms)
-            .unwrap_or(locked_escape::DEFAULT_LOCKED_ESCAPE_TIMEOUT_MS);
-        Duration::from_millis(millis)
+            .unwrap_or(zellij_types::units::ElapsedMillis::new(
+                locked_escape::DEFAULT_LOCKED_ESCAPE_TIMEOUT_MS,
+            ));
+        Duration::from_millis((millis).get())
     }
     pub fn get_client_configuration(&self, client_id: &ClientId) -> Config {
         self.runtime_config

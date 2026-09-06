@@ -44,6 +44,7 @@ use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TerminalId;
+use zellij_types::units::UnixSeconds;
 
 use nix::{
     errno::Errno,
@@ -341,7 +342,7 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
         terminal_id: TerminalId::new(terminal_id),
         session_name,
         cmd,
-        started_at_unix: unix_now(),
+        started_at_unix: zellij_types::units::UnixSeconds::new(unix_now()),
         state: State::Attached,
         ring: RingBuffer::new(),
         session: None,
@@ -413,7 +414,7 @@ struct HostContext {
     terminal_id: TerminalId,
     session_name: Option<SessionName>,
     cmd: RunCommand,
-    started_at_unix: u64,
+    started_at_unix: UnixSeconds,
     state: State,
     ring: RingBuffer,
     session: Option<Session>,

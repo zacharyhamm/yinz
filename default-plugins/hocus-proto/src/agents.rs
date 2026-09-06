@@ -2262,7 +2262,10 @@ fn run_header(run: &AgentRun, width: usize, utc_offset_secs: i32) -> Vec<MdLine>
     };
     let mut rows = wrapped_field(
         "started",
-        &wall_clock(run.started_at_ms, utc_offset_secs),
+        &wall_clock(
+            zellij_tile::prelude::SignedUnixMillis::new(run.started_at_ms),
+            utc_offset_secs,
+        ),
         width,
     );
     rows.extend(wrapped_field(label, value, width));
@@ -2515,7 +2518,9 @@ fn age_gutter(now_ms: i64, then_ms: Option<i64>) -> String {
 ///
 /// Re-exported rather than written here: it lives in `zellij-tile` next to
 /// `get_local_utc_offset`, which is the host command that makes any of this drawable at all.
-pub use zellij_tile::prelude::now_ms;
+pub fn now_ms() -> i64 {
+    zellij_tile::prelude::now_ms().get()
+}
 
 pub fn short_age(now_ms: i64, then_ms: i64) -> String {
     let seconds = now_ms.saturating_sub(then_ms).max(0) / 1000;
@@ -7263,7 +7268,10 @@ mod tests {
         ];
         for (epoch_ms, offset, expected) in cases {
             assert_eq!(
-                wall_clock(epoch_ms, offset),
+                wall_clock(
+                    zellij_tile::prelude::SignedUnixMillis::new(epoch_ms),
+                    offset
+                ),
                 expected,
                 "{epoch_ms}ms at {offset}s"
             );
@@ -7277,14 +7285,22 @@ mod tests {
         for day in [-800_i64, -1, 0, 1, 20_000] {
             let midnight = day * 86_400_000;
             assert!(
-                wall_clock(midnight, 0).ends_with("00:00:00 +00:00"),
+                wall_clock(zellij_tile::prelude::SignedUnixMillis::new(midnight), 0)
+                    .ends_with("00:00:00 +00:00"),
                 "day {day} did not start at midnight: {}",
-                wall_clock(midnight, 0)
+                wall_clock(zellij_tile::prelude::SignedUnixMillis::new(midnight), 0)
             );
             assert!(
-                wall_clock(midnight + 86_399_000, 0).ends_with("23:59:59 +00:00"),
+                wall_clock(
+                    zellij_tile::prelude::SignedUnixMillis::new(midnight + 86_399_000),
+                    0
+                )
+                .ends_with("23:59:59 +00:00"),
                 "day {day} did not end a second before midnight: {}",
-                wall_clock(midnight + 86_399_000, 0)
+                wall_clock(
+                    zellij_tile::prelude::SignedUnixMillis::new(midnight + 86_399_000),
+                    0
+                )
             );
         }
     }

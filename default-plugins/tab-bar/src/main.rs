@@ -166,7 +166,7 @@ impl ZellijPlugin for State {
                 } else {
                     self.hint_text = Some(hint_variants);
                     self.outstanding_hint_timeouts += 1;
-                    set_timeout(5.0);
+                    set_timeout(zellij_tile::prelude::FractionalSeconds::new(5.0));
                     should_render = true;
                 }
             },

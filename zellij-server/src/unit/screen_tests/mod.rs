@@ -482,7 +482,7 @@ fn create_new_screen_with_capture(
         ContextMenu::default(),
         NestedSessionHandling::default(),
         NotificationPosition::default(),
-        DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+        zellij_types::units::ElapsedSeconds::new(DEFAULT_NOTIFICATION_TIMEOUT_SECS),
         Size { rows: 0, cols: 0 }, // agent placement off; a test that wants it sets the floor
     );
     (
@@ -1147,7 +1147,7 @@ fn create_new_screen_with_message_capture(
         ContextMenu::default(),
         NestedSessionHandling::default(),
         NotificationPosition::default(),
-        DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+        zellij_types::units::ElapsedSeconds::new(DEFAULT_NOTIFICATION_TIMEOUT_SECS),
         Size { rows: 0, cols: 0 }, // agent placement off; a test that wants it sets the floor
     );
     (seed_first_client_size(screen, size), messages)
@@ -1294,7 +1294,7 @@ fn create_new_screen_with_forward_capture(size: Size) -> (Screen, ForwardCapture
         ContextMenu::default(),
         NestedSessionHandling::default(),
         NotificationPosition::default(),
-        DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+        zellij_types::units::ElapsedSeconds::new(DEFAULT_NOTIFICATION_TIMEOUT_SECS),
         Size { rows: 0, cols: 0 }, // agent placement off; a test that wants it sets the floor
     );
     (
@@ -1445,7 +1445,7 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
         ContextMenu::default(),
         NestedSessionHandling::default(),
         NotificationPosition::default(),
-        DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+        zellij_types::units::ElapsedSeconds::new(DEFAULT_NOTIFICATION_TIMEOUT_SECS),
         Size { rows: 0, cols: 0 }, // agent placement off; a test that wants it sets the floor
     );
     (
@@ -1576,7 +1576,7 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
         ContextMenu::default(),
         NestedSessionHandling::default(),
         NotificationPosition::default(),
-        DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+        zellij_types::units::ElapsedSeconds::new(DEFAULT_NOTIFICATION_TIMEOUT_SECS),
         Size { rows: 0, cols: 0 }, // agent placement off; a test that wants it sets the floor
     );
     seed_first_client_size(screen, size)
@@ -2191,7 +2191,8 @@ fn notification_history_keeps_dismissed_toasts() {
     );
     assert!(history
         .iter()
-        .all(|notification| notification.received_at_unix_ms > 0));
+        .all(|notification| notification.received_at_unix_ms
+            > zellij_types::units::UnixMillis::new(0)));
 
     mock_screen.teardown(vec![screen_thread]);
 }

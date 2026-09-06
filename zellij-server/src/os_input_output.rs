@@ -1075,7 +1075,7 @@ pub trait ServerOsApi: Send + Sync {
     fn set_firecracker_provider(
         &self,
         _provider: Option<PathBuf>,
-        _timeout_secs: Option<u64>,
+        _timeout_secs: Option<zellij_types::units::ElapsedSeconds>,
         _session: String,
     ) -> Result<()> {
         Ok(())
@@ -1600,7 +1600,7 @@ impl ServerOsApi for ServerOsInputOutput {
     fn set_firecracker_provider(
         &self,
         provider: Option<PathBuf>,
-        timeout_secs: Option<u64>,
+        timeout_secs: Option<zellij_types::units::ElapsedSeconds>,
         session: String,
     ) -> Result<()> {
         let configured = provider

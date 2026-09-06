@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zellij_types::internal_ids::SupervisorId;
+use zellij_types::units::UnixSeconds;
 
 use zellij_runtime::errors::prelude::*;
 use zellij_types::input::command::RunCommand;
@@ -175,12 +176,12 @@ fn describe_state(status: &HostStatus) -> String {
     }
 }
 
-fn humanize_age(started_at_unix: u64) -> String {
+fn humanize_age(started_at_unix: UnixSeconds) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let secs = now.saturating_sub(started_at_unix);
+    let secs = now.saturating_sub((started_at_unix).get());
     if secs < 60 {
         format!("{secs}s")
     } else if secs < 3600 {

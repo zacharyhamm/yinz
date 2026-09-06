@@ -45,7 +45,7 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         };
     let notification_timeout =
         kdl_property_first_arg_as_i64_or_error!(kdl_options, "notification_timeout")
-            .map(|(v, _)| v as u64);
+            .map(|(v, _)| zellij_types::units::ElapsedSeconds::from_legacy_signed_bits(v));
     let auto_layout =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "auto_layout").map(|(v, _)| v);
     let theme = kdl_property_first_arg_as_string_or_error!(kdl_options, "theme")
@@ -218,9 +218,11 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
             .map(|(v, _)| v as usize);
     let styled_underlines =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "styled_underlines").map(|(v, _)| v);
-    let serialization_interval =
-        kdl_property_first_arg_as_i64_or_error!(kdl_options, "serialization_interval")
-            .map(|(scroll_buffer_size, _entry)| scroll_buffer_size as u64);
+    let serialization_interval = kdl_property_first_arg_as_i64_or_error!(
+        kdl_options,
+        "serialization_interval"
+    )
+    .map(|(seconds, _entry)| zellij_types::units::ElapsedSeconds::from_legacy_signed_bits(seconds));
     let disable_session_metadata =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "disable_session_metadata")
             .map(|(v, _)| v);
@@ -338,7 +340,8 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         mouse_mode,
         detachable_panes,
         firecracker_provider,
-        firecracker_provider_timeout_secs,
+        firecracker_provider_timeout_secs: firecracker_provider_timeout_secs
+            .map(zellij_types::units::ElapsedSeconds::new),
         pane_frames,
         pane_frame_style,
         notification_position,
@@ -346,7 +349,8 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         mirror_session,
         on_force_close,
         scroll_buffer_size,
-        locked_escape_timeout_ms,
+        locked_escape_timeout_ms: locked_escape_timeout_ms
+            .map(zellij_types::units::ElapsedMillis::new),
         copy_command,
         copy_clipboard,
         copy_on_select,
@@ -838,7 +842,7 @@ fn firecracker_provider_timeout_secs_to_kdl(
         node
     };
     match value.firecracker_provider_timeout_secs {
-        Some(timeout) => Some(create_node(timeout)),
+        Some(timeout) => Some(create_node((timeout).get())),
         None if add_comments => {
             let mut node = create_node(60);
             node.set_leading("\n// Firecracker provider request timeout\n// ".to_owned());
@@ -861,7 +865,7 @@ fn locked_escape_timeout_ms_to_kdl(value: &Options, add_comments: bool) -> Optio
     };
     match value.locked_escape_timeout_ms {
         Some(timeout) => {
-            let mut node = create_node(timeout);
+            let mut node = create_node((timeout).get());
             if add_comments {
                 node.set_leading(format!("{}\n", comment_text));
             }
@@ -1016,11 +1020,11 @@ fn notification_timeout_to_kdl(value: &Options, add_comments: bool) -> Option<Kd
 
     let create_node = |node_value: u64| -> KdlNode {
         let mut node = KdlNode::new("notification_timeout");
-        node.push(node_value as i64);
+        node.push(i64::from_ne_bytes(node_value.to_ne_bytes()));
         node
     };
     if let Some(notification_timeout) = value.notification_timeout {
-        let mut node = create_node(notification_timeout);
+        let mut node = create_node((notification_timeout).get());
         if add_comments {
             node.set_leading(format!("{}\n", comment_text));
         }
@@ -1552,11 +1556,13 @@ fn serialization_interval_to_kdl(value: &Options, add_comments: bool) -> Option<
 
     let create_node = |node_value: u64| -> KdlNode {
         let mut node = KdlNode::new("serialization_interval");
-        node.push(KdlValue::Base10(node_value as i64));
+        node.push(KdlValue::Base10(i64::from_ne_bytes(
+            node_value.to_ne_bytes(),
+        )));
         node
     };
     if let Some(serialization_interval) = value.serialization_interval {
-        let mut node = create_node(serialization_interval);
+        let mut node = create_node((serialization_interval).get());
         if add_comments {
             node.set_leading(format!("{}\n", comment_text));
         }

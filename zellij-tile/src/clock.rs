@@ -9,11 +9,13 @@
 //! own.
 
 /// Now, as an epoch millisecond.
-pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or_default()
+pub fn now_ms() -> SignedUnixMillis {
+    SignedUnixMillis::new(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
+            .unwrap_or_default(),
+    )
 }
 
 /// Days since 1970-01-01 as a civil `(year, month, day)`.
@@ -48,8 +50,10 @@ pub fn civil_from_days(days: i64) -> (i64, i64, i64) {
 /// `utc_offset_secs` is seconds east of UTC, which only the host can say — see
 /// [`get_local_utc_offset`](crate::shim::get_local_utc_offset). `0` means UTC, which is the
 /// honest answer for a caller that could not ask rather than a wrong one.
-pub fn civil_from_epoch_ms(epoch_ms: i64, utc_offset_secs: i32) -> CivilTime {
-    let local_ms = epoch_ms.saturating_add(i64::from(utc_offset_secs).saturating_mul(1000));
+pub fn civil_from_epoch_ms(epoch_ms: SignedUnixMillis, utc_offset_secs: i32) -> CivilTime {
+    let local_ms = epoch_ms
+        .get()
+        .saturating_add(i64::from(utc_offset_secs).saturating_mul(1000));
     // Euclidean throughout: a pre-epoch instant, or one an offset pushes before it, has to
     // floor rather than truncate towards zero, or the day comes out one too late and the
     // time of day negative.
@@ -93,7 +97,7 @@ pub const MONTH_NAMES: [&str; 12] = [
 /// `"2026-09-04 14:32:07 -04:00"`.
 ///
 /// Everything a relative age cannot answer: which day, and which minute of it.
-pub fn wall_clock(epoch_ms: i64, utc_offset_secs: i32) -> String {
+pub fn wall_clock(epoch_ms: SignedUnixMillis, utc_offset_secs: i32) -> String {
     let at = civil_from_epoch_ms(epoch_ms, utc_offset_secs);
     let (sign, offset) = match utc_offset_secs < 0 {
         true => ('-', -i64::from(utc_offset_secs)),
@@ -112,13 +116,15 @@ pub fn wall_clock(epoch_ms: i64, utc_offset_secs: i32) -> String {
     )
 }
 
+use zellij_types::units::SignedUnixMillis;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn the_epoch_is_a_thursday() {
-        let at = civil_from_epoch_ms(0, 0);
+        let at = civil_from_epoch_ms(zellij_types::units::SignedUnixMillis::new(0), 0);
         assert_eq!((at.year, at.month, at.day), (1970, 1, 1));
         assert_eq!(WEEKDAY_NAMES[at.weekday], "Thu");
     }
@@ -126,7 +132,10 @@ mod tests {
     #[test]
     fn a_negative_offset_can_walk_back_over_midnight() {
         // 1970-01-01 00:30:00 UTC in UTC-4 is 1969-12-31 20:30.
-        let at = civil_from_epoch_ms(30 * 60 * 1000, -4 * 3600);
+        let at = civil_from_epoch_ms(
+            zellij_types::units::SignedUnixMillis::new(30 * 60 * 1000),
+            -4 * 3600,
+        );
         assert_eq!((at.year, at.month, at.day), (1969, 12, 31));
         assert_eq!((at.hour, at.minute), (20, 30));
         assert_eq!(WEEKDAY_NAMES[at.weekday], "Wed");
@@ -135,7 +144,10 @@ mod tests {
     #[test]
     fn leap_day_is_a_day() {
         // 2024-02-29T12:00:00Z
-        let at = civil_from_epoch_ms(1_709_208_000_000, 0);
+        let at = civil_from_epoch_ms(
+            zellij_types::units::SignedUnixMillis::new(1_709_208_000_000),
+            0,
+        );
         assert_eq!((at.year, at.month, at.day), (2024, 2, 29));
         assert_eq!(MONTH_NAMES[at.month as usize - 1], "Feb");
     }
@@ -143,11 +155,17 @@ mod tests {
     #[test]
     fn wall_clock_states_its_offset() {
         assert_eq!(
-            wall_clock(1_709_208_000_000, 0),
+            wall_clock(
+                zellij_types::units::SignedUnixMillis::new(1_709_208_000_000),
+                0
+            ),
             "2024-02-29 12:00:00 +00:00"
         );
         assert_eq!(
-            wall_clock(1_709_208_000_000, -4 * 3600 - 1800),
+            wall_clock(
+                zellij_types::units::SignedUnixMillis::new(1_709_208_000_000),
+                -4 * 3600 - 1800
+            ),
             "2024-02-29 07:30:00 -04:30"
         );
     }
