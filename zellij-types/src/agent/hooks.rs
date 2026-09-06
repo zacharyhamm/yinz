@@ -538,6 +538,9 @@ pub struct HookEvent {
     /// [`waiting_needs_a_person`].
     #[serde(default)]
     pub permission_mode: Option<String>,
+    /// Codex's permission reviewer, supplied by the hook or its matching transcript turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approvals_reviewer: Option<String>,
     /// What the user just asked for, on a `UserPromptSubmit`.
     ///
     /// Held by a reader so the summary made at the end of the turn can say what the turn was
@@ -601,6 +604,7 @@ impl HookEvent {
             last_assistant_message: cut(&self.last_assistant_message, PRUNED_MESSAGE_CHARS),
             message: cut(&self.message, PRUNED_MESSAGE_CHARS),
             permission_mode: self.permission_mode.clone(),
+            approvals_reviewer: self.approvals_reviewer.clone(),
             prompt: cut(&self.prompt, PRUNED_MESSAGE_CHARS),
             agent_id: self.agent_id.clone(),
         }
@@ -778,6 +782,9 @@ pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
 pub fn waiting_needs_a_person(event: &HookEvent) -> bool {
     if event.hook_event_name != "PermissionRequest" {
         return true;
+    }
+    if event.approvals_reviewer.as_deref() == Some("auto_review") {
+        return false;
     }
     let Some(mode) = event.permission_mode.as_deref() else {
         return true;

@@ -1576,7 +1576,7 @@ pub fn actions_from_cli(
                 std::io::stdin()
                     .read_to_string(&mut json)
                     .map_err(|e| format!("failed to read the hook event from stdin: {e}"))?;
-                let event: zellij_types::agent::HookEvent = serde_json::from_str(&json)
+                let (event, json) = zellij_runtime::agent::hooks::parse_hook_event(&kind, json)
                     .map_err(|e| format!("the hook event is not valid agent hook JSON: {e}"))?;
                 return Ok(hook_report_actions(&kind, pane_id, &event, json));
             }
