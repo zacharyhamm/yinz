@@ -425,10 +425,8 @@ pub(crate) struct UnixPtyBackend {
     /// (a package upgrade mid-session), and resolving it repeatedly would turn
     /// that into "no new panes" instead of one stale path.
     host_bin: Option<PathBuf>,
-    /// The user's terminal settings, in wire form. Sampled here because
-    /// `UnixPtyBackend::new()` runs before the server daemonizes and loses its
-    /// controlling terminal — a supervisor could never re-derive them. Converted
-    /// once rather than per spawn.
+    /// Original client settings (or stdin's for direct server startup), converted
+    /// once for local supervisors, which have no controlling terminal to sample.
     wire_termios: Option<WireTermios>,
     terminal_id_to_host: Arc<Mutex<BTreeMap<TerminalId, PtyHostHandle>>>,
     /// Told when any pane's root process stops or resumes. Registered once by the
@@ -461,7 +459,10 @@ fn try_write_to_fd(fd: RawFd, buf: &[u8]) -> Result<usize> {
 
 impl UnixPtyBackend {
     pub fn new() -> Result<Self, io::Error> {
-        let current_termios = termios::tcgetattr(io::stdin()).ok();
+        Self::with_termios(termios::tcgetattr(io::stdin()).ok())
+    }
+
+    pub fn with_termios(current_termios: Option<termios::Termios>) -> Result<Self, io::Error> {
         if current_termios.is_none() {
             log::warn!("Starting a server without a controlling terminal, using the default termios configuration.");
         }
@@ -1253,6 +1254,114 @@ mod tests {
     use nix::fcntl::{fcntl, FcntlArg, OFlag};
     use nix::sys::termios;
     use std::io::Read;
+
+    #[test]
+    fn termios_supervisor_entry() {
+        if std::env::var_os("ZELLIJ_TEST_TERMIOS_SUPERVISOR").is_some() {
+            crate::pty_host::run_pty_host("termios-test/0".to_owned());
+        }
+    }
+
+    #[tokio::test]
+    async fn original_termios_reaches_both_local_pane_paths() {
+        use termios::{InputFlags, LocalFlags, OutputFlags, SetArg, SpecialCharacterIndices};
+        let reference = openpty(None, None).unwrap();
+        let mut cooked = termios::tcgetattr(&reference.slave).unwrap();
+        cooked.input_flags.insert(InputFlags::ICRNL);
+        cooked.local_flags.insert(LocalFlags::ICANON);
+        cooked.local_flags.remove(LocalFlags::ECHO);
+        cooked.output_flags.remove(OutputFlags::OPOST);
+        cooked.control_chars[SpecialCharacterIndices::VERASE as usize] = 8;
+        termios::tcsetattr(&reference.slave, SetArg::TCSANOW, &cooked).unwrap();
+        let snapshot = WireTermios::from_termios(&termios::tcgetattr(&reference.slave).unwrap());
+        let mut raw = cooked.clone();
+        termios::cfmakeraw(&mut raw);
+        raw.local_flags.insert(LocalFlags::ISIG);
+        termios::tcsetattr(&reference.slave, SetArg::TCSANOW, &raw).unwrap();
+        assert!(!termios::tcgetattr(&reference.slave)
+            .unwrap()
+            .input_flags
+            .contains(InputFlags::ICRNL));
+        let json = serde_json::to_string(&Some(snapshot.clone())).unwrap();
+        let decoded: Option<WireTermios> = serde_json::from_str(&json).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let supervisor = dir.path().join("supervisor");
+        let exe = std::env::current_exe().unwrap();
+        // Re-exec the test binary as a real supervisor, with the production fd-3 handoff.
+        zellij_test_support::write_warm_script(&supervisor, &format!(
+            "ZELLIJ_TEST_TERMIOS_SUPERVISOR=1 exec '{}' --exact os_input_output_unix::tests::termios_supervisor_entry --nocapture\n",
+            exe.display().to_string().replace('\'', "'\"'\"'")
+        ));
+        for detachable in [false, true] {
+            let mut backend =
+                UnixPtyBackend::with_termios(decoded.as_ref().map(WireTermios::to_termios))
+                    .unwrap();
+            backend.host_bin = Some(supervisor.clone());
+            backend.pty_host_enabled.store(detachable, Ordering::SeqCst);
+            let id = TerminalId(0);
+            let (mut reader, pid) = backend
+                .spawn_terminal(
+                    RunCommand {
+                        command: PathBuf::from("/bin/sh"),
+                        args: vec![
+                            "-c".to_owned(),
+                            "printf 'ready\\n'; IFS= read -r answer; printf '%s\\n' \"$answer\""
+                                .to_owned(),
+                        ],
+                        ..Default::default()
+                    },
+                    None,
+                    Box::new(|_, _, _| {}),
+                    id,
+                )
+                .unwrap();
+            assert_eq!(
+                backend
+                    .terminal_id_to_host
+                    .lock()
+                    .unwrap()
+                    .contains_key(&id),
+                detachable,
+                "the detachable path must not silently fall back"
+            );
+            let master = match backend
+                .terminal_id_to_transport
+                .lock()
+                .unwrap()
+                .get(&id)
+                .unwrap()
+            {
+                PaneTransport::Local(fd) => *fd,
+                _ => panic!("expected local PTY"),
+            };
+            let applied = termios::tcgetattr(unsafe { BorrowedFd::borrow_raw(master) }).unwrap();
+            assert_eq!(WireTermios::from_termios(&applied), snapshot);
+            let outcome = tokio::time::timeout(Duration::from_secs(10), async {
+                let mut output = Vec::new();
+                let mut buf = [0; 128];
+                while !output.ends_with(b"ready\n") {
+                    let n = reader.read(&mut buf).await.unwrap();
+                    assert_ne!(n, 0, "prompt exited before readiness");
+                    output.extend_from_slice(&buf[..n]);
+                }
+                backend.write_to_tty_stdin(id, b"y\r").unwrap();
+                output.clear();
+                while !output.ends_with(b"y\n") {
+                    let n = reader.read(&mut buf).await.unwrap();
+                    assert_ne!(n, 0, "prompt exited without reading the answer");
+                    output.extend_from_slice(&buf[..n]);
+                }
+            })
+            .await;
+            backend.kill(pid as u32).unwrap();
+            backend.clear_terminal_id(id).unwrap();
+            assert!(
+                outcome.is_ok(),
+                "Enter did not complete the line read (detachable={detachable})"
+            );
+        }
+    }
 
     /// Verify that `try_write_to_fd` writes as many bytes as the kernel will
     /// accept in one pass and returns a partial count (not an error) when the

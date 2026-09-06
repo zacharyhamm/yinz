@@ -90,6 +90,7 @@ pub struct ClientOsInputOutput {
     receive_instructions_from_server: Arc<Mutex<Option<IpcReceiverWithContext<ServerToClientMsg>>>>,
     reading_from_stdin: Arc<Mutex<Option<Vec<u8>>>>,
     session_name: Arc<Mutex<Option<String>>>,
+    orig_termios: Option<zellij_utils::termios::WireTermios>,
 }
 
 impl std::fmt::Debug for ClientOsInputOutput {
@@ -391,6 +392,10 @@ impl StdioAccess for ClientOsInputOutput {
 }
 
 impl ServerConnection for ClientOsInputOutput {
+    fn spawn_server(&self, socket_path: &Path, debug: bool) -> io::Result<()> {
+        crate::spawn_server_with_termios(socket_path, debug, Some(&self.orig_termios))
+    }
+
     fn update_session_name(&mut self, new_session_name: String) {
         *self.session_name.lock().unwrap() = Some(new_session_name);
     }
@@ -499,6 +504,10 @@ pub fn get_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> {
         receive_instructions_from_server: Arc::new(Mutex::new(None)),
         reading_from_stdin,
         session_name: Arc::new(Mutex::new(None)),
+        orig_termios: nix::sys::termios::tcgetattr(io::stdin())
+            .ok()
+            .as_ref()
+            .map(zellij_utils::termios::WireTermios::from_termios),
     })
 }
 
@@ -511,6 +520,58 @@ pub const DEFAULT_STDIN_POLL_TIMEOUT_MS: u64 = 10;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn original_termios_survives_startup_raw_mode_and_cloning() {
+        use nix::sys::termios::{self, InputFlags, LocalFlags, SetArg, SpecialCharacterIndices};
+        use zellij_utils::termios::WireTermios;
+        const CHILD: &str = "ZELLIJ_TEST_CLIENT_TERMIOS";
+        if std::env::var_os(CHILD).is_some() {
+            let original = termios::tcgetattr(io::stdin()).unwrap();
+            let mut client = get_client_os_input().unwrap();
+            client.set_raw_mode_keeping_signals();
+            let raw = termios::tcgetattr(io::stdin()).unwrap();
+            assert!(!raw.input_flags.contains(InputFlags::ICRNL));
+            assert!(raw.local_flags.contains(LocalFlags::ISIG));
+            let cloned = client.clone();
+            let command =
+                crate::server_command(Path::new("test.sock"), false, Some(&cloned.orig_termios))
+                    .unwrap();
+            let args: Vec<_> = command.get_args().collect();
+            let json = args[args
+                .iter()
+                .position(|arg| *arg == "--server-termios")
+                .unwrap()
+                + 1];
+            let snapshot: Option<WireTermios> =
+                serde_json::from_str(json.to_str().unwrap()).unwrap();
+            assert_eq!(snapshot, Some(WireTermios::from_termios(&original)));
+            client.unset_raw_mode().unwrap();
+            assert_eq!(termios::tcgetattr(io::stdin()).unwrap(), original);
+            return;
+        }
+        // Raw mode and stdin are process-global: isolate them from the test runner.
+        let pty = nix::pty::openpty(None, None).unwrap();
+        let mut cooked = termios::tcgetattr(&pty.slave).unwrap();
+        cooked.input_flags.insert(InputFlags::ICRNL);
+        cooked.control_chars[SpecialCharacterIndices::VERASE as usize] = 8;
+        termios::tcsetattr(&pty.slave, SetArg::TCSANOW, &cooked).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "os_input_output::tests::original_termios_survives_startup_raw_mode_and_cloning",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .stdin(std::process::Stdio::from(pty.slave))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
 
     /// The branch nothing else exercises: a socket that never appears. The
     /// error must name the socket and carry the connect failure, and the wait

@@ -22,7 +22,9 @@ use zellij_utils::sessions::{
 use zellij_utils::consts::session_layout_cache_file_name;
 
 use miette::{Report, Result};
-use zellij_server::{os_input_output::get_server_os_input, start_server as start_server_impl};
+use zellij_server::{
+    os_input_output::get_server_os_input_from_termios_arg, start_server as start_server_impl,
+};
 use zellij_utils::{
     cli::{CliArgs, Command, SessionCommand, Sessions},
     data::ConnectToSession,
@@ -448,7 +450,7 @@ pub(crate) fn delete_session(target_session: &Option<String>, force: bool) {
 }
 
 fn get_os_input<OsInputOutput>(
-    fn_get_os_input: fn() -> Result<OsInputOutput, std::io::Error>,
+    fn_get_os_input: impl FnOnce() -> Result<OsInputOutput, std::io::Error>,
 ) -> OsInputOutput {
     match fn_get_os_input() {
         Ok(os_input) => os_input,
@@ -459,10 +461,10 @@ fn get_os_input<OsInputOutput>(
     }
 }
 
-pub(crate) fn start_server(path: PathBuf, debug: bool) {
+pub(crate) fn start_server(path: PathBuf, debug: bool, termios: Option<String>) {
     // Set instance-wide debug mode
     zellij_utils::consts::DEBUG_MODE.set(debug).unwrap();
-    let os_input = get_os_input(get_server_os_input);
+    let os_input = get_os_input(|| get_server_os_input_from_termios_arg(termios.as_deref()));
     start_server_impl(Box::new(os_input), path);
 }
 

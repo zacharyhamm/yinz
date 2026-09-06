@@ -71,6 +71,10 @@ pub struct CliArgs {
     #[clap(long, value_parser, hide = true, overrides_with = "server")]
     pub server: Option<PathBuf>,
 
+    /// Internal: original client terminal settings, before raw mode (JSON or null).
+    #[clap(long, hide = true, requires = "server")]
+    pub server_termios: Option<String>,
+
     /// Internal: run as a pane's pty supervisor, reading its control channel from
     /// fd 3. Spawned by the server, never by a user. The value is a
     /// `<session>/<pane>` label that only exists to make `ps` readable.

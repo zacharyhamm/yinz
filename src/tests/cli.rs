@@ -492,3 +492,21 @@ fn uninstalling_hooks_preserves_user_authored_empty_events() {
         json!({ "hooks": { "SomeEvent": [], "Stop": [{ "hooks": [] }] } })
     );
 }
+
+#[test]
+fn server_termios_requires_server() {
+    assert!(try_parse_cli(["zellij", "--server-termios", "null"]).is_err());
+    let args = try_parse_cli([
+        "zellij",
+        "--server",
+        "/tmp/test.sock",
+        "--server-termios",
+        "null",
+    ])
+    .expect("internal server arguments");
+    assert_eq!(args.server_termios.as_deref(), Some("null"));
+    assert!(try_parse_cli(["zellij", "--server", "/tmp/test.sock"])
+        .unwrap()
+        .server_termios
+        .is_none());
+}
