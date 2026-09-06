@@ -9,6 +9,7 @@
 use super::{AgentInfo, AgentSource, AgentState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::path::Path;
 
@@ -442,15 +443,9 @@ pub const HOOK_DETAIL_CHARS: usize = 24;
 /// a sidebar row.
 pub const WAITING_DETAIL_CHARS: usize = 80;
 
-/// The largest hook event handed to the plugins exactly as it arrived.
-///
-/// A hook event is broadcast to *every* running plugin, which means a copy into each of some
-/// fifteen wasm memories, twice per tool call, inside a hook with a five-second timeout. Two
-/// fields have no bound at all in Claude Code's own schema — `tool_input`, so a `Write` of a
-/// two-megabyte file, and `tool_response`, so a `Read` of anything — and neither is worth that
-/// much of a turn. Over this, the event goes out through [`HookEvent::pruned`] instead of
-/// verbatim; under it, nothing changes, which is nearly always.
-pub const HOOK_BROADCAST_MAX_BYTES: usize = 64 * 1024;
+/// The maximum serialized hook JSON carried in `raw`, delivered only to subscribers.
+/// The surrounding event also carries typed fields and can be larger.
+pub const HOOK_BROADCAST_MAX_BYTES: usize = 256 * 1024;
 
 /// The longest any one string in a pruned event's `tool_input` keeps, unless it sits under one
 /// of [`PRUNED_HISTORY_KEYS`].
@@ -465,21 +460,13 @@ const PRUNED_STRING_CHARS: usize = 256;
 ///
 /// Matched to [`PRUNED_MESSAGE_CHARS`], because a plan and a final message are the same kind
 /// of thing to the same reader: prose, kept whole, shown in a pane that wraps and scrolls.
-const PRUNED_HISTORY_STRING_CHARS: usize = 8 * 1024;
+const PRUNED_HISTORY_STRING_CHARS: usize = HOOK_BROADCAST_MAX_BYTES;
 
-/// What one pruned event's `tool_input` may spend in total, over which the remaining keys and
-/// elements are dropped. Only a pathological object — thousands of small keys — reaches it,
-/// because every string is cut first.
-///
-/// Comfortably above [`PRUNED_HISTORY_STRING_CHARS`], so the budget cannot quietly undo the
-/// larger cap by running out inside the plan it was raised for.
-const PRUNED_INPUT_BUDGET: usize = 32 * 1024;
+/// Maximum per-field byte budget searched when the serialized hook exceeds the ceiling.
+const PRUNED_INPUT_BUDGET: usize = HOOK_BROADCAST_MAX_BYTES;
 
-/// The longest prose a pruned event keeps, per field. `last_assistant_message` is the one
-/// genuinely used at length — it is kept on the run's timeline, and the run is what a summary
-/// is made of — and its reader cuts it again to six thousand characters, so this is set above
-/// that: a prune takes nothing the summary was going to keep.
-const PRUNED_MESSAGE_CHARS: usize = 8 * 1024;
+/// Prose can use the full budget; serialization and other fields decide the actual cut.
+const PRUNED_MESSAGE_CHARS: usize = HOOK_BROADCAST_MAX_BYTES;
 
 /// A Claude Code hook event, as its JSON arrives.
 ///
@@ -496,6 +483,19 @@ pub struct HookEvent {
     /// from one that merely went quiet.
     #[serde(default)]
     pub session_id: String,
+    /// Provider turn identity, preserved even when prose is pruned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    /// SHA-256 of the complete received prompt's UTF-8 bytes, computed before pruning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_sha256: Option<String>,
+    /// Host-injected ownership needed to route remote workflow hooks.
+    #[serde(
+        default,
+        rename = "_zellij_workflow_owner",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub workflow_owner: Option<String>,
     /// Why a `SessionStart` fired: `startup`, `resume`, `clear`, `compact`, or `fork`.
     #[serde(default)]
     pub source: Option<String>,
@@ -559,8 +559,6 @@ pub struct HookEvent {
     /// finishing while the agent above it works on.
     #[serde(default)]
     pub agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -638,6 +636,9 @@ impl HookEvent {
         HookEvent {
             hook_event_name: self.hook_event_name.clone(),
             session_id: self.session_id.clone(),
+            turn_id: self.turn_id.clone(),
+            prompt_sha256: self.prompt_sha256.clone(),
+            workflow_owner: self.workflow_owner.clone(),
             source: self.source.clone(),
             cwd: self.cwd.clone(),
             notification_type: self.notification_type.clone(),
@@ -653,7 +654,6 @@ impl HookEvent {
             approvals_reviewer: self.approvals_reviewer.clone(),
             prompt: cut(&self.prompt, PRUNED_MESSAGE_CHARS),
             agent_id: self.agent_id.clone(),
-            turn_id: self.turn_id.clone(),
             message_id: self.message_id.clone(),
             index: self.index,
             final_batch: self.final_batch,
@@ -670,10 +670,10 @@ impl HookEvent {
     ///
     /// `json` is the event exactly as it arrived, which is what goes out whenever it fits —
     /// nearly always. Over the cap it is re-serialized from a prune, and the prune is repeated
-    /// with a smaller budget until the result fits: a single cap on the input cannot promise
-    /// an output size, because JSON escaping expands what it encodes — six bytes for one
+    /// with a bounded binary search for the largest budget that fits. An input cap cannot
+    /// promise an output size, because JSON escaping expands what it encodes — six bytes for one
     /// control character — and there are several fields drawing on the budget. The last step
-    /// spends nothing, leaving the metadata alone, so the descent always ends under the cap.
+    /// spends nothing on prose. Pathological metadata is bounded separately.
     pub fn broadcast_json(&self, json: String) -> String {
         self.broadcast(json).1
     }
@@ -686,20 +686,53 @@ impl HookEvent {
         if json.len() <= HOOK_BROADCAST_MAX_BYTES {
             return (Cow::Borrowed(self), json);
         }
-        let mut budget = PRUNED_INPUT_BUDGET;
-        loop {
-            let pruned = self.pruned_to(budget);
-            if let Ok(candidate) = serde_json::to_string(&pruned) {
-                if candidate.len() <= HOOK_BROADCAST_MAX_BYTES || budget == 0 {
-                    return (Cow::Owned(pruned), candidate);
-                }
-            } else if budget == 0 {
-                // Unreachable: this struct has no map keys and no non-finite numbers, so it
-                // serializes. Returning the original is still better than looping.
-                return (Cow::Borrowed(self), json);
-            }
-            budget /= 8;
+        let mut source = self.clone();
+        if let Some(prompt) = self
+            .prompt
+            .as_ref()
+            .filter(|_| self.prompt_sha256.is_none())
+        {
+            source.prompt_sha256 = Some(
+                Sha256::digest(prompt.as_bytes())
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
+            );
         }
+        let mut low = 0;
+        let mut high = PRUNED_INPUT_BUDGET;
+        let mut best = source.pruned_to(0);
+        let mut raw = serde_json::to_string(&best).expect("hook fields serialize");
+        // Metadata is normally tiny. Bound pathological metadata too so even the
+        // zero-prose candidate respects the JSON ceiling.
+        if raw.len() > HOOK_BROADCAST_MAX_BYTES {
+            let mut value = serde_json::to_value(&best).expect("hook fields serialize");
+            for field in value
+                .as_object_mut()
+                .expect("hook is an object")
+                .values_mut()
+            {
+                if let Value::String(text) = field {
+                    *text = truncate_within(text, 1024, 1024);
+                }
+            }
+            best = serde_json::from_value(value).expect("same hook fields");
+            raw = serde_json::to_string(&best).expect("hook fields serialize");
+            return (Cow::Owned(best), raw);
+        }
+        while low < high {
+            let budget = low + (high - low).div_ceil(2);
+            let pruned = source.pruned_to(budget);
+            let candidate = serde_json::to_string(&pruned).expect("hook fields serialize");
+            if candidate.len() <= HOOK_BROADCAST_MAX_BYTES {
+                low = budget;
+                best = pruned;
+                raw = candidate;
+            } else {
+                high = budget - 1;
+            }
+        }
+        (Cow::Owned(best), raw)
     }
 }
 
@@ -1714,10 +1747,10 @@ mod tests {
             ..event("PreToolUse")
         };
 
-        let pruned = write.pruned();
-        let json = serde_json::to_string(&pruned).expect("a pruned event serializes");
+        let (pruned, _) = write.broadcast(serde_json::to_string(&write).unwrap());
+        let json = serde_json::to_string(pruned.as_ref()).expect("a pruned event serializes");
         assert!(
-            json.len() < HOOK_BROADCAST_MAX_BYTES,
+            json.len() <= HOOK_BROADCAST_MAX_BYTES,
             "a pruned event fits the cap, got {}",
             json.len()
         );
@@ -1727,7 +1760,8 @@ mod tests {
         assert_eq!(hook_state(&pruned), hook_state(&write));
         assert!(pruned
             .last_assistant_message
-            .is_some_and(|message| message.chars().count() == PRUNED_MESSAGE_CHARS));
+            .as_ref()
+            .is_some_and(|message| message.len() > 8 * 1024));
 
         // The other reader of `tool_input`, whose question is nested two levels down.
         let asking = HookEvent {
@@ -1818,11 +1852,11 @@ mod tests {
         assert!(typed
             .last_message
             .as_ref()
-            .is_some_and(|message| message.chars().count() == PRUNED_MESSAGE_CHARS));
+            .is_some_and(|message| message.len() > 8 * 1024));
         assert!(typed
             .prompt
             .as_ref()
-            .is_some_and(|prompt| prompt.chars().count() == PRUNED_MESSAGE_CHARS));
+            .is_some_and(|prompt| prompt.len() > 8 * 1024));
 
         // Under the cap, whole - nearly every event.
         let small = HookEvent {
@@ -1851,6 +1885,88 @@ mod tests {
         };
         let json = serde_json::to_string(&event).expect("the event serializes");
         assert_eq!(event.broadcast_json(json.clone()), json);
+    }
+
+    #[test]
+    fn hook_json_boundaries_and_full_prompt_identity() {
+        for size in [
+            HOOK_BROADCAST_MAX_BYTES - 1,
+            HOOK_BROADCAST_MAX_BYTES,
+            HOOK_BROADCAST_MAX_BYTES + 1,
+        ] {
+            let mut value =
+                json!({"hook_event_name":"UserPromptSubmit", "prompt":"", "turn_id":"turn-1"});
+            let overhead = value.to_string().len();
+            value["prompt"] = Value::String("x".repeat(size - overhead));
+            let raw = value.to_string();
+            assert_eq!(raw.len(), size);
+            let hook: HookEvent = serde_json::from_str(&raw).unwrap();
+            let (_, bounded) = hook.broadcast(raw.clone());
+            assert!(bounded.len() <= HOOK_BROADCAST_MAX_BYTES);
+            if size <= HOOK_BROADCAST_MAX_BYTES {
+                assert_eq!(bounded, raw);
+            }
+        }
+        let metadata = HookEvent {
+            session_id: "\u{0001}".repeat(HOOK_BROADCAST_MAX_BYTES),
+            ..event("Stop")
+        };
+        assert!(
+            metadata
+                .broadcast_json(serde_json::to_string(&metadata).unwrap())
+                .len()
+                <= HOOK_BROADCAST_MAX_BYTES
+        );
+        for text in ["x", "計🙂", "\\\"\n\u{0001}"] {
+            let prompt = text.repeat(HOOK_BROADCAST_MAX_BYTES);
+            let hook = HookEvent {
+                prompt: Some(prompt.clone()),
+                turn_id: Some("turn-1".into()),
+                workflow_owner: Some("owner".into()),
+                message: Some(prompt.clone()),
+                last_assistant_message: Some(prompt.clone()),
+                tool_input: Some(json!({"plan":prompt, "content":"x".repeat(300000)})),
+                ..event("UserPromptSubmit")
+            };
+            let (bounded, raw) = hook.broadcast(serde_json::to_string(&hook).unwrap());
+            assert!(raw.len() <= HOOK_BROADCAST_MAX_BYTES);
+            assert!(bounded.prompt.as_ref().unwrap().len() > 8192);
+            assert_eq!(bounded.turn_id, hook.turn_id);
+            assert_eq!(bounded.workflow_owner, hook.workflow_owner);
+            assert_eq!(
+                bounded.prompt_sha256,
+                Some(
+                    Sha256::digest(prompt.as_bytes())
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect()
+                )
+            );
+            let arrived: HookEvent = serde_json::from_str(&raw).unwrap();
+            assert_eq!(&arrived, bounded.as_ref());
+            // A remote broker prunes before the host adds workflow ownership.
+            // A second prune must keep the digest of the original, complete prompt.
+            let mut forwarded: Value = serde_json::from_str(&raw).unwrap();
+            forwarded["_zellij_workflow_owner"] = Value::String("owner".repeat(1000));
+            let forwarded_hook: HookEvent = serde_json::from_value(forwarded.clone()).unwrap();
+            let (repruned, forwarded_raw) = forwarded_hook.broadcast(forwarded.to_string());
+            assert!(forwarded_raw.len() <= HOOK_BROADCAST_MAX_BYTES);
+            assert_eq!(repruned.prompt_sha256, bounded.prompt_sha256);
+            assert_eq!(repruned.turn_id, bounded.turn_id);
+            let budget = bounded.prompt.as_ref().unwrap().len();
+            assert!(
+                serde_json::to_string(
+                    &HookEvent {
+                        prompt_sha256: bounded.prompt_sha256.clone(),
+                        ..hook
+                    }
+                    .pruned_to(budget + 4)
+                )
+                .unwrap()
+                .len()
+                    > HOOK_BROADCAST_MAX_BYTES
+            );
+        }
     }
 
     /// A submitted plan survives a prune, where a passing argument does not.
@@ -1957,8 +2073,8 @@ mod tests {
             tool_input: Some(serde_json::Value::Object(input)),
             ..event("PreToolUse")
         };
-        let json = serde_json::to_string(&event.pruned()).expect("a pruned event serializes");
-        assert!(json.len() < HOOK_BROADCAST_MAX_BYTES, "{}", json.len());
+        let json = event.broadcast_json(serde_json::to_string(&event).expect("event serializes"));
+        assert!(json.len() <= HOOK_BROADCAST_MAX_BYTES, "{}", json.len());
     }
 
     #[test]

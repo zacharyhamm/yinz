@@ -33,7 +33,7 @@ use crate::plugins::PluginId;
 ///
 /// It is a ceiling and not a reservation: wasmi grows its backing buffer on
 /// demand, so a plugin that uses three megabytes costs three megabytes.
-pub const MAX_PLUGIN_MEMORY: usize = 512 * 1024 * 1024;
+pub const MAX_PLUGIN_MEMORY: usize = 1024 * 1024 * 1024;
 
 /// One instance per store. Workers get a store of their own.
 const MAX_PLUGIN_INSTANCES: usize = 1;

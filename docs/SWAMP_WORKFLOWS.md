@@ -101,9 +101,16 @@ instructions; after the instructed work completes, another review cycle begins.
 The bridge stores only ownership, operation claims, event delivery and attachment state
 outside Swamp. Ownership names the host, session, server incarnation, agent and work
 item. Supervisor and process identities verify a pane before input. One prompt may be
-outstanding per agent. Prompts are limited to 8000 UTF-8 bytes so the acceptance hook
-can carry the complete correlation text. Prompt observation is registered before bytes are sent. Idle,
+outstanding per agent. Prompts are limited to 256 KiB (262,144 UTF-8 bytes), including generated repairs and reviews.
+Oversized prompts fail before a host claim is created. Repair instructions are never truncated.
+Bridge requests travel as one JSON line on stdin.
+Acceptance compares the expected SHA-256 digest with the host-computed digest when available.
+Older hooks or stored requests without a digest use exact prompt text. Session and turn checks
+still apply to completion. Prompt observation is registered before bytes are sent. Idle,
 closed panes and process exit are not agent success.
+
+Rebuild and restart the server with matching bridge assets to activate these changes.
+The new hook JSON fields are optional. No protobuf or stored-data migration is required.
 
 Use the model's `observe`, `agent_inspect` and `reconcile` methods to inspect saved
 operations. Never create a replacement mutation merely because a caller timed out.

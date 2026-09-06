@@ -169,7 +169,7 @@ list of numbers.
 `pane_id` (a number), `kind`, `hook` (`UserPromptSubmit`, `PreToolUse`, `Stop`, …), `state`
 (`Busy`/`Waiting`/`Idle` as the event moved the pane's record, or nil), `detail`, `prompt`,
 `last_message` (what the agent said, on a `Stop`), `tool_name`, `cwd`, `session_id`, and `raw`,
-the agent's own JSON. An event over 64 KiB is pruned - prose to 8 K characters - and `prompt` and
+the agent's own JSON. Hook JSON over 256 KiB is pruned to fit that serialized ceiling, and `prompt` and
 `last_message` are cut the same way `raw` is. It needs `read_application_state`, and `zellij events --type agent_event`
 streams the same thing to a shell. See *Agents*.
 

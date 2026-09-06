@@ -14,7 +14,11 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
     let session = opts
         .session
         .clone()
-        .or_else(|| zellij_runtime::envs::get_session_name().ok());
+        .or_else(|| {
+            zellij_runtime::envs::get_session_name()
+                .ok()
+                .map(|name| name.into_string())
+        });
     match command {
         Workflow::Run {
             name,

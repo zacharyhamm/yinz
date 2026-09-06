@@ -188,16 +188,7 @@ fn report_parts(
                     .map(AgentReportState::Set)
                     .unwrap_or(AgentReportState::Clear);
             },
-            Action::AgentEvent(mut e) => {
-                if let Ok(owner) = std::env::var("ZELLIJ_SWAMP_OWNER") {
-                    let mut raw: serde_json::Value = serde_json::from_str(&e.raw)
-                        .context("cannot annotate workflow agent event")?;
-                    if let Some(object) = raw.as_object_mut() {
-                        object.insert("_zellij_workflow_owner".into(), owner.into());
-                        e.raw = serde_json::to_string(&raw)
-                            .context("cannot serialize workflow agent event")?;
-                    }
-                }
+            Action::AgentEvent(e) => {
                 pane = Some(PaneId::Terminal(e.pane_id));
                 event = Some(e);
             },

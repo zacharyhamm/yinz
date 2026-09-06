@@ -169,14 +169,15 @@ history and a well-judged interruption are made of. So one process spawn does bo
 is read once, in the session (`agent::AgentEvent::from_hook`): `pane_id`, `kind`, `hook`, the
 `state` the record moved to, `detail`, `prompt`, `last_message`, `tool_name`, `cwd`,
 `session_id` - and `raw`, the agent's own JSON, for the one reader that keeps a run's history
-and needs the rest. The whole event is bounded (`agent::HOOK_BROADCAST_MAX_BYTES`, 64 KiB): over
-it `raw` is pruned, prose to 8 K characters, and `prompt` and `last_message` are cut the same way,
+and needs the rest. The hook JSON in `raw` is bounded (`agent::HOOK_BROADCAST_MAX_BYTES`, 256 KiB).
+Oversized JSON is pruned with the largest per-field budget that fits the serialized ceiling.
+`prompt` and `last_message` are cut the same way,
 so the typed fields and the JSON never disagree. It goes only to subscribers, gated on `read_application_state` like the
 manifest, and nothing waits on it, so a hook cannot stall the turn it fired in. A Lua plugin
 reads it with `zellij.agent.on`, or awaits it with `zellij.async.turn` (`docs/LUA_PLUGINS.md`,
 "Agents").
 
-`raw` has one bound on it, `agent::HOOK_BROADCAST_MAX_BYTES` (64 KiB). Two of the fields
+`raw` has one bound on it, `agent::HOOK_BROADCAST_MAX_BYTES` (256 KiB). Two of the fields
 Claude Code sends have no size limit in its own schema — `tool_input`, so a `Write` of a
 two-megabyte file, and `tool_response`, so a `Read` of anything — and this payload is copied
 into every subscribed plugin's memory, twice per tool call, inside a hook with five seconds to
@@ -184,9 +185,13 @@ live. An event over the cap goes out through `HookEvent::pruned` instead: every 
 models survives, with each string in `tool_input` cut to 256 characters and a budget spent
 across the rest of it, which leaves everything any reader actually takes from it — the `Bash`
 command, the `file_path`, the first `AskUserQuestion` question. A prompt, a plan, a question or
-a final message is prose somebody reads at length, so each of those is cut to 8 KiB instead. Anything the struct does not model,
+a final message is prose somebody reads at length, so each can use up to 256 KiB before the shared serialized ceiling applies. Anything the struct does not model,
 `tool_response` above all, is gone. Under the cap, which is nearly every event, the JSON
 arrives exactly as Claude Code wrote it.
+Pruned hooks retain `turn_id` and carry `prompt_sha256`, computed from the complete prompt's
+UTF-8 bytes before pruning. Typed prose matches `raw`. The surrounding plugin event can be
+larger than 256 KiB. The IPC frame ceiling remains 64 MiB.
+
 
 The same record is written by two other roads, which is what makes "is this pane an agent" one
 question with one answer: the spawn path, when a plugin opens a pane *as* an agent pane
@@ -432,8 +437,8 @@ entries are read back from the store, and it is what lets a run recorded before 
 be compared at all: such a run comes back out of its JSON `payload` blob with no ids on it, and
 `agents::entry_event_id` recomputes them rather than matching nothing forever.
 
-And an element that arrived **cut** has no identity whatever. The 64 KiB broadcast cap takes a
-long `<result>` at a fixed 8 KiB with no marker, so two different reports for one task can arrive
+And an element that arrived **cut** has no identity whatever. The 256 KiB broadcast cap takes a
+long `<result>` to fit the serialized budget with no marker, so two different reports for one task can arrive
 byte for byte the same, and the bytes that would have told them apart are exactly the ones that
 did not arrive. Such a prompt falls back to the adjacent-only rule. The cost is a large
 notification redelivered across a turn showing twice; the alternative was a real report being

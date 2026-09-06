@@ -1576,6 +1576,15 @@ pub fn actions_from_cli(
                 std::io::stdin()
                     .read_to_string(&mut json)
                     .map_err(|e| format!("failed to read the hook event from stdin: {e}"))?;
+                // Ownership is part of the bounded raw JSON, so annotate before pruning.
+                if let Ok(owner) = std::env::var("ZELLIJ_SWAMP_OWNER") {
+                    let mut raw: serde_json::Value = serde_json::from_str(&json)
+                        .map_err(|e| format!("cannot annotate workflow agent event: {e}"))?;
+                    if let Some(object) = raw.as_object_mut() {
+                        object.insert("_zellij_workflow_owner".into(), owner.into());
+                        json = raw.to_string();
+                    }
+                }
                 let (event, json) = zellij_runtime::agent::hooks::parse_hook_event(&kind, json)
                     .map_err(|e| format!("the hook event is not valid agent hook JSON: {e}"))?;
                 return Ok(hook_report_actions(&kind, pane_id, &event, json));

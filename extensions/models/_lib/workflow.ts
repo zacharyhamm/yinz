@@ -22,18 +22,42 @@ export async function exec(
     c: Pick<Context, "signal">,
     cwd: string,
     args: string[],
+    stdin?: string,
 ) {
     c.signal.throwIfAborted();
     args.forEach((arg) => Literal.parse(arg));
-    const result = await new Deno.Command(args[0], {
+    const command = new Deno.Command(args[0], {
         args: args.slice(1),
         cwd,
-        stdin: "null",
+        stdin: stdin === undefined ? "null" : "piped",
         stdout: "piped",
         stderr: "piped",
         env: { GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: "true", GIT_PAGER: "cat" },
         signal: c.signal,
-    }).output();
+    });
+    let result: Deno.CommandOutput;
+    if (stdin === undefined) {
+        result = await command.output();
+    } else {
+        const child = command.spawn();
+        const writer = child.stdin.getWriter();
+        const [output, input] = await Promise.allSettled([
+            child.output(),
+            (async () => {
+                try {
+                    await writer.write(new TextEncoder().encode(stdin));
+                } finally {
+                    await writer.close();
+                }
+            })(),
+        ]);
+        c.signal.throwIfAborted();
+        if (output.status === "rejected") throw output.reason;
+        result = output.value;
+        // Preserve the child's diagnostic if it exits before consuming stdin.
+        if (input.status === "rejected" && result.success) throw input.reason;
+    }
+    c.signal.throwIfAborted();
     const decoder = new TextDecoder("utf-8", { fatal: true });
     return {
         exitCode: result.code,
@@ -45,8 +69,9 @@ export async function checked(
     c: Pick<Context, "signal">,
     cwd: string,
     args: string[],
+    stdin?: string,
 ) {
-    const r = await exec(c, cwd, args);
+    const r = await exec(c, cwd, args, stdin);
     if (r.exitCode !== 0) {
         throw new Error(
             `${args[0]} ${args[1]} failed (${r.exitCode}): ${r.stderr}`,

@@ -1,15 +1,19 @@
 /** Host operations and evidence adapters for the existing Zellij model. @module */
 import { z } from "npm:zod@4.3.6";
-import { AgentSpec, observe, Operation, operation, Request } from "./bridge.ts";
+import {
+    AgentSpec,
+    observe,
+    Operation,
+    operation,
+    PromptText,
+    Request,
+} from "./bridge.ts";
 import { Context, Key, Literal } from "./workflow.ts";
 import { Evidence, Finding } from "../git_workflow.ts";
 const Agent = Request.extend({ agent: Key });
 const Spawn = Request.extend({ spec: AgentSpec });
 const Prompt = Agent.extend({
-    prompt: z.string().min(1).refine(
-        (s) => new TextEncoder().encode(s).length <= 8000,
-        "Prompt exceeds hook correlation limit",
-    ),
+    prompt: PromptText,
 });
 const Observe = Request.extend({
     timeoutSeconds: z.number().int().positive().default(3600),

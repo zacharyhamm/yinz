@@ -161,7 +161,9 @@ pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result
     zellij
         .set(
             "server_session",
-            zellij_runtime::envs::get_session_name().unwrap_or_default(),
+            zellij_runtime::envs::get_session_name()
+                .unwrap_or_default()
+                .to_string(),
         )
         .map_err(|e| anyhow!("failed to expose server session: {e}"))?;
     zellij

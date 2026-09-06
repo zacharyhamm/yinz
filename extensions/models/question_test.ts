@@ -47,6 +47,26 @@ Deno.test("all question kinds stay pending unattended and accept one run-bound a
         constructor(_path: string, opts: Deno.CommandOptions) {
             this.args = opts.args ?? [];
         }
+        spawn() {
+            let input = "";
+            let done!: () => void;
+            const closed = new Promise<void>((resolve) => done = resolve);
+            return {
+                stdin: new WritableStream<Uint8Array>({
+                    write: (bytes) => {
+                        input += new TextDecoder().decode(bytes);
+                    },
+                    close: () => {
+                        done();
+                    },
+                }),
+                output: async () => {
+                    await closed;
+                    this.args.push(input);
+                    return this.output();
+                },
+            };
+        }
         output() {
             let out: unknown = {};
             if (this.args[0] === "workflow") {

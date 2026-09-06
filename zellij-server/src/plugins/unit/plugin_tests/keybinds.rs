@@ -299,6 +299,7 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
     // Plugin subscribes to InitialKeybinds + ModeUpdate
     let mut config = BTreeMap::new();
     config.insert("subscribe_initial_keybinds".to_owned(), "true".to_owned());
+    config.insert("subscribe_agent_event".to_owned(), "true".to_owned());
     let run_plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
         _allow_exec_host_cmd: false,
         location: RunPluginLocation::File(PathBuf::from(&*PLUGIN_FIXTURE)),
@@ -412,6 +413,40 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
                 renders_containing(instructions, "InitialKeybinds"),
             )
         },
+    );
+
+    // Exercise the real Wasm subscription and protobuf path with a full-size raw hook.
+    let mut raw = serde_json::json!({"hook_event_name":"UserPromptSubmit", "prompt":""});
+    let overhead = raw.to_string().len();
+    raw["prompt"] = serde_json::Value::String(
+        "x".repeat(zellij_types::agent::HOOK_BROADCAST_MAX_BYTES - overhead),
+    );
+    let raw = raw.to_string();
+    let hook = serde_json::from_str(&raw).unwrap();
+    let event = Event::AgentEvent(zellij_types::agent::AgentEvent::from_hook(
+        "codex",
+        zellij_types::internal_ids::TerminalId::new(7),
+        &hook,
+        raw,
+    ));
+    let expected = format!("{event:?}");
+    plugin_thread_sender
+        .send(PluginInstruction::Update(vec![(
+            None,
+            Some(client_id),
+            event,
+        )]))
+        .unwrap();
+    received_screen_instructions.wait_until_described(
+        "a subscribed Wasm plugin to receive the complete 256 KiB hook",
+        zellij_test_support::default_timeout(),
+        |instructions| {
+            renders_containing(instructions, "AgentEvent")
+                .iter()
+                .any(|render| render.contains(&expected))
+                .then_some(())
+        },
+        |instructions| format!("{} screen instructions", instructions.len()),
     );
 
     teardown();

@@ -3139,7 +3139,7 @@ impl Screen {
                 "agent_firecracker_worktree".to_owned(),
                 worktree.display().to_string(),
             );
-            payload.insert("agent_session".to_owned(), self.session_name.clone());
+            payload.insert("agent_session".to_owned(), self.session_name.to_string());
             if let Some(executable) = crate::os_input_output_unix::server_binary() {
                 payload.insert(
                     "agent_zellij_executable".to_owned(),
