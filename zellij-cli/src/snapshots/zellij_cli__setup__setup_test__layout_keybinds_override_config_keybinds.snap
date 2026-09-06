@@ -499,7 +499,9 @@ Config {
         items: [
             ContextMenuItem {
                 id: Some(
-                    0,
+                    ContextMenuItemId(
+                        0,
+                    ),
                 ),
                 label: "Copy",
                 shortcut: None,
@@ -512,7 +514,9 @@ Config {
             },
             ContextMenuItem {
                 id: Some(
-                    1,
+                    ContextMenuItemId(
+                        1,
+                    ),
                 ),
                 label: "",
                 shortcut: None,
@@ -523,7 +527,9 @@ Config {
             },
             ContextMenuItem {
                 id: Some(
-                    2,
+                    ContextMenuItemId(
+                        2,
+                    ),
                 ),
                 label: "Split right",
                 shortcut: None,
@@ -542,7 +548,9 @@ Config {
             },
             ContextMenuItem {
                 id: Some(
-                    3,
+                    ContextMenuItemId(
+                        3,
+                    ),
                 ),
                 label: "Split down",
                 shortcut: None,
@@ -561,7 +569,9 @@ Config {
             },
             ContextMenuItem {
                 id: Some(
-                    4,
+                    ContextMenuItemId(
+                        4,
+                    ),
                 ),
                 label: "Fullscreen",
                 shortcut: None,
@@ -574,7 +584,9 @@ Config {
             },
             ContextMenuItem {
                 id: Some(
-                    5,
+                    ContextMenuItemId(
+                        5,
+                    ),
                 ),
                 label: "",
                 shortcut: None,
@@ -585,7 +597,9 @@ Config {
             },
             ContextMenuItem {
                 id: Some(
-                    6,
+                    ContextMenuItemId(
+                        6,
+                    ),
                 ),
                 label: "Move to new tab",
                 shortcut: None,
@@ -598,7 +612,9 @@ Config {
             },
             ContextMenuItem {
                 id: Some(
-                    7,
+                    ContextMenuItemId(
+                        7,
+                    ),
                 ),
                 label: "Close pane",
                 shortcut: None,
