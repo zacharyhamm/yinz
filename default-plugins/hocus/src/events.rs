@@ -426,8 +426,10 @@ impl State {
                     .panes
                     .values()
                     .flatten()
-                    .filter(|pane| pane.is_plugin)
-                    .map(|pane| PluginId::new(pane.id))
+                    .filter_map(|pane| match pane.id {
+                        PaneId::Plugin(id) => Some(id),
+                        _ => None,
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -670,7 +672,7 @@ impl State {
             self.agents_tab_index = manifest.panes.iter().find_map(|(tab_index, panes)| {
                 let agents = panes
                     .iter()
-                    .find(|pane| pane.is_plugin && PluginId::new(pane.id) == agents_id)?;
+                    .find(|pane| pane.id == PaneId::Plugin(agents_id))?;
                 agents_visible = !agents.is_suppressed;
                 agents_focused = agents.is_focused;
                 Some(*tab_index)
@@ -704,10 +706,7 @@ impl State {
         // of it any more - both halves hide together, so a hidden panel is cut as it will return.
         let agents_presence_changed = had_agents != self.agents_plugin.is_some();
         for (tab_index, panes) in &manifest.panes {
-            let Some(own) = panes
-                .iter()
-                .find(|pane| pane.is_plugin && PluginId::new(pane.id) == own_id)
-            else {
+            let Some(own) = panes.iter().find(|pane| pane.id == PaneId::Plugin(own_id)) else {
                 continue;
             };
             self.own_tab_index = Some(*tab_index);

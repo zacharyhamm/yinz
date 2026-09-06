@@ -3311,8 +3311,8 @@ pub fn firecracker_panes(vm: &str, session: &str, current: &SessionInfo) -> Vec<
         .panes
         .values()
         .flatten()
-        .filter(|pane| !pane.is_plugin && pane.target.firecracker_vm() == Some(vm))
-        .map(|pane| pane.id)
+        .filter(|pane| !pane.is_plugin() && pane.target.firecracker_vm() == Some(vm))
+        .map(|pane| pane.id.legacy_parts().0)
         .collect();
     ids.sort_unstable();
     ids
@@ -4195,8 +4195,8 @@ pub fn session_listing(session: &SessionInfo) -> Value {
                 .filter(|pane| !pane.is_suppressed)
                 .map(|pane| {
                     json!({
-                        "pane_id": pane.id,
-                        "is_plugin": pane.is_plugin,
+                        "pane_id": pane.id.legacy_parts().0,
+                        "is_plugin": pane.is_plugin(),
                         "title": pane.title,
                         "focused": pane.is_focused,
                         "floating": pane.is_floating,
@@ -4443,10 +4443,10 @@ mod host {
                             .map(Vec::as_slice)
                             .unwrap_or_default()
                             .iter()
-                            .filter(|pane| !pane.is_suppressed && !pane.is_plugin)
+                            .filter(|pane| !pane.is_suppressed && !pane.is_plugin())
                             .map(|pane| {
                                 json!({
-                                    "pane_id": pane.id,
+                                    "pane_id": pane.id.legacy_parts().0,
                                     "title": pane.title,
                                     "command": pane.terminal_command,
                                     "exit_status": pane.exit_status,
@@ -4793,18 +4793,15 @@ mod host {
             .iter()
             .find(|session| session.is_current_session)?;
         let pane = session.panes.panes.values().flatten().find(|pane| {
-            pane.is_plugin
+            pane.is_plugin()
                 && pane
                     .plugin_url
                     .as_deref()
                     .is_some_and(|url| url.ends_with(path))
         })?;
         Some(PluginObservation {
-            pane_id: pane.id,
-            contents: read_pane(
-                PaneId::Plugin(zellij_tile::prelude::PluginId::new(pane.id)),
-                false,
-            ),
+            pane_id: pane.id.legacy_parts().0,
+            contents: read_pane(pane.id, false),
         })
     }
 
@@ -4950,11 +4947,7 @@ mod host {
     /// The `PaneId` a manifest entry names. Ids overlap by kind, so the flag is
     /// half of the address rather than a detail.
     fn pane_id_of(pane: &PaneInfo) -> PaneId {
-        if pane.is_plugin {
-            PaneId::Plugin(zellij_tile::prelude::PluginId::new(pane.id))
-        } else {
-            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane.id))
-        }
+        pane.id
     }
 
     fn current_pane_positions() -> Result<Vec<PanePosition>, String> {

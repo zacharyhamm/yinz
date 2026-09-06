@@ -3979,7 +3979,7 @@ pub fn get_focused_pane(tab_position: usize, pane_manifest: &PaneManifest) -> Op
     let panes = pane_manifest.panes.get(&tab_position);
     if let Some(panes) = panes {
         for pane in panes {
-            if pane.is_focused & !pane.is_plugin {
+            if pane.is_focused & !pane.is_plugin() {
                 return Some(pane.clone());
             }
         }

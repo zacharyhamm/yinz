@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn a_snapshot_keeps_the_terminal_panes_that_are_agents() {
     let plugin = PaneInfo {
-        is_plugin: true,
+        id: PaneId::from_legacy(1, true),
         ..pane_info(1, "hocus", None)
     };
     let suppressed = PaneInfo {

@@ -253,7 +253,8 @@ fn an_adopted_focused_tab_pane_gets_focus_and_leaves_scroll_mode() {
                                 && info.panes.panes.get(&0).is_some_and(|panes| {
                                     panes.len() == 2
                                         && panes.iter().any(|pane| {
-                                            pane.id == 50 && !pane.is_plugin && pane.is_focused
+                                            pane.id == PaneId::Terminal(crate::TerminalId::new(50))
+                                                && pane.is_focused
                                         })
                                 }) =>
                         {

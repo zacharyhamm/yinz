@@ -1566,15 +1566,16 @@ impl State {
             // Plugin ids and terminal ids are separate number spaces, so a plugin pane
             // clearing by `pane.id` would retract a terminal pane's answer. The same
             // guard `manifest_pane_ids` applies, and a no-op for the inserts either way.
-            if pane.is_plugin {
+            let PaneId::Terminal(terminal_id) = pane.id else {
                 continue;
-            }
+            };
+            let pane_id = terminal_id.get();
             match pane.host.clone() {
                 Some(host) => {
-                    self.hosts.insert(pane.id, host);
+                    self.hosts.insert(pane_id, host);
                 },
                 None => {
-                    self.hosts.remove(&pane.id);
+                    self.hosts.remove(&pane_id);
                 },
             }
             // The host path a Firecracker pane's VM mirrors, which is what identifies
@@ -1586,7 +1587,7 @@ impl State {
             ) {
                 (Some(vm), Some(worktree)) => {
                     self.firecracker_worktrees.insert(
-                        pane.id,
+                        pane_id,
                         VmCheckout {
                             vm: vm.to_owned(),
                             worktree: worktree.display().to_string(),
@@ -1601,10 +1602,10 @@ impl State {
                 (Some(vm), None)
                     if self
                         .firecracker_worktrees
-                        .get(&pane.id)
+                        .get(&pane_id)
                         .is_some_and(|checkout| checkout.vm == vm) => {},
                 _ => {
-                    self.firecracker_worktrees.remove(&pane.id);
+                    self.firecracker_worktrees.remove(&pane_id);
                 },
             }
         }
@@ -3619,7 +3620,7 @@ mod tests {
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
                 agent: Some(record),
                 ..PaneInfo::default()
@@ -3663,7 +3664,7 @@ mod tests {
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
                 agent: Some(record),
                 ..PaneInfo::default()
@@ -3762,7 +3763,7 @@ mod tests {
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -3808,7 +3809,7 @@ mod tests {
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
                 agent: Some(AgentInfo {
                     kind: CLAUDE.to_owned(),
@@ -3851,7 +3852,7 @@ mod tests {
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
                 agent: Some(AgentInfo {
                     kind: CLAUDE.to_owned(),
@@ -3880,7 +3881,7 @@ mod tests {
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -4034,7 +4035,7 @@ mod tests {
     fn a_suppressed_firecracker_pane_keeps_the_worktree_its_vm_mirrors() {
         let mut state = State::default();
         let mut vm = PaneInfo {
-            id: 7,
+            id: zellij_tile::prelude::PaneId::from_legacy(7, false),
             title: "claude".to_owned(),
             host: Some("firecracker:review".to_owned()),
             is_suppressed: true,
@@ -4066,7 +4067,7 @@ mod tests {
     fn a_firecracker_pane_re_run_on_this_machine_stops_answering_with_the_vms_worktree() {
         let mut state = State::default();
         let mut vm = PaneInfo {
-            id: 7,
+            id: zellij_tile::prelude::PaneId::from_legacy(7, false),
             title: "claude".to_owned(),
             host: Some("firecracker:review".to_owned()),
             ..PaneInfo::default()
@@ -4084,7 +4085,7 @@ mod tests {
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -4108,7 +4109,7 @@ mod tests {
     fn a_firecracker_pane_moved_to_another_vm_stops_answering_with_the_first_vms_worktree() {
         let mut state = State::default();
         let mut vm = PaneInfo {
-            id: 7,
+            id: zellij_tile::prelude::PaneId::from_legacy(7, false),
             title: "claude".to_owned(),
             host: Some("firecracker:review".to_owned()),
             ..PaneInfo::default()
@@ -4122,7 +4123,7 @@ mod tests {
         assert_eq!(state.location_of(7), Some(local("/work/hocus")));
 
         let mut moved = PaneInfo {
-            id: 7,
+            id: zellij_tile::prelude::PaneId::from_legacy(7, false),
             title: "claude".to_owned(),
             host: Some("firecracker:dev".to_owned()),
             ..PaneInfo::default()
@@ -4151,7 +4152,7 @@ mod tests {
     fn a_pane_still_in_a_vm_keeps_its_worktree_though_its_target_names_none() {
         let mut state = State::default();
         let mut joining = PaneInfo {
-            id: 7,
+            id: zellij_tile::prelude::PaneId::from_legacy(7, false),
             title: "claude".to_owned(),
             host: Some("firecracker:review".to_owned()),
             ..PaneInfo::default()
@@ -4638,7 +4639,7 @@ mod tests {
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "codex".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -4837,7 +4838,7 @@ mod tests {
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "codex".to_owned(),
                 is_suppressed: true,
                 ..PaneInfo::default()
@@ -4858,7 +4859,7 @@ mod tests {
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "codex".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -4882,7 +4883,7 @@ mod tests {
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
                 exited: true,
                 ..PaneInfo::default()
@@ -4901,7 +4902,7 @@ mod tests {
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -4931,7 +4932,7 @@ mod tests {
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
                 exited: true,
                 ..PaneInfo::default()
@@ -4944,7 +4945,7 @@ mod tests {
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -4966,7 +4967,7 @@ mod tests {
             manifest.panes.insert(
                 0,
                 vec![PaneInfo {
-                    id,
+                    id: zellij_tile::prelude::PaneId::from_legacy(id, false),
                     title: "Pane #1".to_owned(),
                     ..PaneInfo::default()
                 }],
@@ -5114,7 +5115,7 @@ mod tests {
         state.manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -5253,7 +5254,7 @@ mod tests {
         manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: pane_id,
+                id: zellij_tile::prelude::PaneId::from_legacy(pane_id, false),
                 title: "claude".to_owned(),
                 pane_content_rows: rows,
                 pane_content_columns: columns,
@@ -7789,7 +7790,7 @@ mod tests {
         state.dirty_runs.clear();
 
         let mut vm = PaneInfo {
-            id: 7,
+            id: zellij_tile::prelude::PaneId::from_legacy(7, false),
             title: "claude".to_owned(),
             host: Some("firecracker:review".to_owned()),
             ..PaneInfo::default()

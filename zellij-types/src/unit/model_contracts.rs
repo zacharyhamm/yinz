@@ -201,3 +201,26 @@ fn session_pane_selectors_keep_legacy_tuples() {
         assert_eq!(serde_json::to_string(&action).unwrap(), json);
     }
 }
+
+#[test]
+fn pane_manifest_identity_keeps_flat_numeric_fields() {
+    use crate::data::PaneInfo;
+    use crate::pane_id::PaneId;
+    for (id, is_plugin) in [(0, false), (u32::MAX, true)] {
+        let pane = PaneInfo {
+            id: PaneId::from_legacy(id, is_plugin),
+            ..Default::default()
+        };
+        let mut value = serde_json::to_value(&pane).unwrap();
+        assert_eq!(value["id"], id);
+        assert_eq!(value["is_plugin"], is_plugin);
+        assert_eq!(
+            serde_json::from_value::<PaneInfo>(value.clone()).unwrap(),
+            pane
+        );
+        for invalid in [serde_json::json!(-1), serde_json::json!(4294967296_u64)] {
+            value["id"] = invalid;
+            assert!(serde_json::from_value::<PaneInfo>(value.clone()).is_err());
+        }
+    }
+}

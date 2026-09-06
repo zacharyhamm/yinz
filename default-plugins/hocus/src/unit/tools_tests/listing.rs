@@ -13,7 +13,7 @@ fn tab(position: usize, tab_id: usize, name: &str) -> TabInfo {
 
 fn pane(id: u32, title: &str) -> PaneInfo {
     PaneInfo {
-        id,
+        id: zellij_tile::prelude::PaneId::from_legacy(id, false),
         title: title.to_owned(),
         is_selectable: true,
         ..Default::default()

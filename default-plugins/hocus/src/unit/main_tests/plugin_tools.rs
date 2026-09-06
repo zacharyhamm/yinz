@@ -366,8 +366,7 @@ fn session_running(path: &str, id: u32, pane: bool) -> SessionInfo {
         panes.panes.insert(
             0,
             vec![PaneInfo {
-                id,
-                is_plugin: true,
+                id: zellij_tile::prelude::PaneId::from_legacy(id, true),
                 ..PaneInfo::default()
             }],
         );

@@ -1,7 +1,7 @@
-use crate::TerminalId;
 use unicode_width::UnicodeWidthStr;
 use zellij_runtime::errors::prelude::*;
 use zellij_tile_utils::ellipsize;
+use zellij_types::pane_id::PaneId;
 
 use super::Screen;
 use crate::background_jobs::BackgroundJob;
@@ -138,20 +138,15 @@ impl Screen {
             pane_manifest.panes.insert(tab.position, tab.pane_infos());
         }
         // A plugin pane is not a process in a folder, so it is left without one.
-        for pane_info in pane_manifest
-            .panes
-            .values_mut()
-            .flatten()
-            .filter(|pane_info| !pane_info.is_plugin)
-        {
+        for pane_info in pane_manifest.panes.values_mut().flatten() {
+            let PaneId::Terminal(terminal_id) = pane_info.id else {
+                continue;
+            };
             pane_info.cwd = self
                 .terminal_cwds
-                .get(&TerminalId::new(pane_info.id))
+                .get(&terminal_id)
                 .map(|cwd| cwd.to_string_lossy().into_owned());
-            pane_info.host = self
-                .terminal_hosts
-                .get(&TerminalId::new(pane_info.id))
-                .cloned();
+            pane_info.host = self.terminal_hosts.get(&terminal_id).cloned();
             // The worktree the pane's VM actually mirrors, for a pane that named none of
             // its own: `pane_info.target` is what the pane was *asked* for, and a pane
             // that joined an existing VM asked for a VM by name and nothing else. Only
@@ -163,8 +158,7 @@ impl Screen {
                     worktree: named, ..
                 },
             ) = (
-                self.terminal_firecracker_worktrees
-                    .get(&TerminalId::new(pane_info.id)),
+                self.terminal_firecracker_worktrees.get(&terminal_id),
                 &mut pane_info.target,
             ) {
                 if named.is_none() {
@@ -220,7 +214,8 @@ impl Screen {
         }
 
         fn sort_panes_by_tab_and_type(pane_entries: &mut [PaneListEntry]) {
-            pane_entries.sort_by_key(|e| (e.tab_position, !e.pane_info.is_plugin, e.pane_info.id));
+            pane_entries
+                .sort_by_key(|e| (e.tab_position, !e.pane_info.is_plugin(), e.pane_info.id));
         }
 
         let mut pane_entries = Vec::new();
@@ -384,11 +379,11 @@ impl Screen {
         for (tab_position_key, pane_infos) in &pane_manifest.panes {
             if let Some(tab_info) = tab_by_position.get(tab_position_key) {
                 for pane in pane_infos {
-                    if pane.is_plugin {
+                    let PaneId::Terminal(terminal_id) = pane.id else {
                         continue;
-                    }
+                    };
                     result.push(PaneMetadata {
-                        terminal_id: zellij_types::internal_ids::TerminalId::new(pane.id),
+                        terminal_id,
                         tab_id: tab_info.tab_id,
                         tab_position: tab_info.position,
                         tab_name: tab_info.name.clone(),

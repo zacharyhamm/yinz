@@ -14,7 +14,7 @@ fn vm_argv_for(name: &str, arguments: &str) -> Result<Vec<String>, String> {
 
 fn pane(id: u32, host: Option<&str>) -> zellij_tile::prelude::PaneInfo {
     zellij_tile::prelude::PaneInfo {
-        id,
+        id: zellij_tile::prelude::PaneId::from_legacy(id, false),
         target: PaneTarget::parse_display(host),
         ..Default::default()
     }
@@ -100,7 +100,7 @@ fn only_the_panes_running_in_that_vm_are_selected() {
         pane(5, Some("firecracker:review")),
     ];
     let mut plugin = pane(6, Some("firecracker:review"));
-    plugin.is_plugin = true;
+    plugin.id = zellij_tile::prelude::PaneId::from_legacy(plugin.id.legacy_parts().0, true);
     panes.push(plugin);
     let current = SessionInfo {
         name: "work".to_owned(),

@@ -780,7 +780,7 @@ fn agent_records_are_current_on_the_first_ask_and_forget_a_closed_pane() {
         Event::PaneUpdate(manifest)
     };
     let agent_pane = PaneInfo {
-        id: 3,
+        id: zellij_types::pane_id::PaneId::from_legacy(3, false),
         agent: Some(AgentInfo {
             kind: "claude".to_owned(),
             state: AgentState::Busy,
@@ -795,7 +795,7 @@ fn agent_records_are_current_on_the_first_ask_and_forget_a_closed_pane() {
         ..Default::default()
     };
     let shell_pane = PaneInfo {
-        id: 4,
+        id: zellij_types::pane_id::PaneId::from_legacy(4, false),
         ..Default::default()
     };
     let ask = Event::Key(KeyWithModifier::new(BareKey::Char('a')));
@@ -4649,7 +4649,7 @@ fn the_dashboard_example_loads_renders_components_and_takes_input() {
     manifest.panes.insert(
         0,
         vec![PaneInfo {
-            id: 3,
+            id: zellij_types::pane_id::PaneId::from_legacy(3, false),
             title: "日本 shell".to_owned(),
             ..Default::default()
         }],
@@ -5492,7 +5492,7 @@ fn a_workflow_inherits_cwd_only_on_the_same_host() {
         manifest.panes.insert(
             0,
             vec![PaneInfo {
-                id: 7,
+                id: zellij_types::pane_id::PaneId::from_legacy(7, false),
                 cwd: Some(cwd.to_owned()),
                 host: host.map(str::to_owned),
                 ..Default::default()
@@ -6241,7 +6241,7 @@ fn manifest_with_agent(pane_id: u32, state: zellij_types::agent::AgentState) -> 
     manifest.panes.insert(
         0,
         vec![PaneInfo {
-            id: pane_id,
+            id: zellij_types::pane_id::PaneId::from_legacy(pane_id, false),
             agent: Some(AgentInfo {
                 kind: "claude".to_owned(),
                 state,

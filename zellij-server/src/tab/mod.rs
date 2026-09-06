@@ -9613,8 +9613,7 @@ pub fn pane_info_for_pane(
 
     match pane_id {
         PaneId::Terminal(terminal_id) => {
-            pane_info.id = terminal_id.get();
-            pane_info.is_plugin = false;
+            pane_info.id = PaneId::Terminal(*terminal_id);
             if let Some(Run::Command(command)) = pane.invoked_with() {
                 pane_info.target = command.target.clone();
             }
@@ -9624,8 +9623,7 @@ pub fn pane_info_for_pane(
             });
         },
         PaneId::Plugin(plugin_id) => {
-            pane_info.id = plugin_id.get();
-            pane_info.is_plugin = true;
+            pane_info.id = PaneId::Plugin(*plugin_id);
             pane_info.plugin_url = pane.invoked_with().as_ref().and_then(|c| match c {
                 Run::Plugin(run_plugin_or_alias) => Some(run_plugin_or_alias.location_string()),
                 _ => None,

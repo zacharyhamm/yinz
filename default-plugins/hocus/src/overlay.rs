@@ -618,10 +618,7 @@ fn corner_order(
 
 /// The id a manifest entry names.
 pub(crate) fn pane_id_of(pane: &PaneInfo) -> PaneId {
-    match pane.is_plugin {
-        true => PaneId::Plugin(zellij_tile::prelude::PluginId::new(pane.id)),
-        false => PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane.id)),
-    }
+    pane.id
 }
 
 /// Whether a manifest entry is one of the panes the layout is made of.
@@ -1145,9 +1142,7 @@ impl State {
             let plugin_id = plugin_id?;
             self.tab_panes
                 .iter()
-                .find(|pane| {
-                    pane.is_plugin && PluginId::new(pane.id) == plugin_id && !pane.is_suppressed
-                })
+                .find(|pane| pane.id == PaneId::Plugin(plugin_id) && !pane.is_suppressed)
                 .map(Rect::of)
         };
         match (drawn(Some(self.own_plugin_id)), drawn(self.agents_plugin)) {
@@ -1179,9 +1174,7 @@ impl State {
         let drawn = |plugin_id: zellij_tile::prelude::PluginId| {
             panes
                 .iter()
-                .find(|pane| {
-                    pane.is_plugin && PluginId::new(pane.id) == plugin_id && !pane.is_suppressed
-                })
+                .find(|pane| pane.id == PaneId::Plugin(plugin_id) && !pane.is_suppressed)
                 .map(Rect::of)
         };
         let (Some(chat), Some(agents)) = (drawn(self.own_plugin_id), drawn(agents_id)) else {
