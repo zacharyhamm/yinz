@@ -20,6 +20,7 @@ use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::{ContextMenuRequestId, DataWatchId, QueueJobId};
+use zellij_types::units::{FractionalSeconds, SignedUnixMillis};
 use {
     zellij_plugin_api::generated_api::api::plugin_command::hide_floating_panes_response,
     zellij_plugin_api::generated_api::api::plugin_command::save_session_response,
@@ -1036,7 +1037,7 @@ pub fn switch_tab_to(tab_idx: TabNumber) {
 }
 
 /// Set a timeout in seconds (or fractions thereof) after which the plugins [update](./plugin-api-events#update) method will be called with the [`Timer`](./plugin-api-events.md#timer) event.
-pub fn set_timeout(secs: f64) {
+pub fn set_timeout(secs: FractionalSeconds) {
     let plugin_command = PluginCommand::SetTimeout(secs);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -2562,7 +2563,7 @@ fn dump_session_layout_impl(
 /// `Err` where the round trip failed, which includes a host that answered nothing. A caller
 /// drawing a timestamp should fall back to `0` - UTC, stated as such - rather than refuse to
 /// draw one.
-pub fn get_local_utc_offset(epoch_ms: i64) -> Result<i32, String> {
+pub fn get_local_utc_offset(epoch_ms: SignedUnixMillis) -> Result<i32, String> {
     let plugin_command = PluginCommand::GetLocalUtcOffset { epoch_ms };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command
         .try_into()

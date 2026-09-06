@@ -70,7 +70,7 @@ impl ZellijPlugin for State {
             return;
         }
         subscribe(&[EventType::Timer]);
-        set_timeout(RETRY_SECONDS);
+        set_timeout(zellij_tile::prelude::FractionalSeconds::new(RETRY_SECONDS));
         import_legacy(&backend, &get_plugin_ids().host_id);
         match backend.watch(
             &FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT),
@@ -91,7 +91,7 @@ impl ZellijPlugin for State {
     fn update(&mut self, event: Event) -> bool {
         if let Event::Timer(_) = event {
             self.retry_snapshot(&Host::shared());
-            set_timeout(RETRY_SECONDS);
+            set_timeout(zellij_tile::prelude::FractionalSeconds::new(RETRY_SECONDS));
         }
         if let Event::PluginDataChanged { watch_id, rows, .. } = event {
             if self.project_watch_id == Some(watch_id) {

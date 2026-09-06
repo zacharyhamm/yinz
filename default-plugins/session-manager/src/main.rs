@@ -1401,7 +1401,7 @@ impl State {
     }
     fn arm_refresh_timer(&mut self) {
         if !self.refresh_timer_armed {
-            set_timeout(1.0);
+            set_timeout(zellij_tile::prelude::FractionalSeconds::new(1.0));
             self.refresh_timer_armed = true;
         }
     }

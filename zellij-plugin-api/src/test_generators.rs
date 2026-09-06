@@ -1595,7 +1595,9 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             source: strings(tc),
         },
         CommandType::GetLocalUtcOffset => PluginCommand::GetLocalUtcOffset {
-            epoch_ms: tc.draw(generators::integers::<i64>()),
+            epoch_ms: zellij_types::units::SignedUnixMillis::new(
+                tc.draw(generators::integers::<i64>()),
+            ),
         },
         CommandType::SetPaneAgent => PluginCommand::SetPaneAgent {
             pane_id: pane_id(tc),
@@ -1655,7 +1657,9 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             context(tc),
         ),
         CommandType::SwitchTabTo => PluginCommand::SwitchTabTo(TabNumber::new(u32s(tc))),
-        CommandType::SetTimeout => PluginCommand::SetTimeout(seconds(tc)),
+        CommandType::SetTimeout => {
+            PluginCommand::SetTimeout(zellij_types::units::FractionalSeconds::new(seconds(tc)))
+        },
         CommandType::ExecCmd => PluginCommand::ExecCmd(up_to(tc, 3, strings)),
         CommandType::PostMessageTo => PluginCommand::PostMessageTo(plugin_messages(tc)),
         CommandType::PostMessageToPlugin => PluginCommand::PostMessageToPlugin(plugin_messages(tc)),

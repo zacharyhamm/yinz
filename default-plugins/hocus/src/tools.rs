@@ -4568,7 +4568,7 @@ mod host {
                     "session": pane.session_name,
                     "exited": pane.exit_status.is_some(),
                     "exit_code": pane.exit_status.flatten(),
-                    "age_seconds": now.saturating_sub(pane.started_at_unix),
+                    "age_seconds": now.saturating_sub(pane.started_at_unix.get()),
                     "buffered_bytes": pane.buffered_bytes,
                 })
             })

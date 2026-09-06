@@ -72,6 +72,7 @@ use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
+use zellij_types::units::ElapsedSeconds;
 
 use crate::route::NotificationEnd;
 
@@ -785,7 +786,7 @@ pub(crate) struct Screen {
     notification_history: Vec<NotificationInfo>,
     next_notification_id: NotificationId,
     notification_position: NotificationPosition,
-    notification_timeout_secs: u64,
+    notification_timeout_secs: ElapsedSeconds,
     /// The floor a spawned agent pane's equal share of a tab must clear, columns by rows;
     /// zero in either turns the rule off. See `agent_placement`.
     agent_pane_min_size: Size,
@@ -1293,7 +1294,7 @@ impl Screen {
         context_menu: ContextMenu,
         nested_session_handling: NestedSessionHandling,
         notification_position: NotificationPosition,
-        notification_timeout_secs: u64,
+        notification_timeout_secs: ElapsedSeconds,
         agent_pane_min_size: Size,
     ) -> Self {
         let session_name = mode_info.session_name.clone().unwrap_or_default();

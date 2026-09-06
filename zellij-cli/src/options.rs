@@ -397,11 +397,15 @@ impl From<CliOptions> for Options {
             mouse_mode: value.mouse_mode,
             detachable_panes: value.detachable_panes,
             firecracker_provider: value.firecracker_provider,
-            firecracker_provider_timeout_secs: value.firecracker_provider_timeout_secs,
+            firecracker_provider_timeout_secs: value
+                .firecracker_provider_timeout_secs
+                .map(zellij_types::units::ElapsedSeconds::new),
             pane_frames: value.pane_frames,
             pane_frame_style: value.pane_frame_style,
             notification_position: value.notification_position,
-            notification_timeout: value.notification_timeout,
+            notification_timeout: value
+                .notification_timeout
+                .map(zellij_types::units::ElapsedSeconds::new),
             mirror_session: value.mirror_session,
             on_force_close: value.on_force_close,
             scroll_buffer_size: value.scroll_buffer_size,
@@ -422,7 +426,9 @@ impl From<CliOptions> for Options {
             serialize_pane_viewport: value.serialize_pane_viewport,
             scrollback_lines_to_serialize: value.scrollback_lines_to_serialize,
             styled_underlines: value.styled_underlines,
-            serialization_interval: value.serialization_interval,
+            serialization_interval: value
+                .serialization_interval
+                .map(zellij_types::units::ElapsedSeconds::new),
             disable_session_metadata: value.disable_session_metadata,
             support_kitty_keyboard_protocol: value.support_kitty_keyboard_protocol,
             report_modifier_keys: value.report_modifier_keys,
@@ -446,7 +452,9 @@ impl From<CliOptions> for Options {
             post_command_discovery_hook: value.post_command_discovery_hook,
             nested_session_handling: value.nested_session_handling,
             dangerously_enable_paste_buffer_read: value.dangerously_enable_paste_buffer_read,
-            locked_escape_timeout_ms: value.locked_escape_timeout_ms,
+            locked_escape_timeout_ms: value
+                .locked_escape_timeout_ms
+                .map(zellij_types::units::ElapsedMillis::new),
         }
     }
 }
@@ -469,11 +477,15 @@ impl From<Options> for CliOptions {
             mouse_mode: value.mouse_mode,
             detachable_panes: value.detachable_panes,
             firecracker_provider: value.firecracker_provider,
-            firecracker_provider_timeout_secs: value.firecracker_provider_timeout_secs,
+            firecracker_provider_timeout_secs: value
+                .firecracker_provider_timeout_secs
+                .map(zellij_types::units::ElapsedSeconds::get),
             pane_frames: value.pane_frames,
             pane_frame_style: value.pane_frame_style,
             notification_position: value.notification_position,
-            notification_timeout: value.notification_timeout,
+            notification_timeout: value
+                .notification_timeout
+                .map(zellij_types::units::ElapsedSeconds::get),
             mirror_session: value.mirror_session,
             on_force_close: value.on_force_close,
             scroll_buffer_size: value.scroll_buffer_size,
@@ -494,7 +506,9 @@ impl From<Options> for CliOptions {
             serialize_pane_viewport: value.serialize_pane_viewport,
             scrollback_lines_to_serialize: value.scrollback_lines_to_serialize,
             styled_underlines: value.styled_underlines,
-            serialization_interval: value.serialization_interval,
+            serialization_interval: value
+                .serialization_interval
+                .map(zellij_types::units::ElapsedSeconds::get),
             disable_session_metadata: value.disable_session_metadata,
             support_kitty_keyboard_protocol: value.support_kitty_keyboard_protocol,
             report_modifier_keys: value.report_modifier_keys,
@@ -518,7 +532,9 @@ impl From<Options> for CliOptions {
             post_command_discovery_hook: value.post_command_discovery_hook,
             nested_session_handling: value.nested_session_handling,
             dangerously_enable_paste_buffer_read: value.dangerously_enable_paste_buffer_read,
-            locked_escape_timeout_ms: value.locked_escape_timeout_ms,
+            locked_escape_timeout_ms: value
+                .locked_escape_timeout_ms
+                .map(zellij_types::units::ElapsedMillis::get),
         }
     }
 }

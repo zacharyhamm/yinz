@@ -1,4 +1,5 @@
 use zellij_types::internal_ids::SessionName;
+use zellij_types::units::ElapsedSeconds;
 use {
     zellij_runtime::consts::session_info_folder_for_session,
     zellij_runtime::consts::ZELLIJ_SESSION_INFO_CACHE_DIR, zellij_runtime::consts::ZELLIJ_SOCK_DIR,
@@ -163,7 +164,7 @@ pub enum BackgroundJob {
     /// terminating chunk is always emitted from one place (see `finish_stream`)
     WebRequestStreamFinished(StreamKey, u64, Option<String>), // u64 - generation, Option<String> - error
     HighlightPanesWithMessage(Vec<PaneId>, String),
-    DismissNotification(zellij_types::internal_ids::NotificationId, u64), // notification id, timeout in seconds
+    DismissNotification(zellij_types::internal_ids::NotificationId, ElapsedSeconds), // notification id, timeout in seconds
     /// Wake the screen for a frame every `Duration`, until [`BackgroundJob::StopAnimationClock`].
     /// The period is `Screen`'s to choose - see `Screen::animation_clock_period` - because only
     /// the screen knows the coarsest cadence every live surface can live with.
@@ -257,7 +258,7 @@ pub fn session_scan_state() -> Option<&'static SessionScanState> {
 
 pub(crate) fn background_jobs_main(
     bus: Bus<BackgroundJob>,
-    serialization_interval: Option<u64>,
+    serialization_interval: Option<ElapsedSeconds>,
     disable_session_metadata: bool,
 ) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
@@ -276,8 +277,6 @@ pub(crate) fn background_jobs_main(
         current_session_info: current_session_info.clone(),
         current_session_plugin_list: current_session_plugin_list.clone(),
     });
-    let serialization_interval = serialization_interval.map(|s| s * 1000); // convert to
-                                                                           // milliseconds
     let last_render_request: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     let pending_help_text_clear: Arc<Mutex<HashMap<ClientId, Instant>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -303,10 +302,11 @@ pub(crate) fn background_jobs_main(
 
     {
         let senders = bus.senders.clone();
-        let serialization_ms = serialization_interval.unwrap_or(DEFAULT_SERIALIZATION_INTERVAL);
+        let serialization_period = serialization_interval
+            .map(|seconds| Duration::from_secs(seconds.get()))
+            .unwrap_or(Duration::from_millis(DEFAULT_SERIALIZATION_INTERVAL));
         runtime.spawn(async move {
-            let mut ticker =
-                tokio::time::interval(std::time::Duration::from_millis(serialization_ms));
+            let mut ticker = tokio::time::interval(serialization_period);
             ticker.tick().await;
             loop {
                 ticker.tick().await;
@@ -703,7 +703,7 @@ pub(crate) fn background_jobs_main(
                 runtime.spawn({
                     let senders = bus.senders.clone();
                     async move {
-                        tokio::time::sleep(Duration::from_secs(timeout_secs)).await;
+                        tokio::time::sleep(Duration::from_secs(timeout_secs.get())).await;
                         let _ = senders.send_to_screen(ScreenInstruction::DismissNotification(
                             notification_id,
                         ));

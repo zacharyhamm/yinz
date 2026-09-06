@@ -3,6 +3,7 @@ use crate::data::InputMode;
 use crate::internal_ids::HostId;
 use crate::internal_ids::SessionName;
 use crate::style::ThemeHue;
+use crate::units::{ElapsedMillis, ElapsedSeconds};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -274,7 +275,7 @@ pub struct Options {
     pub firecracker_provider: Option<PathBuf>,
     /// Maximum time to wait for one Firecracker provider request.
     #[serde(default)]
-    pub firecracker_provider_timeout_secs: Option<u64>,
+    pub firecracker_provider_timeout_secs: Option<ElapsedSeconds>,
     #[serde(default)]
     /// Set display of the pane frames (true or false)
     pub pane_frames: Option<bool>,
@@ -286,7 +287,7 @@ pub struct Options {
     pub notification_position: Option<NotificationPosition>,
     /// How long a notification stays on screen, in seconds
     #[serde(default)]
-    pub notification_timeout: Option<u64>,
+    pub notification_timeout: Option<ElapsedSeconds>,
     #[serde(default)]
     /// Mirror session when multiple users are connected (true or false)
     pub mirror_session: Option<bool>,
@@ -382,7 +383,7 @@ pub struct Options {
     pub styled_underlines: Option<bool>,
 
     /// The interval at which to serialize sessions for resurrection (in seconds)
-    pub serialization_interval: Option<u64>,
+    pub serialization_interval: Option<ElapsedSeconds>,
 
     /// If true, will disable writing session metadata to disk
     pub disable_session_metadata: Option<bool>,
@@ -508,7 +509,7 @@ pub struct Options {
     /// Ctrl+g unlocks immediately.
     /// default is 250
     #[serde(default)]
-    pub locked_escape_timeout_ms: Option<u64>,
+    pub locked_escape_timeout_ms: Option<ElapsedMillis>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Default)]

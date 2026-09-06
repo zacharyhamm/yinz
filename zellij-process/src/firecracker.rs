@@ -597,13 +597,16 @@ fn read_available(
     }
 }
 
-pub fn provider_from_options(path: Option<&Path>, timeout_secs: Option<u64>) -> Result<Provider> {
+pub fn provider_from_options(
+    path: Option<&Path>,
+    timeout_secs: Option<zellij_types::units::ElapsedSeconds>,
+) -> Result<Provider> {
     let path = path.context(
         "Firecracker is not configured; set firecracker_provider to an absolute executable path",
     )?;
     Provider::new(
         path.to_path_buf(),
-        Duration::from_secs(timeout_secs.unwrap_or(90)),
+        Duration::from_secs(timeout_secs.map(|seconds| seconds.get()).unwrap_or(90)),
     )
 }
 

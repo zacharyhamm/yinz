@@ -10,6 +10,7 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::{ProcessId, SupervisorId};
+use zellij_types::units::UnixSeconds;
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use zellij_runtime::errors::prelude::*;
@@ -216,7 +217,7 @@ pub struct HostStatus {
     pub cwd: Option<PathBuf>,
     pub child_pid: Option<ProcessId>,
     pub host_pid: ProcessId,
-    pub started_at_unix: u64,
+    pub started_at_unix: UnixSeconds,
     pub attached: bool,
     /// `Some(status)` once the child has exited; `None` while it is running.
     pub child_exit_status: Option<Option<i32>>,

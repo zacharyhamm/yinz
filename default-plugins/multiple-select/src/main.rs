@@ -270,7 +270,7 @@ impl App {
             {
                 self.highlighted_at = Some(Instant::now());
                 highlight_and_unhighlight_panes(vec![PaneId::Plugin(own_plugin_id)], vec![]);
-                set_timeout(0.4);
+                set_timeout(zellij_tile::prelude::FractionalSeconds::new(0.4));
             }
         }
     }

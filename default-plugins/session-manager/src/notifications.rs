@@ -124,7 +124,8 @@ impl Notifications {
         for index in first..last {
             let notification = &self.rows[index];
             let mut cells = vec![
-                Text::new(relative_age(notification.received_at_unix_ms)).color_range(2, ..),
+                Text::new(relative_age((notification.received_at_unix_ms).get()))
+                    .color_range(2, ..),
                 Text::new(truncate(&preview(&notification.message), preview_width)),
             ];
             if Some(index) == self.selected_index {
@@ -143,7 +144,7 @@ impl Notifications {
         print_text_with_coordinates(
             Text::new(format!(
                 "Received {}",
-                relative_age(notification.received_at_unix_ms)
+                relative_age((notification.received_at_unix_ms).get())
             ))
             .color_range(2, 9..),
             x,
@@ -254,7 +255,7 @@ mod tests {
         NotificationInfo {
             id: zellij_tile::prelude::NotificationId::new(id),
             message: message.to_owned(),
-            received_at_unix_ms: id,
+            received_at_unix_ms: zellij_tile::prelude::UnixMillis::new(id),
         }
     }
 

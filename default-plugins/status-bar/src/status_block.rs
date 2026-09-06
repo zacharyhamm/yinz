@@ -206,7 +206,10 @@ impl Clock {
     /// The offset only the host can say — `get_local_utc_offset` — and `0` renders as UTC,
     /// which is the honest answer for a caller that could not ask rather than a wrong one.
     pub fn at(epoch_ms: i64, utc_offset_secs: i32) -> Self {
-        let at = civil_from_epoch_ms(epoch_ms, utc_offset_secs);
+        let at = civil_from_epoch_ms(
+            zellij_tile::prelude::SignedUnixMillis::new(epoch_ms),
+            utc_offset_secs,
+        );
         let month = MONTH_NAMES
             .get(at.month as usize - 1)
             .copied()

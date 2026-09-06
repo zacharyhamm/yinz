@@ -863,7 +863,7 @@ impl From<zellij_types::input::options::Options>
             firecracker_provider: options
                 .firecracker_provider
                 .map(|p| p.to_string_lossy().to_string()),
-            firecracker_provider_timeout_secs: options.firecracker_provider_timeout_secs,
+            firecracker_provider_timeout_secs: options.firecracker_provider_timeout_secs.map(zellij_types::units::ElapsedSeconds::get),
             mouse_mode: options.mouse_mode,
             pane_frames: options.pane_frames,
             mirror_session: options.mirror_session,
@@ -891,8 +891,8 @@ impl From<zellij_types::input::options::Options>
             serialize_pane_viewport: options.serialize_pane_viewport,
             scrollback_lines_to_serialize: options.scrollback_lines_to_serialize.map(|s| s as u32),
             styled_underlines: options.styled_underlines,
-            serialization_interval: options.serialization_interval,
-            locked_escape_timeout_ms: options.locked_escape_timeout_ms,
+            serialization_interval: options.serialization_interval.map(zellij_types::units::ElapsedSeconds::get),
+            locked_escape_timeout_ms: options.locked_escape_timeout_ms.map(zellij_types::units::ElapsedMillis::get),
             disable_session_metadata: options.disable_session_metadata,
             support_kitty_keyboard_protocol: options.support_kitty_keyboard_protocol,
             report_modifier_keys: options.report_modifier_keys,
@@ -922,7 +922,7 @@ impl From<zellij_types::input::options::Options>
             notification_position: options
                 .notification_position
                 .map(|p| p.as_str().to_owned()),
-            notification_timeout: options.notification_timeout,
+            notification_timeout: options.notification_timeout.map(zellij_types::units::ElapsedSeconds::get),
             host_notification_protocol: options
                 .host_notification_protocol
                 .map(|p| p.as_str().to_owned()),
@@ -978,7 +978,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             user_plugin_dir: options.user_plugin_dir.map(std::path::PathBuf::from),
             builtin_plugins_dir: options.builtin_plugins_dir.map(std::path::PathBuf::from),
             firecracker_provider: options.firecracker_provider.map(std::path::PathBuf::from),
-            firecracker_provider_timeout_secs: options.firecracker_provider_timeout_secs,
+            firecracker_provider_timeout_secs: options.firecracker_provider_timeout_secs.map(zellij_types::units::ElapsedSeconds::new),
             mouse_mode: options.mouse_mode,
             // Not on the wire: the server reads this straight out of the config
             // file it loads itself, and it has no per-invocation CLI form.
@@ -1000,7 +1000,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
                 .notification_position
                 .as_deref()
                 .and_then(|p| p.parse().ok()),
-            notification_timeout: options.notification_timeout,
+            notification_timeout: options.notification_timeout.map(zellij_types::units::ElapsedSeconds::new),
             mirror_session: options.mirror_session,
             on_force_close: options
                 .on_force_close
@@ -1036,8 +1036,8 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
                 .scrollback_lines_to_serialize
                 .map(|s| s as usize),
             styled_underlines: options.styled_underlines,
-            serialization_interval: options.serialization_interval,
-            locked_escape_timeout_ms: options.locked_escape_timeout_ms,
+            serialization_interval: options.serialization_interval.map(zellij_types::units::ElapsedSeconds::new),
+            locked_escape_timeout_ms: options.locked_escape_timeout_ms.map(zellij_types::units::ElapsedMillis::new),
             disable_session_metadata: options.disable_session_metadata,
             support_kitty_keyboard_protocol: options.support_kitty_keyboard_protocol,
             report_modifier_keys: options.report_modifier_keys,

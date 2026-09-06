@@ -1049,7 +1049,9 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::SetTimeout) => match protobuf_plugin_command.payload {
                 Some(Payload::SetTimeoutPayload(set_timeout_payload)) => {
-                    Ok(PluginCommand::SetTimeout(set_timeout_payload.seconds))
+                    Ok(PluginCommand::SetTimeout(
+                        zellij_types::units::FractionalSeconds::new(set_timeout_payload.seconds),
+                    ))
                 },
                 _ => Err("Mismatched payload for SetTimeout"),
             },
@@ -3404,7 +3406,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::GetLocalUtcOffset) => match protobuf_plugin_command.payload {
                 Some(Payload::GetLocalUtcOffsetPayload(payload)) => {
                     Ok(PluginCommand::GetLocalUtcOffset {
-                        epoch_ms: payload.epoch_ms,
+                        epoch_ms: zellij_types::units::SignedUnixMillis::new(payload.epoch_ms),
                     })
                 },
                 _ => Err("Mismatched payload for GetLocalUtcOffset"),
@@ -3680,7 +3682,9 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             }),
             PluginCommand::SetTimeout(seconds) => Ok(ProtobufPluginCommand {
                 name: CommandName::SetTimeout as i32,
-                payload: Some(Payload::SetTimeoutPayload(SetTimeoutPayload { seconds })),
+                payload: Some(Payload::SetTimeoutPayload(SetTimeoutPayload {
+                    seconds: (seconds).get(),
+                })),
             }),
             PluginCommand::ExecCmd(command_line) => Ok(ProtobufPluginCommand {
                 name: CommandName::ExecCmd as i32,
@@ -5256,7 +5260,9 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::GetLocalUtcOffset { epoch_ms } => Ok(ProtobufPluginCommand {
                 name: CommandName::GetLocalUtcOffset as i32,
                 payload: Some(Payload::GetLocalUtcOffsetPayload(
-                    GetLocalUtcOffsetPayload { epoch_ms },
+                    GetLocalUtcOffsetPayload {
+                        epoch_ms: (epoch_ms).get(),
+                    },
                 )),
             }),
             PluginCommand::GetLayoutDir => Ok(ProtobufPluginCommand {
@@ -5842,7 +5848,7 @@ impl From<OrphanedPane> for ProtobufOrphanedPane {
             command: pane.command,
             cwd: pane.cwd.map(|cwd| cwd.display().to_string()),
             child_pid: pane.child_pid.map(|id| id.get()),
-            started_at_unix: pane.started_at_unix,
+            started_at_unix: (pane.started_at_unix).get(),
             exited,
             exit_code,
             buffered_bytes: pane.buffered_bytes,
@@ -5858,7 +5864,7 @@ impl From<ProtobufOrphanedPane> for OrphanedPane {
             command: pane.command,
             cwd: pane.cwd.map(PathBuf::from),
             child_pid: pane.child_pid.map(ProcessId::new),
-            started_at_unix: pane.started_at_unix,
+            started_at_unix: zellij_types::units::UnixSeconds::new(pane.started_at_unix),
             exit_status: if pane.exited {
                 Some(pane.exit_code)
             } else {
@@ -6957,7 +6963,9 @@ impl From<ProtobufNotificationInfo> for NotificationInfo {
         NotificationInfo {
             id: NotificationId::new(notification.id),
             message: notification.message,
-            received_at_unix_ms: notification.received_at_unix_ms,
+            received_at_unix_ms: zellij_types::units::UnixMillis::new(
+                notification.received_at_unix_ms,
+            ),
         }
     }
 }
@@ -6967,7 +6975,7 @@ impl From<NotificationInfo> for ProtobufNotificationInfo {
         ProtobufNotificationInfo {
             id: notification.id.get(),
             message: notification.message,
-            received_at_unix_ms: notification.received_at_unix_ms,
+            received_at_unix_ms: (notification.received_at_unix_ms).get(),
         }
     }
 }
@@ -7435,7 +7443,7 @@ mod tests {
         let notification = NotificationInfo {
             id: NotificationId::new(7),
             message: "build finished".to_owned(),
-            received_at_unix_ms: 42,
+            received_at_unix_ms: zellij_types::units::UnixMillis::new(42),
         };
         let protobuf: ProtobufNotificationInfo = notification.clone().into();
         assert_eq!(NotificationInfo::from(protobuf), notification);
@@ -7603,7 +7611,7 @@ mod tests {
                 command: "top".to_owned(),
                 cwd: Some(PathBuf::from("/tmp")),
                 child_pid: Some(ProcessId::new(4242)),
-                started_at_unix: 1_700_000_000,
+                started_at_unix: zellij_types::units::UnixSeconds::new(1_700_000_000),
                 exit_status,
                 buffered_bytes: 4096,
             };
