@@ -1273,8 +1273,8 @@ fn a_firecracker_layout_override_appears_before_transport() {
     pty.finish_layout_override(pending).unwrap();
     assert!(screen_rx.try_iter().any(|(instruction, _)| matches!(
         instruction,
-        ScreenInstruction::OverrideLayoutComplete(tabs, false, false, CLIENT_1, _)
-            if tabs.len() == 1 && tabs[0].tab_index == TabId::new(7) && tabs[0].new_terminal_pids == vec![(TerminalId::new(0), None)]
+        ScreenInstruction::OverrideLayoutComplete(tabs, failed_tabs, false, false, CLIENT_1, _)
+            if failed_tabs.is_empty() && tabs.len() == 1 && tabs[0].tab_index == TabId::new(7) && tabs[0].new_terminal_pids == vec![(TerminalId::new(0), None)]
     )));
     os_api.spawn_started.wait();
     assert!(pty
@@ -1283,6 +1283,66 @@ fn a_firecracker_layout_override_appears_before_transport() {
     os_api.spawn_release.wait();
     os_api.transport_started.wait();
     os_api.transport_release.wait();
+}
+
+#[test]
+fn layout_override_completion_reports_failed_tabs_alongside_successes() {
+    for successful_tabs in [0, 1] {
+        let os_api = MockOsApi::new();
+        *os_api.local_spawns_to_allow.lock().unwrap() = successful_tabs;
+        *os_api.fail_local_spawns.lock().unwrap() = true;
+        let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api);
+        pty.finish_layout_override(PendingLayoutOverride {
+            cwd: None,
+            default_shell: Some(TerminalAction::RunCommand(RunCommand::default())),
+            tabs: (0..2)
+                .map(|id| {
+                    (
+                        TabId::new(id + 7),
+                        TabLayoutInfo {
+                            tab_index: TabPosition::new(id),
+                            tab_name: None,
+                            tiled_layout: TiledPaneLayout::default(),
+                            floating_layouts: vec![],
+                            swap_tiled_layouts: None,
+                            swap_floating_layouts: None,
+                        },
+                        HashMap::new(),
+                    )
+                })
+                .collect(),
+            retain_existing_terminal_panes: false,
+            retain_existing_plugin_panes: false,
+            client_id: CLIENT_1,
+            completion_tx: None,
+        })
+        .unwrap();
+        let (tabs, failed_tabs) = screen_rx
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                ScreenInstruction::OverrideLayoutComplete(
+                    tabs,
+                    failed_tabs,
+                    false,
+                    false,
+                    CLIENT_1,
+                    _,
+                ) => Some((tabs, failed_tabs)),
+                _ => None,
+            })
+            .expect("completion is sent even when every tab fails");
+        assert_eq!(tabs.len(), successful_tabs);
+        if successful_tabs == 1 {
+            assert_eq!(tabs[0].tab_index, TabId::new(7));
+            assert_eq!(tabs[0].new_terminal_pids, vec![(TerminalId::new(0), None)]);
+        }
+        assert_eq!(
+            failed_tabs,
+            (successful_tabs..2)
+                .map(|id| TabId::new(id + 7))
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 fn firecracker_command() -> RunCommand {

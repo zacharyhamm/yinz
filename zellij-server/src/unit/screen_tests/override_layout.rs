@@ -161,24 +161,72 @@ fn override_layout_focused_only_targets_active_id_and_keeps_other_tabs() {
 
 #[test]
 fn override_completion_applies_a_queued_tab_switch() {
-    queued_switch_during_override(false);
+    queued_switch_during_override(false, vec![]);
 }
 
 #[test]
 fn override_completion_preserves_a_queued_switch_while_another_tab_is_pending() {
-    queued_switch_during_override(true);
+    queued_switch_during_override(true, vec![]);
 }
 
-fn queued_switch_during_override(another_tab_pending: bool) {
+#[test]
+fn override_completion_removes_failed_reservations_and_preserves_established_tabs() {
+    queued_switch_during_override(false, vec![TabId::new(0), TabId::new(2), TabId::new(99)]);
+}
+
+#[test]
+fn failed_override_keeps_navigation_queued_until_an_unrelated_tab_settles() {
+    queued_switch_during_override(true, vec![TabId::new(0), TabId::new(2)]);
+}
+
+#[test]
+fn all_failed_override_completion_releases_queued_navigation() {
+    queued_switch_during_override(false, vec![TabId::new(0), TabId::new(1), TabId::new(2)]);
+}
+
+fn queued_switch_during_override(another_tab_pending: bool, failed_tabs: Vec<TabId>) {
     let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 24 });
     let screen_thread = mock_screen.run(None, vec![]);
     let client_id = mock_screen.main_client_id;
+    // Two established tabs let an all-failed override preserve a navigation target.
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewTab(
+            None,
+            None,
+            Some(TiledPaneLayout::default()),
+            vec![],
+            None,
+            (Some(vec![]), Some(vec![])),
+            None,
+            false,
+            false,
+            client_id,
+            None,
+        ))
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::ApplyLayout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(TerminalId::new(1), None)],
+            vec![],
+            vec![],
+            HashMap::new(),
+            TabId::new(1),
+            false,
+            client_id,
+            None,
+            None,
+        ))
+        .unwrap();
     mock_screen
         .to_screen
         .send(ScreenInstruction::OverrideLayout(
             None,
             None,
-            vec![layout_at(0, 1), layout_at(1, 1)],
+            vec![layout_at(0, 1), layout_at(1, 1), layout_at(2, 1)],
             true,
             true,
             false,
@@ -243,6 +291,7 @@ fn queued_switch_during_override(another_tab_pending: bool) {
     let before_completion = focused_tab();
     let results = layouts
         .into_iter()
+        .filter(|(tab_index, _)| !failed_tabs.contains(tab_index))
         .map(|(tab_index, layout)| crate::screen::TabOverrideResult {
             tab_index,
             tab_name: layout.tab_name,
@@ -250,10 +299,10 @@ fn queued_switch_during_override(another_tab_pending: bool) {
             floating_layouts: layout.floating_layouts,
             swap_tiled_layouts: layout.swap_tiled_layouts,
             swap_floating_layouts: layout.swap_floating_layouts,
-            new_terminal_pids: if tab_index == TabId::new(0) {
-                vec![] // The first tab retains its existing terminal.
+            new_terminal_pids: if tab_index != TabId::new(2) {
+                vec![] // Established tabs retain their existing terminals.
             } else {
-                vec![(TerminalId::new(1), None)]
+                vec![(TerminalId::new(2), None)]
             },
             new_floating_pane_pids: vec![],
             plugin_ids: HashMap::new(),
@@ -262,7 +311,12 @@ fn queued_switch_during_override(another_tab_pending: bool) {
     mock_screen
         .to_screen
         .send(ScreenInstruction::OverrideLayoutComplete(
-            results, true, true, client_id, None,
+            results,
+            failed_tabs.clone(),
+            true,
+            true,
+            client_id,
+            None,
         ))
         .unwrap();
     let after_override = focused_tab();
@@ -272,11 +326,11 @@ fn queued_switch_during_override(another_tab_pending: bool) {
             .send(ScreenInstruction::ApplyLayout(
                 TiledPaneLayout::default(),
                 vec![],
-                vec![(TerminalId::new(2), None)],
+                vec![(TerminalId::new(3), None)],
                 vec![],
                 vec![],
                 HashMap::new(),
-                TabId::new(2),
+                TabId::new(3),
                 false,
                 client_id,
                 None,
@@ -285,7 +339,25 @@ fn queued_switch_during_override(another_tab_pending: bool) {
             .unwrap();
     }
     let after_all_layouts = focused_tab();
+    let tab_info = |tab_id| {
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::GetTabInfo {
+                tab_id,
+                response_channel: tx,
+            })
+            .unwrap();
+        rx.recv_timeout(zellij_test_support::default_timeout())
+            .unwrap()
+    };
+    let established_tabs = [tab_info(TabId::new(0)), tab_info(TabId::new(1))];
+    let reservation = tab_info(TabId::new(2));
+    let unrelated_tab = tab_info(TabId::new(3));
     mock_screen.teardown(vec![screen_thread]);
+    assert!(established_tabs.iter().all(Option::is_some));
+    assert_eq!(reservation.is_none(), failed_tabs.contains(&TabId::new(2)));
+    assert_eq!(unrelated_tab.is_some(), another_tab_pending);
     assert_eq!(before_completion, TabId::new(0));
     assert_eq!(
         after_override,
