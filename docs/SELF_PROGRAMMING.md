@@ -74,9 +74,10 @@ agent pane's folder with `git rev-parse` and keeps the answer as a
 `hocus_proto::projects::Repository`; `Repository::checkout_label()` reduces that to
 `repo:branch` - `hocus:topic` - which is the fewest words that still tell two worktrees of one
 repository apart. That label goes on the pane's frame as a title prefix
-(`refresh_title_prefixes_with`), and it is also what groups agents visually: focus an agent and
-the *other* agent panes in the same tab carrying the same label are drawn with a gentle tint,
-through `PluginCommand::SetRelatedPanes` (`refresh_related_agents_with`).
+(`refresh_title_prefixes_with`). Focus an agent and the *other* agent panes in the same tab
+sharing its repository host, full `common_dir`, and branch are drawn with a gentle tint,
+through `PluginCommand::SetRelatedPanes` (`refresh_related_agents_with`). Display labels can
+coincide across unrelated repositories, so they are not used for matching.
 
 `SetRelatedPanes` replaces the whole set rather than marking and unmarking, so the daemon says
 what is related *now* and never has to remember what the session still believes; a reload
