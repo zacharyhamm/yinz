@@ -35,6 +35,7 @@ pub struct SecondaryInfo {
     pub hint_revealed: bool,
     pub agent_counts: AgentCounts,
     pub clock: Clock,
+    pub now_ms: i64,
 }
 
 pub fn one_line_ui(
@@ -906,7 +907,7 @@ fn render_secondary_info(
     let (content, new_pane_range, floating_range) = match hint {
         Some(hint) => hint,
         None => (
-            status_block(help, &info.agent_counts, &info.clock, max_len),
+            status_block(help, &info.agent_counts, &info.clock, max_len, info.now_ms),
             None,
             None,
         ),
@@ -1847,10 +1848,52 @@ mod tests {
                 idle: 0,
             },
             clock: Clock::at(FIXED_MS, 0),
+            now_ms: FIXED_MS,
         };
         let (line, _, _) = render_secondary_info(&mode_info, None, max_len, false, false, &info)
             .expect("the slot fits at these widths");
         plain_text(line)
+    }
+
+    #[test]
+    fn animated_counts_share_the_slot_with_hints_at_narrow_widths() {
+        let mut help = with_shipped_keybinds(InputMode::Normal);
+        help.capabilities.arrow_fonts = false;
+        let mut info = SecondaryInfo {
+            hint_revealed: false,
+            agent_counts: AgentCounts {
+                busy: 2,
+                waiting: 1,
+                idle: 3,
+            },
+            clock: Clock::at(FIXED_MS, 0),
+            now_ms: 0,
+        };
+        for width in [200, 25, 12] {
+            for revealed in [false, true] {
+                info.hint_revealed = revealed;
+                for now in [0, 125, 500, 1000] {
+                    info.now_ms = now;
+                    let (line, new_pane, floating) =
+                        render_secondary_info(&help, None, width, revealed, revealed, &info)
+                            .expect("the slot fits");
+                    assert!(line.len <= width);
+                    let text = plain_text(line);
+                    if revealed && width == 200 {
+                        assert!(text.contains("New Pane") && text.contains("Floating"));
+                        assert!(new_pane.is_some() && floating.is_some());
+                        assert!(!text.contains("◆1"));
+                    } else {
+                        assert!(text.contains(&info.clock.time));
+                        assert!(new_pane.is_none() && floating.is_none());
+                        if width >= 25 {
+                            assert!(text.contains("◆1"));
+                        }
+                    }
+                    println!("width={width} hint={revealed} ms={now}: {}", text.trim());
+                }
+            }
+        }
     }
 
     // The regression this guards: hovering the bar in locked mode revealed a hint that had
