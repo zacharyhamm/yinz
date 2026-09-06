@@ -1,6 +1,6 @@
 ---
 source: zellij-server/src/plugins/./unit/plugin_tests/layout_api.rs
-assertion_line: 1911
+assertion_line: 1912
 expression: "format!(\"{:#?}\",\nspawn_terminal_instruction).replace(&format!(\"{}\",\ntemp_layout_folder.path().display()), \"LAYOUT_FOLDER_PATH\")"
 ---
 Some(
@@ -15,7 +15,9 @@ Some(
                     ),
                     originating_plugin: Some(
                         OriginatingPlugin {
-                            plugin_id: 0,
+                            plugin_id: PluginId(
+                                0,
+                            ),
                             client_id: ClientId(
                                 1,
                             ),

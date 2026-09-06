@@ -1,6 +1,6 @@
 ---
 source: zellij-server/src/plugins/./unit/plugin_tests/break_panes_commands.rs
-assertion_line: 229
+assertion_line: 230
 expression: "format!(\"{:#?}\", screen_instruction)"
 ---
 Some(
@@ -17,7 +17,9 @@ Some(
                 ),
             ),
         ],
-        tab_index: 2,
+        tab_index: TabPosition(
+            2,
+        ),
         should_change_focus_to_new_tab: true,
         client_id: ClientId(
             1,

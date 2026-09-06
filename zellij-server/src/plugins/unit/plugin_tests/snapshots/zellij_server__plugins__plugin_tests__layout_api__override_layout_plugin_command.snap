@@ -1,6 +1,6 @@
 ---
 source: zellij-server/src/plugins/./unit/plugin_tests/layout_api.rs
-assertion_line: 2001
+assertion_line: 2002
 expression: "format!(\"{:#?}\", override_layout_instruction)"
 ---
 Some(
@@ -9,7 +9,9 @@ Some(
         None,
         [
             TabLayoutInfo {
-                tab_index: 0,
+                tab_index: TabId(
+                    0,
+                ),
                 tab_name: None,
                 tiled_layout: TiledPaneLayout {
                     children_split_direction: Horizontal,

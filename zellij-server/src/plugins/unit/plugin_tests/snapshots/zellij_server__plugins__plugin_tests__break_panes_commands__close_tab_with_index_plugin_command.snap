@@ -1,10 +1,12 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
-assertion_line: 8121
+source: zellij-server/src/plugins/./unit/plugin_tests/break_panes_commands.rs
+assertion_line: 78
 expression: "format!(\"{:#?}\", screen_instruction)"
 ---
 Some(
     CloseTabWithIndex(
-        2,
+        TabPosition(
+            2,
+        ),
     ),
 )

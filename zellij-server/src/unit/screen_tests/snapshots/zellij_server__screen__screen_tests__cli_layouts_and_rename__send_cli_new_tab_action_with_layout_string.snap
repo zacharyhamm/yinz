@@ -1,6 +1,6 @@
 ---
 source: zellij-server/src/screen/../unit/screen_tests/cli_layouts_and_rename.rs
-assertion_line: 56
+assertion_line: 57
 expression: output
 ---
 NewTab(
@@ -98,7 +98,9 @@ NewTab(
         },
     ),
     [],
-    1,
+    TabId(
+        1,
+    ),
     None,
     false,
     true,
