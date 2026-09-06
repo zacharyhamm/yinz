@@ -958,9 +958,7 @@ fn kill_current_child(ctx: &mut HostContext, event_rx: &Receiver<HostEvent>) {
         ctx.session = None;
         return;
     }
-    let Some(pid) = super::process_pid(session.child_pid).to_log().ok() else {
-        return;
-    };
+    let pid = super::kernel_pid(session.child_pid);
     // A stopped child does not act on SIGHUP until it runs again, so a pane
     // closed while suspended would sit out the whole grace period and then be
     // SIGKILLed — no hangup for its descendants. Wake it first; SIGCONT is
@@ -1288,7 +1286,7 @@ fn start_session(
         // Both sides do this, because either one alone is a race: the child may
         // not have run yet when we return, and it may already have exec'd and
         // read from the tty before we get here. Both are idempotent.
-        let kernel_pid = super::process_pid(child_pid)?.as_raw();
+        let kernel_pid = super::kernel_pid(child_pid).as_raw();
         unsafe {
             libc::setpgid(kernel_pid, kernel_pid);
             libc::tcsetpgrp(slave_raw, kernel_pid);

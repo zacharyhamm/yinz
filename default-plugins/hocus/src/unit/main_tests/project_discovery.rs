@@ -402,16 +402,18 @@ fn poll_reply_round_trips_through_json() {
             },
         )]),
         focused: Some(7),
-        focused_plugin: Some(11),
         summaries: agents::Summaries::new(),
         hooks: agents::HookFeeds::new(),
         runs: Vec::new(),
     };
     let json = serde_json::to_string(&reply).expect("serialize");
+    assert!(serde_json::from_str::<serde_json::Value>(&json)
+        .unwrap()
+        .get("focused_plugin")
+        .is_none());
     let back: PollReply = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(back.panes, reply.panes);
     assert_eq!(back.activity, reply.activity);
     assert_eq!(back.repositories, reply.repositories);
     assert_eq!(back.focused, reply.focused);
-    assert_eq!(back.focused_plugin, reply.focused_plugin);
 }
