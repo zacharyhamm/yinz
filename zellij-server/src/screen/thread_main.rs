@@ -2836,6 +2836,12 @@ pub(crate) fn screen_thread_main(
                     replay_pending_pane_event(&mut screen, event).non_fatal();
                 }
 
+                if !screen.has_pending_tabs() {
+                    for (tab_position, client_id) in pending_tab_switches.drain() {
+                        screen.switch_active_tab(tab_position, None, true, client_id)?;
+                    }
+                }
+
                 // Single render and log after all tabs are updated (performance optimization)
                 screen.log_and_report_session_state()?;
                 let _ = screen.render(None);
