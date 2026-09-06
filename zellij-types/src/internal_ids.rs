@@ -361,64 +361,84 @@ impl TryFrom<u64> for DataRevision {
     }
 }
 
-/// The installation that owns shared data, distinct from its display hostname.
-/// An empty identity retains the meaning of a legacy, unclaimed row.
-///
-/// ```compile_fail
-/// use zellij_types::internal_ids::HostId;
-/// let display_hostname = String::from("laptop");
-/// let _: HostId = display_hostname;
-/// ```
-#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-#[repr(transparent)]
-pub struct HostId(String);
+macro_rules! string_identity {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[serde(transparent)]
+        #[repr(transparent)]
+        pub struct $name(String);
 
-impl HostId {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-    pub fn into_string(self) -> String {
-        self.0
-    }
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
+        impl $name {
+            pub fn new(value: impl Into<String>) -> Self {
+                Self(value.into())
+            }
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+            pub fn into_string(self) -> String {
+                self.0
+            }
+            pub fn is_empty(&self) -> bool {
+                self.0.is_empty()
+            }
+        }
+        impl From<String> for $name {
+            fn from(value: String) -> Self {
+                Self(value)
+            }
+        }
+        impl From<&str> for $name {
+            fn from(value: &str) -> Self {
+                Self::new(value)
+            }
+        }
+        impl std::str::FromStr for $name {
+            type Err = std::convert::Infallible;
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Ok(Self::new(value))
+            }
+        }
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str {
+                self.as_str()
+            }
+        }
+        impl std::borrow::Borrow<str> for $name {
+            fn borrow(&self) -> &str {
+                self.as_str()
+            }
+        }
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(f)
+            }
+        }
+    };
 }
-impl From<String> for HostId {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
-impl From<&str> for HostId {
-    fn from(value: &str) -> Self {
-        Self::new(value)
-    }
-}
-impl std::str::FromStr for HostId {
-    type Err = std::convert::Infallible;
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Ok(Self::new(value))
-    }
-}
-impl AsRef<str> for HostId {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-impl std::borrow::Borrow<str> for HostId {
-    fn borrow(&self) -> &str {
-        self.as_str()
-    }
-}
-impl fmt::Display for HostId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
+
+string_identity!(
+    /// The installation that owns shared data, distinct from its display hostname.
+    /// An empty identity retains the meaning of a legacy, unclaimed row.
+    ///
+    /// ```compile_fail
+    /// use zellij_types::internal_ids::HostId;
+    /// let display_hostname = String::from("laptop");
+    /// let _: HostId = display_hostname;
+    /// ```
+    HostId
+);
+
+string_identity!(
+    /// The stable identity of a pane supervisor, retained when a pane moves between sessions.
+    /// Empty in legacy remote-pane handoffs, whose broker token supplies the address instead.
+    ///
+    /// ```compile_fail
+    /// use zellij_types::internal_ids::{SupervisorId, HostId};
+    /// let _: SupervisorId = HostId::new("host-a");
+    /// ```
+    SupervisorId
+);
 
 unsigned_identity!(
     /// An operating-system process identity, distinct from a terminal pane identity.
@@ -492,6 +512,20 @@ impl TryFrom<TabPosition> for TabNumber {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supervisor_identity_keeps_handoff_strings_and_map_keys() {
+        for (value, json) in [("", "\"\""), ("abcdef012345", "\"abcdef012345\"")] {
+            let id = SupervisorId::new(value);
+            assert_eq!(serde_json::to_string(&id).unwrap(), json);
+            assert_eq!(serde_json::from_str::<SupervisorId>(json).unwrap(), id);
+        }
+        let map = std::collections::BTreeMap::from([(SupervisorId::new("abcdef012345"), "pane")]);
+        assert_eq!(
+            serde_json::to_string(&map).unwrap(),
+            r#"{"abcdef012345":"pane"}"#
+        );
+    }
 
     #[test]
     fn host_identity_keeps_legacy_strings_and_map_keys() {

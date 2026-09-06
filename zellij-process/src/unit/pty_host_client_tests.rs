@@ -11,6 +11,7 @@
 
 use super::*;
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
 
 use crate::pty_host::fdpass::send_fd;
 use crate::pty_host::protocol::{self, HostStatus};
@@ -116,7 +117,7 @@ fn hello_ack() -> HostToServerMsg {
     HostToServerMsg::HelloAck {
         protocol_version: PROTOCOL_VERSION,
         zellij_version: VERSION.to_owned(),
-        host_id: "abcdef012345".to_owned(),
+        host_id: SupervisorId::new("abcdef012345".to_owned()),
         host_pid: ProcessId::new(4242),
         control_socket: Some(PathBuf::from("/tmp/zellij-pty-host-tests.sock")),
     }
@@ -144,7 +145,7 @@ fn the_handshake_hands_the_server_a_working_pty_master() {
             .expect("the handshake should have succeeded");
 
     assert_eq!(child_pid, ProcessId::new(991));
-    assert_eq!(host_id, "abcdef012345");
+    assert_eq!(host_id, SupervisorId::new("abcdef012345"));
     assert_eq!(host_pid, ProcessId::new(4242));
     assert_eq!(
         control_socket,
@@ -194,7 +195,7 @@ fn a_host_speaking_a_different_protocol_version_is_a_fallback_not_a_pane_failure
     let (server_end, _host_end) = preloaded(&[HostToServerMsg::HelloAck {
         protocol_version: PROTOCOL_VERSION + 1,
         zellij_version: "99.0.0".to_owned(),
-        host_id: "abcdef012345".to_owned(),
+        host_id: SupervisorId::new("abcdef012345".to_owned()),
         host_pid: ProcessId::new(4242),
         control_socket: None,
     }]);
@@ -378,7 +379,7 @@ fn pending_host(control: UnixStream, host_child: Child) -> PendingHost {
         control: Some(control),
         reader_stream: Some(reader_stream),
         host_child: Some(host_child),
-        host_id: "abcdef012345".to_owned(),
+        host_id: SupervisorId::new("abcdef012345".to_owned()),
         host_pid,
         control_socket: None,
         // Any descriptor will do — nothing under test reads it, it just has to be
@@ -539,7 +540,7 @@ fn a_supervisor_that_will_not_take_a_message_is_killed() {
         .expect("shutdown failed");
 
     let mut handle = PtyHostHandle {
-        host_id: "abcdef012345".to_owned(),
+        host_id: SupervisorId::new("abcdef012345".to_owned()),
         host_pid,
         control_socket: None,
         control: server_end,
@@ -564,7 +565,11 @@ fn a_supervisor_that_will_not_exit_is_killed_and_reaped() {
     let host_pid = ProcessId::new(child.id());
 
     let started = Instant::now();
-    reap_host(HostProcess::Spawned(child), host_pid, "abcdef012345");
+    reap_host(
+        HostProcess::Spawned(child),
+        host_pid,
+        &SupervisorId::new("abcdef012345"),
+    );
     let elapsed = started.elapsed();
 
     assert!(
@@ -583,7 +588,11 @@ fn a_supervisor_that_has_already_exited_is_reaped_immediately() {
     let host_pid = ProcessId::new(child.id());
 
     let started = Instant::now();
-    reap_host(HostProcess::Spawned(child), host_pid, "abcdef012345");
+    reap_host(
+        HostProcess::Spawned(child),
+        host_pid,
+        &SupervisorId::new("abcdef012345"),
+    );
     assert!(
         started.elapsed() < HOST_EXIT_GRACE,
         "reaping an already-dead supervisor should not wait out the grace period"
@@ -611,7 +620,7 @@ fn fake_supervisor_socket(
 
 fn a_status() -> HostStatus {
     HostStatus {
-        host_id: "abcdef012345".to_owned(),
+        host_id: SupervisorId::new("abcdef012345".to_owned()),
         session_name: Some("client-tests".to_owned()),
         terminal_id: 7,
         command: "/bin/sh -c 'sleep 60'".to_owned(),
@@ -686,7 +695,7 @@ fn query_returns_the_status_the_supervisor_reports() {
     let host = fake_supervisor_socket(&path, Some(HostToServerMsg::Status(a_status())));
 
     let status = query(&path).expect("query should have succeeded");
-    assert_eq!(status.host_id, "abcdef012345");
+    assert_eq!(status.host_id, SupervisorId::new("abcdef012345"));
     assert_eq!(status.terminal_id, 7);
     assert_eq!(status.child_pid, Some(ProcessId::new(991)));
     assert_eq!(status.buffered_bytes, 4096);
@@ -730,7 +739,7 @@ fn terminate_via_socket_asks_the_supervisor_to_stop_and_returns_its_final_status
     let host = fake_supervisor_socket(&path, Some(HostToServerMsg::Status(a_status())));
 
     let status = terminate_via_socket(&path).expect("terminate should have succeeded");
-    assert_eq!(status.host_id, "abcdef012345");
+    assert_eq!(status.host_id, SupervisorId::new("abcdef012345"));
 
     assert!(
         matches!(

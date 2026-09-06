@@ -1,5 +1,6 @@
 use super::*;
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
 
 use crate::pty_host::fdpass::recv_fd;
 use nix::sys::termios;
@@ -18,7 +19,7 @@ struct TestHost {
 impl TestHost {
     /// Boots a supervisor in a thread over a socketpair and completes the
     /// handshake, returning once `HelloAck` is in hand.
-    fn start() -> (Self, String, Option<PathBuf>) {
+    fn start() -> (Self, SupervisorId, Option<PathBuf>) {
         let (server_end, host_end) = UnixStream::pair().expect("socketpair failed");
         let handle = std::thread::spawn(move || {
             serve(

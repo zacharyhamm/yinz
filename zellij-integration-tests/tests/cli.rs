@@ -189,7 +189,7 @@ fn an_agent_report_is_carried_on_the_pane() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|pane| pane["id"] == terminal.terminal_id() && pane["is_plugin"] == false)
+        .find(|pane| pane["id"] == terminal.terminal_id().get() && pane["is_plugin"] == false)
         .unwrap_or_else(|| panic!("pane {pane_id} is not listed: {panes}"));
     assert_eq!(reported["agent"]["kind"], "codex", "{reported}");
     assert_eq!(reported["agent"]["state"], "Waiting", "{reported}");
@@ -207,9 +207,7 @@ fn an_agent_report_is_carried_on_the_pane() {
     let (exit_code, reported) =
         zellij.run_actions_reporting(zellij_types::input::actions::hook_report_actions(
             "claude",
-            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(
-                terminal.terminal_id(),
-            )),
+            zellij_types::data::PaneId::Terminal(terminal.terminal_id()),
             &hook,
             json.to_owned(),
         ));
@@ -222,7 +220,7 @@ fn an_agent_report_is_carried_on_the_pane() {
         .unwrap();
     let event: serde_json::Value = serde_json::from_str(&streamed).unwrap();
     let event = &event["AgentEvent"];
-    assert_eq!(event["pane_id"], terminal.terminal_id(), "{event}");
+    assert_eq!(event["pane_id"], terminal.terminal_id().get(), "{event}");
     assert_eq!(event["kind"], "claude", "{event}");
     assert_eq!(event["hook"], "Stop", "{event}");
     assert_eq!(event["state"], "Idle", "{event}");
@@ -245,7 +243,7 @@ fn an_agent_report_is_carried_on_the_pane() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|pane| pane["id"] == terminal.terminal_id() && pane["is_plugin"] == false)
+        .find(|pane| pane["id"] == terminal.terminal_id().get() && pane["is_plugin"] == false)
         .unwrap();
     assert!(cleared["agent"].is_null(), "{cleared}");
     zellij.quit();

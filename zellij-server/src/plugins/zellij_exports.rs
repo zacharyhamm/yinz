@@ -41,6 +41,7 @@ use zellij_types::data::EnqueueQueueJobResponse;
 use zellij_types::internal_ids::DataWatchId;
 use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::QueueJobId;
+use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
@@ -4898,8 +4899,8 @@ fn warp_tab_from_session(env: &mut PluginEnv, tab_index: TabId, from_session: St
 }
 
 #[cfg(unix)]
-fn adopt_orphaned_pane(env: &mut PluginEnv, host_id: String, placement: WarpPlacement) {
-    let result = crate::pty_host::cli::adopt_payload(&host_id)
+fn adopt_orphaned_pane(env: &mut PluginEnv, host_id: SupervisorId, placement: WarpPlacement) {
+    let result = crate::pty_host::cli::adopt_payload(host_id.as_str())
         .map_err(|e| format!("{e:#}"))
         .and_then(|payload| {
             crate::warp::adopt_pane_here(
@@ -4914,7 +4915,7 @@ fn adopt_orphaned_pane(env: &mut PluginEnv, host_id: String, placement: WarpPlac
 }
 
 #[cfg(not(unix))]
-fn adopt_orphaned_pane(env: &PluginEnv, _host_id: String, _placement: WarpPlacement) {
+fn adopt_orphaned_pane(env: &PluginEnv, _host_id: SupervisorId, _placement: WarpPlacement) {
     write_warp_response(env, Err(NO_DETACHABLE_PANES.to_owned()));
 }
 

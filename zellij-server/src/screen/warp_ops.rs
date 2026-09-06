@@ -1,4 +1,5 @@
 use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TerminalId;
 
@@ -208,7 +209,7 @@ impl Screen {
                 // plausible: they name a local supervisor socket, and reading
                 // them for a remote pane is a mistake `remote` being `Some` is
                 // there to catch.
-                host_id: String::new(),
+                host_id: SupervisorId::default(),
                 control_socket: PathBuf::new(),
                 remote: Some(RemotePaneHandoff {
                     host: remote.host,

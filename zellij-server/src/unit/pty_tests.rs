@@ -24,6 +24,7 @@ use zellij_types::data::Event;
 use zellij_types::diagnostics::ErrorContext;
 use zellij_types::input::command::RunCommand;
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::style::Palette;
 use {
@@ -492,7 +493,7 @@ impl ServerOsApi for MockOsApi {
         }
         Ok(ReleasedPane::Local(
             crate::pty_host::client::ReleasedPtyHost {
-                host_id: format!("host-{terminal_id}"),
+                host_id: SupervisorId::new(format!("host-{terminal_id}")),
                 host_pid: ProcessId::new(1),
                 control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
             },

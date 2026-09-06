@@ -8,6 +8,7 @@
 //! pane instead of an error message.
 
 use super::*;
+use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 
 use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
@@ -201,7 +202,7 @@ fn adopting_times_out_rather_than_waiting_on_a_pty_thread_that_never_answers() {
         &harness.senders,
         crate::ClientId::new(1),
         Box::new(WarpedPane {
-            host_id: "abc123".to_owned(),
+            host_id: SupervisorId::new("abc123".to_owned()),
             control_socket: PathBuf::from("/nonexistent.sock"),
             title: Some("top".to_owned()),
             contents: None,
@@ -245,7 +246,7 @@ fn a_pty_side_refusal_to_adopt_comes_back_verbatim() {
         &senders,
         crate::ClientId::new(1),
         Box::new(WarpedPane {
-            host_id: "abc123".to_owned(),
+            host_id: SupervisorId::new("abc123".to_owned()),
             control_socket: PathBuf::from("/nonexistent.sock"),
             title: None,
             contents: None,
@@ -420,7 +421,7 @@ fn a_pty_side_refusal_to_adopt_a_tab_comes_back_verbatim() {
 
 fn remote_pane(host: &str, pane_token: &str) -> WarpedPane {
     WarpedPane {
-        host_id: String::new(),
+        host_id: SupervisorId::new(String::new()),
         control_socket: PathBuf::new(),
         title: None,
         contents: None,
@@ -450,7 +451,7 @@ fn a_remote_pane_is_recovered_through_the_broker_holding_it() {
 fn a_local_pane_is_recovered_by_its_supervisor_id() {
     assert_eq!(
         recovery_command(&WarpedPane {
-            host_id: "abc123".to_owned(),
+            host_id: SupervisorId::new("abc123".to_owned()),
             ..Default::default()
         }),
         "zellij pty-host adopt abc123",

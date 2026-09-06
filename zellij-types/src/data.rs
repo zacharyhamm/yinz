@@ -13,6 +13,7 @@ use crate::internal_ids::HostId;
 use crate::internal_ids::NotificationId;
 use crate::internal_ids::ProcessId;
 use crate::internal_ids::QueueJobId;
+use crate::internal_ids::SupervisorId;
 use crate::internal_ids::TabId;
 use crate::internal_ids::TabNumber;
 use crate::internal_ids::TabPosition;
@@ -1679,7 +1680,7 @@ pub enum WarpPaneResponse {
 pub struct OrphanedPane {
     /// The id `adopt_orphaned_pane` takes, and that `zellij pty-host adopt` on
     /// the command line takes too.
-    pub host_id: String,
+    pub host_id: SupervisorId,
     /// The session it belonged to, if the supervisor was ever told one.
     pub session_name: Option<String>,
     pub command: String,
@@ -2155,7 +2156,7 @@ pub enum WarpPlacement {
 pub struct WarpedPane {
     /// Identifies the supervisor, for error messages and `pty-host adopt`.
     /// Empty for a remote pane, whose supervisor is not on this machine.
-    pub host_id: String,
+    pub host_id: SupervisorId,
     /// Where to attach. A supervisor that failed to bind a socket has no address
     /// to hand out, which is the one way a pane can be detachable but not
     /// transferable — the source refuses the warp rather than sending this empty.
@@ -2966,7 +2967,7 @@ pub enum PluginCommand {
     ListOrphanedPanes,
     /// Take one of those panes into this session. Sends a response back.
     AdoptOrphanedPane {
-        host_id: String,
+        host_id: SupervisorId,
         placement: WarpPlacement,
     },
     /// Declare an entity in the data store, creating or migrating its storage to match. Sends a

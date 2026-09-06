@@ -3508,7 +3508,7 @@ impl Pty {
                 .tiled_panes
                 .iter()
                 .chain(payload.floating_panes.iter())
-                .map(|pane| pane.host_id.clone())
+                .map(|pane| pane.host_id.to_string())
                 .collect();
             for adopted in tiled.iter().chain(floating.iter()) {
                 if let Err(e) = self.release_terminal_for_warp(

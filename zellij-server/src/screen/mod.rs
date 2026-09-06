@@ -67,6 +67,7 @@ use std::time::{Duration, Instant};
 use zellij_types::animation::{Tween, BLINK_TICK, FRAME_PERIOD};
 use zellij_types::internal_ids::ContextMenuRequestId;
 use zellij_types::internal_ids::NotificationId;
+use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
@@ -612,7 +613,7 @@ pub(crate) struct PreparedTabWarp {
 /// shapes is meaningful: a local supervisor socket, or a broker and a token.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct WarpAddress {
-    host_id: String,
+    host_id: SupervisorId,
     control_socket: PathBuf,
     remote: Option<RemotePaneHandoff>,
 }

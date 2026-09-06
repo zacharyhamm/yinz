@@ -13,6 +13,7 @@
 
 use zellij_cli::args::CliAction;
 use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, PROMPT, TERMINAL_SIZE};
+use zellij_types::internal_ids::TabNumber;
 
 /// Keep the session to just the shell pane: the default background plugins would
 /// otherwise be spawning work of their own while the test watches for pty spawns.
@@ -217,7 +218,9 @@ fn an_overlay_floating_pane_is_gone_from_another_tab() {
         |snapshot| snapshot.contains("OVERLAY-CONTENT"),
     );
 
-    zellij.run_cli_action(CliAction::GoToTab { index: 2 });
+    zellij.run_cli_action(CliAction::GoToTab {
+        index: TabNumber::new(2),
+    });
     zellij.wait_until("the second tab is in view again", |snapshot| {
         snapshot.contains("second tab shell")
     });
@@ -228,7 +231,9 @@ fn an_overlay_floating_pane_is_gone_from_another_tab() {
         "the overlay pane belongs to the tab that was left behind, got:\n{snapshot}"
     );
 
-    zellij.run_cli_action(CliAction::GoToTab { index: 1 });
+    zellij.run_cli_action(CliAction::GoToTab {
+        index: TabNumber::new(1),
+    });
     zellij.wait_until("the overlay pane is back with its tab", |snapshot| {
         snapshot.contains("OVERLAY-CONTENT")
     });

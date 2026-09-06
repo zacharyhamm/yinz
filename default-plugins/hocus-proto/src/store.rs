@@ -27,7 +27,6 @@
 //! is no second implementation to keep honest.
 
 use zellij_tile::prelude::DataRevision;
-use zellij_tile::prelude::DataWatchId;
 use zellij_tile::prelude::HostId;
 use zellij_tile::prelude::*;
 

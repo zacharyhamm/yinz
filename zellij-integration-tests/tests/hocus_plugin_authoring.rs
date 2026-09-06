@@ -304,7 +304,7 @@ fn agent_state_in(
         .values()
         .filter_map(|panes| panes.as_array())
         .flatten()
-        .find(|pane| pane["id"] == terminal_id && pane["is_plugin"] == false)?
+        .find(|pane| pane["id"] == terminal_id.get() && pane["is_plugin"] == false)?
         .get("agent")?
         .get("state")?
         .as_str()

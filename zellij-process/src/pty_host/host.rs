@@ -41,6 +41,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TerminalId;
 
 use nix::{
@@ -405,7 +406,7 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
 }
 
 struct HostContext {
-    host_id: String,
+    host_id: SupervisorId,
     host_pid: ProcessId,
     label: String,
     terminal_id: TerminalId,
@@ -993,7 +994,7 @@ fn terminate(ctx: &mut HostContext, event_rx: &Receiver<HostEvent>) {
     kill_current_child(ctx, event_rx);
 }
 
-fn cleanup_socket(host_id: &str) {
+fn cleanup_socket(host_id: &SupervisorId) {
     let path = protocol::socket_path(host_id);
     if path.exists() {
         let _ = std::fs::remove_file(&path);
@@ -1007,7 +1008,7 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-fn bind_listener(host_id: &str) -> Result<UnixListener> {
+fn bind_listener(host_id: &SupervisorId) -> Result<UnixListener> {
     let dir = protocol::socket_dir();
     ensure_secure_dir(&dir)?;
     let path = protocol::socket_path(host_id);

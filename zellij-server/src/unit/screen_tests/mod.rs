@@ -12,6 +12,7 @@ use crate::{
 use zellij_test_support::Watched;
 use zellij_types::internal_ids::NotificationId;
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
@@ -1950,7 +1951,7 @@ fn released_pane_for_warp(
         .take_released_pane_for_warp(
             terminal_id,
             Ok(ReleasedPane::Local(ReleasedPtyHost {
-                host_id: format!("host-{terminal_id}"),
+                host_id: SupervisorId::new(format!("host-{terminal_id}")),
                 host_pid: ProcessId::new(1),
                 control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
             })),

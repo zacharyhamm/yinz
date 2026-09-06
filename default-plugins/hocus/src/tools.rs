@@ -12,6 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use zellij_tile::prelude::DataRevision;
+use zellij_tile::prelude::SupervisorId;
 use zellij_tile::prelude::TabId;
 
 use hocus_proto::launch;
@@ -2767,7 +2768,7 @@ pub struct Args {
     // the Slack tools already own.
     pub from_session: Option<String>,
     pub placement: Option<String>,
-    pub host_id: Option<String>,
+    pub host_id: Option<SupervisorId>,
     // The file tools. `query` above is `search_files`'s pattern.
     pub path: Option<String>,
     pub pattern: Option<String>,
@@ -4576,7 +4577,7 @@ mod host {
     }
 
     fn adopt_orphaned_pane_tool(args: &Args) -> String {
-        let Some(host_id) = args.host_id.as_deref() else {
+        let Some(host_id) = args.host_id.as_ref() else {
             return "host_id is required; call list_orphaned_panes to get one".to_owned();
         };
         let placement = match args.placement() {

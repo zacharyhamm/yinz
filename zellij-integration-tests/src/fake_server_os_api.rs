@@ -13,6 +13,7 @@ use zellij_server::panes::PaneId;
 use zellij_server::pty_host::client::{ReleasedPane, ReleasedPtyHost, ReleasedRemotePane};
 use zellij_server::{ClientId, TerminalId};
 use zellij_types::data::RemotePaneHandoff;
+use zellij_types::internal_ids::{ProcessId, SupervisorId};
 use zellij_types::style::default_palette;
 use zellij_types::style::Palette;
 use {
@@ -60,7 +61,7 @@ pub struct FakeServerOsApi {
     /// `get_cwd` answers the way a real one does. Without it every pane looks
     /// like it is nowhere, and anything that reads a pane's folder — project
     /// detection above all — cannot be tested end to end.
-    cwds: Arc<Mutex<HashMap<u32, PathBuf>>>,
+    cwds: Arc<Mutex<HashMap<ProcessId, PathBuf>>>,
     /// How many times the server asked for the session's Firecracker VMs to be
     /// released on its way out. The real backend forwards this to the provider;
     /// the fake only counts, so a test can check the server asks exactly once
@@ -95,7 +96,7 @@ impl ServerOsApi for FakeServerOsApi {
             cached_resizes.insert(id, (cols, rows));
             return Ok(());
         }
-        self.shared_ptys.set_size(id.0, cols, rows);
+        self.shared_ptys.set_size(id, cols, rows);
         Ok(())
     }
     fn cache_resizes(&mut self) {
@@ -108,7 +109,7 @@ impl ServerOsApi for FakeServerOsApi {
         let cached_resizes = self.cached_resizes.lock().unwrap().take();
         let cached_resizes = cached_resizes.unwrap_or_default();
         for (terminal_id, (cols, rows)) in &cached_resizes {
-            self.shared_ptys.set_size(terminal_id.0, *cols, *rows);
+            self.shared_ptys.set_size(*terminal_id, *cols, *rows);
         }
         cached_resizes
             .into_iter()
@@ -120,8 +121,8 @@ impl ServerOsApi for FakeServerOsApi {
         terminal_action: TerminalAction,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
-        let terminal_id = TerminalId::new(self.shared_ptys.next_terminal_id());
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
+        let terminal_id = self.shared_ptys.next_terminal_id();
         self.spawn_with_id(terminal_id, terminal_action, quit_cb)
     }
     /// A remote pane is spawned in two steps like the real one, so the pty
@@ -152,7 +153,7 @@ impl ServerOsApi for FakeServerOsApi {
         &self,
         resolved: ResolvedSpawn,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         self.spawn_with_id(
             resolved.terminal_id,
             TerminalAction::RunCommand(resolved.command),
@@ -179,16 +180,16 @@ impl ServerOsApi for FakeServerOsApi {
         &self,
         resolved: ResolvedSpawn,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         self.re_run_command_in_terminal(resolved.terminal_id, resolved.command, quit_cb)
     }
     fn reserve_terminal_id(&self) -> Result<TerminalId> {
-        let terminal_id = TerminalId::new(self.shared_ptys.next_terminal_id());
-        let _ = self.shared_ptys.register(terminal_id.0, None, None);
+        let terminal_id = self.shared_ptys.next_terminal_id();
+        let _ = self.shared_ptys.register(terminal_id, None, None);
         Ok(terminal_id)
     }
     fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize> {
-        if self.shared_ptys.append_stdin(terminal_id.0, buf) {
+        if self.shared_ptys.append_stdin(terminal_id, buf) {
             Ok(buf.len())
         } else {
             Err(anyhow!("no fake pty for terminal id {terminal_id}"))
@@ -197,23 +198,29 @@ impl ServerOsApi for FakeServerOsApi {
     fn tcdrain(&self, _terminal_id: TerminalId) -> Result<()> {
         Ok(())
     }
-    fn kill(&self, pid: u32) -> Result<()> {
-        self.shared_ptys
-            .exit_terminal(pid.saturating_sub(FAKE_PID_BASE), None);
+    fn kill(&self, pid: ProcessId) -> Result<()> {
+        self.shared_ptys.exit_terminal(
+            TerminalId::new(pid.get().saturating_sub(FAKE_PID_BASE)),
+            None,
+        );
         Ok(())
     }
-    fn force_kill(&self, pid: u32) -> Result<()> {
-        self.shared_ptys
-            .exit_terminal(pid.saturating_sub(FAKE_PID_BASE), None);
+    fn force_kill(&self, pid: ProcessId) -> Result<()> {
+        self.shared_ptys.exit_terminal(
+            TerminalId::new(pid.get().saturating_sub(FAKE_PID_BASE)),
+            None,
+        );
         Ok(())
     }
-    fn send_sigint(&self, pid: u32) -> Result<()> {
-        self.shared_ptys
-            .exit_terminal(pid.saturating_sub(FAKE_PID_BASE), None);
+    fn send_sigint(&self, pid: ProcessId) -> Result<()> {
+        self.shared_ptys.exit_terminal(
+            TerminalId::new(pid.get().saturating_sub(FAKE_PID_BASE)),
+            None,
+        );
         Ok(())
     }
     /// Nothing here is ever really stopped, so there is nothing to continue.
-    fn send_sigcont(&self, _pid: u32) -> Result<()> {
+    fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
         Ok(())
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
@@ -256,10 +263,13 @@ impl ServerOsApi for FakeServerOsApi {
     fn load_palette(&self) -> Palette {
         default_palette()
     }
-    fn get_cwd(&self, pid: u32) -> Option<PathBuf> {
+    fn get_cwd(&self, pid: ProcessId) -> Option<PathBuf> {
         self.cwds.lock().unwrap().get(&pid).cloned()
     }
-    fn get_cwds(&self, pids: Vec<u32>) -> (HashMap<u32, PathBuf>, HashMap<u32, Vec<String>>) {
+    fn get_cwds(
+        &self,
+        pids: Vec<ProcessId>,
+    ) -> (HashMap<ProcessId, PathBuf>, HashMap<ProcessId, Vec<String>>) {
         // A fake pane runs no process of its own, so both halves are answered from
         // what it was spawned with rather than from the OS. The command half used
         // to be left empty, which left every pane looking like it ran nothing —
@@ -273,8 +283,9 @@ impl ServerOsApi for FakeServerOsApi {
                 found_cwds.insert(pid, cwd.clone());
             }
             if let Some(command) = pid
+                .get()
                 .checked_sub(FAKE_PID_BASE)
-                .and_then(|terminal_id| process_commands.get(&terminal_id))
+                .and_then(|terminal_id| process_commands.get(&TerminalId::new(terminal_id)))
             {
                 found_cmds.insert(pid, command.clone());
             }
@@ -287,17 +298,14 @@ impl ServerOsApi for FakeServerOsApi {
     /// through the pane's own pid.
     fn get_foreground_cmds(
         &self,
-        panes: &[(TerminalId, u32)],
+        panes: &[(TerminalId, ProcessId)],
         _post_hook: &Option<String>,
     ) -> HashMap<TerminalId, Vec<String>> {
         let foreground_commands = self.shared_ptys.foreground_commands();
         panes
             .iter()
             .filter_map(|(terminal_id, _shell_pid)| {
-                Some((
-                    *terminal_id,
-                    foreground_commands.get(&terminal_id.0)?.clone(),
-                ))
+                Some((*terminal_id, foreground_commands.get(terminal_id)?.clone()))
             })
             .collect()
     }
@@ -312,12 +320,15 @@ impl ServerOsApi for FakeServerOsApi {
         terminal_id: TerminalId,
         _run_command: RunCommand,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
-        let fake_async_reader = self.shared_ptys.rerun(terminal_id.0, quit_cb);
-        Ok((fake_async_reader, Some(FAKE_PID_BASE + terminal_id.0)))
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
+        let fake_async_reader = self.shared_ptys.rerun(terminal_id, quit_cb);
+        Ok((
+            fake_async_reader,
+            Some(ProcessId::new(FAKE_PID_BASE + terminal_id.get())),
+        ))
     }
     fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()> {
-        self.shared_ptys.remove(terminal_id.0);
+        self.shared_ptys.remove(terminal_id);
         Ok(())
     }
     /// Hand a pane's supervisor over without killing it.
@@ -335,7 +346,7 @@ impl ServerOsApi for FakeServerOsApi {
     }
     fn check_terminal_can_be_warped(&self, terminal_id: TerminalId) -> Result<()> {
         self.shared_ptys
-            .check_can_be_warped(terminal_id.0)
+            .check_can_be_warped(terminal_id)
             .map_err(|e| anyhow!("{e}"))
     }
     fn release_terminal_for_warp(
@@ -346,7 +357,7 @@ impl ServerOsApi for FakeServerOsApi {
         // A release rigged to fail models the one case the pre-flight check
         // cannot rule out: a broker that says yes to being asked and then does
         // not confirm the handoff.
-        if self.shared_ptys.release_is_rigged_to_fail(terminal_id.0) {
+        if self.shared_ptys.release_is_rigged_to_fail(terminal_id) {
             return Err(anyhow!(
                 "the supervisor for pane {terminal_id} did not confirm the handoff"
             ));
@@ -355,10 +366,10 @@ impl ServerOsApi for FakeServerOsApi {
         // hand over, so what it releases is a broker address rather than a
         // socket. Asked before the release, because releasing is what removes
         // the state the answer comes from.
-        if let Some(host) = self.shared_ptys.remote_host_of(terminal_id.0) {
+        if let Some(host) = self.shared_ptys.remote_host_of(terminal_id) {
             let pane_token = self
                 .shared_ptys
-                .release_remote_for_warp(terminal_id.0)
+                .release_remote_for_warp(terminal_id)
                 .with_context(|| format!("no fake pty for remote terminal id {terminal_id}"))?;
             return Ok(ReleasedPane::Remote(ReleasedRemotePane {
                 host,
@@ -369,17 +380,17 @@ impl ServerOsApi for FakeServerOsApi {
                 received: 0,
                 cmd: self
                     .shared_ptys
-                    .run_command_of(terminal_id.0)
+                    .run_command_of(terminal_id)
                     .unwrap_or_default(),
             }));
         }
         let control_socket = self
             .shared_ptys
-            .release_for_warp(terminal_id.0)
+            .release_for_warp(terminal_id)
             .with_context(|| format!("no fake pty for terminal id {terminal_id}"))?;
         Ok(ReleasedPane::Local(ReleasedPtyHost {
-            host_id: format!("fake-pty-host-{terminal_id}"),
-            host_pid: FAKE_PID_BASE + terminal_id.0,
+            host_id: SupervisorId::new(format!("fake-pty-host-{terminal_id}")),
+            host_pid: ProcessId::new(FAKE_PID_BASE + terminal_id.get()),
             control_socket: Some(control_socket),
         }))
     }
@@ -398,7 +409,7 @@ impl ServerOsApi for FakeServerOsApi {
                 )
             })?;
         Ok(AdoptedTerminal {
-            terminal_id: TerminalId::new(adopted.terminal_id),
+            terminal_id: adopted.terminal_id,
             reader: adopted.reader,
             // None, as a real remote pane's is: a pid from another machine names
             // an unrelated local process. This is the fake's half of what keeps
@@ -421,20 +432,20 @@ impl ServerOsApi for FakeServerOsApi {
         // The pane's folder follows it: `get_cwd` is answered out of a map keyed
         // by child pid, and this session has never seen this pane before.
         if let Some(cwd) = adopted.run_command.cwd.clone() {
-            self.cwds
-                .lock()
-                .unwrap()
-                .insert(FAKE_PID_BASE + adopted.terminal_id, cwd);
+            self.cwds.lock().unwrap().insert(
+                ProcessId::new(FAKE_PID_BASE + adopted.terminal_id.get()),
+                cwd,
+            );
         }
         Ok(AdoptedTerminal {
-            terminal_id: TerminalId::new(adopted.terminal_id),
+            terminal_id: adopted.terminal_id,
             reader: adopted.reader,
             // Renumbered with the terminal id, as every other fake pid is. A real
             // warp keeps the child's pid, which is the evidence that the process
             // survived; here the evidence is that the pty *state* travelled -
             // its stdin, its sizes, the command it was spawned with - and that it
             // was never told to exit.
-            child_pid: Some(FAKE_PID_BASE + adopted.terminal_id),
+            child_pid: Some(ProcessId::new(FAKE_PID_BASE + adopted.terminal_id.get())),
             cmd: adopted.run_command,
             // Not modelled: a real supervisor buffers what the child wrote while
             // nobody was attached. The fake has no way to be written to while it
@@ -451,7 +462,7 @@ impl FakeServerOsApi {
         terminal_id: TerminalId,
         terminal_action: TerminalAction,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         let opened_file_contents = match &terminal_action {
             TerminalAction::OpenFile(payload) => self
                 .fake_filesystem
@@ -469,21 +480,21 @@ impl FakeServerOsApi {
             self.cwds
                 .lock()
                 .unwrap()
-                .insert(FAKE_PID_BASE + terminal_id.0, cwd);
+                .insert(ProcessId::new(FAKE_PID_BASE + terminal_id.get()), cwd);
         }
         let fake_async_reader =
             self.shared_ptys
-                .register(terminal_id.0, Some(terminal_action), Some(quit_cb));
+                .register(terminal_id, Some(terminal_action), Some(quit_cb));
         if let Some(contents) = opened_file_contents {
             let contents_with_carriage_returns =
                 contents.replace("\r\n", "\n").replace('\n', "\r\n");
             self.shared_ptys
-                .write_output(terminal_id.0, contents_with_carriage_returns.as_bytes());
+                .write_output(terminal_id, contents_with_carriage_returns.as_bytes());
         }
         Ok((
             terminal_id,
             fake_async_reader,
-            Some(FAKE_PID_BASE + terminal_id.0),
+            Some(ProcessId::new(FAKE_PID_BASE + terminal_id.get())),
         ))
     }
 }

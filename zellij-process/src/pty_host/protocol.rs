@@ -8,7 +8,7 @@
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::{ProcessId, SupervisorId};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use zellij_runtime::errors::prelude::*;
@@ -30,10 +30,6 @@ pub const CONTROL_FD: std::os::unix::io::RawFd = 3;
 
 /// Refuse absurd frames rather than allocating whatever a peer claims.
 const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
-
-/// Identifies one supervisor. 12 hex chars, short enough to keep the socket path
-/// well inside `sockaddr_un.sun_path`.
-pub type HostId = String;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerToHostMsg {
@@ -122,7 +118,7 @@ pub enum HostToServerMsg {
     HelloAck {
         protocol_version: u32,
         zellij_version: String,
-        host_id: HostId,
+        host_id: SupervisorId,
         host_pid: ProcessId,
         /// Where the supervisor bound its named socket, or `None` if binding
         /// failed. Binding is not fatal: it only powers `pty-host list|kill` and
@@ -163,7 +159,7 @@ pub enum HostToServerMsg {
     AttachAck {
         protocol_version: u32,
         zellij_version: String,
-        host_id: HostId,
+        host_id: SupervisorId,
         host_pid: ProcessId,
         child_pid: ProcessId,
         /// The structured command. `HostStatus.command` only carries its display
@@ -212,7 +208,7 @@ pub enum SpawnFailureKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostStatus {
-    pub host_id: HostId,
+    pub host_id: SupervisorId,
     pub session_name: Option<String>,
     pub terminal_id: u32,
     pub command: String,
@@ -303,11 +299,11 @@ pub fn socket_dir() -> PathBuf {
     ZELLIJ_SOCK_DIR.join("pty")
 }
 
-pub fn socket_path(host_id: &str) -> PathBuf {
+pub fn socket_path(host_id: &SupervisorId) -> PathBuf {
     socket_dir().join(format!("{host_id}.sock"))
 }
 
-pub fn metadata_path(host_id: &str) -> PathBuf {
+pub fn metadata_path(host_id: &SupervisorId) -> PathBuf {
     socket_dir().join(format!("{host_id}.json"))
 }
 
@@ -339,9 +335,11 @@ pub fn check_socket_path_length(path: &std::path::Path, margin: usize) -> Result
     Ok(())
 }
 
-pub fn new_host_id() -> HostId {
+/// Identifies one supervisor. 12 hex chars, short enough to keep the socket path
+/// well inside `sockaddr_un.sun_path`.
+pub fn new_host_id() -> SupervisorId {
     let uuid = uuid::Uuid::new_v4();
-    uuid.simple().to_string()[..12].to_string()
+    SupervisorId::new(uuid.simple().to_string()[..12].to_string())
 }
 
 pub use zellij_runtime::termios::WireTermios;

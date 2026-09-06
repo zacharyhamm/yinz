@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use zellij_server::os_input_output::AsyncReader;
 use zellij_server::panes::PaneId;
+use zellij_types::internal_ids::TerminalId;
 use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
 
 pub(crate) type QuitCb = Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>;
@@ -53,13 +54,13 @@ impl FakePtyState {
 
 #[derive(Default)]
 pub(crate) struct FakePtyRegistry {
-    next_terminal_id: u32,
-    pub fake_pty_states: HashMap<u32, FakePtyState>,
-    pub spawn_queue: VecDeque<u32>,
+    next_terminal_id: TerminalId,
+    pub fake_pty_states: HashMap<TerminalId, FakePtyState>,
+    pub spawn_queue: VecDeque<TerminalId>,
     /// Terminals this session took over from another one. Kept apart from
     /// `spawn_queue` because nothing was spawned: the whole claim a warp makes is
     /// that the process was already running and went on running.
-    pub adopted_queue: VecDeque<u32>,
+    pub adopted_queue: VecDeque<TerminalId>,
     /// How many panes this session let go of, and took up, by the *remote* road.
     ///
     /// Counted because a warp that took the wrong road still works in this
@@ -82,7 +83,7 @@ pub(crate) struct FakePtyRegistry {
     /// is the harder one: the pre-flight says yes and the release then fails, which
     /// is the shape of a remote broker that will not confirm, and the only case
     /// where a pane really is cut loose.
-    pub warp_failures: HashMap<u32, WarpFailure>,
+    pub warp_failures: HashMap<TerminalId, WarpFailure>,
 }
 
 /// How a test makes a release go wrong. See `FakePtyRegistry::warp_failures`.
@@ -169,17 +170,22 @@ impl SharedPtys {
         result
     }
 
-    pub(crate) fn next_terminal_id(&self) -> u32 {
+    pub(crate) fn next_terminal_id(&self) -> TerminalId {
         self.mutate(|fake_pty_registry| {
             let terminal_id = fake_pty_registry.next_terminal_id;
-            fake_pty_registry.next_terminal_id += 1;
+            fake_pty_registry.next_terminal_id = TerminalId::new(
+                terminal_id
+                    .get()
+                    .checked_add(1)
+                    .expect("fake terminal IDs exhausted"),
+            );
             terminal_id
         })
     }
 
     pub(crate) fn register(
         &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
+        terminal_id: TerminalId,
         terminal_action: Option<TerminalAction>,
         quit_cb: Option<QuitCb>,
     ) -> Box<dyn AsyncReader> {
@@ -238,7 +244,7 @@ impl SharedPtys {
     /// working.
     pub(crate) fn check_can_be_warped(
         &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
+        terminal_id: TerminalId,
     ) -> std::result::Result<(), String> {
         self.read(|registry| {
             if registry.warp_failures.get(&terminal_id) == Some(&WarpFailure::Unwarpable) {
@@ -256,28 +262,18 @@ impl SharedPtys {
 
     /// Whether a test has asked this pane's release to fail after the check
     /// passed.
-    pub(crate) fn release_is_rigged_to_fail(
-        &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
-    ) -> bool {
+    pub(crate) fn release_is_rigged_to_fail(&self, terminal_id: TerminalId) -> bool {
         self.read(|registry| {
             registry.warp_failures.get(&terminal_id) == Some(&WarpFailure::Unreleasable)
         })
     }
 
     /// Make a pane's warp fail, from a test.
-    pub fn fail_warp_of(
-        &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
-        failure: WarpFailure,
-    ) {
+    pub fn fail_warp_of(&self, terminal_id: TerminalId, failure: WarpFailure) {
         self.mutate(|registry| registry.warp_failures.insert(terminal_id, failure));
     }
 
-    pub(crate) fn release_for_warp(
-        &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
-    ) -> Option<PathBuf> {
+    pub(crate) fn release_for_warp(&self, terminal_id: TerminalId) -> Option<PathBuf> {
         let fake_pty_state =
             self.mutate(|fake_pty_registry| fake_pty_registry.fake_pty_states.remove(&terminal_id));
         let fake_pty_state = fake_pty_state?;
@@ -295,10 +291,7 @@ impl SharedPtys {
     /// "remote" pane here is one whose `RunCommand` says it is. That is enough
     /// for the thing worth testing: which of the two addressing shapes a warp
     /// builds, and whether the receiving session can follow it back.
-    pub(crate) fn remote_host_of(
-        &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
-    ) -> Option<String> {
+    pub(crate) fn remote_host_of(&self, terminal_id: TerminalId) -> Option<String> {
         self.read(|registry| {
             registry
                 .fake_pty_states
@@ -308,10 +301,7 @@ impl SharedPtys {
     }
 
     /// The command a pane was spawned with, for the warp payload to carry.
-    pub(crate) fn run_command_of(
-        &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
-    ) -> Option<RunCommand> {
+    pub(crate) fn run_command_of(&self, terminal_id: TerminalId) -> Option<RunCommand> {
         self.read(|registry| {
             registry
                 .fake_pty_states
@@ -326,10 +316,7 @@ impl SharedPtys {
     /// exactly the real difference. A remote pane's state does not move to a
     /// local supervisor socket; it stays where it is, and what travels is the
     /// name the broker knows it by.
-    pub(crate) fn release_remote_for_warp(
-        &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
-    ) -> Option<String> {
+    pub(crate) fn release_remote_for_warp(&self, terminal_id: TerminalId) -> Option<String> {
         let fake_pty_state = self.mutate(|fake_pty_registry| {
             let fake_pty_state = fake_pty_registry.fake_pty_states.remove(&terminal_id)?;
             fake_pty_registry.remote_releases += 1;
@@ -406,17 +393,13 @@ impl SharedPtys {
     }
 
     /// The next terminal this session adopted, waiting for one if need be.
-    pub(crate) fn expect_adoption(&self) -> u32 {
+    pub(crate) fn expect_adoption(&self) -> TerminalId {
         self.wait_for("a pane to be adopted from another session", |registry| {
             registry.adopted_queue.pop_front()
         })
     }
 
-    pub(crate) fn rerun(
-        &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
-        quit_cb: QuitCb,
-    ) -> Box<dyn AsyncReader> {
+    pub(crate) fn rerun(&self, terminal_id: TerminalId, quit_cb: QuitCb) -> Box<dyn AsyncReader> {
         let (output_tx, output_rx) = tokio::sync::mpsc::unbounded_channel();
         self.mutate(|fake_pty_registry| {
             let fake_pty_state = fake_pty_registry
@@ -433,11 +416,7 @@ impl SharedPtys {
         })
     }
 
-    pub(crate) fn exit_terminal(
-        &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
-        exit_status: Option<i32>,
-    ) {
+    pub(crate) fn exit_terminal(&self, terminal_id: TerminalId, exit_status: Option<i32>) {
         let newly_exited = self.mutate(|fake_pty_registry| {
             let fake_pty_state = fake_pty_registry.fake_pty_states.get_mut(&terminal_id)?;
             if fake_pty_state.exited {
@@ -448,26 +427,17 @@ impl SharedPtys {
             Some((fake_pty_state.quit_cb.take(), fake_pty_state.run_command()))
         });
         if let Some((Some(quit_cb), run_command)) = newly_exited {
-            quit_cb(
-                PaneId::Terminal(zellij_server::TerminalId::new(terminal_id)),
-                exit_status,
-                run_command,
-            );
+            quit_cb(PaneId::Terminal(terminal_id), exit_status, run_command);
         }
     }
 
-    pub(crate) fn remove(&self, terminal_id: zellij_types::internal_ids::TerminalId) {
+    pub(crate) fn remove(&self, terminal_id: TerminalId) {
         self.mutate(|fake_pty_registry| {
             fake_pty_registry.fake_pty_states.remove(&terminal_id);
         });
     }
 
-    pub(crate) fn set_size(
-        &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
-        cols: u16,
-        rows: u16,
-    ) {
+    pub(crate) fn set_size(&self, terminal_id: TerminalId, cols: u16, rows: u16) {
         self.mutate(|fake_pty_registry| {
             if let Some(fake_pty_state) = fake_pty_registry.fake_pty_states.get_mut(&terminal_id) {
                 // like a real pty, setting the same size again is a no-op that will not make the
@@ -483,7 +453,7 @@ impl SharedPtys {
 
     pub(crate) fn set_stdin_tap(
         &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
+        terminal_id: TerminalId,
         sender: crossbeam::channel::Sender<Vec<u8>>,
     ) {
         self.mutate(|fake_pty_registry| {
@@ -495,7 +465,7 @@ impl SharedPtys {
 
     /// What each pane's own process is, keyed by terminal id — the fake's answer
     /// to the sysinfo half of `get_cwds`.
-    pub(crate) fn process_commands(&self) -> HashMap<u32, Vec<String>> {
+    pub(crate) fn process_commands(&self) -> HashMap<TerminalId, Vec<String>> {
         self.read(|fake_pty_registry| {
             fake_pty_registry
                 .fake_pty_states
@@ -509,7 +479,7 @@ impl SharedPtys {
 
     /// What holds each pane's tty foreground, keyed by terminal id — the fake's
     /// answer to `get_foreground_cmds`.
-    pub(crate) fn foreground_commands(&self) -> HashMap<u32, Vec<String>> {
+    pub(crate) fn foreground_commands(&self) -> HashMap<TerminalId, Vec<String>> {
         self.read(|fake_pty_registry| {
             fake_pty_registry
                 .fake_pty_states
@@ -523,7 +493,7 @@ impl SharedPtys {
 
     pub(crate) fn set_foreground_command(
         &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
+        terminal_id: TerminalId,
         command: Option<Vec<String>>,
     ) {
         self.mutate(|fake_pty_registry| {
@@ -533,11 +503,7 @@ impl SharedPtys {
         });
     }
 
-    pub(crate) fn write_output(
-        &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
-        bytes: &[u8],
-    ) {
+    pub(crate) fn write_output(&self, terminal_id: TerminalId, bytes: &[u8]) {
         self.read(|fake_pty_registry| {
             if let Some(fake_pty_state) = fake_pty_registry.fake_pty_states.get(&terminal_id) {
                 if let Some(output_tx) = fake_pty_state.output_tx.as_ref() {
@@ -547,11 +513,7 @@ impl SharedPtys {
         });
     }
 
-    pub(crate) fn append_stdin(
-        &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
-        bytes: &[u8],
-    ) -> bool {
+    pub(crate) fn append_stdin(&self, terminal_id: TerminalId, bytes: &[u8]) -> bool {
         self.mutate(|fake_pty_registry| {
             match fake_pty_registry.fake_pty_states.get_mut(&terminal_id) {
                 Some(fake_pty_state) => {
@@ -604,7 +566,7 @@ impl SharedPtys {
 
     pub(crate) fn wait_for_change(
         &self,
-        terminal_id: zellij_types::internal_ids::TerminalId,
+        terminal_id: TerminalId,
         last_seen: (u16, u16),
     ) -> Option<(u16, u16)> {
         let mut fake_pty_registry = self.lock_registry();
@@ -629,7 +591,7 @@ impl SharedPtys {
 
 /// What a session gets back for taking a detached supervisor over.
 pub(crate) struct AdoptedFakePty {
-    pub terminal_id: zellij_types::internal_ids::TerminalId,
+    pub terminal_id: TerminalId,
     pub reader: Box<dyn AsyncReader>,
     pub run_command: RunCommand,
     pub child_exit_status: Option<Option<i32>>,
@@ -665,12 +627,12 @@ impl AsyncReader for FakeAsyncReader {
 
 #[derive(Clone)]
 pub struct FakePtyHandle {
-    pub(crate) terminal_id: zellij_types::internal_ids::TerminalId,
+    pub(crate) terminal_id: TerminalId,
     pub(crate) shared_ptys: SharedPtys,
 }
 
 impl FakePtyHandle {
-    pub fn terminal_id(&self) -> u32 {
+    pub fn terminal_id(&self) -> TerminalId {
         self.terminal_id
     }
 

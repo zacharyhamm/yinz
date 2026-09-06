@@ -34,9 +34,7 @@ use super::protocol::{
 };
 use super::session::{orphan_timeout, PaneRegistry, PaneSession, ResumeStep};
 use crate::pty_host::client::{self as pty_host_client, SpawnParams};
-use crate::pty_host::protocol::{
-    check_socket_path_length, new_host_id, SpawnFailureKind, WireWinsize,
-};
+use crate::pty_host::protocol::{check_socket_path_length, SpawnFailureKind, WireWinsize};
 use crate::pty_host::{ensure_secure_dir, secure_socket};
 
 /// A socket shared by the several things that need to write to it: the output
@@ -418,7 +416,7 @@ fn start_pane(
     let mut env = remote_env::compose(&remote_env::LoginSource::from_user(&user), carried_env);
     // The pane's token, so a hook running inside it can name it to this broker
     // (`report_agent_hook`). Minted before the spawn for exactly that reason.
-    let token = new_host_id();
+    let token = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
     env.push((PANE_TOKEN_ENV.to_owned(), token.clone()));
 
     let pending = match pty_host_client::spawn(SpawnParams {

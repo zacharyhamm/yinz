@@ -41,8 +41,7 @@ use super::protocol::{
 };
 use crate::pty_host::ensure_secure_dir;
 use crate::pty_host::protocol::{
-    check_socket_path_length, new_host_id, SpawnFailureKind, WireWinsize,
-    SSH_CONTROL_PATH_RENAME_MARGIN,
+    check_socket_path_length, SpawnFailureKind, WireWinsize, SSH_CONTROL_PATH_RENAME_MARGIN,
 };
 
 /// How long to wait for the forwarded socket to become connectable.
@@ -236,7 +235,7 @@ impl Default for RemoteHosts {
     fn default() -> Self {
         Self {
             forwards: Mutex::new(HashMap::new()),
-            instance: new_host_id(),
+            instance: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(),
         }
     }
 }

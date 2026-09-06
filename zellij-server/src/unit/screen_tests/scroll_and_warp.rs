@@ -8,6 +8,7 @@ const TAB_0: TabId = TabId::new(0);
 use super::*;
 use zellij_test_support::Watched;
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
@@ -816,7 +817,7 @@ fn a_tab_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
                     (
                         *terminal_id,
                         Ok(ReleasedPane::Local(ReleasedPtyHost {
-                            host_id: format!("host-{terminal_id}"),
+                            host_id: SupervisorId::new(format!("host-{terminal_id}")),
                             host_pid: ProcessId::new(1),
                             control_socket: Some(std::path::PathBuf::from("/tmp/warp-test.sock")),
                         })),
@@ -897,7 +898,7 @@ fn a_tab_is_not_taken_apart_when_its_release_lands_inside_screens_own_reserve() 
                     (
                         *terminal_id,
                         Ok(ReleasedPane::Local(ReleasedPtyHost {
-                            host_id: format!("host-{terminal_id}"),
+                            host_id: SupervisorId::new(format!("host-{terminal_id}")),
                             host_pid: ProcessId::new(1),
                             control_socket: Some(std::path::PathBuf::from("/tmp/warp-test.sock")),
                         })),
@@ -985,7 +986,7 @@ fn a_pane_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
             placement,
             client_id,
             released: Ok(ReleasedPane::Local(ReleasedPtyHost {
-                host_id: "host-1".to_owned(),
+                host_id: SupervisorId::new("host-1".to_owned()),
                 host_pid: ProcessId::new(1),
                 control_socket: Some(std::path::PathBuf::from("/tmp/warp-test.sock")),
             })),
@@ -2043,7 +2044,8 @@ fn a_remote_pane_carries_no_local_address() {
         released_remote_pane_for_warp(&mut screen, zellij_types::internal_ids::TerminalId::new(1));
 
     assert_eq!(
-        warped.host_id, "",
+        warped.host_id,
+        SupervisorId::new(""),
         "a remote pane was given a local supervisor id, which names nothing here",
     );
     assert_eq!(
