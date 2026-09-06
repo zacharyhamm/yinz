@@ -1168,3 +1168,27 @@ fn a_vanished_pane_drops_its_items_actions() {
         "got {routed:?}"
     );
 }
+
+#[test]
+fn a_watcher_menu_only_repaint_restores_the_cursor_after_the_menu() {
+    let (mut screen, followed, _) = screen_with_open_menu((18, 5));
+    let watcher = ClientId::new(2);
+    screen.add_watcher_client(watcher).unwrap();
+    screen.set_watcher_size(watcher, Size { cols: 80, rows: 20 });
+    screen.set_followed_client(followed).unwrap();
+    // Keep regular-client menu output from forcing the watcher panes to repaint.
+    screen.connected_clients.borrow_mut().remove(&followed);
+    screen
+        .connected_clients
+        .borrow_mut()
+        .insert(ClientId::new(99));
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(Size { cols: 80, rows: 20 });
+    let expected = pane_cursor(&mut screen, followed);
+    for _ in 0..2 {
+        let (cursor, snapshot) =
+            render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
+        assert!(snapshot.contains("Copy"), "{snapshot}");
+        assert_eq!(cursor, Some(expected), "{snapshot}");
+    }
+}

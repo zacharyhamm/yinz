@@ -646,6 +646,14 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput) -> Result<String> {
     Ok(out)
 }
 
+/// Shared by `Output::serialize_with_size`, which acts on the answer, and
+/// `Output::cursor_is_cropped_for`, which is how the caller asks for it - one expression, so the
+/// two cannot drift.
+fn cursor_is_cropped(cursor_coordinates: Option<(usize, usize)>, max_size: Size) -> bool {
+    cursor_coordinates
+        .is_some_and(|(cursor_x, cursor_y)| cursor_y >= max_size.rows || cursor_x >= max_size.cols)
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Output {
     pre_vte_instructions: HashMap<ClientId, Vec<String>>,
@@ -672,6 +680,16 @@ pub struct Output {
     // against whichever client happened to render last
     cursor_coordinates: HashMap<ClientId, (usize, usize)>,
     clients_with_hidden_cursor: HashSet<ClientId>,
+    /// Whether each client's host terminal presents this frame atomically (DECSET 2026). Such a
+    /// host never displays anything between the frame's first and last byte, so the cursor cannot
+    /// be seen following the chunks as they paint and does not have to be hidden while they do.
+    /// A client absent from the map has not said, and is hidden the old way.
+    synchronized_output_capabilities: Rc<RefCell<HashMap<ClientId, bool>>>,
+    /// One answer for every client in this output, when the map above cannot give the right one.
+    /// The watchers' frame is keyed by the *followed* client's id but is delivered to the
+    /// watchers' terminals, so what that client's host can do says nothing about whether these
+    /// bytes may leave the cursor up while they paint.
+    atomic_frames_override: Option<bool>,
     // what the session's toasts paint over this frame. they are not panes and so are not in
     // `floating_panes_stack`, but they are drawn above everything and must occlude the cursor the
     // same way a floating pane does
@@ -693,6 +711,7 @@ impl Output {
         kitty_host_capabilities: Rc<RefCell<HashMap<ClientId, bool>>>,
         kitty_host_state: Rc<RefCell<HashMap<ClientId, HostKittyState>>>,
         sixel_host_capabilities: Rc<RefCell<HashMap<ClientId, bool>>>,
+        synchronized_output_capabilities: Rc<RefCell<HashMap<ClientId, bool>>>,
     ) -> Self {
         Output {
             sixel_image_store,
@@ -703,6 +722,7 @@ impl Output {
             kitty_host_capabilities,
             kitty_host_state,
             sixel_host_capabilities,
+            synchronized_output_capabilities,
             ..Default::default()
         }
     }
@@ -721,13 +741,75 @@ impl Output {
     }
     /// The cursor is only positioned once all panes contributed to the frame, so this can be
     /// reached from more than one place - hide each client's cursor at most once per frame.
+    ///
+    /// A client whose host presents the frame atomically is skipped entirely: nothing between the
+    /// frame's first and last byte is ever displayed there, so the cursor is never seen trailing
+    /// the chunks, and the hide/show pair it would need to undo costs a `?25h` and a cursor-shape
+    /// CSI on every frame - which restarts the host's blink phase. It is deliberately *not*
+    /// recorded in `clients_with_hidden_cursor`, because that set is what tells the cursor pass
+    /// whether it has a hide to undo.
     pub fn hide_cursor_for_clients(&mut self, client_ids: impl Iterator<Item = ClientId>) {
-        let client_ids: Vec<ClientId> = client_ids
+        let needing_a_hide: Vec<ClientId> = client_ids
+            .filter(|client_id| !self.host_presents_frames_atomically(*client_id))
+            .collect();
+        let client_ids: Vec<ClientId> = needing_a_hide
+            .into_iter()
             .filter(|client_id| self.clients_with_hidden_cursor.insert(*client_id))
             .collect();
         for client_id in client_ids {
             self.add_pre_vte_instruction_to_client(client_id, "\u{1b}[?25l");
         }
+    }
+
+    /// Whether this client's host terminal shows a whole frame at once (DECSET 2026). Unknown
+    /// clients answer `false`, so a client that has not reported keeps the old behaviour.
+    pub fn host_presents_frames_atomically(&self, client_id: ClientId) -> bool {
+        if let Some(atomic_frames_override) = self.atomic_frames_override {
+            return atomic_frames_override;
+        }
+        self.synchronized_output_capabilities
+            .borrow()
+            .get(&client_id)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Answer `host_presents_frames_atomically` with this, for every client, whatever the shared
+    /// map says. For an output whose client ids are not the ids of the terminals it is going to -
+    /// the watchers' frame, which carries the followed client's id.
+    pub fn set_host_presents_frames_atomically(&mut self, atomic: bool) {
+        self.atomic_frames_override = Some(atomic);
+    }
+
+    /// Whether this frame hid `client_id`'s cursor, and so owes it a `?25h`.
+    pub fn cursor_was_hidden_for(&self, client_id: ClientId) -> bool {
+        self.clients_with_hidden_cursor.contains(&client_id)
+    }
+
+    /// Whether anything in this frame moved `client_id`'s hardware cursor, and so obliges the
+    /// cursor pass to put it back.
+    ///
+    /// Chunks do, obviously. So do the post-VTE instructions, which are full of absolute gotos -
+    /// a pane's raw VTE passthrough, another client's fake cursor, a repainted frame, a terminal
+    /// title. `pre_vte_instructions` is deliberately excluded: the only thing in there is this
+    /// pass's own cursor hide and the display clear, and counting the hide is what made
+    /// `is_dirty()` unconditionally true here and the cursor memo dead.
+    pub fn frame_moved_cursor_for(&self, client_id: ClientId) -> bool {
+        self.post_vte_instructions
+            .get(&client_id)
+            .is_some_and(|instructions| !instructions.is_empty())
+            || self
+                .client_character_chunks
+                .get(&client_id)
+                .is_some_and(|chunks| !chunks.is_empty())
+            || self
+                .sixel_chunks
+                .get(&client_id)
+                .is_some_and(|chunks| !chunks.is_empty())
+            || self
+                .client_kitty_chunks
+                .get(&client_id)
+                .is_some_and(|by_pane| by_pane.values().any(|chunks| !chunks.is_empty()))
     }
     /// `add_clients` sets the stack of whichever tab is rendering, so a later pass over the tabs
     /// (eg. positioning the cursor) needs to point the output back at its own tab's stack.
@@ -1081,11 +1163,8 @@ impl Output {
             }
 
             // Check if cursor was cropped and hide it if necessary
-            if let (Some(max_size), Some((cursor_x, cursor_y))) =
-                (max_size, self.cursor_coordinates.get(&client_id).copied())
-            {
-                let cursor_was_cropped = cursor_y >= max_size.rows || cursor_x >= max_size.cols;
-                if cursor_was_cropped {
+            if let Some(max_size) = max_size {
+                if cursor_is_cropped(self.cursor_coordinates.get(&client_id).copied(), max_size) {
                     vte_hide_cursor_instruction(&mut client_serialized_render_instructions)
                         .with_context(err_context)?;
                 }
@@ -1094,6 +1173,16 @@ impl Output {
             serialized_render_instructions.insert(client_id, client_serialized_render_instructions);
         }
         Ok(serialized_render_instructions)
+    }
+    /// Whether `client_id`'s cursor falls outside `max_size`, and so is hidden by
+    /// `serialize_with_size` rather than placed.
+    ///
+    /// That hide reaches one watcher's byte stream only, and the memo of what the host was told
+    /// lives in the tab, keyed by the *followed* client - so the caller has to ask, or the frame
+    /// that brings the cursor back into range decides it has nothing to say and the watcher's
+    /// cursor stays down for good.
+    pub fn cursor_is_cropped_for(&self, client_id: ClientId, max_size: Size) -> bool {
+        cursor_is_cropped(self.cursor_coordinates.get(&client_id).copied(), max_size)
     }
     pub fn is_dirty(&self) -> bool {
         !self.pre_vte_instructions.is_empty()

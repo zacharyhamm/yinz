@@ -35,6 +35,7 @@ fn create_test_output() -> Output {
         Rc::new(RefCell::new(HashMap::new())),
         Rc::new(RefCell::new(HashMap::new())),
         Rc::new(RefCell::new(HashMap::new())),
+        Rc::new(RefCell::new(HashMap::new())),
     )
 }
 
@@ -56,6 +57,7 @@ fn create_test_output_with_kitty_support(client_id: ClientId, supported: bool) -
         true,
         Rc::new(RefCell::new(KittyImageStore::default())),
         kitty_host_capabilities,
+        Rc::new(RefCell::new(HashMap::new())),
         Rc::new(RefCell::new(HashMap::new())),
         Rc::new(RefCell::new(HashMap::new())),
     )
@@ -1553,6 +1555,7 @@ fn create_test_kitty_output(parts: &KittyTestParts) -> Output {
         parts.1.clone(),
         parts.2.clone(),
         Rc::new(RefCell::new(HashMap::new())),
+        Rc::new(RefCell::new(HashMap::new())),
     )
 }
 
@@ -2178,4 +2181,247 @@ fn a_client_whose_capability_is_unknown_never_receives_placeholder_cells() {
 #[test]
 fn the_placeholder_is_one_cell_wide() {
     assert_eq!(TerminalCharacter::new(PLACEHOLDER).width(), 1);
+}
+
+/// The same `Output`, but told that `client_id`'s host presents each frame atomically.
+fn create_test_output_with_synchronized_output(client_id: ClientId, supported: bool) -> Output {
+    let synchronized_output_capabilities = Rc::new(RefCell::new(HashMap::new()));
+    synchronized_output_capabilities
+        .borrow_mut()
+        .insert(client_id, supported);
+    Output::new(
+        Rc::new(RefCell::new(SixelImageStore::default())),
+        Rc::new(RefCell::new(Some(SizeInPixels {
+            height: 20,
+            width: 10,
+        }))),
+        true,
+        true,
+        Rc::new(RefCell::new(KittyImageStore::default())),
+        Rc::new(RefCell::new(HashMap::new())),
+        Rc::new(RefCell::new(HashMap::new())),
+        Rc::new(RefCell::new(HashMap::new())),
+        synchronized_output_capabilities,
+    )
+}
+
+/// A host that shows the whole frame at once never displays the cursor trailing the chunks as
+/// they paint, so it does not have to be hidden while they do - and does not then owe a `?25h`
+/// and a cursor-shape CSI to undo it on every frame.
+#[test]
+fn a_host_that_presents_frames_atomically_is_not_sent_a_cursor_hide() {
+    let client_id = ClientId::new(1);
+    let mut output = create_test_output_with_synchronized_output(client_id, true);
+    output.add_clients(
+        &create_test_clients(1),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        None,
+    );
+    output
+        .add_character_chunks_to_client(
+            client_id,
+            vec![create_character_chunk_from_str("Test", 0, 0)],
+            None,
+        )
+        .unwrap();
+    output.hide_cursor_for_clients([client_id].into_iter());
+
+    assert!(
+        !output.cursor_was_hidden_for(client_id),
+        "an atomic host owes no hide, so the cursor pass has none to undo"
+    );
+    let serialized = output.serialize().unwrap();
+    assert!(
+        !serialized.get(&client_id).unwrap().contains("\u{1b}[?25l"),
+        "the frame must carry no cursor hide"
+    );
+}
+
+/// The other half: a host that has not reported synchronised output keeps the hide it always had.
+#[test]
+fn a_host_without_synchronized_output_is_still_sent_a_cursor_hide() {
+    for (label, output_under_test) in [
+        (
+            "explicitly unsupported",
+            create_test_output_with_synchronized_output(ClientId::new(1), false),
+        ),
+        ("never reported", create_test_output()),
+    ] {
+        let client_id = ClientId::new(1);
+        let mut output = output_under_test;
+        output.add_clients(
+            &create_test_clients(1),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            None,
+        );
+        output
+            .add_character_chunks_to_client(
+                client_id,
+                vec![create_character_chunk_from_str("Test", 0, 0)],
+                None,
+            )
+            .unwrap();
+        output.hide_cursor_for_clients([client_id].into_iter());
+
+        assert!(
+            output.cursor_was_hidden_for(client_id),
+            "{label}: the cursor pass has a hide to undo"
+        );
+        let serialized = output.serialize().unwrap();
+        assert!(
+            serialized.get(&client_id).unwrap().contains("\u{1b}[?25l"),
+            "{label}: the frame must carry the cursor hide"
+        );
+    }
+}
+
+/// The watchers' frame carries the followed client's id but is delivered to the watchers'
+/// terminals, so what that client's host can do says nothing about it. The override is how the
+/// caller says so, in both directions.
+#[test]
+fn an_output_wide_override_decides_the_hide_instead_of_the_clients_own_capability() {
+    for (label, capability, override_value, expect_a_hide) in [
+        (
+            "an atomic client, watched from a terminal that is not",
+            true,
+            false,
+            true,
+        ),
+        (
+            "a non-atomic client, watched from terminals that are",
+            false,
+            true,
+            false,
+        ),
+    ] {
+        let client_id = ClientId::new(1);
+        let mut output = create_test_output_with_synchronized_output(client_id, capability);
+        output.set_host_presents_frames_atomically(override_value);
+        output.add_clients(
+            &create_test_clients(1),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            None,
+        );
+        output
+            .add_character_chunks_to_client(
+                client_id,
+                vec![create_character_chunk_from_str("Test", 0, 0)],
+                None,
+            )
+            .unwrap();
+        output.hide_cursor_for_clients([client_id].into_iter());
+
+        assert_eq!(
+            output.cursor_was_hidden_for(client_id),
+            expect_a_hide,
+            "{label}: the hide is the watchers' business, not the followed client's"
+        );
+        let serialized = output.serialize().unwrap();
+        assert_eq!(
+            serialized.get(&client_id).unwrap().contains("\u{1b}[?25l"),
+            expect_a_hide,
+            "{label}: and the frame has to match"
+        );
+    }
+}
+
+/// The predicate the cursor pass asks before deciding whether it owes a goto. It must ignore the
+/// pass's own pre-frame hide - counting that is what made `is_dirty()` unconditionally true here
+/// and left the cursor memo unable to suppress anything.
+#[test]
+fn only_the_frames_own_content_counts_as_having_moved_the_cursor() {
+    let client_id = ClientId::new(1);
+    let mut output = create_test_output();
+    output.add_clients(
+        &create_test_clients(1),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        None,
+    );
+    assert!(
+        !output.frame_moved_cursor_for(client_id),
+        "an empty frame moves nothing"
+    );
+
+    output.hide_cursor_for_clients([client_id].into_iter());
+    assert!(
+        !output.frame_moved_cursor_for(client_id),
+        "the cursor pass's own hide is not content and moves nothing"
+    );
+
+    output
+        .add_character_chunks_to_client(
+            client_id,
+            vec![create_character_chunk_from_str("Test", 0, 0)],
+            None,
+        )
+        .unwrap();
+    assert!(
+        output.frame_moved_cursor_for(client_id),
+        "painted cells leave the hardware cursor after them"
+    );
+}
+
+/// A pane's raw VTE passthrough, another client's fake cursor and a repainted frame all go in as
+/// post-VTE instructions carrying absolute gotos, without adding a single character chunk. They
+/// move the hardware cursor just as surely as chunks do, which is why the predicate cannot simply
+/// be `has_rendered_assets`.
+#[test]
+fn a_post_vte_instruction_alone_counts_as_having_moved_the_cursor() {
+    let client_id = ClientId::new(1);
+    let mut output = create_test_output();
+    output.add_clients(
+        &create_test_clients(1),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        None,
+    );
+    output.add_post_vte_instruction_to_client(client_id, "\u{1b}[5;5H\u{1b}[mx");
+
+    assert!(
+        !output.has_rendered_assets(),
+        "nothing was painted, so the naive predicate would say the cursor stayed put"
+    );
+    assert!(
+        output.frame_moved_cursor_for(client_id),
+        "the goto inside the instruction moved it anyway"
+    );
+}
+
+#[test]
+fn cursor_is_cropped_for_agrees_with_what_serialization_emits() {
+    // The caller asks with this, `serialize_with_size` acts on it, and the two only stay honest
+    // if they answer the same question - so ask both about the same cursors.
+    for (cursor_x, cursor_y, expected_to_be_cropped) in
+        [(25, 5, true), (5, 25, true), (5, 5, false), (19, 9, false)]
+    {
+        let mut output = create_test_output();
+        let client_ids = create_test_clients(1);
+        let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
+        output.add_clients(&client_ids, link_handler, None);
+
+        let max_size = Size { rows: 10, cols: 20 };
+        output.set_cursor_coordinates(ClientId::new(1), cursor_x, cursor_y);
+        assert_eq!(
+            output.cursor_is_cropped_for(ClientId::new(1), max_size),
+            expected_to_be_cropped,
+            "cursor at ({cursor_x}, {cursor_y}) against {max_size:?}"
+        );
+
+        let chunk = create_character_chunk_from_str("Test", 0, 0);
+        output
+            .add_character_chunks_to_client(ClientId::new(1), vec![chunk], None)
+            .unwrap();
+        let result = output.serialize_with_size(Some(max_size), None).unwrap();
+        let client_output = result.get(&ClientId::new(1)).unwrap();
+        assert_eq!(
+            client_output.ends_with("\u{1b}[?25l"),
+            expected_to_be_cropped,
+            "serialization disagreed for a cursor at ({cursor_x}, {cursor_y}), got: {client_output:?}"
+        );
+    }
+}
+
+#[test]
+fn a_client_that_has_not_placed_a_cursor_is_never_cropped() {
+    let output = create_test_output();
+    assert!(!output.cursor_is_cropped_for(ClientId::new(1), Size { rows: 10, cols: 20 }));
 }

@@ -58,6 +58,7 @@ use {
     crate::client_server_contract::client_server_contract::SubscribeToPaneRendersMsg,
     crate::client_server_contract::client_server_contract::SubscribedPaneClosedMsg,
     crate::client_server_contract::client_server_contract::SwitchSessionMsg,
+    crate::client_server_contract::client_server_contract::SynchronizedOutputSupportMsg,
     crate::client_server_contract::client_server_contract::TabMetadata as ProtoTabMetadata,
     crate::client_server_contract::client_server_contract::TerminalPixelDimensionsMsg,
     crate::client_server_contract::client_server_contract::TerminalResizeMsg,
@@ -220,6 +221,11 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
             },
             ClientToServerMsg::SixelSupport { supported } => {
                 client_to_server_msg::Message::SixelSupport(SixelSupportMsg { supported })
+            },
+            ClientToServerMsg::SynchronizedOutputSupport { supported } => {
+                client_to_server_msg::Message::SynchronizedOutputSupport(
+                    SynchronizedOutputSupportMsg { supported },
+                )
             },
             ClientToServerMsg::RequestSessionList => {
                 client_to_server_msg::Message::RequestSessionList(RequestSessionListMsg {})
@@ -414,6 +420,11 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
             },
             Some(client_to_server_msg::Message::SixelSupport(msg)) => {
                 Ok(ClientToServerMsg::SixelSupport {
+                    supported: msg.supported,
+                })
+            },
+            Some(client_to_server_msg::Message::SynchronizedOutputSupport(msg)) => {
+                Ok(ClientToServerMsg::SynchronizedOutputSupport {
                     supported: msg.supported,
                 })
             },

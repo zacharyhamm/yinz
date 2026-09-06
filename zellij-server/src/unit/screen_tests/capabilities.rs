@@ -441,3 +441,120 @@ pub fn reported_pixel_dimensions_are_applied_to_existing_ptys() {
     );
     mock_screen.teardown(vec![pty_writer_thread, screen_thread]);
 }
+
+/// The synchronised-output capability is sent as the client attaches, and takes the same route
+/// through the server's main loop as `AddClient` does - so it can still be recorded for a client
+/// Screen has not caught up with, and must survive the wait rather than be discarded.
+#[test]
+fn synchronized_output_support_reported_before_the_client_is_added_still_takes_effect() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut screen = create_new_screen(size, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+
+    screen
+        .update_synchronized_output_support(ClientId::new(2), true)
+        .expect("TEST");
+    screen.add_client(ClientId::new(2)).expect("TEST");
+    assert_eq!(
+        screen
+            .synchronized_output_capabilities
+            .borrow()
+            .get(&ClientId::new(2)),
+        Some(&true),
+        "the capability the client sent on its way in has to survive the wait"
+    );
+}
+
+/// The other half: client ids are recycled, so a departed terminal's answer must not be left for
+/// whoever inherits its id.
+#[test]
+fn synchronized_output_support_does_not_outlive_the_client_that_reported_it() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut screen = create_new_screen(size, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.add_client(ClientId::new(2)).expect("TEST");
+    screen
+        .update_synchronized_output_support(ClientId::new(2), true)
+        .expect("TEST");
+    screen.remove_client(ClientId::new(2)).expect("TEST");
+    assert_eq!(
+        screen
+            .synchronized_output_capabilities
+            .borrow()
+            .get(&ClientId::new(2)),
+        None,
+        "the departed terminal's answer must not be left for the next one"
+    );
+}
+
+/// A watcher reports its own synchronised-output support like any other client, but is never in
+/// `connected_clients` - so it is only recorded at all because the write is unguarded, and only
+/// dropped because `remove_watcher_client` says so.
+#[test]
+fn a_watchers_synchronized_output_support_is_recorded_and_dropped_with_the_watcher() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut screen = create_new_screen(size, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.add_client(ClientId::new(1)).expect("TEST");
+    screen.add_watcher_client(ClientId::new(2)).expect("TEST");
+
+    screen
+        .update_synchronized_output_support(ClientId::new(2), true)
+        .expect("TEST");
+    assert_eq!(
+        screen
+            .synchronized_output_capabilities
+            .borrow()
+            .get(&ClientId::new(2)),
+        Some(&true),
+        "a watcher is not in `connected_clients`, and its answer must be kept all the same"
+    );
+
+    screen.remove_watcher_client(ClientId::new(2));
+    assert_eq!(
+        screen
+            .synchronized_output_capabilities
+            .borrow()
+            .get(&ClientId::new(2)),
+        None,
+        "and it goes when the watcher does, because ids are recycled"
+    );
+}
+
+/// The watchers share one byte stream, hidden according to what every one of their hosts can do -
+/// so one watcher's late answer changes the frame all of them get.
+#[test]
+fn a_watcher_reporting_synchronized_output_support_asks_for_a_full_frame() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut screen = create_new_screen(size, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.add_client(ClientId::new(1)).expect("TEST");
+    screen.add_watcher_client(ClientId::new(2)).expect("TEST");
+    screen.add_watcher_client(ClientId::new(3)).expect("TEST");
+    for watcher_state in screen.watcher_clients.values_mut() {
+        watcher_state.clear_force_render();
+    }
+
+    screen
+        .update_synchronized_output_support(ClientId::new(2), true)
+        .expect("TEST");
+    assert!(
+        screen
+            .watcher_clients
+            .values()
+            .all(|watcher_state| watcher_state.should_force_render()),
+        "every watcher's next frame is decided by this answer, so every watcher is repainted"
+    );
+}

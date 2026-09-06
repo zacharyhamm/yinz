@@ -305,6 +305,11 @@ pub enum ScreenInstruction {
         client_id: ClientId,
         supported: bool,
     },
+    /// Whether this client's host terminal presents each frame atomically (DECSET 2026).
+    SetSynchronizedOutputSupport {
+        client_id: ClientId,
+        supported: bool,
+    },
     /// A pane's Grid intercepted an app-in-pane whitelisted query; Screen
     /// assigns a token, queues the forward, and dispatches to the client.
     /// `query` carries the classified form so Screen can match on it

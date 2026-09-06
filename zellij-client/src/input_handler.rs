@@ -349,6 +349,9 @@ impl InputHandler {
                     .send_to_server(ClientToServerMsg::ColorRegisters { color_registers });
             },
             AnsiStdinInstruction::SynchronizedOutput(enabled) => {
+                // The server is told about this by the client loop rather than from here: it is
+                // the one that owns the flavour, and two threads telling the server about the
+                // same decision can leave it holding the opposite of what the client does.
                 self.send_client_instructions
                     .send(ClientInstruction::SetSynchronizedOutput(enabled))
                     .unwrap();

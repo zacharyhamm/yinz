@@ -286,6 +286,34 @@ enum BufferedTabInstruction {
     HoldPane(PaneId, Option<i32>, bool, RunCommand), // Option<i32> is the exit status, bool is is_first_run
 }
 
+/// What the host terminal was last told about one client's cursor.
+///
+/// The host keeps this state until something changes it, so a frame only has to send the parts
+/// that moved. That matters most for `shape`: re-sending the cursor-shape CSI restarts the host's
+/// blink phase, and on a frame cadence set by an animation rather than by the user that reads as
+/// the cursor flickering.
+/// Which byte stream a `HostCursorState` describes.
+///
+/// The watchers' frame is built from the followed client's panes and carries that client's id,
+/// but it is a second stream, delivered to other terminals, with its own occlusion - the session's
+/// toasts are drawn into the regular clients' frame only. So it remembers what it told the host
+/// separately: sharing the entry let each pass conclude "nothing changed" from what the other one
+/// said, and leave a real client's cursor hidden.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum CursorMemoKey {
+    /// The frame this client's own terminal receives.
+    Client(ClientId),
+    /// The frame every watcher receives, named by the client they are following.
+    Watchers(ClientId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostCursorState {
+    position: Option<(usize, usize)>,
+    shape: Option<String>,
+    visible: bool,
+}
+
 pub(crate) struct Tab {
     pub id: TabId,
     pub position: TabPosition,
@@ -338,9 +366,11 @@ pub(crate) struct Tab {
     // `RunCommandInPane` that raced the pane's own exit waits here and is started by
     // `hold_pane` (last write wins). bool is keep_scrollback.
     pending_command_respawns: HashMap<PaneId, (RunCommand, bool)>,
-    cursor_positions_and_shape: HashMap<ClientId, (usize, usize, String)>, // (x_position,
-    // y_position,
-    // cursor_shape_csi)
+    /// What the host terminal was last told about each cursor, so a frame says only what changed.
+    /// Dropped rather than updated wherever the next frame has to place the cursor from scratch -
+    /// see `render_cursor`. Keyed by stream rather than by client, for the reason `CursorMemoKey`
+    /// gives.
+    host_cursor_state: HashMap<CursorMemoKey, HostCursorState>,
     is_pending: bool, // a pending tab is one that is still being loaded or otherwise waiting
     pending_instructions: Vec<BufferedTabInstruction>, // instructions that came while the tab was
     // pending and need to be re-applied
@@ -1294,7 +1324,7 @@ impl Tab {
             terminal_emulator_color_codes,
             pids_waiting_resize: HashSet::new(),
             pending_command_respawns: HashMap::new(),
-            cursor_positions_and_shape: HashMap::new(),
+            host_cursor_state: HashMap::new(),
             is_pending: true, // will be switched to false once the layout is applied
             pending_instructions: vec![],
             swap_layouts,
@@ -2645,6 +2675,10 @@ impl Tab {
         Ok(())
     }
     pub fn add_client(&mut self, client_id: ClientId, mode_info: Option<ModeInfo>) -> Result<()> {
+        // Client ids are recycled, and a client arriving in a tab that already has clients does
+        // not go through `visible(true)`. Whatever the id's previous holder was told about its
+        // cursor says nothing about this one's terminal, so start it from scratch.
+        self.forget_host_cursor_state(client_id);
         // an overlay is drawn for every client, so a client that joins while one is open must be
         // focused on it - otherwise it sees the dialog and types into the pane behind it. A modal
         // first: it is the one pane that must own the keyboard and cannot learn that it doesn't.
@@ -2732,6 +2766,7 @@ impl Tab {
         self.mouse_last_pane_id.remove(&client_id);
         self.last_mouse_activity_time.remove(&client_id);
         self.set_client_dimmed(client_id, false);
+        self.forget_host_cursor_state(client_id);
         self.set_force_render();
     }
     pub fn drain_connected_clients(
@@ -2754,6 +2789,7 @@ impl Tab {
             .remove(&client_id)
             .unwrap_or_else(|| self.default_mode_info.clone());
         self.connected_clients.borrow_mut().remove(&client_id);
+        self.forget_host_cursor_state(client_id);
         (client_id, client_mode_info)
     }
     pub fn has_no_connected_clients(&self) -> bool {
@@ -5498,13 +5534,14 @@ impl Tab {
     /// paints *above* the tabs - the session's toasts do - must therefore not use this: it has to
     /// call `render_panes` for every tab, paint its own layer, and only then place the cursor with
     /// `render_cursor_last`. See `Screen::render_to_clients`.
+    #[cfg(test)]
     pub fn render(
         &mut self,
         output: &mut Output,
         client_id_override: Option<ClientId>,
     ) -> Result<()> {
         self.render_panes(output, client_id_override)?;
-        self.render_cursor_last(output);
+        self.render_cursor_last(output, client_id_override);
         Ok(())
     }
 
@@ -5642,18 +5679,35 @@ impl Tab {
 
     /// Position this tab's cursor, once everything that contributes to the frame - every pane, and
     /// any layer painted above them - is in the output.
-    pub fn render_cursor_last(&mut self, output: &mut Output) {
-        let connected_clients: Vec<ClientId> =
-            { self.connected_clients.borrow().iter().copied().collect() };
-        if connected_clients.is_empty() {
+    pub fn render_cursor_last(
+        &mut self,
+        output: &mut Output,
+        client_id_override: Option<ClientId>,
+    ) {
+        let clients_in_this_frame = self.clients_in_frame(client_id_override);
+        if clients_in_this_frame.is_empty() {
             return;
         }
         // each tab's render pointed the output at its own stack, so point it back at ours
         output.set_floating_panes_stack(self.occlusion_stack());
         if output.has_rendered_assets() {
-            output.hide_cursor_for_clients(connected_clients.iter().copied());
+            output.hide_cursor_for_clients(clients_in_this_frame.iter().copied());
         }
-        self.render_cursor(output);
+        self.render_cursor(output, client_id_override);
+    }
+
+    /// Whose cursor this frame is placing.
+    ///
+    /// An override names one client and means it: the frame is the watchers', built from that
+    /// client's panes and going nowhere near anybody else's terminal. Placing every connected
+    /// client's cursor into it would write memo entries for bytes those clients never receive -
+    /// and the followed client is not necessarily still connected to this tab, since Screen keeps
+    /// following a departed client while watchers remain.
+    fn clients_in_frame(&self, client_id_override: Option<ClientId>) -> Vec<ClientId> {
+        match client_id_override {
+            Some(client_id) => vec![client_id],
+            None => self.connected_clients.borrow().iter().copied().collect(),
+        }
     }
     fn hide_cursor_and_clear_display_as_needed(&mut self, output: &mut Output) {
         let connected_clients: Vec<ClientId> =
@@ -5669,10 +5723,17 @@ impl Tab {
             self.should_clear_display_before_rendering = false;
         }
     }
-    fn render_cursor(&mut self, output: &mut Output) {
-        let connected_clients: Vec<ClientId> =
-            { self.connected_clients.borrow().iter().copied().collect() };
-        for client_id in connected_clients {
+    fn render_cursor(&mut self, output: &mut Output, client_id_override: Option<ClientId>) {
+        for client_id in self.clients_in_frame(client_id_override) {
+            let memo_key = match client_id_override {
+                Some(_) => CursorMemoKey::Watchers(client_id),
+                None => CursorMemoKey::Client(client_id),
+            };
+            // Whatever this frame already painted moved the host's cursor away from where we last
+            // put it, so it has to be told again - but only about the parts that actually changed.
+            // Read before anything is emitted, so this pass does not see its own instructions.
+            let frame_moved_cursor = output.frame_moved_cursor_for(client_id);
+            let already_hidden_this_frame = output.cursor_was_hidden_for(client_id);
             match self.get_active_terminal_cursor_position(client_id) {
                 Some((cursor_position_x, cursor_position_y, is_cursor_visible)) => {
                     // the same flat list `occlusion_stack` builds, so an overlay's index has to
@@ -5698,69 +5759,161 @@ impl Tab {
                         .unwrap_or(false);
 
                     if active_terminal_is_mid_frame {
-                        // no-op, this means the active terminal is currently rendering a frame,
-                        // which means the cursor can be jumping around and we definitely do not
-                        // want to render it
+                        // The active terminal is part-way through drawing a frame, so its cursor
+                        // is jumping around and must not be shown. On a host that presents frames
+                        // atomically nothing hid it earlier, so say so here. The next frame
+                        // must restore its position and shape from scratch.
+                        self.hide_host_cursor(output, client_id, memo_key);
                     } else if not_occluded && is_cursor_visible {
                         let desired_cursor_shape = self
                             .get_active_pane(client_id)
                             .map(|ap| ap.cursor_shape_csi())
                             .unwrap_or_default();
-                        let cursor_changed_position_or_shape = self
-                            .cursor_positions_and_shape
-                            .get(&client_id)
-                            .map(|(previous_x, previous_y, previous_shape)| {
-                                previous_x != &cursor_position_x
-                                    || previous_y != &cursor_position_y
-                                    || previous_shape != &desired_cursor_shape
+                        let last = self.host_cursor_state.get(&memo_key);
+                        let position_changed = last
+                            .map(|last| {
+                                last.position != Some((cursor_position_x, cursor_position_y))
                             })
                             .unwrap_or(true);
-                        if output.is_dirty() || cursor_changed_position_or_shape {
-                            let show_cursor = "\u{1b}[?25h";
+                        // Re-sending the shape restarts the host's cursor blink phase, so this is
+                        // the one piece that must never be emitted "just in case": on an animated
+                        // frame cadence it is what the flicker actually is.
+                        let shape_changed = last
+                            .map(|last| last.shape.as_ref() != Some(&desired_cursor_shape))
+                            .unwrap_or(true);
+                        let must_show = already_hidden_this_frame
+                            || last.map(|last| !last.visible).unwrap_or(true);
+                        let must_goto = frame_moved_cursor || position_changed;
+
+                        if must_show {
+                            output.add_post_vte_instruction_to_client(client_id, "\u{1b}[?25h");
+                        }
+                        if must_goto {
                             let goto_cursor_position = &format!(
-                                "\u{1b}[{};{}H\u{1b}[m{}",
+                                "\u{1b}[{};{}H\u{1b}[m",
                                 cursor_position_y + 1,
                                 cursor_position_x + 1,
-                                desired_cursor_shape
                             ); // goto row/col
-                            output.add_post_vte_instruction_to_client(client_id, show_cursor);
                             output.add_post_vte_instruction_to_client(
                                 client_id,
                                 goto_cursor_position,
                             );
-                            self.cursor_positions_and_shape.insert(
+                        }
+                        if shape_changed {
+                            output.add_post_vte_instruction_to_client(
                                 client_id,
-                                (cursor_position_x, cursor_position_y, desired_cursor_shape),
+                                &desired_cursor_shape,
                             );
                         }
+                        self.host_cursor_state.insert(
+                            memo_key,
+                            HostCursorState {
+                                position: Some((cursor_position_x, cursor_position_y)),
+                                shape: Some(desired_cursor_shape),
+                                visible: true,
+                            },
+                        );
                     } else if not_occluded {
                         // Cursor is hidden by the app but not occluded by a floating
                         // pane. Position the host terminal cursor at the correct
                         // location (for IME) then hide it. The IME subsystem reads
                         // the cursor position regardless of visibility.
-                        let hide_cursor = "\u{1b}[?25l";
-                        let goto_cursor_position = &format!(
-                            "\u{1b}[{};{}H",
-                            cursor_position_y + 1,
-                            cursor_position_x + 1,
+                        let last = self.host_cursor_state.get(&memo_key);
+                        let position_changed = last
+                            .map(|last| {
+                                last.position != Some((cursor_position_x, cursor_position_y))
+                            })
+                            .unwrap_or(true);
+                        let previous_shape = last.and_then(|last| last.shape.clone());
+                        self.hide_host_cursor(output, client_id, memo_key);
+                        if frame_moved_cursor || position_changed {
+                            let goto_cursor_position = &format!(
+                                "\u{1b}[{};{}H",
+                                cursor_position_y + 1,
+                                cursor_position_x + 1,
+                            );
+                            output.add_post_vte_instruction_to_client(
+                                client_id,
+                                goto_cursor_position,
+                            );
+                        }
+                        self.host_cursor_state.insert(
+                            memo_key,
+                            HostCursorState {
+                                position: Some((cursor_position_x, cursor_position_y)),
+                                // the host keeps its shape across a hide, so remembering it means
+                                // the frame that shows the cursor again does not have to re-send it
+                                shape: previous_shape,
+                                visible: false,
+                            },
                         );
-                        output.add_post_vte_instruction_to_client(client_id, hide_cursor);
-                        output.add_post_vte_instruction_to_client(client_id, goto_cursor_position);
                     } else {
-                        let hide_cursor = "\u{1b}[?25l";
-                        output.add_post_vte_instruction_to_client(client_id, hide_cursor);
-                        // the memo below is only written when the cursor is shown, so leaving it
-                        // in place while something covers the cursor would let the frame that
-                        // uncovers it decide nothing changed and emit no goto
-                        self.cursor_positions_and_shape.remove(&client_id);
+                        self.hide_host_cursor(output, client_id, memo_key);
                     }
                 },
                 None => {
-                    let hide_cursor = "\u{1b}[?25l";
-                    output.add_post_vte_instruction_to_client(client_id, hide_cursor);
-                    self.cursor_positions_and_shape.remove(&client_id);
+                    self.hide_host_cursor(output, client_id, memo_key);
                 },
             }
+        }
+    }
+
+    /// Keep the cursor hidden and invalidate its position and shape for restoration.
+    fn hide_host_cursor(
+        &mut self,
+        output: &mut Output,
+        client_id: ClientId,
+        memo_key: CursorMemoKey,
+    ) {
+        if !output.cursor_was_hidden_for(client_id)
+            && !self
+                .host_cursor_state
+                .get(&memo_key)
+                .is_some_and(|last| !last.visible)
+        {
+            output.add_post_vte_instruction_to_client(client_id, "\u{1b}[?25l");
+        }
+        self.host_cursor_state.insert(
+            memo_key,
+            HostCursorState {
+                position: None,
+                shape: None,
+                visible: false,
+            },
+        );
+    }
+
+    /// Forget what the host was last told about this client's cursor, in both streams, so the next
+    /// frame states it from scratch. For when the id itself stops meaning what it meant - a client
+    /// leaving or arriving, given that ids are recycled.
+    pub fn forget_host_cursor_state(&mut self, client_id: ClientId) {
+        self.host_cursor_state
+            .remove(&CursorMemoKey::Client(client_id));
+        self.host_cursor_state
+            .remove(&CursorMemoKey::Watchers(client_id));
+    }
+
+    /// The same for the watchers' stream alone: a watcher about to be sent a full repaint has not
+    /// necessarily seen this screen before, and the regular clients' memo is still good.
+    pub fn forget_watcher_host_cursor_state(&mut self, followed_client_id: ClientId) {
+        self.host_cursor_state
+            .remove(&CursorMemoKey::Watchers(followed_client_id));
+    }
+
+    /// Serialization hid the watchers' cursor because it fell outside a watcher's size, which this
+    /// memo cannot see - so an entry claiming the cursor is visible at some position is wrong in
+    /// both halves. The host's cursor is down, and the goto that "placed" it was clamped to that
+    /// watcher's edge.
+    ///
+    /// Unlike `forget_watcher_host_cursor_state`, the shape is kept: a hide does not lose it, and
+    /// re-sending the shape CSI restarts the host's blink phase (see `render_cursor`).
+    pub fn mark_watcher_host_cursor_cropped(&mut self, followed_client_id: ClientId) {
+        if let Some(host_cursor_state) = self
+            .host_cursor_state
+            .get_mut(&CursorMemoKey::Watchers(followed_client_id))
+        {
+            host_cursor_state.visible = false;
+            host_cursor_state.position = None;
         }
     }
     pub(crate) fn get_tiled_panes(&self) -> impl Iterator<Item = (&PaneId, &Box<dyn Pane>)> {
@@ -7661,6 +7814,12 @@ impl Tab {
         // `show_floating_panes`/`hide_floating_panes`, and a tab coming back
         // with its surface hidden must not tell it that it is visible.
         self.tab_visible = visible;
+        // The cursor is one host-wide resource that every tab writes to, but the memo of what the
+        // host was last told is per tab. A tab coming into view has no idea what the tab it
+        // replaced left behind, so it places the cursor from scratch on its first frame.
+        if visible {
+            self.host_cursor_state.clear();
+        }
         let floating_panes_are_shown = self.floating_panes.panes_are_shown();
         let visible_overlays: Vec<PaneId> = self.overlay_panes.stack_layer_ids();
         let tiled_pids = self.tiled_panes.pane_ids().filter_map(|p| match p {

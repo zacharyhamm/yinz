@@ -3015,6 +3015,17 @@ pub(crate) fn route_thread_main(
                             )
                             .with_context(err_context)?;
                         },
+                        ClientToServerMsg::SynchronizedOutputSupport { supported } => {
+                            // Through the server's main loop rather than straight to Screen, so
+                            // that it keeps its place in the queue relative to this client's own
+                            // `AttachClient` and `RemoveClient` - see the instruction's own note.
+                            to_server
+                                .send(ServerInstruction::SynchronizedOutputSupport {
+                                    client_id,
+                                    supported,
+                                })
+                                .with_context(err_context)?;
+                        },
                         ClientToServerMsg::SixelSupport { supported } => {
                             send_to_screen_or_retry_queue!(
                                 senders,

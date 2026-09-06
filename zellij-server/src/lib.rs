@@ -243,6 +243,16 @@ pub enum ServerInstruction {
     ForwardQueryToHost(u32, Vec<u8>, bool),
     KeyPassthroughChanged(ClientId, PaneId, PaneId, bool, Option<Direction>, bool),
     EmitNestedSessionFrameToClient(ClientId, Vec<u8>),
+    /// Whether this client's host terminal presents each frame atomically (DECSET 2026).
+    ///
+    /// It comes the long way round, through this loop rather than straight from the router to
+    /// Screen, so that it cannot overtake the client's own `AttachClient` nor be overtaken by its
+    /// `RemoveClient` - client ids are recycled, and an answer landing on the wrong side of
+    /// either would be attributed to the wrong terminal. Nothing re-sends it.
+    SynchronizedOutputSupport {
+        client_id: ClientId,
+        supported: bool,
+    },
 }
 
 impl From<&ServerInstruction> for ServerContext {
@@ -2151,6 +2161,22 @@ pub fn start_server_impl(
                     &session_data,
                     client_id,
                 );
+            },
+            ServerInstruction::SynchronizedOutputSupport {
+                client_id,
+                supported,
+            } => {
+                // Unwrapped like its neighbours would be unsafe here: this one can arrive while
+                // the session is being torn down, having come from a client socket rather than
+                // from inside the server.
+                if let Some(session_data) = session_data.read().unwrap().as_ref() {
+                    let _ = session_data.senders.send_to_screen(
+                        ScreenInstruction::SetSynchronizedOutputSupport {
+                            client_id,
+                            supported,
+                        },
+                    );
+                }
             },
             ServerInstruction::ClearMouseHelpText(client_id) => {
                 session_data

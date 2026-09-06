@@ -32,6 +32,7 @@ message ClientToServerMsg {
     HostTerminalFocusChangedMsg host_terminal_focus_changed = 27;
     AgentReportMsg agent_report = 29;
     ModifiersHeldMsg modifiers_held = 30;
+    SynchronizedOutputSupportMsg synchronized_output_support = 31;
   }
 }
 
@@ -138,6 +139,10 @@ message KittyGraphicsSupportMsg {
 }
 
 message SixelSupportMsg {
+  bool supported = 1;
+}
+
+message SynchronizedOutputSupportMsg {
   bool supported = 1;
 }
 

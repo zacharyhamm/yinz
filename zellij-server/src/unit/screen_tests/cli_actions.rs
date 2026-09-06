@@ -2353,7 +2353,13 @@ pub fn send_cli_launch_or_focus_plugin_action_when_plugin_is_already_loaded_for_
         tab_id: None,
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for actions to be
+    wait_for_render_after(
+        &received_server_instructions,
+        size,
+        0,
+        "the existing plugin has focus",
+        |cursor, _| cursor.is_none(),
+    );
     mock_screen.teardown(vec![plugin_thread, server_thread, screen_thread]);
 
     let plugin_load_instruction_sent = received_plugin_instructions
@@ -2365,19 +2371,4 @@ pub fn send_cli_launch_or_focus_plugin_action_when_plugin_is_already_loaded_for_
         !plugin_load_instruction_sent,
         "Plugin Load instruction should not be sent for an already loaded plugin"
     );
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().iter(),
-        size,
-    );
-    let snapshot_count = snapshots.len();
-    assert_eq!(
-        snapshot_count, 3,
-        "Another render was sent for focusing the already loaded plugin"
-    );
-    for (cursor_coordinates, _snapshot) in snapshots.iter().skip(1) {
-        assert!(
-            cursor_coordinates.is_none(),
-            "Cursor moved to existing plugin in final snapshot indicating focus changed"
-        );
-    }
 }

@@ -203,6 +203,7 @@ fn move_floating_pane_with_sixel_image() {
         Rc::new(RefCell::new(HashMap::new())),
         Rc::new(RefCell::new(HashMap::new())),
         sixel_host_capabilities,
+        Rc::new(RefCell::new(HashMap::new())),
     );
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -274,6 +275,7 @@ fn floating_pane_above_sixel_image() {
         Rc::new(RefCell::new(HashMap::new())),
         Rc::new(RefCell::new(HashMap::new())),
         sixel_host_capabilities,
+        Rc::new(RefCell::new(HashMap::new())),
     );
 
     tab.toggle_floating_panes(Some(client_id), None, None)
