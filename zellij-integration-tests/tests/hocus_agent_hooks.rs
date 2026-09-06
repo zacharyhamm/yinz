@@ -22,7 +22,8 @@ use zellij_types::input::actions::hook_report_actions;
 /// hocus and the daemon, both shared, with the daemon loaded in the background as the
 /// real config has it. `zellij:` rather than `file:` for the reason `hocus_store.rs`
 /// gives: neither plugin asks for permissions it expects a builtin to be granted.
-const HOCUS_CONFIG: &str = r#"plugins {
+const HOCUS_CONFIG: &str = r#"notification_timeout 30
+plugins {
   hocus location="zellij:hocus" {
     shared true
   }
@@ -126,18 +127,37 @@ fn hooks_keep_the_pane_record_and_hocus_waiting_status_in_agreement() {
 
     clear(&zellij, "agents");
 
+    let transcripts = tempfile::tempdir().unwrap();
+    let transcript = transcripts.path().join("codex.jsonl");
+    std::fs::write(&transcript, concat!(
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-session\"}}\n",
+        "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"codex-turn\",\"approvals_reviewer\":\"auto_review\"}}\n",
+    )).unwrap();
+    let codex_permission = serde_json::json!({
+        "hook_event_name": "PermissionRequest", "permission_mode": "default",
+        "session_id": "codex-session", "turn_id": "codex-turn", "transcript_path": transcript,
+        "tool_name": "Bash", "tool_input": {"command": "git status"}
+    })
+    .to_string();
     for kind in ["claude", "codex"] {
         for payload in [
-            r#"{"hook_event_name":"PermissionRequest","permission_mode":"auto","tool_name":"Bash","tool_input":{"command":"git status"}}"#,
+            if kind == "codex" {
+                codex_permission.as_str()
+            } else {
+                r#"{"hook_event_name":"PermissionRequest","permission_mode":"auto","tool_name":"Bash","tool_input":{"command":"git status"}}"#
+            },
             r#"{"hook_event_name":"Notification","notification_type":"permission_prompt"}"#,
             r#"{"hook_event_name":"Notification","notification_type":"worker_permission_prompt"}"#,
         ] {
-            let event = serde_json::from_str(payload).unwrap();
+            // The same host-side parser as local CLI ingestion; the in-process client cannot
+            // supply stdin to `--hook-json`.
+            let (event, payload) =
+                zellij_runtime::agent::hooks::parse_hook_event(kind, payload.to_owned()).unwrap();
             let actions = hook_report_actions(
                 kind,
                 PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(pane_id)),
                 &event,
-                payload.to_owned(),
+                payload,
             );
             let (exit_code, output) = zellij.run_actions_reporting(actions);
             assert_eq!(exit_code, 0, "{output}");
@@ -165,6 +185,8 @@ fn hooks_keep_the_pane_record_and_hocus_waiting_status_in_agreement() {
             zellij.wait_until("hocus agrees that automatic approval is busy", |grid| {
                 grid.contains("busy") && grid.contains("Bash git")
             });
+            // The daemon publishes its list after processing the event and deciding whether
+            // to notify. A persistent toast would therefore be visible with this busy result.
             assert!(!zellij.snapshot().to_string().contains("waiting"));
             clear(&zellij, "agents");
         }
@@ -177,6 +199,9 @@ fn hooks_keep_the_pane_record_and_hocus_waiting_status_in_agreement() {
         pane_id,
         r#"{"hook_event_name":"PermissionRequest","session_id":"cc-1"}"#,
     );
+    zellij.wait_until("a genuine wait still raises a notification", |grid| {
+        grid.contains("agent waiting")
+    });
 
     submit(&zellij, r#"/agent_list {}"#);
     zellij.wait_until(

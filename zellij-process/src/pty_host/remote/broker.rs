@@ -1133,6 +1133,9 @@ fn report_agent_hook_to_traced(
     json: &str,
     trace: &mut zellij_runtime::agent::report::ReportTrace,
 ) -> Result<()> {
+    let (event, json) = zellij_runtime::agent::hooks::parse_hook_event(kind, json.to_owned())
+        .context("invalid agent hook JSON")?;
+    let json = event.broadcast_json(json);
     trace.enter("connect");
     let mut stream = UnixStream::connect(socket)
         .with_context(|| format!("no remote pane broker at {}", socket.display()))?;

@@ -246,6 +246,17 @@ summary such as `busy · Bash git`. Manual approval reports **waiting**. Missing
 modes retain the manual interpretation. `acceptEdits` approves file-editing tools automatically,
 but a `Bash` permission request under that mode still waits for a person.
 
+For Codex, `approvals_reviewer: "auto_review"` also keeps `PermissionRequest` **busy**, regardless
+of permission mode. If the hook omits this field, Zellij checks the hook's `transcript_path`
+on the machine where Codex runs, including remote panes. The first `session_meta` record must
+match `session_id`. The newest `turn_context` for the hook's `turn_id` supplies the reviewer.
+Zellij reads at most 64 KiB for the first record and the final 4 MiB for turn context.
+Missing identifiers, unreadable files, incomplete records, or missing context leave the hook unchanged.
+Zellij does not infer the reviewer from configuration, command text, or elapsed time.
+This is a compatibility fallback: [OpenAI's hook documentation](https://learn.chatgpt.com/docs/hooks)
+states that the transcript format can change. Automatic review stays busy even after rejection.
+A subsequent explicit question or elicitation still reports waiting and can notify the user.
+
 Permission reminders (`permission_prompt` and `worker_permission_prompt`) leave the current
 state unchanged. Their timer can fire while automatic approval is still running, so they cannot
 establish that a person is needed. Older installations that report only these reminders lose

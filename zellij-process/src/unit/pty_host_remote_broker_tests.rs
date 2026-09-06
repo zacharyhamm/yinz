@@ -413,7 +413,7 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
     let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind failed");
     let broker_registry = registry.clone();
     let broker = std::thread::spawn(move || {
-        for _ in 0..2 {
+        for _ in 0..3 {
             let (stream, _) = listener.accept().expect("accept failed");
             let _ = serve_connection(stream, std::path::Path::new("/bin/false"), &broker_registry);
         }
@@ -433,8 +433,48 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
             if kind == "claude" && json == r#"{"hook_event_name":"Stop"}"#
     ));
 
-    let refused = report_agent_hook_to(&socket, "no-such-token", "claude", "{}")
-        .expect_err("a report for an unknown pane is refused");
+    let transcript = dir.path().join("codex.jsonl");
+    std::fs::write(&transcript, concat!(
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"remote-session\"}}\n",
+        "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"remote-turn\",\"approvals_reviewer\":\"auto_review\"}}\n",
+    )).unwrap();
+    let mut hook = serde_json::json!({
+        "hook_event_name": "PermissionRequest", "session_id": "remote-session",
+        "turn_id": "remote-turn", "transcript_path": transcript,
+        "permission_mode": "default", "future_field": "preserved"
+    });
+    report_agent_hook_to(&socket, "token", "codex", &hook.to_string()).unwrap();
+    let report = protocol::read_frame(&mut server_side)
+        .unwrap()
+        .unwrap()
+        .decode_control::<BrokerToServerMsg>()
+        .unwrap();
+    let BrokerToServerMsg::AgentReport { kind, json } = report else {
+        panic!("{report:?}")
+    };
+    assert_eq!(kind, "codex");
+    hook["approvals_reviewer"] = "auto_review".into();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&json).unwrap(),
+        hook
+    );
+    let event = serde_json::from_str(&json).unwrap();
+    let zellij_types::agent::HookOutcome::Reported(agent) =
+        zellij_types::agent::hook_outcome(&kind, &event)
+    else {
+        panic!("no agent state")
+    };
+    assert_eq!(agent.state, zellij_types::agent::AgentState::Busy);
+    assert!(agent.waiting_on.is_none());
+    assert!(!agent.wait_needs_a_person);
+
+    let refused = report_agent_hook_to(
+        &socket,
+        "no-such-token",
+        "claude",
+        r#"{"hook_event_name":"Stop"}"#,
+    )
+    .expect_err("a report for an unknown pane is refused");
     assert!(
         refused.to_string().contains("no session is attached"),
         "{refused}"
