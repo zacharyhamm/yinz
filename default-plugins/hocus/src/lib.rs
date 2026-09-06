@@ -1244,9 +1244,10 @@ impl ZellijPlugin for State {
                 return false;
             },
             wire::AGENT_STRIP_HIDE => {
-                // Esc in the agent list. The panel has one visibility and hocus is the half that
-                // knows both plugin ids, so the list hides itself and asks for the rest. Nothing
-                // to redraw - a suppressed pane is not painted.
+                // Esc in the agent list, or the Enter that walks into an agent. The panel has one
+                // visibility and hocus is the half that knows both plugin ids, so the list hides
+                // itself and asks for the rest. Nothing to redraw - a suppressed pane is not
+                // painted.
                 self.hide_panel();
                 return false;
             },

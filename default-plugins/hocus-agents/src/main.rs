@@ -13,7 +13,7 @@
 //! tools. Deriving them again here would mean a second copy of that state to
 //! keep in step, so hocus pipes the *finished rows* over (`wire::AGENT_STRIP`)
 //! and this plugin is a view: it windows them, tracks a selection, draws the
-//! selected agent's idle summary under the list, and focuses a pane on Enter.
+//! selected agent's idle summary under the list, and walks into a pane on Enter.
 //! `AGENT_STRIP_HELLO` is the reload handshake — a freshly loaded instance
 //! announces itself and hocus answers with the current rows.
 //!
@@ -101,17 +101,18 @@
 //! appearing beside it.
 //!
 //! **The two panes are separate plugins with one visibility.** The panel is one
-//! thing to the user, so Esc here puts the whole of it away: this pane hides
-//! itself and hocus is asked for the other half
+//! thing to the user, so Esc and Enter here put the whole of it away: this pane
+//! hides itself and hocus is asked for the other half
 //! (`wire::AGENT_STRIP_HIDE`), being the only one that knows both plugin ids.
 //! `Ctrl e a` brings the whole panel back with the keyboard here, `Ctrl e c`
 //! with the keyboard in the conversation; neither ever leaves one half alone.
 //! Ctrl-o moves the panel - both halves, split intact - clear of a tiled pane;
 //! hocus does the arithmetic, since it places both overlays, so that key is a
 //! request (`wire::AGENT_STRIP_REPOSITION`) rather than a move. Enter walks you
-//! to the selected agent and leaves the panel exactly where it is: the history
-//! half is worth reading beside the pane it is about, and dismissing is what
-//! Esc is for. `say_hello_to_hocus` carries hocus's url, because this pane is a
+//! to the selected agent, and puts the panel away on the way: the panel is an
+//! overlay drawn over the pane you asked for, so leaving it up would hand you
+//! the keyboard in a pane you cannot see. Esc is the same dismissal without the
+//! walk. `say_hello_to_hocus` carries hocus's url, because this pane is a
 //! view over rows only hocus can compute and a list with no hocus to ask has
 //! nothing to draw; the hocus it launches appears beside us but does **not**
 //! take the focus - `wire::OPENED_BY` is what tells it so - because the user
@@ -204,6 +205,12 @@ struct State {
     /// nothing else can tell a click that only moved the cursor from one that navigated.
     #[cfg(test)]
     activations: Vec<u32>,
+    /// How many times this pane has put the panel away.
+    ///
+    /// Test-only, for `ring_yields`' reason: both halves of `hide_the_panel` are no-ops off
+    /// wasm, so nothing else can tell an Enter that dismissed the panel from one that did not.
+    #[cfg(test)]
+    panel_hides: usize,
     /// Index into `rows`. Always on an `Agent` row when one exists.
     selected: usize,
     /// The last pane hocus reported focused, agent or not.
@@ -832,13 +839,9 @@ impl State {
         }
         match key.bare_key {
             BareKey::Esc => {
-                // Put the whole panel away, not this pane: the list and the conversation are one
-                // thing to the user and have one visibility. This half goes on its own - it has
-                // its own id and no round trip is needed for it - and hocus is asked for the
-                // other, being the only half that knows both ids. Sent even when there may be no
-                // hocus listening: the message launches nobody, so it is free.
-                hide_self();
-                pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_HIDE));
+                // The plain dismissal: the panel goes and the keyboard lands wherever the host
+                // puts it. Enter dismisses too, but hands the keyboard on deliberately.
+                self.hide_the_panel();
                 false
             },
             BareKey::Enter => {
@@ -858,9 +861,8 @@ impl State {
                 }
                 // The only gesture in the pane that navigates: a click moves the cursor
                 // and no more, so walking the list with the pointer reads an agent's
-                // history without leaving for it. The panel stays up either way - the
-                // history half under the list is about the agent you just walked into, so
-                // putting it away is the one thing Enter must not do. Esc is the dismissal.
+                // history without leaving for it. Walking in also puts the panel away -
+                // the agent is what the user asked to look at, and the panel covers it.
                 self.activate();
                 false
             },
@@ -1041,10 +1043,36 @@ impl State {
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_RESUME).with_payload(payload));
     }
 
-    /// The whole of what `Enter` on a list row does: focus the selected agent's pane, if
-    /// there is one. It does not put the panel away - the keys are already where the next
-    /// Tab into the history would want them, and the pointer is already where the next
-    /// click would go.
+    /// Put the whole panel away, not this pane: the list and the conversation are one thing to
+    /// the user and have one visibility. This half goes on its own - it has its own id and no
+    /// round trip is needed for it - and hocus is asked for the other, being the only half that
+    /// knows both ids. Sent even when there may be no hocus listening: the message launches
+    /// nobody, so it is free.
+    ///
+    /// Both keys that dismiss come through here: `Esc`, which is the whole of what it does, and
+    /// `Enter`, which follows it with a focus.
+    fn hide_the_panel(&mut self) {
+        #[cfg(test)]
+        {
+            self.panel_hides += 1;
+        }
+        hide_self();
+        pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_HIDE));
+    }
+
+    /// The whole of what `Enter` on a list row does: put the panel away and hand the keyboard
+    /// to the selected agent's pane, if there is one.
+    ///
+    /// **The panel goes first.** It is an overlay, so it is drawn over whatever the agent's
+    /// pane is, and staying up would leave the user looking at the list rather than at the
+    /// thing they just asked for. Hiding a focused overlay drops the keyboard onto whatever is
+    /// underneath, which is why the focus call comes after rather than before: both are host
+    /// commands queued from this one call, so the server applies them in this order and the
+    /// focus is the one that lands. hocus hides on its own message a moment later, by which
+    /// time it holds no keyboard to lose.
+    ///
+    /// The next `Ctrl e a` brings the panel back with the selection still on this agent, so
+    /// the history half is a keystroke away rather than gone.
     fn activate(&mut self) {
         let Some(StripRow::Agent { pane_id, .. }) = self.rows.get(self.selected) else {
             return;
@@ -1052,6 +1080,7 @@ impl State {
         let pane_id = *pane_id;
         #[cfg(test)]
         self.activations.push(pane_id);
+        self.hide_the_panel();
         // the host resolves which tab holds the pane, so this works across
         // tabs
         focus_terminal_pane(pane_id, false, false);
@@ -3686,6 +3715,7 @@ mod tests {
             state.activations.is_empty(),
             "a click moved the cursor and nothing else"
         );
+        assert_eq!(state.panel_hides, 0, "and left the panel up");
         // what `update` does after every event, and the whole of how the history half
         // learns which agent it is now about
         assert!(
@@ -3696,6 +3726,73 @@ mod tests {
 
         state.on_key(KeyWithModifier::new(BareKey::Enter));
         assert_eq!(state.activations, [7], "and Enter walks into it");
+        assert_eq!(
+            state.panel_hides, 1,
+            "putting the panel away on the way, so the agent is not walked into behind it"
+        );
+    }
+
+    /// Only the Enter that actually walks into an agent dismisses the panel. Every other Enter
+    /// is about something inside the panel, and putting the panel away would take the answer
+    /// off screen with it.
+    #[test]
+    fn only_an_enter_on_an_agent_puts_the_panel_away() {
+        // `reading` is the history half's Enter: it opens the event under that half's own
+        // cursor, which is a thing drawn in this pane.
+        let mut state = reading("implement history");
+        assert!(state.reading.is_some(), "the reader is up");
+        assert_eq!(
+            state.panel_hides, 0,
+            "the reader is in this pane - hiding it would be closing what was just opened"
+        );
+        assert!(state.activations.is_empty(), "and nothing was walked into");
+
+        // Esc backs out of the reader rather than falling through to the dismissal
+        press(&mut state, BareKey::Esc);
+        assert!(state.reading.is_none(), "back to the list");
+        assert_eq!(state.panel_hides, 0, "one step back, not the way out");
+
+        // a project header: Enter is inert on it, and an inert key hides nothing
+        let mut state = State::default();
+        state.set_rows(with_summary(strip(), 3, "Ran the tests.", false));
+        state.render(20, 40);
+        state.focus = Focus::List;
+        state.selected = 0;
+        assert!(
+            matches!(state.rows.first(), Some(StripRow::Project { .. })),
+            "the strip starts on a header"
+        );
+        state.on_key(KeyWithModifier::new(BareKey::Enter));
+        assert_eq!(
+            state.panel_hides, 0,
+            "Enter on a header does nothing at all"
+        );
+
+        // `load older runs…` asks hocus for more of the archive, in this pane
+        let mut rows = strip();
+        rows.push(StripRow::MoreRuns);
+        state.set_rows(unfocused(rows));
+        state.selected = state.rows.len() - 1;
+        assert!(matches!(
+            state.rows.get(state.selected),
+            Some(StripRow::MoreRuns)
+        ));
+        state.on_key(KeyWithModifier::new(BareKey::Enter));
+        assert_eq!(
+            state.panel_hides, 0,
+            "the rows it asks for arrive here, so the list has to still be on screen"
+        );
+        assert!(state.activations.is_empty(), "and it is not an agent");
+
+        // and the one that is
+        state.selected = 2;
+        assert!(matches!(
+            state.rows.get(state.selected),
+            Some(StripRow::Agent { .. })
+        ));
+        state.on_key(KeyWithModifier::new(BareKey::Enter));
+        assert_eq!(state.activations, [3], "the first agent");
+        assert_eq!(state.panel_hides, 1, "and this Enter is the one that hides");
     }
 
     /// The list windows above the divider, so a click maps to the row under the pointer

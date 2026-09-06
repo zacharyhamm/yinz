@@ -1321,7 +1321,9 @@ impl State {
     /// One Esc, both halves: the panel is one thing to the user, so it has one visibility, and
     /// hocus is the half that can act on that because it is the one that knows both plugin ids.
     /// Esc in the list arrives here over `wire::AGENT_STRIP_HIDE` (that pane hides itself on the
-    /// same press, so this call finds nothing left to hide and says so harmlessly).
+    /// same press, so this call finds nothing left to hide and says so harmlessly), and so does
+    /// the Enter that walks into an agent - by which time that agent's pane holds the keyboard,
+    /// so hiding this half takes nothing from it.
     ///
     /// Nothing is torn down: a stream keeps arriving into a suppressed pane, and a tool call
     /// waiting on y/n is still waiting when the panel comes back.
