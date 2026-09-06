@@ -7,6 +7,7 @@
 //! is where the cross-machine failure modes live.
 
 use super::*;
+use zellij_types::internal_ids::ProcessId;
 
 use std::io::Cursor;
 use std::os::unix::net::UnixStream;
@@ -225,7 +226,7 @@ fn pump_over_session(
         "/bin/sh".to_owned(),
         PtyHostHandle::for_test(control),
         pty.master,
-        std::process::id(),
+        ProcessId::new(std::process::id()),
     ));
     let registry = Arc::new(PaneRegistry::new());
     registry.insert(session.clone());
@@ -268,7 +269,7 @@ fn termination_is_acknowledged_only_after_output_is_drained() {
         "/bin/sh".to_owned(),
         PtyHostHandle::for_test(control),
         pty.master,
-        std::process::id(),
+        ProcessId::new(std::process::id()),
     ));
     let registry = Arc::new(PaneRegistry::new());
     registry.insert(session.clone());
@@ -321,7 +322,7 @@ fn a_termination_after_the_pump_reported_the_exit_does_not_report_it_again() {
         "/bin/sh".to_owned(),
         PtyHostHandle::for_test(control),
         pty.master,
-        std::process::id(),
+        ProcessId::new(std::process::id()),
     ));
     let registry = Arc::new(PaneRegistry::new());
     registry.insert(session.clone());
@@ -358,7 +359,7 @@ fn a_drain_timeout_still_finishes_and_reports_the_termination() {
         "/bin/sh".to_owned(),
         PtyHostHandle::for_test(control),
         pty.master,
-        std::process::id(),
+        ProcessId::new(std::process::id()),
     ));
     let registry = Arc::new(PaneRegistry::new());
     registry.insert(session.clone());
@@ -401,7 +402,7 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
         "/bin/sh".to_owned(),
         PtyHostHandle::for_test(control),
         pty.master,
-        std::process::id(),
+        ProcessId::new(std::process::id()),
     ));
     let registry = Arc::new(PaneRegistry::new());
     registry.insert(session.clone());

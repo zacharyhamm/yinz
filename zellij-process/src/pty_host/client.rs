@@ -11,10 +11,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TerminalId;
 
 use nix::sys::signal::{kill, Signal};
-use nix::unistd::Pid;
 use zellij_runtime::errors::prelude::*;
 use {zellij_runtime::consts::VERSION, zellij_types::input::command::RunCommand};
 
@@ -68,10 +68,10 @@ pub struct PendingHost {
     reader_stream: Option<UnixStream>,
     host_child: Option<Child>,
     host_id: String,
-    host_pid: u32,
+    host_pid: ProcessId,
     control_socket: Option<PathBuf>,
     master: Option<OwnedFd>,
-    child_pid: u32,
+    child_pid: ProcessId,
     terminal_id: TerminalId,
     cmd: RunCommand,
 }
@@ -135,14 +135,14 @@ impl Drop for PendingHost {
 pub struct SpawnedHost {
     pub handle: PtyHostHandle,
     pub master: OwnedFd,
-    pub child_pid: u32,
+    pub child_pid: ProcessId,
 }
 
 /// The server's end of one supervisor. Dropping it does **not** kill the pane —
 /// that is the whole point. Only `terminate()` does.
 pub struct PtyHostHandle {
     pub host_id: String,
-    pub host_pid: u32,
+    pub host_pid: ProcessId,
     pub control_socket: Option<PathBuf>,
     control: UnixStream,
     /// Set once the pane's exit has been reported, so `ChildExited` and an
@@ -157,7 +157,7 @@ pub struct PtyHostHandle {
 #[derive(Debug, Clone)]
 pub struct ReleasedPtyHost {
     pub host_id: String,
-    pub host_pid: u32,
+    pub host_pid: ProcessId,
     /// `None` if the supervisor never managed to bind its named socket, which is
     /// the one case where a pane is detachable but not transferable — there is no
     /// address for the next owner to attach to.
@@ -257,7 +257,7 @@ impl PtyHostHandle {
     pub(crate) fn for_test(control: UnixStream) -> Self {
         Self {
             host_id: "test".to_owned(),
-            host_pid: std::process::id(),
+            host_pid: ProcessId::new(std::process::id()),
             control_socket: None,
             control,
             reported: Arc::new(AtomicBool::new(false)),
@@ -285,7 +285,9 @@ impl PtyHostHandle {
                 "could not ask pty-host {} to terminate ({e:#}); killing it",
                 self.host_id
             );
-            let _ = kill(Pid::from_raw(self.host_pid as i32), Some(Signal::SIGKILL));
+            super::process_pid(self.host_pid)
+                .and_then(|pid| kill(pid, Some(Signal::SIGKILL)).context("failed to kill pty host"))
+                .non_fatal();
         }
         // Unblocks the reader thread so it can reap the supervisor and exit.
         let _ = self.control.shutdown(Shutdown::Both);
@@ -445,7 +447,7 @@ pub type AgentReportCb = Arc<dyn Fn(TerminalId, String, String) + Send + Sync>;
 fn handshake_and_spawn(
     control: &UnixStream,
     params: &SpawnParams<'_>,
-) -> Result<(u32, OwnedFd, String, u32, Option<PathBuf>)> {
+) -> Result<(ProcessId, OwnedFd, String, ProcessId, Option<PathBuf>)> {
     control
         .set_read_timeout(Some(HANDSHAKE_TIMEOUT))
         .context("failed to bound the handshake")?;
@@ -546,10 +548,10 @@ pub struct PendingAttach {
     control: Option<UnixStream>,
     reader_stream: Option<UnixStream>,
     host_id: String,
-    host_pid: u32,
+    host_pid: ProcessId,
     control_socket: PathBuf,
     master: Option<OwnedFd>,
-    child_pid: u32,
+    child_pid: ProcessId,
     terminal_id: TerminalId,
     cmd: RunCommand,
     buffered: Vec<u8>,
@@ -618,7 +620,7 @@ impl Drop for PendingAttach {
 pub struct AttachedHost {
     pub handle: PtyHostHandle,
     pub master: OwnedFd,
-    pub child_pid: u32,
+    pub child_pid: ProcessId,
     pub cmd: RunCommand,
     /// Everything the child wrote while nobody was attached. Replayed into the
     /// new pane before any live output, so the hand-off costs no bytes.
@@ -793,7 +795,7 @@ fn spawn_reader_thread(
     mut stream: UnixStream,
     host_process: HostProcess,
     host_id: String,
-    host_pid: u32,
+    host_pid: ProcessId,
     terminal_id: TerminalId,
     cmd: RunCommand,
     quit_cb: QuitCb,
@@ -867,8 +869,10 @@ fn spawn_reader_thread(
 /// `ECHILD`. It still has to be held to the same deadline, since this runs on the
 /// paths where the pane really is finished; liveness is probed with a null signal
 /// instead, and the reaping is left to init once it exits.
-fn reap_host(host_process: HostProcess, host_pid: u32, host_id: &str) {
-    let pid = Pid::from_raw(host_pid as i32);
+fn reap_host(host_process: HostProcess, host_pid: ProcessId, host_id: &str) {
+    let Some(pid) = super::process_pid(host_pid).to_log().ok() else {
+        return;
+    };
     let mut host_process = host_process;
     let deadline = Instant::now() + HOST_EXIT_GRACE;
     loop {

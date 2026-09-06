@@ -361,6 +361,51 @@ impl TryFrom<u64> for DataRevision {
     }
 }
 
+unsigned_identity!(
+    /// An operating-system process identity, distinct from a terminal pane identity.
+    ///
+    /// ```compile_fail
+    /// use zellij_types::internal_ids::{ProcessId, TerminalId};
+    /// let _: ProcessId = TerminalId::new(1);
+    /// ```
+    ProcessId(u32)
+);
+impl ProcessId {
+    /// The legacy plugin int32 fields carry the unsigned PID's bits.
+    pub const fn from_legacy_signed_bits(value: i32) -> Self {
+        Self::new(u32::from_ne_bytes(value.to_ne_bytes()))
+    }
+    /// Encode a legacy plugin field. Use checked `i32::try_from` for kernel calls.
+    pub const fn legacy_signed_bits(self) -> i32 {
+        i32::from_ne_bytes(self.get().to_ne_bytes())
+    }
+}
+
+pub(crate) mod process_id_legacy_signed {
+    use super::ProcessId;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(id: &ProcessId, serializer: S) -> Result<S::Ok, S::Error> {
+        id.legacy_signed_bits().serialize(serializer)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<ProcessId, D::Error> {
+        i32::deserialize(deserializer).map(ProcessId::from_legacy_signed_bits)
+    }
+}
+
+impl TryFrom<i32> for ProcessId {
+    type Error = std::num::TryFromIntError;
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(Self::new)
+    }
+}
+impl TryFrom<ProcessId> for i32 {
+    type Error = std::num::TryFromIntError;
+    fn try_from(value: ProcessId) -> Result<Self, Self::Error> {
+        i32::try_from(value.get())
+    }
+}
+
 impl TryFrom<usize> for TabNumber {
     type Error = std::num::TryFromIntError;
     fn try_from(value: usize) -> Result<Self, Self::Error> {
@@ -388,6 +433,36 @@ impl TryFrom<TabPosition> for TabNumber {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_ids_check_narrowing_and_preserve_legacy_signed_responses() {
+        use crate::data::GetPanePidResponse;
+        for (raw, signed) in [
+            (0, 0),
+            (2147483647, 2147483647),
+            (2147483648, -2147483648),
+            (4294967295, -1),
+        ] {
+            let pid = ProcessId::new(raw);
+            assert_eq!(serde_json::to_string(&pid).unwrap(), raw.to_string());
+            assert_eq!(
+                serde_json::from_str::<ProcessId>(&raw.to_string()).unwrap(),
+                pid
+            );
+            assert_eq!(pid.legacy_signed_bits(), signed);
+            assert_eq!(ProcessId::from_legacy_signed_bits(signed), pid);
+            let response = GetPanePidResponse::Ok(pid);
+            let json = format!("{{\"Ok\":{signed}}}");
+            assert_eq!(serde_json::to_string(&response).unwrap(), json);
+            assert_eq!(
+                serde_json::from_str::<GetPanePidResponse>(&json).unwrap(),
+                response
+            );
+            assert_eq!(i32::try_from(pid).is_ok(), raw <= i32::MAX as u32);
+        }
+        assert!(ProcessId::try_from(-1_i32).is_err());
+        assert!(ProcessId::try_from(4294967296_u64).is_err());
+    }
 
     #[test]
     fn asynchronous_ids_keep_numeric_values_and_map_keys() {

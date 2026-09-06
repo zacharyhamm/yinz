@@ -27,6 +27,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
 };
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TerminalId;
@@ -434,7 +435,7 @@ pub struct PendingLayoutOverride {
 pub struct SpawnedTerminal {
     terminal_id: TerminalId,
     reader: Box<dyn AsyncReader>,
-    child_pid: Option<u32>,
+    child_pid: Option<ProcessId>,
 }
 
 impl std::fmt::Debug for SpawnedTerminal {
@@ -449,7 +450,7 @@ impl std::fmt::Debug for SpawnedTerminal {
 #[doc(hidden)]
 pub struct SpawnedRerun {
     reader: Box<dyn AsyncReader>,
-    child_pid: Option<u32>,
+    child_pid: Option<ProcessId>,
 }
 
 impl std::fmt::Debug for SpawnedRerun {
@@ -1002,7 +1003,7 @@ impl From<&PtyInstruction> for PtyContext {
 pub(crate) struct Pty {
     pub active_panes: HashMap<ClientId, PaneId>,
     pub bus: Bus<PtyInstruction>,
-    pub id_to_child_pid: HashMap<TerminalId, u32>, // terminal_id => child pid
+    pub id_to_child_pid: HashMap<TerminalId, ProcessId>, // terminal_id => child pid
     originating_plugins: HashMap<TerminalId, OriginatingPlugin>,
     debug_to_file: bool,
     task_handles: HashMap<TerminalId, JoinHandle<()>>, // terminal_id to join-handle
@@ -3654,7 +3655,7 @@ impl Pty {
             .as_ref()
             .map(|os_input| os_input.get_cwds(pids))
             .unwrap_or_default();
-        let panes: Vec<(TerminalId, u32)> = terminal_ids
+        let panes: Vec<(TerminalId, ProcessId)> = terminal_ids
             .iter()
             .filter_map(|id| self.id_to_child_pid.get(id).map(|pid| (*id, *pid)))
             .collect();
@@ -3906,7 +3907,7 @@ impl Pty {
     fn capture_initial_cwd(
         &mut self,
         terminal_id: TerminalId,
-        child_pid: u32,
+        child_pid: ProcessId,
         requested_cwd: Option<PathBuf>,
     ) {
         let cwd = self
@@ -3977,7 +3978,7 @@ impl Pty {
             }
         }
 
-        let panes: Vec<(TerminalId, u32)> = active_local
+        let panes: Vec<(TerminalId, ProcessId)> = active_local
             .iter()
             .filter_map(|id| self.id_to_child_pid.get(id).map(|pid| (*id, *pid)))
             .collect();
@@ -4170,7 +4171,7 @@ impl Pty {
                     ));
                 }
                 if let Some(&child_pid) = self.id_to_child_pid.get(&terminal_id) {
-                    GetPanePidResponse::Ok(child_pid as i32)
+                    GetPanePidResponse::Ok(child_pid)
                 } else {
                     GetPanePidResponse::Err(format!(
                         "Terminal pane {} not found or not running",

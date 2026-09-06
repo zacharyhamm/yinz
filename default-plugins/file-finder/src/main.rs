@@ -35,6 +35,7 @@ mod script;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use zellij_tile::prelude::ProcessId;
 
 use opener::{opener_for, Opener};
 use zellij_tile::prelude::*;
@@ -347,7 +348,7 @@ fn finder_title(label: Option<String>) -> String {
 /// `zellij_pid` is the server's own pid, so it separates sessions the way the name needs.
 /// It also separates the integration tests, which are separate processes and were losing
 /// each other's selections exactly this way.
-fn selection_path(zellij_pid: u32, plugin_id: zellij_tile::prelude::PluginId) -> PathBuf {
+fn selection_path(zellij_pid: ProcessId, plugin_id: zellij_tile::prelude::PluginId) -> PathBuf {
     PathBuf::from(format!(
         "/tmp/zellij-file-finder-{}-{}.sel",
         zellij_pid, plugin_id
@@ -449,8 +450,8 @@ mod tests {
     #[test]
     fn two_sessions_do_not_share_a_selection_file() {
         assert_ne!(
-            selection_path(1000, zellij_tile::prelude::PluginId::new(2)),
-            selection_path(1001, zellij_tile::prelude::PluginId::new(2))
+            selection_path(ProcessId::new(1000), zellij_tile::prelude::PluginId::new(2)),
+            selection_path(ProcessId::new(1001), zellij_tile::prelude::PluginId::new(2))
         );
     }
 
@@ -458,8 +459,8 @@ mod tests {
     #[test]
     fn two_finders_in_one_session_do_not_share_a_selection_file() {
         assert_ne!(
-            selection_path(1000, zellij_tile::prelude::PluginId::new(2)),
-            selection_path(1000, zellij_tile::prelude::PluginId::new(5))
+            selection_path(ProcessId::new(1000), zellij_tile::prelude::PluginId::new(2)),
+            selection_path(ProcessId::new(1000), zellij_tile::prelude::PluginId::new(5))
         );
     }
 

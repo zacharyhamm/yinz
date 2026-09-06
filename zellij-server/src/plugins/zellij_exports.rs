@@ -39,6 +39,7 @@ use zellij_storage::plugin_data_store;
 use zellij_types::agent::SpawnedAgent;
 use zellij_types::data::EnqueueQueueJobResponse;
 use zellij_types::internal_ids::DataWatchId;
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::QueueJobId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
@@ -1283,7 +1284,7 @@ fn host_display_name() -> String {
 fn get_plugin_ids(env: &mut PluginEnv) {
     let ids = PluginIds {
         plugin_id: env.plugin_id,
-        zellij_pid: process::id(),
+        zellij_pid: ProcessId::new(process::id()),
         initial_cwd: env.plugin_cwd.clone(),
         client_id: env.client_id,
         hostname: host_display_name(),

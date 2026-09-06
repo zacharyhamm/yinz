@@ -1,4 +1,5 @@
 use super::*;
+use zellij_types::internal_ids::ProcessId;
 
 use crate::pty_host::fdpass::recv_fd;
 use nix::sys::termios;
@@ -63,7 +64,7 @@ impl TestHost {
     }
 
     /// Sends `Spawn` and completes the `Spawned` + fd-handoff exchange.
-    fn spawn(&mut self, cmd: RunCommand) -> (u32, std::fs::File) {
+    fn spawn(&mut self, cmd: RunCommand) -> (ProcessId, std::fs::File) {
         self.spawn_with(
             cmd,
             None,
@@ -83,7 +84,7 @@ impl TestHost {
         cmd: RunCommand,
         termios: Option<WireTermios>,
         initial_size: Option<WireWinsize>,
-    ) -> (u32, std::fs::File) {
+    ) -> (ProcessId, std::fs::File) {
         self.spawn_with_arg0(cmd, termios, initial_size, None)
     }
 
@@ -93,7 +94,7 @@ impl TestHost {
         termios: Option<WireTermios>,
         initial_size: Option<WireWinsize>,
         arg0: Option<String>,
-    ) -> (u32, std::fs::File) {
+    ) -> (ProcessId, std::fs::File) {
         self.spawn_with_env(cmd, termios, initial_size, arg0, vec![], false)
     }
 
@@ -108,7 +109,7 @@ impl TestHost {
         arg0: Option<String>,
         env: Vec<(String, String)>,
         login_session: bool,
-    ) -> (u32, std::fs::File) {
+    ) -> (ProcessId, std::fs::File) {
         self.send(&ServerToHostMsg::Spawn {
             job_control: true,
             terminal_id: 0,
@@ -157,14 +158,14 @@ fn sh(script: &str) -> RunCommand {
     }
 }
 
-fn process_alive(pid: u32) -> bool {
-    kill(Pid::from_raw(pid as i32), None).is_ok()
+fn process_alive(pid: ProcessId) -> bool {
+    kill(Pid::from_raw(i32::try_from(pid).unwrap()), None).is_ok()
 }
 
 /// The argv of `pid` as the kernel currently sees it, so a test can tell a shell
 /// apart from what it has `exec`ed into.
-fn process_argv(pid: u32) -> Option<Vec<String>> {
-    let pid = sysinfo::Pid::from_u32(pid);
+fn process_argv(pid: ProcessId) -> Option<Vec<String>> {
+    let pid = sysinfo::Pid::from_u32(pid.get());
     let mut system = sysinfo::System::new();
     system.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::Some(&[pid]),
@@ -190,7 +191,7 @@ fn process_argv(pid: u32) -> Option<Vec<String>> {
 /// an `exec` discards a pending continue notification on XNU, so a stop landing
 /// in the gap is a stop of a process that is about to be replaced, and the
 /// resume that follows is reported to nobody.
-fn wait_for_exec_into(pid: u32, program: &str) {
+fn wait_for_exec_into(pid: ProcessId, program: &str) {
     wait_until(
         // argv[0], not any argument: the shell's own argv is `sh -c ... exec
         // sleep 30`, which contains the program's name while still being the
@@ -236,7 +237,7 @@ fn read_until(master: &mut std::fs::File, needle: &str) -> String {
 fn the_handed_off_master_carries_the_childs_output() {
     let (mut host, _host_id, _sock) = TestHost::start();
     let (child_pid, mut master) = host.spawn(sh("echo zellij-pty-host-marker"));
-    assert!(child_pid > 0);
+    assert!(child_pid > zellij_types::internal_ids::ProcessId::new(0));
 
     let output = read_until(&mut master, "zellij-pty-host-marker");
     assert!(
@@ -377,7 +378,7 @@ fn pane_children_do_not_inherit_the_supervisors_ignored_signals() {
         }
     }
 
-    fn ignored_signals(pid: u32) -> u64 {
+    fn ignored_signals(pid: ProcessId) -> u64 {
         let status =
             std::fs::read_to_string(format!("/proc/{pid}/status")).expect("read child status");
         let field = status
@@ -1644,7 +1645,11 @@ fn a_stopped_child_is_reported_and_so_is_its_continue() {
     read_until(&mut master, "ready");
     wait_for_exec_into(child_pid, "sleep");
 
-    kill(Pid::from_raw(child_pid as i32), Some(Signal::SIGSTOP)).expect("could not stop the child");
+    kill(
+        Pid::from_raw(i32::try_from(child_pid).unwrap()),
+        Some(Signal::SIGSTOP),
+    )
+    .expect("could not stop the child");
     match host.recv() {
         HostToServerMsg::ChildStopped { signal } => {
             assert_eq!(
@@ -1656,8 +1661,11 @@ fn a_stopped_child_is_reported_and_so_is_its_continue() {
         other => panic!("expected ChildStopped, got {other:?}"),
     }
 
-    kill(Pid::from_raw(child_pid as i32), Some(Signal::SIGCONT))
-        .expect("could not continue the child");
+    kill(
+        Pid::from_raw(i32::try_from(child_pid).unwrap()),
+        Some(Signal::SIGCONT),
+    )
+    .expect("could not continue the child");
     match host.recv() {
         HostToServerMsg::ChildContinued => {},
         other => panic!("expected ChildContinued, got {other:?}"),
@@ -1665,7 +1673,11 @@ fn a_stopped_child_is_reported_and_so_is_its_continue() {
 
     // The waiter has to survive both transitions: a stop that swallowed the
     // exit would leave the pane open forever.
-    kill(Pid::from_raw(child_pid as i32), Some(Signal::SIGKILL)).expect("could not kill the child");
+    kill(
+        Pid::from_raw(i32::try_from(child_pid).unwrap()),
+        Some(Signal::SIGKILL),
+    )
+    .expect("could not kill the child");
     match host.recv() {
         HostToServerMsg::ChildExited { status } => assert_eq!(status, None),
         other => panic!("expected ChildExited, got {other:?}"),
@@ -1684,7 +1696,7 @@ fn a_child_that_stops_again_after_continuing_is_reported_again() {
     let (child_pid, mut master) = host.spawn(sh("echo ready; exec sleep 30"));
     read_until(&mut master, "ready");
     wait_for_exec_into(child_pid, "sleep");
-    let pid = Pid::from_raw(child_pid as i32);
+    let pid = Pid::from_raw(i32::try_from(child_pid).unwrap());
 
     for round in 0..2 {
         kill(pid, Some(Signal::SIGSTOP)).expect("could not stop the child");
@@ -1712,7 +1724,7 @@ fn a_child_killed_while_stopped_still_reports_its_exit() {
     let (child_pid, mut master) = host.spawn(sh("echo ready; exec sleep 30"));
     read_until(&mut master, "ready");
     wait_for_exec_into(child_pid, "sleep");
-    let pid = Pid::from_raw(child_pid as i32);
+    let pid = Pid::from_raw(i32::try_from(child_pid).unwrap());
 
     kill(pid, Some(Signal::SIGSTOP)).expect("could not stop the child");
     match host.recv() {
@@ -1741,7 +1753,11 @@ fn terminating_a_stopped_child_still_waits_for_its_real_exit() {
     let (child_pid, mut master) = host.spawn(sh("echo ready; exec sleep 30"));
     read_until(&mut master, "ready");
 
-    kill(Pid::from_raw(child_pid as i32), Some(Signal::SIGSTOP)).expect("could not stop the child");
+    kill(
+        Pid::from_raw(i32::try_from(child_pid).unwrap()),
+        Some(Signal::SIGSTOP),
+    )
+    .expect("could not stop the child");
     match host.recv() {
         HostToServerMsg::ChildStopped { .. } => {},
         other => panic!("expected ChildStopped, got {other:?}"),

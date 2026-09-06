@@ -11,6 +11,7 @@ use crate::{
 };
 use zellij_test_support::Watched;
 use zellij_types::internal_ids::NotificationId;
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
@@ -298,7 +299,7 @@ impl ServerOsApi for FakeInputOutput {
         _file_to_open: TerminalAction,
         _quit_db: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         Ok((crate::TerminalId::new(42), Box::new(NullAsyncReader), None))
     }
     fn write_to_tty_stdin(&self, id: TerminalId, buf: &[u8]) -> Result<usize> {
@@ -313,10 +314,10 @@ impl ServerOsApi for FakeInputOutput {
     fn tcdrain(&self, _id: TerminalId) -> Result<()> {
         unimplemented!()
     }
-    fn kill(&self, _pid: u32) -> Result<()> {
+    fn kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
-    fn force_kill(&self, _pid: u32) -> Result<()> {
+    fn force_kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
@@ -344,7 +345,7 @@ impl ServerOsApi for FakeInputOutput {
     fn load_palette(&self) -> Palette {
         unimplemented!()
     }
-    fn get_cwd(&self, _pid: u32) -> Option<PathBuf> {
+    fn get_cwd(&self, _pid: ProcessId) -> Option<PathBuf> {
         unimplemented!()
     }
     fn write_to_file(&mut self, contents: String, filename: Option<String>) -> Result<()> {
@@ -361,16 +362,16 @@ impl ServerOsApi for FakeInputOutput {
         _terminal_id: TerminalId,
         _run_command: RunCommand,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         unimplemented!()
     }
     fn clear_terminal_id(&self, _terminal_id: TerminalId) -> Result<()> {
         unimplemented!()
     }
-    fn send_sigint(&self, _pid: u32) -> Result<()> {
+    fn send_sigint(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
-    fn send_sigcont(&self, _pid: u32) -> Result<()> {
+    fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
 }
@@ -1950,7 +1951,7 @@ fn released_pane_for_warp(
             terminal_id,
             Ok(ReleasedPane::Local(ReleasedPtyHost {
                 host_id: format!("host-{terminal_id}"),
-                host_pid: 1,
+                host_pid: ProcessId::new(1),
                 control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
             })),
         )

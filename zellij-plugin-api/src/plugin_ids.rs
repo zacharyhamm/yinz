@@ -1,6 +1,7 @@
 pub use super::generated_api::api::plugin_ids::{
     PluginIds as ProtobufPluginIds, ZellijVersion as ProtobufZellijVersion,
 };
+use zellij_types::internal_ids::ProcessId;
 use {zellij_types::data::ClientId, zellij_types::data::PluginIds};
 
 use std::convert::TryFrom;
@@ -13,7 +14,7 @@ impl TryFrom<ProtobufPluginIds> for PluginIds {
             plugin_id: zellij_types::internal_ids::PluginId::new(
                 protobuf_plugin_ids.plugin_id as u32,
             ),
-            zellij_pid: protobuf_plugin_ids.zellij_pid as u32,
+            zellij_pid: ProcessId::from_legacy_signed_bits(protobuf_plugin_ids.zellij_pid),
             initial_cwd: PathBuf::from(protobuf_plugin_ids.initial_cwd),
             client_id: ClientId::try_from(protobuf_plugin_ids.client_id)
                 .map_err(|_| "client_id is outside u16 range")?,
@@ -28,7 +29,7 @@ impl TryFrom<PluginIds> for ProtobufPluginIds {
     fn try_from(plugin_ids: PluginIds) -> Result<Self, &'static str> {
         Ok(ProtobufPluginIds {
             plugin_id: plugin_ids.plugin_id.get() as i32,
-            zellij_pid: plugin_ids.zellij_pid as i32,
+            zellij_pid: plugin_ids.zellij_pid.legacy_signed_bits(),
             initial_cwd: plugin_ids.initial_cwd.display().to_string(),
             client_id: u32::from(plugin_ids.client_id.get()),
             hostname: plugin_ids.hostname,
@@ -63,6 +64,34 @@ mod tests {
         ClientId,
         std::collections::BTreeMap<String, String>,
     ) -> zellij_types::data::OriginatingPlugin = zellij_types::data::OriginatingPlugin::new;
+
+    #[test]
+    fn process_identity_preserves_fixed_legacy_wire_bits() {
+        use crate::plugin_command::{get_pane_pid_response, ProtobufGetPanePidResponse};
+        use zellij_types::{data::GetPanePidResponse, internal_ids::ProcessId};
+        let bytes = [
+            0x10, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
+        ];
+        let wire = ProtobufPluginIds::decode(bytes.as_slice()).unwrap();
+        let ids = PluginIds::try_from(wire).unwrap();
+        assert_eq!(ids.zellij_pid, ProcessId::new(u32::MAX));
+        assert_eq!(serde_json::to_value(&ids).unwrap()["zellij_pid"], u32::MAX);
+        assert_eq!(
+            ProtobufPluginIds::try_from(ids).unwrap().encode_to_vec(),
+            bytes
+        );
+        for signed in [i32::MIN, -1, 0, i32::MAX] {
+            let wire = ProtobufGetPanePidResponse {
+                result: Some(get_pane_pid_response::Result::Pid(signed)),
+            };
+            let response = GetPanePidResponse::try_from(wire.clone()).unwrap();
+            assert_eq!(
+                response,
+                GetPanePidResponse::Ok(ProcessId::from_legacy_signed_bits(signed))
+            );
+            assert_eq!(ProtobufGetPanePidResponse::from(response), wire);
+        }
+    }
 
     #[test]
     fn plugin_identity_preserves_all_legacy_wire_bits() {

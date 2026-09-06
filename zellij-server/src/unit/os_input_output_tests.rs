@@ -3,6 +3,7 @@ const AMPLE_TIMEOUT: Duration = Duration::from_secs(30);
 use super::*;
 use zellij_types::command::PaneTarget;
 use zellij_types::input::command::RunCommand;
+use zellij_types::internal_ids::ProcessId;
 
 fn make_server() -> ServerOsInputOutput {
     get_server_os_input().expect("failed to create server os input")
@@ -362,7 +363,7 @@ fn get_cwd() {
 
     let pid = std::process::id();
     assert!(
-        server.get_cwd(pid).is_some(),
+        server.get_cwd(ProcessId::new(pid)).is_some(),
         "Get current working directory from PID {}",
         pid
     );
@@ -379,7 +380,9 @@ fn kill_sends_sighup_to_process() {
 
     let server = make_server();
 
-    server.kill(pid).expect("kill should succeed");
+    server
+        .kill(ProcessId::new(pid))
+        .expect("kill should succeed");
 
     // Give the signal time to be delivered, then reap the child so it can't linger as a zombie.
     // The second kill is belt and braces: if the signal under test somehow left the process
@@ -398,7 +401,9 @@ fn force_kill_sends_sigkill_to_process() {
 
     let server = make_server();
 
-    server.force_kill(pid).expect("force_kill should succeed");
+    server
+        .force_kill(ProcessId::new(pid))
+        .expect("force_kill should succeed");
 
     std::thread::sleep(std::time::Duration::from_millis(100));
     let _ = child.kill();
@@ -414,7 +419,9 @@ fn send_sigint_to_process() {
 
     let server = make_server();
 
-    server.send_sigint(pid).expect("send_sigint should succeed");
+    server
+        .send_sigint(ProcessId::new(pid))
+        .expect("send_sigint should succeed");
 
     std::thread::sleep(std::time::Duration::from_millis(100));
     let _ = child.kill();
@@ -743,7 +750,7 @@ fn tcgetpgrp_returns_foreground_group() {
     for _ in 0..100 {
         fpgid = server.pty_backend.tcgetpgrp(terminal_id);
         let ready = match (fpgid, child_pid) {
-            (Some(p), Some(child_pid)) => p > 0 && p as u32 == child_pid,
+            (Some(p), Some(child_pid)) => p > 0 && ProcessId::try_from(p).ok() == Some(child_pid),
             (Some(p), None) => p > 0,
             _ => false,
         };
@@ -759,7 +766,8 @@ fn tcgetpgrp_returns_foreground_group() {
     );
     if let (Some(fpgid), Some(child_pid)) = (fpgid, child_pid) {
         assert_eq!(
-            fpgid as u32, child_pid,
+            ProcessId::try_from(fpgid).unwrap(),
+            child_pid,
             "the spawned command leads its own foreground group"
         );
     }

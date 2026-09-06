@@ -8,6 +8,7 @@
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
+use zellij_types::internal_ids::ProcessId;
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use zellij_runtime::errors::prelude::*;
@@ -122,7 +123,7 @@ pub enum HostToServerMsg {
         protocol_version: u32,
         zellij_version: String,
         host_id: HostId,
-        host_pid: u32,
+        host_pid: ProcessId,
         /// Where the supervisor bound its named socket, or `None` if binding
         /// failed. Binding is not fatal: it only powers `pty-host list|kill` and
         /// (later) re-attach, so a long `$TMPDIR` or an unwritable runtime dir
@@ -131,7 +132,7 @@ pub enum HostToServerMsg {
     },
     /// Sent with the pty master fd as `SCM_RIGHTS` ancillary data.
     Spawned {
-        child_pid: u32,
+        child_pid: ProcessId,
     },
     SpawnFailed {
         kind: SpawnFailureKind,
@@ -163,8 +164,8 @@ pub enum HostToServerMsg {
         protocol_version: u32,
         zellij_version: String,
         host_id: HostId,
-        host_pid: u32,
-        child_pid: u32,
+        host_pid: ProcessId,
+        child_pid: ProcessId,
         /// The structured command. `HostStatus.command` only carries its display
         /// form, and the adopting server needs `hold_on_close` to rebuild a
         /// `quit_cb` that behaves like the original.
@@ -216,8 +217,8 @@ pub struct HostStatus {
     pub terminal_id: u32,
     pub command: String,
     pub cwd: Option<PathBuf>,
-    pub child_pid: Option<u32>,
-    pub host_pid: u32,
+    pub child_pid: Option<ProcessId>,
+    pub host_pid: ProcessId,
     pub started_at_unix: u64,
     pub attached: bool,
     /// `Some(status)` once the child has exited; `None` while it is running.

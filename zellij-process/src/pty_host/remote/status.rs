@@ -13,6 +13,7 @@
 //! identically, with nothing in the detection layer aware of the difference.
 
 use std::os::fd::{BorrowedFd, RawFd};
+use zellij_types::internal_ids::ProcessId;
 
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
@@ -45,22 +46,23 @@ impl Probe {
 /// Mirrors `ServerOsInputOutput::get_foreground_cmds`: a pgid equal to the
 /// pane's own pid means nothing else has taken the terminal, and reporting it
 /// would just be the shell again.
-fn foreground_pid(master_fd: RawFd, child_pid: u32) -> Option<u32> {
+fn foreground_pid(master_fd: RawFd, child_pid: ProcessId) -> Option<ProcessId> {
     let pgid = nix::unistd::tcgetpgrp(unsafe { BorrowedFd::borrow_raw(master_fd) }).ok()?;
     let pgid = pgid.as_raw();
-    if pgid > 0 && pgid as u32 != child_pid {
-        Some(pgid as u32)
+    let pgid = ProcessId::try_from(pgid).ok()?;
+    if pgid.get() > 0 && pgid != child_pid {
+        Some(pgid)
     } else {
         None
     }
 }
 
-pub fn probe(master_fd: RawFd, child_pid: u32) -> Probe {
+pub fn probe(master_fd: RawFd, child_pid: ProcessId) -> Probe {
     let foreground = foreground_pid(master_fd, child_pid);
 
-    let mut wanted = vec![sysinfo::Pid::from_u32(child_pid)];
+    let mut wanted = vec![sysinfo::Pid::from_u32(child_pid.get())];
     if let Some(fg) = foreground {
-        wanted.push(sysinfo::Pid::from_u32(fg));
+        wanted.push(sysinfo::Pid::from_u32(fg.get()));
     }
 
     let mut system = System::new();
@@ -72,8 +74,8 @@ pub fn probe(master_fd: RawFd, child_pid: u32) -> Probe {
             .with_cmd(UpdateKind::Always),
     );
 
-    let argv_of = |pid: u32| -> Option<Vec<String>> {
-        let cmd = system.process(sysinfo::Pid::from_u32(pid))?.cmd();
+    let argv_of = |pid: ProcessId| -> Option<Vec<String>> {
+        let cmd = system.process(sysinfo::Pid::from_u32(pid.get()))?.cmd();
         if cmd.is_empty() {
             return None;
         }
@@ -87,7 +89,7 @@ pub fn probe(master_fd: RawFd, child_pid: u32) -> Probe {
     // The cwd is taken from the pane's own process rather than the foreground
     // one, matching what a local pane reports.
     let cwd = system
-        .process(sysinfo::Pid::from_u32(child_pid))
+        .process(sysinfo::Pid::from_u32(child_pid.get()))
         .and_then(|p| p.cwd().map(|c| c.to_string_lossy().to_string()));
 
     Probe {

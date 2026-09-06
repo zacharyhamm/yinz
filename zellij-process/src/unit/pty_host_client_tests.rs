@@ -10,10 +10,12 @@
 //! frame, and `read_msg`'s exact-sized reads leave it there for `recv_fd`.
 
 use super::*;
+use zellij_types::internal_ids::ProcessId;
 
 use crate::pty_host::fdpass::send_fd;
 use crate::pty_host::protocol::{self, HostStatus};
 use nix::pty::openpty;
+use nix::unistd::Pid;
 use std::io::{Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixListener;
@@ -37,8 +39,8 @@ fn sh(script: &str) -> RunCommand {
     }
 }
 
-fn process_alive(pid: u32) -> bool {
-    kill(Pid::from_raw(pid as i32), None).is_ok()
+fn process_alive(pid: ProcessId) -> bool {
+    kill(Pid::from_raw(i32::try_from(pid).unwrap()), None).is_ok()
 }
 
 fn wait_until(mut condition: impl FnMut() -> bool, what: &str) {
@@ -115,7 +117,7 @@ fn hello_ack() -> HostToServerMsg {
         protocol_version: PROTOCOL_VERSION,
         zellij_version: VERSION.to_owned(),
         host_id: "abcdef012345".to_owned(),
-        host_pid: 4242,
+        host_pid: ProcessId::new(4242),
         control_socket: Some(PathBuf::from("/tmp/zellij-pty-host-tests.sock")),
     }
 }
@@ -128,8 +130,12 @@ fn hello_ack() -> HostToServerMsg {
 #[test]
 fn the_handshake_hands_the_server_a_working_pty_master() {
     let pty = openpty(None, &None).expect("openpty failed");
-    let (server_end, host_end) =
-        preloaded(&[hello_ack(), HostToServerMsg::Spawned { child_pid: 991 }]);
+    let (server_end, host_end) = preloaded(&[
+        hello_ack(),
+        HostToServerMsg::Spawned {
+            child_pid: ProcessId::new(991),
+        },
+    ]);
     send_fd(&host_end, pty.master.as_fd().as_raw_fd()).expect("send_fd failed");
 
     let cmd = sh("echo hi");
@@ -137,9 +143,9 @@ fn the_handshake_hands_the_server_a_working_pty_master() {
         handshake_and_spawn(&server_end, &params(Path::new("/nonexistent"), &cmd))
             .expect("the handshake should have succeeded");
 
-    assert_eq!(child_pid, 991);
+    assert_eq!(child_pid, ProcessId::new(991));
     assert_eq!(host_id, "abcdef012345");
-    assert_eq!(host_pid, 4242);
+    assert_eq!(host_pid, ProcessId::new(4242));
     assert_eq!(
         control_socket,
         Some(PathBuf::from("/tmp/zellij-pty-host-tests.sock"))
@@ -189,7 +195,7 @@ fn a_host_speaking_a_different_protocol_version_is_a_fallback_not_a_pane_failure
         protocol_version: PROTOCOL_VERSION + 1,
         zellij_version: "99.0.0".to_owned(),
         host_id: "abcdef012345".to_owned(),
-        host_pid: 4242,
+        host_pid: ProcessId::new(4242),
         control_socket: None,
     }]);
 
@@ -276,7 +282,9 @@ fn a_host_that_does_not_follow_the_handshake_is_refused() {
     let host_bin = Path::new("/nonexistent");
 
     // A first message that is not a HelloAck.
-    let (server_end, _host_end) = preloaded(&[HostToServerMsg::Spawned { child_pid: 1 }]);
+    let (server_end, _host_end) = preloaded(&[HostToServerMsg::Spawned {
+        child_pid: ProcessId::new(1),
+    }]);
     let err = handshake_and_spawn(&server_end, &params(host_bin, &cmd))
         .expect_err("a missing HelloAck should be refused");
     assert!(
@@ -365,7 +373,7 @@ fn recording_quit_cb(reports: &Reports) -> QuitCb {
 /// to the lifecycle paths under test.
 fn pending_host(control: UnixStream, host_child: Child) -> PendingHost {
     let reader_stream = control.try_clone().expect("try_clone failed");
-    let host_pid = host_child.id();
+    let host_pid = ProcessId::new(host_child.id());
     PendingHost {
         control: Some(control),
         reader_stream: Some(reader_stream),
@@ -378,7 +386,7 @@ fn pending_host(control: UnixStream, host_child: Child) -> PendingHost {
         master: Some(OwnedFd::from(
             std::fs::File::open("/dev/null").expect("failed to open /dev/null"),
         )),
-        child_pid: 991,
+        child_pid: ProcessId::new(991),
         terminal_id: TerminalId::new(7),
         cmd: sh("true"),
     }
@@ -468,7 +476,7 @@ fn terminating_a_pane_does_not_also_synthesize_a_close() {
 fn dropping_a_pending_host_without_finishing_it_kills_the_supervisor() {
     let (server_end, _host_end) = UnixStream::pair().expect("socketpair failed");
     let child = sleeping_child();
-    let host_pid = child.id();
+    let host_pid = ProcessId::new(child.id());
 
     let pending = pending_host(server_end, child);
     assert!(
@@ -490,7 +498,7 @@ fn dropping_a_pending_host_without_finishing_it_kills_the_supervisor() {
 fn finishing_a_pending_host_leaves_its_supervisor_alone() {
     let (server_end, _host_end) = UnixStream::pair().expect("socketpair failed");
     let child = sleeping_child();
-    let host_pid = child.id();
+    let host_pid = ProcessId::new(child.id());
 
     let reports: Reports = Arc::default();
     let mut spawned = pending_host(server_end, child).finish(recording_quit_cb(&reports), None);
@@ -505,7 +513,10 @@ fn finishing_a_pending_host_leaves_its_supervisor_alone() {
     // the reader thread killed it. Kill it outright; the `shutdown` inside
     // `terminate` is what wakes the reader thread up to reap it.
     spawned.handle.terminate();
-    let _ = kill(Pid::from_raw(host_pid as i32), Some(Signal::SIGKILL));
+    let _ = kill(
+        Pid::from_raw(i32::try_from(host_pid).unwrap()),
+        Some(Signal::SIGKILL),
+    );
     wait_until(
         || !process_alive(host_pid),
         "the stand-in supervisor to be reaped",
@@ -519,7 +530,7 @@ fn finishing_a_pending_host_leaves_its_supervisor_alone() {
 fn a_supervisor_that_will_not_take_a_message_is_killed() {
     let (server_end, _host_end) = UnixStream::pair().expect("socketpair failed");
     let mut child = sleeping_child();
-    let host_pid = child.id();
+    let host_pid = ProcessId::new(child.id());
 
     // Shutting down our own write half makes the write fail without depending on
     // the peer's timing.
@@ -550,7 +561,7 @@ fn a_supervisor_that_will_not_take_a_message_is_killed() {
 #[test]
 fn a_supervisor_that_will_not_exit_is_killed_and_reaped() {
     let child = sleeping_child();
-    let host_pid = child.id();
+    let host_pid = ProcessId::new(child.id());
 
     let started = Instant::now();
     reap_host(HostProcess::Spawned(child), host_pid, "abcdef012345");
@@ -569,7 +580,7 @@ fn a_supervisor_that_will_not_exit_is_killed_and_reaped() {
 #[test]
 fn a_supervisor_that_has_already_exited_is_reaped_immediately() {
     let child = finished_child();
-    let host_pid = child.id();
+    let host_pid = ProcessId::new(child.id());
 
     let started = Instant::now();
     reap_host(HostProcess::Spawned(child), host_pid, "abcdef012345");
@@ -605,8 +616,8 @@ fn a_status() -> HostStatus {
         terminal_id: 7,
         command: "/bin/sh -c 'sleep 60'".to_owned(),
         cwd: Some(PathBuf::from("/tmp")),
-        child_pid: Some(991),
-        host_pid: 4242,
+        child_pid: Some(ProcessId::new(991)),
+        host_pid: ProcessId::new(4242),
         started_at_unix: 1_700_000_000,
         attached: false,
         child_exit_status: None,
@@ -677,7 +688,7 @@ fn query_returns_the_status_the_supervisor_reports() {
     let status = query(&path).expect("query should have succeeded");
     assert_eq!(status.host_id, "abcdef012345");
     assert_eq!(status.terminal_id, 7);
-    assert_eq!(status.child_pid, Some(991));
+    assert_eq!(status.child_pid, Some(ProcessId::new(991)));
     assert_eq!(status.buffered_bytes, 4096);
     assert!(!status.attached);
 
@@ -847,11 +858,14 @@ fn re_executed_as_a_supervisor_this_process_serves_one_pane() {
 /// Kills a supervisor if the test panics. Supervisors are designed to outlive
 /// their parent, so without this a failing test would leak a real process onto
 /// the machine permanently.
-struct KillOnDrop(u32);
+struct KillOnDrop(ProcessId);
 
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
-        let _ = kill(Pid::from_raw(self.0 as i32), Some(Signal::SIGKILL));
+        let _ = kill(
+            Pid::from_raw(i32::try_from(self.0).unwrap()),
+            Some(Signal::SIGKILL),
+        );
     }
 }
 
@@ -909,7 +923,10 @@ fn spawning_a_real_supervisor_yields_a_pty_the_server_can_read() {
 
     let reports: Reports = Arc::default();
     let mut spawned = pending.finish(recording_quit_cb(&reports), None);
-    assert!(spawned.child_pid > 0, "the pane's child should have a pid");
+    assert!(
+        spawned.child_pid > ProcessId::new(0),
+        "the pane's child should have a pid"
+    );
 
     let mut master = std::fs::File::from(
         spawned

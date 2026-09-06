@@ -13,6 +13,7 @@ use zellij_types::data::*;
 pub use zellij_types::geometry::PercentOrFixed;
 use zellij_types::geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy};
 use zellij_types::input::actions::Action;
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
@@ -3006,7 +3007,7 @@ pub fn send_sigkill_to_pane_id(pane_id: PaneId) {
 }
 
 /// Get the PID of the process running inside a terminal pane
-pub fn get_pane_pid(pane_id: PaneId) -> Result<i32, String> {
+pub fn get_pane_pid(pane_id: PaneId) -> Result<ProcessId, String> {
     let plugin_command = PluginCommand::GetPanePid { pane_id };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());

@@ -19,6 +19,7 @@ use zellij_runtime::{
     errors::prelude::*,
 };
 use zellij_types::input::options::PaneFrameStyle;
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::pane_size::{Size, SizeInPixels, Viewport};
 use zellij_types::style::{Palette, Style};
@@ -50,7 +51,7 @@ impl ServerOsApi for FakeInputOutput {
         _file_to_open: TerminalAction,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         unimplemented!()
     }
 
@@ -62,11 +63,11 @@ impl ServerOsApi for FakeInputOutput {
         unimplemented!()
     }
 
-    fn kill(&self, _pid: u32) -> Result<()> {
+    fn kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
 
-    fn force_kill(&self, _pid: u32) -> Result<()> {
+    fn force_kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
 
@@ -93,7 +94,7 @@ impl ServerOsApi for FakeInputOutput {
         unimplemented!()
     }
 
-    fn get_cwd(&self, _pid: u32) -> Option<PathBuf> {
+    fn get_cwd(&self, _pid: ProcessId) -> Option<PathBuf> {
         unimplemented!()
     }
 
@@ -106,7 +107,7 @@ impl ServerOsApi for FakeInputOutput {
         _terminal_id: TerminalId,
         _run_command: RunCommand,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         unimplemented!()
     }
 
@@ -114,10 +115,10 @@ impl ServerOsApi for FakeInputOutput {
         unimplemented!()
     }
 
-    fn send_sigint(&self, _pid: u32) -> Result<()> {
+    fn send_sigint(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
-    fn send_sigcont(&self, _pid: u32) -> Result<()> {
+    fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
 }

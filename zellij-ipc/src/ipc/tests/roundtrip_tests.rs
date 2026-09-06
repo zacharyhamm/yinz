@@ -10,6 +10,7 @@ use zellij_types::command::PaneTarget;
 use zellij_types::data::ClientId;
 use zellij_types::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use zellij_types::input::cli_assets::CliAssets;
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::keys::{BareKey, KeyModifier, KeyWithModifier};
@@ -235,7 +236,7 @@ fn test_client_messages() {
                 state: state.clone(),
                 event,
                 trace: true,
-                process_id: 42,
+                process_id: ProcessId::new(42),
                 kind: "claude".into(),
             }));
         }
