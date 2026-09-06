@@ -2378,7 +2378,7 @@ fn init_session(
     // Before anything can write to the plugin data store: this is the one place that holds both
     // the data dir and the options the id is resolved from, and every later reader takes what is
     // cached here. See `zellij_runtime::host_identity`.
-    zellij_runtime::host_identity::init_host_id(&data_dir, config.options.host_id.as_deref());
+    zellij_runtime::host_identity::init_host_id(&data_dir, config.options.host_id.as_ref());
     let data_access = Arc::new(DataAccess::configured(
         config.options.plugin_data_url.as_deref(),
         config.options.plugin_data_schema.as_deref(),

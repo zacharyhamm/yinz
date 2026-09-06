@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use zellij_types::data::InputMode;
 use zellij_types::input::options::*;
+use zellij_types::internal_ids::HostId;
 use zellij_types::style::ThemeHue;
 
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, Serialize, Args)]
@@ -417,7 +418,7 @@ impl From<CliOptions> for Options {
             session_recording_input: value.session_recording_input,
             plugin_data_url: value.plugin_data_url,
             plugin_data_schema: value.plugin_data_schema,
-            host_id: value.host_id,
+            host_id: value.host_id.map(HostId::new),
             serialize_pane_viewport: value.serialize_pane_viewport,
             scrollback_lines_to_serialize: value.scrollback_lines_to_serialize,
             styled_underlines: value.styled_underlines,
@@ -489,7 +490,7 @@ impl From<Options> for CliOptions {
             session_recording_input: value.session_recording_input,
             plugin_data_url: value.plugin_data_url,
             plugin_data_schema: value.plugin_data_schema,
-            host_id: value.host_id,
+            host_id: value.host_id.map(|id| id.into_string()),
             serialize_pane_viewport: value.serialize_pane_viewport,
             scrollback_lines_to_serialize: value.scrollback_lines_to_serialize,
             styled_underlines: value.styled_underlines,

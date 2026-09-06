@@ -9,6 +9,7 @@ pub use crate::input::options::PaneFrameStyle;
 use crate::internal_ids::ContextMenuItemId;
 use crate::internal_ids::ContextMenuRequestId;
 use crate::internal_ids::DataWatchId;
+use crate::internal_ids::HostId;
 use crate::internal_ids::NotificationId;
 use crate::internal_ids::ProcessId;
 use crate::internal_ids::QueueJobId;
@@ -1786,7 +1787,7 @@ pub struct PluginIds {
     /// because they also share the pane ids and session names it qualifies.
     ///
     /// See `zellij_runtime::host_identity`.
-    pub host_id: String,
+    pub host_id: HostId,
 }
 
 /// Tag used to identify the plugin in layout and config kdl files

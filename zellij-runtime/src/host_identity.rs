@@ -31,6 +31,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use zellij_types::internal_ids::HostId;
 
 use uuid::Uuid;
 
@@ -150,7 +151,7 @@ fn resolve(data_dir: &Path, configured: Option<&str>) -> String {
 /// Cached because none of the inputs can change under a running server, and because the id ends
 /// up in the uid of every row a session-scoped entity writes — resolving it per write would mean
 /// a filesystem round trip on a hot path.
-static HOST_ID: OnceLock<String> = OnceLock::new();
+static HOST_ID: OnceLock<HostId> = OnceLock::new();
 
 /// Resolve this installation's host id and cache it, returning what was cached.
 ///
@@ -160,9 +161,9 @@ static HOST_ID: OnceLock<String> = OnceLock::new();
 /// Called once by the server at startup, where the data dir and the options are both in hand.
 /// The first call decides; a later one returns what the first cached and ignores its arguments,
 /// which is why this is the server's job rather than something each reader repeats.
-pub fn init_host_id(data_dir: &Path, configured: Option<&str>) -> String {
+pub fn init_host_id(data_dir: &Path, configured: Option<&HostId>) -> HostId {
     HOST_ID
-        .get_or_init(|| resolve(data_dir, configured))
+        .get_or_init(|| HostId::new(resolve(data_dir, configured.map(|id| id.as_str()))))
         .clone()
 }
 
@@ -172,9 +173,9 @@ pub fn init_host_id(data_dir: &Path, configured: Option<&str>) -> String {
 /// test, or a binary that is not the server — it resolves against the default data dir, which is
 /// the one a server with no `--data-dir` would have used, so a reader and a server that never
 /// spoke still agree.
-pub fn host_id() -> String {
+pub fn host_id() -> HostId {
     HOST_ID
-        .get_or_init(|| resolve(&crate::home::get_default_data_dir(), None))
+        .get_or_init(|| HostId::new(resolve(&crate::home::get_default_data_dir(), None)))
         .clone()
 }
 

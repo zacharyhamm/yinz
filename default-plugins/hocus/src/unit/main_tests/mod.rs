@@ -1,6 +1,7 @@
 use super::*;
 use hocus_proto::notes;
 use hocus_proto::panes::terminal_panes;
+use zellij_tile::prelude::HostId;
 use zellij_tile::prelude::TabId;
 use zellij_tile::prelude::TabPosition;
 
@@ -64,7 +65,7 @@ fn ready_state() -> State {
         // first one. The host is named rather than left empty so that a helper which forgot to
         // write it fails a test instead of matching the pre-migration rows.
         zellij_session_name: "test-session".to_owned(),
-        host_id: "test-host".to_owned(),
+        host_id: HostId::new("test-host"),
         cfg: Config::resolve(
             &BTreeMap::new(),
             &BTreeMap::from([("OPENAI_API_KEY".to_owned(), "sk-test".to_owned())]),

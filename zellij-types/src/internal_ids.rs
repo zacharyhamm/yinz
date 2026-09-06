@@ -361,6 +361,65 @@ impl TryFrom<u64> for DataRevision {
     }
 }
 
+/// The installation that owns shared data, distinct from its display hostname.
+/// An empty identity retains the meaning of a legacy, unclaimed row.
+///
+/// ```compile_fail
+/// use zellij_types::internal_ids::HostId;
+/// let display_hostname = String::from("laptop");
+/// let _: HostId = display_hostname;
+/// ```
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+#[repr(transparent)]
+pub struct HostId(String);
+
+impl HostId {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    pub fn into_string(self) -> String {
+        self.0
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+impl From<String> for HostId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+impl From<&str> for HostId {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+impl std::str::FromStr for HostId {
+    type Err = std::convert::Infallible;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self::new(value))
+    }
+}
+impl AsRef<str> for HostId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+impl std::borrow::Borrow<str> for HostId {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+impl fmt::Display for HostId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 unsigned_identity!(
     /// An operating-system process identity, distinct from a terminal pane identity.
     ///
@@ -433,6 +492,26 @@ impl TryFrom<TabPosition> for TabNumber {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_identity_keeps_legacy_strings_and_map_keys() {
+        for (value, json) in [
+            ("", "\"\""),
+            ("build-box-1", "\"build-box-1\""),
+            ("λ", "\"λ\""),
+        ] {
+            let id = HostId::new(value);
+            assert_eq!(id.is_empty(), value.is_empty());
+            assert_eq!(serde_json::to_string(&id).unwrap(), json);
+            assert_eq!(serde_json::from_str::<HostId>(json).unwrap(), id);
+            assert_eq!(
+                crate::plugin_data::DataValue::from(&id),
+                crate::plugin_data::DataValue::Text(value.to_owned())
+            );
+        }
+        let map = std::collections::BTreeMap::from([(HostId::new("host-a"), "main")]);
+        assert_eq!(serde_json::to_string(&map).unwrap(), r#"{"host-a":"main"}"#);
+    }
 
     #[test]
     fn process_ids_check_narrowing_and_preserve_legacy_signed_responses() {

@@ -17,3 +17,5 @@ pub use zellij_types::internal_ids::{
     TerminalId,
 };
 pub use zellij_types::units::{ElapsedMicros, UnixMicros};
+
+pub use zellij_types::internal_ids::HostId;

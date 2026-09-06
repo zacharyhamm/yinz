@@ -37,6 +37,7 @@ use hocus_proto::{agents, notes, projects, store, todos};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::DataRowId;
 use zellij_tile::prelude::DataWatchId;
+use zellij_tile::prelude::HostId;
 use zellij_tile::prelude::TabId;
 use zellij_tile::prelude::*;
 
@@ -333,7 +334,7 @@ fn discover_from(
 /// than "is the table empty?" — emptiness is a state a user can reach honestly,
 /// by crossing off and clearing the last todo, and that must not resurrect the
 /// file on the next launch.
-fn import_legacy(backend: &impl Backend, host_id: &str) {
+fn import_legacy(backend: &impl Backend, host_id: &HostId) {
     if !imported(backend, host_id, "projects") {
         let registry = projects::parse_legacy(&legacy_bytes(projects::FILE));
         let mut mutations: Vec<zellij_tile::prelude::Mutation> =
@@ -364,14 +365,14 @@ fn import_legacy(backend: &impl Backend, host_id: &str) {
 /// The host is carried in from `load` rather than asked for here. `get_plugin_ids` is a host
 /// shim, and this file's tests run natively, where the shims read real stdin — see `store`'s
 /// module doc.
-fn marker(host_id: &str, what: &str) -> zellij_tile::prelude::Mutation {
+fn marker(host_id: &HostId, what: &str) -> zellij_tile::prelude::Mutation {
     store::import_marker_mutation(host_id, what)
 }
 
 /// Shared with hocus rather than written twice: the two have to agree about the marker's uid,
 /// and about what a marker written before that uid carried a host means — see
 /// `store::import_recorded`.
-fn imported(backend: &impl Backend, host_id: &str, what: &str) -> bool {
+fn imported(backend: &impl Backend, host_id: &HostId, what: &str) -> bool {
     store::import_recorded(backend, host_id, what)
 }
 

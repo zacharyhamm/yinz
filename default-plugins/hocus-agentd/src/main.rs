@@ -17,6 +17,7 @@ use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use zellij_tile::prelude::HostId;
 use zellij_tile::prelude::TabId;
 use zellij_tile::prelude::*;
 
@@ -225,7 +226,7 @@ struct State {
     zellij_session_name: Option<String>,
     /// The machine this daemon runs on, read once at load. The other half of a row's owner —
     /// see `agents::rows::Owner`.
-    host_id: String,
+    host_id: HostId,
     runs: BTreeMap<u32, agents::AgentRun>,
     dirty_runs: BTreeMap<String, agents::AgentRun>,
     /// Runs whose pane is gone from this session, so their write has to be guarded: a warped
@@ -3701,7 +3702,7 @@ mod tests {
             id: "claude:cc-session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "here".to_owned(),
-            host_id: "host-a".to_owned(),
+            host_id: HostId::new("host-a"),
             session_id: "cc-session-1".to_owned(),
             kind: CLAUDE.to_owned(),
             cwd: Some("/work".to_owned()),
@@ -3727,7 +3728,7 @@ mod tests {
                 created_at_ms: Some(10),
             }],
         };
-        run = run.adopted_by(2, &agents::rows::Owner::new("host-a", "there"));
+        run = run.adopted_by(2, &agents::rows::Owner::new(HostId::new("host-a"), "there"));
         state.adopt_run(2, run.clone());
 
         let live = state.runs.get(&2).expect("the run is this pane's now");
@@ -5492,7 +5493,7 @@ mod tests {
             id: "claude:s".to_owned(),
             pane_id: 7,
             zellij_session_name: "here".to_owned(),
-            host_id: "host-a".to_owned(),
+            host_id: HostId::new("host-a"),
             session_id: "s".to_owned(),
             kind: CLAUDE.to_owned(),
             cwd: None,
@@ -6466,7 +6467,7 @@ mod tests {
         let run_id = state.runs[&7].id.clone();
         // One run row, one entry row.
         let (first, written) =
-            state.dirty_run_mutations(&agents::rows::Owner::new("host-a", "zellij"));
+            state.dirty_run_mutations(&agents::rows::Owner::new(HostId::new("host-a"), "zellij"));
         assert_eq!(first.len(), 2);
         assert_eq!(written, vec![(run_id.clone(), 1)]);
 
@@ -6482,7 +6483,7 @@ mod tests {
             None,
         );
         let (second, written) =
-            state.dirty_run_mutations(&agents::rows::Owner::new("host-a", "zellij"));
+            state.dirty_run_mutations(&agents::rows::Owner::new(HostId::new("host-a"), "zellij"));
         assert_eq!(second.len(), 2, "the run row and the one new entry");
         assert_eq!(written, vec![(run_id.clone(), 2)]);
 
@@ -6501,7 +6502,7 @@ mod tests {
             None,
         );
         let (released, written) =
-            state.dirty_run_mutations(&agents::rows::Owner::new("host-a", "zellij"));
+            state.dirty_run_mutations(&agents::rows::Owner::new(HostId::new("host-a"), "zellij"));
         assert_eq!(
             released.len(),
             2,
@@ -6523,7 +6524,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "zellij".to_owned(),
-            host_id: "host-a".to_owned(),
+            host_id: HostId::new("host-a"),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -6545,7 +6546,7 @@ mod tests {
         state.dirty_runs.insert(run.id.clone(), run.clone());
 
         let (mutations, written) =
-            state.dirty_run_mutations(&agents::rows::Owner::new("host-a", "zellij"));
+            state.dirty_run_mutations(&agents::rows::Owner::new(HostId::new("host-a"), "zellij"));
         assert_eq!(
             mutations.len(),
             3,
@@ -7882,7 +7883,7 @@ mod tests {
             id: "claude:cc-session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "here".to_owned(),
-            host_id: "host-a".to_owned(),
+            host_id: HostId::new("host-a"),
             session_id: "cc-session-1".to_owned(),
             kind: CLAUDE.to_owned(),
             cwd: Some("/work".to_owned()),
@@ -7922,7 +7923,7 @@ mod tests {
             id: id.to_owned(),
             pane_id: 7,
             zellij_session_name: "here".to_owned(),
-            host_id: "host-a".to_owned(),
+            host_id: HostId::new("host-a"),
             session_id: "cc-session-1".to_owned(),
             kind: CLAUDE.to_owned(),
             cwd: Some("/work".to_owned()),
