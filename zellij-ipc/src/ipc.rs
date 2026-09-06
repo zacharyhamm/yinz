@@ -158,7 +158,7 @@ pub enum ClientToServerMsg {
     },
     Action {
         action: Action,
-        terminal_id: Option<u32>,
+        terminal_id: Option<zellij_types::internal_ids::TerminalId>,
         client_id: Option<ClientId>,
         is_cli_client: bool,
     },

@@ -1789,7 +1789,17 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
             let plugin_id = if args.is_empty() {
                 None
             } else {
-                Some(args.remove(0) as u32)
+                Some(
+                    zellij_types::internal_ids::PluginId::try_from(args.remove(0)).map_err(
+                        |_| {
+                            ConfigError::new_kdl_error(
+                                "Plugin id is out of range".to_owned(),
+                                kdl_action.span().offset(),
+                                kdl_action.span().len(),
+                            )
+                        },
+                    )?,
+                )
             };
 
             let command_metadata = action_children.first();

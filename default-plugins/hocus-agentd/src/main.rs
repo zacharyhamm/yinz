@@ -203,7 +203,7 @@ struct State {
     /// discovery. A list rather than a single slot because both want the same
     /// snapshot, and broadcasting it instead would hand every plugin in the
     /// session the title and working folder of every pane.
-    subscribers: Vec<u32>,
+    subscribers: Vec<PluginId>,
     seq: u64,
     /// The last snapshot that actually went out, verbatim. Most host events end
     /// in `publish()` whether or not they moved anything a subscriber can see —
@@ -487,7 +487,7 @@ impl ZellijPlugin for State {
                 // have never seen must cost us nothing, so a `raw` that does not parse is
                 // dropped in silence.
                 if let Ok(event) = serde_json::from_str::<wire::HookEvent>(&agent_event.raw) {
-                    self.on_hook_of(agent_event.pane_id, &agent_event.kind, &event);
+                    self.on_hook_of(agent_event.pane_id.get(), &agent_event.kind, &event);
                 }
             },
             Event::SessionUpdate(sessions, _) => {
@@ -807,12 +807,12 @@ impl State {
             |pane_id, text| {
                 notify_with_pane_id(
                     text,
-                    PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+                    PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
                 )
             },
             |pane_id, title| {
                 rename_pane_with_id(
-                    PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+                    PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
                     title,
                 )
             },
@@ -1234,7 +1234,7 @@ impl State {
     /// can find it. See `AgentInfo::run_id`.
     fn publish_run_id(&self, pane_id: u32, run_id: Option<String>) {
         set_pane_agent_run(
-            PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
             run_id,
         );
     }
@@ -2378,7 +2378,7 @@ impl State {
             |pane_id, text| {
                 notify_with_pane_id(
                     text,
-                    PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+                    PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
                 )
             },
         )
@@ -2723,14 +2723,14 @@ impl State {
             context,
             |pane_id, title| {
                 rename_pane_with_id(
-                    PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+                    PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
                     title,
                 )
             },
             |pane_id, text| {
                 notify_with_pane_id(
                     text,
-                    PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+                    PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
                 )
             },
         );
@@ -3014,7 +3014,7 @@ impl State {
     fn refresh_title_prefixes(&mut self) {
         self.refresh_title_prefixes_with(|pane_id, prefix| {
             set_pane_title_prefix(
-                PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+                PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
                 prefix,
             )
         });
@@ -3121,7 +3121,12 @@ impl State {
     /// Tell the session which agent panes are kin of the focused one.
     fn refresh_related_agents(&mut self) {
         self.refresh_related_agents_with(|pane_ids| {
-            set_related_panes(pane_ids.into_iter().map(PaneId::Terminal).collect())
+            set_related_panes(
+                pane_ids
+                    .into_iter()
+                    .map(|id| PaneId::Terminal(TerminalId::new(id)))
+                    .collect(),
+            )
         });
     }
 
@@ -3208,7 +3213,7 @@ impl State {
 #[cfg(target_arch = "wasm32")]
 fn report_agent(pane_id: u32, agent: Option<AgentInfo>) {
     set_pane_agent(
-        PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
         agent,
     );
 }
@@ -7020,7 +7025,7 @@ mod tests {
         };
         let event = |raw: &str| {
             Event::AgentEvent(wire::AgentEvent {
-                pane_id: 7,
+                pane_id: zellij_tile::prelude::TerminalId::new(7),
                 kind: CLAUDE.to_owned(),
                 hook: "Stop".to_owned(),
                 raw: raw.to_owned(),

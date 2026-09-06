@@ -1,3 +1,6 @@
+#[cfg(test)]
+const PLUGIN_2: zellij_types::internal_ids::PluginId = zellij_types::internal_ids::PluginId::new(2);
+
 use super::*;
 
 #[test]
@@ -14,7 +17,7 @@ fn attaching_terminal_client_follows_the_host_tab() {
         .get_mut(&1)
         .unwrap()
         .new_floating_pane(
-            PaneId::Terminal(crate::TerminalId(3)),
+            PaneId::Terminal(crate::TerminalId::new(3)),
             None,
             None,
             false,
@@ -24,10 +27,10 @@ fn attaching_terminal_client_follows_the_host_tab() {
         )
         .unwrap();
 
-    screen.add_client(crate::ClientId(2)).expect("TEST");
+    screen.add_client(crate::ClientId::new(2)).expect("TEST");
 
     assert_eq!(
-        screen.active_tab_ids.get(&ClientId(2)),
+        screen.active_tab_ids.get(&ClientId::new(2)),
         Some(&1),
         "terminal client is on the host tab"
     );
@@ -47,11 +50,13 @@ fn attaching_watcher_follows_the_host_tab() {
     new_tab(&mut screen, 1, 0);
     new_tab(&mut screen, 2, 1);
 
-    screen.add_watcher_client(crate::ClientId(2)).expect("TEST");
-    screen.add_client(crate::ClientId(2)).expect("TEST");
+    screen
+        .add_watcher_client(crate::ClientId::new(2))
+        .expect("TEST");
+    screen.add_client(crate::ClientId::new(2)).expect("TEST");
 
     assert_eq!(
-        screen.active_tab_ids.get(&ClientId(2)),
+        screen.active_tab_ids.get(&ClientId::new(2)),
         Some(&1),
         "watcher client mirrors the host tab"
     );
@@ -68,19 +73,22 @@ fn reattaching_the_only_client_tells_the_tab_plugins_they_are_visible_again() {
     };
     let (mut screen, capture) = create_new_screen_with_theme_capture(size);
     new_tab(&mut screen, 1, 0);
-    add_pane_to_tab(&mut screen, 0, PaneId::Plugin(crate::PluginId(2)), false);
+    add_pane_to_tab(
+        &mut screen,
+        0,
+        PaneId::Plugin(crate::PluginId::new(2)),
+        false,
+    );
     let _ = capture.drain_plugin_updates();
 
-    screen.remove_client(crate::ClientId(1)).expect("TEST");
-    screen.add_client(crate::ClientId(1)).expect("TEST");
+    screen.remove_client(crate::ClientId::new(1)).expect("TEST");
+    screen.add_client(crate::ClientId::new(1)).expect("TEST");
 
     let visibility_events: Vec<bool> = capture
         .drain_plugin_updates()
         .into_iter()
         .filter_map(|(pid, _cid, event)| match (pid, event) {
-            (Some(zellij_types::internal_ids::PluginId(2)), Event::Visible(is_visible)) => {
-                Some(is_visible)
-            },
+            (Some(PLUGIN_2), Event::Visible(is_visible)) => Some(is_visible),
             _ => None,
         })
         .collect();
@@ -104,32 +112,32 @@ fn reattaching_a_client_restores_floating_pane_visibility_notifications() {
     new_tab(&mut screen, 1, 0);
     // focused, so that the floating surface actually comes up with the pane
     screen
-        .get_active_tab_mut(crate::ClientId(1))
+        .get_active_tab_mut(crate::ClientId::new(1))
         .unwrap()
         .new_pane(
-            PaneId::Plugin(crate::PluginId(2)),
+            PaneId::Plugin(crate::PluginId::new(2)),
             None,
             None,
             false,
             true,
             NewPanePlacement::Floating(None),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
     assert!(
         screen
-            .get_active_tab_mut(crate::ClientId(1))
+            .get_active_tab_mut(crate::ClientId::new(1))
             .unwrap()
             .are_floating_panes_visible(),
         "precondition: the floating surface is up"
     );
 
-    screen.remove_client(crate::ClientId(1)).expect("TEST");
-    screen.add_client(crate::ClientId(1)).expect("TEST");
+    screen.remove_client(crate::ClientId::new(1)).expect("TEST");
+    screen.add_client(crate::ClientId::new(1)).expect("TEST");
     let _ = capture.drain_plugin_updates();
     screen
-        .get_active_tab_mut(crate::ClientId(1))
+        .get_active_tab_mut(crate::ClientId::new(1))
         .unwrap()
         .hide_floating_panes();
 
@@ -142,7 +150,7 @@ fn reattaching_a_client_restores_floating_pane_visibility_notifications() {
         })
         .collect();
     assert!(
-        visibility_events.contains(&(Some(zellij_types::internal_ids::PluginId(2)), false)),
+        visibility_events.contains(&(Some(zellij_types::internal_ids::PluginId::new(2)), false)),
         "a floating plugin must still be told when its surface is hidden after a reattach, got {visibility_events:?}"
     );
 }

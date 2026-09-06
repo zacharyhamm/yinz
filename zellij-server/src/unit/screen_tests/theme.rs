@@ -1,3 +1,9 @@
+#[cfg(test)]
+const CLIENT_1: zellij_types::internal_ids::ClientId = zellij_types::internal_ids::ClientId::new(1);
+#[cfg(test)]
+const PLUGIN_77: zellij_types::internal_ids::PluginId =
+    zellij_types::internal_ids::PluginId::new(77);
+
 use super::*;
 
 #[test]
@@ -6,8 +12,13 @@ fn reconfigure_sends_a_plugin_pane_the_updated_client_mode_info_once() {
     new_tab(&mut screen, 1, 0);
     screen
         .mode_info
-        .insert(crate::ClientId(1), ModeInfo::default());
-    add_pane_to_tab(&mut screen, 0, PaneId::Plugin(crate::PluginId(77)), false);
+        .insert(crate::ClientId::new(1), ModeInfo::default());
+    add_pane_to_tab(
+        &mut screen,
+        0,
+        PaneId::Plugin(crate::PluginId::new(77)),
+        false,
+    );
     capture.drain_plugin_updates();
 
     screen
@@ -42,7 +53,7 @@ fn reconfigure_sends_a_plugin_pane_the_updated_client_mode_info_once() {
             false,
             HostNotificationProtocol::default(),
             Size { rows: 0, cols: 0 },
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -51,11 +62,7 @@ fn reconfigure_sends_a_plugin_pane_the_updated_client_mode_info_once() {
         .into_iter()
         .filter_map(
             |(plugin_id, client_id, event)| match (plugin_id, client_id, event) {
-                (
-                    Some(zellij_types::internal_ids::PluginId(77)),
-                    Some(ClientId(1)),
-                    Event::ModeUpdate(mode_info),
-                ) => Some(mode_info),
+                (Some(PLUGIN_77), Some(CLIENT_1), Event::ModeUpdate(mode_info)) => Some(mode_info),
                 _ => None,
             },
         )
@@ -70,21 +77,24 @@ fn reconfigure_sends_a_plugin_pane_the_updated_client_mode_info_once() {
 fn group_marking_updates_a_plugin_pane_s_mode_info_once() {
     let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
     new_tab(&mut screen, 1, 0);
-    add_pane_to_tab(&mut screen, 0, PaneId::Plugin(crate::PluginId(77)), false);
+    add_pane_to_tab(
+        &mut screen,
+        0,
+        PaneId::Plugin(crate::PluginId::new(77)),
+        false,
+    );
     capture.drain_plugin_updates();
 
-    screen.toggle_group_marking(crate::ClientId(1)).unwrap();
+    screen
+        .toggle_group_marking(crate::ClientId::new(1))
+        .unwrap();
 
     let mode_infos: Vec<_> = capture
         .drain_plugin_updates()
         .into_iter()
         .filter_map(
             |(plugin_id, client_id, event)| match (plugin_id, client_id, event) {
-                (
-                    Some(zellij_types::internal_ids::PluginId(77)),
-                    Some(ClientId(1)),
-                    Event::ModeUpdate(mode_info),
-                ) => Some(mode_info),
+                (Some(PLUGIN_77), Some(CLIENT_1), Event::ModeUpdate(mode_info)) => Some(mode_info),
                 _ => None,
             },
         )
@@ -173,7 +183,7 @@ fn color_palette_mode_query_short_circuits_to_dark_reply() {
     screen.host_terminal_theme_mode = Some(zellij_types::style::HostTerminalThemeMode::Dark);
 
     let token = screen.forward_host_query(
-        PaneId::Terminal(crate::TerminalId(13)),
+        PaneId::Terminal(crate::TerminalId::new(13)),
         HostQuery::ColorPaletteMode,
     );
 
@@ -187,7 +197,7 @@ fn color_palette_mode_query_short_circuits_to_dark_reply() {
     );
     let writes = capture.drain_pty_writes();
     assert_eq!(writes.len(), 1, "exactly one pty reply expected");
-    assert_eq!(writes[0], (b"\x1b[?997;1n".to_vec(), TerminalId(13)));
+    assert_eq!(writes[0], (b"\x1b[?997;1n".to_vec(), TerminalId::new(13)));
     assert!(
         screen.forward_in_flight_token.is_none(),
         "slot must remain free; short-circuit does not occupy the queue"
@@ -202,13 +212,13 @@ fn color_palette_mode_query_short_circuits_to_light_reply() {
     screen.host_terminal_theme_mode = Some(zellij_types::style::HostTerminalThemeMode::Light);
 
     let _ = screen.forward_host_query(
-        PaneId::Terminal(crate::TerminalId(4)),
+        PaneId::Terminal(crate::TerminalId::new(4)),
         HostQuery::ColorPaletteMode,
     );
 
     let writes = capture.drain_pty_writes();
     assert_eq!(writes.len(), 1);
-    assert_eq!(writes[0], (b"\x1b[?997;2n".to_vec(), TerminalId(4)));
+    assert_eq!(writes[0], (b"\x1b[?997;2n".to_vec(), TerminalId::new(4)));
 }
 
 #[test]
@@ -224,7 +234,7 @@ fn color_palette_mode_query_falls_back_to_own_dark_theme_when_host_mode_unknown(
         zellij_types::colors::PaletteColor::Rgb((0, 0, 0));
 
     let token = screen.forward_host_query(
-        PaneId::Terminal(crate::TerminalId(1)),
+        PaneId::Terminal(crate::TerminalId::new(1)),
         HostQuery::ColorPaletteMode,
     );
 
@@ -238,7 +248,7 @@ fn color_palette_mode_query_falls_back_to_own_dark_theme_when_host_mode_unknown(
     );
     let writes = capture.drain_pty_writes();
     assert_eq!(writes.len(), 1, "exactly one pty reply expected");
-    assert_eq!(writes[0], (b"\x1b[?997;1n".to_vec(), TerminalId(1)));
+    assert_eq!(writes[0], (b"\x1b[?997;1n".to_vec(), TerminalId::new(1)));
 }
 
 #[test]
@@ -254,13 +264,13 @@ fn color_palette_mode_query_falls_back_to_own_light_theme_when_host_mode_unknown
         zellij_types::colors::PaletteColor::Rgb((255, 255, 255));
 
     let _ = screen.forward_host_query(
-        PaneId::Terminal(crate::TerminalId(7)),
+        PaneId::Terminal(crate::TerminalId::new(7)),
         HostQuery::ColorPaletteMode,
     );
 
     let writes = capture.drain_pty_writes();
     assert_eq!(writes.len(), 1);
-    assert_eq!(writes[0], (b"\x1b[?997;2n".to_vec(), TerminalId(7)));
+    assert_eq!(writes[0], (b"\x1b[?997;2n".to_vec(), TerminalId::new(7)));
 }
 
 #[test]
@@ -273,7 +283,7 @@ fn color_palette_mode_query_prefers_known_host_mode_over_own_theme() {
         zellij_types::colors::PaletteColor::Rgb((0, 0, 0));
 
     let _ = screen.forward_host_query(
-        PaneId::Terminal(crate::TerminalId(9)),
+        PaneId::Terminal(crate::TerminalId::new(9)),
         HostQuery::ColorPaletteMode,
     );
 
@@ -281,7 +291,7 @@ fn color_palette_mode_query_prefers_known_host_mode_over_own_theme() {
     assert_eq!(writes.len(), 1);
     assert_eq!(
         writes[0],
-        (b"\x1b[?997;2n".to_vec(), TerminalId(9)),
+        (b"\x1b[?997;2n".to_vec(), TerminalId::new(9)),
         "the host's announced mode must win over the local theme fallback"
     );
 }
@@ -294,7 +304,7 @@ fn color_palette_mode_query_skips_plugin_panes() {
     screen.host_terminal_theme_mode = Some(zellij_types::style::HostTerminalThemeMode::Dark);
 
     let _ = screen.forward_host_query(
-        PaneId::Plugin(crate::PluginId(99)),
+        PaneId::Plugin(crate::PluginId::new(99)),
         HostQuery::ColorPaletteMode,
     );
 
@@ -629,7 +639,7 @@ fn color_palette_mode_query_answers_with_the_pinned_hue() {
     let _ = capture.drain_pty_writes();
 
     let _ = screen.forward_host_query(
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         HostQuery::ColorPaletteMode,
     );
 
@@ -637,7 +647,7 @@ fn color_palette_mode_query_answers_with_the_pinned_hue() {
     assert_eq!(writes.len(), 1, "exactly one pty reply expected");
     assert_eq!(
         writes[0],
-        (b"\x1b[?997;2n".to_vec(), TerminalId(3)),
+        (b"\x1b[?997;2n".to_vec(), TerminalId::new(3)),
         "a pinned session tells apps the pinned hue, not the host's or a guess"
     );
 }

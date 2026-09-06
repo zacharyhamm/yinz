@@ -607,7 +607,7 @@ mod tests {
             panes: Vec::new(),
         })?;
         sender.send(RecorderInstruction::PaneClosed {
-            terminal_id: crate::TerminalId(1),
+            terminal_id: crate::TerminalId::new(1),
             elapsed_us: ElapsedMicros::new(3),
         })?;
         sender.send(RecorderInstruction::Stop)?;
@@ -658,7 +658,7 @@ mod tests {
                 sender
                     .send(RecorderInstruction::PaneClosed {
                         elapsed_us: ElapsedMicros::new(3),
-                        terminal_id: crate::TerminalId(1),
+                        terminal_id: crate::TerminalId::new(1),
                     })
                     .unwrap();
                 sender
@@ -781,7 +781,7 @@ mod tests {
             .unwrap();
         sender
             .send(RecorderInstruction::PaneClosed {
-                terminal_id: crate::TerminalId(1),
+                terminal_id: crate::TerminalId::new(1),
                 elapsed_us: ElapsedMicros::new(2),
             })
             .unwrap();
@@ -906,9 +906,9 @@ mod tests {
             rows: 24,
         };
         handle.pane_metadata(vec![metadata]);
-        handle.output(crate::TerminalId(1), b"hello".to_vec());
-        handle.input(crate::TerminalId(1), b"input".to_vec());
-        handle.resize(crate::TerminalId(1), 100, 30);
+        handle.output(crate::TerminalId::new(1), b"hello".to_vec());
+        handle.input(crate::TerminalId::new(1), b"input".to_vec());
+        handle.resize(crate::TerminalId::new(1), 100, 30);
         handle.stop();
         thread.join().unwrap();
         // open DB and assert
@@ -961,7 +961,7 @@ mod tests {
         };
         // this should not block, should drop and metric increment, but not disable
         let start = Instant::now();
-        handle.output(crate::TerminalId(1), b"y".to_vec());
+        handle.output(crate::TerminalId::new(1), b"y".to_vec());
         let elapsed = start.elapsed();
         assert!(elapsed < Duration::from_millis(100), "should not block");
         assert!(
@@ -970,7 +970,7 @@ mod tests {
         );
         assert_eq!(dropped.load(Ordering::Relaxed), 1);
         // second call should also try and drop, not be no-op due to disabled
-        handle.output(crate::TerminalId(1), b"z".to_vec());
+        handle.output(crate::TerminalId::new(1), b"z".to_vec());
         assert_eq!(sender.len(), 1); // still full, not increased
         assert_eq!(dropped.load(Ordering::Relaxed), 2);
         assert!(enabled.load(Ordering::Relaxed));
@@ -986,7 +986,7 @@ mod tests {
             enabled: enabled2.clone(),
             dropped: dropped2.clone(),
         };
-        handle2.output(crate::TerminalId(1), b"a".to_vec());
+        handle2.output(crate::TerminalId::new(1), b"a".to_vec());
         assert!(
             !enabled2.load(Ordering::Relaxed),
             "disconnected should disable"
@@ -1041,13 +1041,13 @@ mod tests {
             enabled: enabled.clone(),
             dropped: dropped.clone(),
         };
-        handle.input(crate::TerminalId(1), b"secret".to_vec());
+        handle.input(crate::TerminalId::new(1), b"secret".to_vec());
         assert!(
             receiver.is_empty(),
             "input should be ignored when capture_input false"
         );
         // output should still work
-        handle.output(crate::TerminalId(1), b"hello".to_vec());
+        handle.output(crate::TerminalId::new(1), b"hello".to_vec());
         assert_eq!(receiver.len(), 1);
     }
 }

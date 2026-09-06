@@ -923,13 +923,13 @@ fn warp_replay_notice(dropped: u64) -> Vec<u8> {
 fn pane_start_failed(terminal_id: TerminalId, host: &str, err: anyhow::Error) -> anyhow::Error {
     if let Some(ZellijError::CommandNotFound { command, .. }) = err.downcast_ref::<ZellijError>() {
         return ZellijError::CommandNotFound {
-            terminal_id: terminal_id.0,
+            terminal_id,
             command: command.clone(),
         }
         .into();
     }
     ZellijError::PaneStartFailed {
-        terminal_id: terminal_id.0,
+        terminal_id,
         message: format!("could not open a pane on {host}: {err:#}"),
     }
     .into()

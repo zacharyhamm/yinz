@@ -488,7 +488,7 @@ fn handshake_and_spawn(
     write_msg(
         &mut stream,
         &ServerToHostMsg::Spawn {
-            terminal_id: params.terminal_id.0,
+            terminal_id: params.terminal_id.get(),
             session_name: params.session_name.clone(),
             cmd: params.cmd.clone(),
             failover_cmd: params.failover_cmd.clone(),
@@ -515,7 +515,7 @@ fn handshake_and_spawn(
             // The server checks this before spawning a supervisor at all, so
             // reaching it means the command vanished in between.
             SpawnFailureKind::CommandNotFound => Err(ZellijError::CommandNotFound {
-                terminal_id: params.terminal_id.0,
+                terminal_id: params.terminal_id,
                 command: params.cmd.command.to_string_lossy().to_string(),
             }
             .into()),
@@ -697,7 +697,7 @@ fn try_attach(params: &AttachParams<'_>) -> Result<PendingAttach> {
         &ServerToHostMsg::Attach {
             protocol_version: PROTOCOL_VERSION,
             zellij_version: VERSION.to_owned(),
-            terminal_id: params.terminal_id.0,
+            terminal_id: params.terminal_id.get(),
             session_name: params.session_name.clone(),
         },
     )

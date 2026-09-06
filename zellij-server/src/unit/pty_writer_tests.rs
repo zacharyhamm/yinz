@@ -230,7 +230,7 @@ fn run_pty_writer(
 #[test]
 fn full_write_completes_immediately() {
     let mock = MockServerOsApi::new();
-    mock.set_behavior(crate::TerminalId(1), WriteBehavior::AcceptAll);
+    mock.set_behavior(crate::TerminalId::new(1), WriteBehavior::AcceptAll);
     let mock_clone = mock.clone();
 
     let (bus, sender) = make_test_bus(mock);
@@ -239,12 +239,12 @@ fn full_write_completes_immediately() {
         sender,
         vec![PtyWriteInstruction::Write(
             b"hello world".to_vec(),
-            crate::TerminalId(1),
+            crate::TerminalId::new(1),
             None,
         )],
     );
 
-    let written = mock_clone.get_written_bytes(crate::TerminalId(1));
+    let written = mock_clone.get_written_bytes(crate::TerminalId::new(1));
     assert_eq!(written, b"hello world");
 }
 
@@ -252,7 +252,7 @@ fn full_write_completes_immediately() {
 fn partial_write_is_buffered_and_drained() {
     let mock = MockServerOsApi::new();
     // Accept only 3 bytes at a time
-    mock.set_behavior(crate::TerminalId(1), WriteBehavior::AcceptAtMost(3));
+    mock.set_behavior(crate::TerminalId::new(1), WriteBehavior::AcceptAtMost(3));
     let mock_clone = mock.clone();
 
     let (bus, sender) = make_test_bus(mock);
@@ -261,12 +261,12 @@ fn partial_write_is_buffered_and_drained() {
         sender,
         vec![PtyWriteInstruction::Write(
             b"abcdefghij".to_vec(),
-            crate::TerminalId(1),
+            crate::TerminalId::new(1),
             None,
         )],
     );
 
-    let written = mock_clone.get_written_bytes(crate::TerminalId(1));
+    let written = mock_clone.get_written_bytes(crate::TerminalId::new(1));
     assert_eq!(
         written, b"abcdefghij",
         "all bytes should eventually be written"
@@ -277,9 +277,9 @@ fn partial_write_is_buffered_and_drained() {
 fn eagain_on_one_terminal_does_not_block_another() {
     let mock = MockServerOsApi::new();
     // Terminal 1 is stuck (EAGAIN)
-    mock.set_behavior(crate::TerminalId(1), WriteBehavior::AcceptNone);
+    mock.set_behavior(crate::TerminalId::new(1), WriteBehavior::AcceptNone);
     // Terminal 2 accepts everything
-    mock.set_behavior(crate::TerminalId(2), WriteBehavior::AcceptAll);
+    mock.set_behavior(crate::TerminalId::new(2), WriteBehavior::AcceptAll);
     let mock_clone = mock.clone();
 
     let (bus, sender) = make_test_bus(mock);
@@ -287,13 +287,13 @@ fn eagain_on_one_terminal_does_not_block_another() {
         bus,
         sender,
         vec![
-            PtyWriteInstruction::Write(b"stuck data".to_vec(), crate::TerminalId(1), None),
-            PtyWriteInstruction::Write(b"good data".to_vec(), crate::TerminalId(2), None),
+            PtyWriteInstruction::Write(b"stuck data".to_vec(), crate::TerminalId::new(1), None),
+            PtyWriteInstruction::Write(b"good data".to_vec(), crate::TerminalId::new(2), None),
         ],
     );
 
     // Terminal 2 should have received its bytes despite terminal 1 being stuck
-    let written_2 = mock_clone.get_written_bytes(crate::TerminalId(2));
+    let written_2 = mock_clone.get_written_bytes(crate::TerminalId::new(2));
     assert_eq!(written_2, b"good data");
 
     // Terminal 1 data is lost (stuck until Exit, then dropped)
@@ -304,7 +304,7 @@ fn eagain_on_one_terminal_does_not_block_another() {
 fn writes_to_same_terminal_preserve_order() {
     let mock = MockServerOsApi::new();
     // Accept only 4 bytes at a time — forces buffering
-    mock.set_behavior(crate::TerminalId(1), WriteBehavior::AcceptAtMost(4));
+    mock.set_behavior(crate::TerminalId::new(1), WriteBehavior::AcceptAtMost(4));
     let mock_clone = mock.clone();
 
     let (bus, sender) = make_test_bus(mock);
@@ -312,13 +312,13 @@ fn writes_to_same_terminal_preserve_order() {
         bus,
         sender,
         vec![
-            PtyWriteInstruction::Write(b"AAAA".to_vec(), crate::TerminalId(1), None),
-            PtyWriteInstruction::Write(b"BBBB".to_vec(), crate::TerminalId(1), None),
-            PtyWriteInstruction::Write(b"CCCC".to_vec(), crate::TerminalId(1), None),
+            PtyWriteInstruction::Write(b"AAAA".to_vec(), crate::TerminalId::new(1), None),
+            PtyWriteInstruction::Write(b"BBBB".to_vec(), crate::TerminalId::new(1), None),
+            PtyWriteInstruction::Write(b"CCCC".to_vec(), crate::TerminalId::new(1), None),
         ],
     );
 
-    let written = mock_clone.get_written_bytes(crate::TerminalId(1));
+    let written = mock_clone.get_written_bytes(crate::TerminalId::new(1));
     assert_eq!(
         written, b"AAAABBBBCCCC",
         "writes must be delivered in order"
@@ -329,7 +329,7 @@ fn writes_to_same_terminal_preserve_order() {
 fn memory_cap_drops_buffer_when_exceeded() {
     let mock = MockServerOsApi::new();
     // Terminal is stuck — nothing drains
-    mock.set_behavior(crate::TerminalId(1), WriteBehavior::AcceptNone);
+    mock.set_behavior(crate::TerminalId::new(1), WriteBehavior::AcceptNone);
     let mock_clone = mock.clone();
 
     let (bus, sender) = make_test_bus(mock);
@@ -340,7 +340,7 @@ fn memory_cap_drops_buffer_when_exceeded() {
     for _ in 0..(MAX_PENDING_BYTES / chunk_size + 1) {
         instructions.push(PtyWriteInstruction::Write(
             vec![0x42; chunk_size],
-            crate::TerminalId(1),
+            crate::TerminalId::new(1),
             None,
         ));
     }
@@ -348,14 +348,14 @@ fn memory_cap_drops_buffer_when_exceeded() {
     // the writer thread is still functional
     instructions.push(PtyWriteInstruction::Write(
         b"still alive".to_vec(),
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         None,
     ));
-    mock_clone.set_behavior(crate::TerminalId(2), WriteBehavior::AcceptAll);
+    mock_clone.set_behavior(crate::TerminalId::new(2), WriteBehavior::AcceptAll);
 
     run_pty_writer(bus, sender, instructions);
 
-    let written_2 = mock_clone.get_written_bytes(crate::TerminalId(2));
+    let written_2 = mock_clone.get_written_bytes(crate::TerminalId::new(2));
     assert_eq!(
         written_2, b"still alive",
         "writer thread should continue functioning after dropping a buffer"
@@ -365,8 +365,8 @@ fn memory_cap_drops_buffer_when_exceeded() {
 #[test]
 fn write_error_clears_terminal_queue() {
     let mock = MockServerOsApi::new();
-    mock.set_behavior(crate::TerminalId(1), WriteBehavior::Error);
-    mock.set_behavior(crate::TerminalId(2), WriteBehavior::AcceptAll);
+    mock.set_behavior(crate::TerminalId::new(1), WriteBehavior::Error);
+    mock.set_behavior(crate::TerminalId::new(2), WriteBehavior::AcceptAll);
     let mock_clone = mock.clone();
 
     let (bus, sender) = make_test_bus(mock);
@@ -374,21 +374,21 @@ fn write_error_clears_terminal_queue() {
         bus,
         sender,
         vec![
-            PtyWriteInstruction::Write(b"will fail".to_vec(), crate::TerminalId(1), None),
-            PtyWriteInstruction::Write(b"also queued".to_vec(), crate::TerminalId(1), None),
-            PtyWriteInstruction::Write(b"should work".to_vec(), crate::TerminalId(2), None),
+            PtyWriteInstruction::Write(b"will fail".to_vec(), crate::TerminalId::new(1), None),
+            PtyWriteInstruction::Write(b"also queued".to_vec(), crate::TerminalId::new(1), None),
+            PtyWriteInstruction::Write(b"should work".to_vec(), crate::TerminalId::new(2), None),
         ],
     );
 
     // Terminal 1 should have nothing written (error cleared queue)
-    let written_1 = mock_clone.get_written_bytes(crate::TerminalId(1));
+    let written_1 = mock_clone.get_written_bytes(crate::TerminalId::new(1));
     assert!(
         written_1.is_empty(),
         "errored terminal should have no written bytes"
     );
 
     // Terminal 2 should be unaffected
-    let written_2 = mock_clone.get_written_bytes(crate::TerminalId(2));
+    let written_2 = mock_clone.get_written_bytes(crate::TerminalId::new(2));
     assert_eq!(written_2, b"should work");
 }
 
@@ -396,7 +396,7 @@ fn write_error_clears_terminal_queue() {
 fn pty_writer_records_successful_input() {
     // Mock with AcceptAtMost(2) to cause two partial writes of "abcd" -> "ab" + "cd"
     let mock = MockServerOsApi::new();
-    mock.set_behavior(crate::TerminalId(1), WriteBehavior::AcceptAtMost(2));
+    mock.set_behavior(crate::TerminalId::new(1), WriteBehavior::AcceptAtMost(2));
     let mock_clone = mock.clone();
 
     // Create recorder channel
@@ -420,7 +420,7 @@ fn pty_writer_records_successful_input() {
         sender,
         vec![PtyWriteInstruction::Write(
             b"abcd".to_vec(),
-            crate::TerminalId(1),
+            crate::TerminalId::new(1),
             None,
         )],
     );
@@ -466,7 +466,7 @@ fn pty_writer_records_successful_resize() {
         bus,
         sender,
         vec![PtyWriteInstruction::ResizePty(
-            crate::TerminalId(1),
+            crate::TerminalId::new(1),
             80,
             24,
             None,
@@ -507,8 +507,8 @@ fn pty_writer_records_successful_resize() {
         sender,
         vec![
             PtyWriteInstruction::StartCachingResizes,
-            PtyWriteInstruction::ResizePty(crate::TerminalId(1), 80, 24, None, None),
-            PtyWriteInstruction::ResizePty(crate::TerminalId(1), 100, 30, None, None),
+            PtyWriteInstruction::ResizePty(crate::TerminalId::new(1), 80, 24, None, None),
+            PtyWriteInstruction::ResizePty(crate::TerminalId::new(1), 100, 30, None, None),
             PtyWriteInstruction::ApplyCachedResizes,
         ],
     );
@@ -650,7 +650,7 @@ fn pty_writer_records_successful_resize() {
     // send resize then exit
     sender2_ctx
         .send(PtyWriteInstruction::ResizePty(
-            crate::TerminalId(2),
+            crate::TerminalId::new(2),
             100,
             30,
             None,

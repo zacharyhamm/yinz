@@ -493,10 +493,10 @@ end
 fn test_env() -> PluginEnv {
     PluginEnv {
         response_sink: ResponseSink::WasiStdin,
-        plugin_id: crate::PluginId(1),
+        plugin_id: crate::PluginId::new(1),
         cancel: Default::default(),
-        client_id: crate::ClientId(1),
-        owner_client_id: crate::ClientId(1),
+        client_id: crate::ClientId::new(1),
+        owner_client_id: crate::ClientId::new(1),
         plugin: PluginConfig {
             path: PathBuf::from("test.lua"),
             _allow_exec_host_cmd: false,
@@ -531,7 +531,7 @@ fn test_env() -> PluginEnv {
         cancel_tripped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         stdin_pipe: Arc::new(Mutex::new(VecDeque::new())),
         stdout_pipe: Arc::new(Mutex::new(VecDeque::new())),
-        store_limits: PluginResourceLimits::new(crate::PluginId(1)),
+        store_limits: PluginResourceLimits::new(crate::PluginId::new(1)),
     }
 }
 
@@ -731,7 +731,7 @@ fn an_agent_event_arrives_flat_and_typed() {
     .unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
     let event = Event::AgentEvent(AgentEvent {
-        pane_id: 7,
+        pane_id: zellij_types::internal_ids::TerminalId::new(7),
         kind: "claude".to_owned(),
         hook: "Stop".to_owned(),
         state: Some(zellij_types::agent::AgentState::Idle),
@@ -1988,7 +1988,7 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
     use zellij_types::agent::AgentState;
     let payload =
         |state: AgentState, detail: Option<&str>| zellij_types::data::HookPayload::Agent {
-            pane_id: 7,
+            pane_id: zellij_types::internal_ids::TerminalId::new(7),
             agent: zellij_types::agent::AgentInfo {
                 kind: "claude".to_owned(),
                 state,
@@ -2025,7 +2025,7 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
         notifications(&screen_receiver),
         vec![(
             "claude in pane 7: Allow Bash(cargo test)?".to_owned(),
-            Some(PaneId::Terminal(crate::TerminalId(7))),
+            Some(PaneId::Terminal(crate::TerminalId::new(7))),
         )],
         "a waiting agent is announced, and the toast focuses its pane"
     );
@@ -2040,7 +2040,7 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
         notifications(&screen_receiver),
         vec![(
             "claude in pane 7: is waiting for you".to_owned(),
-            Some(PaneId::Terminal(crate::TerminalId(7))),
+            Some(PaneId::Terminal(crate::TerminalId::new(7))),
         )],
         "a wait with no detail still says who is waiting"
     );
@@ -2340,7 +2340,7 @@ fn the_todo_examples_load_and_the_pane_renders_its_keys() {
     // The discover broadcast is how a hocus reload finds an extension that is already running,
     // and re-registering marshals the whole tool list.
     let discover = zellij_types::data::PipeMessage::new(
-        zellij_types::data::PipeSource::Plugin(1),
+        zellij_types::data::PipeSource::Plugin(zellij_types::internal_ids::PluginId::new(1)),
         "hocus_extension_discover",
         &None,
         &None,
@@ -2926,7 +2926,7 @@ fn a_cli_pipes_pane_reaches_lua_on_the_message() {
         &None,
         false,
     );
-    message.pane_id = Some(PaneId::Terminal(TerminalId(7)));
+    message.pane_id = Some(PaneId::Terminal(TerminalId::new(7)));
     assert!(plugin.pipe(&message).unwrap());
     assert_eq!(
         String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
@@ -3106,7 +3106,7 @@ fn a_plugin_can_set_a_panes_agent_record() {
     assert_eq!(records.len(), 2, "{records:?}");
     assert_eq!(
         records[0].0,
-        crate::panes::PaneId::Terminal(crate::TerminalId(3))
+        crate::panes::PaneId::Terminal(crate::TerminalId::new(3))
     );
     assert_eq!(
         records[0].1,
@@ -3141,10 +3141,13 @@ fn a_plugin_can_set_a_panes_agent_record() {
         runs,
         vec![
             (
-                crate::panes::PaneId::Terminal(crate::TerminalId(3)),
+                crate::panes::PaneId::Terminal(crate::TerminalId::new(3)),
                 Some("codex:s1".to_owned())
             ),
-            (crate::panes::PaneId::Terminal(crate::TerminalId(3)), None),
+            (
+                crate::panes::PaneId::Terminal(crate::TerminalId::new(3)),
+                None
+            ),
         ],
         "leaving `run_id` out clears it"
     );
@@ -3739,7 +3742,7 @@ fn a_hook_event_has_its_point_and_payload() {
     let event = Event::Hook {
         point: HookPoint::AgentWaiting,
         payload: HookPayload::Agent {
-            pane_id: 7,
+            pane_id: zellij_types::internal_ids::TerminalId::new(7),
             agent: AgentInfo {
                 kind: "claude".to_owned(),
                 state: AgentState::Waiting,
@@ -3792,7 +3795,7 @@ fn a_hook_handler_registered_with_on_runs() {
         .update(&Event::Hook {
             point: HookPoint::PaneExit,
             payload: zellij_types::data::HookPayload::PaneExit {
-                pane_id: 7,
+                pane_id: zellij_types::internal_ids::TerminalId::new(7),
                 exit_code: None,
                 cwd: None,
                 command: None,
@@ -3828,8 +3831,11 @@ fn a_command_result_has_named_fields_and_string_output() {
 /// fields are walked by position rather than read off the list's length.
 #[test]
 fn an_absent_exit_code_does_not_shift_the_fields_after_it() {
-    let event =
-        Event::CommandPaneExited(7, None, BTreeMap::from([("a".to_owned(), "b".to_owned())]));
+    let event = Event::CommandPaneExited(
+        zellij_types::internal_ids::TerminalId::new(7),
+        None,
+        BTreeMap::from([("a".to_owned(), "b".to_owned())]),
+    );
     let out = describe_event(
         event,
         r#"return tostring(event.pane_id) .. "|" .. tostring(event.exit_code) .. "|" .. event.context.a"#,
@@ -3895,7 +3901,7 @@ fn a_render_report_can_be_looked_up_by_pane() {
     use {zellij_types::data::PaneContents, zellij_types::data::PaneId};
     let mut report = std::collections::HashMap::new();
     report.insert(
-        PaneId::Terminal(TerminalId(3)),
+        PaneId::Terminal(TerminalId::new(3)),
         PaneContents {
             viewport: vec!["hello".to_owned()],
             ..Default::default()
@@ -5337,7 +5343,11 @@ fn workflow_context(step: &str) -> BTreeMap<String, String> {
 }
 
 fn step_exited(step: &str, code: Option<i32>) -> Event {
-    Event::CommandPaneExited(7, code, workflow_context(step))
+    Event::CommandPaneExited(
+        zellij_types::internal_ids::TerminalId::new(7),
+        code,
+        workflow_context(step),
+    )
 }
 
 fn logged(plugin: &mut super::LuaPlugin) -> String {
@@ -5402,7 +5412,10 @@ fn a_workflow_subscribes_before_opening_its_first_pane() {
         plugin.update(&Event::InputReceived).unwrap();
         assert_eq!(logged(&mut plugin), "");
         plugin
-            .update(&Event::CommandPaneOpened(7, workflow_context("1")))
+            .update(&Event::CommandPaneOpened(
+                zellij_types::internal_ids::TerminalId::new(7),
+                workflow_context("1"),
+            ))
             .unwrap();
         assert_eq!(logged(&mut plugin), "stdin:hello timeout");
         plugin.update(&step_exited("1", Some(0))).unwrap();
@@ -5543,7 +5556,10 @@ fn a_step_timeout_escalates_from_sigint_to_sigkill() {
         r#"steps = { { path = "a", timeout = 0 }, { path = "b" } }, kill_grace = 0,"#,
     );
     plugin
-        .update(&Event::CommandPaneOpened(7, workflow_context("1")))
+        .update(&Event::CommandPaneOpened(
+            zellij_types::internal_ids::TerminalId::new(7),
+            workflow_context("1"),
+        ))
         .unwrap();
     plugin.update(&Event::Timer(1.0)).unwrap();
     plugin.update(&Event::Timer(1.0)).unwrap();
@@ -5566,13 +5582,19 @@ fn a_queued_steps_timeout_starts_only_when_that_step_does() {
     // A manual rerun of step 1 is ahead of step 2 in the pane. Neither that stale start nor a
     // timer event may interrupt it on step 2's behalf.
     plugin
-        .update(&Event::CommandPaneReRun(7, workflow_context("1")))
+        .update(&Event::CommandPaneReRun(
+            zellij_types::internal_ids::TerminalId::new(7),
+            workflow_context("1"),
+        ))
         .unwrap();
     plugin.update(&Event::Timer(1.0)).unwrap();
     assert_eq!(logged(&mut plugin), "open:a step1=0 run:b:true");
 
     plugin
-        .update(&Event::CommandPaneReRun(7, workflow_context("2")))
+        .update(&Event::CommandPaneReRun(
+            zellij_types::internal_ids::TerminalId::new(7),
+            workflow_context("2"),
+        ))
         .unwrap();
     plugin.update(&Event::Timer(1.0)).unwrap();
     assert_eq!(logged(&mut plugin), "open:a step1=0 run:b:true sigint");
@@ -5596,7 +5618,7 @@ fn the_workflows_pane_closing_ends_it() {
     let mut plugin = workflow_plugin(r#"steps = { { path = "a" }, { path = "b" } },"#);
     plugin
         .update(&Event::PaneClosed(zellij_types::data::PaneId::Terminal(
-            zellij_types::internal_ids::TerminalId(7),
+            zellij_types::internal_ids::TerminalId::new(7),
         )))
         .unwrap();
     assert_eq!(logged(&mut plugin), "open:a done:pane_closed");
@@ -5658,7 +5680,10 @@ fn a_steps_stdin_is_written_when_the_step_starts() {
     let mut plugin =
         workflow_plugin(r#"steps = { { path = "a", stdin = "secret" }, { path = "b" } },"#);
     plugin
-        .update(&Event::CommandPaneOpened(7, workflow_context("1")))
+        .update(&Event::CommandPaneOpened(
+            zellij_types::internal_ids::TerminalId::new(7),
+            workflow_context("1"),
+        ))
         .unwrap();
     assert_eq!(
         logged(&mut plugin),
@@ -6281,15 +6306,23 @@ fn pane_exit_resolves_on_close_as_well_as_on_exit() {
         "#,
     );
     plugin
-        .update(&Event::CommandPaneExited(8, Some(1), BTreeMap::new()))
+        .update(&Event::CommandPaneExited(
+            zellij_types::internal_ids::TerminalId::new(8),
+            Some(1),
+            BTreeMap::new(),
+        ))
         .unwrap();
     assert_eq!(logged(&mut plugin), "", "another pane");
     plugin
-        .update(&Event::CommandPaneExited(7, Some(3), BTreeMap::new()))
+        .update(&Event::CommandPaneExited(
+            zellij_types::internal_ids::TerminalId::new(7),
+            Some(3),
+            BTreeMap::new(),
+        ))
         .unwrap();
     plugin
         .update(&Event::PaneClosed(zellij_types::data::PaneId::Terminal(
-            zellij_types::internal_ids::TerminalId(7),
+            zellij_types::internal_ids::TerminalId::new(7),
         )))
         .unwrap();
     assert_eq!(logged(&mut plugin), "exit:3 closed:true");
@@ -6701,7 +6734,7 @@ fn agent_send_writes_a_bracketed_paste_then_enter() {
 
 fn agent_event(pane_id: u32, hook: &str, state: Option<zellij_types::agent::AgentState>) -> Event {
     Event::AgentEvent(zellij_types::agent::AgentEvent {
-        pane_id,
+        pane_id: crate::TerminalId::new(pane_id),
         kind: "claude".to_owned(),
         hook: hook.to_owned(),
         state,
@@ -6872,7 +6905,7 @@ fn an_rpc_call_is_answered_by_the_handler_and_the_reply_resumes_the_caller() {
         .to_owned();
     let call = |name: &str, payload: &str| {
         zellij_types::data::PipeMessage::new(
-            zellij_types::data::PipeSource::Plugin(3),
+            zellij_types::data::PipeSource::Plugin(zellij_types::internal_ids::PluginId::new(3)),
             name,
             &Some(payload.to_owned()),
             &None,
@@ -7004,7 +7037,7 @@ fn hocus_tools_registers_once_launched_and_answers_calls_over_rpc() {
         .unwrap();
     let pipe = |name: &str, payload: &str| {
         zellij_types::data::PipeMessage::new(
-            zellij_types::data::PipeSource::Plugin(3),
+            zellij_types::data::PipeSource::Plugin(zellij_types::internal_ids::PluginId::new(3)),
             name,
             &Some(payload.to_owned()),
             &None,

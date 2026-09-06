@@ -182,9 +182,7 @@ fn report_parts(
                     .unwrap_or(AgentReportState::Clear);
             },
             Action::AgentEvent(e) => {
-                pane = Some(PaneId::Terminal(
-                    zellij_types::internal_ids::TerminalId::new(e.pane_id),
-                ));
+                pane = Some(PaneId::Terminal(e.pane_id));
                 event = Some(e);
             },
             _ => return Err(anyhow!("unexpected agent report action")),

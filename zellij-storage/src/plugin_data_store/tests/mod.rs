@@ -44,8 +44,8 @@ const OWNER: &str = "zellij:test";
 
 /// The plugin and client a watch is registered for. Shared with the watch property test in
 /// `oracle`.
-const PLUGIN: PluginId = PluginId(7);
-const CLIENT: ClientId = ClientId(1);
+const PLUGIN: PluginId = PluginId::new(7);
+const CLIENT: ClientId = ClientId::new(1);
 
 /// The touched-entity set `refresh_watches` filters on, for a write to one entity.
 fn touched(entity: &str) -> BTreeSet<String> {

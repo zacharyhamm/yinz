@@ -275,7 +275,7 @@ fn state_with_worktrees() -> State {
 /// `branch`.
 fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(1),
+        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(1)),
         name: wire::AGENT_SNAPSHOT.to_owned(),
         payload: Some(
             serde_json::to_string(&PollReply {
@@ -684,7 +684,7 @@ fn agent_snapshot(seq: u64) -> PipeMessage {
 /// A snapshot carrying `seq` and the panes it saw.
 fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(1),
+        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(1)),
         name: wire::AGENT_SNAPSHOT.to_owned(),
         payload: Some(
             serde_json::to_string(&PollReply {
@@ -714,7 +714,7 @@ fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
 /// with the nested layout, so this is the shape a real session produces.
 fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(1),
+        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(1)),
         name: wire::AGENT_SNAPSHOT.to_owned(),
         payload: Some(
             serde_json::to_string(&PollReply {
@@ -757,7 +757,7 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
 /// As a plugin asker sends one: a plugin-sourced pipe carrying a `wire::Ask`.
 fn ask(text: &str) -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(7),
+        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(7)),
         name: wire::ASK.to_owned(),
         payload: Some(
             serde_json::to_string(&wire::Ask {
@@ -822,7 +822,7 @@ mod web_search;
 #[test]
 fn a_pane_renamed_from_outside_is_titled_again_on_the_next_render() {
     let mut state = idle_state();
-    state.own_plugin_id = 7;
+    state.own_plugin_id = zellij_tile::prelude::PluginId::new(7);
     state.last_pane_title = Some("hocus — a-model".to_owned());
 
     let mut own = pane_info(7, "hocus — a-model", None);

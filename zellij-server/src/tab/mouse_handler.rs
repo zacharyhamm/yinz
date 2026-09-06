@@ -1197,7 +1197,7 @@ impl MouseHandler {
             .unwrap_or_default();
         let link = pane.plugin_highlight_at(&relative_position).map(
             |(plugin_id, pattern, matched, context)| ContextMenuLink {
-                plugin_id: plugin_id.0,
+                plugin_id,
                 pattern,
                 matched,
                 context,
@@ -2452,8 +2452,8 @@ mod tests {
 
     fn mouse_event_context(mouse_scroll_resize: bool) -> MouseEventContext {
         MouseEventContext {
-            pane_id_at_position: Some(PaneId::Terminal(TerminalId(1))),
-            active_pane_id: Some(PaneId::Terminal(TerminalId(1))),
+            pane_id_at_position: Some(PaneId::Terminal(TerminalId::new(1))),
+            active_pane_id: Some(PaneId::Terminal(TerminalId::new(1))),
             floating_visible: false,
             pane_being_resized: false,
             selecting_with_mouse: false,
@@ -2502,7 +2502,7 @@ mod tests {
     /// why the two are separate actions rather than one action with a flag.
     #[test]
     fn a_press_on_an_overlay_frame_starts_an_overlay_move_and_not_a_floating_one() {
-        let overlay = PaneId::Terminal(TerminalId(9));
+        let overlay = PaneId::Terminal(TerminalId::new(9));
         let mut context = mouse_event_context(false);
         context.floating_visible = true;
         context.pane_id_at_position = Some(overlay);
@@ -2520,7 +2520,7 @@ mod tests {
         );
 
         // the same click on a pane that really is under the visible layer still moves it
-        context.clicked_pane = Some(frame_click_on(PaneId::Terminal(TerminalId(1)), false));
+        context.clicked_pane = Some(frame_click_on(PaneId::Terminal(TerminalId::new(1)), false));
         assert!(matches!(
             MouseHandler::determine_mouse_action(&event, &context).unwrap(),
             MouseAction::StartMovingFloatingPane { .. }
@@ -2534,7 +2534,7 @@ mod tests {
     /// overlay is covering.
     #[test]
     fn a_press_on_an_expanded_overlay_s_frame_is_a_click_and_not_a_move() {
-        let overlay = PaneId::Terminal(TerminalId(9));
+        let overlay = PaneId::Terminal(TerminalId::new(9));
         let mut context = mouse_event_context(false);
         context.floating_visible = true;
         context.pane_id_at_position = Some(overlay);
@@ -2560,7 +2560,7 @@ mod tests {
     /// The floating branch would refuse this press outright.
     #[test]
     fn an_overlay_frame_drags_with_the_floating_layer_down() {
-        let overlay = PaneId::Terminal(TerminalId(9));
+        let overlay = PaneId::Terminal(TerminalId::new(9));
         let mut context = mouse_event_context(false);
         context.floating_visible = false;
         context.pane_id_at_position = Some(overlay);
@@ -2577,7 +2577,10 @@ mod tests {
     /// come before the move: a press on the divider drags the divider, not the panel.
     #[test]
     fn a_press_on_a_linked_overlay_seam_starts_a_seam_drag_and_not_a_move() {
-        let (left, right) = (PaneId::Plugin(PluginId(8)), PaneId::Plugin(PluginId(9)));
+        let (left, right) = (
+            PaneId::Plugin(PluginId::new(8)),
+            PaneId::Plugin(PluginId::new(9)),
+        );
         let mut context = mouse_event_context(false);
         context.pane_id_at_position = Some(right);
         let mut details = frame_click_on(right, true);
@@ -2650,7 +2653,7 @@ mod tests {
     /// a live terminal or plugin, and must not pick the popup up.
     #[test]
     fn a_press_inside_an_overlay_does_not_start_a_move() {
-        let overlay = PaneId::Terminal(TerminalId(9));
+        let overlay = PaneId::Terminal(TerminalId::new(9));
         let mut context = mouse_event_context(false);
         context.floating_visible = true;
         context.pane_id_at_position = Some(overlay);
@@ -2671,7 +2674,7 @@ mod tests {
     /// as it is on the floating branch.
     #[test]
     fn an_intercepted_overlay_frame_press_is_not_a_move() {
-        let overlay = PaneId::Plugin(PluginId(9));
+        let overlay = PaneId::Plugin(PluginId::new(9));
         let mut context = mouse_event_context(false);
         context.pane_id_at_position = Some(overlay);
         let mut details = frame_click_on(overlay, true);
@@ -2722,10 +2725,10 @@ mod tests {
     /// whole mouse event.
     #[test]
     fn a_plain_press_on_an_overlay_frame_does_not_start_a_resize() {
-        let overlay = PaneId::Terminal(TerminalId(9));
+        let overlay = PaneId::Terminal(TerminalId::new(9));
         let mut context = mouse_event_context(false);
         context.pane_id_at_position = Some(overlay);
-        context.active_pane_id = Some(PaneId::Terminal(TerminalId(1)));
+        context.active_pane_id = Some(PaneId::Terminal(TerminalId::new(1)));
         context.clicked_pane = Some(frame_click_on(overlay, true));
 
         let action = MouseHandler::determine_mouse_action(
@@ -2743,10 +2746,10 @@ mod tests {
     /// rather than being handed to the floating or tiled one, neither of which holds it.
     #[test]
     fn a_ctrl_press_on_an_overlay_frame_starts_an_overlay_resize() {
-        let overlay = PaneId::Terminal(TerminalId(9));
+        let overlay = PaneId::Terminal(TerminalId::new(9));
         let mut context = mouse_event_context(false);
         context.pane_id_at_position = Some(overlay);
-        context.active_pane_id = Some(PaneId::Terminal(TerminalId(1)));
+        context.active_pane_id = Some(PaneId::Terminal(TerminalId::new(1)));
         context.clicked_pane = Some(frame_click_on(overlay, true));
 
         let mut event = MouseEvent::new_left_press_event(Position::new(1, 1));
@@ -2769,10 +2772,10 @@ mod tests {
     /// resolve.
     #[test]
     fn a_ctrl_press_on_a_modal_frame_does_not_start_a_resize() {
-        let modal = PaneId::Terminal(TerminalId(9));
+        let modal = PaneId::Terminal(TerminalId::new(9));
         let mut context = mouse_event_context(false);
         context.pane_id_at_position = Some(modal);
-        context.active_pane_id = Some(PaneId::Terminal(TerminalId(1)));
+        context.active_pane_id = Some(PaneId::Terminal(TerminalId::new(1)));
         context.clicked_pane = Some(frame_click_on_modal(modal));
 
         let mut event = MouseEvent::new_left_press_event(Position::new(1, 1));
@@ -2784,7 +2787,7 @@ mod tests {
     /// A modal is still draggable - only its *size* is the plugin's.
     #[test]
     fn a_plain_press_on_a_modal_frame_still_starts_a_move() {
-        let modal = PaneId::Terminal(TerminalId(9));
+        let modal = PaneId::Terminal(TerminalId::new(9));
         let mut context = mouse_event_context(false);
         context.pane_id_at_position = Some(modal);
         context.clicked_pane = Some(frame_click_on_modal(modal));
@@ -2806,10 +2809,10 @@ mod tests {
     /// resizing whatever the client was focused on.
     #[test]
     fn a_ctrl_scroll_over_a_resizable_overlay_asks_for_a_resize() {
-        let overlay = PaneId::Terminal(TerminalId(9));
+        let overlay = PaneId::Terminal(TerminalId::new(9));
         let mut context = mouse_event_context(true);
         context.pane_id_at_position = Some(overlay);
-        context.active_pane_id = Some(PaneId::Terminal(TerminalId(1)));
+        context.active_pane_id = Some(PaneId::Terminal(TerminalId::new(1)));
         context.clicked_pane = Some(ClickedPaneDetails {
             is_overlay: true,
             overlay_is_resizable: true,
@@ -2840,10 +2843,10 @@ mod tests {
     /// land it.
     #[test]
     fn a_ctrl_scroll_over_a_modal_does_nothing() {
-        let modal = PaneId::Terminal(TerminalId(9));
+        let modal = PaneId::Terminal(TerminalId::new(9));
         let mut context = mouse_event_context(true);
         context.pane_id_at_position = Some(modal);
-        context.active_pane_id = Some(PaneId::Terminal(TerminalId(1)));
+        context.active_pane_id = Some(PaneId::Terminal(TerminalId::new(1)));
         context.clicked_pane = Some(ClickedPaneDetails {
             is_overlay: true,
             overlay_is_resizable: false,
@@ -2907,7 +2910,7 @@ mod tests {
 
     #[test]
     fn a_right_press_opens_the_context_menu_when_it_is_enabled() {
-        let pane_id = PaneId::Terminal(TerminalId(1));
+        let pane_id = PaneId::Terminal(TerminalId::new(1));
         let context = right_press_context(pane_id, true);
         let event = MouseEvent::new_right_press_event(Position::new(4, 7));
         assert_eq!(
@@ -2925,7 +2928,7 @@ mod tests {
     /// all about right-click changes.
     #[test]
     fn a_right_press_with_the_option_off_still_reaches_the_terminal() {
-        let pane_id = PaneId::Terminal(TerminalId(1));
+        let pane_id = PaneId::Terminal(TerminalId::new(1));
         let context = right_press_context(pane_id, false);
         let event = MouseEvent::new_right_press_event(Position::new(4, 7));
         assert!(matches!(
@@ -2936,7 +2939,7 @@ mod tests {
 
     #[test]
     fn a_right_press_in_a_pane_tracking_the_mouse_belongs_to_the_program() {
-        let pane_id = PaneId::Terminal(TerminalId(1));
+        let pane_id = PaneId::Terminal(TerminalId::new(1));
         let mut context = right_press_context(pane_id, true);
         context.clicked_pane = Some(ClickedPaneDetails {
             terminal_emulator_wants_mouse: true,
@@ -2956,9 +2959,9 @@ mod tests {
     /// pane being active the way `terminal_wants_mouse` is.
     #[test]
     fn mouse_tracking_wins_even_in_a_pane_that_is_not_focused() {
-        let clicked = PaneId::Terminal(TerminalId(2));
+        let clicked = PaneId::Terminal(TerminalId::new(2));
         let mut context = right_press_context(clicked, true);
-        context.active_pane_id = Some(PaneId::Terminal(TerminalId(1)));
+        context.active_pane_id = Some(PaneId::Terminal(TerminalId::new(1)));
         context.clicked_pane = Some(ClickedPaneDetails {
             terminal_emulator_wants_mouse: true,
             ..content_click_on(clicked)
@@ -2973,7 +2976,7 @@ mod tests {
 
     #[test]
     fn mouse_tracking_does_not_block_a_frame_menu() {
-        let pane_id = PaneId::Terminal(TerminalId(1));
+        let pane_id = PaneId::Terminal(TerminalId::new(1));
         let mut context = right_press_context(pane_id, true);
         context.clicked_pane = Some(ClickedPaneDetails {
             on_frame: true,
@@ -2989,9 +2992,9 @@ mod tests {
 
     #[test]
     fn a_right_press_on_an_unfocused_pane_still_opens_a_menu() {
-        let clicked = PaneId::Terminal(TerminalId(2));
+        let clicked = PaneId::Terminal(TerminalId::new(2));
         let mut context = right_press_context(clicked, true);
-        context.active_pane_id = Some(PaneId::Terminal(TerminalId(1)));
+        context.active_pane_id = Some(PaneId::Terminal(TerminalId::new(1)));
         assert!(matches!(
             MouseHandler::determine_mouse_action(
                 &MouseEvent::new_right_press_event(Position::new(4, 7)),
@@ -3005,7 +3008,7 @@ mod tests {
     /// The release that follows the opening press must not open a second menu.
     #[test]
     fn only_the_press_opens_a_menu_not_the_release() {
-        let pane_id = PaneId::Terminal(TerminalId(1));
+        let pane_id = PaneId::Terminal(TerminalId::new(1));
         let context = right_press_context(pane_id, true);
         let release = MouseEvent::new_right_release_event(Position::new(4, 7));
         assert!(!matches!(
@@ -3016,7 +3019,7 @@ mod tests {
 
     #[test]
     fn a_right_press_on_a_frame_opens_a_menu_and_says_it_was_the_frame() {
-        let pane_id = PaneId::Terminal(TerminalId(1));
+        let pane_id = PaneId::Terminal(TerminalId::new(1));
         let mut context = right_press_context(pane_id, true);
         context.clicked_pane = Some(ClickedPaneDetails {
             on_frame: true,
@@ -3038,7 +3041,7 @@ mod tests {
 
     #[test]
     fn a_frame_that_claims_its_own_mouse_events_keeps_the_right_click() {
-        let pane_id = PaneId::Terminal(TerminalId(1));
+        let pane_id = PaneId::Terminal(TerminalId::new(1));
         let mut context = right_press_context(pane_id, true);
         context.clicked_pane = Some(ClickedPaneDetails {
             on_frame: true,
@@ -3059,7 +3062,7 @@ mod tests {
     /// branch precisely so this keeps working.
     #[test]
     fn alt_right_still_ungroups_rather_than_opening_a_menu() {
-        let pane_id = PaneId::Terminal(TerminalId(1));
+        let pane_id = PaneId::Terminal(TerminalId::new(1));
         let context = right_press_context(pane_id, true);
         let mut event = MouseEvent::new_right_press_event(Position::new(4, 7));
         event.alt = true;

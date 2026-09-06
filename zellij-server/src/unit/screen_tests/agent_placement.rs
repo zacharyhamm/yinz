@@ -15,7 +15,7 @@ use {zellij_types::data::OriginatingPlugin, zellij_types::data::HOCUS_AGENT_PANE
 
 const SURFACE: Size = Size { cols: 80, rows: 20 };
 const FLOOR: Size = Size { cols: 40, rows: 10 };
-const CLIENT: ClientId = crate::ClientId(1);
+const CLIENT: ClientId = crate::ClientId::new(1);
 
 fn run(command: &str) -> Run {
     Run::Command(RunCommand {
@@ -29,7 +29,7 @@ fn marked_run(command: &str) -> Run {
     Run::Command(RunCommand {
         command: PathBuf::from(command),
         originating_plugin: Some(OriginatingPlugin::new(
-            2,
+            zellij_types::internal_ids::PluginId::new(2),
             crate::ClientId::new(1),
             BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
         )),
@@ -57,7 +57,7 @@ fn tab_with_panes(screen: &mut Screen, tab_id: usize, first_pid: u32, count: u32
         add_pane_to_tab(
             screen,
             tab_id,
-            PaneId::Terminal(crate::TerminalId(pid)),
+            PaneId::Terminal(crate::TerminalId::new(pid)),
             false,
         );
     }
@@ -260,7 +260,7 @@ fn a_tab_made_for_an_unfocused_spawn_does_not_take_the_client_along() {
         &mut screen,
         Some(marked_run("some-wrapper")),
         tiled(),
-        ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(crate::TerminalId(1))),
+        ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(crate::TerminalId::new(1))),
     );
     assert_eq!(placed, ClientTabIndexOrPaneId::TabIndexNoFocus(1));
     assert_eq!(focus, None);
@@ -300,7 +300,7 @@ fn a_spawn_from_a_client_with_no_screen_acts_for_the_attached_one() {
     tab_with_panes(&mut screen, 0, 1, 4);
     tab_with_panes(&mut screen, 1, 10, 1);
     screen.go_to_tab(1, CLIENT).expect("TEST");
-    let cli_client: ClientId = crate::ClientId(42);
+    let cli_client: ClientId = crate::ClientId::new(42);
     assert!(!screen.active_tab_ids.contains_key(&cli_client));
     let (placed, focus, _) = target_of(
         &mut screen,
@@ -321,19 +321,19 @@ fn a_spawn_from_a_client_with_no_screen_acts_for_the_attached_one() {
     add_pane_to_tab(
         &mut screen,
         1,
-        PaneId::Terminal(crate::TerminalId(11)),
+        PaneId::Terminal(crate::TerminalId::new(11)),
         false,
     );
     add_pane_to_tab(
         &mut screen,
         1,
-        PaneId::Terminal(crate::TerminalId(12)),
+        PaneId::Terminal(crate::TerminalId::new(12)),
         false,
     );
     add_pane_to_tab(
         &mut screen,
         1,
-        PaneId::Terminal(crate::TerminalId(13)),
+        PaneId::Terminal(crate::TerminalId::new(13)),
         false,
     );
     let plugin_receiver = plugin_capture(&mut screen);
@@ -387,7 +387,7 @@ fn a_fullscreen_tab_is_not_a_candidate() {
         .tabs
         .get_mut(&1)
         .expect("TEST")
-        .toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId(10)));
+        .toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(10)));
     assert!(screen.tabs[&1].is_fullscreen_active());
     screen.go_to_tab(0, CLIENT).expect("TEST");
     let (placed, _, _) = target_of(
@@ -487,7 +487,7 @@ fn a_pane_with_no_preference_tiles_where_it_is_sent_unless_the_floating_layer_is
     add_pane_to_tab(
         &mut screen,
         0,
-        PaneId::Terminal(crate::TerminalId(50)),
+        PaneId::Terminal(crate::TerminalId::new(50)),
         true,
     );
     screen.tabs.get_mut(&0).expect("TEST").show_floating_panes();
@@ -512,13 +512,13 @@ fn floating_panes_do_not_count_toward_the_share() {
     add_pane_to_tab(
         &mut screen,
         0,
-        PaneId::Terminal(crate::TerminalId(50)),
+        PaneId::Terminal(crate::TerminalId::new(50)),
         true,
     );
     add_pane_to_tab(
         &mut screen,
         0,
-        PaneId::Terminal(crate::TerminalId(51)),
+        PaneId::Terminal(crate::TerminalId::new(51)),
         true,
     );
     let target = ClientTabIndexOrPaneId::ClientId(CLIENT);
@@ -551,7 +551,8 @@ fn a_pane_a_plugin_marked_as_an_agent_is_placed_like_a_named_agent() {
     let mut screen = screen_with_floor();
     tab_with_panes(&mut screen, 0, 1, 4);
     tab_with_panes(&mut screen, 1, 10, 1);
-    let near_plugin_pane = ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(crate::TerminalId(1)));
+    let near_plugin_pane =
+        ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(crate::TerminalId::new(1)));
     let (placed, focus, _) = target_of(
         &mut screen,
         Some(marked_run("some-wrapper")),
@@ -572,7 +573,7 @@ fn a_pane_a_plugin_marked_as_an_agent_is_placed_like_a_named_agent() {
         "unmarked, the wrapper is not an agent"
     );
 
-    let nowhere = ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(crate::TerminalId(99)));
+    let nowhere = ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(crate::TerminalId::new(99)));
     let (placed, _, _) = target_of(&mut screen, Some(marked_run("claude")), tiled(), nowhere);
     assert_eq!(
         placed, nowhere,
@@ -597,7 +598,7 @@ fn new_pane_instruction(
     target: ClientTabIndexOrPaneId,
 ) -> ScreenInstruction {
     ScreenInstruction::NewPane(
-        PaneId::Terminal(crate::TerminalId(pid)),
+        PaneId::Terminal(crate::TerminalId::new(pid)),
         Some("claude".to_string()),
         None,
         invoked_with,
@@ -661,8 +662,8 @@ fn through_the_screen_thread_a_pane_opened_near_a_plugin_gets_its_tab_without_th
     let mut mock_screen = mock_screen_with_floor(80, 24);
     let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
     let screen_thread = mock_screen.run(None, vec![]);
-    mock_screen.new_tab_with_plugins(vec![crate::PluginId(7)]);
-    let near_plugin = ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(crate::PluginId(7)));
+    mock_screen.new_tab_with_plugins(vec![crate::PluginId::new(7)]);
+    let near_plugin = ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(crate::PluginId::new(7)));
     mock_screen
         .to_screen
         .send(new_pane_instruction(
@@ -773,8 +774,8 @@ fn through_the_screen_thread_a_focus_on_the_new_pane_waits_for_the_tab_layout() 
     let _plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let screen_thread = mock_screen.run(None, vec![]);
-    mock_screen.new_tab_with_plugins(vec![crate::PluginId(7)]);
-    let near_plugin = ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(crate::PluginId(7)));
+    mock_screen.new_tab_with_plugins(vec![crate::PluginId::new(7)]);
+    let near_plugin = ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(crate::PluginId::new(7)));
     mock_screen
         .to_screen
         .send(new_pane_instruction(
@@ -787,7 +788,7 @@ fn through_the_screen_thread_a_focus_on_the_new_pane_waits_for_the_tab_layout() 
     mock_screen
         .to_screen
         .send(ScreenInstruction::FocusPaneWithId(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             false,
             false,
             mock_screen.main_client_id,

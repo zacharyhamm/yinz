@@ -13,7 +13,7 @@ fn step_command(cmd: &str, step: &str) -> RunCommand {
         command: PathBuf::from(cmd),
         hold_on_close: true,
         originating_plugin: Some(OriginatingPlugin::new(
-            1,
+            zellij_types::internal_ids::PluginId::new(1),
             crate::ClientId::new(1),
             BTreeMap::from([("__step".to_owned(), step.to_owned())]),
         )),
@@ -23,13 +23,13 @@ fn step_command(cmd: &str, step: &str) -> RunCommand {
 
 fn new_pane(pane_id: u32) -> ScreenInstruction {
     ScreenInstruction::NewPane(
-        PaneId::Terminal(crate::TerminalId(pane_id)),
+        PaneId::Terminal(crate::TerminalId::new(pane_id)),
         Some("step1".to_string()),
         None,
         None,
         NewPanePlacement::default(),
         false,
-        ClientTabIndexOrPaneId::ClientId(crate::ClientId(10)),
+        ClientTabIndexOrPaneId::ClientId(crate::ClientId::new(10)),
         None,
         false,
     )
@@ -37,7 +37,7 @@ fn new_pane(pane_id: u32) -> ScreenInstruction {
 
 fn hold(pane_id: u32, run_command: RunCommand) -> ScreenInstruction {
     ScreenInstruction::HoldPane(
-        PaneId::Terminal(crate::TerminalId(pane_id)),
+        PaneId::Terminal(crate::TerminalId::new(pane_id)),
         Some(0),
         run_command,
     )
@@ -69,7 +69,11 @@ fn a_held_pane_respawns_with_the_replacement_command() {
     let respawns = respawns_sent_to_pty(vec![
         new_pane(2),
         hold(2, step_command("step1", "1")),
-        ScreenInstruction::RunCommandInPane(crate::TerminalId(2), step_command("step2", "2"), true),
+        ScreenInstruction::RunCommandInPane(
+            crate::TerminalId::new(2),
+            step_command("step2", "2"),
+            true,
+        ),
     ]);
     assert_eq!(
         respawns
@@ -97,7 +101,11 @@ fn a_replacement_arriving_before_the_hold_waits_for_it() {
     // moment the hold lands, not never.
     let respawns = respawns_sent_to_pty(vec![
         new_pane(2),
-        ScreenInstruction::RunCommandInPane(crate::TerminalId(2), step_command("step2", "2"), true),
+        ScreenInstruction::RunCommandInPane(
+            crate::TerminalId::new(2),
+            step_command("step2", "2"),
+            true,
+        ),
         hold(2, step_command("step1", "1")),
     ]);
     assert_eq!(
@@ -114,8 +122,16 @@ fn a_replacement_arriving_before_the_hold_waits_for_it() {
 fn a_second_replacement_wins_over_a_stashed_one() {
     let respawns = respawns_sent_to_pty(vec![
         new_pane(2),
-        ScreenInstruction::RunCommandInPane(crate::TerminalId(2), step_command("step2", "2"), true),
-        ScreenInstruction::RunCommandInPane(crate::TerminalId(2), step_command("step3", "3"), true),
+        ScreenInstruction::RunCommandInPane(
+            crate::TerminalId::new(2),
+            step_command("step2", "2"),
+            true,
+        ),
+        ScreenInstruction::RunCommandInPane(
+            crate::TerminalId::new(2),
+            step_command("step3", "3"),
+            true,
+        ),
         hold(2, step_command("step1", "1")),
     ]);
     assert_eq!(
@@ -160,7 +176,7 @@ fn a_stashed_replacement_survives_a_cross_tab_pane_move() {
     let _ = mock_screen.to_screen.send(ScreenInstruction::ApplyLayout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(crate::TerminalId(0), None)],
+        vec![(crate::TerminalId::new(0), None)],
         vec![],
         vec![],
         HashMap::new(),
@@ -175,7 +191,7 @@ fn a_stashed_replacement_survives_a_cross_tab_pane_move() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::FocusPaneWithId(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             false,
             false,
             client_id,
@@ -186,7 +202,7 @@ fn a_stashed_replacement_survives_a_cross_tab_pane_move() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::RunCommandInPane(
-            crate::TerminalId(2),
+            crate::TerminalId::new(2),
             step_command("step2", "2"),
             true,
         ));
@@ -221,7 +237,7 @@ fn a_stashed_replacement_survives_a_cross_tab_pane_move() {
 fn a_suppressed_pane_replacement_survives_its_tab_closing() {
     let mut screen = screen_with_a_pane_replaced_in_place();
     screen.tabs.get_mut(&0).unwrap().restore_pending_respawn(
-        PaneId::Terminal(crate::TerminalId(1)),
+        PaneId::Terminal(crate::TerminalId::new(1)),
         (step_command("step2", "2"), true),
     );
 
@@ -231,7 +247,7 @@ fn a_suppressed_pane_replacement_survives_its_tab_closing() {
         .get_mut(&1)
         .unwrap()
         .hold_pane(
-            PaneId::Terminal(crate::TerminalId(1)),
+            PaneId::Terminal(crate::TerminalId::new(1)),
             Some(0),
             false,
             step_command("step1", "1"),
@@ -250,7 +266,7 @@ fn an_overlay_pane_replacement_survives_its_tab_closing() {
     new_tab(&mut screen, 2, 1);
     open_floating_pane(&mut screen, 0, 7, "overlay", true);
     screen.tabs.get_mut(&0).unwrap().restore_pending_respawn(
-        PaneId::Terminal(crate::TerminalId(7)),
+        PaneId::Terminal(crate::TerminalId::new(7)),
         (step_command("step2", "2"), true),
     );
 
@@ -260,7 +276,7 @@ fn an_overlay_pane_replacement_survives_its_tab_closing() {
         .get_mut(&1)
         .unwrap()
         .hold_pane(
-            PaneId::Terminal(crate::TerminalId(7)),
+            PaneId::Terminal(crate::TerminalId::new(7)),
             Some(0),
             false,
             step_command("step1", "1"),
@@ -275,8 +291,17 @@ fn an_overlay_pane_replacement_survives_its_tab_closing() {
 fn closing_the_pane_drops_a_stashed_replacement() {
     let respawns = respawns_sent_to_pty(vec![
         new_pane(2),
-        ScreenInstruction::RunCommandInPane(crate::TerminalId(2), step_command("step2", "2"), true),
-        ScreenInstruction::ClosePane(PaneId::Terminal(crate::TerminalId(2)), None, None, None),
+        ScreenInstruction::RunCommandInPane(
+            crate::TerminalId::new(2),
+            step_command("step2", "2"),
+            true,
+        ),
+        ScreenInstruction::ClosePane(
+            PaneId::Terminal(crate::TerminalId::new(2)),
+            None,
+            None,
+            None,
+        ),
         new_pane(3),
         hold(3, step_command("other", "1")),
     ]);
@@ -307,7 +332,11 @@ fn only_a_changed_pane_host_is_broadcast() {
     let _ = drain_background_jobs(&background_jobs);
 
     screen
-        .set_pane_host(crate::TerminalId(1), Some("build-box".to_owned()), None)
+        .set_pane_host(
+            crate::TerminalId::new(1),
+            Some("build-box".to_owned()),
+            None,
+        )
         .unwrap();
     let jobs = drain_background_jobs(&background_jobs);
     assert_eq!(
@@ -321,7 +350,11 @@ fn only_a_changed_pane_host_is_broadcast() {
     );
 
     screen
-        .set_pane_host(crate::TerminalId(1), Some("build-box".to_owned()), None)
+        .set_pane_host(
+            crate::TerminalId::new(1),
+            Some("build-box".to_owned()),
+            None,
+        )
         .unwrap();
     let jobs = drain_background_jobs(&background_jobs);
     assert_eq!(
@@ -335,7 +368,7 @@ fn only_a_changed_pane_host_is_broadcast() {
     );
 
     screen
-        .set_pane_host(crate::TerminalId(1), None, None)
+        .set_pane_host(crate::TerminalId::new(1), None, None)
         .unwrap();
     assert_eq!(
         session_reports(&drain_background_jobs(&background_jobs)),
@@ -344,7 +377,7 @@ fn only_a_changed_pane_host_is_broadcast() {
     );
 
     screen
-        .set_pane_host(crate::TerminalId(1), None, None)
+        .set_pane_host(crate::TerminalId::new(1), None, None)
         .unwrap();
     assert_eq!(
         session_reports(&drain_background_jobs(&background_jobs)),

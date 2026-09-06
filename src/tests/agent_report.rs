@@ -261,7 +261,7 @@ fn manual_reports_preserve_explicit_targets_and_do_not_read_stdin() {
         };
         assert_eq!(
             report.pane_id,
-            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(7))
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7))
         );
         assert!(report.event.is_none());
         assert_eq!(matches!(report.state, AgentReportState::Clear), clear);

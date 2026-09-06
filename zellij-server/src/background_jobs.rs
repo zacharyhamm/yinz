@@ -1352,13 +1352,7 @@ pub fn scan_session_list(
     );
     for (name, info) in session_infos_on_machine.iter_mut() {
         if name == current_session_name {
-            info.populate_plugin_list(
-                current_session_plugin_list
-                    .clone()
-                    .into_iter()
-                    .map(|(id, plugin)| (id.0, plugin))
-                    .collect(),
-            );
+            info.populate_plugin_list(current_session_plugin_list.clone());
             info.available_layouts = available_layouts.to_vec();
         }
     }
@@ -1579,8 +1573,8 @@ mod web_request_stream_tests {
     use zellij_runtime::channels::{unbounded, Receiver, SenderWithContext};
     use zellij_types::diagnostics::ErrorContext;
 
-    const PLUGIN_ID: PluginId = PluginId(1);
-    const CLIENT_ID: ClientId = ClientId(2);
+    const PLUGIN_ID: PluginId = PluginId::new(1);
+    const CLIENT_ID: ClientId = ClientId::new(2);
     const GENERATION: u64 = 7;
 
     type PluginRx = Receiver<(PluginInstruction, ErrorContext)>;

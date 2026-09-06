@@ -4,6 +4,12 @@
 //! These use the same harness as the wasm plugin tests, which is the point - a Lua plugin is
 //! loaded, subscribed, updated and rendered by exactly the same code.
 
+#[cfg(test)]
+const CLIENT_1: zellij_types::internal_ids::ClientId = zellij_types::internal_ids::ClientId::new(1);
+#[cfg(test)]
+const TERMINAL_7: zellij_types::internal_ids::TerminalId =
+    zellij_types::internal_ids::TerminalId::new(7);
+
 use super::*;
 use crate::plugins::HookFiring;
 use crate::plugins::PluginId;
@@ -47,7 +53,7 @@ pub fn lua_plugin_loads_and_renders() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -135,7 +141,7 @@ pub fn a_lua_plugin_is_found_in_the_user_plugin_dir_by_name() {
             None,
             Some(PathBuf::from(user_plugin_dir.path())),
         );
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size { cols: 80, rows: 10 };
     let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = log_actions_in_thread!(
@@ -208,7 +214,7 @@ pub fn a_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
             None,
             Some(PathBuf::from(user_plugin_dir.path())),
         );
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size { cols: 80, rows: 10 };
     let received_screen_instructions = Watched::new(vec![]);
     // Two renders: the load, then the reload.
@@ -293,7 +299,7 @@ pub fn lua_plugin_receives_its_configuration() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size { cols: 80, rows: 10 };
     let mut configuration = BTreeMap::new();
     // The fixture defaults this to "hello"; the prelude merges the user's value over the top.
@@ -350,7 +356,7 @@ pub fn lua_plugin_is_not_sent_events_it_did_not_subscribe_to() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size { cols: 80, rows: 10 };
     let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = log_actions_in_thread!(
@@ -418,7 +424,7 @@ fn spawned_agent_command(key: char) -> zellij_types::input::command::RunCommand 
     let cache_path = plugin_host_folder.join("permissions_test.kdl");
     let (plugin_thread_sender, pty_receiver, screen_receiver, teardown) =
         create_plugin_thread_with_pty_receiver(Some(plugin_host_folder.clone()), None, None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size { cols: 80, rows: 10 };
 
     let received_pty_instructions = Watched::new(vec![]);
@@ -494,7 +500,7 @@ fn spawned_agent_command(key: char) -> zellij_types::input::command::RunCommand 
     assert!(
         matches!(
             placement,
-            ClientTabIndexOrPaneId::PaneIdOrClient(PaneId::Plugin(_), ClientId(1))
+            ClientTabIndexOrPaneId::PaneIdOrClient(PaneId::Plugin(_), CLIENT_1)
         ),
         "the agent pane is placed near the plugin with a client fallback, got: {placement:?}"
     );
@@ -552,7 +558,7 @@ pub fn lua_plugin_host_command_reaches_the_pty_thread() {
     let cache_path = plugin_host_folder.join("permissions_test.kdl");
     let (plugin_thread_sender, pty_receiver, screen_receiver, teardown) =
         create_plugin_thread_with_pty_receiver(Some(plugin_host_folder), None, None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size { cols: 80, rows: 10 };
 
     let received_pty_instructions = Watched::new(vec![]);
@@ -624,7 +630,7 @@ pub fn plugin_configuration_reaches_load_without_being_re_normalized() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size { cols: 80, rows: 10 };
 
     let mut configuration = PluginUserConfiguration::new(BTreeMap::new());
@@ -694,7 +700,7 @@ pub fn a_newly_reachable_command_works_end_to_end() {
     let cache_path = plugin_host_folder.join("permissions_playground.kdl");
     let (plugin_thread_sender, pty_receiver, screen_receiver, teardown) =
         create_plugin_thread_with_pty_receiver(Some(plugin_host_folder), None, None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size { cols: 80, rows: 20 };
 
     let received_pty_instructions = Watched::new(vec![]);
@@ -797,7 +803,7 @@ pub fn the_agent_exit_hook_renders_the_screen_it_replaced() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -882,7 +888,7 @@ pub fn the_agent_exit_hook_opens_a_pane_in_place_of_the_one_that_exited() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = log_actions_in_thread!(
@@ -895,7 +901,7 @@ pub fn the_agent_exit_hook_opens_a_pane_in_place_of_the_one_that_exited() {
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
         point: HookPoint::AgentExit,
-        pane_id: Some(PaneId::Terminal(crate::TerminalId(7))),
+        pane_id: Some(PaneId::Terminal(crate::TerminalId::new(7))),
         payload: HookFiring::ReplacePane(agent_exit_payload()),
         client_id,
     });
@@ -905,7 +911,7 @@ pub fn the_agent_exit_hook_opens_a_pane_in_place_of_the_one_that_exited() {
     let opened = hook_panes_opened(&received_screen_instructions.lock());
     assert_eq!(
         opened.iter().map(|(_, pane)| *pane).collect::<Vec<_>>(),
-        vec![PaneId::Terminal(crate::TerminalId(7))],
+        vec![PaneId::Terminal(crate::TerminalId::new(7))],
         "expected the hook to open over pane 7, got: {:?}",
         received_screen_instructions.lock()
     );
@@ -927,7 +933,7 @@ pub fn the_agent_exit_hook_opens_again_after_the_first_one_is_closed() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = log_actions_in_thread!(
@@ -940,7 +946,7 @@ pub fn the_agent_exit_hook_opens_again_after_the_first_one_is_closed() {
     let fire = || {
         let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
             point: HookPoint::AgentExit,
-            pane_id: Some(PaneId::Terminal(crate::TerminalId(7))),
+            pane_id: Some(PaneId::Terminal(crate::TerminalId::new(7))),
             payload: HookFiring::ReplacePane(agent_exit_payload()),
             client_id,
         });
@@ -980,8 +986,8 @@ pub fn the_agent_exit_hook_opens_again_after_the_first_one_is_closed() {
     assert_eq!(
         opened.iter().map(|(_, pane)| *pane).collect::<Vec<_>>(),
         vec![
-            PaneId::Terminal(crate::TerminalId(7)),
-            PaneId::Terminal(crate::TerminalId(7))
+            PaneId::Terminal(crate::TerminalId::new(7)),
+            PaneId::Terminal(crate::TerminalId::new(7))
         ],
         "expected a second hook pane over pane 7, got: {:?}",
         received_screen_instructions.lock()
@@ -1002,7 +1008,7 @@ pub fn the_agent_exit_hook_restarts_the_pane_on_enter() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size { cols: 80, rows: 10 };
 
     let received_screen_instructions = Watched::new(vec![]);
@@ -1047,7 +1053,7 @@ pub fn the_agent_exit_hook_restarts_the_pane_on_enter() {
         .any(|instruction| {
             matches!(
                 instruction,
-                ScreenInstruction::RerunCommandPane(zellij_types::internal_ids::TerminalId(7), _)
+                ScreenInstruction::RerunCommandPane(TERMINAL_7, _)
             )
         });
     assert!(
@@ -1066,7 +1072,7 @@ pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, pty_receiver, screen_receiver, teardown) =
         create_plugin_thread_with_pty_receiver(Some(plugin_host_folder), None, None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size { cols: 80, rows: 10 };
 
     let received_pty_instructions = Watched::new(vec![]);
@@ -1115,10 +1121,7 @@ pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
     let closed = received_pty_instructions.lock().iter().any(|instruction| {
         matches!(
             instruction,
-            PtyInstruction::ClosePane(
-                PaneId::Terminal(zellij_types::internal_ids::TerminalId(7)),
-                _
-            )
+            PtyInstruction::ClosePane(PaneId::Terminal(TERMINAL_7), _)
         )
     });
     assert!(
@@ -1132,10 +1135,7 @@ pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
         .any(|instruction| {
             matches!(
                 instruction,
-                ScreenInstruction::ClosePane(
-                    PaneId::Terminal(zellij_types::internal_ids::TerminalId(7)),
-                    ..
-                )
+                ScreenInstruction::ClosePane(PaneId::Terminal(TERMINAL_7), ..)
             )
         });
     assert!(
@@ -1218,7 +1218,7 @@ fn bind_hook(
     plugin: RunPluginOrAlias,
 ) {
     let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
-        client_id: crate::ClientId(1),
+        client_id: crate::ClientId::new(1),
         keybinds: None,
         default_mode: None,
         default_shell: None,
@@ -1233,7 +1233,7 @@ fn bind_hook(
 
 fn pane_exit_payload(pane_id: u32) -> HookFiring {
     HookFiring::Headless(HookPayload::PaneExit {
-        pane_id,
+        pane_id: crate::TerminalId::new(pane_id),
         exit_code: Some(0),
         cwd: None,
         command: None,
@@ -1250,7 +1250,7 @@ pub fn a_headless_hook_is_loaded_on_first_fire_and_receives_the_event() {
     let user_plugin_dir = tempdir().unwrap();
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
@@ -1272,7 +1272,7 @@ pub fn a_headless_hook_is_loaded_on_first_fire_and_receives_the_event() {
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
         point: HookPoint::PaneExit,
-        pane_id: Some(PaneId::Terminal(crate::TerminalId(7))),
+        pane_id: Some(PaneId::Terminal(crate::TerminalId::new(7))),
         payload: pane_exit_payload(7),
         client_id,
     });
@@ -1307,7 +1307,7 @@ pub fn a_second_firing_reuses_the_headless_hook_instance() {
     let user_plugin_dir = tempdir().unwrap();
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let received_screen_instructions = Watched::new(vec![]);
     let screen_thread = grant_permissions_and_log_actions_in_thread!(
@@ -1329,7 +1329,7 @@ pub fn a_second_firing_reuses_the_headless_hook_instance() {
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
         point: HookPoint::PaneExit,
-        pane_id: Some(PaneId::Terminal(crate::TerminalId(7))),
+        pane_id: Some(PaneId::Terminal(crate::TerminalId::new(7))),
         payload: pane_exit_payload(7),
         client_id,
     });
@@ -1342,7 +1342,7 @@ pub fn a_second_firing_reuses_the_headless_hook_instance() {
     );
     let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
         point: HookPoint::PaneExit,
-        pane_id: Some(PaneId::Terminal(crate::TerminalId(8))),
+        pane_id: Some(PaneId::Terminal(crate::TerminalId::new(8))),
         payload: pane_exit_payload(8),
         client_id,
     });
@@ -1371,7 +1371,7 @@ pub fn a_replace_pane_hook_without_a_pane_opens_nothing() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
@@ -1411,7 +1411,7 @@ pub fn session_start_fires_for_the_initiating_client() {
     )]));
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread_with_hooks(Some(plugin_host_folder), None, None, hooks);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
 
     let received_screen_instructions = Watched::new(vec![]);
@@ -1471,12 +1471,12 @@ pub fn a_client_attaching_while_a_hook_waits_on_its_permission_does_not_lose_the
                             // instance for the newcomer - and, before the fix, reset the cache
                             // holding the firing below.
                             let _ = plugin_thread_sender
-                                .send(PluginInstruction::AddClient(crate::ClientId(2)));
+                                .send(PluginInstruction::AddClient(crate::ClientId::new(2)));
                         }
                         let _ =
                             plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
                                 plugin_id,
-                                Some(crate::ClientId(1)),
+                                Some(crate::ClientId::new(1)),
                                 plugin_permission.permissions,
                                 PermissionStatus::Granted,
                                 Some(cache_path.clone()),
@@ -1497,12 +1497,12 @@ pub fn a_client_attaching_while_a_hook_waits_on_its_permission_does_not_lose_the
         HookPoint::PaneExit,
         headless_hook_plugin(user_plugin_dir.path()),
     );
-    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(crate::ClientId(1)));
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(crate::ClientId::new(1)));
     let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
         point: HookPoint::PaneExit,
-        pane_id: Some(PaneId::Terminal(crate::TerminalId(7))),
+        pane_id: Some(PaneId::Terminal(crate::TerminalId::new(7))),
         payload: pane_exit_payload(7),
-        client_id: crate::ClientId(1),
+        client_id: crate::ClientId::new(1),
     });
     screen_thread.join().unwrap();
     teardown();
@@ -1533,7 +1533,7 @@ pub fn a_firing_during_the_headless_hooks_load_reaches_the_loading_instance() {
     let user_plugin_dir = tempdir().unwrap();
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     // Grants by the requesting plugin's id: the macro answers plugin 0, which is the other
     // plugin here.
@@ -1613,7 +1613,7 @@ pub fn a_firing_during_the_headless_hooks_load_reaches_the_loading_instance() {
     for pane_id in [7, 8] {
         let _ = plugin_thread_sender.send(PluginInstruction::RunHook {
             point: HookPoint::PaneExit,
-            pane_id: Some(PaneId::Terminal(crate::TerminalId(pane_id))),
+            pane_id: Some(PaneId::Terminal(crate::TerminalId::new(pane_id))),
             payload: pane_exit_payload(pane_id),
             client_id,
         });

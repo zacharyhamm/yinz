@@ -694,7 +694,7 @@ mod tests {
             &dir.path().to_path_buf(),
             None,
             &plugin_url,
-            zellij_types::internal_ids::PluginId(1),
+            zellij_types::internal_ids::PluginId::new(1),
             Arc::new(Mutex::new(VecDeque::new())),
             Arc::new(Mutex::new(VecDeque::new())),
         )

@@ -376,7 +376,7 @@ fn session_running(path: &str, id: u32, pane: bool) -> SessionInfo {
         is_current_session: true,
         panes,
         plugins: BTreeMap::from([(
-            id,
+            PluginId::new(id),
             PluginInfo {
                 location: format!("file:{path}"),
                 configuration: BTreeMap::new(),
@@ -409,7 +409,7 @@ fn a_headless_reload_names_the_headless_instance_and_never_a_panes() {
     cleared_reload(&mut state, r#"{"name":"harness","headless":true}"#);
     assert_eq!(
         crate::tools::test_seams::HEADLESS_RELOADS.with_borrow(Clone::clone),
-        vec![Some(9)],
+        vec![Some(PluginId::new(9))],
         "the headless instance is reloaded in place"
     );
 }

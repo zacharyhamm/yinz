@@ -292,7 +292,10 @@ return M
 
 /// The agent's state as one `pane_update` event reports it for `terminal_id`, or `None` when
 /// the pane is not in the event or carries no record.
-fn agent_state_in(event_json: &str, terminal_id: u32) -> Option<String> {
+fn agent_state_in(
+    event_json: &str,
+    terminal_id: zellij_types::internal_ids::TerminalId,
+) -> Option<String> {
     let event: serde_json::Value = serde_json::from_str(event_json).ok()?;
     event
         .get("PaneUpdate")?

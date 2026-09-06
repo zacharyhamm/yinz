@@ -5,7 +5,7 @@ use zellij_tile::prelude::*;
 
 #[derive(Debug, Default)]
 pub struct App {
-    own_plugin_id: Option<u32>,
+    own_plugin_id: Option<zellij_tile::prelude::PluginId>,
     own_client_id: Option<ClientId>,
     own_tab_index: Option<usize>,
     total_tabs_in_session: Option<usize>,
@@ -221,9 +221,9 @@ impl App {
             for pane_info in pane_infos {
                 for client_id in pane_info.index_in_pane_group.keys() {
                     let pane_id = if pane_info.is_plugin {
-                        PaneId::Plugin(zellij_tile::prelude::PluginId(pane_info.id))
+                        PaneId::Plugin(zellij_tile::prelude::PluginId::new(pane_info.id))
                     } else {
-                        PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_info.id))
+                        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_info.id))
                     };
 
                     self.all_client_grouped_panes
@@ -245,9 +245,9 @@ impl App {
                 if let Some(index_in_pane_group) = pane_info.index_in_pane_group.get(&own_client_id)
                 {
                     let pane_id = if pane_info.is_plugin {
-                        PaneId::Plugin(zellij_tile::prelude::PluginId(pane_info.id))
+                        PaneId::Plugin(zellij_tile::prelude::PluginId::new(pane_info.id))
                     } else {
-                        PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_info.id))
+                        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_info.id))
                     };
                     panes_with_index.push((*index_in_pane_group, pane_id));
                     count += 1;
@@ -277,12 +277,7 @@ impl App {
                 && self.doherty_threshold_elapsed_since_highlight()
             {
                 self.highlighted_at = Some(Instant::now());
-                highlight_and_unhighlight_panes(
-                    vec![PaneId::Plugin(zellij_tile::prelude::PluginId(
-                        own_plugin_id,
-                    ))],
-                    vec![],
-                );
+                highlight_and_unhighlight_panes(vec![PaneId::Plugin(own_plugin_id)], vec![]);
                 set_timeout(0.4);
             }
         }
@@ -303,7 +298,7 @@ impl App {
     fn update_tab_info(&mut self, pane_manifest: &PaneManifest) {
         for (tab_index, pane_infos) in &pane_manifest.panes {
             for pane_info in pane_infos {
-                if pane_info.is_plugin && Some(pane_info.id) == self.own_plugin_id {
+                if pane_info.is_plugin && Some(PluginId::new(pane_info.id)) == self.own_plugin_id {
                     self.own_tab_index = Some(*tab_index);
                     return;
                 }
@@ -336,12 +331,7 @@ impl App {
     fn handle_timer(&mut self) -> bool {
         if let Some(own_plugin_id) = self.own_plugin_id {
             if self.doherty_threshold_elapsed_since_highlight() {
-                highlight_and_unhighlight_panes(
-                    vec![],
-                    vec![PaneId::Plugin(zellij_tile::prelude::PluginId(
-                        own_plugin_id,
-                    ))],
-                );
+                highlight_and_unhighlight_panes(vec![], vec![PaneId::Plugin(own_plugin_id)]);
             }
         }
         false
@@ -498,7 +488,7 @@ impl App {
                     return;
                 };
                 change_floating_panes_coordinates(vec![(
-                    PaneId::Plugin(zellij_tile::prelude::PluginId(own_plugin_id)),
+                    PaneId::Plugin(own_plugin_id),
                     next_coordinates,
                 )]);
                 self.alternate_coordinates = false;
@@ -518,7 +508,7 @@ impl App {
                     return;
                 };
                 change_floating_panes_coordinates(vec![(
-                    PaneId::Plugin(zellij_tile::prelude::PluginId(own_plugin_id)),
+                    PaneId::Plugin(own_plugin_id),
                     next_coordinates,
                 )]);
                 self.alternate_coordinates = true;

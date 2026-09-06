@@ -149,7 +149,7 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                 is_cli_client,
             } => client_to_server_msg::Message::Action(ActionMsg {
                 action: Some(action.try_into()?),
-                terminal_id,
+                terminal_id: terminal_id.map(|id| id.get()),
                 client_id: client_id.map(|id| u32::from(id.get())),
                 is_cli_client,
             }),
@@ -348,7 +348,9 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                     .action
                     .ok_or_else(|| anyhow!("Missing action"))?
                     .try_into()?,
-                terminal_id: action.terminal_id,
+                terminal_id: action
+                    .terminal_id
+                    .map(zellij_types::internal_ids::TerminalId::new),
                 client_id: action.client_id.map(ClientId::try_from).transpose()?,
                 is_cli_client: action.is_cli_client,
             }),
@@ -2065,17 +2067,21 @@ impl TryFrom<zellij_types::input::actions::Action>
                 })
             },
             zellij_types::input::actions::Action::CloseTerminalPane { pane_id } => {
-                ActionType::CloseTerminalPane(CloseTerminalPaneAction { pane_id })
+                ActionType::CloseTerminalPane(CloseTerminalPaneAction {
+                    pane_id: pane_id.get(),
+                })
             },
             zellij_types::input::actions::Action::ClosePluginPane { pane_id } => {
-                ActionType::ClosePluginPane(ClosePluginPaneAction { pane_id })
+                ActionType::ClosePluginPane(ClosePluginPaneAction {
+                    pane_id: pane_id.get(),
+                })
             },
             zellij_types::input::actions::Action::FocusTerminalPaneWithId {
                 pane_id,
                 should_float_if_hidden,
                 should_be_in_place_if_hidden,
             } => ActionType::FocusTerminalPaneWithId(FocusTerminalPaneWithIdAction {
-                pane_id,
+                pane_id: pane_id.get(),
                 should_float_if_hidden,
                 should_be_in_place_if_hidden,
             }),
@@ -2084,19 +2090,19 @@ impl TryFrom<zellij_types::input::actions::Action>
                 should_float_if_hidden,
                 should_be_in_place_if_hidden,
             } => ActionType::FocusPluginPaneWithId(FocusPluginPaneWithIdAction {
-                pane_id,
+                pane_id: pane_id.get(),
                 should_float_if_hidden,
                 should_be_in_place_if_hidden,
             }),
             zellij_types::input::actions::Action::RenameTerminalPane { pane_id, name } => {
                 ActionType::RenameTerminalPane(RenameTerminalPaneAction {
-                    pane_id,
+                    pane_id: pane_id.get(),
                     name: name.into_iter().map(|b| b as u32).collect(),
                 })
             },
             zellij_types::input::actions::Action::RenamePluginPane { pane_id, name } => {
                 ActionType::RenamePluginPane(RenamePluginPaneAction {
-                    pane_id,
+                    pane_id: pane_id.get(),
                     name: name.into_iter().map(|b| b as u32).collect(),
                 })
             },
@@ -2181,7 +2187,7 @@ impl TryFrom<zellij_types::input::actions::Action>
                     .map(|a| a.into_iter().collect::<HashMap<_, _>>())
                     .unwrap_or_default(),
                 plugin,
-                plugin_id,
+                plugin_id: plugin_id.map(|id| id.get()),
                 configuration: configuration
                     .map(|c| c.into_iter().collect::<HashMap<_, _>>())
                     .unwrap_or_default(),
@@ -3102,31 +3108,33 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::CloseTerminalPane(close_pane_action) => {
                 Ok(zellij_types::input::actions::Action::CloseTerminalPane {
-                    pane_id: close_pane_action.pane_id,
+                    pane_id: zellij_types::internal_ids::TerminalId::new(close_pane_action.pane_id),
                 })
             },
             ActionType::ClosePluginPane(close_pane_action) => {
                 Ok(zellij_types::input::actions::Action::ClosePluginPane {
-                    pane_id: close_pane_action.pane_id,
+                    pane_id: zellij_types::internal_ids::PluginId::new(close_pane_action.pane_id),
                 })
             },
             ActionType::FocusTerminalPaneWithId(focus_pane_action) => Ok(
                 zellij_types::input::actions::Action::FocusTerminalPaneWithId {
-                    pane_id: focus_pane_action.pane_id,
+                    pane_id: zellij_types::internal_ids::TerminalId::new(focus_pane_action.pane_id),
                     should_float_if_hidden: focus_pane_action.should_float_if_hidden,
                     should_be_in_place_if_hidden: focus_pane_action.should_be_in_place_if_hidden,
                 },
             ),
             ActionType::FocusPluginPaneWithId(focus_pane_action) => Ok(
                 zellij_types::input::actions::Action::FocusPluginPaneWithId {
-                    pane_id: focus_pane_action.pane_id,
+                    pane_id: zellij_types::internal_ids::PluginId::new(focus_pane_action.pane_id),
                     should_float_if_hidden: focus_pane_action.should_float_if_hidden,
                     should_be_in_place_if_hidden: focus_pane_action.should_be_in_place_if_hidden,
                 },
             ),
             ActionType::RenameTerminalPane(rename_pane_action) => {
                 Ok(zellij_types::input::actions::Action::RenameTerminalPane {
-                    pane_id: rename_pane_action.pane_id,
+                    pane_id: zellij_types::internal_ids::TerminalId::new(
+                        rename_pane_action.pane_id,
+                    ),
                     name: rename_pane_action
                         .name
                         .into_iter()
@@ -3136,7 +3144,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::RenamePluginPane(rename_pane_action) => {
                 Ok(zellij_types::input::actions::Action::RenamePluginPane {
-                    pane_id: rename_pane_action.pane_id,
+                    pane_id: zellij_types::internal_ids::PluginId::new(rename_pane_action.pane_id),
                     name: rename_pane_action
                         .name
                         .into_iter()
@@ -3226,7 +3234,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         Some(keybind_pipe_action.args.into_iter().collect())
                     },
                     plugin: keybind_pipe_action.plugin,
-                    plugin_id: keybind_pipe_action.plugin_id,
+                    plugin_id: keybind_pipe_action
+                        .plugin_id
+                        .map(zellij_types::internal_ids::PluginId::new),
                     configuration: if keybind_pipe_action.configuration.is_empty() {
                         None
                     } else {
@@ -3929,7 +3939,7 @@ fn agent_event_to_proto(
     event: zellij_types::agent::AgentEvent,
 ) -> crate::client_server_contract::client_server_contract::AgentEventAction {
     crate::client_server_contract::client_server_contract::AgentEventAction {
-        pane_id: event.pane_id,
+        pane_id: event.pane_id.get(),
         kind: event.kind,
         hook: event.hook,
         session_id: event.session_id,
@@ -3947,7 +3957,7 @@ fn agent_event_from_proto(
     action: crate::client_server_contract::client_server_contract::AgentEventAction,
 ) -> Result<zellij_types::agent::AgentEvent> {
     Ok(zellij_types::agent::AgentEvent {
-        pane_id: action.pane_id,
+        pane_id: zellij_types::internal_ids::TerminalId::new(action.pane_id),
         kind: action.kind,
         hook: action.hook,
         session_id: action.session_id,
@@ -4253,10 +4263,10 @@ impl TryFrom<crate::client_server_contract::client_server_contract::PaneId>
             .ok_or_else(|| anyhow!("PaneId missing pane_type"))?
         {
             PaneType::Terminal(id) => Ok(zellij_types::data::PaneId::Terminal(
-                zellij_types::internal_ids::TerminalId(id),
+                zellij_types::internal_ids::TerminalId::new(id),
             )),
             PaneType::Plugin(id) => Ok(zellij_types::data::PaneId::Plugin(
-                zellij_types::internal_ids::PluginId(id),
+                zellij_types::internal_ids::PluginId::new(id),
             )),
         }
     }
@@ -4604,7 +4614,7 @@ impl From<zellij_types::data::OriginatingPlugin>
         let context: HashMap<String, String> = orig.context.into_iter().collect();
 
         Self {
-            plugin_id: orig.plugin_id,
+            plugin_id: orig.plugin_id.get(),
             client_id: u32::from(orig.client_id.get()),
             context,
         }
@@ -4624,7 +4634,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::OriginatingP
         let context: BTreeMap<String, String> = orig.context.into_iter().collect();
 
         Ok(Self {
-            plugin_id: orig.plugin_id,
+            plugin_id: zellij_types::internal_ids::PluginId::new(orig.plugin_id),
             client_id: ClientId::try_from(orig.client_id)?,
             context,
         })

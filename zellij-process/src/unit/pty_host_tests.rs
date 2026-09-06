@@ -857,7 +857,7 @@ fn a_malformed_cli_request_does_not_take_the_supervisor_down() {
 #[test]
 fn classify_spawn_failure_sees_through_the_context_layers() {
     let bare: anyhow::Error = ZellijError::CommandNotFound {
-        terminal_id: 3,
+        terminal_id: zellij_types::internal_ids::TerminalId::new(3),
         command: "/nonexistent/binary".to_owned(),
     }
     .into();
@@ -1031,7 +1031,7 @@ fn the_dropped_byte_count_never_decreases(tc: hegel::TestCase) {
 /// returning the reply and (on success) the pty master it sent with it.
 fn attach_over_socket(
     socket: &std::path::Path,
-    terminal_id: u32,
+    terminal_id: zellij_types::internal_ids::TerminalId,
     session_name: Option<&str>,
 ) -> (HostToServerMsg, Option<std::fs::File>) {
     let mut stream = UnixStream::connect(socket).expect("failed to connect to the named socket");
@@ -1043,7 +1043,7 @@ fn attach_over_socket(
         &ServerToHostMsg::Attach {
             protocol_version: PROTOCOL_VERSION,
             zellij_version: VERSION.to_owned(),
-            terminal_id,
+            terminal_id: terminal_id.get(),
             session_name: session_name.map(str::to_owned),
         },
     )
@@ -1141,7 +1141,11 @@ fn an_attach_hands_the_master_and_the_buffered_output_over() {
         "the detached supervisor to buffer its child's output",
     );
 
-    let (reply, master) = attach_over_socket(&control_socket, 42, Some("the-other-session"));
+    let (reply, master) = attach_over_socket(
+        &control_socket,
+        zellij_types::internal_ids::TerminalId::new(42),
+        Some("the-other-session"),
+    );
     let (buffered, cmd, status) = match reply {
         HostToServerMsg::AttachAck {
             host_id: acked_id,
@@ -1206,7 +1210,11 @@ fn the_buffered_output_is_delivered_once_and_then_cleared() {
         "the detached supervisor to buffer its child's output",
     );
 
-    let (first, first_master) = attach_over_socket(&control_socket, 1, None);
+    let (first, first_master) = attach_over_socket(
+        &control_socket,
+        zellij_types::internal_ids::TerminalId::new(1),
+        None,
+    );
     let first_buffered = match first {
         HostToServerMsg::AttachAck {
             buffered_base64, ..
@@ -1232,7 +1240,11 @@ fn the_buffered_output_is_delivered_once_and_then_cleared() {
         || !query_status(&control_socket).attached,
         "the supervisor to notice the first attacher went away",
     );
-    let (second, _) = attach_over_socket(&control_socket, 2, None);
+    let (second, _) = attach_over_socket(
+        &control_socket,
+        zellij_types::internal_ids::TerminalId::new(2),
+        None,
+    );
     match second {
         HostToServerMsg::AttachAck {
             buffered_base64, ..
@@ -1260,7 +1272,11 @@ fn an_attach_is_refused_while_a_server_is_attached() {
     let control_socket = control_socket.expect("the supervisor should have bound a socket");
     let (_child_pid, master) = host.spawn(sh("sleep 60"));
 
-    let (reply, no_master) = attach_over_socket(&control_socket, 42, None);
+    let (reply, no_master) = attach_over_socket(
+        &control_socket,
+        zellij_types::internal_ids::TerminalId::new(42),
+        None,
+    );
     match reply {
         HostToServerMsg::AttachRefused { reason, .. } => {
             assert_eq!(reason, AttachRefusal::AlreadyAttached)
@@ -1389,7 +1405,11 @@ fn a_release_racing_an_attach_is_ordered_by_the_poll_loop() {
 
     // Both land in kernel buffers with the supervisor still blocked in `poll`.
     host.send(&ServerToHostMsg::Release);
-    let (reply, attached_master) = attach_over_socket(&control_socket, 42, Some("second"));
+    let (reply, attached_master) = attach_over_socket(
+        &control_socket,
+        zellij_types::internal_ids::TerminalId::new(42),
+        Some("second"),
+    );
     match reply {
         HostToServerMsg::AttachAck { child_pid: p, .. } => assert_eq!(p, child_pid),
         other => panic!(

@@ -418,7 +418,7 @@ impl State {
             .find(|session| session.is_current_session);
         // A plugin pane's id is the plugin's id, so the manifest says which instances have a
         // pane; the plugin list alone cannot tell a headless instance from a pane's copy.
-        let pane_ids: BTreeSet<u32> = current
+        let pane_ids: BTreeSet<zellij_tile::prelude::PluginId> = current
             .as_ref()
             .map(|session| {
                 session
@@ -427,7 +427,7 @@ impl State {
                     .values()
                     .flatten()
                     .filter(|pane| pane.is_plugin)
-                    .map(|pane| pane.id)
+                    .map(|pane| PluginId::new(pane.id))
                     .collect()
             })
             .unwrap_or_default();
@@ -509,7 +509,11 @@ impl State {
         self.pump_tools();
     }
 
-    pub(crate) fn on_extension_registration(&mut self, owner: u32, payload: Option<&str>) -> bool {
+    pub(crate) fn on_extension_registration(
+        &mut self,
+        owner: zellij_tile::prelude::PluginId,
+        payload: Option<&str>,
+    ) -> bool {
         let Some(payload) = payload else {
             return false;
         };
@@ -589,7 +593,11 @@ impl State {
         true
     }
 
-    pub(crate) fn on_extension_result(&mut self, owner: u32, payload: Option<&str>) -> bool {
+    pub(crate) fn on_extension_result(
+        &mut self,
+        owner: zellij_tile::prelude::PluginId,
+        payload: Option<&str>,
+    ) -> bool {
         let Some(payload) = payload else {
             return false;
         };
@@ -608,7 +616,11 @@ impl State {
         }
     }
 
-    fn finish_extension_result(&mut self, owner: u32, result: extensions::ToolResult) -> bool {
+    fn finish_extension_result(
+        &mut self,
+        owner: zellij_tile::prelude::PluginId,
+        result: extensions::ToolResult,
+    ) -> bool {
         if !matches!(self.status, Status::AwaitingExtension) {
             return false;
         }
@@ -658,7 +670,7 @@ impl State {
             self.agents_tab_index = manifest.panes.iter().find_map(|(tab_index, panes)| {
                 let agents = panes
                     .iter()
-                    .find(|pane| pane.is_plugin && pane.id == agents_id)?;
+                    .find(|pane| pane.is_plugin && PluginId::new(pane.id) == agents_id)?;
                 agents_visible = !agents.is_suppressed;
                 agents_focused = agents.is_focused;
                 Some(*tab_index)
@@ -694,7 +706,7 @@ impl State {
         for (tab_index, panes) in &manifest.panes {
             let Some(own) = panes
                 .iter()
-                .find(|pane| pane.is_plugin && pane.id == own_id)
+                .find(|pane| pane.is_plugin && PluginId::new(pane.id) == own_id)
             else {
                 continue;
             };
@@ -785,13 +797,8 @@ impl State {
                     // waited on, and converges: the next manifest has both halves down and takes
                     // the arm below.
                     if let Some(agents_id) = self.agents_plugin {
-                        hide_pane_with_id(PaneId::Plugin(zellij_tile::prelude::PluginId(
-                            agents_id,
-                        )));
-                        self.note_visibility(
-                            PaneId::Plugin(zellij_tile::prelude::PluginId(agents_id)),
-                            false,
-                        );
+                        hide_pane_with_id(PaneId::Plugin(agents_id));
+                        self.note_visibility(PaneId::Plugin(agents_id), false);
                     }
                 }
             } else if own.is_suppressed && agents_visible {
@@ -822,15 +829,8 @@ impl State {
                 // manifest that reported it closed.
                 match self.agents_plugin {
                     Some(agents_id) => {
-                        show_pane_with_id(
-                            PaneId::Plugin(zellij_tile::prelude::PluginId(agents_id)),
-                            false,
-                            false,
-                        );
-                        self.note_visibility(
-                            PaneId::Plugin(zellij_tile::prelude::PluginId(agents_id)),
-                            true,
-                        );
+                        show_pane_with_id(PaneId::Plugin(agents_id), false, false);
+                        self.note_visibility(PaneId::Plugin(agents_id), true);
                     },
                     None if !self.agents_closed => self.open_agents_pane(),
                     None => {},
@@ -882,11 +882,7 @@ impl State {
             // the user put it and the conversation arrives beside it.
             Some(overlay::Rejoin::Follow(tab_index)) => self.follow_tab(tab_index),
             Some(overlay::Rejoin::Drag(tab_index)) => {
-                break_panes_to_tab_with_index(
-                    &[PaneId::Plugin(zellij_tile::prelude::PluginId(agents_id))],
-                    tab_index,
-                    false,
-                );
+                break_panes_to_tab_with_index(&[PaneId::Plugin(agents_id)], tab_index, false);
                 self.agents_tab_index = Some(tab_index);
                 // The destination resolves coordinates against its own surface, and the list
                 // arrives with whatever the keybinding's launch gave it - the same restatement

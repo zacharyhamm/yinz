@@ -403,11 +403,11 @@ fn the_toast_says_who_is_asking_before_the_block() {
 fn the_target_respects_which_kind_of_pane_the_id_is() {
     assert_eq!(
         confirmation_target(&call("send_input", r#"{"pane_id":4,"is_plugin":false}"#)),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(4)))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(4)))
     );
     assert_eq!(
         confirmation_target(&call("clear_pane", r#"{"pane_id":4,"is_plugin":true}"#)),
-        Some(PaneId::Plugin(zellij_tile::prelude::PluginId(4)))
+        Some(PaneId::Plugin(zellij_tile::prelude::PluginId::new(4)))
     );
 }
 
@@ -417,11 +417,11 @@ fn the_target_respects_which_kind_of_pane_the_id_is() {
 fn an_agent_call_targets_its_terminal_without_being_told() {
     assert_eq!(
         confirmation_target(&call("agent_send", r#"{"pane_id":9,"text":"hi"}"#)),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(9)))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(9)))
     );
     assert_eq!(
         confirmation_target(&call("agent_control", r#"{"pane_id":9,"action":"close"}"#)),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(9)))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(9)))
     );
 }
 

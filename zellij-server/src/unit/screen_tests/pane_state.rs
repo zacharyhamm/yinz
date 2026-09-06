@@ -13,7 +13,7 @@ fn a_pane_manifest_carries_the_pane_cwd() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     new_tab(&mut screen, 1, 0);
     screen.terminal_cwds.insert(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         std::path::PathBuf::from("/work/hocus"),
     );
 
@@ -49,7 +49,7 @@ fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
         ..Default::default()
     };
     screen
-        .new_tab(0, (vec![], vec![]), None, Some(crate::ClientId(1)))
+        .new_tab(0, (vec![], vec![]), None, Some(crate::ClientId::new(1)))
         .unwrap();
     screen
         .apply_layout(
@@ -58,18 +58,18 @@ fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
                 ..TiledPaneLayout::default()
             },
             vec![],
-            vec![(crate::TerminalId(1), None)],
+            vec![(crate::TerminalId::new(1), None)],
             vec![],
             HashMap::new(),
             0,
             true,
-            crate::ClientId(1),
+            crate::ClientId::new(1),
             None,
         )
         .expect("TEST");
     screen
         .set_pane_host(
-            crate::TerminalId(1),
+            crate::TerminalId::new(1),
             Some("firecracker:review".to_owned()),
             Some(std::path::PathBuf::from("/work/hocus")),
         )
@@ -96,7 +96,7 @@ fn a_plugin_pane_has_no_cwd() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     new_tab(&mut screen, 1, 0);
     screen.terminal_cwds.insert(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         std::path::PathBuf::from("/work/hocus"),
     );
 
@@ -185,8 +185,8 @@ fn plugin_bytes_with_no_pane_still_unblock_cli_pipes() {
         .to_screen
         .send(ScreenInstruction::PluginBytes(vec![
             PluginRenderAsset::new(
-                crate::PluginId(99),
-                crate::ClientId(1),
+                crate::PluginId::new(99),
+                crate::ClientId::new(1),
                 b"ORPHAN_BYTES".to_vec(),
             ),
         ]))
@@ -209,7 +209,7 @@ fn plugin_bytes_with_no_pane_still_unblock_cli_pipes() {
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
     assert!(
-        unblocked_plugin_ids.contains(&PluginId(99)),
+        unblocked_plugin_ids.contains(&PluginId::new(99)),
         "a plugin that rendered without a pane must still unblock, got {unblocked_plugin_ids:?}"
     );
 }

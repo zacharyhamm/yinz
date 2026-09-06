@@ -121,7 +121,7 @@ impl ServerOsApi for FakeServerOsApi {
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
     ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
-        let terminal_id = TerminalId(self.shared_ptys.next_terminal_id());
+        let terminal_id = TerminalId::new(self.shared_ptys.next_terminal_id());
         self.spawn_with_id(terminal_id, terminal_action, quit_cb)
     }
     /// A remote pane is spawned in two steps like the real one, so the pty
@@ -183,7 +183,7 @@ impl ServerOsApi for FakeServerOsApi {
         self.re_run_command_in_terminal(resolved.terminal_id, resolved.command, quit_cb)
     }
     fn reserve_terminal_id(&self) -> Result<TerminalId> {
-        let terminal_id = TerminalId(self.shared_ptys.next_terminal_id());
+        let terminal_id = TerminalId::new(self.shared_ptys.next_terminal_id());
         let _ = self.shared_ptys.register(terminal_id.0, None, None);
         Ok(terminal_id)
     }
@@ -398,7 +398,7 @@ impl ServerOsApi for FakeServerOsApi {
                 )
             })?;
         Ok(AdoptedTerminal {
-            terminal_id: TerminalId(adopted.terminal_id),
+            terminal_id: TerminalId::new(adopted.terminal_id),
             reader: adopted.reader,
             // None, as a real remote pane's is: a pid from another machine names
             // an unrelated local process. This is the fake's half of what keeps
@@ -427,7 +427,7 @@ impl ServerOsApi for FakeServerOsApi {
                 .insert(FAKE_PID_BASE + adopted.terminal_id, cwd);
         }
         Ok(AdoptedTerminal {
-            terminal_id: TerminalId(adopted.terminal_id),
+            terminal_id: TerminalId::new(adopted.terminal_id),
             reader: adopted.reader,
             // Renumbered with the terminal id, as every other fake pid is. A real
             // warp keeps the child's pid, which is the evidence that the process

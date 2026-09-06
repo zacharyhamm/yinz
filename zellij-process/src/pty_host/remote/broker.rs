@@ -143,7 +143,7 @@ pub fn serve_connection(
             failover_cmd,
             initial_size,
             env,
-            TerminalId(terminal_id),
+            TerminalId::new(terminal_id),
         )?,
         ServerToBrokerMsg::Resume {
             pane_token,

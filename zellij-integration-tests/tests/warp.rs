@@ -124,7 +124,7 @@ fn warp_focused_pane_to(
 fn warp_pane_by_id(
     sender: &TestSession,
     receiver: &TestSession,
-    terminal_id: u32,
+    terminal_id: zellij_types::internal_ids::TerminalId,
 ) -> (i32, String) {
     sender.run_cli_action_reporting(CliAction::WarpPane {
         to_session: receiver.session_name().to_owned(),
@@ -151,11 +151,15 @@ fn warp_focused_pane_expecting_success(
 /// has nothing but this field to be found by after a warp.
 const AGENT_RUN_ID: &str = "codex:warped-run";
 
-fn report_waiting_agent(zellij: &TestSession, terminal_id: u32) {
+fn report_waiting_agent(zellij: &TestSession, terminal_id: zellij_types::internal_ids::TerminalId) {
     report_waiting_agent_with_run_id(zellij, terminal_id, Some(AGENT_RUN_ID));
 }
 
-fn report_waiting_agent_with_run_id(zellij: &TestSession, terminal_id: u32, run_id: Option<&str>) {
+fn report_waiting_agent_with_run_id(
+    zellij: &TestSession,
+    terminal_id: zellij_types::internal_ids::TerminalId,
+    run_id: Option<&str>,
+) {
     let (exit_code, reported) = zellij.run_cli_action_reporting(CliAction::AgentReport {
         pane_id: Some(format!("terminal_{terminal_id}")),
         kind: Some("codex".to_owned()),
@@ -169,7 +173,10 @@ fn report_waiting_agent_with_run_id(zellij: &TestSession, terminal_id: u32, run_
     assert_eq!(exit_code, 0, "the agent report was refused: {reported}");
 }
 
-fn assert_waiting_agent(zellij: &TestSession, terminal_id: Option<u32>) {
+fn assert_waiting_agent(
+    zellij: &TestSession,
+    terminal_id: Option<zellij_types::internal_ids::TerminalId>,
+) {
     let (exit_code, listed) = zellij.run_cli_action_reporting(CliAction::ListPanes {
         tab: false,
         command: false,

@@ -15,7 +15,7 @@ fn extension_registry(safety: &str) -> Registry {
         "/plugins/hocus/weather.lua".to_owned(),
     )]);
     let instances = BTreeMap::from([(
-        7,
+        zellij_tile::prelude::PluginId::new(7),
         (
             "weather".to_owned(),
             "/plugins/hocus/weather.lua".to_owned(),
@@ -40,7 +40,13 @@ fn extension_registry(safety: &str) -> Registry {
     .to_string();
     let mut registry = Registry::default();
     registry
-        .register(7, &registration, &discovered, &instances, &BTreeSet::new())
+        .register(
+            zellij_tile::prelude::PluginId::new(7),
+            &registration,
+            &discovered,
+            &instances,
+            &BTreeSet::new(),
+        )
         .expect("the fixture registration is valid");
     registry
 }

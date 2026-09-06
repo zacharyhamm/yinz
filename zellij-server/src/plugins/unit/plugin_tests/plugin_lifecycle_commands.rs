@@ -19,7 +19,7 @@ pub fn reload_plugin_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -89,7 +89,7 @@ pub fn load_new_plugin_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -159,7 +159,7 @@ pub fn rebind_keys_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -245,7 +245,7 @@ pub fn list_clients_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -321,7 +321,7 @@ pub fn before_close_plugin_event() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -362,7 +362,7 @@ pub fn before_close_plugin_event() {
     // so that its BeforeClose Event will be triggered and it will send a
     // HighlightAndUnhighlightPanes
     // instruction which we can assert below
-    let _ = plugin_thread_sender.send(PluginInstruction::Unload(crate::PluginId(0)));
+    let _ = plugin_thread_sender.send(PluginInstruction::Unload(crate::PluginId::new(0)));
     screen_thread.join().unwrap(); // this might take a while if the cache is cold
     teardown();
     let sent_instruction = received_screen_instructions
@@ -397,7 +397,7 @@ pub fn show_cursor_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -474,7 +474,7 @@ pub fn hide_cursor_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -552,7 +552,7 @@ pub fn copy_to_clipboard_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -629,7 +629,7 @@ pub fn run_action_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -698,7 +698,7 @@ pub fn send_sigint_to_pane_id_plugin_command() {
         create_plugin_thread_with_pty_receiver(Some(plugin_host_folder), None, None);
 
     let received_pty_instructions = Watched::new(vec![]);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
@@ -785,7 +785,7 @@ pub fn send_sigkill_to_pane_id_plugin_command() {
         create_plugin_thread_with_pty_receiver(Some(plugin_host_folder), None, None);
 
     let received_pty_instructions = Watched::new(vec![]);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let pty_thread = log_actions_in_thread!(
         received_pty_instructions,
@@ -872,7 +872,7 @@ pub fn copy_to_clipboard_without_permission() {
         create_plugin_thread(Some(plugin_host_folder), None);
 
     let received_screen_instructions = Watched::new(vec![]);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     // The permission is denied, so no CopyTextToClipboard may reach the screen.
     let screen_thread = deny_permissions_and_log_until_disconnect(
@@ -957,7 +957,7 @@ pub fn run_action_without_permission() {
         create_plugin_thread(Some(plugin_host_folder), None);
 
     let received_screen_instructions = Watched::new(vec![]);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     // The permission is denied, so the action may not be routed: no MoveFocusLeft.
     let screen_thread = deny_permissions_and_log_until_disconnect(

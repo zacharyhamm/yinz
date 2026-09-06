@@ -1,3 +1,6 @@
+#[cfg(test)]
+const PLUGIN_2: zellij_types::internal_ids::PluginId = zellij_types::internal_ids::PluginId::new(2);
+
 use super::*;
 use zellij_test_support::Watched;
 
@@ -9,11 +12,11 @@ pub fn background_plugin_receives_broadcasts_regardless_of_active_tab() {
     // After run, client is on tab 2. Switch to tab 0 (plugin 2).
     // Background plugin 99 should also receive updates.
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
 
     let mut mock_screen = MockScreen::new(size);
-    mock_screen.new_tab_with_plugins(vec![crate::PluginId(2)]);
-    mock_screen.new_tab_with_plugins(vec![crate::PluginId(3)]);
+    mock_screen.new_tab_with_plugins(vec![crate::PluginId::new(2)]);
+    mock_screen.new_tab_with_plugins(vec![crate::PluginId::new(3)]);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
 
@@ -25,7 +28,7 @@ pub fn background_plugin_receives_broadcasts_regardless_of_active_tab() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::UpdateBackgroundPluginSubscriptions(
-            crate::PluginId(99),
+            crate::PluginId::new(99),
             main_client_id,
             bg_subs,
         ));
@@ -61,12 +64,12 @@ pub fn background_plugin_receives_broadcasts_regardless_of_active_tab() {
                 match event {
                     Event::TabUpdate(..) => {
                         if let Some(id) = pid {
-                            plugin_ids_that_received_tab_update.push(id.0);
+                            plugin_ids_that_received_tab_update.push(id.get());
                         }
                     },
                     Event::ModeUpdate(..) => {
                         if let Some(id) = pid {
-                            plugin_ids_that_received_mode_update.push(id.0);
+                            plugin_ids_that_received_mode_update.push(id.get());
                         }
                     },
                     _ => {},
@@ -116,11 +119,11 @@ pub fn tab_switch_only_updates_active_tab_plugins() {
     // After run, client is on tab 2. Switch to tab 0 (plugin 2).
     // Only plugin 2 should receive updates; plugin 3 should not.
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
 
     let mut mock_screen = MockScreen::new(size);
-    mock_screen.new_tab_with_plugins(vec![crate::PluginId(2)]);
-    mock_screen.new_tab_with_plugins(vec![crate::PluginId(3)]);
+    mock_screen.new_tab_with_plugins(vec![crate::PluginId::new(2)]);
+    mock_screen.new_tab_with_plugins(vec![crate::PluginId::new(3)]);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
 
@@ -152,7 +155,7 @@ pub fn tab_switch_only_updates_active_tab_plugins() {
                 match event {
                     Event::TabUpdate(..) | Event::ModeUpdate(..) => {
                         if let Some(id) = pid {
-                            plugin_ids_that_received_updates.push(id.0);
+                            plugin_ids_that_received_updates.push(id.get());
                         }
                     },
                     _ => {},
@@ -180,10 +183,10 @@ pub fn inactive_tab_plugins_get_fresh_state_on_activation() {
     // Tab 1: terminal panes only (from run, client starts here)
     // Switch to tab 0 → plugin 2 becomes active and receives TabUpdate with both tabs.
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
 
     let mut mock_screen = MockScreen::new(size);
-    mock_screen.new_tab_with_plugins(vec![crate::PluginId(2)]);
+    mock_screen.new_tab_with_plugins(vec![crate::PluginId::new(2)]);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
 
@@ -211,11 +214,7 @@ pub fn inactive_tab_plugins_get_fresh_state_on_activation() {
     let tab_update_for_plugin_2 = instructions_after_switch.iter().find_map(|instruction| {
         if let PluginInstruction::Update(updates) = instruction {
             for (pid, _cid, event) in updates {
-                if let (
-                    Some(zellij_types::internal_ids::PluginId(2)),
-                    Event::TabUpdate(tab_infos),
-                ) = (pid, event)
-                {
+                if let (Some(PLUGIN_2), Event::TabUpdate(tab_infos)) = (pid, event) {
                     return Some(tab_infos.clone());
                 }
             }
@@ -257,7 +256,7 @@ pub fn closing_tab_updates_input_modes_of_destination_tab_plugins() {
 
     let mut mock_screen = MockScreen::new(size);
     let client_id = mock_screen.main_client_id;
-    mock_screen.new_tab_with_plugins(vec![crate::PluginId(2)]);
+    mock_screen.new_tab_with_plugins(vec![crate::PluginId::new(2)]);
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -316,7 +315,7 @@ pub fn closing_tab_updates_input_modes_of_destination_tab_plugins() {
                     PluginInstruction::Update(updates)
                         if updates.iter().any(|(pid, _, event)| matches!(
                             (pid, event),
-                            (Some(zellij_types::internal_ids::PluginId(2)), Event::TabUpdate(tabs)) if tabs.len() == 1
+                            (Some(PLUGIN_2), Event::TabUpdate(tabs)) if tabs.len() == 1
                         ))
                 )
             });
@@ -335,7 +334,7 @@ pub fn closing_tab_updates_input_modes_of_destination_tab_plugins() {
     mock_screen.teardown(vec![plugin_thread, screen_thread]);
 
     assert!(
-        mode_updates_received.contains(&(crate::PluginId(2), client_id)),
+        mode_updates_received.contains(&(crate::PluginId::new(2), client_id)),
         "Plugin 2 in the tab focus returned to should receive a ModeUpdate for client {}, got: {:?}",
         client_id,
         mode_updates_received

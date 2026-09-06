@@ -281,7 +281,7 @@ pub use zellij_tile::agent::HookEvent;
 /// with no agents in it.
 #[derive(Serialize, Deserialize)]
 pub struct Selection {
-    pub plugin_id: u32,
+    pub plugin_id: zellij_tile::prelude::PluginId,
     #[serde(default)]
     pub pane_id: Option<u32>,
     #[serde(default)]

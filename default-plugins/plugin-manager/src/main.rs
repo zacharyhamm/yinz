@@ -6,14 +6,19 @@ use zellij_tile::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 
 pub struct SearchResult {
-    plugin_id: u32,
+    plugin_id: zellij_tile::prelude::PluginId,
     plugin_info: PluginInfo,
     indices: Vec<usize>,
     score: i64,
 }
 
 impl SearchResult {
-    pub fn new(plugin_id: u32, plugin_info: &PluginInfo, indices: Vec<usize>, score: i64) -> Self {
+    pub fn new(
+        plugin_id: zellij_tile::prelude::PluginId,
+        plugin_info: &PluginInfo,
+        indices: Vec<usize>,
+        score: i64,
+    ) -> Self {
         SearchResult {
             plugin_id,
             plugin_info: plugin_info.clone(),
@@ -484,12 +489,12 @@ impl NewPluginScreen {
 #[derive(Default)]
 struct State {
     userspace_configuration: BTreeMap<String, String>,
-    plugins: BTreeMap<u32, PluginInfo>,
+    plugins: BTreeMap<PluginId, PluginInfo>,
     search_results: Vec<SearchResult>,
     selected_index: Option<usize>,
     expanded_indices: Vec<usize>,
     tab_position_to_tab_name: HashMap<usize, String>,
-    plugin_id_to_tab_position: HashMap<u32, usize>,
+    plugin_id_to_tab_position: HashMap<PluginId, usize>,
     search_term: String,
     new_plugin_screen: Option<NewPluginScreen>,
     colors: Styling,
@@ -566,7 +571,7 @@ impl ZellijPlugin for State {
                     for pane_info in panes {
                         if pane_info.is_plugin {
                             self.plugin_id_to_tab_position
-                                .insert(pane_info.id, tab_position);
+                                .insert(PluginId::new(pane_info.id), tab_position);
                         }
                     }
                 }
@@ -707,7 +712,7 @@ impl State {
     }
     pub fn render_plugin(
         &self,
-        plugin_id: u32,
+        plugin_id: zellij_tile::prelude::PluginId,
         plugin_info: &PluginInfo,
         is_selected: bool,
         is_expanded: bool,
@@ -841,7 +846,11 @@ impl State {
         }
         item
     }
-    fn render_tab_line(&self, plugin_id: u32, max_width: usize) -> NestedListItem {
+    fn render_tab_line(
+        &self,
+        plugin_id: zellij_tile::prelude::PluginId,
+        max_width: usize,
+    ) -> NestedListItem {
         let tab_of_plugin_id = self
             .get_tab_of_plugin_id(plugin_id)
             .unwrap_or_else(|| "N/A".to_owned());
@@ -893,7 +902,7 @@ impl State {
             print_text_with_coordinates(text, 0, y, Some(cols), None);
         }
     }
-    pub fn selected_plugin_id(&self) -> Option<u32> {
+    pub fn selected_plugin_id(&self) -> Option<PluginId> {
         if self.is_searching() {
             self.selected_index
                 .and_then(|i| self.search_results.get(i))
@@ -906,11 +915,7 @@ impl State {
     }
     pub fn focus_selected(&self) {
         if let Some(selected_plugin_id) = self.selected_plugin_id() {
-            focus_pane_with_id(
-                PaneId::Plugin(zellij_tile::prelude::PluginId(selected_plugin_id)),
-                true,
-                false,
-            );
+            focus_pane_with_id(PaneId::Plugin(selected_plugin_id), true, false);
         }
     }
     pub fn reload_selected(&self) {
@@ -937,7 +942,10 @@ impl State {
             self.expanded_indices.retain(|i| i != selected_index);
         }
     }
-    pub fn get_tab_of_plugin_id(&self, plugin_id: u32) -> Option<String> {
+    pub fn get_tab_of_plugin_id(
+        &self,
+        plugin_id: zellij_tile::prelude::PluginId,
+    ) -> Option<String> {
         self.plugin_id_to_tab_position
             .get(&plugin_id)
             .and_then(|plugin_id| self.tab_position_to_tab_name.get(plugin_id))

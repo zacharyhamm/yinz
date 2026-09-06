@@ -4,7 +4,7 @@ use zellij_test_support::Watched;
 #[test]
 pub fn send_cli_new_tab_action_with_layout_string() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -59,7 +59,7 @@ pub fn send_cli_new_tab_action_with_layout_string() {
 #[test]
 pub fn send_cli_new_tab_action_with_layout_string_and_name() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -116,7 +116,7 @@ pub fn send_cli_new_pane_action_with_tab_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -187,7 +187,7 @@ pub fn send_cli_new_floating_pane_action_with_tab_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -257,7 +257,7 @@ pub fn send_cli_edit_action_with_tab_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -311,7 +311,7 @@ pub fn send_cli_new_pane_action_with_tab_id_and_direction() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -381,7 +381,7 @@ pub fn send_cli_new_pane_action_with_tab_id_and_stacked() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -452,11 +452,11 @@ fn cli_rename_active_pane_via_screen_replaces_name() {
         rows: 20,
     };
     let mut screen = create_new_screen(size, true, true);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     new_tab(&mut screen, 1, 0);
 
     // First give the pane a name
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     if let Ok(tab) = screen.get_active_tab_mut(client_id) {
         let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     }
@@ -482,10 +482,10 @@ fn cli_rename_active_pane_single_char_via_screen() {
         rows: 20,
     };
     let mut screen = create_new_screen(size, true, true);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     new_tab(&mut screen, 1, 0);
 
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     if let Ok(tab) = screen.get_active_tab_mut(client_id) {
         let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     }
@@ -514,10 +514,10 @@ fn cli_rename_focused_pane_single_char_via_rename_active_pane() {
         rows: 20,
     };
     let mut screen = create_new_screen(size, true, true);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     new_tab(&mut screen, 1, 0);
 
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     if let Ok(tab) = screen.get_active_tab_mut(client_id) {
         let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     }
@@ -543,7 +543,7 @@ pub fn pty_bytes_and_hold_pane_buffered_before_new_pane() {
     // reader and quit_cb run on separate threads. This test verifies that such early-arriving
     // events are buffered and replayed once NewPane is processed.
     let size = Size { cols: 80, rows: 20 };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -561,7 +561,7 @@ pub fn pty_bytes_and_hold_pane_buffered_before_new_pane() {
 
     // Simulate the race: send PtyBytes for the new pane BEFORE NewPane
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(new_pane_id),
+        crate::TerminalId::new(new_pane_id),
         "hello\r\n".as_bytes().to_vec(),
     ));
 
@@ -573,7 +573,7 @@ pub fn pty_bytes_and_hold_pane_buffered_before_new_pane() {
         ..Default::default()
     };
     let _ = mock_screen.to_screen.send(ScreenInstruction::HoldPane(
-        PaneId::Terminal(crate::TerminalId(new_pane_id)),
+        PaneId::Terminal(crate::TerminalId::new(new_pane_id)),
         Some(0),
         run_command,
     ));
@@ -583,7 +583,7 @@ pub fn pty_bytes_and_hold_pane_buffered_before_new_pane() {
 
     // Now send NewPane — this should replay the buffered PtyBytes and HoldPane
     let _ = mock_screen.to_screen.send(ScreenInstruction::NewPane(
-        PaneId::Terminal(crate::TerminalId(new_pane_id)),
+        PaneId::Terminal(crate::TerminalId::new(new_pane_id)),
         Some("echo hello".to_string()),
         None, // hold_for_command
         None, // invoked_with
@@ -659,7 +659,7 @@ pub fn rename_active_pane_without_a_connected_client_reports_an_error() {
         cols: 130,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut mock_screen = MockScreen::new(size);
     let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
     let received_server_instructions = Watched::new(vec![]);
@@ -694,7 +694,7 @@ pub fn rename_active_tab_without_a_connected_client_reports_an_error() {
         cols: 130,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut mock_screen = MockScreen::new(size);
     let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
     let received_server_instructions = Watched::new(vec![]);

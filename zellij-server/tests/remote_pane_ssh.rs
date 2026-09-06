@@ -478,7 +478,13 @@ fn open_pane(hosts: &Arc<RemoteHosts>, script: &str) -> Pane {
 }
 
 fn open_pane_in(hosts: &Arc<RemoteHosts>, script: &str, cwd: Option<&str>) -> Pane {
-    open_pane_with(hosts, script, cwd, vec![], 0)
+    open_pane_with(
+        hosts,
+        script,
+        cwd,
+        vec![],
+        zellij_types::internal_ids::TerminalId::new(0),
+    )
 }
 
 /// `open_pane_in`, but *saying* what this side's environment is rather than
@@ -489,7 +495,7 @@ fn open_pane_with(
     script: &str,
     cwd: Option<&str>,
     env: Vec<(String, String)>,
-    terminal_id: u32,
+    terminal_id: zellij_types::internal_ids::TerminalId,
 ) -> Pane {
     let cmd = RunCommand {
         command: PathBuf::from("/bin/sh"),
@@ -501,13 +507,7 @@ fn open_pane_with(
         ..Default::default()
     };
     let (conn, reader_socket) = hosts
-        .open_pane_with_env(
-            HOST,
-            &cmd,
-            None,
-            zellij_server::TerminalId(terminal_id),
-            env,
-        )
+        .open_pane_with_env(HOST, &cmd, None, terminal_id, env)
         .unwrap_or_else(|e| panic!("failed to open a pane on {HOST}: {e:#}"));
     let reader = RemoteReader::new(conn.clone(), reader_socket)
         .expect("failed to build a reader for a remote pane");
@@ -520,14 +520,19 @@ fn open_pane_with(
 /// that this side can say "/bin/bash", which is exactly the thing that must not
 /// happen. The empty command is the request.
 fn open_default_shell_pane(hosts: &Arc<RemoteHosts>, cwd: Option<&str>) -> Pane {
-    open_default_shell_pane_with(hosts, cwd, vec![], 0)
+    open_default_shell_pane_with(
+        hosts,
+        cwd,
+        vec![],
+        zellij_types::internal_ids::TerminalId::new(0),
+    )
 }
 
 fn open_default_shell_pane_with(
     hosts: &Arc<RemoteHosts>,
     cwd: Option<&str>,
     env: Vec<(String, String)>,
-    terminal_id: u32,
+    terminal_id: zellij_types::internal_ids::TerminalId,
 ) -> Pane {
     let cmd = RunCommand {
         command: PathBuf::new(),
@@ -539,13 +544,7 @@ fn open_default_shell_pane_with(
         ..Default::default()
     };
     let (conn, reader_socket) = hosts
-        .open_pane_with_env(
-            HOST,
-            &cmd,
-            None,
-            zellij_server::TerminalId(terminal_id),
-            env,
-        )
+        .open_pane_with_env(HOST, &cmd, None, terminal_id, env)
         .unwrap_or_else(|e| panic!("failed to open a shell pane on {HOST}: {e:#}"));
     let reader = RemoteReader::new(conn.clone(), reader_socket)
         .expect("failed to build a reader for a remote pane");
@@ -2077,7 +2076,7 @@ fn a_remote_pane_uses_the_terminal_type_this_side_is_using() {
         &hosts,
         None,
         vec![("TERM".to_owned(), "xterm-zellij-remote-test".to_owned())],
-        0,
+        zellij_types::internal_ids::TerminalId::new(0),
     );
     pane.wait_for_status("a live shell", |s| s.shell_argv.is_some());
 
@@ -2097,7 +2096,7 @@ fn a_remote_pane_has_a_working_terminfo() {
         &hosts,
         None,
         vec![("TERM".to_owned(), "xterm".to_owned())],
-        0,
+        zellij_types::internal_ids::TerminalId::new(0),
     );
     pane.wait_for_status("a live shell", |s| s.shell_argv.is_some());
 
@@ -2127,7 +2126,7 @@ fn the_locale_crosses_but_the_asking_machines_filesystem_does_not() {
             ),
             ("HOME".to_owned(), "/nonsense-home".to_owned()),
         ],
-        0,
+        zellij_types::internal_ids::TerminalId::new(0),
     );
     pane.wait_for_status("a live shell", |s| s.shell_argv.is_some());
 
@@ -2206,13 +2205,13 @@ fn each_pane_gets_its_own_terminal_type_from_the_same_broker() {
         &hosts,
         None,
         vec![("TERM".to_owned(), "xterm-first".to_owned())],
-        0,
+        zellij_types::internal_ids::TerminalId::new(0),
     );
     let second = open_default_shell_pane_with(
         &hosts,
         None,
         vec![("TERM".to_owned(), "xterm-second".to_owned())],
-        0,
+        zellij_types::internal_ids::TerminalId::new(0),
     );
 
     first.wait_for_status("a live shell", |s| s.shell_argv.is_some());
@@ -2318,7 +2317,7 @@ fn a_remote_pane_is_told_its_real_pane_id() {
         &format!("echo pane=$ZELLIJ_PANE_ID; {}", idle_marked("pane-id")),
         None,
         vec![],
-        73,
+        zellij_types::internal_ids::TerminalId::new(73),
     );
 
     pane.wait_for_output("pane=73");

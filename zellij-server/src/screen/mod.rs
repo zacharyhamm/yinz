@@ -250,7 +250,7 @@ pub(crate) fn denormalize_notification_response(payload: &[u8]) -> Option<Notifi
     let restored_metadata = restored_parts.join(":");
     let full_response = format!("\x1b]99;{}{}\x1b\\", restored_metadata, response_payload);
     Some(NotificationResponse {
-        terminal_id: TerminalId(terminal_id),
+        terminal_id: TerminalId::new(terminal_id),
         forward_to_pane: app_wants_report || payload_type.is_control_request(),
         focus_pane: !payload_type.is_control_request(),
         bytes: full_response.into_bytes(),
@@ -3122,7 +3122,7 @@ impl Screen {
             return;
         };
         let payload = HookPayload::PaneExit {
-            pane_id: terminal_pane_id.0,
+            pane_id: terminal_pane_id,
             exit_code: exit_status,
             cwd: run_command.cwd.clone(),
             command: Some(run_command.to_string()),
@@ -3170,7 +3170,7 @@ impl Screen {
                 .map(|cwd| cwd.display().to_string());
         }
         let payload = HookPayload::Agent {
-            pane_id: terminal_pane_id.0,
+            pane_id: terminal_pane_id,
             agent,
             previous_state: previous.map(|previous| previous.state),
             command: run_command

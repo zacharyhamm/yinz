@@ -82,7 +82,7 @@ impl TerminalBytes {
                     self.activity_flag.store(true, Ordering::Relaxed);
                     let bytes = &buf[..n_bytes];
                     if self.debug {
-                        let _ = debug_to_file(bytes, self.terminal_id.0 as i32);
+                        let _ = debug_to_file(bytes, self.terminal_id.get() as i32);
                     }
                     // record output if enabled, before sending to screen
                     if let Some(recorder) = &self.senders.session_recorder {
@@ -180,7 +180,7 @@ mod tests {
             ..Default::default()
         };
         let mut terminal_bytes = TerminalBytes::new(
-            crate::TerminalId(1),
+            crate::TerminalId::new(1),
             Box::new(FakeReader {
                 data: Some(b"hello".to_vec()),
             }),
@@ -209,7 +209,7 @@ mod tests {
             events[0].kind,
             zellij_storage::session_recording::EventKind::Output
         );
-        assert_eq!(closed, Some(TerminalId(1)));
+        assert_eq!(closed, Some(TerminalId::new(1)));
         Ok(())
     }
 }

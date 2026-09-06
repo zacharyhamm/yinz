@@ -1177,9 +1177,9 @@ impl State {
                     if is_current_session {
                         if let Some((pane_id, is_plugin)) = selected_pane {
                             if is_plugin {
-                                focus_plugin_pane(pane_id, true, false);
+                                focus_plugin_pane(PluginId::new(pane_id), true, false);
                             } else {
-                                focus_terminal_pane(pane_id, true, false);
+                                focus_terminal_pane(TerminalId::new(pane_id), true, false);
                             }
                         } else if let Some(tab_position) = selected_tab {
                             go_to_tab(tab_position as u32);

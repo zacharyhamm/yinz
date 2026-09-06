@@ -23,7 +23,7 @@ pub enum PaneId {
 
 impl Default for PaneId {
     fn default() -> Self {
-        PaneId::Terminal(TerminalId(0))
+        PaneId::Terminal(TerminalId::new(0))
     }
 }
 
@@ -33,17 +33,17 @@ impl FromStr for PaneId {
         if let Some(terminal_stringified_pane_id) = stringified_pane_id.strip_prefix("terminal_") {
             terminal_stringified_pane_id
                 .parse::<u32>()
-                .map(|id| PaneId::Terminal(TerminalId(id)))
+                .map(|id| PaneId::Terminal(TerminalId::new(id)))
                 .map_err(|e| e.into())
         } else if let Some(plugin_pane_id) = stringified_pane_id.strip_prefix("plugin_") {
             plugin_pane_id
                 .parse::<u32>()
-                .map(|id| PaneId::Plugin(PluginId(id)))
+                .map(|id| PaneId::Plugin(PluginId::new(id)))
                 .map_err(|e| e.into())
         } else {
             stringified_pane_id
                 .parse::<u32>()
-                .map(|id| PaneId::Terminal(TerminalId(id)))
+                .map(|id| PaneId::Terminal(TerminalId::new(id)))
                 .map_err(|e| e.into())
         }
     }

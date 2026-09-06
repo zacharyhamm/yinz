@@ -85,8 +85,8 @@ pub struct PluginRenderAsset {
 impl Default for PluginRenderAsset {
     fn default() -> Self {
         Self {
-            client_id: ClientId(0),
-            plugin_id: PluginId(0),
+            client_id: ClientId::new(0),
+            plugin_id: PluginId::new(0),
             bytes: Vec::new(),
             cli_pipes: HashMap::new(),
         }
@@ -392,7 +392,7 @@ impl WasmBridge {
                 "Plugins must have a client id, none was provided and none are connected"
             })?;
 
-        let plugin_id = PluginId(self.next_plugin_id);
+        let plugin_id = PluginId::new(self.next_plugin_id);
 
         match run {
             Some(run) => {
@@ -649,7 +649,7 @@ impl WasmBridge {
             cancel.store(true, Ordering::Relaxed);
         }
         let _ = self.senders.send_to_server(ServerInstruction::RebindKeys {
-            client_id: ClientId(0),
+            client_id: ClientId::new(0),
             keys_to_rebind: vec![],
             keys_to_unbind: vec![],
             write_config_to_disk: false,
@@ -937,7 +937,7 @@ impl WasmBridge {
                     let started = Event::QueueJobStarted {
                         queue: job.queue.clone(),
                         job_id: job.job_id,
-                        plugin_id: plugin_id.0,
+                        plugin_id,
                         context: job.context.clone(),
                     };
                     let enqueuer = job.enqueuer;
@@ -3510,7 +3510,7 @@ mod tests {
     #[test]
     fn intercepted_keypress_batches_are_input_jobs() {
         let events = vec![(
-            ClientId(1),
+            ClientId::new(1),
             Event::InterceptedKeyPress(KeyWithModifier::new(BareKey::Char('x'))),
         )];
 
@@ -3543,7 +3543,8 @@ mod tests {
             ("caller_cwd", "/repo"),
             ("caller_terminal_pane_id", "0"),
         ]);
-        let at_this_location = HashMap::from([(running, vec![(PluginId(7), ClientId(1))])]);
+        let at_this_location =
+            HashMap::from([(running, vec![(PluginId::new(7), ClientId::new(1))])]);
 
         // as asked for by `hocus-agents`, whose message is stamped with `caller_cwd` alone
         let greeting = configuration(&[
@@ -3554,7 +3555,7 @@ mod tests {
         ]);
         assert_eq!(
             instances_of(&at_this_location, &greeting),
-            &[(PluginId(7), ClientId(1))],
+            &[(PluginId::new(7), ClientId::new(1))],
             "the conversation that is already open"
         );
 
@@ -3572,33 +3573,33 @@ mod tests {
         let (plugin_id, owner_client_id, other_client_id) = (1, 1, 2);
         // a message for another client reaches a shared plugin, but not a per-client one
         assert!(WasmBridge::message_is_directed_at_plugin(
-            Some(PluginId(plugin_id)),
-            Some(ClientId(other_client_id)),
-            &PluginId(plugin_id),
-            &ClientId(owner_client_id),
+            Some(PluginId::new(plugin_id)),
+            Some(ClientId::new(other_client_id)),
+            &PluginId::new(plugin_id),
+            &ClientId::new(owner_client_id),
             true,
         ));
         assert!(!WasmBridge::message_is_directed_at_plugin(
-            Some(PluginId(plugin_id)),
-            Some(ClientId(other_client_id)),
-            &PluginId(plugin_id),
-            &ClientId(owner_client_id),
+            Some(PluginId::new(plugin_id)),
+            Some(ClientId::new(other_client_id)),
+            &PluginId::new(plugin_id),
+            &ClientId::new(owner_client_id),
             false,
         ));
         // a message for another plugin never reaches it
         assert!(!WasmBridge::message_is_directed_at_plugin(
-            Some(PluginId(plugin_id + 1)),
-            Some(ClientId(other_client_id)),
-            &PluginId(plugin_id),
-            &ClientId(owner_client_id),
+            Some(PluginId::new(plugin_id + 1)),
+            Some(ClientId::new(other_client_id)),
+            &PluginId::new(plugin_id),
+            &ClientId::new(owner_client_id),
             true,
         ));
         // broadcasts still reach it exactly as before
         assert!(WasmBridge::message_is_directed_at_plugin(
             None,
             None,
-            &PluginId(plugin_id),
-            &ClientId(owner_client_id),
+            &PluginId::new(plugin_id),
+            &ClientId::new(owner_client_id),
             true,
         ));
     }

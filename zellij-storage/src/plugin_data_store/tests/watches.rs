@@ -317,7 +317,7 @@ fn a_plugin_cannot_unwatch_another_plugins_watch() {
         )
         .unwrap();
     assert!(store
-        .unregister_watch(PluginId(PLUGIN.0 + 1), handle.watch_id)
+        .unregister_watch(PluginId::new(PLUGIN.get() + 1), handle.watch_id)
         .is_err());
     assert_eq!(store.watch_count(), 1);
 }
@@ -325,7 +325,7 @@ fn a_plugin_cannot_unwatch_another_plugins_watch() {
 #[test]
 fn unloading_a_plugin_drops_its_watches_and_leaves_the_others() {
     let (store, _dir) = defined();
-    for plugin_id in [PLUGIN, PluginId(PLUGIN.0 + 1)] {
+    for plugin_id in [PLUGIN, PluginId::new(PLUGIN.get() + 1)] {
         store
             .register_watch(
                 NS,
@@ -342,7 +342,7 @@ fn unloading_a_plugin_drops_its_watches_and_leaves_the_others() {
     put(&store, "zellij", "one", 1);
     let changes = store.refresh_watches(NS, &touched("agent")).unwrap();
     assert_eq!(changes.len(), 1);
-    assert_eq!(changes[0].plugin_id, PluginId(PLUGIN.0 + 1));
+    assert_eq!(changes[0].plugin_id, PluginId::new(PLUGIN.get() + 1));
 }
 
 #[test]

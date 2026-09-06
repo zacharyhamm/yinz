@@ -293,7 +293,7 @@ fn run_command_action(
         hold_on_close: true,
         hold_on_start: false,
         originating_plugin: Some(OriginatingPlugin::new(
-            env.plugin_id.0,
+            env.plugin_id,
             env.client_id,
             context,
         )),
@@ -588,10 +588,10 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 start_or_reload_plugin(env, &plugin_url)?
             },
             PluginCommand::CloseTerminalPane(terminal_pane_id) => {
-                close_terminal_pane(env, TerminalId(terminal_pane_id))
+                close_terminal_pane(env, terminal_pane_id)
             },
             PluginCommand::ClosePluginPane(plugin_pane_id) => {
-                close_plugin_pane(env, PluginId(plugin_pane_id))
+                close_plugin_pane(env, plugin_pane_id)
             },
             PluginCommand::FocusTerminalPane(
                 terminal_pane_id,
@@ -599,7 +599,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 should_be_in_place_if_hidden,
             ) => focus_terminal_pane(
                 env,
-                TerminalId(terminal_pane_id),
+                terminal_pane_id,
                 should_float_if_hidden,
                 should_be_in_place_if_hidden,
             ),
@@ -609,15 +609,15 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 should_be_in_place_if_hidden,
             ) => focus_plugin_pane(
                 env,
-                PluginId(plugin_pane_id),
+                plugin_pane_id,
                 should_float_if_hidden,
                 should_be_in_place_if_hidden,
             ),
             PluginCommand::RenameTerminalPane(terminal_pane_id, new_name) => {
-                rename_terminal_pane(env, TerminalId(terminal_pane_id), &new_name)
+                rename_terminal_pane(env, terminal_pane_id, &new_name)
             },
             PluginCommand::RenamePluginPane(plugin_pane_id, new_name) => {
-                rename_plugin_pane(env, PluginId(plugin_pane_id), &new_name)
+                rename_plugin_pane(env, plugin_pane_id, &new_name)
             },
             PluginCommand::SetPaneTitlePrefix { pane_id, prefix } => {
                 set_pane_title_prefix(env, pane_id.into(), prefix)
@@ -768,7 +768,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 open_command_pane_background(env, command_to_run, context)
             },
             PluginCommand::RerunCommandPane(terminal_pane_id) => {
-                rerun_command_pane(env, TerminalId(terminal_pane_id))
+                rerun_command_pane(env, terminal_pane_id)
             },
             PluginCommand::RunCommandInPane {
                 pane_id,
@@ -871,7 +871,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     tab_id,
                 )
             },
-            PluginCommand::ReloadPlugin(plugin_id) => reload_plugin(env, PluginId(plugin_id)),
+            PluginCommand::ReloadPlugin(plugin_id) => reload_plugin(env, plugin_id),
             PluginCommand::LoadNewPlugin {
                 url,
                 config,
@@ -1270,7 +1270,7 @@ fn host_display_name() -> String {
 
 fn get_plugin_ids(env: &mut PluginEnv) {
     let ids = PluginIds {
-        plugin_id: env.plugin_id.0,
+        plugin_id: env.plugin_id,
         zellij_pid: process::id(),
         initial_cwd: env.plugin_cwd.clone(),
         client_id: env.client_id,
@@ -1877,7 +1877,7 @@ fn open_file(env: &mut PluginEnv, file_to_open: FileToOpen, context: BTreeMap<St
         .or_else(|| Some(env.plugin_cwd.clone()));
     let action = Action::EditFile {
         payload: OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id.0, env.client_id, context),
+            OriginatingPlugin::new(env.plugin_id, env.client_id, context),
         ),
         direction: None,
         floating,
@@ -1904,7 +1904,7 @@ fn open_file(env: &mut PluginEnv, file_to_open: FileToOpen, context: BTreeMap<St
 fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, String>) {
     // Clone the necessary data to move into the thread
     action.populate_originating_plugin(OriginatingPlugin::new(
-        env.plugin_id.0,
+        env.plugin_id,
         env.client_id,
         context.clone(),
     ));
@@ -1974,7 +1974,7 @@ fn open_file_floating(
         .or_else(|| Some(env.plugin_cwd.clone()));
     let action = Action::EditFile {
         payload: OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id.0, env.client_id, context),
+            OriginatingPlugin::new(env.plugin_id, env.client_id, context),
         ),
         direction: None,
         floating,
@@ -2016,7 +2016,7 @@ fn open_file_in_place(
 
     let action = Action::EditFile {
         payload: OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id.0, env.client_id, context),
+            OriginatingPlugin::new(env.plugin_id, env.client_id, context),
         ),
         direction: None,
         floating,
@@ -2053,7 +2053,7 @@ fn open_file_near_plugin(
     let path = translate_plugin_path(env, file_to_open.path);
     let open_file_payload =
         OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id.0, env.client_id, context),
+            OriginatingPlugin::new(env.plugin_id, env.client_id, context),
         );
     let title = format!("Editing: {}", open_file_payload.path.display());
     let start_suppressed = false;
@@ -2096,7 +2096,7 @@ fn open_file_floating_near_plugin(
     let path = translate_plugin_path(env, file_to_open.path);
     let open_file_payload =
         OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id.0, env.client_id, context),
+            OriginatingPlugin::new(env.plugin_id, env.client_id, context),
         );
     let title = format!("Editing: {}", open_file_payload.path.display());
     let start_suppressed = false;
@@ -2139,7 +2139,7 @@ fn open_file_in_place_of_plugin(
     let path = translate_plugin_path(env, file_to_open.path);
     let open_file_payload =
         OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id.0, env.client_id, context),
+            OriginatingPlugin::new(env.plugin_id, env.client_id, context),
         );
     let title = format!("Editing: {}", open_file_payload.path.display());
     let open_file = TerminalAction::OpenFile(open_file_payload);
@@ -2528,7 +2528,7 @@ fn open_edit_pane_in_place_of_pane_id(
     let path = translate_plugin_path(env, file_to_open.path);
     let open_file_payload =
         OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id.0, env.client_id, context),
+            OriginatingPlugin::new(env.plugin_id, env.client_id, context),
         );
     let title = format!("Editing: {}", open_file_payload.path.display());
     let open_file = TerminalAction::OpenFile(open_file_payload);
@@ -3647,7 +3647,7 @@ fn hide_pane_with_id(env: &PluginEnv, pane_id: PaneId) -> Result<()> {
 
 fn show_self(env: &PluginEnv, should_float_if_hidden: bool) {
     let action = Action::FocusPluginPaneWithId {
-        pane_id: env.plugin_id.0,
+        pane_id: env.plugin_id,
         should_float_if_hidden,
         should_be_in_place_if_hidden: false,
     };
@@ -3849,7 +3849,7 @@ fn register_default_keybindings(env: &PluginEnv, keybindings: String) -> Result<
                 } = action
                 {
                     if name.starts_with("__zellij_default_keybinding:") {
-                        *plugin_id = Some(env.plugin_id.0);
+                        *plugin_id = Some(env.plugin_id);
                     }
                 }
             }
@@ -4622,7 +4622,7 @@ fn reload_plugin_by_url(env: &PluginEnv, url: String) -> Result<()> {
 fn close_terminal_pane(env: &PluginEnv, terminal_pane_id: TerminalId) {
     let error_msg = || format!("failed to change tab focus in plugin {}", env.name());
     let action = Action::CloseTerminalPane {
-        pane_id: terminal_pane_id.0,
+        pane_id: terminal_pane_id,
     };
     apply_action!(action, error_msg, env);
     env.senders
@@ -4636,7 +4636,7 @@ fn close_terminal_pane(env: &PluginEnv, terminal_pane_id: TerminalId) {
 fn close_plugin_pane(env: &PluginEnv, plugin_pane_id: PluginId) {
     let error_msg = || format!("failed to change tab focus in plugin {}", env.name());
     let action = Action::ClosePluginPane {
-        pane_id: plugin_pane_id.0,
+        pane_id: plugin_pane_id,
     };
     apply_action!(action, error_msg, env);
     env.senders
@@ -4651,7 +4651,7 @@ fn focus_terminal_pane(
     should_be_in_place_if_hidden: bool,
 ) {
     let action = Action::FocusTerminalPaneWithId {
-        pane_id: terminal_pane_id.0,
+        pane_id: terminal_pane_id,
         should_float_if_hidden,
         should_be_in_place_if_hidden,
     };
@@ -4666,7 +4666,7 @@ fn focus_plugin_pane(
     should_be_in_place_if_hidden: bool,
 ) {
     let action = Action::FocusPluginPaneWithId {
-        pane_id: plugin_pane_id.0,
+        pane_id: plugin_pane_id,
         should_float_if_hidden,
         should_be_in_place_if_hidden,
     };
@@ -4677,7 +4677,7 @@ fn focus_plugin_pane(
 fn rename_terminal_pane(env: &PluginEnv, terminal_pane_id: TerminalId, new_name: &str) {
     let error_msg = || "Failed to rename terminal pane".to_string();
     let rename_pane_action = Action::RenameTerminalPane {
-        pane_id: terminal_pane_id.0,
+        pane_id: terminal_pane_id,
         name: new_name.as_bytes().to_vec(),
     };
     apply_action!(rename_pane_action, error_msg, env);
@@ -4686,7 +4686,7 @@ fn rename_terminal_pane(env: &PluginEnv, terminal_pane_id: TerminalId, new_name:
 fn rename_plugin_pane(env: &PluginEnv, plugin_pane_id: PluginId, new_name: &str) {
     let error_msg = || "Failed to rename plugin pane".to_string();
     let rename_pane_action = Action::RenamePluginPane {
-        pane_id: plugin_pane_id.0,
+        pane_id: plugin_pane_id,
         name: new_name.as_bytes().to_vec(),
     };
     apply_action!(rename_pane_action, error_msg, env);
@@ -6601,12 +6601,7 @@ fn get_session_list(env: &mut PluginEnv) {
             if !current.name.is_empty() {
                 current.name = session_name.clone();
                 current.is_current_session = true;
-                current.populate_plugin_list(
-                    plugin_list
-                        .into_iter()
-                        .map(|(id, plugin)| (id.0, plugin))
-                        .collect(),
-                );
+                current.populate_plugin_list(plugin_list.into_iter().collect());
                 resurrectable_sessions_map.remove(&session_name);
                 live_sessions_map.insert(session_name, current);
             }
@@ -7036,7 +7031,7 @@ fn try_edit_layout(
             file_to_open.cwd,
         )
         .with_originating_plugin(OriginatingPlugin::new(
-            env.plugin_id.0,
+            env.plugin_id,
             env.client_id,
             context,
         )),

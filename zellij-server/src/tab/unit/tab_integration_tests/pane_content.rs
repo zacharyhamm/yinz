@@ -6,11 +6,11 @@ fn cannot_float_only_embedded_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("\n\n\n                   I am an embedded pane".as_bytes()),
     )
     .unwrap();
@@ -34,11 +34,11 @@ fn replacing_existing_wide_characters() {
         cols: 238,
         rows: 48,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
     let pane_content = read_fixture("ncmpcpp-wide-chars");
-    tab.handle_pty_bytes(crate::TerminalId(1), pane_content)
+    tab.handle_pty_bytes(crate::TerminalId::new(1), pane_content)
         .unwrap();
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
@@ -56,11 +56,11 @@ fn rename_embedded_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("\n\n\n                   I am an embedded pane".as_bytes()),
     )
     .unwrap();
@@ -82,9 +82,9 @@ fn rename_floating_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.new_pane(
         new_pane_id,
@@ -98,7 +98,7 @@ fn rename_floating_pane() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am a floating pane".as_bytes()),
     )
     .unwrap();
@@ -122,11 +122,11 @@ fn wide_characters_in_left_title_side() {
         cols: 238,
         rows: 48,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
     let pane_content = read_fixture("title-wide-chars");
-    tab.handle_pty_bytes(crate::TerminalId(1), pane_content)
+    tab.handle_pty_bytes(crate::TerminalId::new(1), pane_content)
         .unwrap();
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
@@ -143,25 +143,25 @@ fn save_cursor_position_across_resizes() {
     // the save cursor position ANSI instruction (CSI s) needs to point to the same character after we
     // resize the pane
     let size = Size { cols: 100, rows: 5 };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
 
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("\n\n\rI am some text\n\rI am another line of text\n\rLet's save the cursor position here \u{1b}[sI should be ovewritten".as_bytes()),
     ).unwrap();
 
     // We check cursor and saved cursor are handled separately by:
     // 1. moving real cursor up two lines
-    let _ = tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("\u{1b}[2A".as_bytes()));
+    let _ = tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("\u{1b}[2A".as_bytes()));
     // 2. resizing so real cursor gets lost above the viewport, which resets it to row 0
     // The saved cursor ends up on row 1, allowing detection if it (incorrectly) gets reset too
     tab.resize_whole_tab(Size { cols: 35, rows: 4 }).unwrap();
 
     // Now overwrite
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("\u{1b}[uthis overwrote me!".as_bytes()),
     )
     .unwrap();
@@ -180,12 +180,12 @@ fn save_cursor_position_across_resizes() {
 
 #[test]
 fn move_floating_pane_with_sixel_image() {
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let size = Size {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));
     let mut tab = create_new_tab_with_sixel_support(size, sixel_image_store.clone());
     let character_cell_size = Rc::new(RefCell::new(Some(SizeInPixels {
@@ -219,7 +219,8 @@ fn move_floating_pane_with_sixel_image() {
     )
     .unwrap();
     let fixture = read_fixture("sixel-image-500px.six");
-    tab.handle_pty_bytes(crate::TerminalId(2), fixture).unwrap();
+    tab.handle_pty_bytes(crate::TerminalId::new(2), fixture)
+        .unwrap();
     tab.handle_mouse_event(
         &MouseEvent::new_left_press_event(Position::new(5, 71)),
         client_id,
@@ -250,12 +251,12 @@ fn move_floating_pane_with_sixel_image() {
 
 #[test]
 fn floating_pane_above_sixel_image() {
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let size = Size {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));
     let mut tab = create_new_tab_with_sixel_support(size, sixel_image_store.clone());
     let character_cell_size = Rc::new(RefCell::new(Some(SizeInPixels {
@@ -289,7 +290,8 @@ fn floating_pane_above_sixel_image() {
     )
     .unwrap();
     let fixture = read_fixture("sixel-image-500px.six");
-    tab.handle_pty_bytes(crate::TerminalId(1), fixture).unwrap();
+    tab.handle_pty_bytes(crate::TerminalId::new(1), fixture)
+        .unwrap();
     tab.handle_mouse_event(
         &MouseEvent::new_left_press_event(Position::new(5, 71)),
         client_id,
@@ -324,14 +326,14 @@ fn suppress_tiled_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.replace_active_pane_with_editor_pane(new_pane_id, client_id)
         .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\nI am an editor pane".as_bytes()),
     )
     .unwrap();
@@ -351,10 +353,10 @@ fn suppress_floating_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    let editor_pane_id = PaneId::Terminal(crate::TerminalId(3));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    let editor_pane_id = PaneId::Terminal(crate::TerminalId::new(3));
     let mut output = Output::default();
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -373,7 +375,7 @@ fn suppress_floating_pane() {
     tab.replace_active_pane_with_editor_pane(editor_pane_id, client_id)
         .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         Vec::from("\n\n\nI am an editor pane".as_bytes()),
     )
     .unwrap();
@@ -393,19 +395,19 @@ fn close_suppressing_tiled_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.replace_active_pane_with_editor_pane(new_pane_id, client_id)
         .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\nI am an editor pane".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("\n\n\nI am the original pane".as_bytes()),
     )
     .unwrap();
@@ -426,10 +428,10 @@ fn close_suppressing_floating_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    let editor_pane_id = PaneId::Terminal(crate::TerminalId(3));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    let editor_pane_id = PaneId::Terminal(crate::TerminalId::new(3));
     let mut output = Output::default();
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -448,12 +450,12 @@ fn close_suppressing_floating_pane() {
     tab.replace_active_pane_with_editor_pane(editor_pane_id, client_id)
         .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         Vec::from("\n\n\nI am an editor pane".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\nI am the original pane".as_bytes()),
     )
     .unwrap();
@@ -474,19 +476,19 @@ fn suppress_tiled_pane_float_it_and_close() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.replace_active_pane_with_editor_pane(new_pane_id, client_id)
         .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\nI am an editor pane".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("\n\n\nI am the original pane".as_bytes()),
     )
     .unwrap();
@@ -508,10 +510,10 @@ fn suppress_floating_pane_embed_it_and_close_it() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    let editor_pane_id = PaneId::Terminal(crate::TerminalId(3));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    let editor_pane_id = PaneId::Terminal(crate::TerminalId::new(3));
     let mut output = Output::default();
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -530,12 +532,12 @@ fn suppress_floating_pane_embed_it_and_close_it() {
     tab.replace_active_pane_with_editor_pane(editor_pane_id, client_id)
         .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         Vec::from("\n\n\nI am an editor pane".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\nI am the original pane".as_bytes()),
     )
     .unwrap();
@@ -557,14 +559,14 @@ fn resize_whole_tab_while_tiled_pane_is_suppressed() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.replace_active_pane_with_editor_pane(new_pane_id, client_id)
         .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\nI am an editor pane".as_bytes()),
     )
     .unwrap();
@@ -589,10 +591,10 @@ fn resize_whole_tab_while_floting_pane_is_suppressed() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    let editor_pane_id = PaneId::Terminal(crate::TerminalId(3));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    let editor_pane_id = PaneId::Terminal(crate::TerminalId::new(3));
     let mut output = Output::default();
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -611,7 +613,7 @@ fn resize_whole_tab_while_floting_pane_is_suppressed() {
     tab.replace_active_pane_with_editor_pane(editor_pane_id, client_id)
         .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         Vec::from("\n\n\nI am an editor pane".as_bytes()),
     )
     .unwrap();
@@ -636,7 +638,7 @@ fn enter_search_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mode_info = ModeInfo {
         mode: InputMode::Search,
         ..Default::default()
@@ -644,7 +646,7 @@ fn enter_search_pane() {
     let mut tab = create_new_tab(size, mode_info);
     let mut output = Output::default();
     let pane_content = read_fixture("grid_copy");
-    tab.handle_pty_bytes(crate::TerminalId(1), pane_content)
+    tab.handle_pty_bytes(crate::TerminalId::new(1), pane_content)
         .unwrap();
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
@@ -702,13 +704,13 @@ fn enter_search_floating_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mode_info = ModeInfo {
         mode: InputMode::Search,
         ..Default::default()
     };
     let mut tab = create_new_tab(size, mode_info);
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -725,7 +727,7 @@ fn enter_search_floating_pane() {
     .unwrap();
 
     let pane_content = read_fixture("grid_copy");
-    tab.handle_pty_bytes(crate::TerminalId(2), pane_content)
+    tab.handle_pty_bytes(crate::TerminalId::new(2), pane_content)
         .unwrap();
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
@@ -754,7 +756,7 @@ fn pane_in_sgr_button_event_tracking_mouse_mode() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -766,7 +768,7 @@ fn pane_in_sgr_button_event_tracking_mouse_mode() {
 
     let sgr_mouse_mode_any_button = String::from("\u{1b}[?1002;1006h"); // button event tracking (1002) with SGR encoding (1006)
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         sgr_mouse_mode_any_button.as_bytes().to_vec(),
     )
     .unwrap();
@@ -848,7 +850,7 @@ fn pane_in_sgr_normal_event_tracking_mouse_mode() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -860,7 +862,7 @@ fn pane_in_sgr_normal_event_tracking_mouse_mode() {
 
     let sgr_mouse_mode_any_button = String::from("\u{1b}[?1000;1006h"); // normal event tracking (1000) with sgr encoding (1006)
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         sgr_mouse_mode_any_button.as_bytes().to_vec(),
     )
     .unwrap();
@@ -942,7 +944,7 @@ fn pane_in_sgr_any_event_tracking_mouse_mode() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -954,7 +956,7 @@ fn pane_in_sgr_any_event_tracking_mouse_mode() {
 
     let sgr_mouse_mode_any_button = String::from("\u{1b}[?1003;1006h"); // any event tracking (1003) with SGR encoding (1006)
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         sgr_mouse_mode_any_button.as_bytes().to_vec(),
     )
     .unwrap();
@@ -1042,7 +1044,7 @@ fn pane_in_utf8_button_event_tracking_mouse_mode() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -1054,7 +1056,7 @@ fn pane_in_utf8_button_event_tracking_mouse_mode() {
 
     let sgr_mouse_mode_any_button = String::from("\u{1b}[?1002;1005h"); // button event tracking (1002) with utf8 encoding (1005)
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         sgr_mouse_mode_any_button.as_bytes().to_vec(),
     )
     .unwrap();
@@ -1136,7 +1138,7 @@ fn pane_in_utf8_normal_event_tracking_mouse_mode() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -1148,7 +1150,7 @@ fn pane_in_utf8_normal_event_tracking_mouse_mode() {
 
     let sgr_mouse_mode_any_button = String::from("\u{1b}[?1000;1005h"); // normal event tracking (1000) with sgr encoding (1006)
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         sgr_mouse_mode_any_button.as_bytes().to_vec(),
     )
     .unwrap();
@@ -1230,7 +1232,7 @@ fn pane_in_utf8_any_event_tracking_mouse_mode() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -1242,7 +1244,7 @@ fn pane_in_utf8_any_event_tracking_mouse_mode() {
 
     let sgr_mouse_mode_any_button = String::from("\u{1b}[?1003;1005h"); // any event tracking (1002) with utf8 encoding (1005)
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         sgr_mouse_mode_any_button.as_bytes().to_vec(),
     )
     .unwrap();
@@ -1334,42 +1336,42 @@ fn a_remote_pane_that_becomes_ready_forgets_the_loading_screen_it_buffered() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     // enough lines to have somewhere to scroll to
     for line in 0..40 {
         tab.handle_pty_bytes(
-            crate::TerminalId(1),
+            crate::TerminalId::new(1),
             format!("line {line}\n\r").into_bytes(),
         )
         .unwrap();
     }
     tab.scroll_active_terminal_up(client_id);
     assert!(
-        tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId(1)))
+        tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
             .map(|pane| pane.is_scrolled())
             .unwrap_or(false),
         "the pane is scrolled before the connection completes"
     );
 
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("Status: connecting to the guest".as_bytes()),
     )
     .unwrap();
     assert!(
-        tab.pending_vte_events.contains_key(&TerminalId(1)),
+        tab.pending_vte_events.contains_key(&TerminalId::new(1)),
         "the loading update was buffered rather than drawn"
     );
 
-    tab.remote_pane_ready(crate::TerminalId(1)).unwrap();
+    tab.remote_pane_ready(crate::TerminalId::new(1)).unwrap();
 
     assert!(
-        !tab.pending_vte_events.contains_key(&TerminalId(1)),
+        !tab.pending_vte_events.contains_key(&TerminalId::new(1)),
         "the buffered loading updates are dropped, not replayed later"
     );
     assert!(
-        !tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId(1)))
+        !tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
             .map(|pane| pane.is_scrolled())
             .unwrap_or(true),
         "the pane starts the live command unscrolled, so its output is not buffered"
@@ -1399,14 +1401,17 @@ fn search_input_accepts_unicode_and_preserves_editing_commands() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mode_info = ModeInfo {
         mode: InputMode::Search,
         ..Default::default()
     };
     let mut tab = create_new_tab(size, mode_info);
-    tab.handle_pty_bytes(crate::TerminalId(1), "café 東京 🙂 end".as_bytes().to_vec())
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(1),
+        "café 東京 🙂 end".as_bytes().to_vec(),
+    )
+    .unwrap();
 
     for (input, expected) in [
         ("café 東京 🙂".as_bytes().to_vec(), "café 東京 🙂"),

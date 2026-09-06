@@ -7,12 +7,14 @@ use std::fmt;
 ///
 /// ```compile_fail
 /// use zellij_types::internal_ids::{TerminalId, PluginId};
-/// let _: TerminalId = PluginId(0);
+/// let _: TerminalId = PluginId::new(0);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(transparent)]
 #[repr(transparent)]
-pub struct TerminalId(pub u32);
+pub struct TerminalId(u32);
 
 impl TerminalId {
     pub const fn new(value: u32) -> Self {
@@ -41,12 +43,14 @@ impl fmt::Display for TerminalId {
 ///
 /// ```compile_fail
 /// use zellij_types::internal_ids::{PluginId, ClientId};
-/// let _: PluginId = ClientId(0);
+/// let _: PluginId = ClientId::new(0);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(transparent)]
 #[repr(transparent)]
-pub struct PluginId(pub u32);
+pub struct PluginId(u32);
 
 impl PluginId {
     pub const fn new(value: u32) -> Self {
@@ -67,7 +71,7 @@ impl fmt::Display for PluginId {
 ///
 /// ```compile_fail
 /// use zellij_types::internal_ids::{ClientId, TerminalId};
-/// let _: ClientId = TerminalId(0);
+/// let _: ClientId = TerminalId::new(0);
 /// ```
 ///
 /// ```compile_fail
@@ -80,7 +84,7 @@ impl fmt::Display for PluginId {
 )]
 #[serde(transparent)]
 #[repr(transparent)]
-pub struct ClientId(pub u16);
+pub struct ClientId(u16);
 
 impl TryFrom<u32> for ClientId {
     type Error = std::num::TryFromIntError;
@@ -148,6 +152,70 @@ impl std::str::FromStr for RecordingId {
     }
 }
 
+impl std::str::FromStr for TerminalId {
+    type Err = std::num::ParseIntError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.parse::<u32>().map(Self::new)
+    }
+}
+
+impl std::str::FromStr for PluginId {
+    type Err = std::num::ParseIntError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.parse::<u32>().map(Self::new)
+    }
+}
+
+impl std::str::FromStr for ClientId {
+    type Err = std::num::ParseIntError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.parse::<u16>().map(Self::new)
+    }
+}
+
+impl TryFrom<u64> for TerminalId {
+    type Error = std::num::TryFromIntError;
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(Self::new)
+    }
+}
+impl TryFrom<usize> for TerminalId {
+    type Error = std::num::TryFromIntError;
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(Self::new)
+    }
+}
+impl TryFrom<i64> for PluginId {
+    type Error = std::num::TryFromIntError;
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(Self::new)
+    }
+}
+impl TryFrom<u64> for PluginId {
+    type Error = std::num::TryFromIntError;
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(Self::new)
+    }
+}
+impl TryFrom<usize> for PluginId {
+    type Error = std::num::TryFromIntError;
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(Self::new)
+    }
+}
+impl TryFrom<u64> for ClientId {
+    type Error = std::num::TryFromIntError;
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        u16::try_from(value).map(Self::new)
+    }
+}
+impl TryFrom<usize> for ClientId {
+    type Error = std::num::TryFromIntError;
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        u16::try_from(value).map(Self::new)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,11 +223,11 @@ mod tests {
     #[test]
     fn ids_display_as_plain_numbers() {
         for id in [0, u32::MAX] {
-            assert_eq!(TerminalId(id).to_string(), id.to_string());
-            assert_eq!(PluginId(id).to_string(), id.to_string());
+            assert_eq!(TerminalId::new(id).to_string(), id.to_string());
+            assert_eq!(PluginId::new(id).to_string(), id.to_string());
         }
         for id in [0, u16::MAX] {
-            assert_eq!(ClientId(id).to_string(), id.to_string());
+            assert_eq!(ClientId::new(id).to_string(), id.to_string());
         }
     }
 

@@ -28,7 +28,7 @@ struct App {
     keybinding_state: Rc<RefCell<KeybindingState>>,
     tab_rows: usize,
     tab_columns: usize,
-    own_plugin_id: Option<u32>,
+    own_plugin_id: Option<zellij_tile::prelude::PluginId>,
     is_release_notes: bool,
     is_startup_tip: bool,
     tip_index: usize,
@@ -424,7 +424,7 @@ impl App {
                 let desired_x_coords = self.tab_columns.saturating_sub(UI_COLUMNS) / 2;
                 let desired_y_coords = self.tab_rows.saturating_sub(UI_ROWS) / 2;
                 change_floating_panes_coordinates(vec![(
-                    PaneId::Plugin(zellij_tile::prelude::PluginId(self.own_plugin_id.unwrap())),
+                    PaneId::Plugin(self.own_plugin_id.unwrap()),
                     FloatingPaneCoordinates::new(
                         Some(desired_x_coords.to_string()),
                         Some(desired_y_coords.to_string()),

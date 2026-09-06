@@ -166,7 +166,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum ZellijError {
     #[error("could not find command '{command}' for terminal {terminal_id}")]
-    CommandNotFound { terminal_id: u32, command: String },
+    CommandNotFound {
+        terminal_id: zellij_types::internal_ids::TerminalId,
+        command: String,
+    },
 
     /// A pane that could not be started, for a reason the user should read
     /// rather than a reason that should end the session.
@@ -177,7 +180,10 @@ pub enum ZellijError {
     /// that will not connect, a broker that is not there — and none of them are
     /// worth taking every other pane in the session down with.
     #[error("could not start a pane in terminal {terminal_id}: {message}")]
-    PaneStartFailed { terminal_id: u32, message: String },
+    PaneStartFailed {
+        terminal_id: zellij_types::internal_ids::TerminalId,
+        message: String,
+    },
 
     #[error("could not determine default editor")]
     NoEditorFound,

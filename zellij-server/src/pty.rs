@@ -124,9 +124,9 @@ fn finish_terminal_spawn(
                 pty.bus
                     .senders
                     .send_to_plugin(PluginInstruction::Update(vec![(
-                        Some(PluginId(originating_plugin.plugin_id)),
+                        Some(originating_plugin.plugin_id),
                         Some(originating_plugin.client_id),
-                        Event::CommandPaneOpened(pid.0, originating_plugin.context),
+                        Event::CommandPaneOpened(pid, originating_plugin.context),
                     )]))
                     .with_context(err_context)?;
             }
@@ -137,9 +137,9 @@ fn finish_terminal_spawn(
                 pty.bus
                     .senders
                     .send_to_plugin(PluginInstruction::Update(vec![(
-                        Some(PluginId(originating_plugin.plugin_id)),
+                        Some(originating_plugin.plugin_id),
                         Some(originating_plugin.client_id),
-                        Event::EditPaneOpened(pid.0, originating_plugin.context),
+                        Event::EditPaneOpened(pid, originating_plugin.context),
                     )]))
                     .with_context(err_context)?;
             }
@@ -179,10 +179,10 @@ fn finish_terminal_spawn(
                         pty.bus
                             .senders
                             .send_to_plugin(PluginInstruction::Update(vec![(
-                                Some(PluginId(originating_plugin.plugin_id)),
+                                Some(originating_plugin.plugin_id),
                                 Some(originating_plugin.client_id),
                                 Event::CommandPaneExited(
-                                    terminal_id.0,
+                                    terminal_id,
                                     Some(2),
                                     originating_plugin.context,
                                 ),
@@ -291,10 +291,10 @@ fn finish_command_rerun(
                     pty.bus
                         .senders
                         .send_to_plugin(PluginInstruction::Update(vec![(
-                            Some(PluginId(originating_plugin.plugin_id)),
+                            Some(originating_plugin.plugin_id),
                             Some(originating_plugin.client_id),
                             Event::CommandPaneExited(
-                                terminal_id.0,
+                                terminal_id,
                                 Some(2),
                                 originating_plugin.context,
                             ),
@@ -581,7 +581,7 @@ fn handle_remote_agent_report(
         None,
         Event::AgentEvent(agent::AgentEvent::from_hook(
             kind,
-            terminal_id.0,
+            terminal_id,
             &event,
             json,
         )),
@@ -757,9 +757,9 @@ fn terminal_quit_callback(
         if let PaneId::Terminal(terminal_id) = pane_id {
             if let Some(plugin) = edit_plugin.as_ref() {
                 let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                    Some(PluginId(plugin.plugin_id)),
+                    Some(plugin.plugin_id),
                     Some(plugin.client_id),
-                    Event::EditPaneExited(terminal_id.0, exit_status, plugin.context.clone()),
+                    Event::EditPaneExited(terminal_id, exit_status, plugin.context.clone()),
                 )]));
             }
         }
@@ -777,9 +777,9 @@ fn terminal_quit_callback(
         if let PaneId::Terminal(terminal_id) = pane_id {
             if let Some(plugin) = command_plugin.as_ref() {
                 let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                    Some(PluginId(plugin.plugin_id)),
+                    Some(plugin.plugin_id),
                     Some(plugin.client_id),
-                    Event::CommandPaneExited(terminal_id.0, exit_status, plugin.context.clone()),
+                    Event::CommandPaneExited(terminal_id, exit_status, plugin.context.clone()),
                 )]));
             }
         }
@@ -2029,10 +2029,10 @@ impl Pty {
                     self.bus
                         .senders
                         .send_to_plugin(PluginInstruction::Update(vec![(
-                            Some(PluginId(originating_plugin.plugin_id)),
+                            Some(originating_plugin.plugin_id),
                             Some(originating_plugin.client_id),
                             Event::CommandPaneExited(
-                                terminal_id.0,
+                                terminal_id,
                                 Some(2),
                                 originating_plugin.context.clone(),
                             ),
@@ -2950,12 +2950,12 @@ impl Pty {
     ) {
         self.originating_plugins
             .insert(terminal_id, originating_plugin.clone());
-        let update_event = Event::CommandPaneOpened(terminal_id.0, originating_plugin.context);
+        let update_event = Event::CommandPaneOpened(terminal_id, originating_plugin.context);
         let _ = self
             .bus
             .senders
             .send_to_plugin(PluginInstruction::Update(vec![(
-                Some(PluginId(originating_plugin.plugin_id)),
+                Some(originating_plugin.plugin_id),
                 Some(originating_plugin.client_id),
                 update_event,
             )]));
@@ -3627,9 +3627,9 @@ impl Pty {
             self.bus
                 .senders
                 .send_to_plugin(PluginInstruction::Update(vec![(
-                    Some(PluginId(plugin.plugin_id)),
+                    Some(plugin.plugin_id),
                     Some(plugin.client_id),
-                    Event::CommandPaneReRun(id.0, plugin.context.clone()),
+                    Event::CommandPaneReRun(id, plugin.context.clone()),
                 )]))?;
         }
         Ok(())
@@ -3741,7 +3741,7 @@ impl Pty {
                     PaneId::Terminal(id) => Some(*id),
                     PaneId::Plugin(_) => None,
                 });
-            alias.set_caller_terminal_pane_id_if_not_set(pane_id.map(|id| id.0));
+            alias.set_caller_terminal_pane_id_if_not_set(pane_id);
         }
         self.bus.senders.send_to_plugin(PluginInstruction::Load(
             should_float,
@@ -4376,7 +4376,7 @@ fn pane_start_failure(err: &anyhow::Error) -> Option<(TerminalId, String)> {
             terminal_id,
             command,
         } => Some((
-            TerminalId(*terminal_id),
+            *terminal_id,
             format!(
                 "Command not found: {command}\n\rIf you were including arguments as part of \
                  the command, try including them as 'args' instead."
@@ -4385,7 +4385,7 @@ fn pane_start_failure(err: &anyhow::Error) -> Option<(TerminalId, String)> {
         ZellijError::PaneStartFailed {
             terminal_id,
             message,
-        } => Some((TerminalId(*terminal_id), message.clone())),
+        } => Some((*terminal_id, message.clone())),
         _ => None,
     }
 }

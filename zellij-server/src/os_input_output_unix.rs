@@ -279,7 +279,7 @@ fn handle_openpty(
 
     if !command_exists(&cmd) {
         return Err(ZellijError::CommandNotFound {
-            terminal_id: terminal_id.0,
+            terminal_id,
             command: cmd.command.to_string_lossy().to_string(),
         })
         .with_context(|| err_context(&cmd));
@@ -544,7 +544,7 @@ impl UnixPtyBackend {
         // rather than dying on — without paying for a process spawn.
         if !command_exists(cmd) {
             return Err(ZellijError::CommandNotFound {
-                terminal_id: terminal_id.0,
+                terminal_id,
                 command: cmd.command.to_string_lossy().to_string(),
             }
             .into());
@@ -1000,7 +1000,7 @@ impl UnixPtyBackend {
     }
 
     pub fn next_terminal_id(&self) -> Option<TerminalId> {
-        Some(TerminalId(
+        Some(TerminalId::new(
             self.next_terminal_id_counter
                 .fetch_add(1, Ordering::Relaxed),
         ))
@@ -1300,7 +1300,7 @@ mod tests {
                     .unwrap();
             backend.host_bin = Some(supervisor.clone());
             backend.pty_host_enabled.store(detachable, Ordering::SeqCst);
-            let id = TerminalId(0);
+            let id = TerminalId::new(0);
             let (mut reader, pid) = backend
                 .spawn_terminal(
                     RunCommand {
@@ -1500,13 +1500,13 @@ mod tests {
             .terminal_id_to_transport
             .lock()
             .unwrap()
-            .insert(TerminalId(7), PaneTransport::Remote(Arc::new(conn)));
+            .insert(TerminalId::new(7), PaneTransport::Remote(Arc::new(conn)));
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let releasing = backend.clone();
         std::thread::spawn(move || {
             let outcome =
-                releasing.release_terminal_for_warp(TerminalId(7), Duration::from_secs(1));
+                releasing.release_terminal_for_warp(TerminalId::new(7), Duration::from_secs(1));
             let _ = done_tx.send(outcome.map(|_| ()).map_err(|e| format!("{e:#}")));
         });
 
@@ -1520,7 +1520,7 @@ mod tests {
                 .terminal_id_to_transport
                 .lock()
                 .unwrap()
-                .contains_key(&TerminalId(7)),
+                .contains_key(&TerminalId::new(7)),
             "a released pane leaves the transport table whether or not the broker confirmed"
         );
     }
@@ -1552,10 +1552,14 @@ mod callback_tests {
             ..Default::default()
         };
         for status in [Some(17), None] {
-            callback(TerminalId(42), status, command.clone());
+            callback(TerminalId::new(42), status, command.clone());
             assert_eq!(
                 receiver.recv().unwrap(),
-                (PaneId::Terminal(TerminalId(42)), status, command.clone())
+                (
+                    PaneId::Terminal(TerminalId::new(42)),
+                    status,
+                    command.clone()
+                )
             );
         }
     }

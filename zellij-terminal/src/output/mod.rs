@@ -425,8 +425,8 @@ pub struct KittyFrameInput<'a> {
 
 fn pane_sort_key(pane_id: PaneId) -> (u8, u32) {
     match pane_id {
-        PaneId::Terminal(id) => (0, id.0),
-        PaneId::Plugin(id) => (1, id.0),
+        PaneId::Terminal(id) => (0, id.get()),
+        PaneId::Plugin(id) => (1, id.get()),
     }
 }
 

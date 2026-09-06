@@ -13,7 +13,7 @@ fn swap_planner_maps_each_unique_shared_edge_to_its_direction() {
             plan_swap(
                 &[source.clone(), target],
                 source.id,
-                PaneId::Terminal(zellij_tile::prelude::TerminalId(2))
+                PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2))
             )
             .unwrap(),
             expected
@@ -113,7 +113,7 @@ fn planners_reject_tabs_where_zellij_will_not_move_tiled_panes() {
     assert!(plan_swap(
         &[floating_layer, target],
         source.id,
-        PaneId::Terminal(zellij_tile::prelude::TerminalId(2))
+        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2))
     )
     .is_err());
 }

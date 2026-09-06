@@ -306,7 +306,9 @@ impl TryFrom<ProtobufEvent> for Event {
                 Some(ProtobufEventPayload::CommandPaneOpenedPayload(
                     command_pane_opened_payload,
                 )) => Ok(Event::CommandPaneOpened(
-                    command_pane_opened_payload.terminal_pane_id,
+                    zellij_types::internal_ids::TerminalId::new(
+                        command_pane_opened_payload.terminal_pane_id,
+                    ),
                     command_pane_opened_payload
                         .context
                         .into_iter()
@@ -319,7 +321,9 @@ impl TryFrom<ProtobufEvent> for Event {
                 Some(ProtobufEventPayload::CommandPaneExitedPayload(
                     command_pane_exited_payload,
                 )) => Ok(Event::CommandPaneExited(
-                    command_pane_exited_payload.terminal_pane_id,
+                    zellij_types::internal_ids::TerminalId::new(
+                        command_pane_exited_payload.terminal_pane_id,
+                    ),
                     command_pane_exited_payload.exit_code,
                     command_pane_exited_payload
                         .context
@@ -341,7 +345,9 @@ impl TryFrom<ProtobufEvent> for Event {
             Ok(ProtobufEventType::EditPaneOpened) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::EditPaneOpenedPayload(command_pane_opened_payload)) => {
                     Ok(Event::EditPaneOpened(
-                        command_pane_opened_payload.terminal_pane_id,
+                        zellij_types::internal_ids::TerminalId::new(
+                            command_pane_opened_payload.terminal_pane_id,
+                        ),
                         command_pane_opened_payload
                             .context
                             .into_iter()
@@ -354,7 +360,9 @@ impl TryFrom<ProtobufEvent> for Event {
             Ok(ProtobufEventType::EditPaneExited) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::EditPaneExitedPayload(command_pane_exited_payload)) => {
                     Ok(Event::EditPaneExited(
-                        command_pane_exited_payload.terminal_pane_id,
+                        zellij_types::internal_ids::TerminalId::new(
+                            command_pane_exited_payload.terminal_pane_id,
+                        ),
                         command_pane_exited_payload.exit_code,
                         command_pane_exited_payload
                             .context
@@ -368,7 +376,9 @@ impl TryFrom<ProtobufEvent> for Event {
             Ok(ProtobufEventType::CommandPaneReRun) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::CommandPaneRerunPayload(command_pane_rerun_payload)) => {
                     Ok(Event::CommandPaneReRun(
-                        command_pane_rerun_payload.terminal_pane_id,
+                        zellij_types::internal_ids::TerminalId::new(
+                            command_pane_rerun_payload.terminal_pane_id,
+                        ),
                         command_pane_rerun_payload
                             .context
                             .into_iter()
@@ -449,7 +459,9 @@ impl TryFrom<ProtobufEvent> for Event {
                         .map_err(|_| "Failed to convert Action in UserAction payload")?;
                     let client_id = ClientId::try_from(protobuf_payload.client_id)
                         .map_err(|_| "client_id is outside u16 range")?;
-                    let terminal_id = protobuf_payload.terminal_id;
+                    let terminal_id = protobuf_payload
+                        .terminal_id
+                        .map(zellij_types::internal_ids::TerminalId::new);
                     let cli_client_id = protobuf_payload
                         .cli_client_id
                         .map(ClientId::try_from)
@@ -685,7 +697,7 @@ impl TryFrom<ProtobufEvent> for Event {
                     Ok(Event::QueueJobStarted {
                         queue: p.queue,
                         job_id: p.job_id,
-                        plugin_id: p.plugin_id,
+                        plugin_id: zellij_types::internal_ids::PluginId::new(p.plugin_id),
                         context: context_from_items(p.context),
                     })
                 },
@@ -698,7 +710,7 @@ impl TryFrom<ProtobufEvent> for Event {
                     let payload = match p.payload {
                         Some(hook_payload::Payload::Agent(agent)) => {
                             zellij_types::data::HookPayload::Agent {
-                                pane_id: agent.pane_id,
+                                pane_id: zellij_types::internal_ids::TerminalId::new(agent.pane_id),
                                 agent: agent
                                     .agent
                                     .ok_or("Malformed agent for Hook Event")?
@@ -717,7 +729,7 @@ impl TryFrom<ProtobufEvent> for Event {
                         },
                         Some(hook_payload::Payload::PaneExit(exit)) => {
                             zellij_types::data::HookPayload::PaneExit {
-                                pane_id: exit.pane_id,
+                                pane_id: zellij_types::internal_ids::TerminalId::new(exit.pane_id),
                                 exit_code: exit.exit_code,
                                 cwd: exit.cwd.map(PathBuf::from),
                                 command: exit.command,
@@ -740,7 +752,7 @@ impl TryFrom<ProtobufEvent> for Event {
             Ok(ProtobufEventType::AgentEvent) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::AgentEventPayload(p)) => {
                     Ok(Event::AgentEvent(zellij_types::agent::AgentEvent {
-                        pane_id: p.pane_id,
+                        pane_id: zellij_types::internal_ids::TerminalId::new(p.pane_id),
                         kind: p.kind,
                         hook: p.hook,
                         session_id: p.session_id,
@@ -1084,7 +1096,7 @@ impl TryFrom<Event> for ProtobufEvent {
             }),
             Event::CommandPaneOpened(terminal_pane_id, context) => {
                 let command_pane_opened_payload = CommandPaneOpenedPayload {
-                    terminal_pane_id,
+                    terminal_pane_id: terminal_pane_id.get(),
                     context: context
                         .into_iter()
                         .map(|(name, value)| ContextItem { name, value })
@@ -1099,7 +1111,7 @@ impl TryFrom<Event> for ProtobufEvent {
             },
             Event::CommandPaneExited(terminal_pane_id, exit_code, context) => {
                 let command_pane_exited_payload = CommandPaneExitedPayload {
-                    terminal_pane_id,
+                    terminal_pane_id: terminal_pane_id.get(),
                     exit_code,
                     context: context
                         .into_iter()
@@ -1121,7 +1133,7 @@ impl TryFrom<Event> for ProtobufEvent {
             }),
             Event::EditPaneOpened(terminal_pane_id, context) => {
                 let command_pane_opened_payload = EditPaneOpenedPayload {
-                    terminal_pane_id,
+                    terminal_pane_id: terminal_pane_id.get(),
                     context: context
                         .into_iter()
                         .map(|(name, value)| ContextItem { name, value })
@@ -1136,7 +1148,7 @@ impl TryFrom<Event> for ProtobufEvent {
             },
             Event::EditPaneExited(terminal_pane_id, exit_code, context) => {
                 let command_pane_exited_payload = EditPaneExitedPayload {
-                    terminal_pane_id,
+                    terminal_pane_id: terminal_pane_id.get(),
                     exit_code,
                     context: context
                         .into_iter()
@@ -1152,7 +1164,7 @@ impl TryFrom<Event> for ProtobufEvent {
             },
             Event::CommandPaneReRun(terminal_pane_id, context) => {
                 let command_pane_rerun_payload = CommandPaneReRunPayload {
-                    terminal_pane_id,
+                    terminal_pane_id: terminal_pane_id.get(),
                     context: context
                         .into_iter()
                         .map(|(name, value)| ContextItem { name, value })
@@ -1225,7 +1237,7 @@ impl TryFrom<Event> for ProtobufEvent {
                 let protobuf_payload = ProtobufUserActionPayload {
                     action: Some(protobuf_action),
                     client_id: u32::from(client_id.get()),
-                    terminal_id,
+                    terminal_id: terminal_id.map(|id| id.get()),
                     cli_client_id: cli_client_id.map(|id| u32::from(id.get())),
                 };
                 Ok(ProtobufEvent {
@@ -1436,7 +1448,7 @@ impl TryFrom<Event> for ProtobufEvent {
                     ProtobufQueueJobStartedPayload {
                         queue,
                         job_id,
-                        plugin_id,
+                        plugin_id: plugin_id.get(),
                         context: context_to_items(context),
                     },
                 )),
@@ -1449,7 +1461,7 @@ impl TryFrom<Event> for ProtobufEvent {
                         previous_state,
                         command,
                     } => hook_payload::Payload::Agent(ProtobufAgentHookPayload {
-                        pane_id,
+                        pane_id: pane_id.get(),
                         agent: Some(agent.try_into()?),
                         previous_state: previous_state.map(|state| state.to_string()),
                         command,
@@ -1461,7 +1473,7 @@ impl TryFrom<Event> for ProtobufEvent {
                         command,
                         held,
                     } => hook_payload::Payload::PaneExit(ProtobufPaneExitHookPayload {
-                        pane_id,
+                        pane_id: pane_id.get(),
                         exit_code,
                         cwd: cwd.map(|cwd| cwd.display().to_string()),
                         command,
@@ -1502,7 +1514,7 @@ impl TryFrom<Event> for ProtobufEvent {
                 name: ProtobufEventType::AgentEvent as i32,
                 payload: Some(event::Payload::AgentEventPayload(
                     ProtobufAgentEventPayload {
-                        pane_id: agent_event.pane_id,
+                        pane_id: agent_event.pane_id.get(),
                         kind: agent_event.kind,
                         hook: agent_event.hook,
                         session_id: agent_event.session_id,
@@ -1656,10 +1668,12 @@ impl From<(ClientId, Vec<PaneId>)> for ProtobufClientPaneHistory {
         }
     }
 }
-impl From<(u32, PluginInfo)> for ProtobufPluginInfo {
-    fn from((plugin_id, plugin_info): (u32, PluginInfo)) -> ProtobufPluginInfo {
+impl From<(zellij_types::internal_ids::PluginId, PluginInfo)> for ProtobufPluginInfo {
+    fn from(
+        (plugin_id, plugin_info): (zellij_types::internal_ids::PluginId, PluginInfo),
+    ) -> ProtobufPluginInfo {
         ProtobufPluginInfo {
-            plugin_id,
+            plugin_id: plugin_id.get(),
             plugin_url: plugin_info.location,
             plugin_config: plugin_info
                 .configuration
@@ -1695,7 +1709,7 @@ impl TryFrom<ProtobufSessionManifest> for SessionInfo {
                 configuration.insert(context_item.name, context_item.value);
             }
             plugins.insert(
-                plugin_info.plugin_id,
+                zellij_types::internal_ids::PluginId::new(plugin_info.plugin_id),
                 PluginInfo {
                     location: plugin_info.plugin_url,
                     configuration,
@@ -2828,7 +2842,7 @@ fn serialize_hook_event() {
     use prost::Message;
     let payloads = [
         zellij_types::data::HookPayload::Agent {
-            pane_id: 7,
+            pane_id: zellij_types::internal_ids::TerminalId::new(7),
             agent: AgentInfo {
                 kind: "claude".to_owned(),
                 state: AgentState::Waiting,
@@ -2844,7 +2858,7 @@ fn serialize_hook_event() {
             command: Some("claude".to_owned()),
         },
         zellij_types::data::HookPayload::PaneExit {
-            pane_id: 7,
+            pane_id: zellij_types::internal_ids::TerminalId::new(7),
             exit_code: Some(1),
             cwd: Some(PathBuf::from("/work")),
             command: Some("cargo test".to_owned()),
@@ -3342,7 +3356,7 @@ fn serialize_session_update_event_with_non_default_values() {
     let mut plugin_configuration = BTreeMap::new();
     plugin_configuration.insert("config_key".to_owned(), "config_value".to_owned());
     plugins.insert(
-        1,
+        zellij_types::internal_ids::PluginId::new(1),
         PluginInfo {
             location: "https://example.com/my-plugin.wasm".to_owned(),
             configuration: plugin_configuration,
@@ -3436,10 +3450,10 @@ impl TryFrom<ProtobufPaneId> for PaneId {
     fn try_from(protobuf_pane_id: ProtobufPaneId) -> Result<Self, &'static str> {
         match ProtobufPaneType::try_from(protobuf_pane_id.pane_type) {
             Ok(ProtobufPaneType::Terminal) => Ok(PaneId::Terminal(
-                zellij_types::internal_ids::TerminalId(protobuf_pane_id.id),
+                zellij_types::internal_ids::TerminalId::new(protobuf_pane_id.id),
             )),
             Ok(ProtobufPaneType::Plugin) => Ok(PaneId::Plugin(
-                zellij_types::internal_ids::PluginId(protobuf_pane_id.id),
+                zellij_types::internal_ids::PluginId::new(protobuf_pane_id.id),
             )),
             Err(_) => Err("Failed to convert PaneId"),
         }
@@ -3684,8 +3698,10 @@ impl TryFrom<ProtobufQueueJobInfo> for QueueJobInfo {
             job_id: info.job_id,
             queue: info.queue,
             plugin_url: info.plugin_url,
-            plugin_id: info.plugin_id,
-            enqueuer_plugin_id: info.enqueuer_plugin_id,
+            plugin_id: info
+                .plugin_id
+                .map(zellij_types::internal_ids::PluginId::new),
+            enqueuer_plugin_id: zellij_types::internal_ids::PluginId::new(info.enqueuer_plugin_id),
             context: context_from_items(info.context),
             state,
         })
@@ -3702,8 +3718,8 @@ impl From<QueueJobInfo> for ProtobufQueueJobInfo {
             job_id: info.job_id,
             queue: info.queue,
             plugin_url: info.plugin_url,
-            plugin_id: info.plugin_id,
-            enqueuer_plugin_id: info.enqueuer_plugin_id,
+            plugin_id: info.plugin_id.map(|id| id.get()),
+            enqueuer_plugin_id: info.enqueuer_plugin_id.get(),
             context: context_to_items(info.context),
             state: state as i32,
         }
@@ -3790,7 +3806,7 @@ impl From<ContextMenuItem> for ProtobufContextMenuItem {
 impl From<ProtobufContextMenuLink> for ContextMenuLink {
     fn from(link: ProtobufContextMenuLink) -> Self {
         ContextMenuLink {
-            plugin_id: link.plugin_id,
+            plugin_id: zellij_types::internal_ids::PluginId::new(link.plugin_id),
             pattern: link.pattern,
             matched: link.matched,
             context: link
@@ -3805,7 +3821,7 @@ impl From<ProtobufContextMenuLink> for ContextMenuLink {
 impl From<ContextMenuLink> for ProtobufContextMenuLink {
     fn from(link: ContextMenuLink) -> Self {
         ProtobufContextMenuLink {
-            plugin_id: link.plugin_id,
+            plugin_id: link.plugin_id.get(),
             pattern: link.pattern,
             matched: link.matched,
             context: link
@@ -3978,8 +3994,12 @@ mod tests {
                 job_id: tc.draw(generators::integers::<u64>()),
                 queue: strings(tc),
                 plugin_url: strings(tc),
-                plugin_id: tc.draw(generators::optional(generators::integers::<u32>())),
-                enqueuer_plugin_id: tc.draw(generators::integers::<u32>()),
+                plugin_id: tc
+                    .draw(generators::optional(generators::integers::<u32>()))
+                    .map(zellij_types::internal_ids::PluginId::new),
+                enqueuer_plugin_id: zellij_types::internal_ids::PluginId::new(
+                    tc.draw(generators::integers::<u32>()),
+                ),
                 context: context(tc),
                 state: tc.draw(generators::sampled_from(vec![
                     QueueJobState::Pending,
@@ -4029,7 +4049,9 @@ mod tests {
                 word_under_cursor: tc.draw(generators::optional(generators::text())),
                 line_under_cursor: tc.draw(generators::optional(generators::text())),
                 link: tc.draw(generators::booleans()).then(|| ContextMenuLink {
-                    plugin_id: tc.draw(generators::integers::<u32>()),
+                    plugin_id: zellij_types::internal_ids::PluginId::new(
+                        tc.draw(generators::integers::<u32>()),
+                    ),
                     pattern: strings(tc),
                     matched: strings(tc),
                     context: context(tc),
@@ -4042,7 +4064,9 @@ mod tests {
         fn any_event(tc: &hegel::TestCase) -> Event {
             match tc.draw(generators::integers::<u8>().max_value(37)) {
                 37 => Event::AgentEvent(zellij_types::agent::AgentEvent {
-                    pane_id: tc.draw(generators::integers::<u32>()),
+                    pane_id: zellij_types::internal_ids::TerminalId::new(
+                        tc.draw(generators::integers::<u32>()),
+                    ),
                     kind: strings(tc),
                     hook: strings(tc),
                     session_id: tc.draw(generators::optional(generators::text().max_size(8))),
@@ -4063,7 +4087,9 @@ mod tests {
                     point: tc.draw(generators::sampled_from(HookPoint::ALL.to_vec())),
                     payload: match tc.draw(generators::integers::<u8>().max_value(2)) {
                         0 => zellij_types::data::HookPayload::Agent {
-                            pane_id: tc.draw(generators::integers::<u32>()),
+                            pane_id: zellij_types::internal_ids::TerminalId::new(
+                                tc.draw(generators::integers::<u32>()),
+                            ),
                             agent: crate::test_generators::agent_infos(tc),
                             previous_state: tc.draw(generators::optional(
                                 generators::sampled_from(vec![
@@ -4076,7 +4102,9 @@ mod tests {
                             command: tc.draw(generators::optional(generators::text().max_size(8))),
                         },
                         1 => zellij_types::data::HookPayload::PaneExit {
-                            pane_id: tc.draw(generators::integers::<u32>()),
+                            pane_id: zellij_types::internal_ids::TerminalId::new(
+                                tc.draw(generators::integers::<u32>()),
+                            ),
                             exit_code: tc.draw(generators::optional(generators::integers::<i32>())),
                             cwd: tc
                                 .draw(generators::optional(generators::text().max_size(8)))
@@ -4099,7 +4127,9 @@ mod tests {
                 30 => Event::QueueJobStarted {
                     queue: strings(tc),
                     job_id: tc.draw(generators::integers::<u64>()),
-                    plugin_id: tc.draw(generators::integers::<u32>()),
+                    plugin_id: zellij_types::internal_ids::PluginId::new(
+                        tc.draw(generators::integers::<u32>()),
+                    ),
                     context: context(tc),
                 },
                 31 => Event::QueueJobFinished {
@@ -4170,20 +4200,39 @@ mod tests {
                     done: tc.draw(generators::booleans()),
                     error: tc.draw(generators::optional(generators::text())),
                 },
-                16 => Event::CommandPaneOpened(tc.draw(generators::integers::<u32>()), context(tc)),
+                16 => Event::CommandPaneOpened(
+                    zellij_types::internal_ids::TerminalId::new(
+                        tc.draw(generators::integers::<u32>()),
+                    ),
+                    context(tc),
+                ),
                 17 => Event::CommandPaneExited(
-                    tc.draw(generators::integers::<u32>()),
+                    zellij_types::internal_ids::TerminalId::new(
+                        tc.draw(generators::integers::<u32>()),
+                    ),
                     tc.draw(generators::optional(generators::integers::<i32>())),
                     context(tc),
                 ),
                 18 => Event::PaneClosed(pane_id(tc)),
-                19 => Event::EditPaneOpened(tc.draw(generators::integers::<u32>()), context(tc)),
+                19 => Event::EditPaneOpened(
+                    zellij_types::internal_ids::TerminalId::new(
+                        tc.draw(generators::integers::<u32>()),
+                    ),
+                    context(tc),
+                ),
                 20 => Event::EditPaneExited(
-                    tc.draw(generators::integers::<u32>()),
+                    zellij_types::internal_ids::TerminalId::new(
+                        tc.draw(generators::integers::<u32>()),
+                    ),
                     tc.draw(generators::optional(generators::integers::<i32>())),
                     context(tc),
                 ),
-                21 => Event::CommandPaneReRun(tc.draw(generators::integers::<u32>()), context(tc)),
+                21 => Event::CommandPaneReRun(
+                    zellij_types::internal_ids::TerminalId::new(
+                        tc.draw(generators::integers::<u32>()),
+                    ),
+                    context(tc),
+                ),
                 22 => Event::FailedToWriteConfigToDisk(
                     tc.draw(generators::optional(generators::text())),
                 ),

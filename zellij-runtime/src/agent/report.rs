@@ -17,7 +17,7 @@ pub fn validate_report(report: &AgentReport) -> Result<()> {
         return Err(anyhow!("invalid report id"));
     }
     if let Some(event) = &report.event {
-        if report.pane_id != PaneId::Terminal(zellij_types::internal_ids::TerminalId(event.pane_id))
+        if report.pane_id != PaneId::Terminal(event.pane_id)
             || event.raw.len() > super::HOOK_BROADCAST_MAX_BYTES
         {
             return Err(anyhow!("invalid report event target or size"));

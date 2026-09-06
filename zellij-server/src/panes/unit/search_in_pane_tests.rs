@@ -37,7 +37,7 @@ fn create_pane() -> TerminalPane {
     let osc8_hyperlinks = true;
     let explicitly_disable_kitty_keyboard_protocol = false;
     let mut terminal_pane = TerminalPane::new(
-        crate::TerminalId(pid),
+        crate::TerminalId::new(pid),
         fake_win_size,
         style,
         0,
@@ -240,7 +240,7 @@ pub fn searching_case_insensitive() {
 
 #[test]
 pub fn searching_inside_and_scroll() {
-    let fake_client_id = ClientId(1);
+    let fake_client_id = ClientId::new(1);
     let mut terminal_pane = create_pane();
     terminal_pane.update_search_term("quam");
     terminal_pane.search_up();

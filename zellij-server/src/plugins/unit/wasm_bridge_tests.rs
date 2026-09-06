@@ -79,7 +79,7 @@ fn launch_job(bridge: &mut WasmBridge, queue: &str, plugin_id: PluginId) {
     let mut queues = bridge.queues.lock().unwrap();
     queues.enqueue(
         queue,
-        (crate::PluginId(1), crate::ClientId(1)),
+        (crate::PluginId::new(1), crate::ClientId::new(1)),
         zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
             "file:/plugins/job.lua",
             &None,
@@ -111,14 +111,14 @@ fn shutting_down_cancels_a_plugin_that_is_still_loading() {
     let mut test = TestBridge::new();
     test.bridge
         .loading_plugins
-        .insert((crate::PluginId(7), run_plugin()));
+        .insert((crate::PluginId::new(7), run_plugin()));
 
     test.bridge
         .cleanup(std::time::Instant::now() + std::time::Duration::from_secs(1));
 
     assert_eq!(
         cancellation_marks(&test.bridge),
-        vec![PluginId(7)],
+        vec![PluginId::new(7)],
         "the loader must find the plugin cancelled rather than instantiate it after shutdown"
     );
     assert!(test.bridge.loading_plugins.is_empty());
@@ -127,13 +127,13 @@ fn shutting_down_cancels_a_plugin_that_is_still_loading() {
 #[test]
 fn a_job_whose_load_failed_leaves_no_cancellation_mark() {
     let mut test = TestBridge::new();
-    launch_job(&mut test.bridge, "merge", crate::PluginId(7));
+    launch_job(&mut test.bridge, "merge", crate::PluginId::new(7));
     test.bridge
         .loading_plugins
-        .insert((crate::PluginId(7), run_plugin()));
+        .insert((crate::PluginId::new(7), run_plugin()));
 
     test.bridge
-        .queue_plugin_failed(crate::PluginId(7), "no such file".to_owned(), true)
+        .queue_plugin_failed(crate::PluginId::new(7), "no such file".to_owned(), true)
         .unwrap();
 
     assert!(
@@ -159,15 +159,15 @@ fn a_job_that_trapped_while_still_loading_is_cancelled() {
     // the other side of the coin: a plugin that failed *after* it loaded has a loader still
     // pending only if it never got there, so this path must keep marking it.
     let mut test = TestBridge::new();
-    launch_job(&mut test.bridge, "merge", crate::PluginId(7));
+    launch_job(&mut test.bridge, "merge", crate::PluginId::new(7));
     test.bridge
         .loading_plugins
-        .insert((crate::PluginId(7), run_plugin()));
+        .insert((crate::PluginId::new(7), run_plugin()));
 
     test.bridge
-        .queue_plugin_failed(crate::PluginId(7), "boom".to_owned(), false)
+        .queue_plugin_failed(crate::PluginId::new(7), "boom".to_owned(), false)
         .unwrap();
 
-    assert_eq!(cancellation_marks(&test.bridge), vec![PluginId(7)]);
+    assert_eq!(cancellation_marks(&test.bridge), vec![PluginId::new(7)]);
     assert!(test.bridge.loading_plugins.is_empty());
 }

@@ -17,7 +17,7 @@ impl TryFrom<ProtobufPipeMessage> for PipeMessage {
                 PipeSource::Cli(cli_source_id)
             },
             (Some(ProtobufPipeSource::Plugin), _, Some(plugin_source_id)) => {
-                PipeSource::Plugin(plugin_source_id)
+                PipeSource::Plugin(zellij_types::internal_ids::PluginId::new(plugin_source_id))
             },
             (Some(ProtobufPipeSource::Keybind), _, _) => PipeSource::Keybind,
             _ => return Err("Invalid PipeSource or payload"),
@@ -71,7 +71,7 @@ impl TryFrom<PipeMessage> for ProtobufPipeMessage {
         Ok(ProtobufPipeMessage {
             source,
             cli_source_id,
-            plugin_source_id,
+            plugin_source_id: plugin_source_id.map(|id| id.get()),
             name,
             payload,
             args,
@@ -92,7 +92,9 @@ mod tests {
     fn a_pipe_message_round_trips_with_its_pane() {
         for pane_id in [
             None,
-            Some(PaneId::Terminal(zellij_types::internal_ids::TerminalId(7))),
+            Some(PaneId::Terminal(
+                zellij_types::internal_ids::TerminalId::new(7),
+            )),
         ] {
             let mut message = PipeMessage::new(
                 PipeSource::Cli("pipe-1".to_owned()),
@@ -107,7 +109,8 @@ mod tests {
         }
         // The wire has a slot for a terminal only: a plugin pane cannot run `zellij pipe`.
         let mut from_plugin_pane = PipeMessage::new(PipeSource::Keybind, "x", &None, &None, true);
-        from_plugin_pane.pane_id = Some(PaneId::Plugin(zellij_types::internal_ids::PluginId(2)));
+        from_plugin_pane.pane_id =
+            Some(PaneId::Plugin(zellij_types::internal_ids::PluginId::new(2)));
         let protobuf = ProtobufPipeMessage::try_from(from_plugin_pane).unwrap();
         assert_eq!(PipeMessage::try_from(protobuf).unwrap().pane_id, None);
     }

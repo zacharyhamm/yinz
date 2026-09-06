@@ -7,7 +7,7 @@ pub fn rename_pane_sets_current_title() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     let pane = tab.get_pane_with_id(pane_id).unwrap();
     assert_eq!(pane.current_title(), "flame");
@@ -20,7 +20,7 @@ pub fn rename_pane_replaces_existing_name() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     let _ = tab.rename_pane_by_pane_id(pane_id, "spark".as_bytes().to_vec());
     let pane = tab.get_pane_with_id(pane_id).unwrap();
@@ -34,7 +34,7 @@ pub fn rename_pane_to_empty_clears_name() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     let _ = tab.rename_pane_by_pane_id(pane_id, "".as_bytes().to_vec());
     let pane = tab.get_pane_with_id(pane_id).unwrap();
@@ -49,7 +49,7 @@ pub fn rename_pane_single_char() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let _ = tab.rename_pane_by_pane_id(pane_id, "x".as_bytes().to_vec());
     let pane = tab.get_pane_with_id(pane_id).unwrap();
     assert_eq!(pane.current_title(), "x");
@@ -62,7 +62,7 @@ pub fn rename_pane_with_spaces() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let _ = tab.rename_pane_by_pane_id(pane_id, "my pane".as_bytes().to_vec());
     let pane = tab.get_pane_with_id(pane_id).unwrap();
     assert_eq!(pane.current_title(), "my pane");
@@ -75,7 +75,7 @@ pub fn rename_pane_with_special_chars() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let _ = tab.rename_pane_by_pane_id(pane_id, "pane#1 (dev)".as_bytes().to_vec());
     let pane = tab.get_pane_with_id(pane_id).unwrap();
     assert_eq!(pane.current_title(), "pane#1 (dev)");
@@ -88,11 +88,11 @@ pub fn named_pane_not_overridden_by_osc_title() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     // Simulate shell sending OSC 0 title
     let osc_title = b"\x1b]0;user@host: ~/code\x07";
-    let _ = tab.handle_pty_bytes(crate::TerminalId(1), osc_title.to_vec());
+    let _ = tab.handle_pty_bytes(crate::TerminalId::new(1), osc_title.to_vec());
     let pane = tab.get_pane_with_id(pane_id).unwrap();
     assert_eq!(pane.current_title(), "flame");
 }
@@ -104,10 +104,10 @@ pub fn unnamed_pane_shows_osc_title() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     // Send OSC 0 title without renaming the pane
     let osc_title = b"\x1b]0;user@host: ~/code\x07";
-    let _ = tab.handle_pty_bytes(crate::TerminalId(1), osc_title.to_vec());
+    let _ = tab.handle_pty_bytes(crate::TerminalId::new(1), osc_title.to_vec());
     let pane = tab.get_pane_with_id(pane_id).unwrap();
     assert_eq!(pane.current_title(), "user@host: ~/code");
 }
@@ -119,7 +119,7 @@ pub fn undo_rename_clears_name() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let title_before = tab.get_pane_with_id(pane_id).unwrap().current_title();
     let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     tab.undo_rename_pane_by_pane_id(pane_id);
@@ -134,7 +134,7 @@ pub fn undo_rename_on_unnamed_pane_is_noop() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let title_before = tab.get_pane_with_id(pane_id).unwrap().current_title();
     tab.undo_rename_pane_by_pane_id(pane_id);
     let pane = tab.get_pane_with_id(pane_id).unwrap();
@@ -148,14 +148,14 @@ pub fn interactive_rename_appends_to_empty_name() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let _ = tab.update_active_pane_name(vec![b's'], client_id);
     let _ = tab.update_active_pane_name(vec![b'p'], client_id);
     let _ = tab.update_active_pane_name(vec![b'a'], client_id);
     let _ = tab.update_active_pane_name(vec![b'r'], client_id);
     let _ = tab.update_active_pane_name(vec![b'k'], client_id);
     let pane = tab
-        .get_pane_with_id(PaneId::Terminal(crate::TerminalId(1)))
+        .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
         .unwrap();
     assert_eq!(pane.current_title(), "spark");
 }
@@ -167,8 +167,8 @@ pub fn interactive_rename_appends_to_existing_name() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let client_id = ClientId(1);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let client_id = ClientId::new(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     // Simulate entering rename mode
     if let Some(pane) = tab.get_active_pane_or_floating_pane_mut(client_id) {
@@ -186,8 +186,8 @@ pub fn interactive_rename_nul_clears_existing_name() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let client_id = ClientId(1);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let client_id = ClientId::new(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     let _ = tab.update_active_pane_name(vec![0], client_id);
     let pane = tab.get_pane_with_id(pane_id).unwrap();
@@ -205,8 +205,8 @@ pub fn interactive_rename_sanitizes_other_control_characters() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let client_id = ClientId(1);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let client_id = ClientId::new(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     let _ = tab.update_active_pane_name(vec![0x01, 0x07, b'\n', b'\r', 0x1b], client_id);
     let pane = tab.get_pane_with_id(pane_id).unwrap();
@@ -220,8 +220,8 @@ pub fn interactive_rename_backspace_removes_chars() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let client_id = ClientId(1);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let client_id = ClientId::new(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     if let Some(pane) = tab.get_active_pane_or_floating_pane_mut(client_id) {
         pane.store_pane_name();
@@ -241,8 +241,8 @@ pub fn interactive_rename_backspace_all_then_retype() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let client_id = ClientId(1);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let client_id = ClientId::new(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     if let Some(pane) = tab.get_active_pane_or_floating_pane_mut(client_id) {
         pane.store_pane_name();
@@ -266,8 +266,8 @@ pub fn interactive_rename_esc_reverts() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let client_id = ClientId(1);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let client_id = ClientId::new(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     // Enter rename mode
     if let Some(pane) = tab.get_active_pane_or_floating_pane_mut(client_id) {
@@ -289,8 +289,8 @@ pub fn interactive_rename_esc_on_unnamed_stays_unnamed() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let client_id = ClientId(1);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let client_id = ClientId::new(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let title_before = tab.get_pane_with_id(pane_id).unwrap().current_title();
     // Enter rename mode on unnamed pane
     if let Some(pane) = tab.get_active_pane_or_floating_pane_mut(client_id) {
@@ -311,8 +311,8 @@ pub fn cli_rename_then_interactive_esc_restores_cli_name() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let client_id = ClientId(1);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let client_id = ClientId::new(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     // CLI rename
     let _ = tab.rename_pane_by_pane_id(pane_id, "spark".as_bytes().to_vec());
     // Enter interactive rename mode
@@ -333,7 +333,7 @@ pub fn cli_rename_then_undo_clears_to_fallback() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let fallback_title = tab.get_pane_with_id(pane_id).unwrap().current_title();
     let _ = tab.rename_pane_by_pane_id(pane_id, "spark".as_bytes().to_vec());
     tab.undo_rename_pane_by_pane_id(pane_id);
@@ -348,8 +348,8 @@ pub fn cli_rename_active_pane_replaces_name() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let client_id = ClientId(1);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let client_id = ClientId::new(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     // Set initial name
     let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     // CLI rename (focused pane) — full replacement
@@ -365,8 +365,8 @@ pub fn cli_rename_active_pane_single_char() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let client_id = ClientId(1);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let client_id = ClientId::new(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     // CLI rename with single character — should replace, not append
     let _ = tab.rename_active_pane("x".as_bytes().to_vec(), client_id);
@@ -381,8 +381,8 @@ pub fn cli_rename_active_pane_on_unnamed_pane() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let client_id = ClientId(1);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let client_id = ClientId::new(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     // Pane has no name — CLI rename should set it
     let _ = tab.rename_active_pane("spark".as_bytes().to_vec(), client_id);
     let pane = tab.get_pane_with_id(pane_id).unwrap();
@@ -396,8 +396,8 @@ pub fn cli_rename_active_pane_to_empty_clears_name() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let client_id = ClientId(1);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let client_id = ClientId::new(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let fallback = tab.get_pane_with_id(pane_id).unwrap().current_title();
     let _ = tab.rename_pane_by_pane_id(pane_id, "flame".as_bytes().to_vec());
     // CLI rename to empty — should clear name
@@ -413,8 +413,8 @@ pub fn cli_rename_active_pane_then_interactive_esc_restores() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let client_id = ClientId(1);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let client_id = ClientId::new(1);
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     // CLI rename
     let _ = tab.rename_active_pane("spark".as_bytes().to_vec(), client_id);
     // Enter interactive rename, type something
@@ -440,7 +440,7 @@ pub fn renaming_a_pane_reports_whether_the_name_moved() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
 
     assert!(
         tab.rename_pane("flame".as_bytes().to_vec(), pane_id)

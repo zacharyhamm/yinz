@@ -11,7 +11,7 @@ use zellij_tile::prelude::*;
 
 #[derive(Default)]
 struct State {
-    plugin_id: u32,
+    plugin_id: zellij_tile::prelude::PluginId,
     presses: BTreeMap<ClientId, u32>,
     total: u32,
     last_presser: Option<ClientId>,

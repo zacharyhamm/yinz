@@ -8,7 +8,7 @@
 use super::*;
 use zellij_types::data::{Palette, Styling};
 
-const CLIENT: ClientId = ClientId(1);
+const CLIENT: ClientId = ClientId::new(1);
 
 /// The default theme, which is the one that matters: it leaves `frame_unselected` as `None`,
 /// so an ordinary pane's frame has no colour at all and the tint has nothing to be a

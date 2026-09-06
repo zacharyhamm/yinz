@@ -777,7 +777,7 @@ mod tests {
     #[test]
     fn test_first_plugin_assigned_to_thread_zero() {
         let executor = create_test_executor(4);
-        let thread_idx = executor.register_plugin(PluginId(1));
+        let thread_idx = executor.register_plugin(PluginId::new(1));
         assert_eq!(thread_idx, 0);
     }
 
@@ -788,7 +788,7 @@ mod tests {
         let plugin_map_clone = plugin_map.clone();
         let (tx, rx) = channel();
         let lookup = thread::spawn(move || {
-            tx.send(plugin_name(&plugin_map_clone, PluginId(42)))
+            tx.send(plugin_name(&plugin_map_clone, PluginId::new(42)))
                 .unwrap()
         });
 
@@ -805,14 +805,14 @@ mod tests {
         // only share a thread once every thread has a tenant. The old policy
         // put everything registered at an idle moment on thread 0.
         let executor = create_test_executor(3);
-        assert_eq!(executor.register_plugin(PluginId(1)), 0);
+        assert_eq!(executor.register_plugin(PluginId::new(1)), 0);
         assert_eq!(
-            executor.register_plugin(PluginId(2)),
+            executor.register_plugin(PluginId::new(2)),
             1,
             "own thread while one can be spawned"
         );
-        assert_eq!(executor.register_plugin(PluginId(3)), 2);
-        let fourth = executor.register_plugin(PluginId(4));
+        assert_eq!(executor.register_plugin(PluginId::new(3)), 2);
+        let fourth = executor.register_plugin(PluginId::new(4));
         assert!(
             fourth <= 2,
             "at capacity, the least-loaded thread is shared"
@@ -823,13 +823,13 @@ mod tests {
     #[test]
     fn test_vacant_thread_slot_is_reused_before_sharing() {
         let executor = create_test_executor(2);
-        assert_eq!(executor.register_plugin(PluginId(1)), 0);
-        assert_eq!(executor.register_plugin(PluginId(2)), 1);
+        assert_eq!(executor.register_plugin(PluginId::new(1)), 0);
+        assert_eq!(executor.register_plugin(PluginId::new(2)), 1);
 
-        executor.unregister_plugin(PluginId(2));
+        executor.unregister_plugin(PluginId::new(2));
 
         assert_eq!(executor.thread_count(), 1);
-        assert_eq!(executor.register_plugin(PluginId(3)), 1);
+        assert_eq!(executor.register_plugin(PluginId::new(3)), 1);
         assert_eq!(executor.thread_count(), 2);
     }
 
@@ -841,13 +841,13 @@ mod tests {
         // reorders plugin 1's own jobs, which is the per-plugin FIFO the
         // batching tests pin.
         let executor = create_test_executor(1);
-        executor.register_plugin(PluginId(1));
-        executor.register_plugin(PluginId(2));
+        executor.register_plugin(PluginId::new(1));
+        executor.register_plugin(PluginId::new(2));
 
         let (started_tx, started_rx) = channel();
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId(2), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(2), move |_s, _p, _c, _ca, _e| {
             started_tx.send(()).unwrap();
             barrier_clone.wait();
         });
@@ -870,13 +870,13 @@ mod tests {
                 },
             );
         };
-        queue(PluginId(2), "b1", false);
-        queue(PluginId(2), "b2", false);
-        queue(PluginId(1), "a1", false);
-        queue(PluginId(1), "a2-input", true);
-        queue(PluginId(2), "b3", false);
-        queue(PluginId(1), "a3", false);
-        queue(PluginId(1), "a4-input", true);
+        queue(PluginId::new(2), "b1", false);
+        queue(PluginId::new(2), "b2", false);
+        queue(PluginId::new(1), "a1", false);
+        queue(PluginId::new(1), "a2-input", true);
+        queue(PluginId::new(2), "b3", false);
+        queue(PluginId::new(1), "a3", false);
+        queue(PluginId::new(1), "a4-input", true);
 
         barrier.wait();
         for _ in 0..7 {
@@ -894,13 +894,13 @@ mod tests {
     #[test]
     fn test_without_input_jobs_the_queue_stays_fifo() {
         let executor = create_test_executor(1);
-        executor.register_plugin(PluginId(1));
-        executor.register_plugin(PluginId(2));
+        executor.register_plugin(PluginId::new(1));
+        executor.register_plugin(PluginId::new(2));
 
         let (started_tx, started_rx) = channel();
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId(2), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(2), move |_s, _p, _c, _ca, _e| {
             started_tx.send(()).unwrap();
             barrier_clone.wait();
         });
@@ -923,9 +923,9 @@ mod tests {
                 },
             );
         };
-        queue(PluginId(2), "b1");
-        queue(PluginId(1), "a1");
-        queue(PluginId(2), "b2");
+        queue(PluginId::new(2), "b1");
+        queue(PluginId::new(1), "a1");
+        queue(PluginId::new(2), "b2");
 
         barrier.wait();
         for _ in 0..3 {
@@ -945,13 +945,13 @@ mod tests {
         let executor = create_test_executor(3);
 
         // Register plugin 1, gets thread 0
-        let thread_idx1 = executor.register_plugin(PluginId(1));
+        let thread_idx1 = executor.register_plugin(PluginId::new(1));
         assert_eq!(thread_idx1, 0);
 
         // Make thread 0 busy with a barrier
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
             barrier_clone.wait();
         });
 
@@ -959,7 +959,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
 
         // Register plugin 2 while thread 0 is busy
-        let thread_idx2 = executor.register_plugin(PluginId(2));
+        let thread_idx2 = executor.register_plugin(PluginId::new(2));
         assert_eq!(
             thread_idx2, 1,
             "Plugin 2 should get new thread 1 when thread 0 is busy"
@@ -977,29 +977,29 @@ mod tests {
         let executor = create_test_executor(2);
 
         // Register plugin 1, gets thread 0
-        executor.register_plugin(PluginId(1));
+        executor.register_plugin(PluginId::new(1));
 
         // Make thread 0 busy
         let barrier1 = Arc::new(Barrier::new(2));
         let barrier1_clone = barrier1.clone();
-        executor.execute_for_plugin(PluginId(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
             barrier1_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
 
         // Register plugin 2, gets thread 1
-        executor.register_plugin(PluginId(2));
+        executor.register_plugin(PluginId::new(2));
 
         // Make thread 1 busy
         let barrier2 = Arc::new(Barrier::new(2));
         let barrier2_clone = barrier2.clone();
-        executor.execute_for_plugin(PluginId(2), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(2), move |_s, _p, _c, _ca, _e| {
             barrier2_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
 
         // Register plugin 3 when all threads busy
-        let thread_idx3 = executor.register_plugin(PluginId(3));
+        let thread_idx3 = executor.register_plugin(PluginId::new(3));
         assert!(
             thread_idx3 == 0 || thread_idx3 == 1,
             "Plugin 3 should be assigned to existing thread"
@@ -1014,8 +1014,8 @@ mod tests {
     #[test]
     fn test_duplicate_registration_returns_same_thread() {
         let executor = create_test_executor(4);
-        let thread_idx1 = executor.register_plugin(PluginId(1));
-        let thread_idx2 = executor.register_plugin(PluginId(1));
+        let thread_idx1 = executor.register_plugin(PluginId::new(1));
+        let thread_idx2 = executor.register_plugin(PluginId::new(1));
         assert_eq!(
             thread_idx1, thread_idx2,
             "Duplicate registration should return same thread"
@@ -1027,13 +1027,13 @@ mod tests {
         let executor = create_test_executor(2);
 
         // The first two get threads of their own.
-        assert_eq!(executor.register_plugin(PluginId(1)), 0);
-        assert_eq!(executor.register_plugin(PluginId(2)), 1);
+        assert_eq!(executor.register_plugin(PluginId::new(1)), 0);
+        assert_eq!(executor.register_plugin(PluginId::new(2)), 1);
 
         // At capacity, each newcomer lands on the least-loaded thread, so the
         // tenancy stays balanced.
-        let third = executor.register_plugin(PluginId(3));
-        let fourth = executor.register_plugin(PluginId(4));
+        let third = executor.register_plugin(PluginId::new(3));
+        let fourth = executor.register_plugin(PluginId::new(4));
         assert_ne!(
             third, fourth,
             "with one tenant each, consecutive registrations balance out"
@@ -1046,26 +1046,26 @@ mod tests {
         let executor = create_test_executor(3);
 
         // Register plugin 1 to thread 0
-        executor.register_plugin(PluginId(1));
+        executor.register_plugin(PluginId::new(1));
 
         // Make thread 0 busy to force plugin 2 to thread 1
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
             barrier_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
 
         // Register plugin 2 to thread 1
-        executor.register_plugin(PluginId(2));
+        executor.register_plugin(PluginId::new(2));
 
         // Release barrier
         barrier.wait();
         thread::sleep(Duration::from_millis(50));
 
         // Get thread names for both plugins
-        let thread_name1 = get_thread_name_for_plugin(&executor, PluginId(1));
-        let thread_name2 = get_thread_name_for_plugin(&executor, PluginId(2));
+        let thread_name1 = get_thread_name_for_plugin(&executor, PluginId::new(1));
+        let thread_name2 = get_thread_name_for_plugin(&executor, PluginId::new(2));
 
         assert_eq!(thread_name1, "plugin-exec-0");
         assert_eq!(thread_name2, "plugin-exec-1");
@@ -1077,7 +1077,7 @@ mod tests {
         let (tx, rx) = channel();
 
         // Execute job for unregistered plugin
-        executor.execute_for_plugin(PluginId(999), make_signaling_job(tx));
+        executor.execute_for_plugin(PluginId::new(999), make_signaling_job(tx));
 
         // Try to receive with timeout - should timeout
         let result = rx.recv_timeout(Duration::from_millis(100));
@@ -1090,7 +1090,7 @@ mod tests {
     #[test]
     fn test_job_execution_order_per_thread() {
         let executor = create_test_executor(4);
-        executor.register_plugin(PluginId(1));
+        executor.register_plugin(PluginId::new(1));
 
         let order = Arc::new(Mutex::new(Vec::new()));
         let (tx, rx) = channel();
@@ -1099,7 +1099,7 @@ mod tests {
         for i in 1..=3 {
             let order_clone = order.clone();
             let tx_clone = tx.clone();
-            executor.execute_for_plugin(PluginId(1), move |_s, _p, _c, _ca, _e| {
+            executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
                 order_clone.lock().unwrap().push(i);
                 tx_clone.send(()).unwrap();
             });
@@ -1121,10 +1121,10 @@ mod tests {
     #[test]
     fn test_jobs_complete_successfully() {
         let executor = create_test_executor(4);
-        executor.register_plugin(PluginId(1));
+        executor.register_plugin(PluginId::new(1));
 
         let (tx, rx) = channel();
-        executor.execute_for_plugin(PluginId(1), make_signaling_job(tx));
+        executor.execute_for_plugin(PluginId::new(1), make_signaling_job(tx));
 
         let result = rx.recv_timeout(Duration::from_secs(5));
         assert!(result.is_ok(), "Job should complete successfully");
@@ -1135,18 +1135,18 @@ mod tests {
         let executor = create_test_executor(3);
 
         // Register plugin 1 to thread 0
-        executor.register_plugin(PluginId(1));
+        executor.register_plugin(PluginId::new(1));
 
         // Make thread 0 busy to force plugin 2 to thread 1
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
             barrier_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
 
         // Register plugin 2 to thread 1
-        executor.register_plugin(PluginId(2));
+        executor.register_plugin(PluginId::new(2));
 
         // Release barrier
         barrier.wait();
@@ -1158,13 +1158,13 @@ mod tests {
         let (tx2, rx2) = channel();
 
         let barrier1 = sync_barrier.clone();
-        executor.execute_for_plugin(PluginId(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
             barrier1.wait();
             tx1.send(()).unwrap();
         });
 
         let barrier2 = sync_barrier.clone();
-        executor.execute_for_plugin(PluginId(2), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(2), move |_s, _p, _c, _ca, _e| {
             barrier2.wait();
             tx2.send(()).unwrap();
         });
@@ -1182,14 +1182,14 @@ mod tests {
         let executor = create_test_executor(4);
 
         let (tx, rx) = channel();
-        executor.execute_plugin_load(PluginId(1), make_signaling_job(tx));
+        executor.execute_plugin_load(PluginId::new(1), make_signaling_job(tx));
 
         // Wait for load to complete
         rx.recv_timeout(Duration::from_secs(5))
             .expect("Load should complete");
 
         // Verify plugin is registered
-        let thread_idx = executor.register_plugin(PluginId(1));
+        let thread_idx = executor.register_plugin(PluginId::new(1));
         assert_eq!(thread_idx, 0, "Plugin should already be registered");
     }
 
@@ -1199,7 +1199,7 @@ mod tests {
 
         // Load plugin
         let (tx_load, rx_load) = channel();
-        executor.execute_plugin_load(PluginId(1), make_signaling_job(tx_load));
+        executor.execute_plugin_load(PluginId::new(1), make_signaling_job(tx_load));
         rx_load
             .recv_timeout(Duration::from_secs(5))
             .expect("Load should complete");
@@ -1209,7 +1209,7 @@ mod tests {
         let counter_clone = counter.clone();
         let (tx_unload, rx_unload) = channel();
 
-        executor.execute_plugin_unload(PluginId(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_plugin_unload(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
             counter_clone.fetch_add(1, Ordering::SeqCst);
             tx_unload.send(()).unwrap();
         });
@@ -1226,7 +1226,7 @@ mod tests {
         thread::sleep(Duration::from_millis(100));
 
         // Plugin should be unregistered - registering again should assign new thread
-        let thread_idx = executor.register_plugin(PluginId(1));
+        let thread_idx = executor.register_plugin(PluginId::new(1));
         assert_eq!(thread_idx, 0, "Plugin should be re-registered to thread 0");
     }
 
@@ -1236,7 +1236,7 @@ mod tests {
 
         // Load plugin
         let (tx_load, rx_load) = channel();
-        executor.execute_plugin_load(PluginId(1), make_signaling_job(tx_load));
+        executor.execute_plugin_load(PluginId::new(1), make_signaling_job(tx_load));
         rx_load
             .recv_timeout(Duration::from_secs(5))
             .expect("Load should complete");
@@ -1246,7 +1246,7 @@ mod tests {
         let sequence_clone = sequence.clone();
         let (tx_unload, rx_unload) = channel();
 
-        executor.execute_plugin_unload(PluginId(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_plugin_unload(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
             sequence_clone.lock().unwrap().push("cleanup");
             tx_unload.send(()).unwrap();
         });
@@ -1268,15 +1268,15 @@ mod tests {
     fn several_cleanups_all_run_when_only_the_last_unregisters() {
         let executor = create_test_executor(4);
         let (tx_load, rx_load) = channel();
-        executor.execute_plugin_load(PluginId(1), make_signaling_job(tx_load));
+        executor.execute_plugin_load(PluginId::new(1), make_signaling_job(tx_load));
         rx_load
             .recv_timeout(Duration::from_secs(5))
             .expect("Load should complete");
 
         let (tx, rx) = channel();
-        executor.execute_for_plugin(PluginId(1), make_signaling_job(tx.clone()));
-        executor.execute_for_plugin(PluginId(1), make_signaling_job(tx.clone()));
-        executor.execute_plugin_unload(PluginId(1), make_signaling_job(tx));
+        executor.execute_for_plugin(PluginId::new(1), make_signaling_job(tx.clone()));
+        executor.execute_for_plugin(PluginId::new(1), make_signaling_job(tx.clone()));
+        executor.execute_plugin_unload(PluginId::new(1), make_signaling_job(tx));
         for n in 1..=3 {
             rx.recv_timeout(Duration::from_secs(5))
                 .unwrap_or_else(|_| panic!("cleanup {n} of 3 never ran"));
@@ -1292,13 +1292,13 @@ mod tests {
     #[test]
     fn cleanups_stay_ordered_when_a_thread_mate_has_input_waiting() {
         let executor = create_test_executor(1);
-        executor.register_plugin(PluginId(1));
-        executor.register_plugin(PluginId(2));
+        executor.register_plugin(PluginId::new(1));
+        executor.register_plugin(PluginId::new(2));
 
         let (started_tx, started_rx) = channel();
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId(2), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(2), move |_s, _p, _c, _ca, _e| {
             started_tx.send(()).unwrap();
             barrier_clone.wait();
         });
@@ -1320,10 +1320,10 @@ mod tests {
                 tx.send(()).unwrap();
             }
         };
-        executor.execute_for_plugin(PluginId(1), record("cleanup-1"));
-        executor.execute_for_plugin_tagged(PluginId(2), "key", true, record("input-2"));
-        executor.execute_for_plugin(PluginId(1), record("cleanup-2"));
-        executor.execute_plugin_unload(PluginId(1), record("unload-1"));
+        executor.execute_for_plugin(PluginId::new(1), record("cleanup-1"));
+        executor.execute_for_plugin_tagged(PluginId::new(2), "key", true, record("input-2"));
+        executor.execute_for_plugin(PluginId::new(1), record("cleanup-2"));
+        executor.execute_plugin_unload(PluginId::new(1), record("unload-1"));
         drop(tx);
 
         barrier.wait();
@@ -1347,13 +1347,13 @@ mod tests {
     fn a_job_submitted_after_the_unload_finished_is_dropped() {
         let executor = create_test_executor(4);
         let (tx_load, rx_load) = channel();
-        executor.execute_plugin_load(PluginId(1), make_signaling_job(tx_load));
+        executor.execute_plugin_load(PluginId::new(1), make_signaling_job(tx_load));
         rx_load
             .recv_timeout(Duration::from_secs(5))
             .expect("Load should complete");
 
         let (tx_unload, rx_unload) = channel();
-        executor.execute_plugin_unload(PluginId(1), make_signaling_job(tx_unload));
+        executor.execute_plugin_unload(PluginId::new(1), make_signaling_job(tx_unload));
         rx_unload
             .recv_timeout(Duration::from_secs(5))
             .expect("Unload should complete");
@@ -1364,7 +1364,7 @@ mod tests {
             .lock()
             .unwrap()
             .assignments
-            .contains_key(&PluginId(1))
+            .contains_key(&PluginId::new(1))
         {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1374,7 +1374,7 @@ mod tests {
         }
 
         let (tx_late, rx_late) = channel();
-        executor.execute_plugin_unload(PluginId(1), make_signaling_job(tx_late));
+        executor.execute_plugin_unload(PluginId::new(1), make_signaling_job(tx_late));
         assert!(
             rx_late.recv_timeout(Duration::from_millis(500)).is_err(),
             "a job for an unregistered plugin must not run"
@@ -1387,21 +1387,21 @@ mod tests {
 
         // Load plugin 1 to thread 0
         let (tx1, rx1) = channel();
-        executor.execute_plugin_load(PluginId(1), make_signaling_job(tx1));
+        executor.execute_plugin_load(PluginId::new(1), make_signaling_job(tx1));
         rx1.recv_timeout(Duration::from_secs(5))
             .expect("Load should complete");
 
         // Make thread 0 busy to force plugin 2 to thread 1
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
             barrier_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
 
         // Load plugin 2 to thread 1
         let (tx2, rx2) = channel();
-        executor.execute_plugin_load(PluginId(2), make_signaling_job(tx2));
+        executor.execute_plugin_load(PluginId::new(2), make_signaling_job(tx2));
         rx2.recv_timeout(Duration::from_secs(5))
             .expect("Load should complete");
 
@@ -1414,7 +1414,7 @@ mod tests {
 
         // Unload plugin 2
         let (tx_unload2, rx_unload2) = channel();
-        executor.execute_plugin_unload(PluginId(2), make_signaling_job(tx_unload2));
+        executor.execute_plugin_unload(PluginId::new(2), make_signaling_job(tx_unload2));
         rx_unload2
             .recv_timeout(Duration::from_secs(5))
             .expect("Unload should complete");
@@ -1437,13 +1437,13 @@ mod tests {
 
         // Load a plugin and then unload it
         let (tx_load, rx_load) = channel();
-        executor.execute_plugin_load(PluginId(1), make_signaling_job(tx_load));
+        executor.execute_plugin_load(PluginId::new(1), make_signaling_job(tx_load));
         rx_load
             .recv_timeout(Duration::from_secs(5))
             .expect("Load should complete");
 
         let (tx_unload, rx_unload) = channel();
-        executor.execute_plugin_unload(PluginId(1), make_signaling_job(tx_unload));
+        executor.execute_plugin_unload(PluginId::new(1), make_signaling_job(tx_unload));
         rx_unload
             .recv_timeout(Duration::from_secs(5))
             .expect("Unload should complete");
@@ -1464,20 +1464,20 @@ mod tests {
 
         // Load plugin 1 to thread 0
         let (tx1, rx1) = channel();
-        executor.execute_plugin_load(PluginId(1), make_signaling_job(tx1));
+        executor.execute_plugin_load(PluginId::new(1), make_signaling_job(tx1));
         rx1.recv_timeout(Duration::from_secs(5))
             .expect("Load should complete");
 
         // Force plugin 2 to thread 1 by making thread 0 busy
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
             barrier_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
 
         let (tx2, rx2) = channel();
-        executor.execute_plugin_load(PluginId(2), make_signaling_job(tx2));
+        executor.execute_plugin_load(PluginId::new(2), make_signaling_job(tx2));
         rx2.recv_timeout(Duration::from_secs(5))
             .expect("Load should complete");
 
@@ -1492,7 +1492,7 @@ mod tests {
 
         // Unload plugin 2
         let (tx_unload, rx_unload) = channel();
-        executor.execute_plugin_unload(PluginId(2), make_signaling_job(tx_unload));
+        executor.execute_plugin_unload(PluginId::new(2), make_signaling_job(tx_unload));
         rx_unload
             .recv_timeout(Duration::from_secs(5))
             .expect("Unload should complete");
@@ -1501,7 +1501,7 @@ mod tests {
 
         // Plugin 1's thread should still work (verify active threads not affected)
         let (tx_test, rx_test) = channel();
-        executor.execute_for_plugin(PluginId(1), make_signaling_job(tx_test));
+        executor.execute_for_plugin(PluginId::new(1), make_signaling_job(tx_test));
         assert!(
             rx_test.recv_timeout(Duration::from_secs(5)).is_ok(),
             "Plugin 1's thread should still work"
@@ -1522,20 +1522,20 @@ mod tests {
 
         // Load plugin 1 to thread 0
         let (tx1, rx1) = channel();
-        executor.execute_plugin_load(PluginId(1), make_signaling_job(tx1));
+        executor.execute_plugin_load(PluginId::new(1), make_signaling_job(tx1));
         rx1.recv_timeout(Duration::from_secs(5))
             .expect("Load should complete");
 
         // Force plugin 2 to thread 1
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
             barrier_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
 
         let (tx2, rx2) = channel();
-        executor.execute_plugin_load(PluginId(2), make_signaling_job(tx2));
+        executor.execute_plugin_load(PluginId::new(2), make_signaling_job(tx2));
         rx2.recv_timeout(Duration::from_secs(5))
             .expect("Load should complete");
 
@@ -1544,7 +1544,7 @@ mod tests {
 
         // Unload plugin 2 (shrinks pool)
         let (tx_unload, rx_unload) = channel();
-        executor.execute_plugin_unload(PluginId(2), make_signaling_job(tx_unload));
+        executor.execute_plugin_unload(PluginId::new(2), make_signaling_job(tx_unload));
         rx_unload
             .recv_timeout(Duration::from_secs(5))
             .expect("Unload should complete");
@@ -1553,7 +1553,7 @@ mod tests {
 
         // Execute job for plugin 1
         let (tx_test, rx_test) = channel();
-        executor.execute_for_plugin(PluginId(1), make_signaling_job(tx_test));
+        executor.execute_for_plugin(PluginId::new(1), make_signaling_job(tx_test));
 
         assert!(
             rx_test.recv_timeout(Duration::from_secs(5)).is_ok(),
@@ -1567,19 +1567,19 @@ mod tests {
 
         // Load multiple plugins on different threads
         let (tx1, rx1) = channel();
-        executor.execute_plugin_load(PluginId(1), make_signaling_job(tx1));
+        executor.execute_plugin_load(PluginId::new(1), make_signaling_job(tx1));
         rx1.recv_timeout(Duration::from_secs(5))
             .expect("Load should complete");
 
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
             barrier_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
 
         let (tx2, rx2) = channel();
-        executor.execute_plugin_load(PluginId(2), make_signaling_job(tx2));
+        executor.execute_plugin_load(PluginId::new(2), make_signaling_job(tx2));
         rx2.recv_timeout(Duration::from_secs(5))
             .expect("Load should complete");
 
@@ -1594,11 +1594,11 @@ mod tests {
     #[test]
     fn test_drop_with_jobs_in_flight() {
         let executor = create_test_executor(4);
-        executor.register_plugin(PluginId(1));
+        executor.register_plugin(PluginId::new(1));
 
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
             barrier_clone.wait();
         });
 
@@ -1618,7 +1618,7 @@ mod tests {
         let handles: Vec<_> = (1..=10)
             .map(|i| {
                 let exec = executor.clone();
-                thread::spawn(move || exec.register_plugin(PluginId(i)))
+                thread::spawn(move || exec.register_plugin(PluginId::new(i)))
             })
             .collect();
 
@@ -1633,11 +1633,11 @@ mod tests {
         let executor = create_test_executor(4);
 
         // Unregister non-existent plugin
-        executor.unregister_plugin(PluginId(999));
+        executor.unregister_plugin(PluginId::new(999));
 
         // Executor should still work
         let (tx, rx) = channel();
-        executor.execute_plugin_load(PluginId(1), make_signaling_job(tx));
+        executor.execute_plugin_load(PluginId::new(1), make_signaling_job(tx));
         assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok());
     }
 
@@ -1646,9 +1646,9 @@ mod tests {
         let executor = create_test_executor(1);
 
         // Register multiple plugins
-        let thread_idx1 = executor.register_plugin(PluginId(1));
-        let thread_idx2 = executor.register_plugin(PluginId(2));
-        let thread_idx3 = executor.register_plugin(PluginId(3));
+        let thread_idx1 = executor.register_plugin(PluginId::new(1));
+        let thread_idx2 = executor.register_plugin(PluginId::new(2));
+        let thread_idx3 = executor.register_plugin(PluginId::new(3));
 
         assert_eq!(thread_idx1, 0);
         assert_eq!(thread_idx2, 0);
@@ -1662,13 +1662,13 @@ mod tests {
 
         // Load plugin 1
         let (tx1, rx1) = channel();
-        executor.execute_plugin_load(PluginId(1), make_signaling_job(tx1));
+        executor.execute_plugin_load(PluginId::new(1), make_signaling_job(tx1));
         rx1.recv_timeout(Duration::from_secs(5))
             .expect("Load should complete");
 
         // Unload plugin 1
         let (tx2, rx2) = channel();
-        executor.execute_plugin_unload(PluginId(1), make_signaling_job(tx2));
+        executor.execute_plugin_unload(PluginId::new(1), make_signaling_job(tx2));
         rx2.recv_timeout(Duration::from_secs(5))
             .expect("Unload should complete");
 
@@ -1676,13 +1676,13 @@ mod tests {
 
         // Load plugin 1 again
         let (tx3, rx3) = channel();
-        executor.execute_plugin_load(PluginId(1), make_signaling_job(tx3));
+        executor.execute_plugin_load(PluginId::new(1), make_signaling_job(tx3));
         rx3.recv_timeout(Duration::from_secs(5))
             .expect("Second load should complete");
 
         // Execute job for plugin 1
         let (tx4, rx4) = channel();
-        executor.execute_for_plugin(PluginId(1), make_signaling_job(tx4));
+        executor.execute_for_plugin(PluginId::new(1), make_signaling_job(tx4));
         assert!(
             rx4.recv_timeout(Duration::from_secs(5)).is_ok(),
             "Executor should handle cycles correctly"
@@ -1697,7 +1697,7 @@ mod tests {
         // Load 20 plugins
         for i in 1..=20 {
             let tx_clone = tx.clone();
-            executor.execute_plugin_load(PluginId(i), make_signaling_job(tx_clone));
+            executor.execute_plugin_load(PluginId::new(i), make_signaling_job(tx_clone));
         }
 
         // Collect 20 completion signals
@@ -1720,7 +1720,7 @@ mod tests {
         // Load 5 plugins
         for i in 1..=5 {
             let tx_clone = tx.clone();
-            executor.execute_plugin_load(PluginId(i), make_signaling_job(tx_clone));
+            executor.execute_plugin_load(PluginId::new(i), make_signaling_job(tx_clone));
         }
 
         // Wait for all loads
@@ -1733,7 +1733,7 @@ mod tests {
         for i in 1..=5 {
             for _ in 0..2 {
                 let tx_clone = tx.clone();
-                executor.execute_for_plugin(PluginId(i), make_signaling_job(tx_clone));
+                executor.execute_for_plugin(PluginId::new(i), make_signaling_job(tx_clone));
             }
         }
 
@@ -1748,7 +1748,7 @@ mod tests {
         // Unload 3 plugins
         for i in 1..=3 {
             let tx_clone = tx.clone();
-            executor.execute_plugin_unload(PluginId(i), make_signaling_job(tx_clone));
+            executor.execute_plugin_unload(PluginId::new(i), make_signaling_job(tx_clone));
         }
 
         // Wait for unloads
@@ -1769,7 +1769,7 @@ mod tests {
         // Execute jobs for remaining plugins
         for i in 4..=5 {
             let tx_clone = tx.clone();
-            executor.execute_for_plugin(PluginId(i), make_signaling_job(tx_clone));
+            executor.execute_for_plugin(PluginId::new(i), make_signaling_job(tx_clone));
         }
 
         for _ in 0..2 {
@@ -1789,7 +1789,7 @@ mod tests {
         // Load plugins 1, 2, 3
         for i in 1..=3 {
             let tx_clone = tx.clone();
-            executor.execute_plugin_load(PluginId(i), make_signaling_job(tx_clone));
+            executor.execute_plugin_load(PluginId::new(i), make_signaling_job(tx_clone));
         }
         for _ in 0..3 {
             rx.recv_timeout(Duration::from_secs(5))
@@ -1799,7 +1799,7 @@ mod tests {
         // Execute jobs for each
         for i in 1..=3 {
             let tx_clone = tx.clone();
-            executor.execute_for_plugin(PluginId(i), make_signaling_job(tx_clone));
+            executor.execute_for_plugin(PluginId::new(i), make_signaling_job(tx_clone));
         }
         for _ in 0..3 {
             rx.recv_timeout(Duration::from_secs(5))
@@ -1808,7 +1808,7 @@ mod tests {
 
         // Unload plugin 2
         let tx_clone = tx.clone();
-        executor.execute_plugin_unload(PluginId(2), make_signaling_job(tx_clone));
+        executor.execute_plugin_unload(PluginId::new(2), make_signaling_job(tx_clone));
         rx.recv_timeout(Duration::from_secs(5))
             .expect("Unload should complete");
 
@@ -1817,7 +1817,7 @@ mod tests {
         // Load plugins 4, 5
         for i in 4..=5 {
             let tx_clone = tx.clone();
-            executor.execute_plugin_load(PluginId(i), make_signaling_job(tx_clone));
+            executor.execute_plugin_load(PluginId::new(i), make_signaling_job(tx_clone));
         }
         for _ in 0..2 {
             rx.recv_timeout(Duration::from_secs(5))
@@ -1827,7 +1827,7 @@ mod tests {
         // Execute jobs for plugins 1, 3, 4, 5
         for i in &[1, 3, 4, 5] {
             let tx_clone = tx.clone();
-            executor.execute_for_plugin(PluginId(*i), make_signaling_job(tx_clone));
+            executor.execute_for_plugin(PluginId::new(*i), make_signaling_job(tx_clone));
         }
         for _ in 0..4 {
             rx.recv_timeout(Duration::from_secs(5))
@@ -1837,7 +1837,7 @@ mod tests {
         // Unload plugins 1, 3
         for i in &[1, 3] {
             let tx_clone = tx.clone();
-            executor.execute_plugin_unload(PluginId(*i), make_signaling_job(tx_clone));
+            executor.execute_plugin_unload(PluginId::new(*i), make_signaling_job(tx_clone));
         }
         for _ in 0..2 {
             rx.recv_timeout(Duration::from_secs(5))
@@ -1878,8 +1878,8 @@ mod tests {
                 barrier.wait(); // start all four at once, to maximise contention
                 for i in 0..250u32 {
                     let plugin_id = t * 10_000 + i;
-                    exec.register_plugin(PluginId(plugin_id));
-                    exec.unregister_plugin(PluginId(plugin_id));
+                    exec.register_plugin(PluginId::new(plugin_id));
+                    exec.unregister_plugin(PluginId::new(plugin_id));
                 }
                 done_tx.send(t).unwrap();
             }));
@@ -1910,22 +1910,22 @@ mod tests {
     fn a_reclaimed_thread_slot_is_reused_on_the_next_growth() {
         let executor = create_test_executor(4);
 
-        assert_eq!(executor.register_plugin(PluginId(0)), 0);
+        assert_eq!(executor.register_plugin(PluginId::new(0)), 0);
         assert_eq!(
-            executor.register_plugin(PluginId(1)),
+            executor.register_plugin(PluginId::new(1)),
             1,
             "a fresh thread is spawned while thread 0 has a tenant"
         );
         assert_eq!(executor.thread_count(), 2);
 
         // Reclaim thread 1 by unregistering its only plugin — leaves a `None` at 1.
-        executor.unregister_plugin(PluginId(1));
+        executor.unregister_plugin(PluginId::new(1));
         assert_eq!(executor.thread_count(), 1, "the idle thread is reclaimed");
 
         // Grow again: the reclaimed slot must be reused. The old growth returned
         // index 2.
         assert_eq!(
-            executor.register_plugin(PluginId(2)),
+            executor.register_plugin(PluginId::new(2)),
             1,
             "the reclaimed slot must be reused, not grown past"
         );

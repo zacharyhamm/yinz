@@ -19,8 +19,8 @@ pub fn screen_can_suppress_pane() {
         server_receiver
     );
     let _ = mock_screen.to_screen.send(ScreenInstruction::SuppressPane(
-        PaneId::Terminal(crate::TerminalId(1)),
-        crate::ClientId(1),
+        PaneId::Terminal(crate::TerminalId::new(1)),
+        crate::ClientId::new(1),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -66,7 +66,7 @@ pub fn screen_can_break_pane_to_a_new_tab() {
 
     let _ = mock_screen.to_screen.send(ScreenInstruction::BreakPane(
         Default::default(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -82,7 +82,7 @@ pub fn screen_can_break_pane_to_a_new_tab() {
         Default::default(),
         1,
         true,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     ));
@@ -91,7 +91,7 @@ pub fn screen_can_break_pane_to_a_new_tab() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::MoveFocusLeftOrPreviousTab(
-            crate::ClientId(1),
+            crate::ClientId::new(1),
             None,
         ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -99,7 +99,7 @@ pub fn screen_can_break_pane_to_a_new_tab() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::MoveFocusRightOrNextTab(
-            crate::ClientId(1),
+            crate::ClientId::new(1),
             None,
         ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -133,7 +133,7 @@ pub fn screen_cannot_break_last_selectable_pane_to_a_new_tab() {
 
     let _ = mock_screen.to_screen.send(ScreenInstruction::BreakPane(
         Default::default(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -182,7 +182,7 @@ pub fn screen_can_break_floating_pane_to_a_new_tab() {
 
     let _ = mock_screen.to_screen.send(ScreenInstruction::BreakPane(
         Default::default(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -199,7 +199,7 @@ pub fn screen_can_break_floating_pane_to_a_new_tab() {
         Default::default(),
         1,
         true,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     ));
@@ -208,7 +208,7 @@ pub fn screen_can_break_floating_pane_to_a_new_tab() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::MoveFocusLeftOrPreviousTab(
-            crate::ClientId(1),
+            crate::ClientId::new(1),
             None,
         ));
     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -216,7 +216,7 @@ pub fn screen_can_break_floating_pane_to_a_new_tab() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::MoveFocusRightOrNextTab(
-            crate::ClientId(1),
+            crate::ClientId::new(1),
             None,
         ));
     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -277,13 +277,13 @@ pub fn screen_can_break_multiple_stacked_panes_to_a_new_tab() {
         .to_screen
         .send(ScreenInstruction::BreakPanesToNewTab {
             pane_ids: vec![
-                PaneId::Terminal(crate::TerminalId(1)),
-                PaneId::Terminal(crate::TerminalId(2)),
+                PaneId::Terminal(crate::TerminalId::new(1)),
+                PaneId::Terminal(crate::TerminalId::new(2)),
             ],
             default_shell: None,
             should_change_focus_to_new_tab: true,
             new_tab_name: None,
-            client_id: crate::ClientId(1),
+            client_id: crate::ClientId::new(1),
             completion_tx: None,
         });
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -299,7 +299,7 @@ pub fn screen_can_break_multiple_stacked_panes_to_a_new_tab() {
         Default::default(),
         1,
         true,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     ));
@@ -308,7 +308,7 @@ pub fn screen_can_break_multiple_stacked_panes_to_a_new_tab() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::MoveFocusLeftOrPreviousTab(
-            crate::ClientId(1),
+            crate::ClientId::new(1),
             None,
         ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -316,7 +316,7 @@ pub fn screen_can_break_multiple_stacked_panes_to_a_new_tab() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::MoveFocusRightOrNextTab(
-            crate::ClientId(1),
+            crate::ClientId::new(1),
             None,
         ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -373,7 +373,7 @@ pub fn screen_can_break_plugin_pane_to_a_new_tab() {
 
     let _ = mock_screen.to_screen.send(ScreenInstruction::BreakPane(
         Default::default(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -389,7 +389,7 @@ pub fn screen_can_break_plugin_pane_to_a_new_tab() {
         Default::default(),
         1,
         true,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     ));
@@ -398,7 +398,7 @@ pub fn screen_can_break_plugin_pane_to_a_new_tab() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::MoveFocusLeftOrPreviousTab(
-            crate::ClientId(1),
+            crate::ClientId::new(1),
             None,
         ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -406,7 +406,7 @@ pub fn screen_can_break_plugin_pane_to_a_new_tab() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::MoveFocusRightOrNextTab(
-            crate::ClientId(1),
+            crate::ClientId::new(1),
             None,
         ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -461,7 +461,7 @@ pub fn screen_can_break_floating_plugin_pane_to_a_new_tab() {
 
     let _ = mock_screen.to_screen.send(ScreenInstruction::BreakPane(
         Default::default(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -478,7 +478,7 @@ pub fn screen_can_break_floating_plugin_pane_to_a_new_tab() {
         Default::default(),
         1,
         true,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     ));
@@ -487,7 +487,7 @@ pub fn screen_can_break_floating_plugin_pane_to_a_new_tab() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::MoveFocusLeftOrPreviousTab(
-            crate::ClientId(1),
+            crate::ClientId::new(1),
             None,
         ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -495,7 +495,7 @@ pub fn screen_can_break_floating_plugin_pane_to_a_new_tab() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::MoveFocusRightOrNextTab(
-            crate::ClientId(1),
+            crate::ClientId::new(1),
             None,
         ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -541,7 +541,7 @@ pub fn screen_can_move_pane_to_a_new_tab_right() {
 
     let _ = mock_screen.to_screen.send(ScreenInstruction::BreakPane(
         Default::default(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
     ));
 
@@ -555,7 +555,7 @@ pub fn screen_can_move_pane_to_a_new_tab_right() {
         Default::default(),
         1,
         true,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     ));
@@ -563,13 +563,16 @@ pub fn screen_can_move_pane_to_a_new_tab_right() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::MoveFocusLeftOrPreviousTab(
-            crate::ClientId(1),
+            crate::ClientId::new(1),
             None,
         ));
     std::thread::sleep(std::time::Duration::from_millis(100));
     let _ = mock_screen
         .to_screen
-        .send(ScreenInstruction::BreakPaneRight(crate::ClientId(1), None));
+        .send(ScreenInstruction::BreakPaneRight(
+            crate::ClientId::new(1),
+            None,
+        ));
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -613,7 +616,7 @@ pub fn screen_can_move_pane_to_a_new_tab_left() {
 
     let _ = mock_screen.to_screen.send(ScreenInstruction::BreakPane(
         Default::default(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
     ));
     let _ = mock_screen.to_screen.send(ScreenInstruction::ApplyLayout(
@@ -625,7 +628,7 @@ pub fn screen_can_move_pane_to_a_new_tab_left() {
         Default::default(),
         1,
         true,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     ));
@@ -633,13 +636,14 @@ pub fn screen_can_move_pane_to_a_new_tab_left() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::MoveFocusLeftOrPreviousTab(
-            crate::ClientId(1),
+            crate::ClientId::new(1),
             None,
         ));
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let _ = mock_screen
-        .to_screen
-        .send(ScreenInstruction::BreakPaneLeft(crate::ClientId(1), None));
+    let _ = mock_screen.to_screen.send(ScreenInstruction::BreakPaneLeft(
+        crate::ClientId::new(1),
+        None,
+    ));
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -658,7 +662,7 @@ pub fn screen_can_move_pane_to_a_new_tab_left() {
 #[test]
 pub fn send_cli_stack_panes_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![
@@ -721,7 +725,7 @@ pub fn send_cli_stack_panes_action() {
 #[test]
 pub fn send_cli_change_floating_pane_coordinates_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_tiled_layout = TiledPaneLayout::default();
     let initial_floating_panes = vec![FloatingPaneLayout::default()];
     let mut mock_screen = MockScreen::new(size);
@@ -768,7 +772,7 @@ pub fn go_to_tab_by_id_verifies_screen_state() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut screen = create_new_screen(size, true, true);
 
     // Create multiple tabs with known IDs
@@ -814,7 +818,7 @@ pub fn send_cli_go_to_tab_by_id_action() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
 
@@ -896,7 +900,7 @@ pub fn send_cli_rename_tab_by_id_action() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
 
@@ -986,7 +990,7 @@ pub fn send_cli_close_tab_by_id_action() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
 
@@ -1025,7 +1029,7 @@ pub fn send_cli_new_pane_in_place_with_close_replaced_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -1091,7 +1095,7 @@ pub fn send_cli_edit_in_place_with_close_replaced_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -1143,7 +1147,7 @@ pub fn send_cli_launch_or_focus_plugin_in_place_with_close_replaced_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();

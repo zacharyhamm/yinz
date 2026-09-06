@@ -515,7 +515,7 @@ fn run_in_guest(ensured: &EnsureResponse, script: &str, marker: &str) -> String 
             &ensured.ssh_host,
             &command,
             None,
-            zellij_server::TerminalId(1),
+            zellij_server::TerminalId::new(1),
             options,
         )
         .unwrap();

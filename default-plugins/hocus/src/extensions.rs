@@ -59,7 +59,7 @@ struct RegistrationTool {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExtensionTool {
-    pub owner: u32,
+    pub owner: zellij_tile::prelude::PluginId,
     pub path: String,
     pub namespace: String,
     pub local_name: String,
@@ -86,8 +86,8 @@ impl ExtensionTool {
 #[derive(Default)]
 pub struct Registry {
     tools: BTreeMap<String, ExtensionTool>,
-    owners: BTreeMap<u32, BTreeSet<String>>,
-    identities: BTreeMap<u32, (String, String)>,
+    owners: BTreeMap<zellij_tile::prelude::PluginId, BTreeSet<String>>,
+    identities: BTreeMap<zellij_tile::prelude::PluginId, (String, String)>,
 }
 
 impl Registry {
@@ -107,14 +107,14 @@ impl Registry {
             .collect()
     }
 
-    pub fn owner_for_path(&self, path: &str) -> Option<u32> {
+    pub fn owner_for_path(&self, path: &str) -> Option<zellij_tile::prelude::PluginId> {
         self.identities
             .iter()
             .find(|(_, (_, registered_path))| registered_path == path)
             .map(|(owner, _)| *owner)
     }
 
-    pub fn remove_owner(&mut self, owner: u32) {
+    pub fn remove_owner(&mut self, owner: zellij_tile::prelude::PluginId) {
         self.identities.remove(&owner);
         if let Some(names) = self.owners.remove(&owner) {
             for name in names {
@@ -125,10 +125,10 @@ impl Registry {
 
     pub fn register(
         &mut self,
-        owner: u32,
+        owner: zellij_tile::prelude::PluginId,
         payload: &str,
         discovered: &BTreeMap<String, String>,
-        instances: &BTreeMap<u32, (String, String)>,
+        instances: &BTreeMap<zellij_tile::prelude::PluginId, (String, String)>,
         reserved: &BTreeSet<String>,
     ) -> Result<Vec<String>, String> {
         if payload.len() > MAX_REGISTRATION_BYTES {
@@ -345,17 +345,17 @@ pub fn load(_path: &str, _namespace: &str) {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn reload(owner: u32) {
+pub fn reload(owner: zellij_tile::prelude::PluginId) {
     zellij_tile::shim::reload_plugin_with_id(owner);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn reload(_owner: u32) {
+pub fn reload(_owner: zellij_tile::prelude::PluginId) {
     test_seams::count_load();
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn call(owner: u32, payload: String) {
+pub fn call(owner: zellij_tile::prelude::PluginId, payload: String) {
     zellij_tile::shim::pipe_message_to_plugin(
         MessageToPlugin::new(CALL)
             .with_destination_plugin_id(owner)
@@ -364,7 +364,7 @@ pub fn call(owner: u32, payload: String) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn call(_owner: u32, _payload: String) {}
+pub fn call(_owner: zellij_tile::prelude::PluginId, _payload: String) {}
 
 fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();

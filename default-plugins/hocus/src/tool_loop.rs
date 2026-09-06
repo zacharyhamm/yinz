@@ -896,7 +896,9 @@ impl State {
                 .map(|current| tools::firecracker_panes(vm, session, current))
                 .unwrap_or_default();
             for pane_id in &closed {
-                close_pane_with_id(PaneId::Terminal(zellij_tile::prelude::TerminalId(*pane_id)));
+                close_pane_with_id(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(
+                    *pane_id,
+                )));
             }
             // Record requests, not confirmed closures, including if the stop fails.
             context.insert(
@@ -3028,13 +3030,8 @@ impl State {
             // on the very press that dismissed it. The id exists here, so it joins at the panel's
             // visibility instead of at its own.
             if self.hidden {
-                hide_pane_with_id(PaneId::Plugin(zellij_tile::prelude::PluginId(
-                    selection.plugin_id,
-                )));
-                self.note_visibility(
-                    PaneId::Plugin(zellij_tile::prelude::PluginId(selection.plugin_id)),
-                    false,
-                );
+                hide_pane_with_id(PaneId::Plugin(selection.plugin_id));
+                self.note_visibility(PaneId::Plugin(selection.plugin_id), false);
                 self.agents_visible = false;
             } else {
                 self.agents_visible = true;

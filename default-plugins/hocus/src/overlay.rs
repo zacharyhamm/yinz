@@ -619,8 +619,8 @@ fn corner_order(
 /// The id a manifest entry names.
 pub(crate) fn pane_id_of(pane: &PaneInfo) -> PaneId {
     match pane.is_plugin {
-        true => PaneId::Plugin(zellij_tile::prelude::PluginId(pane.id)),
-        false => PaneId::Terminal(zellij_tile::prelude::TerminalId(pane.id)),
+        true => PaneId::Plugin(zellij_tile::prelude::PluginId::new(pane.id)),
+        false => PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane.id)),
     }
 }
 
@@ -1030,15 +1030,9 @@ impl State {
     /// one has announced itself.
     fn placements_of(&self, panel: Rect) -> Vec<(PaneId, FloatingPaneCoordinates)> {
         let (chat, agents) = split_panel(&self.kdl, panel, self.shown(), self.split);
-        let mut placements = vec![(
-            PaneId::Plugin(zellij_tile::prelude::PluginId(self.own_plugin_id)),
-            fixed_rect(chat),
-        )];
+        let mut placements = vec![(PaneId::Plugin(self.own_plugin_id), fixed_rect(chat))];
         if let Some(agents_id) = self.agents_plugin {
-            placements.push((
-                PaneId::Plugin(zellij_tile::prelude::PluginId(agents_id)),
-                fixed_rect(agents),
-            ));
+            placements.push((PaneId::Plugin(agents_id), fixed_rect(agents)));
         }
         placements
     }
@@ -1147,11 +1141,13 @@ impl State {
     /// `None` with neither on screen. Both halves together are the panel; one alone has the whole
     /// of it.
     fn reported_panel(&self) -> Option<Rect> {
-        let drawn = |plugin_id: Option<u32>| {
+        let drawn = |plugin_id: Option<zellij_tile::prelude::PluginId>| {
             let plugin_id = plugin_id?;
             self.tab_panes
                 .iter()
-                .find(|pane| pane.is_plugin && pane.id == plugin_id && !pane.is_suppressed)
+                .find(|pane| {
+                    pane.is_plugin && PluginId::new(pane.id) == plugin_id && !pane.is_suppressed
+                })
                 .map(Rect::of)
         };
         match (drawn(Some(self.own_plugin_id)), drawn(self.agents_plugin)) {
@@ -1180,10 +1176,12 @@ impl State {
         let Some(agents_id) = self.agents_plugin else {
             return;
         };
-        let drawn = |plugin_id: u32| {
+        let drawn = |plugin_id: zellij_tile::prelude::PluginId| {
             panes
                 .iter()
-                .find(|pane| pane.is_plugin && pane.id == plugin_id && !pane.is_suppressed)
+                .find(|pane| {
+                    pane.is_plugin && PluginId::new(pane.id) == plugin_id && !pane.is_suppressed
+                })
                 .map(Rect::of)
         };
         let (Some(chat), Some(agents)) = (drawn(self.own_plugin_id), drawn(agents_id)) else {
@@ -1351,16 +1349,10 @@ impl State {
             return;
         }
         hide_self();
-        self.note_visibility(
-            PaneId::Plugin(zellij_tile::prelude::PluginId(self.own_plugin_id)),
-            false,
-        );
+        self.note_visibility(PaneId::Plugin(self.own_plugin_id), false);
         if let Some(agents_id) = self.agents_plugin {
-            hide_pane_with_id(PaneId::Plugin(zellij_tile::prelude::PluginId(agents_id)));
-            self.note_visibility(
-                PaneId::Plugin(zellij_tile::prelude::PluginId(agents_id)),
-                false,
-            );
+            hide_pane_with_id(PaneId::Plugin(agents_id));
+            self.note_visibility(PaneId::Plugin(agents_id), false);
         }
         self.hidden = true;
         self.hide_pending = HIDE_PENDING_FRAMES;
@@ -1412,7 +1404,7 @@ impl State {
         let Some(agents_id) = self.agents_plugin.filter(|_| self.is_panel()) else {
             return false;
         };
-        let pane = PaneId::Plugin(zellij_tile::prelude::PluginId(agents_id));
+        let pane = PaneId::Plugin(agents_id);
         // Leaving, so this half's stop is spent: coming back should be the box.
         self.reset_ring_stop();
         focus_pane_with_id(pane, false, false);
@@ -1512,15 +1504,8 @@ impl State {
         self.agents_open_requested = false;
         match self.agents_plugin {
             Some(agents_id) => {
-                show_pane_with_id(
-                    PaneId::Plugin(zellij_tile::prelude::PluginId(agents_id)),
-                    false,
-                    false,
-                );
-                self.note_visibility(
-                    PaneId::Plugin(zellij_tile::prelude::PluginId(agents_id)),
-                    true,
-                );
+                show_pane_with_id(PaneId::Plugin(agents_id), false, false);
+                self.note_visibility(PaneId::Plugin(agents_id), true);
             },
             // Nothing to unsuppress: the panel has to grow its other half first. The placement
             // below still runs - the list announces itself with an id, and `on_panes` places it
@@ -1550,15 +1535,8 @@ impl State {
         // The list on screen is the one that was asked for, whatever hocus last claimed - and a
         // stale claim held here is a panel that can never grow its half again. See `reveal_panel`.
         self.agents_open_requested = false;
-        show_pane_with_id(
-            PaneId::Plugin(zellij_tile::prelude::PluginId(self.own_plugin_id)),
-            false,
-            false,
-        );
-        self.note_visibility(
-            PaneId::Plugin(zellij_tile::prelude::PluginId(self.own_plugin_id)),
-            true,
-        );
+        show_pane_with_id(PaneId::Plugin(self.own_plugin_id), false, false);
+        self.note_visibility(PaneId::Plugin(self.own_plugin_id), true);
         self.apply_overlay_geometry();
     }
 
@@ -1575,10 +1553,7 @@ impl State {
     /// come back, because a job showing the conversation is showing the panel.
     pub(crate) fn show_panel(&mut self) {
         show_self(true);
-        self.note_visibility(
-            PaneId::Plugin(zellij_tile::prelude::PluginId(self.own_plugin_id)),
-            true,
-        );
+        self.note_visibility(PaneId::Plugin(self.own_plugin_id), true);
         self.reveal_panel();
     }
 
@@ -1617,11 +1592,9 @@ impl State {
         if own_tab_index == tab_index {
             return;
         }
-        let mut pane_ids = vec![PaneId::Plugin(zellij_tile::prelude::PluginId(
-            self.own_plugin_id,
-        ))];
+        let mut pane_ids = vec![PaneId::Plugin(self.own_plugin_id)];
         if let Some(agents_id) = self.agents_plugin {
-            pane_ids.push(PaneId::Plugin(zellij_tile::prelude::PluginId(agents_id)));
+            pane_ids.push(PaneId::Plugin(agents_id));
         }
         break_panes_to_tab_with_index(&pane_ids, tab_index, false);
         self.own_tab_index = Some(tab_index);
