@@ -11,14 +11,11 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
         return Err(anyhow!(error));
     }
     let binary = std::env::current_exe().context("cannot resolve Zellij executable")?;
-    let session = opts
-        .session
-        .clone()
-        .or_else(|| {
-            zellij_runtime::envs::get_session_name()
-                .ok()
-                .map(|name| name.into_string())
-        });
+    let session = opts.session.clone().or_else(|| {
+        zellij_runtime::envs::get_session_name()
+            .ok()
+            .map(|name| name.into_string())
+    });
     match command {
         Workflow::Run {
             name,
