@@ -34,7 +34,9 @@ pub fn report_diagnostics(report: &AgentReport) -> ReportTrace {
     trace.enabled = report.trace;
     trace.kind = report.kind.clone();
     trace.pane = format!("{:?}", report.pane_id);
-    trace.session = crate::envs::get_session_name().unwrap_or_default();
+    trace.session = crate::envs::get_session_name()
+        .unwrap_or_default()
+        .into_string();
     if let AgentReportState::Set(agent) = &report.state {
         trace.kind = agent.kind.clone();
     }

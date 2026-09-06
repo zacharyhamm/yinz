@@ -195,7 +195,7 @@ pub fn actions_from_cli(
             }
             Ok(vec![Action::WarpPane {
                 pane_id,
-                to_session,
+                to_session: to_session.into(),
                 placement: warp_placement(focused_tab, floating),
             }])
         },
@@ -210,7 +210,7 @@ pub fn actions_from_cli(
                 }
                 Ok(vec![Action::WarpTab {
                     tab_index,
-                    to_session,
+                    to_session: to_session.into(),
                 }])
             },
             (None, Some(from_session)) => {
@@ -222,7 +222,7 @@ pub fn actions_from_cli(
                 let tab_index =
                     tab_index.ok_or_else(|| "--from-session also needs --tab-index".to_owned())?;
                 Ok(vec![Action::WarpTabFrom {
-                    from_session,
+                    from_session: from_session.into(),
                     tab_index,
                 }])
             },
@@ -1341,7 +1341,7 @@ pub fn actions_from_cli(
                 tab_id,
             }])
         },
-        CliAction::RenameSession { name } => Ok(vec![Action::RenameSession { name }]),
+        CliAction::RenameSession { name } => Ok(vec![Action::RenameSession { name: name.into() }]),
         CliAction::Reconfigure { kdl, file, write } => {
             let fragment = match (kdl, file) {
                 (Some(_), Some(_)) => {
@@ -1761,7 +1761,7 @@ pub fn actions_from_cli(
             };
 
             Ok(vec![Action::SwitchSession {
-                name: name.clone(),
+                name: name.clone().into(),
                 tab_position,
                 pane_id,
                 layout: layout_info,

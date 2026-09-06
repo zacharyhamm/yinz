@@ -1,3 +1,4 @@
+use zellij_types::internal_ids::SessionName;
 use {
     zellij_runtime::consts::session_info_folder_for_session,
     zellij_runtime::consts::ZELLIJ_SESSION_INFO_CACHE_DIR, zellij_runtime::consts::ZELLIJ_SOCK_DIR,
@@ -133,7 +134,7 @@ pub enum BackgroundJob {
     DisplayPaneError(Vec<PaneId>, String),
     AnimatePluginLoading(PluginId),                  // u32 - plugin_id
     StopPluginLoadingAnimation(PluginId),            // u32 - plugin_id
-    ReportSessionInfo(String, SessionInfo),          // String - session name
+    ReportSessionInfo(SessionName, SessionInfo),     // String - session name
     ReportPluginList(BTreeMap<PluginId, RunPlugin>), // String - session name
     ReportLayoutInfo((String, BTreeMap<String, String>)), // BTreeMap<file_name, pane_contents>
     RunCommand(
@@ -243,7 +244,7 @@ static COMMAND_OUTPUT_FLASH_DURATION_MS: u64 = 400;
 
 #[derive(Clone)]
 pub struct SessionScanState {
-    pub current_session_name: Arc<Mutex<String>>,
+    pub current_session_name: Arc<Mutex<SessionName>>,
     pub current_session_info: Arc<Mutex<SessionInfo>>,
     pub current_session_plugin_list: Arc<Mutex<BTreeMap<PluginId, RunPlugin>>>,
 }
@@ -264,7 +265,7 @@ pub(crate) fn background_jobs_main(
     // the shared animation clock's cancel flag and the period it is ticking at, `Some` while it is
     // running.
     let mut animation_clock: Option<(Arc<AtomicBool>, Duration)> = None;
-    let current_session_name = Arc::new(Mutex::new(String::default()));
+    let current_session_name = Arc::new(Mutex::new(SessionName::default()));
     let current_session_info = Arc::new(Mutex::new(SessionInfo::default()));
     let current_session_plugin_list: Arc<Mutex<BTreeMap<PluginId, RunPlugin>>> =
         Arc::new(Mutex::new(BTreeMap::new()));
@@ -1332,7 +1333,7 @@ fn job_already_running(
 }
 
 pub fn write_session_state_to_disk(
-    current_session_name: String,
+    current_session_name: SessionName,
     current_session_info: SessionInfo,
     current_session_layout: (String, BTreeMap<String, String>),
 ) -> Result<()> {
@@ -1345,12 +1346,15 @@ pub fn write_session_state_to_disk(
 }
 
 pub fn scan_session_list(
-    current_session_name: &str,
+    current_session_name: &SessionName,
     available_layouts: &[LayoutInfo],
     current_session_plugin_list: &BTreeMap<PluginId, RunPlugin>,
     sock_dir: &Path,
     session_info_cache_dir: &Path,
-) -> (BTreeMap<String, SessionInfo>, BTreeMap<String, Duration>) {
+) -> (
+    BTreeMap<SessionName, SessionInfo>,
+    BTreeMap<SessionName, Duration>,
+) {
     let mut session_infos_on_machine = zellij_session::sessions::read_live_session_states(
         current_session_name,
         sock_dir,
@@ -1368,10 +1372,13 @@ pub fn scan_session_list(
 }
 
 pub fn scan_session_list_default_dirs(
-    current_session_name: &str,
+    current_session_name: &SessionName,
     available_layouts: &[LayoutInfo],
     current_session_plugin_list: &BTreeMap<PluginId, RunPlugin>,
-) -> (BTreeMap<String, SessionInfo>, BTreeMap<String, Duration>) {
+) -> (
+    BTreeMap<SessionName, SessionInfo>,
+    BTreeMap<SessionName, Duration>,
+) {
     scan_session_list(
         current_session_name,
         available_layouts,
@@ -1382,9 +1389,9 @@ pub fn scan_session_list_default_dirs(
 }
 
 fn find_resurrectable_sessions(
-    session_infos_on_machine: &BTreeMap<String, SessionInfo>,
+    session_infos_on_machine: &BTreeMap<SessionName, SessionInfo>,
     session_info_cache_dir: &Path,
-) -> BTreeMap<String, Duration> {
+) -> BTreeMap<SessionName, Duration> {
     match fs::read_dir(session_info_cache_dir) {
         Ok(files_in_session_info_folder) => {
             let files_that_are_folders = files_in_session_info_folder
@@ -1392,7 +1399,7 @@ fn find_resurrectable_sessions(
                 .filter(|f| f.is_dir());
             files_that_are_folders
                 .filter_map(|folder_name| {
-                    let session_name = folder_name.file_name()?.to_str()?.to_owned();
+                    let session_name = SessionName::new(folder_name.file_name()?.to_str()?);
                     if session_infos_on_machine.contains_key(&session_name) {
                         // this is not a dead session...
                         return None;
@@ -1470,7 +1477,7 @@ mod tests {
             zellij_runtime::session_checkpoint::write_checkpoint(
                 &info_dir.path().join(name),
                 &zellij_session::metadata::session_info::to_string(&SessionInfo::new(
-                    name.to_owned(),
+                    name.to_owned().into(),
                 ))
                 .unwrap(),
                 &("layout {}".to_owned(), BTreeMap::new()),
@@ -1478,14 +1485,23 @@ mod tests {
             .unwrap();
         }
         let (live, resurrectable) = scan_session_list(
-            "me",
+            &zellij_types::internal_ids::SessionName::new("me"),
             &[],
             &BTreeMap::new(),
             sock_dir.path(),
             info_dir.path(),
         );
-        assert_eq!(live.keys().collect::<Vec<_>>(), vec!["live"]);
-        assert_eq!(resurrectable.keys().collect::<Vec<_>>(), vec!["dead"]);
+        assert_eq!(
+            live.keys().map(SessionName::as_str).collect::<Vec<_>>(),
+            vec!["live"]
+        );
+        assert_eq!(
+            resurrectable
+                .keys()
+                .map(SessionName::as_str)
+                .collect::<Vec<_>>(),
+            vec!["dead"]
+        );
     }
 
     #[test]
@@ -1493,7 +1509,7 @@ mod tests {
         let sock_dir = tempdir().unwrap();
         let info_dir = tempdir().unwrap();
         let (live, resurrectable) = scan_session_list(
-            "me",
+            &zellij_types::internal_ids::SessionName::new("me"),
             &[],
             &BTreeMap::new(),
             sock_dir.path(),
@@ -1509,10 +1525,14 @@ mod tests {
         let info_dir = tempdir().unwrap();
         let peer = "peer-alpha";
         let _listener = make_socket(sock_dir.path(), peer);
-        write_metadata(info_dir.path(), peer, &SessionInfo::new(peer.to_string()));
+        write_metadata(
+            info_dir.path(),
+            peer,
+            &SessionInfo::new(peer.to_string().into()),
+        );
 
         let (live, resurrectable) = scan_session_list(
-            "me",
+            &zellij_types::internal_ids::SessionName::new("me"),
             &[],
             &BTreeMap::new(),
             sock_dir.path(),
@@ -1530,7 +1550,7 @@ mod tests {
         write_layout(info_dir.path(), "dead-beta");
 
         let (live, resurrectable) = scan_session_list(
-            "me",
+            &zellij_types::internal_ids::SessionName::new("me"),
             &[],
             &BTreeMap::new(),
             sock_dir.path(),
@@ -1547,7 +1567,11 @@ mod tests {
         let info_dir = tempdir().unwrap();
         for name in ["live-a", "live-b", "live-c"] {
             let _listener = make_socket(sock_dir.path(), name);
-            write_metadata(info_dir.path(), name, &SessionInfo::new(name.to_string()));
+            write_metadata(
+                info_dir.path(),
+                name,
+                &SessionInfo::new(name.to_string().into()),
+            );
             std::mem::forget(_listener);
         }
         for name in ["dead-a", "dead-b"] {
@@ -1555,7 +1579,7 @@ mod tests {
         }
 
         let (live, resurrectable) = scan_session_list(
-            "me",
+            &zellij_types::internal_ids::SessionName::new("me"),
             &[],
             &BTreeMap::new(),
             sock_dir.path(),

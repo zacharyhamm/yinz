@@ -248,3 +248,25 @@ fn plugin_data_ids_and_revisions_preserve_signed_values_and_absent_guards() {
     assert!(DataRowId::try_from(u64::MAX).is_err());
     assert!(DataRevision::try_from(u64::MAX).is_err());
 }
+
+#[test]
+fn session_names_preserve_strings_and_map_keys() {
+    use crate::internal_ids::SessionName;
+    use std::collections::BTreeMap;
+
+    for raw in ["", "main", "日本語", "a/b"] {
+        // Construction does not move the creation/rename validation boundary.
+        let name: SessionName = raw.parse().unwrap();
+        assert_eq!(name.as_str(), raw);
+        assert_eq!(name.to_string(), raw);
+        assert_eq!(serde_json::to_value(&name).unwrap(), raw);
+        assert_eq!(name.into_string(), raw);
+    }
+    let json = r#"{"main":1}"#;
+    let names: BTreeMap<SessionName, u32> = serde_json::from_str(json).unwrap();
+    assert_eq!(names.get("main"), Some(&1));
+    assert_eq!(serde_json::to_string(&names).unwrap(), json);
+    let json = r#"{"RenameSession":{"name":"main"}}"#;
+    let action: crate::input::actions::Action = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_string(&action).unwrap(), json);
+}

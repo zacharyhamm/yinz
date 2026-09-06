@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TerminalId;
 
@@ -38,7 +39,7 @@ const HOST_EXIT_GRACE: Duration = Duration::from_secs(4);
 pub struct SpawnParams<'a> {
     pub host_bin: &'a Path,
     pub terminal_id: TerminalId,
-    pub session_name: Option<String>,
+    pub session_name: Option<SessionName>,
     pub cmd: RunCommand,
     pub failover_cmd: Option<RunCommand>,
     pub termios: Option<WireTermios>,
@@ -347,7 +348,7 @@ pub fn spawn(params: SpawnParams<'_>) -> Result<PendingHost> {
 
     let (server_end, host_end) = UnixStream::pair().with_context(err_context)?;
 
-    let label = match params.session_name.as_deref() {
+    let label = match params.session_name.as_ref().map(|name| name.as_str()) {
         Some(session) => format!("{session}/{}", params.terminal_id),
         None => format!("{}", params.terminal_id),
     };
@@ -541,7 +542,7 @@ pub struct AttachParams<'a> {
     /// The terminal id this pane will have in the *adopting* session. Ids are
     /// per-server, so the one it had before means nothing here.
     pub terminal_id: TerminalId,
-    pub session_name: Option<String>,
+    pub session_name: Option<SessionName>,
 }
 
 /// A supervisor that has handed its pty over to us, but whose lifecycle messages

@@ -24,7 +24,7 @@ fn pane(id: u32, title: &str) -> PaneInfo {
 
 fn session(tabs: Vec<TabInfo>, panes: PaneManifest) -> SessionInfo {
     SessionInfo {
-        name: "work".to_owned(),
+        name: "work".to_owned().into(),
         tabs,
         panes,
         is_current_session: true,

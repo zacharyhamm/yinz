@@ -13,6 +13,7 @@ use zellij_types::geometry::Direction;
 use zellij_types::input::actions::Action;
 use zellij_types::input::keybinds::shortcut_for_action;
 use zellij_types::input::options::NestedSessionHandling;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::style::HostTerminalThemeMode;
 use {
@@ -134,7 +135,7 @@ impl Screen {
         }
     }
 
-    fn handle_nested_guest_announce(&mut self, pane_id: PaneId, guest_session_name: String) {
+    fn handle_nested_guest_announce(&mut self, pane_id: PaneId, guest_session_name: SessionName) {
         use crate::nested_guest::AnnounceKind;
         let terminal_id = match pane_id {
             PaneId::Terminal(terminal_id) => terminal_id,

@@ -980,7 +980,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         ActionKind::SetLightTheme => Action::SetLightTheme,
         ActionKind::ToggleTheme => Action::ToggleTheme,
         ActionKind::SwitchSession => Action::SwitchSession {
-            name: strings(tc),
+            name: strings(tc).into(),
             tab_position: optional_usize_as_u32(tc)
                 .map(|p| u32::try_from(p).map(TabNumber::new))
                 .transpose()
@@ -992,7 +992,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         },
         ActionKind::WarpPane => Action::WarpPane {
             pane_id: booleans(tc).then(|| pane_id(tc)),
-            to_session: strings(tc),
+            to_session: strings(tc).into(),
             placement: warp_placements(tc),
         },
         ActionKind::AdoptPane => Action::AdoptPane {
@@ -1001,13 +1001,13 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         },
         ActionKind::WarpTab => Action::WarpTab {
             tab_index: optional_usize_as_u32(tc).map(TabId::new),
-            to_session: strings(tc),
+            to_session: strings(tc).into(),
         },
         ActionKind::AdoptTab => Action::AdoptTab {
             payload: Box::new(warped_tabs(tc)),
         },
         ActionKind::WarpTabFrom => Action::WarpTabFrom {
-            from_session: strings(tc),
+            from_session: strings(tc).into(),
             tab_index: TabId::new(usize_as_u32(tc)),
         },
         ActionKind::LaunchOrFocusPlugin => Action::LaunchOrFocusPlugin {
@@ -1139,7 +1139,9 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         ActionKind::FocusHostSession => Action::FocusHostSession,
         ActionKind::FocusGuestSession => Action::FocusGuestSession,
         ActionKind::ToggleHostFullscreen => Action::ToggleHostFullscreen,
-        ActionKind::RenameSession => Action::RenameSession { name: strings(tc) },
+        ActionKind::RenameSession => Action::RenameSession {
+            name: strings(tc).into(),
+        },
         ActionKind::Notify => Action::Notify(strings(tc)),
         ActionKind::CliPipe => Action::CliPipe {
             pipe_id: strings(tc),
@@ -1399,7 +1401,7 @@ pub(crate) fn plugin_messages(tc: &hegel::TestCase) -> PluginMessage {
 /// `SwitchSessionPayload.tab_position` is an `optional uint32`.
 pub(crate) fn connect_to_sessions(tc: &hegel::TestCase) -> ConnectToSession {
     ConnectToSession {
-        name: optional_strings(tc),
+        name: optional_strings(tc).map(Into::into),
         tab_position: optional_usize_as_u32(tc).map(TabPosition::new),
         pane_id: booleans(tc).then(|| PaneId::from_legacy(u32s(tc), booleans(tc))),
         layout: booleans(tc).then(|| layout_infos(tc)),
@@ -1755,7 +1757,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             PluginCommand::RequestPluginPermissions(permission_types(tc))
         },
         CommandType::SwitchSession => PluginCommand::SwitchSession(connect_to_sessions(tc)),
-        CommandType::DeleteDeadSession => PluginCommand::DeleteDeadSession(strings(tc)),
+        CommandType::DeleteDeadSession => PluginCommand::DeleteDeadSession(strings(tc).into()),
         CommandType::DeleteAllDeadSessions => PluginCommand::DeleteAllDeadSessions,
         CommandType::OpenTerminalInPlace => PluginCommand::OpenTerminalInPlace(files_to_open(tc)),
         CommandType::OpenFileInPlace => {
@@ -1781,7 +1783,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             optional_strings(tc),
         ),
         CommandType::CancelWebRequest => PluginCommand::CancelWebRequest(strings(tc)),
-        CommandType::RenameSession => PluginCommand::RenameSession(strings(tc)),
+        CommandType::RenameSession => PluginCommand::RenameSession(strings(tc).into()),
         CommandType::Notify => {
             PluginCommand::Notify(strings(tc), booleans(tc).then(|| pane_id(tc)))
         },
@@ -1790,7 +1792,9 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::CliPipeOutput => PluginCommand::CliPipeOutput(strings(tc), strings(tc)),
         CommandType::MessageToPlugin => PluginCommand::MessageToPlugin(messages_to_plugin(tc)),
         CommandType::DisconnectOtherClients => PluginCommand::DisconnectOtherClients,
-        CommandType::KillSessions => PluginCommand::KillSessions(up_to(tc, 3, strings)),
+        CommandType::KillSessions => {
+            PluginCommand::KillSessions(up_to(tc, 3, strings).into_iter().map(Into::into).collect())
+        },
         CommandType::ScanHostFolder => PluginCommand::ScanHostFolder(paths(tc)),
         CommandType::WatchFilesystem => PluginCommand::WatchFilesystem,
         CommandType::FsRead => PluginCommand::FsRead {
@@ -2125,11 +2129,11 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             context: context(tc),
         },
         CommandType::GetSessionList => PluginCommand::GetSessionList,
-        CommandType::KillSessionsAndReply => {
-            PluginCommand::KillSessionsAndReply(up_to(tc, 3, strings))
-        },
+        CommandType::KillSessionsAndReply => PluginCommand::KillSessionsAndReply(
+            up_to(tc, 3, strings).into_iter().map(Into::into).collect(),
+        ),
         CommandType::DeleteDeadSessionAndReply => {
-            PluginCommand::DeleteDeadSessionAndReply(strings(tc))
+            PluginCommand::DeleteDeadSessionAndReply(strings(tc).into())
         },
         CommandType::DeleteAllDeadSessionsAndReply => PluginCommand::DeleteAllDeadSessionsAndReply,
         CommandType::FocusHostSession => PluginCommand::FocusHostSession,
@@ -2142,23 +2146,23 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         },
         CommandType::WarpPaneToSession => PluginCommand::WarpPaneToSession {
             pane_id: pane_id(tc),
-            to_session: strings(tc),
+            to_session: strings(tc).into(),
             placement: warp_placements(tc),
         },
         CommandType::WarpPaneFromSession => PluginCommand::WarpPaneFromSession {
             pane_id: pane_id(tc),
-            from_session: strings(tc),
+            from_session: strings(tc).into(),
             placement: warp_placements(tc),
         },
         // `WarpTabToSessionPayload.tab_index` and `WarpTabFromSessionPayload.tab_index` are
         // `uint32`.
         CommandType::WarpTabToSession => PluginCommand::WarpTabToSession {
             tab_index: TabId::new(usize_as_u32(tc)),
-            to_session: strings(tc),
+            to_session: strings(tc).into(),
         },
         CommandType::WarpTabFromSession => PluginCommand::WarpTabFromSession {
             tab_index: TabId::new(usize_as_u32(tc)),
-            from_session: strings(tc),
+            from_session: strings(tc).into(),
         },
         CommandType::ListOrphanedPanes => PluginCommand::ListOrphanedPanes,
         CommandType::AdoptOrphanedPane => PluginCommand::AdoptOrphanedPane {

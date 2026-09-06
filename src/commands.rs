@@ -4,6 +4,7 @@ use std::{
     process,
     time::Duration,
 };
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::SupervisorId;
 use zellij_types::units::{ElapsedMicros, UnixMicros};
 
@@ -47,8 +48,9 @@ use {
 pub(crate) use zellij_cli::sessions::list_sessions;
 
 fn sessions_to_kill(
-    get_sessions: impl FnOnce() -> Result<Vec<(String, Duration, SessionProbe)>, std::io::ErrorKind>,
-) -> Result<Vec<(String, Duration)>, std::io::ErrorKind> {
+    get_sessions: impl FnOnce()
+        -> Result<Vec<(SessionName, Duration, SessionProbe)>, std::io::ErrorKind>,
+) -> Result<Vec<(SessionName, Duration)>, std::io::ErrorKind> {
     Ok(get_sessions()?
         .into_iter()
         .filter_map(|(name, age, status)| {
@@ -125,15 +127,15 @@ struct ListedVm<'a> {
 /// session this command runs inside, else the only active one.
 pub(crate) fn resolve_firecracker_session(
     explicit: Option<String>,
-    env_session: Option<String>,
+    env_session: Option<SessionName>,
     active: ActiveSession,
 ) -> zellij_runtime::errors::prelude::Result<String> {
     use zellij_runtime::errors::prelude::*;
 
     explicit
-        .or(env_session)
+        .or(env_session.map(SessionName::into_string))
         .or(match active {
-            ActiveSession::One(name) => Some(name),
+            ActiveSession::One(name) => Some(name.into_string()),
             ActiveSession::None | ActiveSession::Many => None,
         })
         .context("no session selected; pass --session SESSION")
@@ -284,7 +286,7 @@ pub(crate) fn kill_all_sessions(yes: bool) {
                     // One unreachable server must not stop the rest being
                     // killed, but it must not be reported as killed either.
                     log::error!("failed to kill session {:?}: {e}", session.0);
-                    eprintln!("{}", undeliverable_kill_message(&session.0));
+                    eprintln!("{}", undeliverable_kill_message(session.0.as_str()));
                     all_delivered = false;
                 }
             }
@@ -302,8 +304,8 @@ pub(crate) fn delete_all_sessions(yes: bool, force: bool) {
     use zellij_server::background_jobs::scan_session_list_default_dirs;
 
     let (_live_sessions, resurrectable_map) =
-        scan_session_list_default_dirs("", &[], &BTreeMap::new());
-    let mut resurrectable_sessions: Vec<(String, Duration)> =
+        scan_session_list_default_dirs(&SessionName::default(), &[], &BTreeMap::new());
+    let mut resurrectable_sessions: Vec<(SessionName, Duration)> =
         resurrectable_map.into_iter().collect();
     if force {
         for entry in get_resurrectable_sessions() {
@@ -331,20 +333,20 @@ pub(crate) fn delete_all_sessions(yes: bool, force: bool) {
         }
     }
     for session in &dead_sessions {
-        delete_session_impl(&session.0, force);
+        delete_session_impl(session.0.as_str(), force);
     }
     process::exit(0);
 }
 
 fn sessions_to_delete(
     force: bool,
-    resurrectable_sessions: Vec<(String, Duration)>,
-    get_active_sessions: impl FnOnce() -> Result<Vec<(String, Duration)>, std::io::ErrorKind>,
-) -> Result<Vec<(String, Duration)>, std::io::ErrorKind> {
+    resurrectable_sessions: Vec<(SessionName, Duration)>,
+    get_active_sessions: impl FnOnce() -> Result<Vec<(SessionName, Duration)>, std::io::ErrorKind>,
+) -> Result<Vec<(SessionName, Duration)>, std::io::ErrorKind> {
     if force {
         return Ok(resurrectable_sessions);
     }
-    let active_sessions: Vec<String> = get_active_sessions()?
+    let active_sessions: Vec<SessionName> = get_active_sessions()?
         .into_iter()
         .map(|(name, _)| name)
         .collect();
@@ -405,9 +407,14 @@ pub(crate) fn kill_session(target_session: &Option<String>) {
     match target_session {
         Some(target_session) => {
             let outcome = kill_outcome(
-                session_status(target_session),
-                || kill_session_impl(target_session),
-                || session_left(target_session, KILL_CONFIRM_TIMEOUT),
+                session_status(&SessionName::new(target_session.clone())),
+                || kill_session_impl(&SessionName::new(target_session.clone())),
+                || {
+                    session_left(
+                        &SessionName::new(target_session.clone()),
+                        KILL_CONFIRM_TIMEOUT,
+                    )
+                },
             );
             match outcome {
                 KillOutcome::Killed => process::exit(0),
@@ -482,7 +489,7 @@ fn create_new_client() -> ClientInfo {
 }
 
 fn find_indexed_session(
-    sessions: Vec<String>,
+    sessions: Vec<SessionName>,
     config_options: Options,
     index: usize,
     create: bool,
@@ -523,6 +530,7 @@ pub(crate) fn send_action_to_session(
         eprintln!("{e}");
         std::process::exit(1);
     }
+    let requested_session_name = requested_session_name.map(SessionName::new);
     match get_active_session() {
         ActiveSession::None => {
             eprintln!("There is no active session!");
@@ -542,7 +550,7 @@ pub(crate) fn send_action_to_session(
             attach_with_cli_client(cli_action, &session_name, config);
         },
         ActiveSession::Many => {
-            let existing_sessions: Vec<String> = get_sessions()
+            let existing_sessions: Vec<SessionName> = get_sessions()
                 .unwrap_or_default()
                 .iter()
                 .map(|s| s.0.clone())
@@ -618,13 +626,17 @@ pub(crate) fn retarget_implicit_agent_report(
         .session_name
         .ok_or_else(|| format!("pane {pane_ref} has no owning session"))?;
     *pane_id = Some(status.terminal_id.to_string());
-    *requested_session_name = Some(session_name);
+    *requested_session_name = Some(session_name.into_string());
     Ok(())
 }
 /// The session a `zellij subscribe` / `zellij events` client attaches to: the one running, the
 /// one asked for, or the one this shell is inside. Anything else is an error naming the choices,
 /// with `purpose` finishing the sentence ("subscribe to", "stream events from").
-fn resolve_session_for_stream(requested_session_name: Option<String>, purpose: &str) -> String {
+fn resolve_session_for_stream(
+    requested_session_name: Option<String>,
+    purpose: &str,
+) -> SessionName {
+    let requested_session_name = requested_session_name.map(SessionName::new);
     match get_active_session() {
         ActiveSession::None => {
             eprintln!("There is no active session!");
@@ -644,7 +656,7 @@ fn resolve_session_for_stream(requested_session_name: Option<String>, purpose: &
             session_name
         },
         ActiveSession::Many => {
-            let existing_sessions: Vec<String> = get_sessions()
+            let existing_sessions: Vec<SessionName> = get_sessions()
                 .unwrap_or_default()
                 .iter()
                 .map(|s| s.0.clone())
@@ -700,7 +712,7 @@ pub(crate) fn stream_session_events(
 
 fn attach_with_cli_client(
     cli_action: zellij_cli::args::CliAction,
-    session_name: &str,
+    session_name: &SessionName,
     config: Option<Config>,
 ) {
     let os_input = get_os_input(zellij_client::os_input_output::get_cli_client_os_input);
@@ -742,19 +754,19 @@ fn attach_with_session_index(config_options: Options, index: usize, create: bool
 }
 
 fn named_session_exists_or_error(
-    session_name: &str,
+    session_name: &SessionName,
     probe: Result<SessionProbe, std::io::ErrorKind>,
 ) -> Result<bool, String> {
     match probe {
         Ok(SessionProbe::Alive) => Ok(true),
         Ok(SessionProbe::Absent) => Ok(false),
-        Ok(SessionProbe::Unresponsive) => Err(unresponsive_session_message(session_name)),
+        Ok(SessionProbe::Unresponsive) => Err(unresponsive_session_message(session_name.as_str())),
         Err(kind) => Err(session_listing_error_message(kind)),
     }
 }
 
 fn attach_with_session_name(
-    session_name: Option<String>,
+    session_name: Option<SessionName>,
     config_options: Options,
     create: bool,
 ) -> ClientInfo {
@@ -771,7 +783,7 @@ fn attach_with_session_name(
                 ClientInfo::New(session_name.unwrap(), None, None)
             }
         },
-        Some(prefix) => match match_session_name(prefix) {
+        Some(prefix) => match match_session_name(prefix.as_str()) {
             Ok(SessionNameMatch::UniquePrefix(s)) | Ok(SessionNameMatch::Exact(s)) => {
                 ClientInfo::Attach(s, config_options)
             },
@@ -860,7 +872,10 @@ pub(crate) fn start_client(opts: CliArgs) {
             );
             if reconnect_to_session.name.is_some() {
                 opts.command = Some(Command::Sessions(Sessions::Attach {
-                    session_name: reconnect_to_session.name.clone(),
+                    session_name: reconnect_to_session
+                        .name
+                        .clone()
+                        .map(SessionName::into_string),
                     create: true,
                     create_background: false,
                     force_run_commands: false,
@@ -884,8 +899,8 @@ pub(crate) fn start_client(opts: CliArgs) {
             is_a_reconnect = true;
         }
 
-        let start_client_plan = |session_name: std::string::String| {
-            assert_session_ne(&session_name);
+        let start_client_plan = |session_name: SessionName| {
+            assert_session_ne(session_name.as_str());
         };
 
         if let Some(Command::Sessions(Sessions::Attach {
@@ -903,6 +918,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                 },
                 None => config_options,
             };
+            let session_name = session_name.map(SessionName::new);
             should_create_detached = create_background;
 
             let mut client = if let Some(idx) = index {
@@ -913,7 +929,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                 )
             } else {
                 let session_exists = session_name
-                    .as_deref()
+                    .as_ref()
                     .map(|session_name| {
                         named_session_exists_or_error(session_name, session_status(session_name))
                             .unwrap_or_else(|error| {
@@ -945,7 +961,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                         }
                         ClientInfo::Resurrect(
                             session_name.clone(),
-                            session_layout_cache_file_name(session_name.as_ref()),
+                            session_layout_cache_file_name(session_name),
                             force_run_commands,
                             new_session_cwd.clone(),
                         )
@@ -959,7 +975,7 @@ pub(crate) fn start_client(opts: CliArgs) {
             };
 
             if let Ok(val) = std::env::var(envs::SESSION_NAME_ENV_KEY) {
-                if val == *client.get_session_name() {
+                if val == client.get_session_name().as_str() {
                     panic!("You are trying to attach to the current session (\"{}\"). This is not supported.", val);
                 }
             }
@@ -986,7 +1002,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                 should_create_detached,
             );
         } else {
-            if let Some(session_name) = opts.session.clone() {
+            if let Some(session_name) = opts.session.clone().map(SessionName::new) {
                 start_client_plan(session_name.clone());
                 reconnect_to_session = start_client_impl(
                     Box::new(os_input),
@@ -1077,7 +1093,7 @@ pub(crate) fn start_client(opts: CliArgs) {
     }
 }
 
-fn generate_unique_session_name_or_exit() -> String {
+fn generate_unique_session_name_or_exit() -> SessionName {
     let Some(unique_session_name) = generate_unique_session_name() else {
         eprintln!("Failed to generate a unique session name, giving up");
         process::exit(1);
@@ -1121,7 +1137,7 @@ pub(crate) fn watch_session(session_name: Option<String>, opts: CliArgs) {
 
     // Resolve the session name to watch
     let client_info = match &session_name {
-        Some(prefix) => match match_session_name(prefix).unwrap() {
+        Some(prefix) => match match_session_name(prefix.as_str()).unwrap() {
             SessionNameMatch::UniquePrefix(s) | SessionNameMatch::Exact(s) => {
                 ClientInfo::Watch(s, config_options.clone())
             },
@@ -1255,7 +1271,7 @@ pub(crate) fn pty_host_adopt(
     let os_input = get_os_input(zellij_client::os_input_output::get_cli_client_os_input);
     let exit_status = zellij_client::cli_client::start_cli_client(
         Box::new(os_input),
-        &session,
+        &SessionName::new(session),
         vec![Action::AdoptPane {
             payload: Box::new(payload),
             placement: warp_placement(focused_tab, floating),
@@ -1579,8 +1595,8 @@ mod tests {
         zellij_cli::sessions::unresponsive_session_message, zellij_ipc::probe::SessionProbe,
     };
 
-    fn session(name: &str) -> (String, Duration) {
-        (name.to_owned(), Duration::default())
+    fn session(name: &str) -> (zellij_types::internal_ids::SessionName, Duration) {
+        (name.into(), Duration::default())
     }
 
     fn agent_report(pane_id: Option<&str>) -> CliAction {
@@ -1599,7 +1615,7 @@ mod tests {
     fn pane_status(attached: bool) -> HostStatus {
         HostStatus {
             host_id: zellij_types::internal_ids::SupervisorId::new("abcdef012345"),
-            session_name: Some("after-warp".to_owned()),
+            session_name: Some("after-warp".to_owned().into()),
             terminal_id: 42,
             command: "codex".to_owned(),
             cwd: Some("/work".into()),
@@ -1700,14 +1716,18 @@ mod tests {
     fn session_killing_includes_every_non_absent_socket() {
         let sessions = sessions_to_kill(|| {
             Ok(vec![
-                ("alive".to_owned(), Duration::default(), SessionProbe::Alive),
                 (
-                    "wedged".to_owned(),
+                    "alive".to_owned().into(),
+                    Duration::default(),
+                    SessionProbe::Alive,
+                ),
+                (
+                    "wedged".to_owned().into(),
                     Duration::default(),
                     SessionProbe::Unresponsive,
                 ),
                 (
-                    "absent".to_owned(),
+                    "absent".to_owned().into(),
                     Duration::default(),
                     SessionProbe::Absent,
                 ),
@@ -1781,7 +1801,11 @@ mod tests {
     #[test]
     fn only_an_absent_named_session_allows_creation() {
         let creation_allowed = |probe| {
-            named_session_exists_or_error("named", probe).map(|session_exists| !session_exists)
+            named_session_exists_or_error(
+                &zellij_types::internal_ids::SessionName::new("named"),
+                probe,
+            )
+            .map(|session_exists| !session_exists)
         };
 
         assert_eq!(creation_allowed(Ok(SessionProbe::Alive)), Ok(false));
@@ -1929,8 +1953,8 @@ mod firecracker_command_tests {
         assert_eq!(
             resolve_firecracker_session(
                 Some("explicit".to_owned()),
-                Some("env".to_owned()),
-                ActiveSession::One("active".to_owned()),
+                Some("env".to_owned().into()),
+                ActiveSession::One("active".to_owned().into()),
             )
             .unwrap(),
             "explicit"
@@ -1942,8 +1966,8 @@ mod firecracker_command_tests {
         assert_eq!(
             resolve_firecracker_session(
                 None,
-                Some("env".to_owned()),
-                ActiveSession::One("active".to_owned()),
+                Some("env".to_owned().into()),
+                ActiveSession::One("active".to_owned().into()),
             )
             .unwrap(),
             "env"
@@ -1953,7 +1977,7 @@ mod firecracker_command_tests {
     #[test]
     fn a_single_active_session_is_used_when_nothing_else_selects_one() {
         assert_eq!(
-            resolve_firecracker_session(None, None, ActiveSession::One("active".to_owned()))
+            resolve_firecracker_session(None, None, ActiveSession::One("active".to_owned().into()))
                 .unwrap(),
             "active"
         );

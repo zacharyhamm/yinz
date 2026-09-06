@@ -637,7 +637,7 @@ fn a_registered_kind_survives_open_store() {
     // `store::agent_latch_def`. A hocus that has not heard a snapshot yet reads none, and
     // restores them when the first one names the session.
     let mut restarted = State {
-        zellij_session_name: "test-session".to_owned(),
+        zellij_session_name: "test-session".to_owned().into(),
         host_id: HostId::new("test-host"),
         ..State::default()
     };

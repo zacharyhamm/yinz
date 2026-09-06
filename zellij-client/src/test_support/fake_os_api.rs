@@ -222,7 +222,7 @@ impl ServerConnection for FakeClientOsApi {
     ) -> Result<(), crate::os_input_output::ConnectToServerError> {
         Ok(())
     }
-    fn update_session_name(&mut self, _new_session_name: String) {}
+    fn update_session_name(&mut self, _new_session_name: zellij_types::internal_ids::SessionName) {}
 }
 
 impl SignalSource for FakeClientOsApi {

@@ -5,6 +5,7 @@ use std::io::{self, BufRead, Write};
 use std::process;
 use std::str::FromStr;
 use std::{fs, path::PathBuf};
+use zellij_types::internal_ids::SessionName;
 
 use crate::os_input_output::CliClientOs;
 use uuid::Uuid;
@@ -18,7 +19,7 @@ use {
 
 pub fn start_cli_client(
     mut os_input: Box<dyn CliClientOs>,
-    session_name: &str,
+    session_name: &SessionName,
     actions: Vec<Action>,
 ) -> i32 {
     let zellij_ipc_pipe: PathBuf = {
@@ -269,7 +270,7 @@ fn individual_messages_client(
 
 pub fn start_subscribe_client(
     os_input: Box<dyn CliClientOs>,
-    session_name: &str,
+    session_name: &SessionName,
     subscribe_cli: SubscribeCli,
 ) {
     let zellij_ipc_pipe: PathBuf = {
@@ -381,7 +382,7 @@ pub fn start_subscribe_client(
 /// on stdout, until the session ends or stdout goes away.
 pub fn start_events_client(
     os_input: Box<dyn CliClientOs>,
-    session_name: &str,
+    session_name: &SessionName,
     events_cli: EventsCli,
 ) {
     let zellij_ipc_pipe: PathBuf = {

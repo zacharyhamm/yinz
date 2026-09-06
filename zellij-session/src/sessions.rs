@@ -6,6 +6,7 @@ use std::{fs, io};
 use zellij_ipc::probe::SessionProbe;
 use zellij_ipc::probe::{classify_probe_connect_error, classify_probe_reply};
 use zellij_runtime::session_checkpoint::SessionCheckpoint;
+use zellij_types::internal_ids::SessionName;
 use {
     zellij_ipc::consts::is_ipc_socket, zellij_ipc::ipc::ClientToServerMsg,
     zellij_ipc::ipc::IpcReceiverWithContext, zellij_ipc::ipc::IpcSenderWithContext,
@@ -25,7 +26,7 @@ use {zellij_runtime::errors::prelude::Context, zellij_runtime::errors::prelude::
 /// costs one timeout instead of N.
 ///
 /// Order is not preserved; both callers below impose their own.
-fn probe_sockets<T: Send + 'static>(candidates: Vec<(String, T)>) -> Vec<(String, T)> {
+fn probe_sockets<T: Send + 'static>(candidates: Vec<(SessionName, T)>) -> Vec<(SessionName, T)> {
     // Only a server that answers is listed. An unresponsive one is not offered
     // for attaching — attaching to it would hang — but it is not forgotten
     // either: `session_status` still reports it, so nothing creates a new
@@ -45,8 +46,8 @@ fn probe_sockets<T: Send + 'static>(candidates: Vec<(String, T)>) -> Vec<(String
 /// a session to attach to or a name to create, where "answered" is the only
 /// useful answer.
 fn probe_sockets_with_status<T: Send + 'static>(
-    candidates: Vec<(String, T)>,
-) -> Vec<(String, T, SessionProbe)> {
+    candidates: Vec<(SessionName, T)>,
+) -> Vec<(SessionName, T, SessionProbe)> {
     let probes: Vec<_> = candidates
         .into_iter()
         .map(|(name, extra)| {
@@ -68,7 +69,7 @@ fn probe_sockets_with_status<T: Send + 'static>(
 ///
 /// Unprobed: this is the candidate list the probe sweeps, shared by the two
 /// entry points below so that they cannot disagree about what a session is.
-fn session_socket_candidates() -> Result<Vec<(String, Duration)>, io::ErrorKind> {
+fn session_socket_candidates() -> Result<Vec<(SessionName, Duration)>, io::ErrorKind> {
     match fs::read_dir(&*ZELLIJ_SOCK_DIR) {
         Ok(files) => {
             let mut candidates = Vec::new();
@@ -85,7 +86,7 @@ fn session_socket_candidates() -> Result<Vec<(String, Duration)>, io::ErrorKind>
                         .unwrap_or_default();
                     let duration = Duration::from_secs(ctime.as_secs());
                     if is_ipc_socket(&file.file_type().unwrap()) {
-                        candidates.push((file_name, duration));
+                        candidates.push((SessionName::new(file_name), duration));
                     }
                 }
             });
@@ -96,7 +97,7 @@ fn session_socket_candidates() -> Result<Vec<(String, Duration)>, io::ErrorKind>
     }
 }
 
-pub fn get_sessions() -> Result<Vec<(String, Duration)>, io::ErrorKind> {
+pub fn get_sessions() -> Result<Vec<(SessionName, Duration)>, io::ErrorKind> {
     Ok(probe_sockets(session_socket_candidates()?))
 }
 
@@ -107,11 +108,12 @@ pub fn get_sessions() -> Result<Vec<(String, Duration)>, io::ErrorKind> {
 /// over, and handing them a wedged session would have them hang on it or build
 /// on top of a live server. Listing and kill-all are the callers that need the
 /// whole picture.
-pub fn get_sessions_with_status() -> Result<Vec<(String, Duration, SessionProbe)>, io::ErrorKind> {
+pub fn get_sessions_with_status(
+) -> Result<Vec<(SessionName, Duration, SessionProbe)>, io::ErrorKind> {
     Ok(probe_sockets_with_status(session_socket_candidates()?))
 }
 
-pub fn get_resurrectable_sessions() -> Vec<(String, Duration)> {
+pub fn get_resurrectable_sessions() -> Vec<(SessionName, Duration)> {
     match fs::read_dir(&*ZELLIJ_SESSION_INFO_CACHE_DIR) {
         Ok(files_in_session_info_folder) => {
             let files_that_are_folders = files_in_session_info_folder
@@ -136,7 +138,7 @@ pub fn get_resurrectable_sessions() -> Vec<(String, Duration)> {
                         .file_name()
                         .map(|f| std::path::PathBuf::from(f).display().to_string())?;
                     if std::path::Path::new(&layout_file_name).exists() {
-                        Some((session_name, elapsed_duration))
+                        Some((SessionName::new(session_name), elapsed_duration))
                     } else {
                         None
                     }
@@ -154,7 +156,7 @@ pub fn get_resurrectable_sessions() -> Vec<(String, Duration)> {
     }
 }
 
-pub fn get_resurrectable_session_names() -> Vec<String> {
+pub fn get_resurrectable_session_names() -> Vec<SessionName> {
     match fs::read_dir(&*ZELLIJ_SESSION_INFO_CACHE_DIR) {
         Ok(files_in_session_info_folder) => {
             let files_that_are_folders = files_in_session_info_folder
@@ -167,7 +169,7 @@ pub fn get_resurrectable_session_names() -> Vec<String> {
                     if std::path::Path::new(&resurrection_layout_file).exists() {
                         folder_name
                             .file_name()
-                            .map(|f| format!("{}", f.to_string_lossy()))
+                            .map(|f| SessionName::new(f.to_string_lossy()))
                     } else {
                         None
                     }
@@ -185,16 +187,16 @@ pub fn get_resurrectable_session_names() -> Vec<String> {
     }
 }
 
-pub fn get_sessions_sorted_by_mtime() -> anyhow::Result<Vec<String>> {
+pub fn get_sessions_sorted_by_mtime() -> anyhow::Result<Vec<SessionName>> {
     match fs::read_dir(&*ZELLIJ_SOCK_DIR) {
         Ok(files) => {
-            let mut candidates: Vec<(String, SystemTime)> = Vec::new();
+            let mut candidates: Vec<(SessionName, SystemTime)> = Vec::new();
             for file in files {
                 let file = file?;
                 let file_name = file.file_name().into_string().unwrap();
                 let file_modified_at = file.metadata()?.modified()?;
                 if is_ipc_socket(&file.file_type()?) {
-                    candidates.push((file_name, file_modified_at));
+                    candidates.push((SessionName::new(file_name), file_modified_at));
                 }
             }
             let mut sessions_with_mtime = probe_sockets(candidates);
@@ -227,7 +229,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// "Alive" here means *answering*, which is the property callers actually need —
 /// a server that cannot reply to `ConnStatus` cannot accept a client either.
 #[cfg(unix)]
-fn assert_socket(name: &str) -> Result<SessionProbe, io::ErrorKind> {
+fn assert_socket(name: &SessionName) -> Result<SessionProbe, io::ErrorKind> {
     use interprocess::local_socket::prelude::*;
     use zellij_ipc::consts::ipc_connect;
     let path = &*ZELLIJ_SOCK_DIR.join(name);
@@ -278,7 +280,7 @@ fn assert_socket(name: &str) -> Result<SessionProbe, io::ErrorKind> {
 }
 
 #[cfg(not(unix))]
-fn assert_socket(_name: &str) -> Result<SessionProbe, io::ErrorKind> {
+fn assert_socket(_name: &SessionName) -> Result<SessionProbe, io::ErrorKind> {
     Ok(SessionProbe::Alive)
 }
 
@@ -288,7 +290,7 @@ fn assert_socket(_name: &str) -> Result<SessionProbe, io::ErrorKind> {
 /// the only one that can say `Unresponsive`: `get_sessions` and everything
 /// built on it list answering servers only, so through them a wedged session
 /// is indistinguishable from no session at all.
-pub fn session_status(name: &str) -> Result<SessionProbe, io::ErrorKind> {
+pub fn session_status(name: &SessionName) -> Result<SessionProbe, io::ErrorKind> {
     let path = ZELLIJ_SOCK_DIR.join(name);
     match fs::metadata(&path) {
         Ok(metadata) if is_ipc_socket(&metadata.file_type()) => assert_socket(name),
@@ -306,7 +308,7 @@ pub fn session_status(name: &str) -> Result<SessionProbe, io::ErrorKind> {
 /// `IPC_CONNECT_TIMEOUT`. Reporting that rather than exiting here lets the
 /// caller say something useful about a server that has to be killed from
 /// outside.
-pub fn kill_session(name: &str) -> io::Result<()> {
+pub fn kill_session(name: &SessionName) -> io::Result<()> {
     use zellij_ipc::consts::ipc_connect;
     let path = &*ZELLIJ_SOCK_DIR.join(name);
     let stream = ipc_connect(path)?;
@@ -331,7 +333,7 @@ pub const KILL_CONFIRM_TIMEOUT: Duration = Duration::from_secs(3);
 /// silence made the probe say so. The server unlinks its socket on the way
 /// out, so the socket going is the shutdown having happened, and its staying
 /// is the request sitting in a queue nobody is draining.
-pub fn session_left(name: &str, within: Duration) -> Result<bool, io::ErrorKind> {
+pub fn session_left(name: &SessionName, within: Duration) -> Result<bool, io::ErrorKind> {
     let deadline = Instant::now() + within;
     loop {
         if session_status(name)? == SessionProbe::Absent {
@@ -344,7 +346,7 @@ pub fn session_left(name: &str, within: Duration) -> Result<bool, io::ErrorKind>
     }
 }
 
-pub fn delete_session(name: &str, force: bool) -> io::Result<()> {
+pub fn delete_session(name: &SessionName, force: bool) -> io::Result<()> {
     if force {
         use zellij_ipc::consts::ipc_connect;
         let path = &*ZELLIJ_SOCK_DIR.join(name);
@@ -359,9 +361,9 @@ pub fn delete_session(name: &str, force: bool) -> io::Result<()> {
 
 #[derive(Debug, Clone)]
 pub enum SessionNameMatch {
-    AmbiguousPrefix(Vec<String>),
-    UniquePrefix(String),
-    Exact(String),
+    AmbiguousPrefix(Vec<SessionName>),
+    UniquePrefix(SessionName),
+    Exact(SessionName),
     None,
 }
 
@@ -370,17 +372,17 @@ pub fn match_session_name(prefix: &str) -> Result<SessionNameMatch, io::ErrorKin
 
     let filtered_sessions: Vec<_> = sessions
         .iter()
-        .filter(|s| s.0.starts_with(prefix))
+        .filter(|s| s.0.as_str().starts_with(prefix))
         .collect();
 
-    if filtered_sessions.iter().any(|s| s.0 == prefix) {
-        return Ok(SessionNameMatch::Exact(prefix.to_string()));
+    if filtered_sessions.iter().any(|s| s.0.as_str() == prefix) {
+        return Ok(SessionNameMatch::Exact(prefix.into()));
     }
 
     Ok({
         match &filtered_sessions[..] {
             [] => SessionNameMatch::None,
-            [s] => SessionNameMatch::UniquePrefix(s.0.to_string()),
+            [s] => SessionNameMatch::UniquePrefix(s.0.clone()),
             _ => SessionNameMatch::AmbiguousPrefix(
                 filtered_sessions.into_iter().map(|s| s.0.clone()).collect(),
             ),
@@ -393,12 +395,14 @@ pub fn match_session_name(prefix: &str) -> Result<SessionNameMatch, io::ErrorKin
 /// `false` covers both an absent server and an unresponsive one; a caller about
 /// to create or resurrect a session must use `session_status` and refuse on
 /// `Unresponsive`, or it will spawn a second server over a live socket.
-pub fn session_exists(name: &str) -> Result<bool, io::ErrorKind> {
+pub fn session_exists(name: &SessionName) -> Result<bool, io::ErrorKind> {
     session_status(name).map(|status| status == SessionProbe::Alive)
 }
 
 // if the session is resurrecable, the returned layout is the one to be used to resurrect it
-pub fn resurrection_layout(session_name_to_resurrect: &str) -> Result<Option<Layout>, String> {
+pub fn resurrection_layout(
+    session_name_to_resurrect: &SessionName,
+) -> Result<Option<Layout>, String> {
     let checkpoint =
         SessionCheckpoint::read(&session_info_folder_for_session(session_name_to_resurrect))
             .map_err(|error| format!("{error:#}"))?;
@@ -451,11 +455,11 @@ pub fn validate_session_name(name: &str) -> Result<(), String> {
 }
 
 pub fn read_live_session_states(
-    current_session_name: &str,
+    current_session_name: &SessionName,
     sock_dir: &Path,
     session_info_cache_dir: &Path,
-) -> BTreeMap<String, SessionInfo> {
-    let mut other_session_names: Vec<(String, Duration)> = vec![];
+) -> BTreeMap<SessionName, SessionInfo> {
+    let mut other_session_names: Vec<(SessionName, Duration)> = vec![];
     let mut session_infos_on_machine = BTreeMap::new();
     if let Ok(files) = fs::read_dir(sock_dir) {
         files.for_each(|file| {
@@ -471,7 +475,7 @@ pub fn read_live_session_states(
                             .and_then(|f| f.created().ok().or_else(|| f.modified().ok()))
                             .and_then(|d| d.elapsed().ok())
                             .unwrap_or_default();
-                        other_session_names.push((file_name, creation_time));
+                        other_session_names.push((SessionName::new(file_name), creation_time));
                     }
                 }
             }
@@ -497,8 +501,8 @@ pub fn read_live_session_states(
 }
 
 pub fn read_live_session_states_default_dirs(
-    current_session_name: &str,
-) -> BTreeMap<String, SessionInfo> {
+    current_session_name: &SessionName,
+) -> BTreeMap<SessionName, SessionInfo> {
     read_live_session_states(
         current_session_name,
         &ZELLIJ_SOCK_DIR,
@@ -506,18 +510,19 @@ pub fn read_live_session_states_default_dirs(
     )
 }
 
-pub fn generate_unique_session_name() -> Result<Option<String>, io::ErrorKind> {
+pub fn generate_unique_session_name() -> Result<Option<SessionName>, io::ErrorKind> {
     let sessions = get_sessions().map(|sessions| {
         sessions
             .iter()
             .map(|s| s.0.clone())
-            .collect::<Vec<String>>()
+            .collect::<Vec<SessionName>>()
     });
     let dead_sessions = get_resurrectable_session_names();
     let sessions = sessions?;
 
     let name = get_name_generator()
         .take(1000)
+        .map(SessionName::new)
         .find(|name| !sessions.contains(name) && !dead_sessions.contains(name));
 
     {

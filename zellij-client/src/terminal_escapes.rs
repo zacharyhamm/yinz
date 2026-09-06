@@ -13,6 +13,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use zellij_ipc::nested_session;
 use zellij_runtime::errors::FatalError;
+use zellij_types::internal_ids::SessionName;
 
 pub const ENTER_ALTERNATE_SCREEN: &str = "\u{1b}[?1049h";
 pub const EXIT_ALTERNATE_SCREEN: &str = "\u{1b}[?1049l";
@@ -150,7 +151,7 @@ pub fn write_synchronised(w: &mut dyn Write, sync: Option<SyncOutput>, bytes: &[
 
 /// Tell an enclosing Zellij pane that a client is running inside it, so the
 /// outer session can route nested control frames to us.
-pub fn announce_nested(os_input: &dyn StdioAccess, session_name: &str) {
+pub fn announce_nested(os_input: &dyn StdioAccess, session_name: &SessionName) {
     let announce = nested_session::NestedSessionMessage::Announce {
         session_name: session_name.to_owned(),
         capabilities: vec![nested_session::NestedSessionCapability::NestedControl],

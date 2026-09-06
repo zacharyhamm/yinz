@@ -40,7 +40,7 @@ pub fn nested_guest_announce_gets_announce_ack_with_ancestry() {
     assert_eq!(
         announce_ack,
         zellij_ipc::nested_session::NestedSessionMessage::AnnounceAck {
-            ancestry: vec!["zellij-test".to_owned()],
+            ancestry: vec!["zellij-test".to_owned().into()],
             capabilities: vec![zellij_ipc::nested_session::NestedSessionCapability::NestedControl],
             descend_keys: vec![],
         }

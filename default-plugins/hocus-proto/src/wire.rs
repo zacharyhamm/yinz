@@ -12,6 +12,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::TabId;
+use zellij_types::internal_ids::SessionName;
 
 use crate::agents;
 use crate::location::Location;
@@ -214,7 +215,7 @@ pub struct PollReply {
     /// writes about a *pane* has to say which session's pane it means — and hocus has no other
     /// route to the name. The daemon holds it already.
     #[serde(default)]
-    pub zellij_session_name: String,
+    pub zellij_session_name: SessionName,
     /// Resolved agent folder to its repository or plain-folder definition.
     ///
     /// Keyed by folder *and machine*: a remote pane's path names a place on

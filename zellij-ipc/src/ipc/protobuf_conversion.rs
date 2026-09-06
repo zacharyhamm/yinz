@@ -493,7 +493,9 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                 server_to_client_msg::Message::QueryTerminalSize(QueryTerminalSizeMsg {})
             },
             ServerToClientMsg::RenamedSession { name } => {
-                server_to_client_msg::Message::RenamedSession(RenamedSessionMsg { name })
+                server_to_client_msg::Message::RenamedSession(RenamedSessionMsg {
+                    name: name.to_string(),
+                })
             },
             ServerToClientMsg::ConfigFileUpdated => {
                 server_to_client_msg::Message::ConfigFileUpdated(ConfigFileUpdatedMsg {})
@@ -615,7 +617,9 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
                 Ok(ServerToClientMsg::QueryTerminalSize)
             },
             Some(server_to_client_msg::Message::RenamedSession(renamed)) => {
-                Ok(ServerToClientMsg::RenamedSession { name: renamed.name })
+                Ok(ServerToClientMsg::RenamedSession {
+                    name: renamed.name.into(),
+                })
             },
             Some(server_to_client_msg::Message::ConfigFileUpdated(_)) => {
                 Ok(ServerToClientMsg::ConfigFileUpdated)
@@ -878,7 +882,7 @@ impl From<zellij_types::input::options::Options>
             scrollback_editor: options
                 .scrollback_editor
                 .map(|p| p.to_string_lossy().to_string()),
-            session_name: options.session_name,
+            session_name: options.session_name.map(|name| name.into_string()),
             attach_to_session: options.attach_to_session,
             auto_layout: options.auto_layout,
             session_serialization: options.session_serialization,
@@ -1021,7 +1025,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             copy_on_select: options.copy_on_select,
             osc8_hyperlinks: options.osc8_hyperlinks,
             scrollback_editor: options.scrollback_editor.map(std::path::PathBuf::from),
-            session_name: options.session_name,
+            session_name: options.session_name.map(Into::into),
             attach_to_session: options.attach_to_session,
             auto_layout: options.auto_layout,
             session_serialization: options.session_serialization,
@@ -1879,7 +1883,7 @@ impl TryFrom<zellij_types::input::actions::Action>
                 layout,
                 cwd,
             } => ActionType::SwitchSession(SwitchSessionAction {
-                name: name.clone(),
+                name: name.to_string(),
                 tab_position: tab_position.map(|p| p.get()),
                 pane_id: pane_id.map(|pane| {
                     let (pane_id, is_plugin) = pane.legacy_parts();
@@ -1893,7 +1897,7 @@ impl TryFrom<zellij_types::input::actions::Action>
                 to_session,
                 placement,
             } => ActionType::WarpPane(WarpPaneAction {
-                to_session: to_session.clone(),
+                to_session: to_session.to_string(),
                 pane_id: pane_id.map(|pane_id| pane_id.into()),
                 placement: ProtobufWarpPlacement::from(placement) as i32,
             }),
@@ -1913,7 +1917,7 @@ impl TryFrom<zellij_types::input::actions::Action>
                 tab_index,
                 to_session,
             } => ActionType::WarpTab(WarpTabAction {
-                to_session: to_session.clone(),
+                to_session: to_session.to_string(),
                 tab_index: tab_index
                     .map(|i| u32::try_from(i.get()))
                     .transpose()
@@ -1923,7 +1927,7 @@ impl TryFrom<zellij_types::input::actions::Action>
                 from_session,
                 tab_index,
             } => ActionType::WarpTabFrom(WarpTabFromAction {
-                from_session: from_session.clone(),
+                from_session: from_session.to_string(),
                 tab_index: u32::try_from(tab_index.get()).context("tab_id is outside u32 range")?,
             }),
             zellij_types::input::actions::Action::AdoptTab { payload } => {
@@ -2180,7 +2184,9 @@ impl TryFrom<zellij_types::input::actions::Action>
                 ActionType::BreakPaneLeft(BreakPaneLeftAction {})
             },
             zellij_types::input::actions::Action::RenameSession { name } => {
-                ActionType::RenameSession(RenameSessionAction { name })
+                ActionType::RenameSession(RenameSessionAction {
+                    name: name.to_string(),
+                })
             },
             zellij_types::input::actions::Action::Notify(text) => {
                 ActionType::Notify(NotifyAction { text })
@@ -2938,7 +2944,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             ActionType::ToggleTheme(_) => Ok(zellij_types::input::actions::Action::ToggleTheme),
             ActionType::SwitchSession(switch_session_action) => {
                 Ok(zellij_types::input::actions::Action::SwitchSession {
-                    name: switch_session_action.name.clone(),
+                    name: switch_session_action.name.clone().into(),
                     tab_position: switch_session_action.tab_position.map(TabNumber::new),
                     pane_id: switch_session_action
                         .pane_id
@@ -2953,7 +2959,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::WarpPane(warp_pane_action) => {
                 Ok(zellij_types::input::actions::Action::WarpPane {
-                    to_session: warp_pane_action.to_session.clone(),
+                    to_session: warp_pane_action.to_session.clone().into(),
                     pane_id: warp_pane_action
                         .pane_id
                         .map(|pane_id| pane_id.try_into())
@@ -2984,13 +2990,13 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::WarpTab(warp_tab_action) => {
                 Ok(zellij_types::input::actions::Action::WarpTab {
-                    to_session: warp_tab_action.to_session.clone(),
+                    to_session: warp_tab_action.to_session.clone().into(),
                     tab_index: warp_tab_action.tab_index.map(|i| TabId::new(i as usize)),
                 })
             },
             ActionType::WarpTabFrom(warp_tab_from_action) => {
                 Ok(zellij_types::input::actions::Action::WarpTabFrom {
-                    from_session: warp_tab_from_action.from_session.clone(),
+                    from_session: warp_tab_from_action.from_session.clone().into(),
                     tab_index: TabId::try_from(u64::from(warp_tab_from_action.tab_index))
                         .context("tab_id is outside usize range")?,
                 })
@@ -3263,7 +3269,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::RenameSession(rename_session_action) => {
                 Ok(zellij_types::input::actions::Action::RenameSession {
-                    name: rename_session_action.name,
+                    name: rename_session_action.name.into(),
                 })
             },
             ActionType::Notify(notify_action) => Ok(zellij_types::input::actions::Action::Notify(
@@ -3712,7 +3718,7 @@ impl From<zellij_types::data::SessionConnection>
 {
     fn from(connect: zellij_types::data::SessionConnection) -> Self {
         Self {
-            name: connect.name,
+            name: connect.name.map(|name| name.into_string()),
             tab_position: connect.tab_position.map(|p| p.get()),
             pane_id: connect.pane_id.map(|pane| {
                 let (id, is_plugin) = pane.legacy_parts();
@@ -3735,7 +3741,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::ConnectToSes
         connect: crate::client_server_contract::client_server_contract::ConnectToSession,
     ) -> Result<Self> {
         Ok(Self {
-            name: connect.name,
+            name: connect.name.map(Into::into),
             tab_position: connect.tab_position.map(TabNumber::new),
             pane_id: connect
                 .pane_id

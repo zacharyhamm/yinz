@@ -33,6 +33,7 @@ use zellij_types::data::PaneContents;
 use zellij_types::geometry::{Direction, ResizeStrategy};
 use zellij_types::input::command::RunCommand;
 use zellij_types::input::options::DEFAULT_WORD_SEPARATORS;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
@@ -671,8 +672,8 @@ pub trait Pane {
         None
     }
     fn clear_all_guest_choice_indicators(&mut self) {}
-    fn set_guest_session_name(&mut self, _session_name: Option<String>) {}
-    fn guest_session_name(&self) -> Option<String> {
+    fn set_guest_session_name(&mut self, _session_name: Option<SessionName>) {}
+    fn guest_session_name(&self) -> Option<SessionName> {
         None
     }
     fn set_guest_modal_shortcuts(&mut self, _shortcuts: GuestModalShortcuts) {}
@@ -2393,7 +2394,7 @@ impl Tab {
         }
         Ok(())
     }
-    pub fn rename_session(&mut self, new_session_name: String) -> Result<()> {
+    pub fn rename_session(&mut self, new_session_name: SessionName) -> Result<()> {
         {
             let mode_infos = &mut self.mode_info.borrow_mut();
             for mode_info in mode_infos.values_mut() {
@@ -4495,7 +4496,7 @@ impl Tab {
     pub fn set_guest_session_name_on_pane(
         &mut self,
         pane_id: PaneId,
-        session_name: Option<String>,
+        session_name: Option<SessionName>,
     ) {
         if let Some(pane) = self
             .tiled_panes

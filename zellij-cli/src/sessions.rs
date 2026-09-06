@@ -5,6 +5,7 @@ use suggest::Suggest;
 use zellij_ipc::probe::SessionProbe;
 use zellij_runtime::{consts::ZELLIJ_SOCK_DIR, envs};
 use zellij_session::sessions::*;
+use zellij_types::internal_ids::SessionName;
 /// What to tell a user who named a session whose server is not answering.
 pub fn unresponsive_session_message(name: &str) -> String {
     format!(
@@ -14,7 +15,7 @@ pub fn unresponsive_session_message(name: &str) -> String {
     )
 }
 pub fn print_sessions(
-    mut sessions: Vec<(String, Duration, SessionListing)>,
+    mut sessions: Vec<(SessionName, Duration, SessionListing)>,
     no_formatting: bool,
     short: bool,
     reverse: bool,
@@ -72,7 +73,7 @@ pub fn print_sessions(
         }
     })
 }
-pub fn print_sessions_with_index(sessions: Vec<String>) {
+pub fn print_sessions_with_index(sessions: Vec<SessionName>) {
     let curr_session = envs::get_session_name().unwrap_or_else(|_| "".into());
     for (i, session) in sessions.iter().enumerate() {
         let suffix = if curr_session == *session {
@@ -123,7 +124,7 @@ fn kill_from_outside_remedy(name: &str) -> String {
 pub fn list_sessions(no_formatting: bool, short: bool, reverse: bool, exited: bool) {
     let exit_code = match get_sessions_with_status() {
         Ok(sessions_with_status) => {
-            let mut all_sessions: HashMap<String, (Duration, SessionListing)> = if exited {
+            let mut all_sessions: HashMap<SessionName, (Duration, SessionListing)> = if exited {
                 get_resurrectable_sessions()
                     .into_iter()
                     .map(|(name, timestamp)| (name, (timestamp, SessionListing::Exited)))
@@ -168,7 +169,7 @@ pub fn list_sessions(no_formatting: bool, short: bool, reverse: bool, exited: bo
     process::exit(exit_code);
 }
 pub fn assert_session(name: &str) {
-    match session_status(name) {
+    match session_status(&SessionName::new(name)) {
         Ok(SessionProbe::Alive) => return,
         // Attaching would connect and then wait forever for a reply that is
         // not coming; say so instead.
@@ -194,7 +195,7 @@ pub fn assert_session(name: &str) {
 pub fn assert_dead_session(name: &str, force: bool) {
     // An unresponsive server is still a running one: deleting under it needs
     // `--force` just like deleting under a healthy one.
-    match session_status(name).map(|status| status != SessionProbe::Absent) {
+    match session_status(&SessionName::new(name)).map(|status| status != SessionProbe::Absent) {
         Ok(exists) => {
             if exists && !force {
                 println!(
@@ -220,10 +221,10 @@ pub fn assert_session_ne(name: &str) {
         process::exit(1);
     }
 
-    match session_status(name) {
+    match session_status(&SessionName::new(name)) {
         Ok(SessionProbe::Absent) => {
             let resurrectable_sessions = get_resurrectable_session_names();
-            if resurrectable_sessions.iter().find(|s| s == &name).is_some() {
+            if resurrectable_sessions.iter().find(|s| s.as_str() == name).is_some() {
                 println!("Session with name {:?} already exists, but is dead. Use the attach command to resurrect it or, the delete-session command to kill it or specify a different name.", name);
             } else {
                 return
@@ -267,7 +268,7 @@ pub enum SessionListing {
     Unresponsive,
 }
 pub fn delete_session(name: &str, force: bool) {
-    if let Err(e) = zellij_session::sessions::delete_session(name, force) {
+    if let Err(e) = zellij_session::sessions::delete_session(&SessionName::new(name), force) {
         if e.kind() == std::io::ErrorKind::NotFound {
             eprintln!("Session: {:?} not found.", name);
             process::exit(2);
@@ -278,7 +279,7 @@ pub fn delete_session(name: &str, force: bool) {
         println!("Session: {:?} successfully deleted.", name);
     }
 }
-pub fn generate_unique_session_name() -> Option<String> {
+pub fn generate_unique_session_name() -> Option<SessionName> {
     match zellij_session::sessions::generate_unique_session_name() {
         Ok(name) => name,
         Err(kind) => {
@@ -289,6 +290,6 @@ pub fn generate_unique_session_name() -> Option<String> {
 }
 pub enum ActiveSession {
     None,
-    One(String),
+    One(SessionName),
     Many,
 }

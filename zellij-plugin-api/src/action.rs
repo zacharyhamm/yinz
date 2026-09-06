@@ -1088,7 +1088,7 @@ impl TryFrom<ProtobufAction> for Action {
             },
             Some(ProtobufActionName::RenameSession) => match protobuf_action.optional_payload {
                 Some(OptionalPayload::RenameSessionPayload(name)) => {
-                    Ok(Action::RenameSession { name })
+                    Ok(Action::RenameSession { name: name.into() })
                 },
                 _ => Err("Wrong payload for Action::RenameSession"),
             },
@@ -2072,7 +2072,7 @@ impl TryFrom<Action> for ProtobufAction {
             }),
             Action::RenameSession { name: session_name } => Ok(ProtobufAction {
                 name: ProtobufActionName::RenameSession as i32,
-                optional_payload: Some(OptionalPayload::RenameSessionPayload(session_name)),
+                optional_payload: Some(OptionalPayload::RenameSessionPayload(session_name.to_string())),
             }),
             Action::KeybindPipe { .. } => Ok(ProtobufAction {
                 name: ProtobufActionName::KeybindPipe as i32,

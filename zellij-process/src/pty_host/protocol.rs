@@ -8,6 +8,7 @@
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::{ProcessId, SupervisorId};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -39,7 +40,7 @@ pub enum ServerToHostMsg {
     },
     Spawn {
         terminal_id: u32,
-        session_name: Option<String>,
+        session_name: Option<SessionName>,
         cmd: RunCommand,
         failover_cmd: Option<RunCommand>,
         termios: Option<WireTermios>,
@@ -109,7 +110,7 @@ pub enum ServerToHostMsg {
         protocol_version: u32,
         zellij_version: String,
         terminal_id: u32,
-        session_name: Option<String>,
+        session_name: Option<SessionName>,
     },
 }
 
@@ -209,7 +210,7 @@ pub enum SpawnFailureKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostStatus {
     pub host_id: SupervisorId,
-    pub session_name: Option<String>,
+    pub session_name: Option<SessionName>,
     pub terminal_id: u32,
     pub command: String,
     pub cwd: Option<PathBuf>,

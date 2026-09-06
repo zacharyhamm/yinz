@@ -104,7 +104,10 @@ pub fn list(as_json: bool) -> Result<()> {
             let s = &entry.status;
             [
                 s.host_id.to_string(),
-                s.session_name.clone().unwrap_or_else(|| "-".to_owned()),
+                s.session_name
+                    .clone()
+                    .unwrap_or_else(|| "-".to_owned().into())
+                    .to_string(),
                 s.terminal_id.to_string(),
                 s.child_pid
                     .map(|pid| pid.to_string())
@@ -242,7 +245,11 @@ pub fn kill(host_id: &str) -> Result<()> {
 /// thing that can give the pane a home.
 pub fn adopt_request(host_id: &str, session: Option<String>) -> Result<(String, WarpedPane)> {
     let payload = adopt_payload(host_id)?;
-    let session = match session.or_else(|| zellij_runtime::envs::get_session_name().ok()) {
+    let session = match session.or_else(|| {
+        zellij_runtime::envs::get_session_name()
+            .ok()
+            .map(|name| name.into_string())
+    }) {
         Some(session) => session,
         None => {
             return Err(anyhow!(
@@ -264,7 +271,12 @@ pub fn adopt_payload(host_id: &str) -> Result<WarpedPane> {
         return Err(anyhow!(
             "{} is already attached to session '{}'; there is nothing to recover",
             entry.status.host_id,
-            entry.status.session_name.as_deref().unwrap_or("<unknown>")
+            entry
+                .status
+                .session_name
+                .as_ref()
+                .map(|name| name.as_str())
+                .unwrap_or("<unknown>")
         ));
     }
     Ok(WarpedPane {
@@ -368,7 +380,11 @@ pub fn remote_adopt_request(
     session: Option<String>,
 ) -> Result<(String, WarpedPane)> {
     let payload = remote_adopt_payload(host, pane_token)?;
-    let session = match session.or_else(|| zellij_runtime::envs::get_session_name().ok()) {
+    let session = match session.or_else(|| {
+        zellij_runtime::envs::get_session_name()
+            .ok()
+            .map(|name| name.into_string())
+    }) {
         Some(session) => session,
         None => {
             return Err(anyhow!(

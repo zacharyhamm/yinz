@@ -1,6 +1,7 @@
 //! Handles cli and configuration options
 use crate::data::InputMode;
 use crate::internal_ids::HostId;
+use crate::internal_ids::SessionName;
 use crate::style::ThemeHue;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -314,7 +315,7 @@ pub struct Options {
 
     /// The name of the session to create when starting Zellij
     #[serde(default)]
-    pub session_name: Option<String>,
+    pub session_name: Option<SessionName>,
 
     /// Whether to attach to a session specified in "session-name" if it exists
     #[serde(default)]

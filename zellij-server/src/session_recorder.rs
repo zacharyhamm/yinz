@@ -4,6 +4,7 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::units::{ElapsedMicros, UnixMicros};
 
@@ -179,7 +180,7 @@ impl SessionRecorderHandle {
 pub fn spawn_session_recorder(
     data_access: Arc<DataAccess>,
     data_dir: PathBuf,
-    session_name: String,
+    session_name: SessionName,
     capture_input: bool,
 ) -> Option<(SessionRecorderHandle, std::thread::JoinHandle<()>)> {
     // validate data_dir can be created and is a directory
@@ -347,7 +348,7 @@ impl Recording {
 
 fn recorder_thread(
     data_access: Arc<DataAccess>,
-    session_name: String,
+    session_name: SessionName,
     capture_input: bool,
     started_at: Instant,
     started_at_us: UnixMicros,
@@ -355,19 +356,19 @@ fn recorder_thread(
     enabled: Arc<AtomicBool>,
     dropped: Arc<AtomicUsize>,
 ) {
-    let store =
-        match data_access
-            .recordings()
-            .start_recording(&session_name, capture_input, started_at_us)
-        {
-            Ok(s) => s,
-            Err(e) => {
-                Err::<(), _>(e)
-                    .context("failed to start session recorder")
-                    .non_fatal();
-                return;
-            },
-        };
+    let store = match data_access.recordings().start_recording(
+        session_name.as_str(),
+        capture_input,
+        started_at_us,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            Err::<(), _>(e)
+                .context("failed to start session recorder")
+                .non_fatal();
+            return;
+        },
+    };
     let mut recording = Recording {
         store,
         batch: Vec::new(),
@@ -583,7 +584,7 @@ mod tests {
         let backend = Arc::new(MemoryRecordingBackend(log.clone()));
         recorder_thread(
             Arc::new(DataAccess::from_backends(backend.clone(), backend)),
-            "test".to_owned(),
+            "test".to_owned().into(),
             false,
             Instant::now(),
             UnixMicros::new(0),
@@ -892,7 +893,7 @@ mod tests {
         let (handle, thread) = spawn_session_recorder(
             Arc::new(DataAccess::sqlite(dir.path())),
             dir.path().to_path_buf(),
-            "test".to_string(),
+            "test".to_string().into(),
             true,
         )
         .unwrap();
@@ -1000,7 +1001,7 @@ mod tests {
         sender.send(RecorderInstruction::Stop)?;
         recorder_thread(
             Arc::new(DataAccess::sqlite(dir.path())),
-            "test".to_string(),
+            "test".to_string().into(),
             false,
             Instant::now(),
             UnixMicros::new(1_000),
@@ -1023,7 +1024,7 @@ mod tests {
         let result = spawn_session_recorder(
             Arc::new(DataAccess::sqlite(dir.path())),
             file_path,
-            "test".to_string(),
+            "test".to_string().into(),
             true,
         );
         assert!(result.is_none(), "should return None for invalid data_dir");

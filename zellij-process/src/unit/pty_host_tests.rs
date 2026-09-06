@@ -114,7 +114,7 @@ impl TestHost {
         self.send(&ServerToHostMsg::Spawn {
             job_control: true,
             terminal_id: 0,
-            session_name: Some("pty-host-tests".to_owned()),
+            session_name: Some("pty-host-tests".to_owned().into()),
             cmd,
             failover_cmd: None,
             termios,
@@ -1046,7 +1046,7 @@ fn attach_over_socket(
             protocol_version: PROTOCOL_VERSION,
             zellij_version: VERSION.to_owned(),
             terminal_id: terminal_id.get(),
-            session_name: session_name.map(str::to_owned),
+            session_name: session_name.map(str::to_owned).map(Into::into),
         },
     )
     .expect("failed to send Attach");
@@ -1183,7 +1183,10 @@ fn an_attach_hands_the_master_and_the_buffered_output_over() {
 
     // Re-keyed to the session that owns it now, so `pty-host list` does not lie.
     assert_eq!(status.terminal_id, 42);
-    assert_eq!(status.session_name.as_deref(), Some("the-other-session"));
+    assert_eq!(
+        status.session_name.as_ref().map(|name| name.as_str()),
+        Some("the-other-session")
+    );
     assert!(status.attached);
 
     let _ = crate::pty_host::client::terminate_via_socket(&control_socket);

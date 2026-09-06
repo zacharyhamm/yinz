@@ -7,6 +7,7 @@ mod single_screen;
 mod ui;
 use std::collections::BTreeMap;
 use uuid::Uuid;
+use zellij_tile::prelude::SessionName;
 use zellij_tile::prelude::*;
 
 use new_session_info::NewSessionInfo;
@@ -39,7 +40,7 @@ enum ActiveScreen {
 
 #[derive(Default)]
 pub(crate) struct State {
-    session_name: Option<String>,
+    session_name: Option<SessionName>,
     pub(crate) sessions: SessionList,
     pub(crate) resurrectable_sessions: ResurrectableSessions,
     pub(crate) recordings: Recordings,
@@ -1147,7 +1148,9 @@ impl State {
                     if renaming_session_name.is_empty() {
                         self.show_error("New name must not be empty.");
                         return; // so that we don't hide self
-                    } else if self.session_name.as_ref() == Some(renaming_session_name) {
+                    } else if self.session_name.as_ref().map(SessionName::as_str)
+                        == Some(renaming_session_name.as_str())
+                    {
                         // noop - we're already called that!
                         return; // so that we don't hide self
                     } else if self.sessions.has_session(renaming_session_name) {
@@ -1165,7 +1168,7 @@ impl State {
                             return;
                         }
                         self.update_current_session_name_in_ui(renaming_session_name);
-                        rename_session(renaming_session_name);
+                        rename_session(&SessionName::new(renaming_session_name.clone()));
                         return; // s that we don't hide self
                     }
                 }
@@ -1225,7 +1228,9 @@ impl State {
                     if renaming_session_name.is_empty() {
                         self.show_error("New name must not be empty.");
                         return;
-                    } else if self.session_name.as_ref() == Some(renaming_session_name) {
+                    } else if self.session_name.as_ref().map(SessionName::as_str)
+                        == Some(renaming_session_name.as_str())
+                    {
                         return;
                     } else if self.sessions.has_session(renaming_session_name) {
                         self.show_error("A session by this name already exists.");
@@ -1242,7 +1247,7 @@ impl State {
                             return;
                         }
                         self.update_current_session_name_in_ui(renaming_session_name);
-                        rename_session(renaming_session_name);
+                        rename_session(&SessionName::new(renaming_session_name.clone()));
                         return;
                     }
                 }
@@ -1260,12 +1265,16 @@ impl State {
                                     if *is_current_session {
                                         self.show_error("Already attached...");
                                     } else {
-                                        switch_session_with_focus(&session_name, None, None);
+                                        switch_session_with_focus(
+                                            &SessionName::new(session_name),
+                                            None,
+                                            None,
+                                        );
                                         switched_session = true;
                                     }
                                 },
                                 UnifiedSearchResult::ResurrectableSession { .. } => {
-                                    switch_session(Some(&session_name));
+                                    switch_session(Some(&SessionName::new(session_name)));
                                     switched_session = true;
                                 },
                             }
@@ -1293,10 +1302,16 @@ impl State {
                             }
                             // Check exact match against active sessions
                             if self.sessions.has_session(&typed_name) {
-                                if self.session_name.as_deref() == Some(&typed_name) {
+                                if self.session_name.as_ref().map(SessionName::as_str)
+                                    == Some(&typed_name)
+                                {
                                     self.show_error("Already attached...");
                                 } else {
-                                    switch_session_with_focus(&typed_name, None, None);
+                                    switch_session_with_focus(
+                                        &SessionName::new(typed_name),
+                                        None,
+                                        None,
+                                    );
                                     if self.is_welcome_screen {
                                         quit_zellij();
                                     } else {
@@ -1307,7 +1322,7 @@ impl State {
                             }
                             // Check exact match against resurrectable sessions
                             if self.resurrectable_sessions.has_session(&typed_name) {
-                                switch_session(Some(&typed_name));
+                                switch_session(Some(&SessionName::new(typed_name)));
                                 if self.is_welcome_screen {
                                     quit_zellij();
                                 } else {
@@ -1328,14 +1343,19 @@ impl State {
                         let layout = self.single_screen_state.layout_list.selected_layout_info();
                         let cwd = self.single_screen_state.new_session_folder.clone();
 
-                        let switched_session = new_session_name != self.session_name.as_deref();
+                        let switched_session =
+                            new_session_name != self.session_name.as_ref().map(SessionName::as_str);
                         if switched_session {
                             match layout {
                                 Some(layout_info) => {
-                                    switch_session_with_layout(new_session_name, layout_info, cwd);
+                                    switch_session_with_layout(
+                                        new_session_name.map(SessionName::new).as_ref(),
+                                        layout_info,
+                                        cwd,
+                                    );
                                 },
                                 None => {
-                                    switch_session(new_session_name);
+                                    switch_session(new_session_name.map(SessionName::new).as_ref());
                                 },
                             }
                         }
@@ -1375,9 +1395,9 @@ impl State {
     fn update_current_session_name_in_ui(&mut self, new_name: &str) {
         if let Some(old_session_name) = self.session_name.as_ref() {
             self.sessions
-                .update_session_name(old_session_name, new_name);
+                .update_session_name(old_session_name.as_str(), new_name);
         }
-        self.session_name = Some(new_name.to_owned());
+        self.session_name = Some(new_name.to_owned().into());
     }
     fn arm_refresh_timer(&mut self) {
         if !self.refresh_timer_armed {

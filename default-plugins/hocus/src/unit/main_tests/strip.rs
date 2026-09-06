@@ -209,7 +209,7 @@ fn seed_run(state: &State, session_id: &str, host: Option<&str>, ended: bool) {
     let run = agents::AgentRun {
         id: agents::run_id("claude", 3, session_id, 10, &HostId::new("test-host")),
         pane_id: 3,
-        zellij_session_name: "main".to_owned(),
+        zellij_session_name: "main".to_owned().into(),
         host_id: HostId::new("test-host"),
         session_id: session_id.to_owned(),
         kind: "claude".to_owned(),

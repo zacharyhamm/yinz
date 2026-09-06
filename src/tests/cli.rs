@@ -138,7 +138,7 @@ fn recordings_search_output_formats_header_and_rows() {
 
     let hits = vec![SearchHit {
         recording_id: RecordingId::new(3),
-        session_name: "my_session".to_string(),
+        session_name: "my_session".to_string().into(),
         tab_name: "my_tab".to_string(),
         pane_title: String::new(),
         elapsed_us: ElapsedMicros::new(2_500_000),
@@ -226,7 +226,7 @@ fn recordings_state_strings() {
 
     let running = RecordingSummary {
         id: RecordingId::new(1),
-        session_name: "s".to_string(),
+        session_name: "s".to_string().into(),
         tab_name: "t".to_string(),
         terminal_id: TerminalId::new(1),
         pane_title: "p".to_string(),
@@ -238,7 +238,7 @@ fn recordings_state_strings() {
     };
     let complete = RecordingSummary {
         id: RecordingId::new(2),
-        session_name: "s".to_string(),
+        session_name: "s".to_string().into(),
         tab_name: "t".to_string(),
         terminal_id: TerminalId::new(2),
         pane_title: "p".to_string(),
@@ -250,7 +250,7 @@ fn recordings_state_strings() {
     };
     let incomplete = RecordingSummary {
         id: RecordingId::new(3),
-        session_name: "s".to_string(),
+        session_name: "s".to_string().into(),
         tab_name: "t".to_string(),
         terminal_id: TerminalId::new(3),
         pane_title: "p".to_string(),

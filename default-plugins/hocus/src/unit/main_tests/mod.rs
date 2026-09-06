@@ -64,7 +64,7 @@ fn ready_state() -> State {
         // id, so a state that has never heard a snapshot writes none. Standing in for the
         // first one. The host is named rather than left empty so that a helper which forgot to
         // write it fails a test instead of matching the pre-migration rows.
-        zellij_session_name: "test-session".to_owned(),
+        zellij_session_name: "test-session".to_owned().into(),
         host_id: HostId::new("test-host"),
         cfg: Config::resolve(
             &BTreeMap::new(),
@@ -288,7 +288,7 @@ fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
                 ]),
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
-                zellij_session_name: "test-session".to_owned(),
+                zellij_session_name: "test-session".to_owned().into(),
                 tab_projects: BTreeMap::new(),
                 repositories: BTreeMap::from([
                     (
@@ -694,7 +694,7 @@ fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
                 panes: Some(panes),
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
-                zellij_session_name: "test-session".to_owned(),
+                zellij_session_name: "test-session".to_owned().into(),
                 tab_projects: BTreeMap::new(),
                 repositories: BTreeMap::new(),
                 focused: None,
@@ -727,7 +727,7 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
                 ]),
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
-                zellij_session_name: "test-session".to_owned(),
+                zellij_session_name: "test-session".to_owned().into(),
                 tab_projects: BTreeMap::new(),
                 repositories: BTreeMap::from([
                     (

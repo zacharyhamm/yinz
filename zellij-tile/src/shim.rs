@@ -14,6 +14,7 @@ pub use zellij_types::geometry::PercentOrFixed;
 use zellij_types::geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy};
 use zellij_types::input::actions::Action;
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
@@ -1870,9 +1871,9 @@ pub fn set_tab_projects(tab_projects: BTreeMap<TabId, String>) {
 }
 
 /// Switch to a session with the given name, create one if no name is given
-pub fn switch_session(name: Option<&str>) {
+pub fn switch_session(name: Option<&SessionName>) {
     let plugin_command = PluginCommand::SwitchSession(ConnectToSession {
-        name: name.map(|n| n.to_string()),
+        name: name.cloned(),
         ..Default::default()
     });
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -1882,9 +1883,13 @@ pub fn switch_session(name: Option<&str>) {
 
 /// Switch to a session with the given name, creating one from `layout` if needed. Layout
 /// permissions follow [`new_tabs_with_layout_info`].
-pub fn switch_session_with_layout(name: Option<&str>, layout: LayoutInfo, cwd: Option<PathBuf>) {
+pub fn switch_session_with_layout(
+    name: Option<&SessionName>,
+    layout: LayoutInfo,
+    cwd: Option<PathBuf>,
+) {
     let plugin_command = PluginCommand::SwitchSession(ConnectToSession {
-        name: name.map(|n| n.to_string()),
+        name: name.cloned(),
         layout: Some(layout),
         cwd,
         ..Default::default()
@@ -1895,9 +1900,9 @@ pub fn switch_session_with_layout(name: Option<&str>, layout: LayoutInfo, cwd: O
 }
 
 /// Switch to a session with the given name, create one if no name is given
-pub fn switch_session_with_cwd(name: Option<&str>, cwd: Option<PathBuf>) {
+pub fn switch_session_with_cwd(name: Option<&SessionName>, cwd: Option<PathBuf>) {
     let plugin_command = PluginCommand::SwitchSession(ConnectToSession {
-        name: name.map(|n| n.to_string()),
+        name: name.cloned(),
         cwd,
         ..Default::default()
     });
@@ -1909,12 +1914,12 @@ pub fn switch_session_with_cwd(name: Option<&str>, cwd: Option<PathBuf>) {
 /// Switch to a session with the given name, focusing either the provided pane_id or the provided
 /// tab position (in that order)
 pub fn switch_session_with_focus(
-    name: &str,
+    name: &SessionName,
     tab_position: Option<TabPosition>,
     pane_id: Option<zellij_types::pane_id::PaneId>,
 ) {
     let plugin_command = PluginCommand::SwitchSession(ConnectToSession {
-        name: Some(name.to_owned()),
+        name: Some(name.clone()),
         tab_position,
         pane_id,
         ..Default::default()
@@ -1928,8 +1933,8 @@ pub fn switch_session_with_focus(
 ///
 /// Returns `Ok(())` if the session's cache directory was removed; `Err(...)`
 /// if the underlying `remove_dir_all` failed (e.g. permissions, missing path).
-pub fn delete_dead_session(name: &str) -> Result<(), String> {
-    let plugin_command = PluginCommand::DeleteDeadSessionAndReply(name.to_owned());
+pub fn delete_dead_session(name: &SessionName) -> Result<(), String> {
+    let plugin_command = PluginCommand::DeleteDeadSessionAndReply(name.clone());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };
@@ -1966,8 +1971,8 @@ pub fn delete_all_dead_sessions() -> Result<(), String> {
 }
 
 /// Rename the current session
-pub fn rename_session(name: &str) {
-    let plugin_command = PluginCommand::RenameSession(name.to_owned());
+pub fn rename_session(name: &SessionName) {
+    let plugin_command = PluginCommand::RenameSession(name.clone());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };
@@ -2037,12 +2042,8 @@ pub fn disconnect_other_clients() {
 /// sends as part of its shutdown, or a stream-close if the peer dies first).
 /// Returns once every kill has been confirmed or one has failed. A wedged
 /// peer is bounded by a short server-side wedge timeout.
-pub fn kill_sessions<S>(session_names: &[S]) -> Result<(), String>
-where
-    S: AsRef<str> + ToString,
-{
-    let plugin_command =
-        PluginCommand::KillSessionsAndReply(session_names.iter().map(|s| s.to_string()).collect());
+pub fn kill_sessions(session_names: &[SessionName]) -> Result<(), String> {
+    let plugin_command = PluginCommand::KillSessionsAndReply(session_names.to_vec());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };
@@ -2076,12 +2077,12 @@ where
 /// * `ChangeApplicationState`
 pub fn warp_pane_to_session(
     pane_id: PaneId,
-    to_session: &str,
+    to_session: &SessionName,
     placement: WarpPlacement,
 ) -> Result<String, String> {
     warp_request(PluginCommand::WarpPaneToSession {
         pane_id,
-        to_session: to_session.to_owned(),
+        to_session: to_session.clone(),
         placement,
     })
 }
@@ -2095,12 +2096,12 @@ pub fn warp_pane_to_session(
 /// * `ChangeApplicationState`
 pub fn warp_pane_from_session(
     pane_id: PaneId,
-    from_session: &str,
+    from_session: &SessionName,
     placement: WarpPlacement,
 ) -> Result<String, String> {
     warp_request(PluginCommand::WarpPaneFromSession {
         pane_id,
-        from_session: from_session.to_owned(),
+        from_session: from_session.clone(),
         placement,
     })
 }
@@ -2126,10 +2127,10 @@ pub fn warp_pane_from_session(
 ///
 /// # Permissions Required
 /// * `ChangeApplicationState`
-pub fn warp_tab_to_session(tab_index: TabId, to_session: &str) -> Result<String, String> {
+pub fn warp_tab_to_session(tab_index: TabId, to_session: &SessionName) -> Result<String, String> {
     warp_request(PluginCommand::WarpTabToSession {
         tab_index,
-        to_session: to_session.to_owned(),
+        to_session: to_session.clone(),
     })
 }
 
@@ -2141,10 +2142,13 @@ pub fn warp_tab_to_session(tab_index: TabId, to_session: &str) -> Result<String,
 ///
 /// # Permissions Required
 /// * `ChangeApplicationState`
-pub fn warp_tab_from_session(tab_index: TabId, from_session: &str) -> Result<String, String> {
+pub fn warp_tab_from_session(
+    tab_index: TabId,
+    from_session: &SessionName,
+) -> Result<String, String> {
     warp_request(PluginCommand::WarpTabFromSession {
         tab_index,
-        from_session: from_session.to_owned(),
+        from_session: from_session.clone(),
     })
 }
 
@@ -4346,7 +4350,10 @@ mod tests {
 
         let sessions = SessionListSnapshot {
             live_sessions: vec![],
-            resurrectable_sessions: vec![("dead".to_owned(), std::time::Duration::from_secs(3))],
+            resurrectable_sessions: vec![(
+                "dead".to_owned().into(),
+                std::time::Duration::from_secs(3),
+            )],
         };
         respond(ProtobufGetSessionListResponse::from(
             GetSessionListResponse::Ok(sessions.clone()),

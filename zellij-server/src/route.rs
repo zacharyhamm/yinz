@@ -1478,7 +1478,8 @@ pub(crate) fn route_action(
             layout,
             cwd,
         } => {
-            let current_session_name = envs::get_session_name().unwrap_or_else(|_| String::new());
+            let current_session_name =
+                envs::get_session_name().unwrap_or_else(|_| String::new().into());
             if name != current_session_name {
                 let connect_to_session = SessionConnection {
                     name: Some(name.clone()),

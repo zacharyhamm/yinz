@@ -104,7 +104,7 @@ fn only_the_panes_running_in_that_vm_are_selected() {
     plugin.id = zellij_tile::prelude::PaneId::from_legacy(plugin.id.legacy_parts().0, true);
     panes.push(plugin);
     let current = SessionInfo {
-        name: "work".to_owned(),
+        name: "work".to_owned().into(),
         panes: zellij_tile::prelude::PaneManifest {
             panes: std::collections::HashMap::from([(TabPosition::new(0), panes)]),
         },

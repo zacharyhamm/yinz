@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
+use zellij_tile::prelude::SessionName;
 use zellij_tile::prelude::*;
 
 use crate::single_screen::UnifiedSearchResult;
@@ -16,7 +17,7 @@ use crate::{ActiveScreen, NewSessionInfo};
 /// Pre-computed data for a single visible row, independent of selection state.
 #[derive(Clone)]
 pub struct CachedRowData {
-    pub session_name: String,
+    pub session_name: SessionName,
     pub indices: Vec<usize>,
     pub original_index: usize,
     pub kind: CachedRowKind,
@@ -140,7 +141,7 @@ impl UnifiedResultsRenderCache {
                         }
                     };
 
-                    let name_width = session_name.width();
+                    let name_width = session_name.as_str().width();
                     let full_details_width = full_details.width();
                     let abbr_details_width = abbr_details.width();
 
@@ -198,7 +199,7 @@ impl UnifiedResultsRenderCache {
                         }
                     };
 
-                    let name_width = session_name.width();
+                    let name_width = session_name.as_str().width();
                     let full_details_width = full_details.width();
                     let abbr_details_width = abbr_details.width();
 
@@ -253,7 +254,7 @@ impl ListItem {
     pub fn from_session_info(session_ui_info: &SessionUiInfo, colors: Colors) -> Self {
         let session_ui_line = build_session_ui_line(session_ui_info, colors);
         ListItem {
-            name: session_ui_info.name.clone(),
+            name: session_ui_info.name.to_string(),
             session_name: Some(session_ui_line),
             tab_name: None,
             pane_name: None,
@@ -639,7 +640,7 @@ pub fn build_session_ui_line(session_ui_info: &SessionUiInfo, colors: Colors) ->
             3,
         )]));
     let session_name_span = UiSpan::TruncatableUiSpan(TruncatableUiSpan::new(
-        session_name.clone(),
+        session_name.to_string(),
         SpanStyle::ForegroundBold(colors.palette.text_unselected.emphasis_0),
     ));
     let tab_and_pane_count = UiSpan::UiSpanTelescope(UiSpanTelescope::new(vec![
@@ -945,8 +946,8 @@ pub fn render_unified_results(
 
         // Name cell — use cached string, only truncate if needed
         let display_name = match name_max_width {
-            Some(max_w) => truncate_to_width(&row.session_name, max_w),
-            None => row.session_name.clone(),
+            Some(max_w) => truncate_to_width(row.session_name.as_str(), max_w),
+            None => row.session_name.to_string(),
         };
 
         let display_indices: Vec<usize> = row

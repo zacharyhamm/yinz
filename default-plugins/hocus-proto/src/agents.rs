@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use unicode_width::UnicodeWidthStr;
 use zellij_tile::prelude::HostId;
 use zellij_tile::prelude::TabId;
+use zellij_types::internal_ids::SessionName;
 
 use crate::location::Location;
 use crate::markdown::{MdLine, MdStyle};
@@ -864,7 +865,7 @@ pub struct AgentRun {
     pub id: String,
     pub pane_id: u32,
     #[serde(default)]
-    pub zellij_session_name: String,
+    pub zellij_session_name: SessionName,
     /// The machine whose server owns this run, with `zellij_session_name` — see
     /// [`rows::Owner`]. Not to be confused with [`AgentRun::host`], which is where the agent's
     /// *folder* is: an agent working over ssh on a build box is owned by the server that opened
@@ -1305,6 +1306,7 @@ pub fn push_summary_entry(run: &mut AgentRun, text: &str, now_ms: i64) -> bool {
 /// hand, and what the daemon last said about each idle pane, so a hocus reload keeps both.
 /// hocus is the only writer; see `store::agent_latch_def` and `store::agent_summary_def`.
 pub mod rows {
+    use super::SessionName;
     use super::{
         summary_says_same, AgentRun, AgentRunHeader, HostId, RunEntry, RunEntryKind, Summaries,
         Summary,
@@ -1329,14 +1331,14 @@ pub mod rows {
     #[derive(Debug, Clone, Default, PartialEq, Eq)]
     pub struct Owner {
         pub host_id: HostId,
-        pub zellij_session_name: String,
+        pub zellij_session_name: SessionName,
     }
 
     impl Owner {
-        pub fn new(host_id: HostId, zellij_session_name: impl Into<String>) -> Self {
+        pub fn new(host_id: HostId, zellij_session_name: SessionName) -> Self {
             Owner {
                 host_id,
-                zellij_session_name: zellij_session_name.into(),
+                zellij_session_name,
             }
         }
 
@@ -3236,7 +3238,7 @@ mod tests {
 
     /// An owner on [`HOST`]. The cross-machine cases spell `Owner::new` out.
     fn owner(zellij_session_name: &str) -> rows::Owner {
-        rows::Owner::new(HostId::new(HOST), zellij_session_name)
+        rows::Owner::new(HostId::new(HOST), zellij_session_name.into())
     }
 
     #[test]
@@ -4320,7 +4322,7 @@ mod tests {
         let mut run = AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "zellij".to_owned(),
+            zellij_session_name: "zellij".to_owned().into(),
             host_id: HostId::new(HOST),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
@@ -4480,7 +4482,7 @@ mod tests {
         let mut run = AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "zellij".to_owned(),
+            zellij_session_name: "zellij".to_owned().into(),
             host_id: HostId::new(HOST),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
@@ -4563,7 +4565,7 @@ mod tests {
         let mut run = AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "zellij".to_owned(),
+            zellij_session_name: "zellij".to_owned().into(),
             host_id: HostId::new(HOST),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
@@ -4618,7 +4620,7 @@ mod tests {
         let mut run = AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "zellij".to_owned(),
+            zellij_session_name: "zellij".to_owned().into(),
             host_id: HostId::new(HOST),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
@@ -4707,7 +4709,7 @@ mod tests {
         let mut run = AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "zellij".to_owned(),
+            zellij_session_name: "zellij".to_owned().into(),
             host_id: HostId::new(HOST),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
@@ -4732,7 +4734,7 @@ mod tests {
         let mut foreign = run.clone();
         foreign.id = "claude:session-2".to_owned();
         foreign.session_id = "session-2".to_owned();
-        foreign.zellij_session_name = "another-zellij".to_owned();
+        foreign.zellij_session_name = "another-zellij".to_owned().into();
         local.apply(rows::run_mutations(&foreign)).unwrap();
         let active = local
             .fetch(&rows::active_runs_request(&owner("zellij")))
@@ -4902,7 +4904,7 @@ mod tests {
         AgentRun {
             id: id.to_owned(),
             pane_id,
-            zellij_session_name: session.to_owned(),
+            zellij_session_name: session.to_owned().into(),
             host_id: HostId::new(HOST),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
@@ -4973,7 +4975,7 @@ mod tests {
 
         let stored = stored_run(&losing, "claude:session-1");
         assert_eq!(stored.pane_id, 2);
-        assert_eq!(stored.zellij_session_name, "there");
+        assert_eq!(stored.zellij_session_name, "there".into());
         assert_eq!(stored.ended_at_ms, None);
     }
 
@@ -5159,8 +5161,8 @@ mod tests {
 
         // Both sessions are called `main`, which is what makes this a collision rather than a
         // coincidence.
-        let on_laptop = rows::Owner::new(HostId::new("host-laptop"), "main");
-        let on_build_box = rows::Owner::new(HostId::new("host-build-box"), "main");
+        let on_laptop = rows::Owner::new(HostId::new("host-laptop"), "main".into());
+        let on_build_box = rows::Owner::new(HostId::new("host-build-box"), "main".into());
 
         laptop
             .apply(vec![rows::latch_mutation(&on_laptop, 5, "reviewer")])
@@ -5209,8 +5211,8 @@ mod tests {
         laptop.define_all(&store::shared_defs()).unwrap();
         let build_box = laptop.joined(store::SHARED, "hocus-agentd");
 
-        let on_laptop = rows::Owner::new(HostId::new("host-laptop"), "main");
-        let on_build_box = rows::Owner::new(HostId::new("host-build-box"), "main");
+        let on_laptop = rows::Owner::new(HostId::new("host-laptop"), "main".into());
+        let on_build_box = rows::Owner::new(HostId::new("host-build-box"), "main".into());
 
         // The build box owns the run, and has said something recent about it.
         let mut run = a_run_with_entries("claude:session-1", "main", 7, &["answered"]);
@@ -5362,7 +5364,7 @@ mod tests {
 
         // Which narrows the row. Another machine running a session of the same name could reach
         // it while it named no host, and cannot once it does.
-        let elsewhere = rows::Owner::new(HostId::new("host-b"), "zellij");
+        let elsewhere = rows::Owner::new(HostId::new("host-b"), "zellij".into());
         assert!(
             rows::runs_from_rows(&local.fetch(&rows::active_runs_request(&elsewhere)).unwrap())
                 .is_empty(),
@@ -7291,7 +7293,7 @@ mod tests {
         AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 3,
-            zellij_session_name: "zellij".to_owned(),
+            zellij_session_name: "zellij".to_owned().into(),
             host_id: HostId::new(HOST),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),

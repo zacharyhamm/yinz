@@ -1596,7 +1596,7 @@ fn decode_nested_frame(bytes: &[u8]) -> Option<zellij_ipc::nested_session::Neste
 
 fn guest_announce_message() -> zellij_ipc::nested_session::NestedSessionMessage {
     zellij_ipc::nested_session::NestedSessionMessage::Announce {
-        session_name: "guest-session".to_owned(),
+        session_name: "guest-session".to_owned().into(),
         capabilities: vec![zellij_ipc::nested_session::NestedSessionCapability::NestedControl],
     }
 }

@@ -2400,7 +2400,7 @@ fn init_session(
         let session_name = envs::get_session_name()
             .ok()
             .or_else(|| config.options.session_name.clone())
-            .unwrap_or_else(|| "default".to_string());
+            .unwrap_or_else(|| "default".to_string().into());
         match crate::session_recorder::spawn_session_recorder(
             data_access.clone(),
             data_dir.clone(),
@@ -2443,7 +2443,9 @@ fn init_session(
         .set_firecracker_provider(
             config.options.firecracker_provider.clone(),
             config.options.firecracker_provider_timeout_secs,
-            envs::get_session_name().unwrap_or_else(|_| "default".to_owned()),
+            envs::get_session_name()
+                .unwrap_or_else(|_| "default".to_owned().into())
+                .to_string(),
         )
         .non_fatal();
 

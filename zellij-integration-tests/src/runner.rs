@@ -109,7 +109,7 @@ impl TestRunner {
             cli_args.clone(),
             config.clone(),
             config_options.clone(),
-            ClientInfo::New(session_name.clone(), layout_info, None),
+            ClientInfo::New(session_name.clone().into(), layout_info, None),
         );
 
         TestSession {
@@ -544,7 +544,10 @@ impl TestSession {
             self.cli_args.clone(),
             self.config.clone(),
             self.config_options.clone(),
-            ClientInfo::Attach(self.session_name.clone(), self.config_options.clone()),
+            ClientInfo::Attach(
+                self.session_name.clone().into(),
+                self.config_options.clone(),
+            ),
         );
         TestClient {
             fake_client_handle,
@@ -559,7 +562,10 @@ impl TestSession {
             self.cli_args.clone(),
             self.config.clone(),
             self.config_options.clone(),
-            ClientInfo::Watch(self.session_name.clone(), self.config_options.clone()),
+            ClientInfo::Watch(
+                self.session_name.clone().into(),
+                self.config_options.clone(),
+            ),
         );
         TestClient {
             fake_client_handle,
@@ -633,7 +639,7 @@ impl TestSession {
             .spawn(move || {
                 zellij_client::cli_client::start_cli_client(
                     Box::new(fake_client_os_api),
-                    &session_name,
+                    &zellij_types::internal_ids::SessionName::new(&session_name),
                     actions,
                 )
             })
@@ -646,8 +652,9 @@ impl TestSession {
     }
 
     pub fn wait_for_serialized_session(&self) {
-        let session_dir =
-            zellij_runtime::consts::session_info_folder_for_session(&self.session_name);
+        let session_dir = zellij_runtime::consts::session_info_folder_for_session(
+            &zellij_types::internal_ids::SessionName::new(&self.session_name),
+        );
         let deadline = std::time::Instant::now() + crate::default_timeout();
         loop {
             if let Ok(checkpoint) =
@@ -673,8 +680,9 @@ impl TestSession {
     }
 
     pub fn resurrect(&mut self, size: Size) {
-        let layout_path =
-            zellij_runtime::consts::session_layout_cache_file_name(&self.session_name);
+        let layout_path = zellij_runtime::consts::session_layout_cache_file_name(
+            &zellij_types::internal_ids::SessionName::new(&self.session_name),
+        );
         {
             let checkpoint = zellij_runtime::session_checkpoint::SessionCheckpoint::read(
                 layout_path.parent().unwrap(),
@@ -703,7 +711,7 @@ impl TestSession {
             cli_args,
             self.config.clone(),
             self.config_options.clone(),
-            ClientInfo::Resurrect(self.session_name.clone(), layout_path, false, None),
+            ClientInfo::Resurrect(self.session_name.clone().into(), layout_path, false, None),
         );
         self.fake_server_os_api = fake_server_os_api;
         self.server_thread = server_thread;
@@ -797,7 +805,7 @@ impl TestSession {
             .spawn(move || {
                 zellij_client::cli_client::start_events_client(
                     Box::new(fake_client_os_api),
-                    &session_name,
+                    &zellij_types::internal_ids::SessionName::new(&session_name),
                     events_cli,
                 )
             })
@@ -851,8 +859,10 @@ impl TestSession {
             self.main_client.fake_client_handle.kill_session();
             self.main_client.join();
         } else {
-            zellij_session::sessions::kill_session(&self.session_name)
-                .expect("failed to deliver the integration-test server shutdown request");
+            zellij_session::sessions::kill_session(&zellij_types::internal_ids::SessionName::new(
+                &self.session_name,
+            ))
+            .expect("failed to deliver the integration-test server shutdown request");
         }
         if let Some(server_thread) = self.server_thread.lock().unwrap().take() {
             join_server_thread_with_timeout(server_thread);

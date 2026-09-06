@@ -1,6 +1,7 @@
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use zellij_tile::prelude::PaneId;
+use zellij_tile::prelude::SessionName;
 use zellij_tile::prelude::TabPosition;
 
 use crate::ui::{
@@ -10,7 +11,13 @@ use crate::ui::{
 
 /// One flattened row of the session list: the item itself, the session it belongs to, the tab
 /// position, the (pane id, is_plugin) pair, and whether it is the current session.
-type FlattenedAsset = (ListItem, String, Option<TabPosition>, Option<PaneId>, bool);
+type FlattenedAsset = (
+    ListItem,
+    SessionName,
+    Option<TabPosition>,
+    Option<PaneId>,
+    bool,
+);
 
 #[derive(Debug, Default)]
 pub struct SessionList {
@@ -93,7 +100,7 @@ impl SessionList {
         }
         list_items
     }
-    pub fn get_selected_session_name(&self) -> Option<String> {
+    pub fn get_selected_session_name(&self) -> Option<SessionName> {
         if self.is_searching {
             self.selected_search_index
                 .and_then(|i| self.search_results.get(i))
@@ -341,18 +348,20 @@ impl SessionList {
         }
     }
     pub fn has_session(&self, session_name: &str) -> bool {
-        self.session_ui_infos.iter().any(|s| s.name == session_name)
+        self.session_ui_infos
+            .iter()
+            .any(|s| s.name == session_name.into())
     }
     pub fn update_session_name(&mut self, old_name: &str, new_name: &str) {
         if let Some(session) = self
             .session_ui_infos
             .iter_mut()
-            .find(|s| s.name == old_name)
+            .find(|s| s.name == old_name.into())
         {
-            session.name = new_name.to_owned();
+            session.name = new_name.to_owned().into();
         }
     }
-    pub fn all_other_sessions(&self) -> Vec<String> {
+    pub fn all_other_sessions(&self) -> Vec<SessionName> {
         self.session_ui_infos
             .iter()
             .filter_map(|s| {
@@ -415,7 +424,7 @@ pub struct SearchResult {
     score: i64,
     indices: Vec<usize>,
     list_item: ListItem,
-    session_name: String,
+    session_name: SessionName,
     tab_position: Option<TabPosition>,
     pane_id: Option<PaneId>,
     is_current_session: bool,
@@ -426,7 +435,7 @@ impl SearchResult {
         score: i64,
         indices: Vec<usize>,
         list_item: ListItem,
-        session_name: String,
+        session_name: SessionName,
         tab_position: Option<TabPosition>,
         pane_id: Option<PaneId>,
         is_current_session: bool,

@@ -213,7 +213,9 @@ pub fn new_from_string(
                 direction: search_direction,
             })
         },
-        "RenameSession" => Ok(Action::RenameSession { name: string }),
+        "RenameSession" => Ok(Action::RenameSession {
+            name: string.into(),
+        }),
         "Notify" => Ok(Action::Notify(string)),
         _ => Err(ConfigError::new_kdl_error(
             format!("Unsupported action: {}", action_name),
@@ -747,7 +749,7 @@ pub fn to_kdl(value: &Action) -> Option<KdlNode> {
             cwd,
         } => {
             let mut node = KdlNode::new("SwitchSession");
-            node.push(KdlEntry::new_prop("name", name.clone()));
+            node.push(KdlEntry::new_prop("name", name.to_string()));
             if let Some(pos) = tab_position {
                 node.push(KdlEntry::new_prop("tab_position", i64::from(pos.get())));
             }
@@ -1197,7 +1199,7 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
             let cwd = kdl_get_string_property_or_child_value!(kdl_action, "cwd").map(PathBuf::from);
 
             Ok(Action::SwitchSession {
-                name,
+                name: name.into(),
                 tab_position,
                 pane_id,
                 layout,

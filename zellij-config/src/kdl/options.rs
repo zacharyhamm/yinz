@@ -352,7 +352,7 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         copy_on_select,
         osc8_hyperlinks,
         scrollback_editor,
-        session_name,
+        session_name: session_name.map(Into::into),
         attach_to_session,
         auto_layout,
         session_serialization,
@@ -1272,7 +1272,7 @@ fn session_name_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
         node
     };
     if let Some(session_name) = &value.session_name {
-        let mut node = create_node(session_name);
+        let mut node = create_node(session_name.as_str());
         if add_comments {
             node.set_leading(format!("{}\n", comment_text));
         }

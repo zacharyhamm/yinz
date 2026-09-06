@@ -1,6 +1,7 @@
 use unicode_width::UnicodeWidthStr;
 use zellij_runtime::errors::prelude::*;
 use zellij_tile_utils::ellipsize;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::pane_id::PaneId;
@@ -499,7 +500,7 @@ impl Screen {
         for info in live_sessions.iter_mut() {
             info.is_current_session = info.name == self.session_name;
         }
-        let resurrectable_sessions: Vec<(String, Duration)> = self
+        let resurrectable_sessions: Vec<(SessionName, Duration)> = self
             .resurrectable_sessions_cache
             .iter()
             .map(|(n, d)| (n.clone(), *d))
@@ -528,8 +529,8 @@ impl Screen {
     }
     pub fn update_session_infos(
         &mut self,
-        new_session_infos: BTreeMap<String, SessionInfo>,
-        resurrectable_sessions: BTreeMap<String, Duration>,
+        new_session_infos: BTreeMap<SessionName, SessionInfo>,
+        resurrectable_sessions: BTreeMap<SessionName, Duration>,
     ) -> Result<()> {
         self.peer_sessions_cache = new_session_infos;
         self.resurrectable_sessions_cache = resurrectable_sessions;

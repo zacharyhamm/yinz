@@ -5,6 +5,7 @@ use directories::ProjectDirs;
 use lazy_static::lazy_static;
 use std::{path::PathBuf, sync::OnceLock};
 use uuid::Uuid;
+use zellij_types::internal_ids::SessionName;
 
 pub const ZELLIJ_CONFIG_FILE_ENV: &str = "ZELLIJ_CONFIG_FILE";
 pub const ZELLIJ_CONFIG_DIR_ENV: &str = "ZELLIJ_CONFIG_DIR";
@@ -24,16 +25,16 @@ pub const SYSTEM_DEFAULT_DATA_DIR_PREFIX: &str = system_default_data_dir();
 pub const CLIENT_SERVER_CONTRACT_VERSION: usize = 1;
 
 /// Legacy flat metadata path. Read current metadata through `SessionCheckpoint`.
-pub fn session_info_cache_file_name(session_name: &str) -> PathBuf {
+pub fn session_info_cache_file_name(session_name: &SessionName) -> PathBuf {
     session_info_folder_for_session(session_name).join("session-metadata.kdl")
 }
 
 /// Logical resurrection path passed over IPC; the server resolves its checkpoint when loading.
-pub fn session_layout_cache_file_name(session_name: &str) -> PathBuf {
+pub fn session_layout_cache_file_name(session_name: &SessionName) -> PathBuf {
     session_info_folder_for_session(session_name).join("session-layout.kdl")
 }
 
-pub fn session_info_folder_for_session(session_name: &str) -> PathBuf {
+pub fn session_info_folder_for_session(session_name: &SessionName) -> PathBuf {
     ZELLIJ_SESSION_INFO_CACHE_DIR.join(session_name)
 }
 

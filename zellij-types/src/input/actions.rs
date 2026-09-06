@@ -1,4 +1,5 @@
 //! Definition of the actions that can be bound to keys.
+use crate::internal_ids::SessionName;
 
 pub use super::command::{OpenFilePayload, RunCommandAction};
 use super::layout::{
@@ -413,7 +414,7 @@ pub enum Action {
     ToggleTheme,
     /// Switch to a different session
     SwitchSession {
-        name: String,
+        name: SessionName,
         tab_position: Option<TabNumber>,
         #[serde(default, with = "crate::pane_id::legacy_tuple")]
         pane_id: Option<PaneId>,
@@ -428,7 +429,7 @@ pub enum Action {
     WarpPane {
         /// `None` means whichever pane is focused.
         pane_id: Option<PaneId>,
-        to_session: String,
+        to_session: SessionName,
         placement: WarpPlacement,
     },
     /// Take a pane over, from a session warping it here or from a supervisor that
@@ -451,7 +452,7 @@ pub enum Action {
         /// `None` means whichever tab is focused. This is a tab *id* rather than
         /// a position, matching `Screen::tabs`.
         tab_index: Option<TabId>,
-        to_session: String,
+        to_session: SessionName,
     },
     /// Take a whole tab over from a session warping it here.
     ///
@@ -469,7 +470,7 @@ pub enum Action {
     /// the pull to plugins, which can name their own session; a CLI client
     /// cannot, so it needs the receiving server to do it.
     WarpTabFrom {
-        from_session: String,
+        from_session: SessionName,
         tab_index: TabId,
     },
     /// Returns: Plugin pane ID (format: plugin_<id>) when creating or focusing plugin
@@ -607,7 +608,7 @@ pub enum Action {
     FocusGuestSession,
     ToggleHostFullscreen,
     RenameSession {
-        name: String,
+        name: SessionName,
     },
     /// Apply a KDL config fragment to every attached client's running configuration, and
     /// optionally persist it. What `PluginCommand::Reconfigure` does for a plugin, for a shell.

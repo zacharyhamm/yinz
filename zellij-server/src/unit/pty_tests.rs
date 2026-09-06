@@ -2749,7 +2749,7 @@ fn a_refused_pane_is_not_told_it_was_cut_loose() {
     let released = release_pane_for_warp(
         &mut pty,
         crate::TerminalId::new(3),
-        "elsewhere",
+        &zellij_types::internal_ids::SessionName::new("elsewhere"),
         test_warp_deadline(),
     );
 
@@ -2780,7 +2780,7 @@ fn a_release_that_fails_after_the_check_says_so_in_the_pane() {
     let released = release_pane_for_warp(
         &mut pty,
         crate::TerminalId::new(3),
-        "elsewhere",
+        &zellij_types::internal_ids::SessionName::new("elsewhere"),
         test_warp_deadline(),
     );
 

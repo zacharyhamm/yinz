@@ -85,7 +85,7 @@ fn params<'a>(host_bin: &'a Path, cmd: &RunCommand) -> SpawnParams<'a> {
     SpawnParams {
         host_bin,
         terminal_id: TerminalId::new(7),
-        session_name: Some("client-tests".to_owned()),
+        session_name: Some("client-tests".to_owned().into()),
         cmd: cmd.clone(),
         failover_cmd: None,
         termios: None,
@@ -178,7 +178,10 @@ fn the_handshake_hands_the_server_a_working_pty_master() {
             ..
         }) => {
             assert_eq!(terminal_id, 7);
-            assert_eq!(session_name.as_deref(), Some("client-tests"));
+            assert_eq!(
+                session_name.as_ref().map(|name| name.as_str()),
+                Some("client-tests")
+            );
             assert_eq!(sent, cmd);
             assert_eq!(initial_size.map(|s| (s.cols, s.rows)), Some((100, 30)));
         },
@@ -621,7 +624,7 @@ fn fake_supervisor_socket(
 fn a_status() -> HostStatus {
     HostStatus {
         host_id: SupervisorId::new("abcdef012345".to_owned()),
-        session_name: Some("client-tests".to_owned()),
+        session_name: Some("client-tests".to_owned().into()),
         terminal_id: 7,
         command: "/bin/sh -c 'sleep 60'".to_owned(),
         cwd: Some(PathBuf::from("/tmp")),
@@ -887,7 +890,7 @@ fn spawn_real_host(dir: &Path, cmd: RunCommand) -> Result<PendingHost> {
         job_control: true,
         host_bin: &wrapper,
         terminal_id: TerminalId::new(7),
-        session_name: Some("client-tests".to_owned()),
+        session_name: Some("client-tests".to_owned().into()),
         cmd,
         failover_cmd: None,
         termios: None,
@@ -1232,7 +1235,7 @@ fn a_released_pane_can_be_attached_by_another_server() {
     let pending = attach(AttachParams {
         control_socket: &control_socket,
         terminal_id: TerminalId::new(42),
-        session_name: Some("the-other-session".to_owned()),
+        session_name: Some("the-other-session".to_owned().into()),
     })
     .expect("attaching to the released supervisor failed");
     assert_eq!(
@@ -1246,7 +1249,11 @@ fn a_released_pane_can_be_attached_by_another_server() {
         "the supervisor should have re-keyed itself to the adopting session's pane"
     );
     assert_eq!(
-        pending.status().session_name.as_deref(),
+        pending
+            .status()
+            .session_name
+            .as_ref()
+            .map(|name| name.as_str()),
         Some("the-other-session"),
         "the supervisor should report the session that owns the pane now"
     );
@@ -1301,7 +1308,7 @@ fn attaching_to_a_pane_someone_else_holds_is_refused() {
     let err = match attach(AttachParams {
         control_socket: &control_socket,
         terminal_id: TerminalId::new(42),
-        session_name: Some("the-other-session".to_owned()),
+        session_name: Some("the-other-session".to_owned().into()),
     }) {
         Ok(_) => panic!("attaching to an attached supervisor should have been refused"),
         Err(e) => e,

@@ -4002,7 +4002,7 @@ fn a_hook_handler_registered_with_on_runs() {
         .update(&Event::Hook {
             point: HookPoint::SessionStart,
             payload: zellij_types::data::HookPayload::SessionStart {
-                session_name: "main".to_owned(),
+                session_name: "main".to_owned().into(),
                 client_id: crate::ClientId::new(1),
             },
         })
@@ -4693,12 +4693,15 @@ fn the_session_list_arrives_as_the_snapshot_the_shim_builds() {
     };
     let snapshot = SessionListSnapshot {
         live_sessions: vec![SessionInfo {
-            name: "work".to_owned(),
+            name: "work".to_owned().into(),
             connected_clients: 2,
             is_current_session: true,
             ..Default::default()
         }],
-        resurrectable_sessions: vec![("yesterday".to_owned(), std::time::Duration::from_secs(90))],
+        resurrectable_sessions: vec![(
+            "yesterday".to_owned().into(),
+            std::time::Duration::from_secs(90),
+        )],
     };
     let reply =
         ProtobufGetSessionListResponse::from(GetSessionListResponse::Ok(snapshot)).encode_to_vec();

@@ -163,7 +163,7 @@ mod tests {
 
     /// The machine these jobs were armed on.
     fn owner() -> Owner {
-        Owner::new(zellij_tile::prelude::HostId::new("host-a"), "zellij")
+        Owner::new(zellij_tile::prelude::HostId::new("host-a"), "zellij".into())
     }
 
     fn job(id: u64) -> JobRow {
@@ -189,8 +189,14 @@ mod tests {
         laptop.define_all(&store::shared_defs()).unwrap();
         let build_box = laptop.joined(store::SHARED, "hocus");
 
-        let on_laptop = Owner::new(zellij_tile::prelude::HostId::new("host-laptop"), "main");
-        let on_build_box = Owner::new(zellij_tile::prelude::HostId::new("host-build-box"), "main");
+        let on_laptop = Owner::new(
+            zellij_tile::prelude::HostId::new("host-laptop"),
+            "main".into(),
+        );
+        let on_build_box = Owner::new(
+            zellij_tile::prelude::HostId::new("host-build-box"),
+            "main".into(),
+        );
 
         let mut theirs = job(1);
         theirs.prompt = "run the build".to_owned();
@@ -236,7 +242,7 @@ mod tests {
                 .set("prompt", "an old prompt")
                 .build()])
             .unwrap();
-        let owner = Owner::new(zellij_tile::prelude::HostId::new("host-a"), "main");
+        let owner = Owner::new(zellij_tile::prelude::HostId::new("host-a"), "main".into());
         assert!(from_rows(&local.fetch(&owned_request(&owner)).unwrap()).is_empty());
     }
 

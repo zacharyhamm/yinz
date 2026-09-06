@@ -15,6 +15,7 @@ use zellij_types::data::SessionConnection;
 use zellij_types::diagnostics::ErrorContext;
 use zellij_types::input::actions::Action;
 use zellij_types::input::cli_assets::CliAssets;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::keys::KeyModifier;
 use zellij_types::keys::KeyWithModifier;
@@ -247,7 +248,7 @@ pub enum ServerToClientMsg {
     },
     QueryTerminalSize,
     RenamedSession {
-        name: String,
+        name: SessionName,
     },
     ConfigFileUpdated,
     PaneRenderUpdate {

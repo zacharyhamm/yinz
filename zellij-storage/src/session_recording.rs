@@ -781,7 +781,7 @@ fn sqlite_list_recordings(data_dir: &Path) -> Result<Vec<RecordingSummary>> {
         let started_at_us = session_started + started_elapsed_us;
         results.push(RecordingSummary {
             id: RecordingId::new(id),
-            session_name,
+            session_name: session_name.into(),
             tab_name,
             terminal_id: TerminalId::try_from(terminal_id)?,
             pane_title,
@@ -1186,7 +1186,7 @@ fn run_search(conn: &rusqlite::Connection, query: &str, limit: usize) -> Result<
             recording_id: RecordingId::new(row.get(0)?),
             elapsed_us: ElapsedMicros::new(elapsed_us),
             text: row.get(2)?,
-            session_name: row.get(3)?,
+            session_name: row.get::<_, String>(3)?.into(),
             tab_name: row.get(4)?,
             pane_title: row.get(5)?,
             // Same best-effort wall clock reconstruction as `list_recordings`.
@@ -1244,7 +1244,7 @@ mod search_tests {
         let hits = search_recordings(dir.path(), "needle", 10)?;
         assert_eq!(hits.len(), 1, "expected exactly one hit: {:?}", hits.len());
         assert_eq!(hits[0].text, "hello needle world");
-        assert_eq!(hits[0].session_name, "my_session");
+        assert_eq!(hits[0].session_name, "my_session".into());
         assert_eq!(hits[0].tab_name, "my_tab");
         assert_eq!(hits[0].pane_title, "my_pane");
         // attributed to the event that completed the line
@@ -1519,7 +1519,7 @@ mod list_tests {
         assert_eq!(list.len(), 3);
         // newest session first -> terminal 3 (second session) first
         assert_eq!(list[0].terminal_id, TerminalId::new(3));
-        assert_eq!(list[0].session_name, "second");
+        assert_eq!(list[0].session_name, "second".into());
         // then tab_position 0 before 1 within first session
         assert_eq!(list[1].terminal_id, TerminalId::new(2));
         assert_eq!(list[2].terminal_id, TerminalId::new(1));
