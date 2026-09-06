@@ -3098,11 +3098,9 @@ impl State {
     /// folder Git did not claim, or one no probe has answered for yet. Empty is a real
     /// answer here rather than an absence - it is what takes a highlight down.
     ///
-    /// The key is `checkout_label` - `repo:branch` - and not the folder, which is the whole
-    /// point: two panes in one worktree match, and so do two worktrees of one repository
-    /// that have the same branch out, while two different branches of one repository do
-    /// not. It is also the string already on these panes' title prefixes, so what lights up
-    /// and what the frame says agree by construction.
+    /// Match the repository's host, full common directory and branch. Worktrees of one
+    /// repository on the same branch match; unrelated repositories with identical display
+    /// labels do not. Two detached HEADs in the same repository also match.
     fn related_agent_panes(&self) -> BTreeSet<u32> {
         let empty = BTreeSet::new();
         // `focused` is the focused *terminal* pane of the active tab, so a plugin pane with
@@ -3126,7 +3124,7 @@ impl State {
         let Some(tab_id) = focused.tab.as_ref().map(|(id, _)| *id) else {
             return empty;
         };
-        let Some(label) = self.checkout_label_of(focused) else {
+        let Some(key) = self.checkout_key_of(focused) else {
             return empty;
         };
         self.panes
@@ -3135,17 +3133,22 @@ impl State {
             .filter(|pane| pane.pane_id != focused_id)
             .filter(|pane| pane.tab.as_ref().map(|(id, _)| *id) == Some(tab_id))
             .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
-            .filter(|pane| self.checkout_label_of(pane).as_ref() == Some(&label))
+            .filter(|pane| self.checkout_key_of(pane) == Some(key))
             .map(|pane| pane.pane_id)
             .collect()
     }
 
-    /// `repo:branch` for a pane's folder, or `None` for a folder that is not a checkout or
-    /// has not been probed yet. The same lookup `refresh_title_prefixes_with` makes.
-    fn checkout_label_of(&self, pane: &agents::AgentPane) -> Option<String> {
-        self.repositories
-            .get(&self.pane_location(pane)?)?
-            .checkout_label()
+    /// Repository identity and branch, or `None` without a probe or common directory.
+    fn checkout_key_of(
+        &self,
+        pane: &agents::AgentPane,
+    ) -> Option<(Option<&str>, &str, Option<&str>)> {
+        let repository = self.repositories.get(&self.pane_location(pane)?)?;
+        Some((
+            repository.host.as_deref(),
+            repository.common_dir.as_deref()?,
+            repository.branch.as_deref(),
+        ))
     }
 
     /// Tell the session which agent panes are kin of the focused one.
@@ -3374,8 +3377,7 @@ mod tests {
         assert_eq!(related(&mut state), Some(vec![8, 9]));
     }
 
-    /// The whole reason the key is `checkout_label` and not the folder: a second worktree of
-    /// one repository with the same branch out is the same piece of work.
+    /// Sharing a repository is not enough when the branches differ.
     #[test]
     fn a_different_branch_of_the_same_repository_is_not_a_sibling() {
         let mut state = related_agents();
@@ -3385,6 +3387,65 @@ mod tests {
             Some(vec![]),
             "the primary checkout is on `main`, and nothing else here is"
         );
+    }
+
+    #[test]
+    fn identical_checkout_labels_in_different_repositories_are_not_siblings() {
+        let mut state = related_agents();
+        let twin = local("/work/hocus/.worktrees/topic-twin");
+        let repository = state.repositories.get_mut(&twin).unwrap();
+        repository.common_dir = Some("/other/hocus/.git".to_owned());
+        assert_eq!(repository.checkout_label().as_deref(), Some("hocus:topic"));
+        assert_eq!(related(&mut state), Some(vec![8]));
+    }
+
+    #[test]
+    fn identical_repository_paths_on_different_hosts_are_not_siblings() {
+        for host in [None, Some("build-box")] {
+            let mut state = related_agents();
+            for pane in state.panes.as_mut().unwrap() {
+                pane.host = host.map(str::to_owned);
+                if pane.pane_id == 9 {
+                    pane.host = Some("other-box".to_owned());
+                }
+            }
+            state.repositories = state
+                .repositories
+                .into_iter()
+                .map(|(location, repository)| {
+                    let host = if location.path.ends_with("topic-twin") {
+                        Some("other-box")
+                    } else {
+                        host
+                    };
+                    (
+                        Location::new(host, location.path),
+                        repository.on_host(host.map(str::to_owned)),
+                    )
+                })
+                .collect();
+            assert_eq!(related(&mut state), Some(vec![8]));
+        }
+    }
+
+    #[test]
+    fn detached_heads_in_the_same_repository_are_siblings() {
+        let mut state = related_agents();
+        for repository in state.repositories.values_mut() {
+            if repository.branch.as_deref() == Some("topic") {
+                repository.branch = None;
+            }
+        }
+        assert_eq!(related(&mut state), Some(vec![8, 9]));
+    }
+
+    #[test]
+    fn a_checkout_without_a_common_directory_has_no_siblings() {
+        let mut state = related_agents();
+        for repository in state.repositories.values_mut() {
+            repository.common_dir = None;
+        }
+        assert_eq!(related(&mut state), Some(vec![]));
     }
 
     /// A fresh daemon has no idea what the session still believes, so it says so even when
