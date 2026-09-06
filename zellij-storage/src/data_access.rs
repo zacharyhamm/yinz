@@ -8,6 +8,8 @@
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
+use zellij_types::internal_ids::{RecordingId, TerminalId};
+use zellij_types::units::{ElapsedMicros, UnixMicros};
 
 use anyhow::Result;
 
@@ -41,9 +43,13 @@ pub trait PluginDataBackend: Send + Sync {
 pub trait RecordingSession: Send {
     /// Commit the entire batch or return an error without retaining any of its events.
     fn record_events(&mut self, events: &[RecordedEvent]) -> Result<()>;
-    fn update_panes(&mut self, panes: &[PaneMetadata], elapsed_us: i64) -> Result<()>;
-    fn finish_pane(&mut self, terminal_id: u32, elapsed_us: i64) -> Result<()>;
-    fn finish_session(&mut self, ended_at_us: i64, ended_elapsed_us: i64) -> Result<()>;
+    fn update_panes(&mut self, panes: &[PaneMetadata], elapsed_us: ElapsedMicros) -> Result<()>;
+    fn finish_pane(&mut self, terminal_id: TerminalId, elapsed_us: ElapsedMicros) -> Result<()>;
+    fn finish_session(
+        &mut self,
+        ended_at_us: UnixMicros,
+        ended_elapsed_us: ElapsedMicros,
+    ) -> Result<()>;
     fn mark_incomplete(&mut self, message: &str) -> Result<()>;
 }
 
@@ -53,11 +59,11 @@ pub trait RecordingBackend: Send + Sync {
         &self,
         session_name: &str,
         capture_input: bool,
-        started_at_us: i64,
+        started_at_us: UnixMicros,
     ) -> Result<Box<dyn RecordingSession>>;
     fn list(&self) -> Result<Vec<RecordingSummary>>;
     fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>>;
-    fn export(&self, recording_id: i64, output: &mut dyn Write) -> Result<()>;
+    fn export(&self, recording_id: RecordingId, output: &mut dyn Write) -> Result<()>;
 }
 
 /// The Postgres schema the plugin data store uses when `plugin_data_schema` is unset.

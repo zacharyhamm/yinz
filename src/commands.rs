@@ -4,6 +4,7 @@ use std::{
     process,
     time::Duration,
 };
+use zellij_types::units::{ElapsedMicros, UnixMicros};
 
 use zellij_client::{
     os_input_output::get_client_os_input, start_client as start_client_impl, ClientInfo,
@@ -1539,13 +1540,13 @@ pub(crate) fn format_recordings_list(
     out
 }
 
-fn format_started(started_at_us: i64) -> String {
-    let t = std::time::UNIX_EPOCH + Duration::from_micros(started_at_us.max(0) as u64);
+fn format_started(started_at_us: UnixMicros) -> String {
+    let t = std::time::UNIX_EPOCH + Duration::from_micros(started_at_us.get().max(0) as u64);
     humantime::format_rfc3339_seconds(t).to_string()
 }
 
-fn format_duration(duration_us: i64) -> String {
-    let secs = duration_us as f64 / 1_000_000.0;
+fn format_duration(duration_us: ElapsedMicros) -> String {
+    let secs = duration_us.get() as f64 / 1_000_000.0;
     if secs < 60.0 {
         format!("{:.1}s", secs)
     } else if secs < 3600.0 {

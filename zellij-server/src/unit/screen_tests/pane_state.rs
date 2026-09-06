@@ -147,7 +147,10 @@ fn recorder_pane_metadata() {
         std::slice::from_ref(&tab_info),
     );
     assert_eq!(metadata.len(), 1, "should filter plugin panes");
-    assert_eq!(metadata[0].terminal_id, 5);
+    assert_eq!(
+        metadata[0].terminal_id,
+        zellij_types::internal_ids::TerminalId::new(5)
+    );
     assert_eq!(metadata[0].tab_id, 0);
     assert_eq!(metadata[0].tab_position, 0);
     assert_eq!(metadata[0].tab_name, "my tab");

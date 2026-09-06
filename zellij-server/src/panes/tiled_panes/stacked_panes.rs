@@ -592,6 +592,10 @@ impl<'a> StackedPanes<'a> {
         let geom_to_combine = geoms_to_combine.first()?;
         geom_to_combine
             .combine_horizontally_with_many(&geoms_to_combine.iter().copied().skip(1).collect())
+            .or_else(|| {
+                Err::<(), _>(anyhow!("Can't combine fixed panes")).non_fatal();
+                None
+            })
     }
     fn combine_geoms_vertically(
         &self,
@@ -611,6 +615,10 @@ impl<'a> StackedPanes<'a> {
         let geom_to_combine = geoms_to_combine.first()?;
         geom_to_combine
             .combine_vertically_with_many(&geoms_to_combine.iter().copied().skip(1).collect())
+            .or_else(|| {
+                Err::<(), _>(anyhow!("Can't combine fixed panes")).non_fatal();
+                None
+            })
     }
     pub fn combine_vertically_aligned_panes_to_stack(
         &mut self,
@@ -638,6 +646,7 @@ impl<'a> StackedPanes<'a> {
             geom_of_main_pane.combine_vertically_with(&geom_to_combine)
         };
         let Some(new_stack_geom) = new_stack_geom else {
+            Err::<(), _>(anyhow!("Can't combine fixed panes")).non_fatal();
             // nothing to do, likely the pane below is fixed
             return Ok(());
         };
@@ -713,6 +722,7 @@ impl<'a> StackedPanes<'a> {
             geom_of_main_pane.combine_horizontally_with(&geom_to_combine)
         };
         let Some(new_stack_geom) = new_stack_geom else {
+            Err::<(), _>(anyhow!("Can't combine fixed panes")).non_fatal();
             // nothing to do, likely the pane below is fixed
             return Ok(());
         };

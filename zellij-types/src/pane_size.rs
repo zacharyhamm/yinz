@@ -8,6 +8,11 @@ use crate::geometry::FloatingPaneCoordinates;
 use crate::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use crate::position::Position;
 
+/// A percentage-only reduction was requested for a fixed dimension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("Cannot reduce_by fixed dimensions")]
+pub struct FixedDimension;
+
 /// Contains the position and size of a [`Pane`], or more generally of any terminal, measured
 /// in character rows and columns.
 #[derive(Clone, Copy, Default, Debug, Serialize, Deserialize)]
@@ -211,15 +216,14 @@ impl Dimension {
             },
         }
     }
-    pub fn reduce_by(&mut self, by: f64, by_inner: usize) {
+    pub fn reduce_by(&mut self, by: f64, by_inner: usize) -> Result<(), FixedDimension> {
         match self.constraint {
             Constraint::Percent(percent) => {
                 self.constraint = Constraint::Percent(percent - by);
                 self.inner = self.inner.saturating_sub(by_inner);
+                Ok(())
             },
-            Constraint::Fixed(_fixed) => {
-                log::error!("Cannot reduce_by fixed dimensions");
-            },
+            Constraint::Fixed(_) => Err(FixedDimension),
         }
     }
 }
@@ -349,10 +353,7 @@ impl PaneGeom {
                 combined.rows.inner = self.rows.inner + geom_below.rows.inner;
                 Some(combined)
             },
-            _ => {
-                log::error!("Can't combine fixed panes");
-                None
-            },
+            _ => None,
         }
     }
     pub fn combine_horizontally_with(&self, geom_to_the_right: &PaneGeom) -> Option<Self> {
@@ -363,10 +364,7 @@ impl PaneGeom {
                 combined.cols.inner = self.cols.inner + geom_to_the_right.cols.inner;
                 Some(combined)
             },
-            _ => {
-                log::error!("Can't combine fixed panes");
-                None
-            },
+            _ => None,
         }
     }
     pub fn combine_vertically_with_many(&self, geoms_below: &Vec<PaneGeom>) -> Option<Self> {
@@ -384,7 +382,6 @@ impl PaneGeom {
                     combined.rows.inner = new_rows_inner;
                 },
                 _ => {
-                    log::error!("Can't combine fixed panes");
                     return None;
                 },
             }
@@ -410,7 +407,6 @@ impl PaneGeom {
                     combined.cols.inner = new_cols;
                 },
                 _ => {
-                    log::error!("Can't combine fixed panes");
                     return None;
                 },
             }

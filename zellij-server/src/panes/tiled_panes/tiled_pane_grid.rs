@@ -1741,10 +1741,14 @@ impl<'a> TiledPaneGrid<'a> {
                     if !trailing {
                         pane_geom.x = hole_geom.x;
                     }
-                    hole_geom.rows.reduce_by(
-                        pane_geom.rows.as_percent().with_context(err_context)?,
-                        pane_geom.rows.as_usize(),
-                    );
+                    hole_geom
+                        .rows
+                        .reduce_by(
+                            pane_geom.rows.as_percent().with_context(err_context)?,
+                            pane_geom.rows.as_usize(),
+                        )
+                        .with_context(err_context)
+                        .non_fatal();
                     if direction == Direction::Down {
                         hole_geom.y += pane_geom.rows.as_usize();
                     }
@@ -1754,10 +1758,14 @@ impl<'a> TiledPaneGrid<'a> {
                     if !trailing {
                         pane_geom.y = hole_geom.y;
                     }
-                    hole_geom.cols.reduce_by(
-                        pane_geom.cols.as_percent().with_context(err_context)?,
-                        pane_geom.cols.as_usize(),
-                    );
+                    hole_geom
+                        .cols
+                        .reduce_by(
+                            pane_geom.cols.as_percent().with_context(err_context)?,
+                            pane_geom.cols.as_usize(),
+                        )
+                        .with_context(err_context)
+                        .non_fatal();
                     if direction == Direction::Right {
                         hole_geom.x += pane_geom.cols.as_usize();
                     }

@@ -1,71 +1,12 @@
 use std::path::{Path, PathBuf};
+use zellij_types::internal_ids::{RecordingId, TerminalId};
+use zellij_types::units::{ElapsedMicros, UnixMicros};
 
 use anyhow::Result;
 
 use crate::data_access::{RecordingBackend, RecordingSession};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EventKind {
-    Output,
-    Input,
-    Resize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RecordedEvent {
-    pub terminal_id: u32,
-    pub elapsed_us: i64,
-    pub kind: EventKind,
-    pub data: Vec<u8>,
-}
-
-impl RecordedEvent {
-    pub fn output(terminal_id: u32, elapsed_us: i64, data: Vec<u8>) -> Self {
-        Self {
-            terminal_id,
-            elapsed_us,
-            kind: EventKind::Output,
-            data,
-        }
-    }
-
-    pub fn input(terminal_id: u32, elapsed_us: i64, data: Vec<u8>) -> Self {
-        Self {
-            terminal_id,
-            elapsed_us,
-            kind: EventKind::Input,
-            data,
-        }
-    }
-
-    pub fn resize(terminal_id: u32, elapsed_us: i64, cols: u16, rows: u16) -> Self {
-        Self {
-            terminal_id,
-            elapsed_us,
-            kind: EventKind::Resize,
-            data: format!("{}x{}", cols, rows).into_bytes(),
-        }
-    }
-
-    fn code(&self) -> &'static str {
-        match self.kind {
-            EventKind::Output => "o",
-            EventKind::Input => "i",
-            EventKind::Resize => "r",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PaneMetadata {
-    pub terminal_id: u32,
-    pub tab_id: usize,
-    pub tab_position: usize,
-    pub tab_name: String,
-    pub title: String,
-    pub cols: usize,
-    pub rows: usize,
-}
+pub use zellij_types::recording::{EventKind, PaneMetadata, RecordedEvent};
 
 struct SqliteRecordingSession {
     connection: rusqlite::Connection,
@@ -95,7 +36,7 @@ impl SqliteRecordingSession {
         data_dir: &Path,
         session_name: &str,
         capture_input: bool,
-        started_at_us: i64,
+        started_at_us: UnixMicros,
     ) -> Result<Self> {
         std::fs::create_dir_all(data_dir)
             .map_err(|e| anyhow::anyhow!("failed to create data dir {:?}: {}", data_dir, e))?;
@@ -154,7 +95,7 @@ impl SqliteRecordingSession {
         )?;
         connection.execute(
             "INSERT INTO recording_sessions (name, started_at_us, capture_input) VALUES (?1, ?2, ?3)",
-            rusqlite::params![session_name, started_at_us, if capture_input { 1 } else { 0 }],
+            rusqlite::params![session_name, started_at_us.get(), if capture_input { 1 } else { 0 }],
         )?;
         let session_id = connection.last_insert_rowid();
         Ok(Self {
@@ -174,8 +115,10 @@ impl SqliteRecordingSession {
                 let mut stmt = tx.prepare(
                     "SELECT id FROM recording_panes WHERE session_id = ?1 AND terminal_id = ?2",
                 )?;
-                let mut rows =
-                    stmt.query(rusqlite::params![self.session_id, event.terminal_id as i64])?;
+                let mut rows = stmt.query(rusqlite::params![
+                    self.session_id,
+                    event.terminal_id.get() as i64
+                ])?;
                 if let Some(row) = rows.next()? {
                     row.get(0)?
                 } else {
@@ -187,29 +130,35 @@ impl SqliteRecordingSession {
                     };
                     tx.execute(
                         "INSERT INTO recording_panes (session_id, terminal_id, started_elapsed_us, initial_cols, initial_rows) VALUES (?1, ?2, ?3, ?4, ?5)",
-                        rusqlite::params![self.session_id, event.terminal_id as i64, event.elapsed_us, initial_cols as i64, initial_rows as i64],
+                        rusqlite::params![self.session_id, event.terminal_id.get() as i64, event.elapsed_us.get(), initial_cols as i64, initial_rows as i64],
                     )?;
                     tx.last_insert_rowid()
                 }
             };
             tx.execute(
                 "INSERT INTO recording_events (pane_id, elapsed_us, code, data) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![pane_id, event.elapsed_us, event.code(), event.data],
+                rusqlite::params![pane_id, event.elapsed_us.get(), event.asciicast_code(), event.data],
             )?;
         }
         tx.commit()?;
         Ok(())
     }
 
-    pub fn update_panes(&mut self, panes: &[PaneMetadata], elapsed_us: i64) -> Result<()> {
+    pub fn update_panes(
+        &mut self,
+        panes: &[PaneMetadata],
+        elapsed_us: ElapsedMicros,
+    ) -> Result<()> {
         let tx = self.connection.transaction()?;
         for pane in panes {
             let existing: Option<(i64, i64, i64, String)> = {
                 let mut stmt = tx.prepare(
                     "SELECT id, initial_cols, initial_rows, tab_name FROM recording_panes WHERE session_id = ?1 AND terminal_id = ?2",
                 )?;
-                let mut rows =
-                    stmt.query(rusqlite::params![self.session_id, pane.terminal_id as i64])?;
+                let mut rows = stmt.query(rusqlite::params![
+                    self.session_id,
+                    pane.terminal_id.get() as i64
+                ])?;
                 if let Some(row) = rows.next()? {
                     Some((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
                 } else {
@@ -268,12 +217,12 @@ impl SqliteRecordingSession {
                     "INSERT INTO recording_panes (session_id, terminal_id, tab_id, tab_position, tab_name, title, started_elapsed_us, initial_cols, initial_rows) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     rusqlite::params![
                         self.session_id,
-                        pane.terminal_id as i64,
+                        pane.terminal_id.get() as i64,
                         pane.tab_id as i64,
                         pane.tab_position as i64,
                         pane.tab_name,
                         pane.title,
-                        elapsed_us,
+                        elapsed_us.get(),
                         pane.cols as i64,
                         pane.rows as i64
                     ],
@@ -284,23 +233,31 @@ impl SqliteRecordingSession {
         Ok(())
     }
 
-    pub fn finish_pane(&mut self, terminal_id: u32, elapsed_us: i64) -> Result<()> {
+    pub fn finish_pane(
+        &mut self,
+        terminal_id: TerminalId,
+        elapsed_us: ElapsedMicros,
+    ) -> Result<()> {
         self.connection.execute(
             "UPDATE recording_panes SET ended_elapsed_us = ?1 WHERE session_id = ?2 AND terminal_id = ?3 AND ended_elapsed_us IS NULL",
-            rusqlite::params![elapsed_us, self.session_id, terminal_id as i64],
+            rusqlite::params![elapsed_us.get(), self.session_id, terminal_id.get() as i64],
         )?;
         Ok(())
     }
 
-    pub fn finish_session(&mut self, ended_at_us: i64, ended_elapsed_us: i64) -> Result<()> {
+    pub fn finish_session(
+        &mut self,
+        ended_at_us: UnixMicros,
+        ended_elapsed_us: ElapsedMicros,
+    ) -> Result<()> {
         let tx = self.connection.transaction()?;
         tx.execute(
             "UPDATE recording_panes SET ended_elapsed_us = ?1 WHERE session_id = ?2 AND ended_elapsed_us IS NULL",
-            rusqlite::params![ended_elapsed_us, self.session_id],
+            rusqlite::params![ended_elapsed_us.get(), self.session_id],
         )?;
         tx.execute(
             "UPDATE recording_sessions SET ended_at_us = ?1 WHERE id = ?2",
-            rusqlite::params![ended_at_us, self.session_id],
+            rusqlite::params![ended_at_us.get(), self.session_id],
         )?;
         tx.commit()?;
         Ok(())
@@ -320,15 +277,19 @@ impl RecordingSession for SqliteRecordingSession {
         SqliteRecordingSession::record_events(self, events)
     }
 
-    fn update_panes(&mut self, panes: &[PaneMetadata], elapsed_us: i64) -> Result<()> {
+    fn update_panes(&mut self, panes: &[PaneMetadata], elapsed_us: ElapsedMicros) -> Result<()> {
         SqliteRecordingSession::update_panes(self, panes, elapsed_us)
     }
 
-    fn finish_pane(&mut self, terminal_id: u32, elapsed_us: i64) -> Result<()> {
+    fn finish_pane(&mut self, terminal_id: TerminalId, elapsed_us: ElapsedMicros) -> Result<()> {
         SqliteRecordingSession::finish_pane(self, terminal_id, elapsed_us)
     }
 
-    fn finish_session(&mut self, ended_at_us: i64, ended_elapsed_us: i64) -> Result<()> {
+    fn finish_session(
+        &mut self,
+        ended_at_us: UnixMicros,
+        ended_elapsed_us: ElapsedMicros,
+    ) -> Result<()> {
         SqliteRecordingSession::finish_session(self, ended_at_us, ended_elapsed_us)
     }
 
@@ -342,7 +303,7 @@ impl RecordingStore {
         data_dir: &Path,
         session_name: &str,
         capture_input: bool,
-        started_at_us: i64,
+        started_at_us: UnixMicros,
     ) -> Result<Self> {
         Ok(Self {
             session: SqliteRecordingBackend::new(data_dir).start_recording(
@@ -357,15 +318,27 @@ impl RecordingStore {
         self.session.record_events(events)
     }
 
-    pub fn update_panes(&mut self, panes: &[PaneMetadata], elapsed_us: i64) -> Result<()> {
+    pub fn update_panes(
+        &mut self,
+        panes: &[PaneMetadata],
+        elapsed_us: ElapsedMicros,
+    ) -> Result<()> {
         self.session.update_panes(panes, elapsed_us)
     }
 
-    pub fn finish_pane(&mut self, terminal_id: u32, elapsed_us: i64) -> Result<()> {
+    pub fn finish_pane(
+        &mut self,
+        terminal_id: TerminalId,
+        elapsed_us: ElapsedMicros,
+    ) -> Result<()> {
         self.session.finish_pane(terminal_id, elapsed_us)
     }
 
-    pub fn finish_session(&mut self, ended_at_us: i64, ended_elapsed_us: i64) -> Result<()> {
+    pub fn finish_session(
+        &mut self,
+        ended_at_us: UnixMicros,
+        ended_elapsed_us: ElapsedMicros,
+    ) -> Result<()> {
         self.session.finish_session(ended_at_us, ended_elapsed_us)
     }
 
@@ -379,7 +352,7 @@ impl RecordingBackend for SqliteRecordingBackend {
         &self,
         session_name: &str,
         capture_input: bool,
-        started_at_us: i64,
+        started_at_us: UnixMicros,
     ) -> Result<Box<dyn RecordingSession>> {
         Ok(Box::new(SqliteRecordingSession::open(
             &self.data_dir,
@@ -397,7 +370,7 @@ impl RecordingBackend for SqliteRecordingBackend {
         sqlite_search_recordings(&self.data_dir, query, limit)
     }
 
-    fn export(&self, recording_id: i64, output: &mut dyn std::io::Write) -> Result<()> {
+    fn export(&self, recording_id: RecordingId, output: &mut dyn std::io::Write) -> Result<()> {
         sqlite_export_recording(&self.data_dir, recording_id, output)
     }
 }
@@ -423,7 +396,7 @@ mod tests {
     fn resize_events_roundtrip_through_parse_resize(tc: hegel::TestCase) {
         let cols = tc.draw(generators::integers::<u16>());
         let rows = tc.draw(generators::integers::<u16>());
-        let event = RecordedEvent::resize(0, 0, cols, rows);
+        let event = RecordedEvent::resize(TerminalId::new(0), ElapsedMicros::new(0), cols, rows);
         assert_eq!(
             parse_resize(&event.data),
             Some((cols as usize, rows as usize)),
@@ -448,9 +421,14 @@ mod tests {
     #[test]
     fn stores_pane_events() -> Result<()> {
         let dir = tempdir()?;
-        let mut store = RecordingStore::open(dir.path(), "test", true, 1_500_000_000_000_000)?;
+        let mut store = RecordingStore::open(
+            dir.path(),
+            "test",
+            true,
+            UnixMicros::new(1_500_000_000_000_000),
+        )?;
         let metadata = PaneMetadata {
-            terminal_id: 7,
+            terminal_id: TerminalId::new(7),
             tab_id: 1,
             tab_position: 0,
             tab_name: "tab".to_string(),
@@ -458,11 +436,19 @@ mod tests {
             cols: 80,
             rows: 24,
         };
-        store.update_panes(&[metadata], 5_000)?;
+        store.update_panes(&[metadata], ElapsedMicros::new(5_000))?;
         store.record_events(&[
-            RecordedEvent::output(7, 10_000, b"hello\r\n".to_vec()),
-            RecordedEvent::input(7, 20_000, b"pwd\r".to_vec()),
-            RecordedEvent::resize(7, 30_000, 120, 40),
+            RecordedEvent::output(
+                TerminalId::new(7),
+                ElapsedMicros::new(10_000),
+                b"hello\r\n".to_vec(),
+            ),
+            RecordedEvent::input(
+                TerminalId::new(7),
+                ElapsedMicros::new(20_000),
+                b"pwd\r".to_vec(),
+            ),
+            RecordedEvent::resize(TerminalId::new(7), ElapsedMicros::new(30_000), 120, 40),
         ])?;
 
         let db_path = dir.path().join("session-recordings.db");
@@ -487,9 +473,9 @@ mod tests {
     #[test]
     fn finishes_pane_and_session() -> Result<()> {
         let dir = tempdir()?;
-        let mut store = RecordingStore::open(dir.path(), "test", false, 1_000)?;
-        let metadata = |terminal_id| PaneMetadata {
-            terminal_id,
+        let mut store = RecordingStore::open(dir.path(), "test", false, UnixMicros::new(1_000))?;
+        let metadata = |terminal_id: u32| PaneMetadata {
+            terminal_id: TerminalId::new(terminal_id),
             tab_id: 0,
             tab_position: terminal_id as usize,
             tab_name: "tab".to_string(),
@@ -497,10 +483,14 @@ mod tests {
             cols: 80,
             rows: 24,
         };
-        store.update_panes(&[metadata(1), metadata(2)], 0)?;
-        store.record_events(&[RecordedEvent::output(1, 10, b"hi".to_vec())])?;
-        store.finish_pane(1, 100)?;
-        store.finish_session(200, 150)?;
+        store.update_panes(&[metadata(1), metadata(2)], ElapsedMicros::new(0))?;
+        store.record_events(&[RecordedEvent::output(
+            TerminalId::new(1),
+            ElapsedMicros::new(10),
+            b"hi".to_vec(),
+        )])?;
+        store.finish_pane(TerminalId::new(1), ElapsedMicros::new(100))?;
+        store.finish_session(UnixMicros::new(200), ElapsedMicros::new(150))?;
         let db_path = dir.path().join("session-recordings.db");
         let conn = rusqlite::Connection::open(&db_path)?;
         let mut ended =
@@ -523,7 +513,7 @@ mod tests {
     #[test]
     fn marks_incomplete() -> Result<()> {
         let dir = tempdir()?;
-        let mut store = RecordingStore::open(dir.path(), "test", false, 1_000)?;
+        let mut store = RecordingStore::open(dir.path(), "test", false, UnixMicros::new(1_000))?;
         store.mark_incomplete("boom")?;
         let db_path = dir.path().join("session-recordings.db");
         let conn = rusqlite::Connection::open(&db_path)?;
@@ -540,9 +530,10 @@ mod tests {
     fn persists_across_reopen() -> Result<()> {
         let dir = tempdir()?;
         {
-            let mut store = RecordingStore::open(dir.path(), "persist", false, 1_000)?;
+            let mut store =
+                RecordingStore::open(dir.path(), "persist", false, UnixMicros::new(1_000))?;
             let metadata = PaneMetadata {
-                terminal_id: 5,
+                terminal_id: TerminalId::new(5),
                 tab_id: 0,
                 tab_position: 0,
                 tab_name: "tab".to_string(),
@@ -550,13 +541,18 @@ mod tests {
                 cols: 80,
                 rows: 24,
             };
-            store.update_panes(&[metadata], 0)?;
-            store.record_events(&[RecordedEvent::output(5, 10, b"hello".to_vec())])?;
+            store.update_panes(&[metadata], ElapsedMicros::new(0))?;
+            store.record_events(&[RecordedEvent::output(
+                TerminalId::new(5),
+                ElapsedMicros::new(10),
+                b"hello".to_vec(),
+            )])?;
             // store dropped here
         }
         // reopen with new session, old data should still be there
         {
-            let _store2 = RecordingStore::open(dir.path(), "persist2", false, 2_000)?;
+            let _store2 =
+                RecordingStore::open(dir.path(), "persist2", false, UnixMicros::new(2_000))?;
             let db_path = dir.path().join("session-recordings.db");
             let conn = rusqlite::Connection::open(&db_path)?;
             let session_count: i64 =
@@ -577,9 +573,9 @@ mod tests {
     #[test]
     fn pane_initial_size_unchanged() -> Result<()> {
         let dir = tempdir()?;
-        let mut store = RecordingStore::open(dir.path(), "test", false, 1_000)?;
+        let mut store = RecordingStore::open(dir.path(), "test", false, UnixMicros::new(1_000))?;
         let meta1 = PaneMetadata {
-            terminal_id: 9,
+            terminal_id: TerminalId::new(9),
             tab_id: 0,
             tab_position: 0,
             tab_name: "a".to_string(),
@@ -587,10 +583,10 @@ mod tests {
             cols: 80,
             rows: 24,
         };
-        store.update_panes(&[meta1], 0)?;
+        store.update_panes(&[meta1], ElapsedMicros::new(0))?;
         // update with different size, should not change initial
         let meta2 = PaneMetadata {
-            terminal_id: 9,
+            terminal_id: TerminalId::new(9),
             tab_id: 0,
             tab_position: 0,
             tab_name: "b".to_string(),
@@ -598,9 +594,14 @@ mod tests {
             cols: 120,
             rows: 40,
         };
-        store.update_panes(&[meta2], 10)?;
+        store.update_panes(&[meta2], ElapsedMicros::new(10))?;
         // also resize event should not change initial
-        store.record_events(&[RecordedEvent::resize(9, 20, 200, 50)])?;
+        store.record_events(&[RecordedEvent::resize(
+            TerminalId::new(9),
+            ElapsedMicros::new(20),
+            200,
+            50,
+        )])?;
         let db_path = dir.path().join("session-recordings.db");
         let conn = rusqlite::Connection::open(&db_path)?;
         let (cols, rows): (i64, i64) = conn.query_row(
@@ -623,7 +624,7 @@ mod tests {
     #[test]
     fn database_permissions() -> Result<()> {
         let dir = tempdir()?;
-        let _store = RecordingStore::open(dir.path(), "perm", false, 1_000)?;
+        let _store = RecordingStore::open(dir.path(), "perm", false, UnixMicros::new(1_000))?;
         let db_path = dir.path().join("session-recordings.db");
         #[cfg(unix)]
         {
@@ -640,7 +641,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("file");
         std::fs::write(&file_path, b"hello").unwrap();
-        let res = RecordingStore::open(&file_path, "test", false, 1_000);
+        let res = RecordingStore::open(&file_path, "test", false, UnixMicros::new(1_000));
         assert!(res.is_err());
     }
 }
@@ -740,13 +741,13 @@ fn sqlite_list_recordings(data_dir: &Path) -> Result<Vec<RecordingSummary>> {
         // Use session started + pane started elapsed to match duration logic, fallback to session start
         let started_at_us = session_started + started_elapsed_us;
         results.push(RecordingSummary {
-            id,
+            id: RecordingId::new(id),
             session_name,
             tab_name,
-            terminal_id: terminal_id as u32,
+            terminal_id: TerminalId::try_from(terminal_id)?,
             pane_title,
-            started_at_us,
-            duration_us,
+            started_at_us: UnixMicros::new(started_at_us),
+            duration_us: ElapsedMicros::new(duration_us),
             is_running,
             capture_input: capture_input_int != 0,
             error,
@@ -761,7 +762,7 @@ type RecordedPaneRow = (i64, i64, i64, i64, i64, String, String, i64, String);
 
 pub fn export_recording(
     data_dir: &Path,
-    recording_id: i64,
+    recording_id: RecordingId,
     output: &mut dyn std::io::Write,
 ) -> Result<()> {
     SqliteRecordingBackend::new(data_dir).export(recording_id, output)
@@ -769,7 +770,7 @@ pub fn export_recording(
 
 fn sqlite_export_recording(
     data_dir: &Path,
-    recording_id: i64,
+    recording_id: RecordingId,
     output: &mut dyn std::io::Write,
 ) -> Result<()> {
     let db_path = data_dir.join("session-recordings.db");
@@ -784,7 +785,7 @@ fn sqlite_export_recording(
         let mut stmt = conn.prepare(
             "SELECT p.id, p.session_id, p.initial_cols, p.initial_rows, p.started_elapsed_us, s.name, p.tab_name, s.started_at_us, p.title FROM recording_panes p JOIN recording_sessions s ON p.session_id = s.id WHERE p.id = ?1",
         )?;
-        let mut rows = stmt.query(rusqlite::params![recording_id])?;
+        let mut rows = stmt.query(rusqlite::params![recording_id.get()])?;
         if let Some(row) = rows.next()? {
             Some((
                 row.get(0)?,
@@ -1143,14 +1144,14 @@ fn run_search(conn: &rusqlite::Connection, query: &str, limit: usize) -> Result<
         let elapsed_us: i64 = row.get(1)?;
         let session_started_us: i64 = row.get(6)?;
         Ok(SearchHit {
-            recording_id: row.get(0)?,
-            elapsed_us,
+            recording_id: RecordingId::new(row.get(0)?),
+            elapsed_us: ElapsedMicros::new(elapsed_us),
             text: row.get(2)?,
             session_name: row.get(3)?,
             tab_name: row.get(4)?,
             pane_title: row.get(5)?,
             // Same best-effort wall clock reconstruction as `list_recordings`.
-            started_at_us: session_started_us + elapsed_us,
+            started_at_us: UnixMicros::new(session_started_us + elapsed_us),
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -1164,16 +1165,21 @@ mod search_tests {
 
     fn record(store: &mut RecordingStore, elapsed_us: i64, data: &[u8]) {
         store
-            .record_events(&[RecordedEvent::output(1, elapsed_us, data.to_vec())])
+            .record_events(&[RecordedEvent::output(
+                TerminalId::new(1),
+                ElapsedMicros::new(elapsed_us),
+                data.to_vec(),
+            )])
             .unwrap();
     }
 
     fn open(dir: &Path) -> RecordingStore {
-        let mut store = RecordingStore::open(dir, "my_session", false, 1_000_000).unwrap();
+        let mut store =
+            RecordingStore::open(dir, "my_session", false, UnixMicros::new(1_000_000)).unwrap();
         store
             .update_panes(
                 &[PaneMetadata {
-                    terminal_id: 1,
+                    terminal_id: TerminalId::new(1),
                     tab_id: 0,
                     tab_position: 0,
                     tab_name: "my_tab".to_string(),
@@ -1181,7 +1187,7 @@ mod search_tests {
                     cols: 80,
                     rows: 24,
                 }],
-                0,
+                ElapsedMicros::new(0),
             )
             .unwrap();
         store
@@ -1203,8 +1209,8 @@ mod search_tests {
         assert_eq!(hits[0].tab_name, "my_tab");
         assert_eq!(hits[0].pane_title, "my_pane");
         // attributed to the event that completed the line
-        assert_eq!(hits[0].elapsed_us, 200);
-        assert_eq!(hits[0].started_at_us, 1_000_000 + 200);
+        assert_eq!(hits[0].elapsed_us, ElapsedMicros::new(200));
+        assert_eq!(hits[0].started_at_us, UnixMicros::new(1_000_000 + 200));
         Ok(())
     }
 
@@ -1416,11 +1422,12 @@ mod list_tests {
         let dir = tempdir()?;
         // first session (older)
         {
-            let mut store = RecordingStore::open(dir.path(), "first", false, 1_000)?;
+            let mut store =
+                RecordingStore::open(dir.path(), "first", false, UnixMicros::new(1_000))?;
             store.update_panes(
                 &[
                     PaneMetadata {
-                        terminal_id: 1,
+                        terminal_id: TerminalId::new(1),
                         tab_id: 10,
                         tab_position: 1,
                         tab_name: "tab1".to_string(),
@@ -1429,7 +1436,7 @@ mod list_tests {
                         rows: 24,
                     },
                     PaneMetadata {
-                        terminal_id: 2,
+                        terminal_id: TerminalId::new(2),
                         tab_id: 10,
                         tab_position: 0,
                         tab_name: "tab0".to_string(),
@@ -1438,17 +1445,22 @@ mod list_tests {
                         rows: 24,
                     },
                 ],
-                1_000,
+                ElapsedMicros::new(1_000),
             )?;
-            store.record_events(&[RecordedEvent::output(1, 1_100, b"hello".to_vec())])?;
-            store.finish_pane(1, 1_200)?;
+            store.record_events(&[RecordedEvent::output(
+                TerminalId::new(1),
+                ElapsedMicros::new(1_100),
+                b"hello".to_vec(),
+            )])?;
+            store.finish_pane(TerminalId::new(1), ElapsedMicros::new(1_200))?;
         }
         // second session (newer)
         {
-            let mut store = RecordingStore::open(dir.path(), "second", true, 2_000)?;
+            let mut store =
+                RecordingStore::open(dir.path(), "second", true, UnixMicros::new(2_000))?;
             store.update_panes(
                 &[PaneMetadata {
-                    terminal_id: 3,
+                    terminal_id: TerminalId::new(3),
                     tab_id: 20,
                     tab_position: 0,
                     tab_name: "tabA".to_string(),
@@ -1456,27 +1468,36 @@ mod list_tests {
                     cols: 80,
                     rows: 24,
                 }],
-                2_000,
+                ElapsedMicros::new(2_000),
             )?;
-            store.record_events(&[RecordedEvent::output(3, 2_100, b"world".to_vec())])?;
+            store.record_events(&[RecordedEvent::output(
+                TerminalId::new(3),
+                ElapsedMicros::new(2_100),
+                b"world".to_vec(),
+            )])?;
         }
         let list = list_recordings(dir.path())?;
         assert_eq!(list.len(), 3);
         // newest session first -> terminal 3 (second session) first
-        assert_eq!(list[0].terminal_id, 3);
+        assert_eq!(list[0].terminal_id, TerminalId::new(3));
         assert_eq!(list[0].session_name, "second");
         // then tab_position 0 before 1 within first session
-        assert_eq!(list[1].terminal_id, 2);
-        assert_eq!(list[2].terminal_id, 1);
+        assert_eq!(list[1].terminal_id, TerminalId::new(2));
+        assert_eq!(list[2].terminal_id, TerminalId::new(1));
         Ok(())
     }
 
     #[test]
     fn exports_asciicast_v3() -> Result<()> {
         let dir = tempdir()?;
-        let mut store = RecordingStore::open(dir.path(), "test", false, 1_500_000_000_000_000)?;
+        let mut store = RecordingStore::open(
+            dir.path(),
+            "test",
+            false,
+            UnixMicros::new(1_500_000_000_000_000),
+        )?;
         let metadata = PaneMetadata {
-            terminal_id: 1,
+            terminal_id: TerminalId::new(1),
             tab_id: 1,
             tab_position: 0,
             tab_name: "tab".to_string(),
@@ -1484,12 +1505,20 @@ mod list_tests {
             cols: 80,
             rows: 24,
         };
-        store.update_panes(&[metadata], 0)?;
+        store.update_panes(&[metadata], ElapsedMicros::new(0))?;
         store.record_events(&[
-            RecordedEvent::output(1, 0, b"hello".to_vec()),
-            RecordedEvent::input(1, 500_000, b"x".to_vec()),
-            RecordedEvent::resize(1, 1_250_000, 100, 30),
-            RecordedEvent::output(1, 2_000_000, b"bye".to_vec()),
+            RecordedEvent::output(TerminalId::new(1), ElapsedMicros::new(0), b"hello".to_vec()),
+            RecordedEvent::input(
+                TerminalId::new(1),
+                ElapsedMicros::new(500_000),
+                b"x".to_vec(),
+            ),
+            RecordedEvent::resize(TerminalId::new(1), ElapsedMicros::new(1_250_000), 100, 30),
+            RecordedEvent::output(
+                TerminalId::new(1),
+                ElapsedMicros::new(2_000_000),
+                b"bye".to_vec(),
+            ),
         ])?;
         // need to get pane id for export - it's the first pane inserted
         let db_path = dir.path().join("session-recordings.db");
@@ -1500,7 +1529,7 @@ mod list_tests {
             |r| r.get(0),
         )?;
         let mut out = Vec::new();
-        export_recording(dir.path(), pane_id, &mut out)?;
+        export_recording(dir.path(), RecordingId::new(pane_id), &mut out)?;
         let out_str = String::from_utf8(out)?;
         let mut lines = out_str.lines();
         let header: serde_json::Value = serde_json::from_str(lines.next().unwrap())?;
@@ -1525,13 +1554,13 @@ mod list_tests {
     fn export_unknown_id_errors() -> Result<()> {
         let dir = tempdir()?;
         let mut out = Vec::new();
-        let err = export_recording(dir.path(), 999, &mut out).unwrap_err();
+        let err = export_recording(dir.path(), RecordingId::new(999), &mut out).unwrap_err();
         assert!(err.to_string().contains("not found"));
         // also when DB exists but id missing
-        let mut store = RecordingStore::open(dir.path(), "test", false, 1_000)?;
+        let mut store = RecordingStore::open(dir.path(), "test", false, UnixMicros::new(1_000))?;
         store.update_panes(
             &[PaneMetadata {
-                terminal_id: 1,
+                terminal_id: TerminalId::new(1),
                 tab_id: 0,
                 tab_position: 0,
                 tab_name: "a".to_string(),
@@ -1539,9 +1568,9 @@ mod list_tests {
                 cols: 80,
                 rows: 24,
             }],
-            0,
+            ElapsedMicros::new(0),
         )?;
-        let err2 = export_recording(dir.path(), 9999, &mut out).unwrap_err();
+        let err2 = export_recording(dir.path(), RecordingId::new(9999), &mut out).unwrap_err();
         assert!(err2.to_string().contains("not found"));
         Ok(())
     }
@@ -1549,10 +1578,10 @@ mod list_tests {
     #[test]
     fn export_invalid_utf8() -> Result<()> {
         let dir = tempdir()?;
-        let mut store = RecordingStore::open(dir.path(), "test", false, 0)?;
+        let mut store = RecordingStore::open(dir.path(), "test", false, UnixMicros::new(0))?;
         store.update_panes(
             &[PaneMetadata {
-                terminal_id: 1,
+                terminal_id: TerminalId::new(1),
                 tab_id: 0,
                 tab_position: 0,
                 tab_name: "tab".to_string(),
@@ -1560,9 +1589,13 @@ mod list_tests {
                 cols: 80,
                 rows: 24,
             }],
-            0,
+            ElapsedMicros::new(0),
         )?;
-        store.record_events(&[RecordedEvent::output(1, 0, vec![0xff, 0xfe, b'a'])])?;
+        store.record_events(&[RecordedEvent::output(
+            TerminalId::new(1),
+            ElapsedMicros::new(0),
+            vec![0xff, 0xfe, b'a'],
+        )])?;
         let pane_id: i64 = {
             let db_path = dir.path().join("session-recordings.db");
             let conn = rusqlite::Connection::open(db_path)?;
@@ -1573,7 +1606,7 @@ mod list_tests {
             )?
         };
         let mut out = Vec::new();
-        export_recording(dir.path(), pane_id, &mut out)?;
+        export_recording(dir.path(), RecordingId::new(pane_id), &mut out)?;
         let out_str = String::from_utf8_lossy(&out).to_string();
         // should contain replacement character � (UTF-8 lossy)
         assert!(out_str.contains("�"));
@@ -1588,10 +1621,10 @@ mod list_tests {
     #[test]
     fn export_equal_timestamps_keep_order() -> Result<()> {
         let dir = tempdir()?;
-        let mut store = RecordingStore::open(dir.path(), "test", false, 0)?;
+        let mut store = RecordingStore::open(dir.path(), "test", false, UnixMicros::new(0))?;
         store.update_panes(
             &[PaneMetadata {
-                terminal_id: 1,
+                terminal_id: TerminalId::new(1),
                 tab_id: 0,
                 tab_position: 0,
                 tab_name: "t".to_string(),
@@ -1599,12 +1632,20 @@ mod list_tests {
                 cols: 80,
                 rows: 24,
             }],
-            0,
+            ElapsedMicros::new(0),
         )?;
         // two events same timestamp, insertion order should be preserved
         store.record_events(&[
-            RecordedEvent::output(1, 1_000, b"first".to_vec()),
-            RecordedEvent::output(1, 1_000, b"second".to_vec()),
+            RecordedEvent::output(
+                TerminalId::new(1),
+                ElapsedMicros::new(1_000),
+                b"first".to_vec(),
+            ),
+            RecordedEvent::output(
+                TerminalId::new(1),
+                ElapsedMicros::new(1_000),
+                b"second".to_vec(),
+            ),
         ])?;
         let pane_id: i64 = {
             let db_path = dir.path().join("session-recordings.db");
@@ -1616,7 +1657,7 @@ mod list_tests {
             )?
         };
         let mut out = Vec::new();
-        export_recording(dir.path(), pane_id, &mut out)?;
+        export_recording(dir.path(), RecordingId::new(pane_id), &mut out)?;
         let out_str = String::from_utf8(out)?;
         let lines: Vec<&str> = out_str.lines().collect();
         let v1: serde_json::Value = serde_json::from_str(lines[1])?;
@@ -1632,10 +1673,10 @@ mod list_tests {
     #[test]
     fn export_running_recording() -> Result<()> {
         let dir = tempdir()?;
-        let mut store = RecordingStore::open(dir.path(), "test", false, 0)?;
+        let mut store = RecordingStore::open(dir.path(), "test", false, UnixMicros::new(0))?;
         store.update_panes(
             &[PaneMetadata {
-                terminal_id: 1,
+                terminal_id: TerminalId::new(1),
                 tab_id: 0,
                 tab_position: 0,
                 tab_name: "t".to_string(),
@@ -1643,11 +1684,11 @@ mod list_tests {
                 cols: 80,
                 rows: 24,
             }],
-            0,
+            ElapsedMicros::new(0),
         )?;
         store.record_events(&[
-            RecordedEvent::output(1, 0, b"a".to_vec()),
-            RecordedEvent::output(1, 1_000, b"b".to_vec()),
+            RecordedEvent::output(TerminalId::new(1), ElapsedMicros::new(0), b"a".to_vec()),
+            RecordedEvent::output(TerminalId::new(1), ElapsedMicros::new(1_000), b"b".to_vec()),
         ])?;
         // do not finish pane/session, export should still include committed events
         let pane_id: i64 = {
@@ -1660,7 +1701,7 @@ mod list_tests {
             )?
         };
         let mut out = Vec::new();
-        export_recording(dir.path(), pane_id, &mut out)?;
+        export_recording(dir.path(), RecordingId::new(pane_id), &mut out)?;
         let out_str = String::from_utf8(out)?;
         assert_eq!(out_str.lines().count(), 3); // header + 2 events
         Ok(())
@@ -1669,10 +1710,10 @@ mod list_tests {
     #[test]
     fn export_no_resize_uses_default_size() -> Result<()> {
         let dir = tempdir()?;
-        let mut store = RecordingStore::open(dir.path(), "test", false, 0)?;
+        let mut store = RecordingStore::open(dir.path(), "test", false, UnixMicros::new(0))?;
         store.update_panes(
             &[PaneMetadata {
-                terminal_id: 1,
+                terminal_id: TerminalId::new(1),
                 tab_id: 0,
                 tab_position: 0,
                 tab_name: "t".to_string(),
@@ -1680,9 +1721,13 @@ mod list_tests {
                 cols: 80,
                 rows: 24,
             }],
-            0,
+            ElapsedMicros::new(0),
         )?;
-        store.record_events(&[RecordedEvent::output(1, 0, b"hi".to_vec())])?;
+        store.record_events(&[RecordedEvent::output(
+            TerminalId::new(1),
+            ElapsedMicros::new(0),
+            b"hi".to_vec(),
+        )])?;
         let pane_id: i64 = {
             let db_path = dir.path().join("session-recordings.db");
             let conn = rusqlite::Connection::open(db_path)?;
@@ -1693,11 +1738,49 @@ mod list_tests {
             )?
         };
         let mut out = Vec::new();
-        export_recording(dir.path(), pane_id, &mut out)?;
+        export_recording(dir.path(), RecordingId::new(pane_id), &mut out)?;
         let header: serde_json::Value =
             serde_json::from_str(String::from_utf8(out)?.lines().next().unwrap())?;
         assert_eq!(header["term"]["cols"], 80);
         assert_eq!(header["term"]["rows"], 24);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    // These fail at compile time if a public API regresses to interchangeable scalars.
+    const _: fn(TerminalId, ElapsedMicros, Vec<u8>) -> RecordedEvent = RecordedEvent::output;
+    const _: fn(&Path, RecordingId, &mut dyn std::io::Write) -> Result<()> = export_recording;
+    const _: fn(&Path, &str, bool, UnixMicros) -> Result<RecordingStore> = RecordingStore::open;
+
+    #[test]
+    fn listing_rejects_database_terminal_ids_that_cannot_fit_the_contract() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut store = RecordingStore::open(dir.path(), "test", false, UnixMicros::new(0))?;
+        store.record_events(&[RecordedEvent::output(
+            TerminalId::new(0),
+            ElapsedMicros::new(0),
+            vec![],
+        )])?;
+        drop(store);
+        let conn = rusqlite::Connection::open(dir.path().join("session-recordings.db"))?;
+        for value in [-1, i64::from(u32::MAX) + 1, i64::MAX] {
+            conn.execute("UPDATE recording_panes SET terminal_id = ?1", [value])?;
+            assert!(list_recordings(dir.path()).is_err(), "accepted {value}");
+        }
+        for value in [0, u32::MAX] {
+            conn.execute(
+                "UPDATE recording_panes SET terminal_id = ?1",
+                [i64::from(value)],
+            )?;
+            assert_eq!(
+                list_recordings(dir.path())?[0].terminal_id,
+                TerminalId::new(value)
+            );
+        }
         Ok(())
     }
 }

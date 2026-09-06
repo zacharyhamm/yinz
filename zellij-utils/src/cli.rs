@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use url::Url;
 use zellij_types::geometry::{Direction, Resize};
+use zellij_types::internal_ids::RecordingId;
 
 const fn ansi(color: AnsiColor) -> Style {
     Style::new().fg_color(Some(Color::Ansi(color)))
@@ -147,7 +148,7 @@ pub enum Recordings {
     /// Export one terminal pane as asciicast v3.
     Export {
         /// Recording ID from `zellij recordings list`.
-        recording_id: i64,
+        recording_id: RecordingId,
         /// Write the cast to this file. The default is stdout.
         #[clap(short, long)]
         output: Option<PathBuf>,

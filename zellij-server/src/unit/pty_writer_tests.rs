@@ -487,7 +487,7 @@ fn pty_writer_records_successful_resize() {
     );
     // verify resize data encodes cols/rows via RecordedEvent::resize logic (format "80x24")
     assert_eq!(resize_events[0].data, "80x24".to_string().into_bytes());
-    assert_eq!(resize_events[0].terminal_id, 1);
+    assert_eq!(resize_events[0].terminal_id, TerminalId::new(1));
 
     let (rec_sender, rec_receiver) = crossbeam::channel::unbounded();
     let handle = crate::session_recorder::SessionRecorderHandle {
