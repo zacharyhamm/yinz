@@ -1745,6 +1745,13 @@ local HOCUS_COMPLETE, HOCUS_COMPLETE_RESULT = "hocus_complete", "hocus_complete_
 local hocus_completions = {} -- request id -> { resolve, plugin_id }
 local hocus_complete_count = 0
 
+local function completion_list(value)
+  if type(value) == "table" and next(value) == nil then
+    return zellij.json.decode("[]")
+  end
+  return value
+end
+
 function zellij.hocus.complete(opts)
   hocus_complete_count = hocus_complete_count + 1
   local request_id = interpreter_id .. ":hc" .. hocus_complete_count
@@ -1772,21 +1779,41 @@ function zellij.hocus.complete(opts)
     resolve { error = "no hocus-agentd in the current session" }
     return aw
   end
+  local messages = completion_list(opts.messages)
+  if type(messages) == "table" and next(messages) ~= nil then
+    local copied = {}
+    for key, message in pairs(messages) do
+      copied[key] = message
+      if type(message) == "table" and type(message.tool_calls) == "table"
+          and next(message.tool_calls) == nil then
+        local copy = {}
+        for field, value in pairs(message) do copy[field] = value end
+        copy.tool_calls = completion_list(message.tool_calls)
+        copied[key] = copy
+      end
+    end
+    messages = copied
+  end
+  local payload = zellij.json.encode {
+    request_id = request_id,
+    messages = messages,
+    system = opts.system,
+    model = opts.model,
+    tools = completion_list(opts.tools),
+    tool_choice = opts.tool_choice,
+    temperature = opts.temperature,
+    max_tokens = opts.max_tokens,
+  }
+  if #payload > 64000 then
+    resolve { error = "a completion request is at most 64000 bytes, and this one is " .. #payload }
+    return aw
+  end
   hocus_completions[request_id] = { resolve = resolve, plugin_id = daemon_id }
   -- Address the existing daemon by its host-reported id, without launching or broadcasting.
   zellij.message_to_plugin {
     destination_plugin_id = daemon_id,
     message_name = HOCUS_COMPLETE,
-    message_payload = zellij.json.encode {
-      request_id = request_id,
-      messages = opts.messages,
-      system = opts.system,
-      model = opts.model,
-      tools = opts.tools,
-      tool_choice = opts.tool_choice,
-      temperature = opts.temperature,
-      max_tokens = opts.max_tokens,
-    },
+    message_payload = payload,
   }
   -- A daemon can disappear or stop answering after discovery. Always bound the wait.
   local timeout = opts.timeout or 60
