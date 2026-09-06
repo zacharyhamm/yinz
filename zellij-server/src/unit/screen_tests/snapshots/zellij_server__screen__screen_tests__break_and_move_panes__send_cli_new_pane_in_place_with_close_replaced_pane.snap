@@ -1,6 +1,5 @@
 ---
 source: zellij-server/src/screen/../unit/screen_tests/break_and_move_panes.rs
-assertion_line: 1085
 expression: "format!(\"{:#?}\", spawn_in_place_instruction)"
 ---
 Some(
@@ -16,6 +15,7 @@ Some(
                     hold_on_close: true,
                     hold_on_start: false,
                     originating_plugin: None,
+                    workflow_owner: None,
                     use_terminal_title: false,
                     target: Local,
                     remote_default_shell: false,

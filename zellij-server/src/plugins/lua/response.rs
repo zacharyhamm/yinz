@@ -602,7 +602,14 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
         },
         CommandType::SpawnAgent => {
             decode(bytes).and_then(|r: ProtobufSpawnAgentResponse| match r.result {
-                Some(spawn_agent_response::Result::PaneId(id)) => pane_id(lua, Some(id)),
+                Some(spawn_agent_response::Result::PaneId(id)) => value(
+                    lua,
+                    zellij_types::agent::SpawnedAgent {
+                        pane_id: PaneId::try_from(id).map_err(|e| anyhow!(e))?,
+                        branch: r.branch,
+                        cwd: r.cwd.map(Into::into),
+                    },
+                ),
                 Some(spawn_agent_response::Result::Error(e)) => Err(anyhow!("{}", e)),
                 None => Err(anyhow!("zellij answered with nothing")),
             })

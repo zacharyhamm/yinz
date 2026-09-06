@@ -131,6 +131,53 @@ pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result
         .map_err(|e| anyhow!("failed to load zellij's Lua prelude: {}", e))?;
 
     install_json(&lua, &zellij)?;
+    // Only the builtin delivery adapter can inspect transport ownership. This is
+    // an internal host query, not a new public plugin protocol capability.
+    if env.plugin.location
+        == zellij_types::input::layout::RunPluginLocation::Zellij(
+            zellij_types::data::PluginTag::new("swamp-bridge"),
+        )
+    {
+        let senders = env.senders.clone();
+        let inspect = lua
+            .create_function(move |lua, ()| {
+                let (tx, rx) = crossbeam::channel::bounded(1);
+                senders
+                    .send_to_pty(crate::pty::PtyInstruction::WorkflowRemotePanes(tx))
+                    .map_err(mlua::Error::external)?;
+                let rows = rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .map_err(mlua::Error::external)?;
+                mlua::LuaSerdeExt::to_value(lua, &rows)
+            })
+            .map_err(|e| anyhow!("cannot expose remote workflow identities: {e}"))?;
+        zellij
+            .set("workflow_remote_panes", inspect)
+            .map_err(|e| anyhow!("cannot expose remote workflow identities: {e}"))?;
+    }
+    // Process incarnation, unlike a PID, cannot alias a later server.
+    static INCARNATION: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| Uuid::new_v4().to_string());
+    zellij
+        .set(
+            "server_session",
+            zellij_runtime::envs::get_session_name().unwrap_or_default(),
+        )
+        .map_err(|e| anyhow!("failed to expose server session: {e}"))?;
+    zellij
+        .set("server_incarnation", INCARNATION.as_str())
+        .map_err(|e| anyhow!("failed to expose server incarnation: {e}"))?;
+
+    zellij
+        .set(
+            "server_binary",
+            crate::os_input_output_unix::server_binary()
+                .context("cannot resolve server executable")?
+                .to_string_lossy()
+                .as_ref(),
+        )
+        .map_err(|e| anyhow!("failed to expose server executable: {e}"))?;
+
     // `zellij.null`: the one value a Lua table cannot hold that a tuple command may need in the
     // middle - serde counts a tuple variant's elements, a Lua table cannot hold `nil`, and mlua
     // deserializes this as `None`. A constant, not a capability.

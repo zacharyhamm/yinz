@@ -102,6 +102,6 @@ listed under "errors" in `/skills`.
 
 Hocus installs `/project-setup` in its user skill directory when it first scans that directory.
 An existing copy or symlink is preserved. The skill reads repository instructions and proposes
-`.zellij.kdl` workflow settings. It uses `project_config_read` and `project_config_write` from the
+`.zellij/.swamp-workflows.kdl` workflow settings. It uses `project_config_read` and `project_config_write` from the
 plugin tool family. The write tool shows the proposed source for confirmation and rejects stale writes.
 The skill does not run CI, commit changes, or merge branches.

@@ -3,6 +3,7 @@ mod commands;
 mod hocus_hooks;
 #[cfg(test)]
 mod tests;
+mod workflow;
 
 #[cfg(target_os = "windows")]
 compile_error!("Zellij does not support Windows");
@@ -76,6 +77,14 @@ fn main() {
             }
             std::process::exit(0);
         }
+    }
+
+    if let Some(Command::Workflow(command)) = opts.command.clone() {
+        if let Err(error) = workflow::run(command, &opts) {
+            eprintln!("Error: {error:#}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
     }
 
     if let Some(Command::Firecracker(command)) = opts.command.clone() {

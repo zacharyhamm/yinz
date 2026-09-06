@@ -3,6 +3,7 @@ A terminal workspace with batteries included
 Usage: zellij [OPTIONS] [COMMAND]
 
 Commands:
+  workflow             Run and view project-owned Swamp workflows
   options              Change the behaviour of zellij
   setup                Setup zellij and check its configuration
   action               Send actions to a specific session [alias: ac]

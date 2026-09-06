@@ -66,6 +66,26 @@ fn apply_queued_agent_report(
     if screen.tab_containing_pane(pane_id).is_none() {
         return Ok(false);
     }
+    // A late hook from an earlier process must not finish a new operation in a reused pane.
+    if let Some(command) = screen
+        .tab_containing_pane(pane_id)
+        .and_then(|tab| tab.pane_run_command(pane_id))
+    {
+        if let Some(owner) = command.workflow_owner() {
+            let reported = report
+                .event
+                .as_ref()
+                .and_then(|event| serde_json::from_str::<serde_json::Value>(&event.raw).ok())
+                .and_then(|raw| {
+                    raw.get("_zellij_workflow_owner")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned)
+                });
+            if reported.as_deref() != Some(owner) {
+                return Ok(true); // consumed, but deliberately not applied or broadcast
+            }
+        }
+    }
     let mut trace = zellij_runtime::agent::report::report_diagnostics(&report);
     trace.session = screen.session_name.to_string();
     trace.record("screen_queue", accepted_at.elapsed(), "ok");
@@ -3163,6 +3183,20 @@ pub(crate) fn screen_thread_main(
                     } else {
                         log::error!("Must have pane id to replace or connected client_id if replacing a pane");
                     }
+                } else if let Some(active_tab) =
+                    tab_index.and_then(|tab_index| screen.tabs.get_mut(&tab_index))
+                {
+                    // An explicit tab remains usable after its CLI client disconnects.
+                    active_tab.new_pane(
+                        PaneId::Plugin(plugin_id),
+                        Some(pane_title),
+                        Some(run_plugin),
+                        start_suppressed,
+                        should_focus_plugin.unwrap_or(true),
+                        new_pane_placement,
+                        client_id,
+                        None,
+                    )?;
                 } else if let Some(client_id) = client_id {
                     active_tab_and_connected_client_id!(screen, client_id, |active_tab: &mut Tab, _client_id: ClientId| {
                         active_tab.new_pane(
@@ -3176,19 +3210,6 @@ pub(crate) fn screen_thread_main(
                             None,
                         )
                     }, ?);
-                } else if let Some(active_tab) =
-                    tab_index.and_then(|tab_index| screen.tabs.get_mut(&tab_index))
-                {
-                    active_tab.new_pane(
-                        PaneId::Plugin(plugin_id),
-                        Some(pane_title),
-                        Some(run_plugin),
-                        start_suppressed,
-                        should_focus_plugin.unwrap_or(true),
-                        new_pane_placement,
-                        None,
-                        None,
-                    )?;
                 } else {
                     log::error!("Tab index not found: {:?}", tab_index);
                 }

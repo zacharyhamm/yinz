@@ -1,0 +1,11 @@
+type: '@hammz/zellij'
+typeVersion: 2026.09.06.1
+id: a9297df7-7afa-434e-b53f-996561f9d763
+name: zellij-session
+version: 1
+tags: {}
+globalArguments:
+  session: unique-mouse
+  binary: zellij
+  timeoutMs: 30000
+methods: {}

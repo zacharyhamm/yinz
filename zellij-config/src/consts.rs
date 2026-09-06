@@ -35,6 +35,14 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
 /// that reads that list is looking for something to load wasm for.
 pub const BUILTIN_LUA_PLUGINS: &[(&str, &str)] = &[
     (
+        "swamp-bridge",
+        include_str!("../assets/plugins/swamp-bridge.lua"),
+    ),
+    (
+        "swamp-workflow",
+        include_str!("../assets/plugins/swamp-workflow.lua"),
+    ),
+    (
         "agent-exit",
         include_str!("../assets/plugins/agent-exit.lua"),
     ),

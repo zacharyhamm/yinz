@@ -1,3 +1,4 @@
 agent_exit {
+    workflow "@hammz/zellij-agent-exit"
     ci "cargo" "x" "ci" "check"
 }

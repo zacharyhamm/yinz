@@ -5,6 +5,7 @@ use std::io::Cursor;
 
 fn sample_run_command() -> RunCommand {
     RunCommand {
+        workflow_owner: None,
         command: std::path::PathBuf::from("/bin/sh"),
         args: vec!["-c".to_owned(), "echo hi".to_owned()],
         cwd: Some(std::path::PathBuf::from("/tmp")),

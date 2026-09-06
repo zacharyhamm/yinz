@@ -1,0 +1,2783 @@
+{
+  "id": "7fef23fb-ec77-4be5-a30f-2a5854bbbabd",
+  "name": "@hammz/zellij-review-integration",
+  "version": 1,
+  "description": "Project-owned local agent work. Unknown operations are reconciled, never repeated.",
+  "inputs": {
+    "type": "object",
+    "properties": {
+      "launch": {
+        "type": "string"
+      },
+      "session": {
+        "type": "string"
+      },
+      "checkout": {
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "targetBranch": {
+        "type": "string",
+        "default": "main"
+      },
+      "gate": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "cargo",
+          "x",
+          "ci",
+          "check"
+        ]
+      },
+      "task": {
+        "type": "string",
+        "default": "Inspect and complete the existing work in this checkout. Do not merge, remove resources, or contact remotes. Leave changes for the workflow to commit. Report completion explicitly."
+      },
+      "kind": {
+        "type": "string",
+        "default": "codex"
+      },
+      "answer": {
+        "type": "string",
+        "default": ""
+      },
+      "submission": {
+        "type": "string",
+        "default": ""
+      },
+      "binary": {
+        "type": "string",
+        "default": "zellij"
+      },
+      "agentCommand": {
+        "type": "string",
+        "default": ""
+      },
+      "agentArgs": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": []
+      },
+      "firecracker": {
+        "type": "string",
+        "default": ""
+      },
+      "firecrackerImage": {
+        "type": "string",
+        "default": ""
+      },
+      "cycle": {
+        "type": "string",
+        "default": "initial"
+      }
+    },
+    "required": [
+      "launch",
+      "session",
+      "checkout",
+      "target"
+    ]
+  },
+  "jobs": [
+    {
+      "name": "main",
+      "steps": [
+        {
+          "name": "attach",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-attachments\" }}",
+            "methodName": "workflow_attach",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ \"attach-\" + run.id }}",
+              "run": "${{ run.id }}",
+              "workflow": "${{ run.workflowName }}"
+            }
+          }
+        },
+        {
+          "name": "round-0-sync",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-worker-sync\" }}",
+            "methodName": "vm_sync",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-sync-0\" }}",
+              "agent": "worker"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "attach",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "round-0-synced",
+          "task": {
+            "type": "assert",
+            "expr": "data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes.clean == true",
+            "message": "Unresolved guest changes or sync conflicts block integration.",
+            "severity": "high"
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-sync",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "round-0-inspect",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\" }}",
+            "methodName": "verify_checkout",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-synced",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "round-0-commit",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\" }}",
+            "methodName": "guarded_commit",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "key": "commit-0",
+              "message": "Complete agent work (review round 0)",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-inspect",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes.source.clean || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes.source.rebasing }}"
+        },
+        {
+          "name": "round-0-rebase",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\" }}",
+            "methodName": "rebase",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "key": "rebase-0",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-commit",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes.source.rebasing }}"
+        },
+        {
+          "name": "round-0-continue-rebase",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\" }}",
+            "methodName": "rebase_continue",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "key": "continue-0",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-rebase",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes.source.rebasing }}"
+        },
+        {
+          "name": "round-0-revision",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\" }}",
+            "methodName": "verify_checkout",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-continue-rebase",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "round-0-review-spawn",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-0-reviewer\" }}",
+            "methodName": "agent_spawn",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-reviewer-0\" }}",
+              "spec": {
+                "kind": "${{ inputs.kind }}",
+                "cwd": "${{ inputs.checkout }}",
+                "source_directory": "${{ inputs.checkout }}",
+                "command": "${{ inputs.agentCommand }}",
+                "args": "${{ inputs.agentArgs }}"
+              }
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-revision",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "round-0-review",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-0-review\" }}",
+            "methodName": "review_prompt",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-review-0\" }}",
+              "agent": "${{ inputs.cycle + \"-reviewer-0\" }}",
+              "evidence": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-review-spawn",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "round-0-review-completion",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-0-review\" }}",
+            "methodName": "observe",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-review-0\" }}",
+              "timeoutSeconds": 3600
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-review",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "round-0-review-findings",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-0-review\" }}",
+            "methodName": "review_result",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "operation": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-review\", \"operation-current\").attributes }}",
+              "evidence": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes }}",
+              "worker": "worker"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-review-completion",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "round-0-gate",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-0-gate\" }}",
+            "methodName": "command",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-gate-0\" }}",
+              "argv": "${{ inputs.gate }}",
+              "cwd": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-review-findings",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes.source.rebasing || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes.source.clean }}"
+        },
+        {
+          "name": "round-0-gate-completion",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-0-gate\" }}",
+            "methodName": "observe",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-gate-0\" }}",
+              "timeoutSeconds": 7200
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-gate",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes.source.rebasing || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes.source.clean }}"
+        },
+        {
+          "name": "round-0-gate-result",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-0-gate\" }}",
+            "methodName": "test_result",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "operation": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-gate\", \"operation-current\").attributes }}",
+              "evidence": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-gate-completion",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes.source.rebasing || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes.source.clean }}"
+        },
+        {
+          "name": "round-0-freshness",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\" }}",
+            "methodName": "verify_checkout",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-gate-result",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "round-0-assess",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-assessment\" }}",
+            "methodName": "assess",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "review": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-review\", \"review-current\").attributes }}",
+              "test": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes.source.rebasing || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes.source.clean ? null : data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-gate\", \"test-current\").attributes }}",
+              "current": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-0-git\", \"evidence-current\").attributes }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-freshness",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "round-1-repair",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-worker-turn\" }}",
+            "methodName": "repair_prompt",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-repair-1\" }}",
+              "agent": "worker",
+              "assessment": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-0-assess",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-1-repair-completion",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-worker-turn\" }}",
+            "methodName": "observe",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-repair-1\" }}",
+              "timeoutSeconds": 3600
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-repair",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-1-repair-completed",
+          "task": {
+            "type": "assert",
+            "expr": "data.latest(inputs.launch + \"-worker-turn\", \"operation-current\").attributes.outcome == \"completed\"",
+            "message": "Repair did not explicitly complete. Reconcile the operation.",
+            "severity": "high"
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-repair-completion",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-1-sync",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-worker-sync\" }}",
+            "methodName": "vm_sync",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-sync-1\" }}",
+              "agent": "worker"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-repair-completed",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-1-synced",
+          "task": {
+            "type": "assert",
+            "expr": "data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes.clean == true",
+            "message": "Unresolved guest changes or sync conflicts block integration.",
+            "severity": "high"
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-sync",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-1-inspect",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\" }}",
+            "methodName": "verify_checkout",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-synced",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-1-commit",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\" }}",
+            "methodName": "guarded_commit",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "key": "commit-1",
+              "message": "Complete agent work (review round 1)",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-inspect",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true) || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes.source.clean || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes.source.rebasing }}"
+        },
+        {
+          "name": "round-1-rebase",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\" }}",
+            "methodName": "rebase",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "key": "rebase-1",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-commit",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true) || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes.source.rebasing }}"
+        },
+        {
+          "name": "round-1-continue-rebase",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\" }}",
+            "methodName": "rebase_continue",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "key": "continue-1",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-rebase",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true) || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes.source.rebasing }}"
+        },
+        {
+          "name": "round-1-revision",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\" }}",
+            "methodName": "verify_checkout",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-continue-rebase",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-1-review-spawn",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-1-reviewer\" }}",
+            "methodName": "agent_spawn",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-reviewer-1\" }}",
+              "spec": {
+                "kind": "${{ inputs.kind }}",
+                "cwd": "${{ inputs.checkout }}",
+                "source_directory": "${{ inputs.checkout }}",
+                "command": "${{ inputs.agentCommand }}",
+                "args": "${{ inputs.agentArgs }}"
+              }
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-revision",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-1-review",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-1-review\" }}",
+            "methodName": "review_prompt",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-review-1\" }}",
+              "agent": "${{ inputs.cycle + \"-reviewer-1\" }}",
+              "evidence": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-review-spawn",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-1-review-completion",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-1-review\" }}",
+            "methodName": "observe",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-review-1\" }}",
+              "timeoutSeconds": 3600
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-review",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-1-review-findings",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-1-review\" }}",
+            "methodName": "review_result",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "operation": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-review\", \"operation-current\").attributes }}",
+              "evidence": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes }}",
+              "worker": "worker"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-review-completion",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-1-gate",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-1-gate\" }}",
+            "methodName": "command",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-gate-1\" }}",
+              "argv": "${{ inputs.gate }}",
+              "cwd": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-review-findings",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true) || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes.source.rebasing || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes.source.clean }}"
+        },
+        {
+          "name": "round-1-gate-completion",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-1-gate\" }}",
+            "methodName": "observe",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-gate-1\" }}",
+              "timeoutSeconds": 7200
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-gate",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true) || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes.source.rebasing || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes.source.clean }}"
+        },
+        {
+          "name": "round-1-gate-result",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-1-gate\" }}",
+            "methodName": "test_result",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "operation": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-gate\", \"operation-current\").attributes }}",
+              "evidence": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-gate-completion",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true) || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes.source.rebasing || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes.source.clean }}"
+        },
+        {
+          "name": "round-1-freshness",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\" }}",
+            "methodName": "verify_checkout",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-gate-result",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-1-assess",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-assessment\" }}",
+            "methodName": "assess",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "review": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-review\", \"review-current\").attributes }}",
+              "test": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes.source.rebasing || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes.source.clean ? null : data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-gate\", \"test-current\").attributes }}",
+              "current": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-1-git\", \"evidence-current\").attributes }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-freshness",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-2-repair",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-worker-turn\" }}",
+            "methodName": "repair_prompt",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-repair-2\" }}",
+              "agent": "worker",
+              "assessment": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-1-assess",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-2-repair-completion",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-worker-turn\" }}",
+            "methodName": "observe",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-repair-2\" }}",
+              "timeoutSeconds": 3600
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-repair",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-2-repair-completed",
+          "task": {
+            "type": "assert",
+            "expr": "data.latest(inputs.launch + \"-worker-turn\", \"operation-current\").attributes.outcome == \"completed\"",
+            "message": "Repair did not explicitly complete. Reconcile the operation.",
+            "severity": "high"
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-repair-completion",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-2-sync",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-worker-sync\" }}",
+            "methodName": "vm_sync",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-sync-2\" }}",
+              "agent": "worker"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-repair-completed",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-2-synced",
+          "task": {
+            "type": "assert",
+            "expr": "data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes.clean == true",
+            "message": "Unresolved guest changes or sync conflicts block integration.",
+            "severity": "high"
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-sync",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-2-inspect",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\" }}",
+            "methodName": "verify_checkout",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-synced",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-2-commit",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\" }}",
+            "methodName": "guarded_commit",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "key": "commit-2",
+              "message": "Complete agent work (review round 2)",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-inspect",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true) || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes.source.clean || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes.source.rebasing }}"
+        },
+        {
+          "name": "round-2-rebase",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\" }}",
+            "methodName": "rebase",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "key": "rebase-2",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-commit",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true) || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes.source.rebasing }}"
+        },
+        {
+          "name": "round-2-continue-rebase",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\" }}",
+            "methodName": "rebase_continue",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "key": "continue-2",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-rebase",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true) || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes.source.rebasing }}"
+        },
+        {
+          "name": "round-2-revision",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\" }}",
+            "methodName": "verify_checkout",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-continue-rebase",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-2-review-spawn",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-2-reviewer\" }}",
+            "methodName": "agent_spawn",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-reviewer-2\" }}",
+              "spec": {
+                "kind": "${{ inputs.kind }}",
+                "cwd": "${{ inputs.checkout }}",
+                "source_directory": "${{ inputs.checkout }}",
+                "command": "${{ inputs.agentCommand }}",
+                "args": "${{ inputs.agentArgs }}"
+              }
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-revision",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-2-review",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-2-review\" }}",
+            "methodName": "review_prompt",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-review-2\" }}",
+              "agent": "${{ inputs.cycle + \"-reviewer-2\" }}",
+              "evidence": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-review-spawn",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-2-review-completion",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-2-review\" }}",
+            "methodName": "observe",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-review-2\" }}",
+              "timeoutSeconds": 3600
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-review",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-2-review-findings",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-2-review\" }}",
+            "methodName": "review_result",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "operation": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-review\", \"operation-current\").attributes }}",
+              "evidence": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes }}",
+              "worker": "worker"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-review-completion",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-2-gate",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-2-gate\" }}",
+            "methodName": "command",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-gate-2\" }}",
+              "argv": "${{ inputs.gate }}",
+              "cwd": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-review-findings",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true) || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes.source.rebasing || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes.source.clean }}"
+        },
+        {
+          "name": "round-2-gate-completion",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-2-gate\" }}",
+            "methodName": "observe",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-gate-2\" }}",
+              "timeoutSeconds": 7200
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-gate",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true) || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes.source.rebasing || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes.source.clean }}"
+        },
+        {
+          "name": "round-2-gate-result",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-2-gate\" }}",
+            "methodName": "test_result",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "operation": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-gate\", \"operation-current\").attributes }}",
+              "evidence": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-gate-completion",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true) || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes.source.rebasing || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes.source.clean }}"
+        },
+        {
+          "name": "round-2-freshness",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\" }}",
+            "methodName": "verify_checkout",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes }}",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-gate-result",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "round-2-assess",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-assessment\" }}",
+            "methodName": "assess",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "review": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-review\", \"review-current\").attributes }}",
+              "test": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes.source.rebasing || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes.source.clean ? null : data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-gate\", \"test-current\").attributes }}",
+              "current": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-round-2-git\", \"evidence-current\").attributes }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-freshness",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready == true }}"
+        },
+        {
+          "name": "repair-limit-question",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/question",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-questions\" }}",
+            "methodName": "open",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "run": "${{ run.id }}",
+              "workflow": "${{ run.workflowName }}",
+              "question": "repair-limit",
+              "step": "repair-limit-approval",
+              "kind": "instructions",
+              "prompt": "Two automatic repair rounds did not produce clean review and tests. Enter instructions; the run preserves all resources.",
+              "answers": [],
+              "resumeInput": "answer"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "round-2-assess",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready }}"
+        },
+        {
+          "name": "repair-limit-approval",
+          "task": {
+            "type": "manual_approval",
+            "prompt": "Two automatic repair rounds did not produce clean review and tests. Enter instructions; the run preserves all resources."
+          },
+          "dependsOn": [
+            {
+              "step": "repair-limit-question",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready }}"
+        },
+        {
+          "name": "repair-limit-answer",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/question",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-questions\" }}",
+            "methodName": "consume",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "run": "${{ run.id }}",
+              "question": "repair-limit",
+              "answer": "${{ inputs.answer }}",
+              "submission": "${{ inputs.submission }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "repair-limit-approval",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready }}"
+        },
+        {
+          "name": "instructed-repair-prompt",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-worker-turn\" }}",
+            "methodName": "agent_prompt",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-instructed-repair\" }}",
+              "agent": "worker",
+              "prompt": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-questions\", \"repair-limit\").attributes.answer }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "repair-limit-answer",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready }}"
+        },
+        {
+          "name": "instructed-repair-completion",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-worker-turn\" }}",
+            "methodName": "observe",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-instructed-repair\" }}",
+              "timeoutSeconds": 3600
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "instructed-repair-prompt",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready }}"
+        },
+        {
+          "name": "instructed-repair-completed",
+          "task": {
+            "type": "assert",
+            "expr": "data.latest(inputs.launch + \"-worker-turn\", \"operation-current\").attributes.outcome == \"completed\"",
+            "message": "The instructed work must explicitly complete before a fresh review cycle.",
+            "severity": "high"
+          },
+          "dependsOn": [
+            {
+              "step": "instructed-repair-completion",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready }}"
+        },
+        {
+          "name": "ready",
+          "task": {
+            "type": "assert",
+            "expr": "data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready",
+            "message": "Work remains unresolved after two repair rounds. Resume from a relevant review stage after addressing the recorded instructions.",
+            "severity": "high"
+          },
+          "dependsOn": [
+            {
+              "step": "instructed-repair-completed",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (!data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready) }}"
+        },
+        {
+          "name": "decision-question",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/question",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-questions\" }}",
+            "methodName": "open",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "run": "${{ run.id }}",
+              "workflow": "${{ run.workflowName }}",
+              "question": "decision",
+              "step": "decision-approval",
+              "kind": "merge",
+              "prompt": "Choose merge for local fast-forward integration, or continue to preserve this checkout for more work.",
+              "answers": [
+                "merge",
+                "continue"
+              ],
+              "resumeInput": "answer"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "ready",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (!data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready) }}"
+        },
+        {
+          "name": "decision-approval",
+          "task": {
+            "type": "manual_approval",
+            "prompt": "Choose merge for local fast-forward integration, or continue to preserve this checkout for more work."
+          },
+          "dependsOn": [
+            {
+              "step": "decision-question",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (!data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready) }}"
+        },
+        {
+          "name": "decision-answer",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/question",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-questions\" }}",
+            "methodName": "consume",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "run": "${{ run.id }}",
+              "question": "decision",
+              "answer": "${{ inputs.answer }}",
+              "submission": "${{ inputs.submission }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "decision-approval",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (!data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready) }}"
+        },
+        {
+          "name": "integrate",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-integration\" }}",
+            "methodName": "integrate",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.review.evidence.vmSync }}",
+              "key": "integrate",
+              "evidence": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.review.evidence }}",
+              "review": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.review }}",
+              "test": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.test }}",
+              "approved": true,
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "decision-answer",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ (!data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready) || (data.latest(inputs.launch + \"-\" + inputs.cycle + \"-questions\", \"decision\").attributes.answer != \"merge\") }}"
+        },
+        {
+          "name": "cleanup-question",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/question",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-questions\" }}",
+            "methodName": "open",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "run": "${{ run.id }}",
+              "workflow": "${{ run.workflowName }}",
+              "question": "cleanup",
+              "step": "cleanup-approval",
+              "kind": "cleanup",
+              "prompt": "Remove the integrated clean secondary worktree?",
+              "answers": [
+                "remove",
+                "keep"
+              ],
+              "resumeInput": "answer"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "integrate",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-questions\", \"decision\").attributes.answer != \"merge\" || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-integration\", \"integrationDecision-current\").attributes.integrated }}"
+        },
+        {
+          "name": "cleanup-approval",
+          "task": {
+            "type": "manual_approval",
+            "prompt": "Remove the integrated clean secondary worktree?"
+          },
+          "dependsOn": [
+            {
+              "step": "cleanup-question",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-questions\", \"decision\").attributes.answer != \"merge\" || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-integration\", \"integrationDecision-current\").attributes.integrated }}"
+        },
+        {
+          "name": "cleanup-answer",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/question",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-questions\" }}",
+            "methodName": "consume",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "run": "${{ run.id }}",
+              "question": "cleanup",
+              "answer": "${{ inputs.answer }}",
+              "submission": "${{ inputs.submission }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "cleanup-approval",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-questions\", \"decision\").attributes.answer != \"merge\" || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-integration\", \"integrationDecision-current\").attributes.integrated }}"
+        },
+        {
+          "name": "cleanup-worktree",
+          "task": {
+            "type": "model_method",
+            "modelType": "@swamp/git",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-integration\" }}",
+            "methodName": "guarded_cleanup",
+            "globalArgs": {
+              "repoPath": "${{ inputs.checkout }}"
+            },
+            "inputs": {
+              "target": "${{ inputs.target }}",
+              "targetBranch": "${{ inputs.targetBranch }}",
+              "gate": "${{ inputs.gate }}",
+              "vmSync": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.review.evidence.vmSync }}",
+              "key": "cleanup",
+              "approved": true,
+              "commit": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.review.evidence.source.commit }}",
+              "binary": "${{ inputs.binary }}",
+              "source": "${{ inputs.checkout }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "cleanup-answer",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-questions\", \"decision\").attributes.answer != \"merge\" || !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-integration\", \"integrationDecision-current\").attributes.integrated || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-questions\", \"cleanup\").attributes.answer != \"remove\" }}"
+        },
+        {
+          "name": "continue-question",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/question",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-questions\" }}",
+            "methodName": "open",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "run": "${{ run.id }}",
+              "workflow": "${{ run.workflowName }}",
+              "question": "continue",
+              "step": "continue-approval",
+              "kind": "instructions",
+              "prompt": "What should the worker do next?",
+              "answers": [],
+              "resumeInput": "answer"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "cleanup-worktree",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-questions\", \"decision\").attributes.answer != \"continue\" }}"
+        },
+        {
+          "name": "continue-approval",
+          "task": {
+            "type": "manual_approval",
+            "prompt": "Provide instructions for continued work."
+          },
+          "dependsOn": [
+            {
+              "step": "continue-question",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-questions\", \"decision\").attributes.answer != \"continue\" }}"
+        },
+        {
+          "name": "continue-answer",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/question",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-questions\" }}",
+            "methodName": "consume",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "run": "${{ run.id }}",
+              "question": "continue",
+              "answer": "${{ inputs.answer }}",
+              "submission": "${{ inputs.submission }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "continue-approval",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-questions\", \"decision\").attributes.answer != \"continue\" }}"
+        },
+        {
+          "name": "continued-work-prompt",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-worker-turn\" }}",
+            "methodName": "agent_prompt",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-continued-work\" }}",
+              "agent": "worker",
+              "prompt": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-questions\", \"continue\").attributes.answer }}"
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "continue-answer",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-questions\", \"decision\").attributes.answer != \"continue\" }}"
+        },
+        {
+          "name": "continued-work-completion",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-worker-turn\" }}",
+            "methodName": "observe",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ inputs.cycle + \"-continued-work\" }}",
+              "timeoutSeconds": 3600
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "continued-work-prompt",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-questions\", \"decision\").attributes.answer != \"continue\" }}"
+        },
+        {
+          "name": "continued-work-completed",
+          "task": {
+            "type": "assert",
+            "expr": "data.latest(inputs.launch + \"-worker-turn\", \"operation-current\").attributes.outcome == \"completed\"",
+            "message": "The instructed work must explicitly complete before a fresh review cycle.",
+            "severity": "high"
+          },
+          "dependsOn": [
+            {
+              "step": "continued-work-completion",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ !data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready || data.latest(inputs.launch + \"-\" + inputs.cycle + \"-questions\", \"decision\").attributes.answer != \"continue\" }}"
+        },
+        {
+          "name": "next-review",
+          "task": {
+            "type": "model_method",
+            "modelType": "@hammz/zellij",
+            "modelName": "${{ inputs.launch + \"-\" + inputs.cycle + \"-continuation\" }}",
+            "methodName": "continue_review",
+            "globalArgs": {
+              "session": "${{ inputs.session }}",
+              "binary": "${{ inputs.binary }}"
+            },
+            "inputs": {
+              "work": "${{ inputs.launch }}",
+              "key": "${{ \"next-\" + run.id }}",
+              "inputs": {
+                "launch": "${{ inputs.launch }}",
+                "session": "${{ inputs.session }}",
+                "binary": "${{ inputs.binary }}",
+                "checkout": "${{ inputs.checkout }}",
+                "target": "${{ inputs.target }}",
+                "targetBranch": "${{ inputs.targetBranch }}",
+                "gate": "${{ inputs.gate }}",
+                "kind": "${{ inputs.kind }}",
+                "task": "${{ inputs.task }}",
+                "agentCommand": "${{ inputs.agentCommand }}",
+                "agentArgs": "${{ inputs.agentArgs }}",
+                "firecracker": "${{ inputs.firecracker }}",
+                "firecrackerImage": "${{ inputs.firecrackerImage }}",
+                "cycle": "${{ run.id }}"
+              }
+            }
+          },
+          "dependsOn": [
+            {
+              "step": "continued-work-completed",
+              "condition": {
+                "type": "or",
+                "conditions": [
+                  {
+                    "type": "succeeded"
+                  },
+                  {
+                    "type": "skipped"
+                  }
+                ]
+              }
+            }
+          ],
+          "guard": "${{ data.latest(inputs.launch + \"-\" + inputs.cycle + \"-assessment\", \"assessment-current\").attributes.ready && data.latest(inputs.launch + \"-\" + inputs.cycle + \"-questions\", \"decision\").attributes.answer == \"merge\" && data.latest(inputs.launch + \"-\" + inputs.cycle + \"-integration\", \"integrationDecision-current\").attributes.integrated }}"
+        }
+      ]
+    }
+  ],
+  "reports": {
+    "require": [
+      "@hammz/workflow"
+    ]
+  }
+}

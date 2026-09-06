@@ -147,6 +147,7 @@ impl TestHost {
 
 fn sh(script: &str) -> RunCommand {
     RunCommand {
+        workflow_owner: None,
         command: PathBuf::from("/bin/sh"),
         args: vec!["-c".to_owned(), script.to_owned()],
         cwd: None,
@@ -621,6 +622,7 @@ fn a_missing_command_is_reported_rather_than_panicking() {
         terminal_id: 0,
         session_name: None,
         cmd: RunCommand {
+            workflow_owner: None,
             command: PathBuf::from("/nonexistent/zellij-pty-host-no-such-binary"),
             args: vec![],
             cwd: None,
@@ -1127,7 +1129,13 @@ fn an_attach_hands_the_master_and_the_buffered_output_over() {
     // Driven by input rather than a timer: the child says nothing until asked, so
     // "output produced while detached" is a fact the test establishes rather than
     // a race it hopes to win.
-    let (child_pid, mut master) = host.spawn(sh("while read line; do echo \"got:$line\"; done"));
+    let mut command = sh("while read line; do echo \"got:$line\"; done");
+    command.originating_plugin = Some(zellij_types::data::OriginatingPlugin::new(
+        zellij_types::internal_ids::PluginId::new(41),
+        zellij_types::internal_ids::ClientId::new(7),
+        std::collections::BTreeMap::from([("swamp_owner".into(), "durable-owner".into())]),
+    ));
+    let (child_pid, mut master) = host.spawn(command);
 
     host.send(&ServerToHostMsg::Release);
     wait_until(
@@ -1180,6 +1188,7 @@ fn an_attach_hands_the_master_and_the_buffered_output_over() {
         cmd.originating_plugin.is_none(),
         "a plugin id from the previous session must not follow the pane"
     );
+    assert_eq!(cmd.workflow_owner(), Some("durable-owner"));
 
     // Re-keyed to the session that owns it now, so `pty-host list` does not lie.
     assert_eq!(status.terminal_id, 42);

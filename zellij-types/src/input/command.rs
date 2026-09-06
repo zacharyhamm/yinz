@@ -72,6 +72,11 @@ pub struct RunCommand {
     pub hold_on_start: bool,
     #[serde(default)]
     pub originating_plugin: Option<OriginatingPlugin>,
+    /// Ownership recovered from the supervisor during adoption. This is server
+    /// metadata, not a client action argument; old plugin/client ids are discarded.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow_owner: Option<String>,
     #[serde(default)]
     pub use_terminal_title: bool,
     /// The machine this command runs on. See `PaneTarget`.
@@ -155,6 +160,7 @@ impl From<RunCommandAction> for RunCommand {
             hold_on_close: action.hold_on_close,
             hold_on_start: action.hold_on_start,
             originating_plugin: action.originating_plugin,
+            workflow_owner: None,
             use_terminal_title: action.use_terminal_title,
             target: action.target,
             remote_default_shell: action.remote_default_shell,
@@ -197,6 +203,16 @@ impl RunCommandAction {
 }
 
 impl RunCommand {
+    /// Portable ownership survives adoption; plugin/client numbers do not.
+    pub fn workflow_owner(&self) -> Option<&str> {
+        self.workflow_owner.as_deref().or_else(|| {
+            self.originating_plugin
+                .as_ref()?
+                .context
+                .get("swamp_owner")
+                .map(String::as_str)
+        })
+    }
     pub fn new(command: PathBuf) -> Self {
         RunCommand {
             command,

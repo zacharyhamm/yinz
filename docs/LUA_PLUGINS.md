@@ -1348,6 +1348,7 @@ empty:
 |---|---|
 | `agent_pane_id` | the pane the hook stands in for, as a string |
 | `agent_cwd` | where the agent was working |
+| `agent_exit_token` | host-generated correlation token, retained when the hook reloads |
 | `agent_exit_code` | absent if the command was killed by a signal |
 | `agent_command` | the command that exited, for display |
 | `agent_kind` | the last recognized agent kind |
@@ -1360,83 +1361,57 @@ empty:
 | `agent_zellij_config_file` | selected config file, forwarded as `ZELLIJ_CONFIG_FILE` |
 | `agent_zellij_config_dir` | selected config directory, forwarded as `ZELLIJ_CONFIG_DIR` |
 
-For a worktree-backed Firecracker pane, the shipped hook checks the guest against its last sync
-baseline. Select **Sync** to sync before the host workflow starts. Changes include committed
-and uncommitted file results. Sync failures remain on the hook with diagnostics. Restart is
-disabled while the VM check or sync runs.
+### Project-owned Swamp workflows
 
-
-### Agent exit workflow
-
-The builtin `agent-exit` hook starts a local Git workflow after an agent exits, at any exit status.
-For a Firecracker checkout, select **Sync** first. Remaining guest changes block host work.
-For sync warnings, select **Resolve sync conflicts**, then confirm that the conflicts are resolved.
-SSH checkouts retain restart and close controls.
-
-The conversation keeps completed steps, choices, and results for the life of the plugin instance.
-The current controls stay at the bottom of the pane. Use Tab or Shift-Tab to move focus.
-Press Enter to activate a button, or click it. In a narrow pane, select an action, then activate **Choose**.
-Text fields support editing and paste. PageUp, PageDown, and the mouse wheel scroll the conversation.
-New messages follow the bottom of the conversation. If you scroll up, new messages preserve your position.
-Operation controls are unavailable while work runs.
-
-Select **review diff** to inspect branch commits, staged changes, unstaged changes, and untracked files.
-Select **return** to return to the choices.
-Select **commit** to edit a message. Accepting the draft does not approve a commit.
-A separate approval stages all non-ignored changes and commits them.
-Select **generate commit message** to ask a helper agent for a draft.
-After a commit, the hook attempts a rebase onto the local default branch. It never fetches or pushes.
-Conflicts offer a repair agent, continuation, and abort. Other failures show diagnostics.
-
-Configure the workflow at the Git worktree root in `.zellij.kdl`:
+The builtin `agent-exit` hook launches the workflow bound in the control checkout.
+It preserves the exited pane and its scrollback. Escape closes the view and restores
+that pane. Enter restarts the agent; Delete closes its held pane. An unconfigured exit
+shows setup guidance and retains these controls.
 
 ```kdl
 agent_exit {
+    workflow "@hammz/zellij-agent-exit"
     ci "cargo" "x" "ci" "check"
-    // default_branch "main"
-    // agent kind="codex" model="..." effort="medium"
+    default_branch "main"
 }
 ```
 
-CI is an argument vector. To use shell syntax, configure an explicit shell, such as
-`ci "sh" "-c" "make lint && make test"`. Reading configuration does not execute it.
-Without a default-branch override, the hook uses remote HEAD metadata or asks for a local branch.
-Without agent settings, helpers use the exiting agent's kind and CLI defaults.
-Unknown kinds require an explicit supported kind: `codex`, `claude`, or `cursor`.
+The supplied workflow spawns a work agent, observes explicit completion, syncs its VM,
+asks a separate agent for structured review findings, commits changes, rebases onto
+the local target, and runs the configured gate. Two automatic repair rounds are
+written in the definition. Unresolved work then suspends for instructions. Integration
+and cleanup each require an answer to a separate question. No remote Git operations
+are included. See [SWAMP_WORKFLOWS.md](SWAMP_WORKFLOWS.md) for setup, custom definitions,
+questions and recovery.
 
-`zellij.project_config.read(host_directory)` returns `{ root, source, config }` and needs `ReadFiles`.
-`zellij.project_config.write(host_directory, source, expected)` validates before writing and needs `WriteFiles`.
-Pass the exact previous source as `expected`, or nil for an absent file. Stale writes fail.
-Writes use an OS lock and a temporary file in the worktree’s Git metadata directory, so an
-interrupted writer does not block later writes or leave new files to stage. Atomic replacement
-requires the Git metadata and checkout to be on the same filesystem. Otherwise, the write fails
-and preserves the original file. Legacy `.zellij.kdl.lock` files in the checkout are ignored
-and left for manual inspection.
-These directories are host paths. Access outside the plugin directory also needs `FullHdAccess`.
-Use Hocus `/project-setup` to propose and confirm settings. Missing CI configuration blocks CI and merge.
+`zellij.project_config.read(host_directory)` returns `{ root, source, config, error }`
+and needs `ReadFiles`. An invalid source is returned with an error so setup can correct
+it. Operational callers must stop when `error` is present.
+`zellij.project_config.write(host_directory, source, expected)` validates before writing
+and needs `WriteFiles`. Pass the exact previous source as `expected`, or nil for an
+absent file. Stale writes fail. Writes use an OS lock and atomic replacement; they refuse
+file and directory symlinks. Reads do not create `.zellij`.
 
-`zellij.agent.spawn` accepts optional `effort`. In `.zellij.kdl`, setting `effort` requires an
-explicit agent `kind`. Codex uses `model_reasoning_effort`, Claude uses
-`--effort`, and Cursor uses a model bracket override. Cursor requires an explicit model without
-existing bracket overrides. Unsupported effort values fail before the pane opens.
-Workflow helpers carry `agent_workflow_run` and `agent_workflow_role` (`message` or `repair`) in
-context. The host supplies `agent_workflow_owner`. Their absolute cwd is a host path.
-Exit-hook configuration includes these fields, `agent_kind`, and `agent_target`.
-The owner receives the command-pane exit event. The helper hook also sends `agent_exit_helper_finished`.
+Linked worktrees resolve through the primary checkout. An optional
+`control_checkout "path"` inside `agent_exit` redirects to another control directory;
+relative paths resolve against the primary checkout. Both directories require
+`FullHdAccess` when outside the plugin directory. Configuration, definitions, models,
+and Swamp state all resolve through that control checkout. The old root `.zellij.kdl`
+is ignored. Move its settings to `.zellij/.swamp-workflows.kdl` and add a workflow binding.
 
-CI runs in a command pane. Closing it does not count as success. Complete command logs and generated
-messages remain in an external temporary directory, whose path appears in the workflow.
-A successful gate permits a local fast-forward merge only while HEAD, checkout contents, target branch,
-and gate configuration still match. The target checkout must be clean.
-After merge, choose to keep both, remove the linked worktree, delete the branch, or remove both.
-Cleanup uses non-force Git operations and refuses the primary checkout or dirty worktrees.
-A branch-only deletion first detaches the clean linked checkout.
+`zellij.agent.spawn_details(opts)` returns the actual `{ pane_id, branch, cwd }`.
+`zellij.agent.spawn(opts)` still returns the pane ID. Existing effort options remain
+available. The builtin `swamp-bridge` routes typed `@hammz/zellij` operations through
+host implementations. Its durable records contain host, session, server incarnation,
+agent ownership, correlation keys, dispatch claims and attachments. Pane IDs alone
+never prove ownership. Managed helpers report their exits to their operation and do
+not start another exit workflow.
 
-Each canonical worktree has one owner under its Git metadata in `agent-exit.lock`.
-Duplicate hooks identify the owner. Recovery checks the owner and outstanding operations before proceeding.
-Recovered workflows start at repository inspection and never reuse a previous CI pass.
-Escape leaves a prompt. During an operation, closing the plugin leaves ownership information for recovery.
-
+A workflow runs in a separate supervised command pane. Closing its view detaches;
+`zellij workflow show <run-id>` reopens it. Cancellation is a separate action and
+preserves resources. The view reads Swamp history, questions, reports and recorded
+command scrollback. Terminal history has a retention limit, which the output marks.
+Idle transitions and pane closure never count as success.
 
 ### Headless hooks
 

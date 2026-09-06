@@ -456,6 +456,20 @@ fn try_write_to_fd(fd: RawFd, buf: &[u8]) -> Result<usize> {
     Ok(written)
 }
 
+/// Resolve before a package upgrade unlinks the running executable. Shared by
+/// supervisors, hook payloads and Lua helpers that re-exec this server's binary.
+pub(crate) fn server_binary() -> Option<&'static PathBuf> {
+    static BINARY: std::sync::LazyLock<Option<PathBuf>> =
+        std::sync::LazyLock::new(|| match std::env::current_exe() {
+            Ok(path) => Some(path),
+            Err(e) => {
+                log::warn!("Could not resolve our own binary ({e}); re-execution is unavailable.");
+                None
+            },
+        });
+    BINARY.as_ref()
+}
+
 impl UnixPtyBackend {
     pub fn new() -> Result<Self, io::Error> {
         Self::with_termios(termios::tcgetattr(io::stdin()).ok())
@@ -466,13 +480,7 @@ impl UnixPtyBackend {
             log::warn!("Starting a server without a controlling terminal, using the default termios configuration.");
         }
         let wire_termios = current_termios.as_ref().map(WireTermios::from_termios);
-        let host_bin = match std::env::current_exe() {
-            Ok(path) => Some(path),
-            Err(e) => {
-                log::warn!("Could not resolve our own binary ({e}); panes will not be detachable.");
-                None
-            },
-        };
+        let host_bin = server_binary().cloned();
         Ok(Self {
             orig_termios: Arc::new(Mutex::new(current_termios)),
             terminal_id_to_transport: Arc::new(Mutex::new(BTreeMap::new())),
@@ -891,6 +899,24 @@ impl UnixPtyBackend {
             .get(&terminal_id)?
             .remote()
             .map(|conn| conn.status())
+    }
+
+    pub fn workflow_remote_panes(&self) -> Vec<serde_json::Value> {
+        let Ok(transports) = self.terminal_id_to_transport.lock() else {
+            return vec![];
+        };
+        transports
+            .iter()
+            .filter_map(|(id, transport)| {
+                let conn = transport.remote()?;
+                Some(serde_json::json!({
+                    "terminal_id": id,
+                    "host_id": format!("remote:{}:{}", conn.host(), conn.pane_token()),
+                    "remote_host": conn.host(), "pane_token": conn.pane_token(),
+                    "owner": conn.cmd().workflow_owner(),
+                }))
+            })
+            .collect()
     }
 
     /// Every pane whose process lives on another machine.

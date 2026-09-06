@@ -293,7 +293,11 @@ fn run_command_action(
     default_to_plugin_cwd: bool,
     context: BTreeMap<String, String>,
 ) -> RunCommandAction {
-    let cwd = command_cwd(env, &command_to_run, default_to_plugin_cwd);
+    let cwd = if env.plugin.is_builtin() && context.contains_key("swamp_owner") {
+        command_to_run.cwd.clone()
+    } else {
+        command_cwd(env, &command_to_run, default_to_plugin_cwd)
+    };
     RunCommandAction {
         command: command_to_run.path,
         args: command_to_run.args,
@@ -2680,7 +2684,7 @@ fn open_command_pane_in_git_checkout_near_plugin(
 /// `agent_spawn`, the `hocus-new-agent` modal and a Lua plugin's `zellij.agent.spawn`.
 fn spawn_agent(
     env: &mut PluginEnv,
-    spec: AgentSpawnSpec,
+    mut spec: AgentSpawnSpec,
     source_directory: Option<PathBuf>,
     cwd: Option<PathBuf>,
     name: Option<String>,
@@ -2688,6 +2692,12 @@ fn spawn_agent(
     automatic_firecracker_vm: bool,
 ) {
     let result: SpawnAgentResponse = (|| {
+        if let Some(owner) = context.get("swamp_owner") {
+            if owner.is_empty() || owner.len() > 4096 {
+                return Err("invalid workflow ownership".into());
+            }
+            spec.env.insert("ZELLIJ_SWAMP_OWNER".into(), owner.clone());
+        }
         context.remove("agent_workflow_owner");
         if let Some(role) = context.get("agent_workflow_role") {
             if !["message", "repair"].contains(&role.as_str())
@@ -2710,9 +2720,11 @@ fn spawn_agent(
         let kind = zellij_types::agent::agent_kind_of(&command.path, &command.args)
             .unwrap_or_else(|| "true".to_owned());
         let host_workflow = context.contains_key("agent_workflow_role");
+        let host_paths =
+            host_workflow || (env.plugin.is_builtin() && context.contains_key("swamp_owner"));
         let source = source_directory
             .map(|path| {
-                if host_workflow && path.is_absolute() {
+                if host_paths && path.is_absolute() {
                     path
                 } else {
                     translate_plugin_path(env, path)
@@ -2720,7 +2732,7 @@ fn spawn_agent(
             })
             .unwrap_or_else(|| env.plugin_cwd.clone());
         let cwd = cwd.map(|path| {
-            if host_workflow && path.is_absolute() {
+            if host_paths && path.is_absolute() {
                 path
             } else {
                 translate_plugin_path(env, path)
@@ -2747,9 +2759,14 @@ fn spawn_agent(
             WorktreeGuard::Required
         };
         let prepared = agent_folder(checkout, cwd, source, spec.reuse.unwrap_or(false), guard)?;
-        let branch = prepared.branch;
+        let branch = prepared.branch.or_else(|| {
+            worktree_at(&prepared.path, &prepared.path)
+                .ok()
+                .flatten()
+                .and_then(|worktree| worktree.branch)
+        });
         let folder = prepared.path;
-        let reported_cwd = checkout_made.then(|| folder.clone());
+        let reported_cwd = Some(folder.clone());
         place_agent(
             &mut command,
             folder,
@@ -3562,7 +3579,11 @@ fn run_command(
         log::error!("Command cannot be empty");
     } else {
         let command = command_line.remove(0);
-        let cwd = translate_plugin_path(env, cwd);
+        let cwd = if env.plugin.is_builtin() && context.contains_key("swamp_owner") {
+            cwd
+        } else {
+            translate_plugin_path(env, cwd)
+        };
         let _ = env
             .senders
             .send_to_background_jobs(BackgroundJob::RunCommand(
@@ -6140,9 +6161,15 @@ fn project_config(
             .plugin_cwd
             .canonicalize()
             .context("cannot resolve plugin directory")?;
-        if !root.starts_with(own) && !has_permission(env, PermissionType::FullHdAccess) {
+        if !root.starts_with(&own) && !has_permission(env, PermissionType::FullHdAccess) {
             return Err(anyhow!(
                 "project configuration outside the plugin directory requires FullHdAccess"
+            ));
+        }
+        let root = zellij_config::project_config::control_root(&root).map_err(|e| anyhow!(e))?;
+        if !root.starts_with(&own) && !has_permission(env, PermissionType::FullHdAccess) {
+            return Err(anyhow!(
+                "project control checkout outside the plugin directory requires FullHdAccess"
             ));
         }
         let snapshot = if let Some((source, expected)) = write {

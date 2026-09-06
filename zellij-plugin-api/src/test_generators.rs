@@ -491,6 +491,7 @@ pub(crate) fn optional_run_command_actions(tc: &hegel::TestCase) -> Option<RunCo
 
 pub(crate) fn run_commands(tc: &hegel::TestCase) -> RunCommand {
     RunCommand {
+        workflow_owner: None,
         command: paths(tc),
         args: up_to(tc, 3, strings),
         cwd: optional_paths(tc),

@@ -808,14 +808,17 @@ pub fn the_agent_exit_hook_renders_the_screen_it_replaced() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    // One frame: the hook paints its question once and then waits for a key. Waiting for a
-    // second would be waiting for something that never comes.
-    let screen_thread = log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
-        screen_receiver,
-        1
-    );
+    // Loading may emit an empty frame before the hook is ready. Wait for content.
+    let screen_thread = std::thread::spawn({
+        let log = received_screen_instructions.clone();
+        move || loop {
+            let (event, _) = recv_from_fake_screen(&screen_receiver, 0, 1);
+            log.lock().push(event);
+            if !rendered_output(&log.lock()).is_empty() {
+                break;
+            }
+        }
+    });
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     let _ = plugin_thread_sender.send(PluginInstruction::Load(
@@ -850,15 +853,15 @@ pub fn the_agent_exit_hook_renders_the_screen_it_replaced() {
         rendered.contains(&codes)
     };
     assert!(
-        contains("Agent exited. Create another agent in the same directory?"),
+        contains("No local control checkout is available."),
         "got: {rendered}"
     );
     assert!(
         contains("Directory: /work/.worktrees/topic"),
         "the payload's cwd is shown, got: {rendered}"
     );
-    assert!(contains("Create another agent"), "got: {rendered}");
-    assert!(contains("Close pane"), "got: {rendered}");
+    assert!(contains("Enter: restart agent"), "got: {rendered}");
+    assert!(contains("Delete: close held pane"), "got: {rendered}");
 }
 
 /// The `AddPlugin` a hook produces, as (plugin id, pane it replaces).
@@ -1073,8 +1076,8 @@ pub fn the_agent_exit_hook_restarts_the_pane_on_enter() {
 
 #[test]
 #[serial(plugin_tests)]
-pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
-    // Esc closes the pane the hook stands in for, and only then itself: closing the suppressed
+pub fn the_agent_exit_hook_closes_the_pane_on_delete() {
+    // Delete closes the pane the hook stands in for, and only then itself: closing the suppressed
     // pane first is what stops it being restored when this one goes.
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -1117,11 +1120,15 @@ pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    received_screen_instructions.wait_until(
+        "exit hook ready for Delete",
+        zellij_test_support::default_timeout(),
+        |instructions| (!rendered_output(instructions).is_empty()).then_some(()),
+    );
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
-        Event::Key(KeyWithModifier::new(BareKey::Esc)),
+        Event::Key(KeyWithModifier::new(BareKey::Delete)),
     )]));
     pty_thread.join().unwrap();
     teardown();
@@ -1134,7 +1141,7 @@ pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
     });
     assert!(
         closed,
-        "expected Esc to close pane 7, got: {:?}",
+        "expected Delete to close pane 7, got: {:?}",
         received_pty_instructions.lock()
     );
     let closed_in_screen = received_screen_instructions
@@ -1148,7 +1155,7 @@ pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
         });
     assert!(
         closed_in_screen,
-        "expected Esc to close pane 7 in the screen too, got: {:?}",
+        "expected Delete to close pane 7 in the screen too, got: {:?}",
         received_screen_instructions.lock()
     );
 }

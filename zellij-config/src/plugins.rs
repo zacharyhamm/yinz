@@ -62,6 +62,11 @@ impl PluginConfig {
     /// instance per connected client. Opted into with a `shared true` key in the plugin's
     /// configuration block.
     pub fn is_shared(&self) -> bool {
+        // Delivery and view attachment survive the short-lived CLI client that loads them.
+        if matches!(&self.location, RunPluginLocation::Zellij(tag) if matches!(tag.to_string().as_str(), "swamp-bridge" | "swamp-workflow"))
+        {
+            return true;
+        }
         match self
             .initial_userspace_configuration
             .inner()
@@ -417,6 +422,13 @@ mod tests {
             ..Default::default()
         })
         .unwrap()
+    }
+
+    #[test]
+    fn workflow_delivery_and_views_survive_cli_client_detachment() {
+        assert!(builtin_plugin("swamp-bridge").is_shared());
+        assert!(builtin_plugin("swamp-workflow").is_shared());
+        assert!(!builtin_plugin("agent-exit").is_shared());
     }
 
     fn file_plugin(path: &str) -> PluginConfig {

@@ -8,6 +8,7 @@
 local zellij = {}
 
 local interpreter_id = __zellij_interpreter_id
+zellij.instance_id = interpreter_id
 __zellij_interpreter_id = nil
 
 -- The host stops a cancelled plugin by raising this error from an instruction-count hook. It is
@@ -1325,7 +1326,7 @@ local SPAWN_SPEC_FIELDS = {
 --- on one checkout share one VM. `name` titles the pane and `context` comes back on
 --- `command_pane_exited`. Answers with the pane id and raises on failure. Needs
 --- `run_commands`.
-function zellij.agent.spawn(opts)
+function zellij.agent.spawn_details(opts)
   if type(opts) ~= "table" then
     error("zellij.agent.spawn takes a table: { kind = \"claude\", prompt = ... }", 2)
   end
@@ -1341,6 +1342,12 @@ function zellij.agent.spawn(opts)
     context = opts.context or {},
     automatic_firecracker_vm = opts.automatic_firecracker_vm or false,
   })
+end
+
+--- Full host result: pane_id, actual branch, and actual checkout cwd.
+--- Existing callers keep receiving a PaneId from spawn.
+function zellij.agent.spawn(opts)
+  return zellij.agent.spawn_details(opts).pane_id
 end
 
 -- The rest of `zellij.agent`: observing and steering an agent that is running in a pane.
@@ -1564,6 +1571,7 @@ table.insert(pipe_intercepts, function(message)
     if not ok or type(call) ~= "table" or call.version ~= 1 then
       return true
     end
+    call.source = message.source -- host provenance, never the sender-supplied JSON field
     local reply = { version = 1, call_id = call.call_id }
     local handler = rpc_handlers[call.name]
     if handler == nil then

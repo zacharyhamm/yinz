@@ -1146,6 +1146,35 @@ pub(crate) fn plugin_thread_main(
                 let mut pipe_messages = vec![];
                 let floating_pane_coordinates = None; // TODO: do we want to allow this?
                 match plugin {
+                    Some(destination) if destination.starts_with("plugin_") => {
+                        match destination.parse::<PaneId>() {
+                            Ok(PaneId::Plugin(plugin_id))
+                                if wasm_bridge.run_plugin_of_plugin_id(plugin_id).is_some()
+                                    || wasm_bridge
+                                        .run_plugin_of_loading_plugin_id(plugin_id)
+                                        .is_some() =>
+                            {
+                                pipe_messages.push((
+                                    Some(plugin_id),
+                                    None,
+                                    PipeMessage::new(
+                                        PipeSource::Cli(pipe_id.clone()),
+                                        &name,
+                                        &payload,
+                                        &args,
+                                        true,
+                                    ),
+                                ));
+                            },
+                            _ => {
+                                bus.senders.send_to_server(ServerInstruction::LogError(
+                                    vec![format!("Plugin destination is invalid or missing: {destination}")],
+                                    cli_client_id,
+                                    None,
+                                )).context("failed to report missing pipe destination").non_fatal();
+                            },
+                        }
+                    },
                     Some(plugin_url) => {
                         // send to specific plugin(s)
                         pipe_to_specific_plugins(

@@ -355,7 +355,15 @@ impl RemoteReader {
             },
             // An event, not state: handed on at once rather than cached, or a
             // burst of them would collapse to whichever came last.
-            BrokerToServerMsg::AgentReport { kind, json } => {
+            BrokerToServerMsg::AgentReport { kind, mut json } => {
+                // The authenticated broker channel identifies this exact process.
+                // Guest hooks need no knowledge of host sessions or plugin ids.
+                if let Some(owner) = self.cmd.workflow_owner() {
+                    if let Ok(serde_json::Value::Object(mut raw)) = serde_json::from_str(&json) {
+                        raw.insert("_zellij_workflow_owner".into(), owner.into());
+                        json = serde_json::Value::Object(raw).to_string();
+                    }
+                }
                 match &self.agent_report_cb {
                     Some(cb) => cb(self.terminal_id, kind, json),
                     None => log::warn!(
