@@ -3,8 +3,11 @@ use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::{PaneFactory, PaneId};
 use crate::pty_host::client::{ReleasedPane, ReleasedPtyHost, ReleasedRemotePane};
 use crate::{
-    channels::SenderWithContext, os_input_output::ServerOsApi, route::route_action,
-    thread_bus::Bus, ClientId, ServerInstruction, SessionMetaData, ThreadSenders,
+    channels::SenderWithContext,
+    os_input_output::ServerOsApi,
+    route::{actions_leave_clipboard_message, route_action},
+    thread_bus::Bus,
+    ClientId, ServerInstruction, SessionMetaData, ThreadSenders,
 };
 use zellij_test_support::Watched;
 use zellij_utils::internal_ids::TerminalId;
@@ -201,6 +204,7 @@ fn send_cli_action_to_server(
         .options
         .default_mode
         .unwrap_or(InputMode::Normal);
+    let leaves_clipboard_message = actions_leave_clipboard_message(&actions);
     for action in actions {
         route_action(
             action,
@@ -212,6 +216,7 @@ fn send_cli_action_to_server(
             None,
             default_mode,
             None,
+            leaves_clipboard_message,
         )
         .unwrap();
     }
@@ -239,6 +244,7 @@ fn route_arbitrary_action_to_server(
         None,
         default_mode,
         None,
+        false,
     )
     .unwrap();
 }

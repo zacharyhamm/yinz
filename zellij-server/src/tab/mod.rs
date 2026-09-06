@@ -7596,35 +7596,19 @@ impl Tab {
         }
         .and_then(|p| p.get_selected_text(client_id));
         if let Some(selected_text) = selected_text {
+            // `write_selection_to_clipboard` already tells the plugins how it went - and says
+            // `SystemClipboardFailure` when it went badly, which a second unconditional
+            // `CopyToClipboard` from here used to paper over.
             self.write_selection_to_clipboard(&selected_text)
                 .with_context(|| {
                     format!("failed to write selection to clipboard for client {client_id}")
                 })?;
-            self.senders
-                .send_to_plugin(PluginInstruction::Update(vec![(
-                    None,
-                    None,
-                    Event::CopyToClipboard(self.clipboard_provider.as_copy_destination()),
-                )]))
-                .with_context(|| {
-                    format!("failed to inform plugins about copy selection for client {client_id}")
-                })
-                .non_fatal();
         }
         Ok(())
     }
     pub fn copy_text_to_clipboard(&self, text: &str) -> Result<()> {
         self.write_selection_to_clipboard(text)
-            .with_context(|| "failed to write text to clipboard".to_string())?;
-        self.senders
-            .send_to_plugin(PluginInstruction::Update(vec![(
-                None,
-                None,
-                Event::CopyToClipboard(self.clipboard_provider.as_copy_destination()),
-            )]))
-            .with_context(|| "failed to inform plugins about clipboard copy")
-            .non_fatal();
-        Ok(())
+            .with_context(|| "failed to write text to clipboard".to_string())
     }
 
     pub(crate) fn write_selection_to_clipboard(&self, selection: &str) -> Result<()> {
