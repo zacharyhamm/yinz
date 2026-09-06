@@ -260,7 +260,7 @@ impl<'a> PaneContentsAndUi<'a> {
                     format!("failed to render fake cursor if needed for client {client_id}")
                 })?;
             if let Some(colors) = client_id_to_colors(
-                fake_cursor_client_id.0,
+                *fake_cursor_client_id,
                 self.style.colors.multiplayer_user_colors,
             ) {
                 let cursor_is_visible = self
@@ -589,7 +589,7 @@ pub fn frame_color(
                     Some((style.colors.frame_selected.base, 4))
                 } else {
                     let colors =
-                        client_id_to_colors(client_id.0, style.colors.multiplayer_user_colors);
+                        client_id_to_colors(client_id, style.colors.multiplayer_user_colors);
                     colors.map(|colors| (colors.0, 4))
                 }
             },

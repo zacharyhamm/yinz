@@ -27,7 +27,7 @@ use std::time::Duration;
 use strum_macros::{Display, EnumDiscriminants, EnumIter, EnumString};
 use unicode_width::UnicodeWidthChar;
 
-pub type ClientId = u16; // TODO: merge with crate type?
+pub use zellij_types::internal_ids::ClientId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnblockCondition {
@@ -69,7 +69,7 @@ pub fn client_id_to_colors(
 ) -> Option<(PaletteColor, PaletteColor)> {
     // (primary color, secondary color)
     let black = PaletteColor::EightBit(default_colors::BLACK);
-    match client_id {
+    match client_id.get() {
         1 => Some((colors.player_1, black)),
         2 => Some((colors.player_2, black)),
         3 => Some((colors.player_3, black)),
@@ -2079,7 +2079,7 @@ pub enum HookPayload {
     /// `session_start`: the session's first client connected.
     SessionStart {
         session_name: String,
-        client_id: u16,
+        client_id: ClientId,
     },
 }
 

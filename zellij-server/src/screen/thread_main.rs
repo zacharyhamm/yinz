@@ -4086,12 +4086,12 @@ pub(crate) fn screen_thread_main(
                     tab_history: screen
                         .tab_history
                         .iter()
-                        .map(|(id, history)| (id.0, history.clone()))
+                        .map(|(id, history)| (*id, history.clone()))
                         .collect(),
                     pane_history: screen
                         .pane_history
                         .iter()
-                        .map(|(k, v)| (k.0, v.iter().map(|v| (*v).into()).collect()))
+                        .map(|(k, v)| (*k, v.clone()))
                         .collect(),
                     creation_time,
                 };

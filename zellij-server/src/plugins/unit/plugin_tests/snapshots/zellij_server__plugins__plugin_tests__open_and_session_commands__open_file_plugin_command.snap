@@ -16,7 +16,9 @@ Some(
                     originating_plugin: Some(
                         OriginatingPlugin {
                             plugin_id: 0,
-                            client_id: 1,
+                            client_id: ClientId(
+                                1,
+                            ),
                             context: {},
                         },
                     ),

@@ -2916,7 +2916,7 @@ fn a_tab_release_that_fails_part_way_tells_every_pane_in_it() {
 fn step_origin(step: &str) -> zellij_utils::data::OriginatingPlugin {
     zellij_utils::data::OriginatingPlugin::new(
         2,
-        1,
+        crate::ClientId::new(1),
         std::collections::BTreeMap::from([("__step".to_owned(), step.to_owned())]),
     )
 }

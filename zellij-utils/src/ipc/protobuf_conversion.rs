@@ -21,7 +21,7 @@ use crate::{
         TabMetadata as ProtoTabMetadata, TerminalPixelDimensionsMsg, TerminalResizeMsg,
         UnblockCliPipeInputMsg, UnblockInputThreadMsg, WarpPlacement as ProtobufWarpPlacement,
     },
-    data::{HostTerminalThemeMode, InputMode, PaneId},
+    data::{ClientId, HostTerminalThemeMode, InputMode, PaneId},
     errors::prelude::*,
     ipc::{
         ClientToServerMsg, ColorRegister, ExitReason, PaneReference, PixelDimensions,
@@ -61,7 +61,10 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
             },
             ClientToServerMsg::DetachSession { client_ids } => {
                 client_to_server_msg::Message::DetachSession(DetachSessionMsg {
-                    client_ids: client_ids.into_iter().map(|id| id as u32).collect(),
+                    client_ids: client_ids
+                        .into_iter()
+                        .map(|id| u32::from(id.get()))
+                        .collect(),
                 })
             },
             ClientToServerMsg::TerminalPixelDimensions { pixel_dimensions } => {
@@ -112,7 +115,7 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
             } => client_to_server_msg::Message::Action(ActionMsg {
                 action: Some(action.try_into()?),
                 terminal_id,
-                client_id: client_id.map(|id| id as u32),
+                client_id: client_id.map(|id| u32::from(id.get())),
                 is_cli_client,
             }),
             ClientToServerMsg::Key {
@@ -234,7 +237,11 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
             },
             Some(client_to_server_msg::Message::DetachSession(detach)) => {
                 Ok(ClientToServerMsg::DetachSession {
-                    client_ids: detach.client_ids.into_iter().map(|id| id as u16).collect(),
+                    client_ids: detach
+                        .client_ids
+                        .into_iter()
+                        .map(ClientId::try_from)
+                        .collect::<std::result::Result<_, _>>()?,
                 })
             },
             Some(client_to_server_msg::Message::TerminalPixelDimensions(pixel_dims)) => {
@@ -304,7 +311,7 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                     .ok_or_else(|| anyhow!("Missing action"))?
                     .try_into()?,
                 terminal_id: action.terminal_id,
-                client_id: action.client_id.map(|id| id as u16),
+                client_id: action.client_id.map(ClientId::try_from).transpose()?,
                 is_cli_client: action.is_cli_client,
             }),
             Some(client_to_server_msg::Message::Key(key)) => Ok(ClientToServerMsg::Key {
@@ -4486,7 +4493,7 @@ impl From<crate::data::OriginatingPlugin>
 
         Self {
             plugin_id: orig.plugin_id,
-            client_id: orig.client_id as u32,
+            client_id: u32::from(orig.client_id.get()),
             context,
         }
     }
@@ -4506,7 +4513,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::OriginatingP
 
         Ok(Self {
             plugin_id: orig.plugin_id,
-            client_id: orig.client_id as u16,
+            client_id: ClientId::try_from(orig.client_id)?,
             context,
         })
     }

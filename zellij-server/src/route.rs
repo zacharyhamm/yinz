@@ -2896,7 +2896,6 @@ pub(crate) fn route_thread_main(
                             is_cli_client,
                         } => {
                             let maybe_pane_id = maybe_pane_id.map(TerminalId);
-                            let maybe_client_id = maybe_client_id.map(ClientId);
                             let cli_client_id = client_id;
                             let client_id = if is_cli_client {
                                 // for cli clients, we want to default to the last active client
@@ -3133,7 +3132,7 @@ pub(crate) fn route_thread_main(
                         },
                         ClientToServerMsg::DetachSession { client_ids } => {
                             let _ =
-                                to_server.send(ServerInstruction::DetachSession(client_ids.into_iter().map(ClientId).collect(), None));
+                                to_server.send(ServerInstruction::DetachSession(client_ids, None));
                             should_break = true;
                         },
                         ClientToServerMsg::DesktopNotificationResponse { ref raw_bytes } => {

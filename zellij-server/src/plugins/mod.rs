@@ -1096,7 +1096,7 @@ pub(crate) fn plugin_thread_main(
                 for (client_metadata_id, client_metadata) in clients_metadata.iter_mut() {
                     let is_current_client = client_metadata_id == &client_id;
                     client_list_for_plugin.push(ClientInfo::new(
-                        client_metadata_id.0,
+                        *client_metadata_id,
                         client_metadata.get_pane_id(),
                         client_metadata.stringify_command(&default_editor),
                         is_current_client,
@@ -1432,12 +1432,7 @@ pub(crate) fn plugin_thread_main(
                 let updates = vec![(
                     None,
                     None,
-                    Event::UserAction(
-                        action,
-                        client_id.0,
-                        terminal_id.map(|id| id.0),
-                        cli_client_id.map(|id| id.0),
-                    ),
+                    Event::UserAction(action, client_id, terminal_id.map(|id| id.0), cli_client_id),
                 )];
                 wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
             },
@@ -1693,7 +1688,7 @@ fn session_start_payload(client_id: ClientId) -> HookFiring {
     // it here beats threading it through the thread's signature for one string.
     HookFiring::Headless(HookPayload::SessionStart {
         session_name: zellij_runtime::envs::get_session_name().unwrap_or_default(),
-        client_id: client_id.0,
+        client_id,
     })
 }
 

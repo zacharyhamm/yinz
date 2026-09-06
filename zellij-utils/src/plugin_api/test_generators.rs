@@ -415,7 +415,7 @@ pub(crate) fn new_pane_placements(tc: &hegel::TestCase) -> NewPanePlacement {
 pub(crate) fn originating_plugins(tc: &hegel::TestCase) -> OriginatingPlugin {
     OriginatingPlugin {
         plugin_id: tc.draw(generators::integers::<u32>()),
-        client_id: tc.draw(generators::integers::<u16>()),
+        client_id: crate::data::ClientId::new(tc.draw(generators::integers::<u16>())),
         context: context(tc),
     }
 }

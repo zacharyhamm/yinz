@@ -1185,11 +1185,8 @@ impl Output {
         pane_id: PaneId,
         pane_contents: PaneContents,
     ) {
-        self.pane_render_report.add_pane_contents(
-            &client_ids.iter().map(|id| id.0).collect::<Vec<_>>(),
-            pane_id,
-            pane_contents,
-        );
+        self.pane_render_report
+            .add_pane_contents(client_ids, pane_id, pane_contents);
     }
     pub fn add_pane_contents_with_ansi(
         &mut self,
@@ -1197,11 +1194,8 @@ impl Output {
         pane_id: PaneId,
         pane_contents: PaneContents,
     ) {
-        self.pane_render_report.add_pane_contents_with_ansi(
-            &client_ids.iter().map(|id| id.0).collect::<Vec<_>>(),
-            pane_id,
-            pane_contents,
-        );
+        self.pane_render_report
+            .add_pane_contents_with_ansi(client_ids, pane_id, pane_contents);
     }
     pub fn drain_pane_render_report(&mut self) -> PaneRenderReport {
         let empty_pane_render_report = PaneRenderReport::default();

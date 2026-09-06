@@ -125,7 +125,7 @@ fn finish_terminal_spawn(
                     .senders
                     .send_to_plugin(PluginInstruction::Update(vec![(
                         Some(PluginId(originating_plugin.plugin_id)),
-                        Some(ClientId(originating_plugin.client_id)),
+                        Some(originating_plugin.client_id),
                         Event::CommandPaneOpened(pid.0, originating_plugin.context),
                     )]))
                     .with_context(err_context)?;
@@ -138,7 +138,7 @@ fn finish_terminal_spawn(
                     .senders
                     .send_to_plugin(PluginInstruction::Update(vec![(
                         Some(PluginId(originating_plugin.plugin_id)),
-                        Some(ClientId(originating_plugin.client_id)),
+                        Some(originating_plugin.client_id),
                         Event::EditPaneOpened(pid.0, originating_plugin.context),
                     )]))
                     .with_context(err_context)?;
@@ -180,7 +180,7 @@ fn finish_terminal_spawn(
                             .senders
                             .send_to_plugin(PluginInstruction::Update(vec![(
                                 Some(PluginId(originating_plugin.plugin_id)),
-                                Some(ClientId(originating_plugin.client_id)),
+                                Some(originating_plugin.client_id),
                                 Event::CommandPaneExited(
                                     terminal_id.0,
                                     Some(2),
@@ -292,7 +292,7 @@ fn finish_command_rerun(
                         .senders
                         .send_to_plugin(PluginInstruction::Update(vec![(
                             Some(PluginId(originating_plugin.plugin_id)),
-                            Some(ClientId(originating_plugin.client_id)),
+                            Some(originating_plugin.client_id),
                             Event::CommandPaneExited(
                                 terminal_id.0,
                                 Some(2),
@@ -758,7 +758,7 @@ fn terminal_quit_callback(
             if let Some(plugin) = edit_plugin.as_ref() {
                 let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
                     Some(PluginId(plugin.plugin_id)),
-                    Some(ClientId(plugin.client_id)),
+                    Some(plugin.client_id),
                     Event::EditPaneExited(terminal_id.0, exit_status, plugin.context.clone()),
                 )]));
             }
@@ -778,7 +778,7 @@ fn terminal_quit_callback(
             if let Some(plugin) = command_plugin.as_ref() {
                 let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
                     Some(PluginId(plugin.plugin_id)),
-                    Some(ClientId(plugin.client_id)),
+                    Some(plugin.client_id),
                     Event::CommandPaneExited(terminal_id.0, exit_status, plugin.context.clone()),
                 )]));
             }
@@ -2030,7 +2030,7 @@ impl Pty {
                         .senders
                         .send_to_plugin(PluginInstruction::Update(vec![(
                             Some(PluginId(originating_plugin.plugin_id)),
-                            Some(ClientId(originating_plugin.client_id)),
+                            Some(originating_plugin.client_id),
                             Event::CommandPaneExited(
                                 terminal_id.0,
                                 Some(2),
@@ -2956,7 +2956,7 @@ impl Pty {
             .senders
             .send_to_plugin(PluginInstruction::Update(vec![(
                 Some(PluginId(originating_plugin.plugin_id)),
-                Some(ClientId(originating_plugin.client_id)),
+                Some(originating_plugin.client_id),
                 update_event,
             )]));
     }
@@ -3628,7 +3628,7 @@ impl Pty {
                 .senders
                 .send_to_plugin(PluginInstruction::Update(vec![(
                     Some(PluginId(plugin.plugin_id)),
-                    Some(ClientId(plugin.client_id)),
+                    Some(plugin.client_id),
                     Event::CommandPaneReRun(id.0, plugin.context.clone()),
                 )]))?;
         }
@@ -3802,7 +3802,7 @@ impl Pty {
                 Event::CwdChanged(
                     pane_id,
                     cwd.clone(),
-                    focused_client_ids.into_iter().map(|id| id.0).collect(),
+                    focused_client_ids.into_iter().collect(),
                 ),
             )]));
         let _ = self
@@ -4052,7 +4052,7 @@ impl Pty {
                             pane_id,
                             command,
                             is_foreground,
-                            focused_client_ids.into_iter().map(|id| id.0).collect(),
+                            focused_client_ids.into_iter().collect(),
                         ),
                     )]));
                 self.terminal_foreground_cmds

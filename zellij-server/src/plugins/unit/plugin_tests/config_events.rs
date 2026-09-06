@@ -571,7 +571,7 @@ pub fn a_reload_replaces_the_hooks_and_the_configured_context_menu() {
     let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
         context: Box::new(ContextMenuContext {
             request_id: 7,
-            client_id: client_id.0,
+            client_id,
             ..Default::default()
         }),
         client_id,
@@ -642,7 +642,7 @@ pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
     let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
         context: Box::new(ContextMenuContext {
             request_id: 1,
-            client_id: 1,
+            client_id: ClientId::new(1),
             ..Default::default()
         }),
         client_id: crate::ClientId(1),
@@ -675,7 +675,7 @@ pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
     let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
         context: Box::new(ContextMenuContext {
             request_id: 2,
-            client_id: 2,
+            client_id: ClientId::new(2),
             ..Default::default()
         }),
         client_id: crate::ClientId(2),
@@ -729,7 +729,7 @@ pub fn a_shared_context_menu_hook_is_loaded_on_the_first_request() {
     let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
         context: Box::new(ContextMenuContext {
             request_id: 1,
-            client_id: 1,
+            client_id: ClientId::new(1),
             ..Default::default()
         }),
         client_id: crate::ClientId(1),

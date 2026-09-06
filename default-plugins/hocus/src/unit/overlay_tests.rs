@@ -1041,9 +1041,9 @@ fn two_clients_on_different_tabs_leave_the_panes_alone() {
     };
 
     for _ in 0..3 {
-        state.client = 1;
+        state.client = ClientId::new(1);
         state.on_tabs(tabs(0));
-        state.client = 2;
+        state.client = ClientId::new(2);
         state.on_tabs(tabs(1));
     }
 
@@ -1054,7 +1054,7 @@ fn two_clients_on_different_tabs_leave_the_panes_alone() {
     );
     assert_eq!(
         state.client_tabs,
-        BTreeMap::from([(1, 0), (2, 1)]),
+        BTreeMap::from([(ClientId::new(1), 0), (ClientId::new(2), 1)]),
         "and both clients were recorded where they actually are"
     );
 }
@@ -1140,8 +1140,8 @@ fn a_reveal_stays_on_the_tab_the_server_put_us_on() {
         own_tab_index: Some(3),
         hidden: true,
         hide_pending: 0,
-        client: 1,
-        client_tabs: BTreeMap::from([(1, 0), (2, 3)]),
+        client: ClientId::new(1),
+        client_tabs: BTreeMap::from([(ClientId::new(1), 0), (ClientId::new(2), 3)]),
         tabs: vec![TabInfo {
             position: 0,
             tab_id: 0,
@@ -3145,8 +3145,8 @@ fn a_dismissed_panel_does_not_follow_a_tab_switch() {
         agents_plugin: Some(9),
         hidden: true,
         agents_visible: true,
-        client: 1,
-        client_tabs: BTreeMap::from([(1, 0)]),
+        client: ClientId::new(1),
+        client_tabs: BTreeMap::from([(ClientId::new(1), 0)]),
         ..Default::default()
     };
 

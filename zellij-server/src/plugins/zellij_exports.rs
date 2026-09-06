@@ -217,7 +217,7 @@ fn run_command_action(
         hold_on_start: false,
         originating_plugin: Some(OriginatingPlugin::new(
             env.plugin_id.0,
-            env.client_id.0,
+            env.client_id,
             context,
         )),
         use_terminal_title: false,
@@ -1196,7 +1196,7 @@ fn get_plugin_ids(env: &mut PluginEnv) {
         plugin_id: env.plugin_id.0,
         zellij_pid: process::id(),
         initial_cwd: env.plugin_cwd.clone(),
-        client_id: env.client_id.0,
+        client_id: env.client_id,
         hostname: host_display_name(),
         host_id: zellij_runtime::host_identity::host_id(),
     };
@@ -1800,7 +1800,7 @@ fn open_file(env: &mut PluginEnv, file_to_open: FileToOpen, context: BTreeMap<St
         .or_else(|| Some(env.plugin_cwd.clone()));
     let action = Action::EditFile {
         payload: OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id.0, env.client_id.0, context),
+            OriginatingPlugin::new(env.plugin_id.0, env.client_id, context),
         ),
         direction: None,
         floating,
@@ -1828,7 +1828,7 @@ fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, Str
     // Clone the necessary data to move into the thread
     action.populate_originating_plugin(OriginatingPlugin::new(
         env.plugin_id.0,
-        env.client_id.0,
+        env.client_id,
         context.clone(),
     ));
     let action_clone = action.clone();
@@ -1897,7 +1897,7 @@ fn open_file_floating(
         .or_else(|| Some(env.plugin_cwd.clone()));
     let action = Action::EditFile {
         payload: OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id.0, env.client_id.0, context),
+            OriginatingPlugin::new(env.plugin_id.0, env.client_id, context),
         ),
         direction: None,
         floating,
@@ -1939,7 +1939,7 @@ fn open_file_in_place(
 
     let action = Action::EditFile {
         payload: OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id.0, env.client_id.0, context),
+            OriginatingPlugin::new(env.plugin_id.0, env.client_id, context),
         ),
         direction: None,
         floating,
@@ -1976,7 +1976,7 @@ fn open_file_near_plugin(
     let path = translate_plugin_path(env, file_to_open.path);
     let open_file_payload =
         OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id.0, env.client_id.0, context),
+            OriginatingPlugin::new(env.plugin_id.0, env.client_id, context),
         );
     let title = format!("Editing: {}", open_file_payload.path.display());
     let start_suppressed = false;
@@ -2019,7 +2019,7 @@ fn open_file_floating_near_plugin(
     let path = translate_plugin_path(env, file_to_open.path);
     let open_file_payload =
         OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id.0, env.client_id.0, context),
+            OriginatingPlugin::new(env.plugin_id.0, env.client_id, context),
         );
     let title = format!("Editing: {}", open_file_payload.path.display());
     let start_suppressed = false;
@@ -2062,7 +2062,7 @@ fn open_file_in_place_of_plugin(
     let path = translate_plugin_path(env, file_to_open.path);
     let open_file_payload =
         OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id.0, env.client_id.0, context),
+            OriginatingPlugin::new(env.plugin_id.0, env.client_id, context),
         );
     let title = format!("Editing: {}", open_file_payload.path.display());
     let open_file = TerminalAction::OpenFile(open_file_payload);
@@ -2451,7 +2451,7 @@ fn open_edit_pane_in_place_of_pane_id(
     let path = translate_plugin_path(env, file_to_open.path);
     let open_file_payload =
         OpenFilePayload::new(path, file_to_open.line_number, cwd).with_originating_plugin(
-            OriginatingPlugin::new(env.plugin_id.0, env.client_id.0, context),
+            OriginatingPlugin::new(env.plugin_id.0, env.client_id, context),
         );
     let title = format!("Editing: {}", open_file_payload.path.display());
     let open_file = TerminalAction::OpenFile(open_file_payload);
@@ -6953,7 +6953,7 @@ fn try_edit_layout(
         )
         .with_originating_plugin(OriginatingPlugin::new(
             env.plugin_id.0,
-            env.client_id.0,
+            env.client_id,
             context,
         )),
         direction: None,

@@ -30,7 +30,7 @@ fn marked_run(command: &str) -> Run {
         command: PathBuf::from(command),
         originating_plugin: Some(OriginatingPlugin::new(
             2,
-            1,
+            crate::ClientId::new(1),
             BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
         )),
         ..Default::default()

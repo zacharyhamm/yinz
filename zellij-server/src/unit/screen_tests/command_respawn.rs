@@ -14,7 +14,7 @@ fn step_command(cmd: &str, step: &str) -> RunCommand {
         hold_on_close: true,
         originating_plugin: Some(OriginatingPlugin::new(
             1,
-            1,
+            crate::ClientId::new(1),
             BTreeMap::from([("__step".to_owned(), step.to_owned())]),
         )),
         ..Default::default()

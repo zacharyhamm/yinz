@@ -9621,10 +9621,7 @@ pub fn pane_info_for_pane(
                 .map(|position| (*client_id, position))
         })
         .collect();
-    pane_info.index_in_pane_group = index_in_pane_group
-        .into_iter()
-        .map(|(id, index)| (id.0, index))
-        .collect();
+    pane_info.index_in_pane_group = index_in_pane_group;
 
     let (default_fg, default_bg) = pane.get_pane_default_colors();
     pane_info.default_fg = default_fg;

@@ -179,7 +179,7 @@ fn pane_bracketed_paste_ignored_when_not_in_bracketed_paste_mode() {
         cols: 121,
         rows: 20,
     };
-    let client_id: u16 = 1;
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -191,27 +191,12 @@ fn pane_bracketed_paste_ignored_when_not_in_bracketed_paste_mode() {
 
     let bracketed_paste_start = vec![27, 91, 50, 48, 48, 126]; // \u{1b}[200~
     let bracketed_paste_end = vec![27, 91, 50, 48, 49, 126]; // \u{1b}[201
-    tab.write_to_active_terminal(
-        &None,
-        bracketed_paste_start,
-        false,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
-    tab.write_to_active_terminal(
-        &None,
-        "test".as_bytes().to_vec(),
-        false,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
-    tab.write_to_active_terminal(
-        &None,
-        bracketed_paste_end,
-        false,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
+    tab.write_to_active_terminal(&None, bracketed_paste_start, false, client_id)
+        .unwrap();
+    tab.write_to_active_terminal(&None, "test".as_bytes().to_vec(), false, client_id)
+        .unwrap();
+    tab.write_to_active_terminal(&None, bracketed_paste_end, false, client_id)
+        .unwrap();
 
     pty_instruction_bus.exit();
 
@@ -224,7 +209,7 @@ fn pane_faux_scrolling_in_alternate_mode() {
         cols: 121,
         rows: 20,
     };
-    let client_id: u16 = 1;
+    let client_id = ClientId::new(1);
     let lines_to_scroll = 3;
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
@@ -239,18 +224,10 @@ fn pane_faux_scrolling_in_alternate_mode() {
     let set_application_mode = String::from("\u{1b}[?1h");
 
     // no output since alternate scren not active yet
-    tab.handle_scrollwheel_up(
-        &Position::new(1, 1),
-        lines_to_scroll,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
-    tab.handle_scrollwheel_down(
-        &Position::new(1, 1),
-        lines_to_scroll,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
+    tab.handle_scrollwheel_up(&Position::new(1, 1), lines_to_scroll, client_id)
+        .unwrap();
+    tab.handle_scrollwheel_down(&Position::new(1, 1), lines_to_scroll, client_id)
+        .unwrap();
 
     tab.handle_pty_bytes(
         crate::TerminalId(1),
@@ -258,18 +235,10 @@ fn pane_faux_scrolling_in_alternate_mode() {
     )
     .unwrap();
     // CSI A * lines_to_scroll, CSI B * lines_to_scroll
-    tab.handle_scrollwheel_up(
-        &Position::new(1, 1),
-        lines_to_scroll,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
-    tab.handle_scrollwheel_down(
-        &Position::new(1, 1),
-        lines_to_scroll,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
+    tab.handle_scrollwheel_up(&Position::new(1, 1), lines_to_scroll, client_id)
+        .unwrap();
+    tab.handle_scrollwheel_down(&Position::new(1, 1), lines_to_scroll, client_id)
+        .unwrap();
 
     tab.handle_pty_bytes(
         crate::TerminalId(1),
@@ -277,18 +246,10 @@ fn pane_faux_scrolling_in_alternate_mode() {
     )
     .unwrap();
     // SS3 A * lines_to_scroll, SS3 B * lines_to_scroll
-    tab.handle_scrollwheel_up(
-        &Position::new(1, 1),
-        lines_to_scroll,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
-    tab.handle_scrollwheel_down(
-        &Position::new(1, 1),
-        lines_to_scroll,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
+    tab.handle_scrollwheel_up(&Position::new(1, 1), lines_to_scroll, client_id)
+        .unwrap();
+    tab.handle_scrollwheel_down(&Position::new(1, 1), lines_to_scroll, client_id)
+        .unwrap();
 
     pty_instruction_bus.exit();
 

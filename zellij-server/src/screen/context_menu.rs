@@ -98,7 +98,7 @@ impl Screen {
         let request_id = self.next_context_menu_request_id;
         self.next_context_menu_request_id += 1;
         context.request_id = request_id;
-        context.client_id = client_id.0;
+        context.client_id = client_id;
 
         let anchor = Position::new(context.click.1 as i32, context.click.0 as u16);
         // The one place the configured items enter a menu. The tab that fired this knows the pane
