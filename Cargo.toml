@@ -18,10 +18,17 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+zellij-cli = { workspace = true }
+zellij-config = { workspace = true }
+zellij-plugin-api = { workspace = true }
+zellij-ipc = { workspace = true }
+zellij-session = { workspace = true }
+zellij-types = { workspace = true }
+zellij-runtime = { workspace = true }
+zellij-storage = { workspace = true }
 zellij-process = { path = "zellij-process", version = "0.45.0" }
 zellij-client = { path = "zellij-client/", version = "0.45.0" }
 zellij-server = { path = "zellij-server/", version = "0.45.0" }
-zellij-utils = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 dialoguer = { workspace = true }
@@ -80,7 +87,14 @@ members = [
     "zellij-process",
     "zellij-terminal",
     "zellij-server",
-    "zellij-utils",
+    "zellij-config",
+    "zellij-plugin-api",
+    "zellij-ipc",
+    "zellij-session",
+    "zellij-cli",
+    "zellij-storage",
+    "zellij-types",
+    "zellij-runtime",
     "zellij-tile",
     "zellij-tile-markdown",
     "zellij-tile-utils",
@@ -114,6 +128,14 @@ large_enum_variant = "allow"
 too_many_arguments = "allow"
 
 [workspace.dependencies]
+zellij-cli = { path = "zellij-cli", version = "0.45.0" }
+zellij-session = { path = "zellij-session", version = "0.45.0" }
+zellij-ipc = { path = "zellij-ipc", version = "0.45.0" }
+zellij-plugin-api = { path = "zellij-plugin-api", version = "0.45.0" }
+zellij-config = { path = "zellij-config", version = "0.45.0" }
+zellij-storage = { path = "zellij-storage", version = "0.45.0" }
+zellij-types = { path = "zellij-types", version = "0.45.0" }
+zellij-runtime = { path = "zellij-runtime", version = "0.45.0" }
 ansi_term = { version = "0.12.1", default-features = false }
 anyhow = { version = "1.0.70", default-features = false, features = ["backtrace", "std"] }
 async-trait = { version = "0.1", default-features = false }
@@ -160,7 +182,6 @@ vte = { version = "0.15", default-features = false, features = ["std"] }
 names = { version = "0.14.0", default-features = false }
 include_dir = { version = "0.7.3", default-features = false }
 sha2 = { version = "0.11", default-features = false }
-zellij-utils = { path = "zellij-utils/", version = "0.45.0" }
 
 [profile.dev]
 debug = "line-tables-only"
@@ -206,10 +227,10 @@ pkg-fmt = "tgz"
 
 [features]
 default = ["vendored_curl"]
-vendored_curl = ["zellij-utils/vendored_curl"]
-unstable = ["zellij-client/unstable", "zellij-utils/unstable"]
+vendored_curl = ["zellij-runtime/vendored_curl"]
+unstable = ["zellij-client/unstable"]
 # The dockerized end-to-end suite. Off by default so an ordinary `cargo test` does not build
 # libssh2 and OpenSSL for five `#[ignore]`d tests; `cargo x ci e2e` turns it on.
 e2e = ["dep:ssh2"]
 # The plugin-data store suite against a real Postgres in docker; see `cargo x postgres-test`.
-postgres-tests = ["zellij-utils/postgres-tests"]
+postgres-tests = ["zellij-storage/postgres-tests"]

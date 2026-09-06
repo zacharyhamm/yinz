@@ -4,6 +4,7 @@
 //! thing as a unit test gets without a second machine.
 
 use super::*;
+use zellij_types::internal_ids::ProcessId;
 
 use std::os::fd::AsRawFd;
 
@@ -61,7 +62,7 @@ fn a_pane_reports_its_own_command_and_directory() {
     let pane = Pane::new("cd /tmp && sleep 5");
     pane.settle();
 
-    let probe = probe(pane.master_fd(), pane.pid());
+    let probe = probe(pane.master_fd(), ProcessId::new(pane.pid()));
     let shell = probe.shell_argv.expect("no shell argv");
     assert!(
         shell.iter().any(|a| a.contains("sh")),
@@ -85,7 +86,7 @@ fn a_foreground_process_is_reported_separately_from_the_shell() {
     let pane = Pane::new("sleep 5 < /dev/tty");
     pane.settle();
 
-    let probe = probe(pane.master_fd(), pane.pid());
+    let probe = probe(pane.master_fd(), ProcessId::new(pane.pid()));
     match probe.foreground_argv {
         Some(argv) => assert!(
             argv.iter().any(|a| a.contains("sleep")),
@@ -113,7 +114,7 @@ fn a_pane_with_nothing_in_the_foreground_reports_no_foreground_command() {
     let pane = Pane::new("exec sleep 5");
     pane.settle();
 
-    let probe = probe(pane.master_fd(), pane.pid());
+    let probe = probe(pane.master_fd(), ProcessId::new(pane.pid()));
     assert_eq!(
         probe.foreground_argv, None,
         "the pane's own process must not be reported as a foreground command"
@@ -137,7 +138,7 @@ fn probing_a_process_that_is_gone_reports_nothing() {
     // Give the kernel a moment to reap it.
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    let probe = probe(pty.master.as_raw_fd(), pid);
+    let probe = probe(pty.master.as_raw_fd(), ProcessId::new(pid));
     assert_eq!(probe.cwd, None);
     assert_eq!(probe.shell_argv, None);
 }

@@ -1,5 +1,5 @@
 use super::*;
-use zellij_utils::input::layout::{Run, RunPlugin};
+use zellij_types::input::layout::Run;
 
 #[test]
 fn new_floating_pane() {
@@ -7,9 +7,9 @@ fn new_floating_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -25,7 +25,7 @@ fn new_floating_pane() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
@@ -45,12 +45,12 @@ fn overlay_does_not_show_hidden_floating_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
-    let other_client_id = ClientId(2);
+    let client_id = ClientId::new(1);
+    let other_client_id = ClientId::new(2);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let floating_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    let overlay_pane_id = PaneId::Terminal(crate::TerminalId(3));
-    let other_client_pane_id = PaneId::Terminal(crate::TerminalId(4));
+    let floating_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    let overlay_pane_id = PaneId::Terminal(crate::TerminalId::new(3));
+    let other_client_pane_id = PaneId::Terminal(crate::TerminalId::new(4));
 
     tab.new_floating_pane(
         floating_pane_id,
@@ -146,7 +146,7 @@ fn overlay_does_not_show_hidden_floating_panes() {
 
     assert_eq!(
         tab.get_active_pane(other_client_id).unwrap().pid(),
-        PaneId::Terminal(crate::TerminalId(1)),
+        PaneId::Terminal(crate::TerminalId::new(1)),
         "the other client must stay on its visible tiled pane"
     );
     assert!(!tab.move_focus_right(client_id).unwrap());
@@ -191,7 +191,7 @@ fn overlay_does_not_show_hidden_floating_panes() {
     assert!(tab.get_pane_with_id(overlay_pane_id).is_none());
     assert!(tab.floating_panes.rendered_pane_ids().is_empty());
     assert!(tab
-        .get_pane_with_id(PaneId::Terminal(crate::TerminalId(1)))
+        .get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
         .is_some());
     assert!(tab.get_pane_with_id(floating_pane_id).is_some());
 }
@@ -208,10 +208,10 @@ fn default_new_pane_from_overlay_is_tiled_and_visible() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let overlay_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(3));
+    let overlay_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(3));
 
     tab.new_pane(
         overlay_pane_id,
@@ -268,9 +268,9 @@ fn an_overlay_outranks_a_ui_covering_fullscreen_tiled_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let overlay_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let overlay_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.toggle_active_pane_no_ui_fullscreen(client_id);
     tab.new_pane(
@@ -313,9 +313,9 @@ fn an_overlay_is_expanded_over_the_screen_by_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let overlay_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let overlay_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.new_pane(
         overlay_pane_id,
@@ -389,9 +389,9 @@ fn a_fullscreen_keystroke_on_an_overlay_leaves_the_pane_behind_it_alone() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let overlay_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let overlay_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.new_pane(
         overlay_pane_id,
@@ -427,16 +427,18 @@ fn a_suppressed_modal_coming_back_out_leaves_no_phantom_in_the_floating_collecti
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     // a plugin pane needs somewhere to send to before it can be built
     let (plugin_sender, _plugin_receiver): ChannelWithContext<PluginInstruction> =
         channels::unbounded();
     tab.senders
         .replace_to_plugin(SenderWithContext::new(plugin_sender));
-    let modal_pane_id = PaneId::Plugin(crate::PluginId(2));
+    let modal_pane_id = PaneId::Plugin(crate::PluginId::new(2));
 
-    let mut modal = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
+    let mut modal =
+        zellij_runtime::plugin_location::run_plugin_from_url("zellij:quit-confirmation")
+            .expect("test plugin");
     modal.configuration.insert("modal", "true");
     let modal = Run::Plugin(RunPluginOrAlias::RunPlugin(modal));
 
@@ -488,9 +490,9 @@ fn new_stacked_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.new_pane(
         new_pane_id,
@@ -522,9 +524,9 @@ fn floating_panes_persist_across_toggles() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -544,7 +546,7 @@ fn floating_panes_persist_across_toggles() {
     // here we send bytes to the pane when it's not visible to make sure they're still handled and
     // we see them once we toggle the panes back
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
@@ -566,9 +568,9 @@ fn toggle_floating_panes_off() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -584,7 +586,7 @@ fn toggle_floating_panes_off() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
@@ -606,9 +608,9 @@ fn toggle_floating_panes_on() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -624,7 +626,7 @@ fn toggle_floating_panes_on() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
@@ -648,13 +650,13 @@ fn five_new_floating_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -714,17 +716,17 @@ fn five_new_floating_panes() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(4), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(4), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(5), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(5), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(6), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(6), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
@@ -742,9 +744,9 @@ fn increase_floating_pane_size() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -760,7 +762,7 @@ fn increase_floating_pane_size() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
@@ -782,9 +784,9 @@ fn decrease_floating_pane_size() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -800,7 +802,7 @@ fn decrease_floating_pane_size() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
@@ -822,9 +824,9 @@ fn resize_floating_pane_left() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -840,7 +842,7 @@ fn resize_floating_pane_left() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
@@ -865,9 +867,9 @@ fn resize_floating_pane_right() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -883,7 +885,7 @@ fn resize_floating_pane_right() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
@@ -908,9 +910,9 @@ fn resize_floating_pane_up() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -926,7 +928,7 @@ fn resize_floating_pane_up() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
@@ -951,9 +953,9 @@ fn resize_floating_pane_down() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -969,7 +971,7 @@ fn resize_floating_pane_down() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
@@ -994,13 +996,13 @@ fn move_floating_pane_focus_left() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -1060,17 +1062,17 @@ fn move_floating_pane_focus_left() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(4), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(4), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(5), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(5), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(6), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(6), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
     tab.move_focus_left(client_id).unwrap();
     tab.render(&mut output, None).unwrap();
@@ -1095,13 +1097,13 @@ fn move_floating_pane_focus_right() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -1161,17 +1163,17 @@ fn move_floating_pane_focus_right() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(4), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(4), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(5), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(5), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(6), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(6), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
     tab.move_focus_left(client_id).unwrap();
     tab.move_focus_right(client_id).unwrap();
@@ -1197,13 +1199,13 @@ fn move_floating_pane_focus_up() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -1263,17 +1265,17 @@ fn move_floating_pane_focus_up() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(4), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(4), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(5), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(5), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(6), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(6), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
     tab.move_focus_up(client_id).unwrap();
     tab.render(&mut output, None).unwrap();
@@ -1298,13 +1300,13 @@ fn move_floating_pane_focus_down() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -1364,17 +1366,17 @@ fn move_floating_pane_focus_down() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(4), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(4), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(5), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(5), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(6), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(6), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
     tab.move_focus_up(client_id).unwrap();
     tab.move_focus_down(client_id).unwrap();
@@ -1400,13 +1402,13 @@ fn move_floating_pane_focus_with_mouse() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -1466,17 +1468,17 @@ fn move_floating_pane_focus_with_mouse() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(4), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(4), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(5), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(5), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(6), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(6), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
     tab.handle_mouse_event(
         &MouseEvent::new_left_press_event(Position::new(9, 71)),
@@ -1510,13 +1512,13 @@ fn move_floating_pane_focus_to_last_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -1576,17 +1578,17 @@ fn move_floating_pane_focus_to_last_pane() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(4), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(4), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(5), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(5), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(6), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(6), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
     tab.move_focus_up(client_id).unwrap();
     tab.focus_last_pane(client_id);
@@ -1612,13 +1614,13 @@ fn move_pane_focus_with_mouse_to_non_floating_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -1678,17 +1680,17 @@ fn move_pane_focus_with_mouse_to_non_floating_pane() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(4), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(4), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(5), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(5), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(6), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(6), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
     tab.handle_mouse_event(
         &MouseEvent::new_left_press_event(Position::new(4, 71)),
@@ -1722,13 +1724,13 @@ fn drag_pane_with_mouse() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -1788,17 +1790,17 @@ fn drag_pane_with_mouse() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(4), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(4), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(5), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(5), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(6), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(6), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
     tab.handle_mouse_event(
         &MouseEvent::new_left_press_event(Position::new(5, 71)),
@@ -1832,13 +1834,13 @@ fn mark_text_inside_floating_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -1898,17 +1900,17 @@ fn mark_text_inside_floating_pane() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(4), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(4), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(5), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(5), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(6), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(6), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
     tab.handle_mouse_event(
         &MouseEvent::new_left_press_event(Position::new(6, 30)),
@@ -1950,13 +1952,13 @@ fn resize_tab_with_floating_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -2016,17 +2018,17 @@ fn resize_tab_with_floating_panes() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(4), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(4), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(5), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(5), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(6), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(6), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
     tab.resize_whole_tab(Size {
         cols: 100,
@@ -2050,13 +2052,13 @@ fn shrink_whole_tab_with_floating_panes_horizontally_and_vertically() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -2116,17 +2118,17 @@ fn shrink_whole_tab_with_floating_panes_horizontally_and_vertically() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(4), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(4), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(5), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(5), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(6), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(6), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
     tab.resize_whole_tab(Size { cols: 50, rows: 10 }).unwrap();
     tab.render(&mut output, None).unwrap();
@@ -2146,13 +2148,13 @@ fn shrink_whole_tab_with_floating_panes_horizontally_and_vertically_and_expand_b
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -2212,17 +2214,17 @@ fn shrink_whole_tab_with_floating_panes_horizontally_and_vertically_and_expand_b
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(4), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(4), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(5), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(5), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(6), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(6), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
     tab.resize_whole_tab(Size { cols: 50, rows: 10 }).unwrap();
     tab.resize_whole_tab(Size {
@@ -2247,9 +2249,9 @@ fn embed_floating_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -2265,7 +2267,7 @@ fn embed_floating_pane() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
@@ -2286,9 +2288,9 @@ fn float_embedded_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.new_pane(
         new_pane_id,
@@ -2302,7 +2304,7 @@ fn float_embedded_pane() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am an embedded pane".as_bytes()),
     )
     .unwrap();
@@ -2323,9 +2325,9 @@ fn embed_floating_pane_without_pane_frames() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.set_pane_frames(PaneFrameStyle::None);
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -2342,7 +2344,7 @@ fn embed_floating_pane_without_pane_frames() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am scratch terminal".as_bytes()),
     )
     .unwrap();
@@ -2363,9 +2365,9 @@ fn float_embedded_pane_without_pane_frames() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
     tab.set_pane_frames(PaneFrameStyle::None);
     tab.new_pane(
@@ -2380,7 +2382,7 @@ fn float_embedded_pane_without_pane_frames() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am an embedded pane".as_bytes()),
     )
     .unwrap();
@@ -2401,7 +2403,7 @@ fn floating_fullscreen_full_frame_style() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = setup_tab_with_focused_floating_pane(size, client_id, PaneFrameStyle::Full);
     let mut output = Output::default();
     tab.toggle_active_pane_fullscreen(client_id);
@@ -2421,7 +2423,7 @@ fn floating_fullscreen_titles_frame_style() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = setup_tab_with_focused_floating_pane(size, client_id, PaneFrameStyle::Titles);
     let mut output = Output::default();
     tab.toggle_active_pane_fullscreen(client_id);
@@ -2441,7 +2443,7 @@ fn floating_fullscreen_none_frame_style() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = setup_tab_with_focused_floating_pane(size, client_id, PaneFrameStyle::None);
     let mut output = Output::default();
     tab.toggle_active_pane_fullscreen(client_id);
@@ -2461,7 +2463,7 @@ fn changing_frame_style_while_floating_fullscreen_reflows_content() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = setup_tab_with_focused_floating_pane(size, client_id, PaneFrameStyle::Full);
     let mut output = Output::default();
     tab.toggle_active_pane_fullscreen(client_id);
@@ -2482,14 +2484,14 @@ fn exiting_floating_fullscreen_clears_background() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
     tab.new_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
@@ -2500,7 +2502,7 @@ fn exiting_floating_fullscreen_clears_background() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am a floating pane".as_bytes()),
     )
     .unwrap();
@@ -2525,7 +2527,7 @@ fn floating_no_ui_fullscreen_covers_tab_and_status_bar() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = setup_tab_with_focused_floating_pane(size, client_id, PaneFrameStyle::Full);
     let mut output = Output::default();
     tab.toggle_active_pane_no_ui_fullscreen(client_id);
@@ -2545,12 +2547,12 @@ fn floating_fullscreen_hides_other_floating_and_pinned_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
     tab.new_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
@@ -2561,7 +2563,7 @@ fn floating_fullscreen_hides_other_floating_and_pinned_panes() {
     )
     .unwrap();
     tab.new_pane(
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
         None,
         false,
@@ -2571,13 +2573,13 @@ fn floating_fullscreen_hides_other_floating_and_pinned_panes() {
         None,
     )
     .unwrap();
-    tab.set_floating_pane_pinned(PaneId::Terminal(crate::TerminalId(3)), true);
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("\u{1b}#8".as_bytes()))
+    tab.set_floating_pane_pinned(PaneId::Terminal(crate::TerminalId::new(3)), true);
+    tab.handle_pty_bytes(crate::TerminalId::new(2), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("\u{1b}#8".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("\u{1b}#8".as_bytes()))
         .unwrap();
     let _ = tab.focus_pane_with_id(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         false,
         false,
         client_id,
@@ -2615,7 +2617,7 @@ fn an_overlay_is_not_counted_by_the_floating_collection() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let overlay_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let overlay_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.new_overlay_pane(
         overlay_pane_id,
@@ -2659,8 +2661,8 @@ fn closing_the_last_floating_pane_under_an_overlay_takes_the_layer_down() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let floating_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    let overlay_pane_id = PaneId::Terminal(crate::TerminalId(3));
+    let floating_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    let overlay_pane_id = PaneId::Terminal(crate::TerminalId::new(3));
 
     tab.new_floating_pane(floating_pane_id, None, None, false, true, None, None)
         .unwrap();
@@ -2700,9 +2702,9 @@ fn unset_fullscreen_puts_back_the_overlay_and_the_pane_underneath_it() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let overlay_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let overlay_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.toggle_active_pane_no_ui_fullscreen(client_id);
     tab.new_pane(
@@ -2737,10 +2739,10 @@ fn an_expanded_overlay_is_not_the_tiled_or_floating_fullscreen() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let tiled_pane_id = PaneId::Terminal(crate::TerminalId(1));
-    let overlay_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let tiled_pane_id = PaneId::Terminal(crate::TerminalId::new(1));
+    let overlay_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.toggle_active_pane_no_ui_fullscreen(client_id);
     tab.new_pane(

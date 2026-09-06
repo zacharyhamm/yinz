@@ -34,15 +34,16 @@ use crate::{
     ClientId,
 };
 use stacked_panes::StackedPanes;
-use zellij_utils::{
-    data::{Direction, ModeInfo, PaneInfo, Resize, ResizeStrategy, Style, Styling},
-    errors::prelude::*,
-    input::{
-        command::RunCommand,
-        layout::{Run, RunPluginOrAlias, SplitDirection},
-        options::PaneFrameStyle,
-    },
+use zellij_runtime::errors::prelude::*;
+use zellij_types::style::{Style, Styling};
+use zellij_types::{
+    geometry::{Direction, Resize, ResizeStrategy, SplitDirection},
     pane_size::{Offset, PaneGeom, Size, SizeInPixels, Viewport},
+};
+use {
+    zellij_types::data::ModeInfo, zellij_types::data::PaneInfo,
+    zellij_types::input::command::RunCommand, zellij_types::input::layout::Run,
+    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::options::PaneFrameStyle,
 };
 
 use std::{
@@ -3335,7 +3336,7 @@ pub fn pane_geom_is_inside_viewport(viewport: &Viewport, geom: &PaneGeom) -> boo
 #[cfg(test)]
 mod content_offset_tests {
     use super::pane_content_offset;
-    use zellij_utils::pane_size::{Dimension, PaneGeom, Viewport};
+    use zellij_types::pane_size::{Dimension, PaneGeom, Viewport};
 
     fn geom(x: usize, cols: usize, y: usize, rows: usize) -> PaneGeom {
         PaneGeom {

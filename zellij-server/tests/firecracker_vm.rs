@@ -23,7 +23,8 @@ use zellij_server::{
     },
 };
 use zellij_test_support::Watched;
-use zellij_utils::input::command::{PaneTarget, RunCommand};
+use zellij_types::command::PaneTarget;
+use zellij_types::input::command::RunCommand;
 
 const TIMEOUT: Duration = Duration::from_secs(90);
 const IMAGE: &str = "zellij-dev";
@@ -514,7 +515,7 @@ fn run_in_guest(ensured: &EnsureResponse, script: &str, marker: &str) -> String 
             &ensured.ssh_host,
             &command,
             None,
-            zellij_server::TerminalId(1),
+            zellij_server::TerminalId::new(1),
             options,
         )
         .unwrap();

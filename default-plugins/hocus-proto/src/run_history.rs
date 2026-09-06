@@ -19,6 +19,7 @@
 //! the crate.
 
 use std::collections::{BTreeMap, BTreeSet};
+use zellij_tile::prelude::HostId;
 
 use crate::agents::{self, rows, AgentRunHeader, RunEntry, RunEntryKind};
 use crate::store::{self, Backend};
@@ -100,7 +101,7 @@ pub struct Filter {
     /// Left `None` by default, and deliberately: "have I had an agent look at this before" is a
     /// better question when it can answer across every machine the user works on, which is what
     /// a shared store now makes possible. Narrowing is the option, as it is for the session.
-    pub host_id: Option<String>,
+    pub host_id: Option<HostId>,
     /// A project, as a root folder and the machine that folder is on. Matched against a run's
     /// `cwd` by prefix, in the guest — see [`matches_root`].
     pub root: Option<RootScope>,
@@ -121,7 +122,12 @@ impl Filter {
         if let Some(session) = self.session() {
             preds.push(Pred::eq("zellij_session_name", session));
         }
-        if let Some(host_id) = trimmed(&self.host_id) {
+        if let Some(host_id) = self
+            .host_id
+            .as_ref()
+            .map(|id| HostId::new(id.as_str().trim()))
+            .filter(|id| !id.is_empty())
+        {
             // A run recorded before the `host_id` column existed carries the migration's empty
             // default, and a closed run is never rewritten, so nothing will ever fill it in.
             // Paired with a session name this is `agents::rows::owned_or_unclaimed`'s bargain —
@@ -130,7 +136,7 @@ impl Filter {
             // alone the question is about one machine, and a row that names none cannot answer
             // it: on a shared store the tolerance would hand back every machine's oldest runs.
             preds.push(match self.session() {
-                Some(_) => store::host_or_legacy(host_id),
+                Some(_) => store::host_or_legacy(&host_id),
                 None => Pred::eq("host_id", host_id),
             });
         }
@@ -158,7 +164,7 @@ impl Filter {
     /// `host_id` is the run row's, not the header's: the header is JSON written when the run
     /// was recorded and rows older than the column have none, while the column is on every row
     /// and is what the migration backfilled.
-    fn keeps(&self, header: &AgentRunHeader, host_id: &str) -> bool {
+    fn keeps(&self, header: &AgentRunHeader, host_id: &HostId) -> bool {
         match &self.root {
             Some(scope) => matches_root(
                 header.cwd.as_deref(),
@@ -182,14 +188,14 @@ pub struct RootScope {
     pub root: String,
     /// The machine the root is a folder on — this one, for every caller there is. See
     /// `agents::rows::Owner`.
-    pub host_id: String,
+    pub host_id: HostId,
 }
 
 impl RootScope {
-    pub fn new(root: impl Into<String>, host_id: impl Into<String>) -> Self {
+    pub fn new(root: impl Into<String>, host_id: HostId) -> Self {
         RootScope {
             root: root.into(),
-            host_id: host_id.into(),
+            host_id,
         }
     }
 }
@@ -229,7 +235,7 @@ fn trimmed(value: &Option<String>) -> Option<&str> {
 pub fn matches_root(
     cwd: Option<&str>,
     host: Option<&str>,
-    host_id: &str,
+    host_id: &HostId,
     worktree: Option<&str>,
     scope: &RootScope,
 ) -> bool {
@@ -238,8 +244,8 @@ pub fn matches_root(
         None if host.is_some_and(|host| !host.trim().is_empty()) => return false,
         None => cwd,
     };
-    let host_id = host_id.trim();
-    if !host_id.is_empty() && host_id != scope.host_id.trim() {
+    let host_id = host_id.as_str().trim();
+    if !host_id.is_empty() && host_id != scope.host_id.as_str().trim() {
         return false;
     }
     let (Some(cwd), root) = (cwd, scope.root.trim_end_matches('/')) else {
@@ -810,7 +816,7 @@ mod tests {
             id: id.to_owned(),
             pane_id: 7,
             zellij_session_name: session.to_owned(),
-            host_id: HOST.to_owned(),
+            host_id: HostId::new(HOST),
             session_id: id.to_owned(),
             kind: kind.to_owned(),
             cwd: Some("/work/hocus".to_owned()),
@@ -916,7 +922,7 @@ mod tests {
     fn a_search_is_narrowed_by_project_root() {
         let backend = seeded();
         let filter = Filter {
-            root: Some(RootScope::new("/work/hocus", HOST)),
+            root: Some(RootScope::new("/work/hocus", HostId::new(HOST))),
             ..Filter::default()
         };
         let found = search(&backend, &filter, None, "parser", 10).unwrap();
@@ -942,18 +948,18 @@ mod tests {
         // The same path, on a machine sharing the store. Nothing about the run says "remote":
         // its pane was local to *that* machine, so `host` is empty exactly as mine is.
         let mut theirs = run("claude:theirs", "claude", "main", 4_000);
-        theirs.host_id = "another-machine".to_owned();
+        theirs.host_id = HostId::new("another-machine");
         theirs.entries = vec![entry(1, RunEntryKind::Prompt, "fix the parser", 4_000)];
         write(&backend, &theirs);
 
         // And one from before the column, which there was only one machine to have written.
         let mut legacy = run("claude:legacy", "claude", "main", 2_000);
-        legacy.host_id = String::new();
+        legacy.host_id = HostId::default();
         legacy.entries = vec![entry(1, RunEntryKind::Prompt, "fix the parser", 2_000)];
         write(&backend, &legacy);
 
         let filter = Filter {
-            root: Some(RootScope::new("/work/hocus", HOST)),
+            root: Some(RootScope::new("/work/hocus", HostId::new(HOST))),
             ..Filter::default()
         };
         let listed: BTreeSet<String> = list_runs(&backend, &filter, 10, 0)
@@ -1002,13 +1008,13 @@ mod tests {
         write(&backend, &mine);
 
         let mut legacy = run("claude:legacy", "claude", "main", 2_000);
-        legacy.host_id = String::new();
+        legacy.host_id = HostId::default();
         legacy.entries = vec![entry(1, RunEntryKind::Prompt, "fix the parser", 2_000)];
         write(&backend, &legacy);
 
         // Another machine's session, sharing both the store and the name `main`.
         let mut theirs = run("claude:theirs", "claude", "main", 4_000);
-        theirs.host_id = "another-machine".to_owned();
+        theirs.host_id = HostId::new("another-machine");
         theirs.entries = vec![entry(1, RunEntryKind::Prompt, "fix the parser", 4_000)];
         write(&backend, &theirs);
 
@@ -1019,7 +1025,7 @@ mod tests {
 
         let this_session = Filter {
             zellij_session_name: Some("main".to_owned()),
-            host_id: Some(HOST.to_owned()),
+            host_id: Some(HostId::new(HOST)),
             ..Filter::default()
         };
         assert_eq!(
@@ -1042,7 +1048,7 @@ mod tests {
         // about that machine — and a row naming none cannot answer it. Tolerating `""` here
         // would hand every machine's oldest runs to whoever asked first.
         let host_alone = Filter {
-            host_id: Some("another-machine".to_owned()),
+            host_id: Some(HostId::new("another-machine")),
             ..Filter::default()
         };
         assert_eq!(
@@ -1237,7 +1243,7 @@ mod tests {
             write(&backend, &run);
         }
         let filter = Filter {
-            root: Some(RootScope::new("/work/hocus", HOST)),
+            root: Some(RootScope::new("/work/hocus", HostId::new(HOST))),
             ..Filter::default()
         };
         let mut seen: Vec<String> = Vec::new();
@@ -1305,7 +1311,7 @@ mod tests {
         write(&backend, &here);
         write(&backend, &there);
         let filter = Filter {
-            root: Some(RootScope::new("/work/hocus", HOST)),
+            root: Some(RootScope::new("/work/hocus", HostId::new(HOST))),
             ..Filter::default()
         };
         let page = list_runs(&backend, &filter, 10, 0).unwrap();
@@ -1322,29 +1328,41 @@ mod tests {
     /// inside it.
     #[test]
     fn a_project_root_does_not_claim_a_sibling_that_shares_its_name() {
-        let here = RootScope::new("/work/hocus", HOST);
-        assert!(matches_root(Some("/work/hocus"), None, HOST, None, &here));
+        let here = RootScope::new("/work/hocus", HostId::new(HOST));
+        assert!(matches_root(
+            Some("/work/hocus"),
+            None,
+            &HostId::new(HOST),
+            None,
+            &here
+        ));
         assert!(matches_root(
             Some("/work/hocus/src"),
             None,
-            HOST,
+            &HostId::new(HOST),
             None,
             &here
         ));
-        assert!(matches_root(Some("/work/hocus/"), None, HOST, None, &here));
+        assert!(matches_root(
+            Some("/work/hocus/"),
+            None,
+            &HostId::new(HOST),
+            None,
+            &here
+        ));
         assert!(!matches_root(
             Some("/work/hocus-fork"),
             None,
-            HOST,
+            &HostId::new(HOST),
             None,
             &here
         ));
-        assert!(!matches_root(None, None, HOST, None, &here));
+        assert!(!matches_root(None, None, &HostId::new(HOST), None, &here));
         // The same path over ssh is another folder, not this project.
         assert!(!matches_root(
             Some("/work/hocus"),
             Some("build-box"),
-            HOST,
+            &HostId::new(HOST),
             None,
             &here
         ));
@@ -1353,23 +1371,29 @@ mod tests {
         assert!(!matches_root(
             Some("/work/hocus"),
             None,
-            "another-machine",
+            &HostId::new("another-machine"),
             None,
             &here
         ));
         // A run from before the column names no machine, and there was only one machine then.
-        assert!(matches_root(Some("/work/hocus"), None, "", None, &here));
+        assert!(matches_root(
+            Some("/work/hocus"),
+            None,
+            &HostId::new(""),
+            None,
+            &here
+        ));
     }
 
     /// The exception the host rule makes for a VM: the folder the run names is a copy of
     /// one on this machine, and the worktree is where the work actually landed.
     #[test]
     fn a_firecracker_run_matches_the_project_of_the_worktree_its_vm_mirrored() {
-        let here = RootScope::new("/work/hocus", HOST);
+        let here = RootScope::new("/work/hocus", HostId::new(HOST));
         assert!(matches_root(
             Some("/workspace"),
             Some("firecracker:review"),
-            HOST,
+            &HostId::new(HOST),
             Some("/work/hocus"),
             &here
         ));
@@ -1378,7 +1402,7 @@ mod tests {
         assert!(!matches_root(
             Some("/workspace"),
             Some("firecracker:review"),
-            HOST,
+            &HostId::new(HOST),
             Some("/work/hocus-fork"),
             &here
         ));

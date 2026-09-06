@@ -18,11 +18,14 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::rc::Rc;
 use unicode_width::UnicodeWidthChar;
-use zellij_utils::data::{
-    HighlightLayer, HighlightStyle, HostTerminalThemeMode, RegexHighlight, Style,
+use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::{PluginId, TerminalId};
+use zellij_types::mouse::{MouseEvent, MouseEventType};
+use zellij_types::style::{HostTerminalThemeMode, Style};
+use {
+    zellij_types::data::HighlightLayer, zellij_types::data::HighlightStyle,
+    zellij_types::data::RegexHighlight,
 };
-use zellij_utils::errors::prelude::*;
-use zellij_utils::internal_ids::{PluginId, TerminalId};
 
 use std::{
     cmp::Ordering,
@@ -32,14 +35,13 @@ use std::{
 };
 
 use vte;
-use zellij_utils::{
-    consts::{DEFAULT_SCROLL_BUFFER_SIZE, SCROLL_BUFFER_SIZE},
-    data::{Palette, PaletteColor, Styling},
-    input::mouse::{MouseEvent, MouseEventType},
-    input::options::DEFAULT_WORD_SEPARATORS,
-    nested_session::{self, NestedSessionMessage},
-    pane_size::SizeInPixels,
-    position::Position,
+use zellij_types::pane_size::SizeInPixels;
+use zellij_types::position::Position;
+use zellij_types::style::{Palette, Styling};
+use {
+    zellij_ipc::nested_session, zellij_ipc::nested_session::NestedSessionMessage,
+    zellij_runtime::consts::DEFAULT_SCROLL_BUFFER_SIZE, zellij_runtime::consts::SCROLL_BUFFER_SIZE,
+    zellij_types::data::PaletteColor, zellij_types::input::options::DEFAULT_WORD_SEPARATORS,
 };
 
 const TABSTOP_WIDTH: usize = 8; // TODO: is this always right?
@@ -297,7 +299,7 @@ pub fn namespace_notification_id(
 }
 
 use vte::{Params, Perform};
-use zellij_utils::{consts::VERSION, shared::version_number};
+use {zellij_runtime::consts::VERSION, zellij_runtime::shared::version_number};
 
 use crate::output::{CharacterChunk, HighlightSelection, OutputBuffer, SixelImageChunk};
 use crate::panes::alacritty_functions::{parse_number, xparse_color};
@@ -310,7 +312,8 @@ use crate::panes::terminal_character::{
 };
 use crate::panes::Selection;
 use crate::ui::components::UiComponentParser;
-use zellij_utils::data::{Direction, PaneContents};
+use zellij_types::data::PaneContents;
+use zellij_types::geometry::Direction;
 
 fn get_top_non_canonical_rows(rows: &mut VecDeque<Row>) -> Vec<Row> {
     let mut index_of_last_non_canonical_row = None;

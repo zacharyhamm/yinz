@@ -20,8 +20,8 @@ fn tab_with_three_rows_of_chrome(size: Size) -> Tab {
         ..Default::default()
     };
     let mut tab = create_new_tab_with_layout(size, initial_layout);
-    tab.set_pane_selectable(PaneId::Terminal(crate::TerminalId(0)), false);
-    tab.set_pane_selectable(PaneId::Terminal(crate::TerminalId(2)), false);
+    tab.set_pane_selectable(PaneId::Terminal(crate::TerminalId::new(0)), false);
+    tab.set_pane_selectable(PaneId::Terminal(crate::TerminalId::new(2)), false);
     tab
 }
 

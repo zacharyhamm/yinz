@@ -1,4 +1,5 @@
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TabId;
 
 use super::Screen;
 use crate::background_jobs::BackgroundJob;
@@ -7,7 +8,7 @@ use crate::panes::PaneId;
 use crate::plugins::{PluginInstruction, PluginRenderAsset};
 use crate::{ClientId, ServerInstruction};
 use std::collections::HashMap;
-use zellij_utils::pane_size::Viewport;
+use zellij_types::pane_size::Viewport;
 
 impl Screen {
     pub fn render(&mut self, plugin_render_assets: Option<Vec<PluginRenderAsset>>) -> Result<()> {
@@ -172,7 +173,7 @@ impl Screen {
 
             // Only the panes here: the cursor is placed further down, once the toasts have painted
             // too.
-            let mut tabs_that_rendered: Vec<usize> = vec![];
+            let mut tabs_that_rendered: Vec<TabId> = vec![];
             for (tab_index, tab) in &mut self.tabs {
                 if tab.has_selectable_tiled_panes() {
                     // Pass None for normal client rendering
@@ -256,9 +257,9 @@ impl Screen {
 
             if self.visual_bell {
                 let mut panes_to_flash: Vec<PaneId> = vec![];
-                let mut tabs_to_flash: Vec<usize> = vec![];
+                let mut tabs_to_flash: Vec<TabId> = vec![];
 
-                let active_tab_ids_snapshot: Vec<usize> =
+                let active_tab_ids_snapshot: Vec<TabId> =
                     self.active_tab_ids.values().copied().collect();
 
                 for tab in self.tabs.values_mut() {
@@ -373,8 +374,10 @@ impl Screen {
                     self.sixel_host_capabilities.clone(),
                 );
 
-                let focused_tab_index_of_followed_client_id =
-                    *self.active_tab_ids.get(&followed_client_id).unwrap_or(&0);
+                let focused_tab_index_of_followed_client_id = *self
+                    .active_tab_ids
+                    .get(&followed_client_id)
+                    .unwrap_or(&TabId::new(0));
                 let followed_content_size =
                     self.followed_frame_size(focused_tab_index_of_followed_client_id);
 

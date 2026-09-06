@@ -40,7 +40,9 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
+use zellij_types::internal_ids::TerminalId;
 
 use nix::{
     errno::Errno,
@@ -51,7 +53,8 @@ use nix::{
     sys::wait::{waitpid, WaitPidFlag, WaitStatus},
     unistd::Pid,
 };
-use zellij_utils::{consts::VERSION, errors::prelude::*, input::command::RunCommand};
+use zellij_runtime::errors::prelude::*;
+use {zellij_runtime::consts::VERSION, zellij_types::input::command::RunCommand};
 
 use super::fdpass::{self, send_fd};
 use super::protocol::{
@@ -154,7 +157,7 @@ struct Session {
     /// dropping the last slave is what makes an attached server's `read` on the
     /// master return `EIO`/`0`, which is how a pane learns to close.
     slave: Option<OwnedFd>,
-    child_pid: u32,
+    child_pid: ProcessId,
     exit_status: Option<Option<i32>>,
     /// Set once the master has nothing left to give. Without it the poll loop
     /// would keep watching a hung-up descriptor that is permanently "ready", and
@@ -173,7 +176,7 @@ pub fn run_pty_host(label: String) -> ! {
     unsafe {
         close_fds::close_open_fds(protocol::CONTROL_FD + 1, &[]);
     }
-    zellij_utils::logging::configure_logger();
+    zellij_runtime::logging::configure_logger();
 
     // A new session (and therefore a new process group), so a SIGINT/SIGTERM/
     // SIGHUP aimed at the server's group cannot reach us. No double fork: staying
@@ -263,7 +266,7 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
         label,
         handle_signals,
     } = config;
-    let host_pid = std::process::id();
+    let host_pid = ProcessId::new(std::process::id());
 
     // --- handshake ---
     let hello: ServerToHostMsg = read_msg(&mut control)
@@ -334,7 +337,7 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
         host_id,
         host_pid,
         label,
-        terminal_id: TerminalId(terminal_id),
+        terminal_id: TerminalId::new(terminal_id),
         session_name,
         cmd,
         started_at_unix: unix_now(),
@@ -355,7 +358,7 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
     match start_session(
         &ctx.cmd,
         failover_cmd.as_ref(),
-        TerminalId(terminal_id),
+        TerminalId::new(terminal_id),
         termios.as_ref(),
         initial_size.as_ref(),
         arg0.as_deref(),
@@ -403,8 +406,8 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
 }
 
 struct HostContext {
-    host_id: String,
-    host_pid: u32,
+    host_id: SupervisorId,
+    host_pid: ProcessId,
     label: String,
     terminal_id: TerminalId,
     session_name: Option<String>,
@@ -420,7 +423,7 @@ impl HostContext {
         HostStatus {
             host_id: self.host_id.clone(),
             session_name: self.session_name.clone(),
-            terminal_id: self.terminal_id.0,
+            terminal_id: self.terminal_id.get(),
             command: self.cmd.to_string(),
             cwd: self.cmd.cwd.clone(),
             child_pid: self.session.as_ref().map(|s| s.child_pid),
@@ -794,7 +797,7 @@ fn serve_cli_connection(ctx: &mut HostContext, mut stream: UnixStream) -> CliOut
             ctx,
             stream,
             protocol_version,
-            TerminalId(terminal_id),
+            TerminalId::new(terminal_id),
             session_name,
         ),
         Ok(Some(_)) => CliOutcome::Done,
@@ -953,7 +956,9 @@ fn kill_current_child(ctx: &mut HostContext, event_rx: &Receiver<HostEvent>) {
         ctx.session = None;
         return;
     }
-    let pid = Pid::from_raw(session.child_pid as i32);
+    let Some(pid) = super::process_pid(session.child_pid).to_log().ok() else {
+        return;
+    };
     // A stopped child does not act on SIGHUP until it runs again, so a pane
     // closed while suspended would sit out the whole grace period and then be
     // SIGKILLed — no hangup for its descendants. Wake it first; SIGCONT is
@@ -989,7 +994,7 @@ fn terminate(ctx: &mut HostContext, event_rx: &Receiver<HostEvent>) {
     kill_current_child(ctx, event_rx);
 }
 
-fn cleanup_socket(host_id: &str) {
+fn cleanup_socket(host_id: &SupervisorId) {
     let path = protocol::socket_path(host_id);
     if path.exists() {
         let _ = std::fs::remove_file(&path);
@@ -1003,7 +1008,7 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-fn bind_listener(host_id: &str) -> Result<UnixListener> {
+fn bind_listener(host_id: &SupervisorId) -> Result<UnixListener> {
     let dir = protocol::socket_dir();
     ensure_secure_dir(&dir)?;
     let path = protocol::socket_path(host_id);
@@ -1106,7 +1111,7 @@ fn start_session(
     .is_none()
     {
         return Err(ZellijError::CommandNotFound {
-            terminal_id: terminal_id.0,
+            terminal_id,
             command: cmd.command.to_string_lossy().to_string(),
         })
         .with_context(err_context);
@@ -1276,14 +1281,15 @@ fn start_session(
     let child = command
         .spawn()
         .with_context(|| format!("failed to spawn '{}'", cmd.command.to_string_lossy()))?;
-    let child_pid = child.id();
+    let child_pid = ProcessId::new(child.id());
     if job_control {
         // Both sides do this, because either one alone is a race: the child may
         // not have run yet when we return, and it may already have exec'd and
         // read from the tty before we get here. Both are idempotent.
+        let kernel_pid = super::process_pid(child_pid)?.as_raw();
         unsafe {
-            libc::setpgid(child_pid as i32, child_pid as i32);
-            libc::tcsetpgrp(slave_raw, child_pid as i32);
+            libc::setpgid(kernel_pid, kernel_pid);
+            libc::tcsetpgrp(slave_raw, kernel_pid);
         }
     }
 

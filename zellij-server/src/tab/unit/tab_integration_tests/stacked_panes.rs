@@ -6,7 +6,7 @@ fn can_swap_tiled_layout_at_runtime() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -24,7 +24,13 @@ fn can_swap_tiled_layout_at_runtime() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -36,7 +42,7 @@ fn can_swap_tiled_layout_at_runtime() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.new_pane(
         new_pane_id_1,
@@ -66,7 +72,7 @@ fn can_swap_floating_layout_at_runtime() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -88,7 +94,13 @@ fn can_swap_floating_layout_at_runtime() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let stacked_resize = true;
@@ -100,8 +112,8 @@ fn can_swap_floating_layout_at_runtime() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
 
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -144,7 +156,7 @@ fn swapping_layouts_after_resize_snaps_to_current_layout() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -164,7 +176,13 @@ fn swapping_layouts_after_resize_snaps_to_current_layout() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -176,7 +194,7 @@ fn swapping_layouts_after_resize_snaps_to_current_layout() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.new_pane(
         new_pane_id_1,
@@ -209,7 +227,7 @@ fn swap_tiled_layout_with_stacked_children() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -223,7 +241,13 @@ fn swap_tiled_layout_with_stacked_children() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -235,9 +259,9 @@ fn swap_tiled_layout_with_stacked_children() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
 
     tab.new_pane(
         new_pane_id_1,
@@ -288,7 +312,7 @@ fn swap_tiled_layout_with_only_stacked_children() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -299,7 +323,13 @@ fn swap_tiled_layout_with_only_stacked_children() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -311,9 +341,9 @@ fn swap_tiled_layout_with_only_stacked_children() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
 
     tab.new_pane(
         new_pane_id_1,
@@ -364,7 +394,7 @@ fn swap_tiled_layout_with_stacked_children_and_no_pane_frames() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -378,7 +408,13 @@ fn swap_tiled_layout_with_stacked_children_and_no_pane_frames() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -390,9 +426,9 @@ fn swap_tiled_layout_with_stacked_children_and_no_pane_frames() {
         false,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
 
     tab.new_pane(
         new_pane_id_1,
@@ -443,7 +479,7 @@ fn move_focus_up_with_stacked_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -457,7 +493,13 @@ fn move_focus_up_with_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -469,9 +511,9 @@ fn move_focus_up_with_stacked_panes() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
 
     tab.new_pane(
         new_pane_id_1,
@@ -524,7 +566,7 @@ fn move_focus_down_with_stacked_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -538,7 +580,13 @@ fn move_focus_down_with_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -550,9 +598,9 @@ fn move_focus_down_with_stacked_panes() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
 
     tab.new_pane(
         new_pane_id_1,
@@ -609,7 +657,7 @@ fn move_focus_right_into_stacked_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -623,7 +671,13 @@ fn move_focus_right_into_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -638,7 +692,7 @@ fn move_focus_right_into_stacked_panes() {
     for i in 0..12 {
         let new_pane_id = i + 2;
         tab.new_pane(
-            PaneId::Terminal(crate::TerminalId(new_pane_id)),
+            PaneId::Terminal(crate::TerminalId::new(new_pane_id)),
             None,
             None,
             false,
@@ -651,7 +705,7 @@ fn move_focus_right_into_stacked_panes() {
     }
     let _ = tab.move_focus_left(client_id);
     tab.horizontal_split(
-        PaneId::Terminal(crate::TerminalId(16)),
+        PaneId::Terminal(crate::TerminalId::new(16)),
         None,
         client_id,
         None,
@@ -687,7 +741,7 @@ fn move_focus_left_into_stacked_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -701,7 +755,13 @@ fn move_focus_left_into_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -716,7 +776,7 @@ fn move_focus_left_into_stacked_panes() {
     for i in 0..13 {
         let new_pane_id = i + 2;
         tab.new_pane(
-            PaneId::Terminal(crate::TerminalId(new_pane_id)),
+            PaneId::Terminal(crate::TerminalId::new(new_pane_id)),
             None,
             None,
             false,
@@ -729,7 +789,7 @@ fn move_focus_left_into_stacked_panes() {
     }
     let _ = tab.move_focus_right(client_id);
     tab.horizontal_split(
-        PaneId::Terminal(crate::TerminalId(1)),
+        PaneId::Terminal(crate::TerminalId::new(1)),
         None,
         client_id,
         None,
@@ -765,7 +825,7 @@ fn move_focus_up_into_stacked_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -781,7 +841,13 @@ fn move_focus_up_into_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -796,7 +862,7 @@ fn move_focus_up_into_stacked_panes() {
     for i in 0..4 {
         let new_pane_id = i + 3;
         tab.new_pane(
-            PaneId::Terminal(crate::TerminalId(new_pane_id)),
+            PaneId::Terminal(crate::TerminalId::new(new_pane_id)),
             None,
             None,
             false,
@@ -812,7 +878,7 @@ fn move_focus_up_into_stacked_panes() {
     let _ = tab.move_focus_left(client_id);
     let _ = tab.move_focus_down(client_id);
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(7)),
+        PaneId::Terminal(crate::TerminalId::new(7)),
         None,
         client_id,
         None,
@@ -846,7 +912,7 @@ fn move_focus_down_into_stacked_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -862,7 +928,13 @@ fn move_focus_down_into_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -877,7 +949,7 @@ fn move_focus_down_into_stacked_panes() {
     for i in 0..4 {
         let new_pane_id = i + 3;
         tab.new_pane(
-            PaneId::Terminal(crate::TerminalId(new_pane_id)),
+            PaneId::Terminal(crate::TerminalId::new(new_pane_id)),
             None,
             None,
             false,
@@ -891,7 +963,7 @@ fn move_focus_down_into_stacked_panes() {
     let _ = tab.move_focus_left(client_id);
     let _ = tab.move_focus_up(client_id);
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(7)),
+        PaneId::Terminal(crate::TerminalId::new(7)),
         None,
         client_id,
         None,
@@ -923,7 +995,7 @@ fn focus_last_stacked_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -937,7 +1009,13 @@ fn focus_last_stacked_pane() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -949,9 +1027,9 @@ fn focus_last_stacked_pane() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
 
     tab.new_pane(
         new_pane_id_1,
@@ -1006,7 +1084,7 @@ fn close_main_stacked_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -1020,7 +1098,13 @@ fn close_main_stacked_pane() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1032,9 +1116,9 @@ fn close_main_stacked_pane() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
 
     tab.new_pane(
         new_pane_id_1,
@@ -1086,7 +1170,7 @@ fn close_main_stacked_pane_in_mid_stack() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -1100,7 +1184,13 @@ fn close_main_stacked_pane_in_mid_stack() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1112,11 +1202,11 @@ fn close_main_stacked_pane_in_mid_stack() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -1193,7 +1283,7 @@ fn close_one_liner_stacked_pane_below_main_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -1207,7 +1297,13 @@ fn close_one_liner_stacked_pane_below_main_pane() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1219,11 +1315,11 @@ fn close_one_liner_stacked_pane_below_main_pane() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -1301,7 +1397,7 @@ fn close_one_liner_stacked_pane_above_main_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -1315,7 +1411,13 @@ fn close_one_liner_stacked_pane_above_main_pane() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1327,11 +1429,11 @@ fn close_one_liner_stacked_pane_above_main_pane() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -1408,7 +1510,7 @@ fn can_increase_size_of_main_pane_in_stack_horizontally() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -1422,7 +1524,13 @@ fn can_increase_size_of_main_pane_in_stack_horizontally() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1434,11 +1542,11 @@ fn can_increase_size_of_main_pane_in_stack_horizontally() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -1517,7 +1625,7 @@ fn can_increase_size_of_main_pane_in_stack_vertically() {
         cols: 121,
         rows: 40,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -1533,7 +1641,13 @@ fn can_increase_size_of_main_pane_in_stack_vertically() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1545,11 +1659,11 @@ fn can_increase_size_of_main_pane_in_stack_vertically() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -1628,7 +1742,7 @@ fn can_increase_size_of_main_pane_in_stack_non_directionally() {
         cols: 121,
         rows: 40,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -1644,7 +1758,13 @@ fn can_increase_size_of_main_pane_in_stack_non_directionally() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = false;
@@ -1656,11 +1776,11 @@ fn can_increase_size_of_main_pane_in_stack_non_directionally() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -1736,7 +1856,7 @@ fn can_increase_size_into_pane_stack_horizontally() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -1750,7 +1870,13 @@ fn can_increase_size_into_pane_stack_horizontally() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1762,11 +1888,11 @@ fn can_increase_size_into_pane_stack_horizontally() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -1844,7 +1970,7 @@ fn can_increase_size_into_pane_stack_vertically() {
         cols: 121,
         rows: 40,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -1860,7 +1986,13 @@ fn can_increase_size_into_pane_stack_vertically() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1872,11 +2004,11 @@ fn can_increase_size_into_pane_stack_vertically() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -1957,7 +2089,7 @@ fn can_increase_size_into_pane_stack_non_directionally() {
         cols: 121,
         rows: 40,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -1973,7 +2105,13 @@ fn can_increase_size_into_pane_stack_non_directionally() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = false;
@@ -1985,11 +2123,11 @@ fn can_increase_size_into_pane_stack_non_directionally() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -2064,7 +2202,7 @@ fn decreasing_size_of_whole_tab_treats_stacked_panes_properly() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -2078,7 +2216,13 @@ fn decreasing_size_of_whole_tab_treats_stacked_panes_properly() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2090,11 +2234,11 @@ fn decreasing_size_of_whole_tab_treats_stacked_panes_properly() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -2171,7 +2315,7 @@ fn increasing_size_of_whole_tab_treats_stacked_panes_properly() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -2185,7 +2329,13 @@ fn increasing_size_of_whole_tab_treats_stacked_panes_properly() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2197,11 +2347,11 @@ fn increasing_size_of_whole_tab_treats_stacked_panes_properly() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -2282,7 +2432,7 @@ fn cannot_decrease_stack_size_beyond_minimum_height() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -2297,7 +2447,13 @@ fn cannot_decrease_stack_size_beyond_minimum_height() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2309,11 +2465,11 @@ fn cannot_decrease_stack_size_beyond_minimum_height() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -2394,7 +2550,7 @@ fn focus_stacked_pane_over_flexible_pane_with_the_mouse() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -2409,7 +2565,13 @@ fn focus_stacked_pane_over_flexible_pane_with_the_mouse() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2421,11 +2583,11 @@ fn focus_stacked_pane_over_flexible_pane_with_the_mouse() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -2508,7 +2670,7 @@ fn focus_stacked_pane_under_flexible_pane_with_the_mouse() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -2523,7 +2685,13 @@ fn focus_stacked_pane_under_flexible_pane_with_the_mouse() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2535,11 +2703,11 @@ fn focus_stacked_pane_under_flexible_pane_with_the_mouse() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -2622,7 +2790,7 @@ fn close_stacked_pane_with_previously_focused_other_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -2637,7 +2805,13 @@ fn close_stacked_pane_with_previously_focused_other_pane() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2649,11 +2823,11 @@ fn close_stacked_pane_with_previously_focused_other_pane() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -2730,7 +2904,7 @@ fn close_stacked_pane_with_previously_focused_other_pane() {
         client_id,
     )
     .unwrap();
-    tab.close_pane(PaneId::Terminal(crate::TerminalId(4)), false, None);
+    tab.close_pane(PaneId::Terminal(crate::TerminalId::new(4)), false, None);
     tab.render(&mut output, None).unwrap();
     let (snapshot, cursor_coordinates) = take_snapshot_and_cursor_position(
         output.serialize().unwrap().get(&client_id).unwrap(),
@@ -2753,7 +2927,7 @@ fn close_pane_near_stacked_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -2767,7 +2941,13 @@ fn close_pane_near_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2779,11 +2959,11 @@ fn close_pane_near_stacked_panes() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -2840,7 +3020,7 @@ fn close_pane_near_stacked_panes() {
         None,
     )
     .unwrap();
-    tab.close_pane(PaneId::Terminal(crate::TerminalId(6)), false, None);
+    tab.close_pane(PaneId::Terminal(crate::TerminalId::new(6)), false, None);
     tab.render(&mut output, None).unwrap();
     let (snapshot, cursor_coordinates) = take_snapshot_and_cursor_position(
         output.serialize().unwrap().get(&client_id).unwrap(),
@@ -2863,7 +3043,7 @@ fn focus_next_pane_expands_stacked_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -2878,7 +3058,13 @@ fn focus_next_pane_expands_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2890,11 +3076,11 @@ fn focus_next_pane_expands_stacked_panes() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -2970,7 +3156,7 @@ fn stacked_panes_can_become_fullscreen() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let swap_layouts = r#"
         layout {
@@ -2985,7 +3171,13 @@ fn stacked_panes_can_become_fullscreen() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2997,11 +3189,11 @@ fn stacked_panes_can_become_fullscreen() {
         true,
         stacked_resize,
     );
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
-    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId(5));
-    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId(6));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
+    let new_pane_id_4 = PaneId::Terminal(crate::TerminalId::new(5));
+    let new_pane_id_5 = PaneId::Terminal(crate::TerminalId::new(6));
 
     tab.new_pane(
         new_pane_id_1,
@@ -3083,11 +3275,11 @@ fn kitty_visible_panes_exclude_collapsed_stack_members() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     for i in 2..4 {
         tab.new_pane(
-            PaneId::Terminal(crate::TerminalId(i)),
+            PaneId::Terminal(crate::TerminalId::new(i)),
             None,
             None,
             false,
@@ -3106,12 +3298,12 @@ fn kitty_visible_panes_exclude_collapsed_stack_members() {
     let visible_after_focus_change = sorted_kitty_visible_pane_ids(&tab);
     assert_eq!(
         visible_before_focus_change,
-        vec![PaneId::Terminal(crate::TerminalId(3))],
+        vec![PaneId::Terminal(crate::TerminalId::new(3))],
         "only the expanded stack member is kitty visible"
     );
     assert_eq!(
         visible_after_focus_change,
-        vec![PaneId::Terminal(crate::TerminalId(2))],
+        vec![PaneId::Terminal(crate::TerminalId::new(2))],
         "kitty visibility follows the expanded stack member"
     );
 }

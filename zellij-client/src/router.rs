@@ -8,9 +8,9 @@ use crate::os_input_output::ClientOsApi;
 use crate::ClientInstruction;
 use std::thread;
 use std::time::{Duration, Instant};
-use zellij_utils::{
-    channels::SenderWithContext, errors::ErrorContext, ipc::IpcRecv, ipc::ServerToClientMsg,
-};
+use zellij_runtime::channels::SenderWithContext;
+use zellij_types::diagnostics::ErrorContext;
+use {zellij_ipc::ipc::IpcRecv, zellij_ipc::ipc::ServerToClientMsg};
 
 /// How many unreadable messages in a row we tolerate before concluding the
 /// stream is not going to recover and tearing the client down. A single
@@ -173,7 +173,7 @@ fn forward(
     instruction: ServerToClientMsg,
     err_ctx: ErrorContext,
 ) -> bool {
-    err_ctx.update_thread_ctx();
+    zellij_runtime::errors::update_thread_ctx(&err_ctx);
     let is_exit = matches!(instruction, ServerToClientMsg::Exit { .. });
     send_client_instructions.send(instruction.into()).unwrap();
     is_exit

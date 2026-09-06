@@ -10,11 +10,11 @@ const LONE_ESC_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 const PARTIAL_REPLY_FLUSH_GUARD: Duration = Duration::from_millis(1000);
 const STARTUP_KITTY_PROBE_TIMEOUT: Duration =
     Duration::from_millis(crate::stdin_ansi_parser::CLIENT_KITTY_PROBE_TIMEOUT_MS);
-use zellij_utils::{
+use zellij_runtime::{
     channels::SenderWithContext,
-    data::KeyModifier,
     vendored::termwiz::input::{InputEvent, InputParser},
 };
+use zellij_types::keys::KeyModifier;
 
 pub(crate) fn stdin_loop(
     mut os_input: Box<dyn ClientOsApi>,
@@ -382,14 +382,13 @@ fn parse_keyboard_bytes(
             if let Some(key) = kitty_key {
                 // The raw bytes ride along so a pane that asked for kitty mode itself can be
                 // written the host's own sequence. Panes only ever get flag 1
-                // (`KeyWithModifier::serialize_kitty`), so under the extended flags the host's
+                // (`zellij_runtime::keys::serialize_kitty`), so under the extended flags the host's
                 // bytes are the wrong shape for them - they would carry event types and
                 // alternate keys nothing downstream asked for. Re-serialise instead.
                 // A key `serialize_kitty` cannot spell keeps the host's bytes: they are still
                 // a better guess than nothing, and this is only the passthrough copy.
                 let raw_bytes = match report_modifier_keys {
-                    true => key
-                        .serialize_kitty()
+                    true => zellij_runtime::keys::serialize_kitty(&key)
                         .map(String::into_bytes)
                         .unwrap_or_else(|| candidate.to_vec()),
                     false => candidate.to_vec(),
@@ -585,10 +584,8 @@ mod tests {
     };
     use crate::{stdin_ansi_parser::StdinAnsiParser, InputInstruction};
     use std::time::{Duration, Instant};
-    use zellij_utils::{
-        data::BareKey,
-        vendored::termwiz::input::{InputEvent, InputParser, KeyCode, Modifiers},
-    };
+    use zellij_runtime::vendored::termwiz::input::{InputEvent, InputParser, KeyCode, Modifiers};
+    use zellij_types::keys::BareKey;
 
     fn parse_stdin_chunks(chunks: &[&[u8]]) -> Vec<InputInstruction> {
         parse_stdin_chunks_reporting_modifiers(chunks, false)
@@ -843,7 +840,7 @@ mod tests {
     #[test]
     fn a_modifier_press_drained_from_a_partial_is_still_held_afterwards() {
         use std::collections::BTreeSet;
-        use zellij_utils::data::KeyModifier;
+        use zellij_types::keys::KeyModifier;
         let mut input_parser = InputParser::new();
         let mut termwiz_buffer = vec![];
         let mut held_modifiers = BTreeSet::new();
@@ -890,7 +887,7 @@ mod tests {
     #[test]
     fn a_focus_change_forgets_what_was_held() {
         use std::collections::BTreeSet;
-        use zellij_utils::data::KeyModifier;
+        use zellij_types::keys::KeyModifier;
         let mut held: BTreeSet<KeyModifier> = [KeyModifier::Alt].into_iter().collect();
         match forget_held_modifiers(&mut held) {
             Some(InputInstruction::ModifiersHeldChanged(announced)) => {
@@ -904,7 +901,7 @@ mod tests {
     #[test]
     fn a_focus_change_with_nothing_held_says_nothing() {
         use std::collections::BTreeSet;
-        use zellij_utils::data::KeyModifier;
+        use zellij_types::keys::KeyModifier;
         let mut held: BTreeSet<KeyModifier> = BTreeSet::new();
         assert!(forget_held_modifiers(&mut held).is_none());
         assert!(held.is_empty());

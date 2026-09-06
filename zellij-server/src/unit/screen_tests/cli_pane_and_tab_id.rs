@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 // ==========================================
 // Category 3: MockScreen end-to-end CLI tests
@@ -11,7 +12,7 @@ pub fn send_cli_scroll_up_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -38,7 +39,7 @@ pub fn send_cli_scroll_down_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -65,7 +66,7 @@ pub fn send_cli_scroll_to_top_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -92,7 +93,7 @@ pub fn send_cli_scroll_to_bottom_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -119,7 +120,7 @@ pub fn send_cli_page_scroll_up_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -146,7 +147,7 @@ pub fn send_cli_page_scroll_down_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -173,7 +174,7 @@ pub fn send_cli_half_page_scroll_up_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -200,7 +201,7 @@ pub fn send_cli_half_page_scroll_down_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -227,7 +228,7 @@ pub fn send_cli_resize_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -256,7 +257,7 @@ pub fn send_cli_move_pane_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -284,7 +285,7 @@ pub fn send_cli_move_pane_backwards_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -311,7 +312,7 @@ pub fn send_cli_clear_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -338,7 +339,7 @@ pub fn send_cli_edit_scrollback_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -366,7 +367,7 @@ pub fn send_cli_toggle_fullscreen_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -393,7 +394,7 @@ pub fn send_cli_toggle_pane_embed_or_floating_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -420,7 +421,7 @@ pub fn send_cli_close_pane_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let initial_layout = TiledPaneLayout {
@@ -452,7 +453,7 @@ pub fn send_cli_rename_pane_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -480,7 +481,7 @@ pub fn send_cli_undo_rename_pane_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -507,7 +508,7 @@ pub fn send_cli_toggle_pane_pinned_with_pane_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -536,7 +537,7 @@ pub fn send_cli_close_tab_with_tab_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -550,7 +551,9 @@ pub fn send_cli_close_tab_with_tab_id() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.new_tab(TiledPaneLayout::default());
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let cli_action = CliAction::CloseTab { tab_id: Some(1) };
+    let cli_action = CliAction::CloseTab {
+        tab_id: Some(TabId::new(1)),
+    };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -563,7 +566,7 @@ pub fn send_cli_rename_tab_with_tab_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -579,7 +582,7 @@ pub fn send_cli_rename_tab_with_tab_id() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     let cli_action = CliAction::RenameTab {
         name: "targeted-tab".to_string(),
-        tab_id: Some(1),
+        tab_id: Some(TabId::new(1)),
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -593,7 +596,7 @@ pub fn send_cli_undo_rename_tab_with_tab_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -607,7 +610,9 @@ pub fn send_cli_undo_rename_tab_with_tab_id() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.new_tab(TiledPaneLayout::default());
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let cli_action = CliAction::UndoRenameTab { tab_id: Some(0) };
+    let cli_action = CliAction::UndoRenameTab {
+        tab_id: Some(TabId::new(0)),
+    };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -620,7 +625,7 @@ pub fn send_cli_toggle_active_sync_tab_with_tab_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -632,7 +637,9 @@ pub fn send_cli_toggle_active_sync_tab_with_tab_id() {
         server_receiver
     );
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let cli_action = CliAction::ToggleActiveSyncTab { tab_id: Some(0) };
+    let cli_action = CliAction::ToggleActiveSyncTab {
+        tab_id: Some(TabId::new(0)),
+    };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -645,7 +652,7 @@ pub fn send_cli_toggle_floating_panes_with_tab_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -657,7 +664,9 @@ pub fn send_cli_toggle_floating_panes_with_tab_id() {
         server_receiver
     );
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let cli_action = CliAction::ToggleFloatingPanes { tab_id: Some(0) };
+    let cli_action = CliAction::ToggleFloatingPanes {
+        tab_id: Some(TabId::new(0)),
+    };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -670,7 +679,7 @@ pub fn send_cli_previous_swap_layout_with_tab_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -682,7 +691,9 @@ pub fn send_cli_previous_swap_layout_with_tab_id() {
         server_receiver
     );
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let cli_action = CliAction::PreviousSwapLayout { tab_id: Some(0) };
+    let cli_action = CliAction::PreviousSwapLayout {
+        tab_id: Some(TabId::new(0)),
+    };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -695,7 +706,7 @@ pub fn send_cli_next_swap_layout_with_tab_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -707,7 +718,9 @@ pub fn send_cli_next_swap_layout_with_tab_id() {
         server_receiver
     );
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let cli_action = CliAction::NextSwapLayout { tab_id: Some(0) };
+    let cli_action = CliAction::NextSwapLayout {
+        tab_id: Some(TabId::new(0)),
+    };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -720,7 +733,7 @@ pub fn send_cli_move_tab_with_tab_id() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -736,7 +749,7 @@ pub fn send_cli_move_tab_with_tab_id() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     let cli_action = CliAction::MoveTab {
         direction: Direction::Right,
-        tab_id: Some(0),
+        tab_id: Some(TabId::new(0)),
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -755,14 +768,22 @@ pub fn move_tab_by_id_verifies_screen_state() {
         rows: 20,
     };
     let mut screen = create_new_screen(size, true, true);
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
-    new_tab(&mut screen, 3, 2);
-    let original_pos_0 = screen.get_tab_by_id(0).unwrap().position;
-    let original_pos_1 = screen.get_tab_by_id(1).unwrap().position;
-    screen.move_tab_by_id(0, Direction::Right).expect("TEST");
-    assert_eq!(screen.get_tab_by_id(0).unwrap().position, original_pos_1);
-    assert_eq!(screen.get_tab_by_id(1).unwrap().position, original_pos_0);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    new_tab(&mut screen, 3, TabId::new(2));
+    let original_pos_0 = screen.get_tab_by_id(TabId::new(0)).unwrap().position;
+    let original_pos_1 = screen.get_tab_by_id(TabId::new(1)).unwrap().position;
+    screen
+        .move_tab_by_id(TabId::new(0), Direction::Right)
+        .expect("TEST");
+    assert_eq!(
+        screen.get_tab_by_id(TabId::new(0)).unwrap().position,
+        original_pos_1
+    );
+    assert_eq!(
+        screen.get_tab_by_id(TabId::new(1)).unwrap().position,
+        original_pos_0
+    );
 }
 
 // ==========================================
@@ -772,7 +793,7 @@ pub fn move_tab_by_id_verifies_screen_state() {
 #[test]
 pub fn send_cli_dump_screen_action_with_ansi() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -795,7 +816,7 @@ pub fn send_cli_dump_screen_action_with_ansi() {
         ansi: true,
     };
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         "\x1b[31mred text\x1b[0m".as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -814,7 +835,7 @@ pub fn send_cli_dump_screen_action_with_ansi() {
 #[test]
 pub fn send_cli_dump_screen_action_without_ansi_strips_codes() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -837,7 +858,7 @@ pub fn send_cli_dump_screen_action_without_ansi_strips_codes() {
         ansi: false,
     };
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         "\x1b[31mred text\x1b[0m".as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -856,7 +877,7 @@ pub fn send_cli_dump_screen_action_without_ansi_strips_codes() {
 #[test]
 pub fn send_cli_edit_scrollback_action_with_ansi() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -877,7 +898,7 @@ pub fn send_cli_edit_scrollback_action_with_ansi() {
         ansi: true,
     };
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         "\x1b[31mred text\x1b[0m".as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -899,7 +920,7 @@ pub fn send_cli_edit_scrollback_with_pane_id_and_ansi() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let screen_thread = mock_screen.run(None, vec![]);
@@ -925,17 +946,21 @@ pub fn send_cli_edit_scrollback_with_pane_id_and_ansi() {
 fn subscriber_ansi_flag_preserved_in_subscription() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, _messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     screen.subscribe_to_pane_renders(
-        crate::ClientId(100),
-        vec![zellij_utils::data::PaneId::Terminal(1)],
+        crate::ClientId::new(100),
+        vec![zellij_types::data::PaneId::Terminal(
+            zellij_types::internal_ids::TerminalId::new(1),
+        )],
         None,
         false,
     );
     screen.subscribe_to_pane_renders(
-        crate::ClientId(101),
-        vec![zellij_utils::data::PaneId::Terminal(1)],
+        crate::ClientId::new(101),
+        vec![zellij_types::data::PaneId::Terminal(
+            zellij_types::internal_ids::TerminalId::new(1),
+        )],
         None,
         true,
     );
@@ -943,7 +968,7 @@ fn subscriber_ansi_flag_preserved_in_subscription() {
     assert!(
         !screen
             .pane_render_subscribers
-            .get(&ClientId(100))
+            .get(&ClientId::new(100))
             .unwrap()
             .ansi,
         "Subscriber 100 should have ansi=false"
@@ -951,7 +976,7 @@ fn subscriber_ansi_flag_preserved_in_subscription() {
     assert!(
         screen
             .pane_render_subscribers
-            .get(&ClientId(101))
+            .get(&ClientId::new(101))
             .unwrap()
             .ansi,
         "Subscriber 101 should have ansi=true"
@@ -962,18 +987,22 @@ fn subscriber_ansi_flag_preserved_in_subscription() {
 fn subscriber_ansi_and_plain_receive_different_content() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     // Subscribe plain and ansi subscribers
     screen.subscribe_to_pane_renders(
-        crate::ClientId(100),
-        vec![zellij_utils::data::PaneId::Terminal(1)],
+        crate::ClientId::new(100),
+        vec![zellij_types::data::PaneId::Terminal(
+            zellij_types::internal_ids::TerminalId::new(1),
+        )],
         None,
         false,
     );
     screen.subscribe_to_pane_renders(
-        crate::ClientId(101),
-        vec![zellij_utils::data::PaneId::Terminal(1)],
+        crate::ClientId::new(101),
+        vec![zellij_types::data::PaneId::Terminal(
+            zellij_types::internal_ids::TerminalId::new(1),
+        )],
         None,
         true,
     );
@@ -982,40 +1011,40 @@ fn subscriber_ansi_and_plain_receive_different_content() {
     messages
         .lock()
         .unwrap()
-        .get_mut(&ClientId(100))
+        .get_mut(&ClientId::new(100))
         .unwrap()
         .clear();
     messages
         .lock()
         .unwrap()
-        .get_mut(&ClientId(101))
+        .get_mut(&ClientId::new(101))
         .unwrap()
         .clear();
 
     // Reset previous viewports to force delivery
     screen
         .pane_render_subscribers
-        .get_mut(&ClientId(100))
+        .get_mut(&ClientId::new(100))
         .unwrap()
         .previous_viewports
         .insert(
-            zellij_utils::data::PaneId::Terminal(1),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1)),
             vec!["old".to_string()],
         );
     screen
         .pane_render_subscribers
-        .get_mut(&ClientId(101))
+        .get_mut(&ClientId::new(101))
         .unwrap()
         .previous_viewports
         .insert(
-            zellij_utils::data::PaneId::Terminal(1),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1)),
             vec!["old".to_string()],
         );
 
     // Build plain and ansi maps with different content
     let mut plain_map = HashMap::new();
     plain_map.insert(
-        zellij_utils::data::PaneId::Terminal(1),
+        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1)),
         PaneContents {
             viewport: vec!["plain text".to_string()],
             ..Default::default()
@@ -1023,7 +1052,7 @@ fn subscriber_ansi_and_plain_receive_different_content() {
     );
     let mut ansi_map = HashMap::new();
     ansi_map.insert(
-        zellij_utils::data::PaneId::Terminal(1),
+        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1)),
         PaneContents {
             viewport: vec!["\x1b[31mred text\x1b[0m".to_string()],
             ..Default::default()
@@ -1032,8 +1061,8 @@ fn subscriber_ansi_and_plain_receive_different_content() {
     screen.deliver_subscriber_updates_from_map(&plain_map, Some(&ansi_map));
 
     let msgs = messages.lock().unwrap();
-    let plain_msgs = msgs.get(&ClientId(100)).unwrap();
-    let ansi_msgs = msgs.get(&ClientId(101)).unwrap();
+    let plain_msgs = msgs.get(&ClientId::new(100)).unwrap();
+    let ansi_msgs = msgs.get(&ClientId::new(101)).unwrap();
 
     assert_eq!(
         plain_msgs.len(),
@@ -1085,15 +1114,17 @@ fn integration_subscribe_with_ansi_flag() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::SubscribeToPaneRenders {
-            client_id: crate::ClientId(100),
-            pane_ids: vec![zellij_utils::data::PaneId::Terminal(0)],
+            client_id: crate::ClientId::new(100),
+            pane_ids: vec![zellij_types::data::PaneId::Terminal(
+                zellij_types::internal_ids::TerminalId::new(0),
+            )],
             scrollback: None,
             ansi: true,
         });
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         "\x1b[31mred text\x1b[0m\r\n".as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1105,7 +1136,7 @@ fn integration_subscribe_with_ansi_flag() {
         .server_to_client_messages
         .lock()
         .unwrap();
-    let subscriber_msgs = msgs.get(&ClientId(100)).unwrap_or(&vec![]).clone();
+    let subscriber_msgs = msgs.get(&ClientId::new(100)).unwrap_or(&vec![]).clone();
 
     assert!(
         subscriber_msgs.len() >= 2,

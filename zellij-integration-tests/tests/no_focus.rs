@@ -1,10 +1,10 @@
 #![cfg(unix)]
 
 use std::time::Instant;
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{
     claim_first_terminal_and_wait_for_prompt, default_timeout, start_zellij, FakePtyHandle, PROMPT,
 };
-use zellij_utils::cli::CliAction;
 
 fn no_focus_new_pane_action(command: &[&str]) -> CliAction {
     CliAction::NewPane {

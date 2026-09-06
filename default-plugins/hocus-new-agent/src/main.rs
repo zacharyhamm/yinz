@@ -100,7 +100,7 @@ struct State {
     /// project is derived from.
     source_directory: PathBuf,
     projects: Registry,
-    plugin_id: u32,
+    plugin_id: zellij_tile::prelude::PluginId,
     job: Job,
     firecracker_image_edited: bool,
     error: Option<String>,
@@ -196,7 +196,7 @@ impl Default for State {
                 .status_row(),
             source_directory: PathBuf::from("."),
             projects: Registry::new(),
-            plugin_id: 0,
+            plugin_id: zellij_tile::prelude::PluginId::new(0),
             job: Job::New,
             firecracker_image_edited: false,
             error: None,
@@ -1092,7 +1092,7 @@ mod tests {
             firecracker_image: None,
             firecracker_worktree: None,
             status: agents::AgentStatus::Running,
-            tab: Some((1, "work".to_owned())),
+            tab: Some((zellij_tile::prelude::TabId::new(1), "work".to_owned())),
             detected: Some(kind.to_owned()),
             agent: None,
         }
@@ -1831,7 +1831,7 @@ mod tests {
             firecracker_image: None,
             firecracker_worktree: None,
             status: agents::AgentStatus::Running,
-            tab: Some((1, "work".to_owned())),
+            tab: Some((zellij_tile::prelude::TabId::new(1), "work".to_owned())),
             detected: Some("cursor".to_owned()),
             agent: None,
         };

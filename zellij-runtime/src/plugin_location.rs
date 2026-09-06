@@ -1,0 +1,105 @@
+//! Decode plugin locations using host path expansion.
+use std::{collections::BTreeMap, path::PathBuf};
+use url::Url;
+use zellij_types::input::{
+    layout::{
+        PluginAlias, PluginUserConfiguration, RunPlugin, RunPluginLocation, RunPluginOrAlias,
+    },
+    plugins::{PluginAliases, PluginTag, PluginsConfigError},
+};
+pub fn run_plugin_or_alias_from_url(
+    url: &str,
+    configuration: &Option<BTreeMap<String, String>>,
+    alias_dict: Option<&PluginAliases>,
+    cwd: Option<PathBuf>,
+) -> Result<RunPluginOrAlias, String> {
+    match crate::plugin_location::parse_plugin_location_with_relative(url, cwd) {
+        Ok((location, relative_path)) => Ok(RunPluginOrAlias::RunPlugin(RunPlugin {
+            _allow_exec_host_cmd: false,
+            location,
+            configuration: configuration
+                .as_ref()
+                .map(|c| PluginUserConfiguration::new(c.clone()))
+                .unwrap_or_default(),
+            relative_path,
+            ..Default::default()
+        })),
+        Err(PluginsConfigError::InvalidUrlScheme(_)) | Err(PluginsConfigError::InvalidUrl(..)) => {
+            let mut plugin_alias = PluginAlias::new(url, configuration, None);
+            if let Some(alias_dict) = alias_dict {
+                plugin_alias.run_plugin = alias_dict
+                    .aliases
+                    .get(url)
+                    .map(|r| r.clone().merge_configuration(configuration));
+            }
+            Ok(RunPluginOrAlias::Alias(plugin_alias))
+        },
+        Err(e) => Err(format!("Failed to parse plugin location {url}: {}", e)),
+    }
+}
+pub fn run_plugin_from_url(url: &str) -> Result<RunPlugin, PluginsConfigError> {
+    let location = crate::plugin_location::parse_plugin_location(url, None)?;
+    Ok(RunPlugin {
+        location,
+        ..Default::default()
+    })
+}
+pub fn parse_plugin_location(
+    location: &str,
+    cwd: Option<PathBuf>,
+) -> Result<RunPluginLocation, PluginsConfigError> {
+    crate::plugin_location::parse_plugin_location_with_relative(location, cwd)
+        .map(|(location, _)| location)
+}
+pub fn parse_plugin_location_with_relative(
+    location: &str,
+    cwd: Option<PathBuf>,
+) -> Result<(RunPluginLocation, Option<PathBuf>), PluginsConfigError> {
+    let url = Url::parse(location)?;
+
+    let decoded_path = percent_encoding::percent_decode_str(url.path()).decode_utf8_lossy();
+
+    match url.scheme() {
+        "zellij" => Ok((
+            RunPluginLocation::Zellij(PluginTag::new(decoded_path)),
+            None,
+        )),
+        "file" => {
+            // Set by the one branch that joins a cwd, so it is exactly "what the user wrote,
+            // before it was made absolute".
+            let mut relative = None;
+            let path = if location.starts_with("file:/") {
+                // Path is absolute, its safe to use URL path.
+                //
+                // This is the case if the scheme and : delimiter are followed by a / slash
+                PathBuf::from(decoded_path.as_ref())
+            } else if location.starts_with("file:~") {
+                // Unwrap is safe here since location is a valid URL
+                PathBuf::from(location.strip_prefix("file:").unwrap())
+            } else {
+                // URL dep doesn't handle relative paths with `file` schema properly,
+                // it always makes them absolute. Use raw location string instead.
+                //
+                // Unwrap is safe here since location is a valid URL
+                let stripped = location.strip_prefix("file:").unwrap();
+                relative = Some(expand_plugin_path(PathBuf::from(stripped)));
+                match cwd {
+                    Some(cwd) => cwd.join(stripped),
+                    None => PathBuf::from(stripped),
+                }
+            };
+            Ok((RunPluginLocation::File(expand_plugin_path(path)), relative))
+        },
+        "https" | "http" => Ok((RunPluginLocation::Remote(url.as_str().to_owned()), None)),
+        _ => Err(PluginsConfigError::InvalidUrlScheme(url)),
+    }
+}
+fn expand_plugin_path(path: PathBuf) -> PathBuf {
+    match shellexpand::full(&path.to_string_lossy()) {
+        Ok(expanded) => PathBuf::from(expanded.as_ref()),
+        Err(e) => {
+            log::error!("Failed to shell expand plugin path: {}", e);
+            path
+        },
+    }
+}

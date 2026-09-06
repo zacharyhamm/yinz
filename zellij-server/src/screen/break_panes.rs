@@ -1,4 +1,5 @@
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TabId;
 
 use super::{BreakPanesToTabOutcome, Screen};
 use crate::background_jobs::BackgroundJob;
@@ -7,10 +8,11 @@ use crate::plugins::PluginInstruction;
 use crate::pty::PtyInstruction;
 use crate::tab::{AcceptedPane, ExtractedPanePlacement, Pane};
 use crate::ClientId;
-use zellij_utils::data::{Direction, Event};
-use zellij_utils::input::command::{RunCommand, TerminalAction};
-use zellij_utils::input::layout::Layout;
-use zellij_utils::pane_size::PaneGeom;
+use zellij_types::data::Event;
+use zellij_types::geometry::Direction;
+use zellij_types::input::layout::Layout;
+use zellij_types::pane_size::PaneGeom;
+use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
 
 impl Screen {
     pub fn break_pane(
@@ -117,7 +119,7 @@ impl Screen {
         should_change_focus_to_new_tab: bool,
         new_tab_name: Option<String>,
         client_id: ClientId,
-    ) -> Result<usize> {
+    ) -> Result<TabId> {
         let err_context = || "failed break multiple panes to a new tab".to_string();
 
         let all_tabs = self.get_tabs_mut();
@@ -358,7 +360,7 @@ impl Screen {
     pub fn break_multiple_panes_to_tab_with_id(
         &mut self,
         pane_ids: Vec<PaneId>,
-        tab_id: usize,
+        tab_id: TabId,
         should_change_focus_to_target_tab: bool,
         client_id: ClientId,
     ) -> Result<BreakPanesToTabOutcome> {
@@ -385,7 +387,7 @@ impl Screen {
         // remember where each pane came from, so that a destination that refuses it can
         // be recovered from rather than losing the pane
         let mut extracted: Vec<(
-            usize,
+            TabId,
             ExtractedPanePlacement,
             Box<dyn Pane>,
             Option<(RunCommand, bool)>,
@@ -416,7 +418,7 @@ impl Screen {
         }
 
         let mut refused: Vec<(
-            usize,
+            TabId,
             ExtractedPanePlacement,
             Box<dyn Pane>,
             Option<(RunCommand, bool)>,

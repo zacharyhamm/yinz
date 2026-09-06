@@ -1,6 +1,6 @@
 //! The plugin-data store suite against a real Postgres, in a container.
 //!
-//! `zellij-utils/src/plugin_data_store/tests/` runs every test once per database engine. The
+//! `zellij-storage/src/plugin_data_store/tests/` runs every test once per database engine. The
 //! SQLite half runs under `cargo x test` like anything else; the Postgres half needs a server,
 //! sits behind the `postgres-tests` cargo feature, and runs here.
 //!
@@ -85,7 +85,7 @@ fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
     let result = if crate::test::nextest_available(sh, &cargo) {
         cmd!(
             sh,
-            "{cargo} nextest run -p zellij-utils --features postgres-tests --profile unit -j {PARALLELISM} -E {filter}"
+            "{cargo} nextest run -p zellij-storage --features postgres-tests --profile unit -j {PARALLELISM} -E {filter}"
         )
         .env(URL_ENV, URL)
         .args(args)
@@ -97,7 +97,7 @@ fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
         );
         cmd!(
             sh,
-            "{cargo} test -p zellij-utils --features postgres-tests --lib postgres"
+            "{cargo} test -p zellij-storage --features postgres-tests --lib postgres"
         )
         .env(URL_ENV, URL)
         // The bootstrap deadline test deliberately holds the shared schema lock.

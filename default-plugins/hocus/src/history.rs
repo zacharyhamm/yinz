@@ -17,6 +17,8 @@
 //! should be would write that nothing back over them.
 
 use hocus_proto::store::{self, Backend};
+use zellij_tile::prelude::DataRowId;
+use zellij_tile::prelude::HostId;
 use zellij_tile::prelude::*;
 
 use crate::tools::ToolCall;
@@ -167,7 +169,7 @@ fn message_mutation(chat_id: u64, seq: usize, message: &Message) -> Mutation {
 /// this errs long.
 pub fn save(
     backend: &impl Backend,
-    host_id: &str,
+    host_id: &HostId,
     id: &mut Option<u64>,
     messages: &[Message],
     saved_len: usize,
@@ -201,7 +203,9 @@ pub fn save(
                 .first()
                 .copied()
                 .ok_or("the store did not report an id for the new chat")?;
-            *id.insert(new as u64)
+            *id.insert(
+                u64::try_from(new.get()).map_err(|_| "the store returned a negative chat id")?,
+            )
         },
     };
 
@@ -290,7 +294,7 @@ pub fn load_usage(backend: &impl Backend, id: u64) -> Result<Option<TokenUsage>,
 /// suffix is ever deleted, but that is a fact about today's writers.
 pub fn load(backend: &impl Backend, id: u64) -> Option<Vec<Message>> {
     let mut found: Vec<(u64, Message)> = Vec::new();
-    let mut cursor: Option<i64> = None;
+    let mut cursor: Option<DataRowId> = None;
     loop {
         let mut request = FetchRequest::entity("chat_message")
             .filter(Pred::eq("chat_id", id))
@@ -526,7 +530,7 @@ fn import_legacy_prompts(_backend: &impl Backend) {}
 /// itself. Oldest first within what is imported, so the new dense ids keep the
 /// order the old ones had.
 #[cfg(target_family = "wasm")]
-pub fn import_legacy(backend: &impl Backend, host_id: &str) {
+pub fn import_legacy(backend: &impl Backend, host_id: &HostId) {
     let mut ids = legacy_ids();
     ids.sort_unstable();
     // Newest kept, oldest written first: take the tail, then walk it forwards.
@@ -588,7 +592,7 @@ fn legacy_transcript(id: u64) -> Option<Vec<Message>> {
 
 /// Native builds run the tests, where there is no `/cache` to read.
 #[cfg(not(target_family = "wasm"))]
-pub fn import_legacy(_backend: &impl Backend, _host_id: &str) {}
+pub fn import_legacy(_backend: &impl Backend, _host_id: &HostId) {}
 
 /// Declare the private entities and import the old files once.
 ///
@@ -597,7 +601,7 @@ pub fn import_legacy(_backend: &impl Backend, _host_id: &str) {}
 /// there is no single transaction to join. A crash midway re-imports, which
 /// duplicates chats — the alternative is a marker written first, where a crash
 /// loses them. Duplicates are visible and deletable; a silent loss is not.
-pub fn open(backend: &impl Backend, host_id: &str) -> Result<(), String> {
+pub fn open(backend: &impl Backend, host_id: &HostId) -> Result<(), String> {
     backend.define_all(&store::private_defs())?;
     if !imported(backend, host_id, "chats") {
         import_legacy(backend, host_id);
@@ -614,14 +618,14 @@ pub fn open(backend: &impl Backend, host_id: &str) -> Result<(), String> {
 /// The host is carried in rather than asked for. `get_plugin_ids` is a host shim, and these run
 /// in a native test binary where the shims read real stdin — see `store`'s module doc. The state
 /// has it from load anyway.
-pub(crate) fn marker(host_id: &str, what: &str) -> Mutation {
+pub(crate) fn marker(host_id: &HostId, what: &str) -> Mutation {
     store::import_marker_mutation(host_id, what)
 }
 
 /// Shared with hocus-store rather than written twice: the two have to agree about the marker's
 /// uid, and about what a marker written before that uid carried a host means — see
 /// `store::import_recorded`.
-pub(crate) fn imported(backend: &impl Backend, host_id: &str, what: &str) -> bool {
+pub(crate) fn imported(backend: &impl Backend, host_id: &HostId, what: &str) -> bool {
     store::import_recorded(backend, host_id, what)
 }
 
@@ -639,6 +643,44 @@ mod tests {
             .define_all(&store::private_defs())
             .expect("declared the private entities");
         backend
+    }
+
+    #[test]
+    fn a_negative_chat_row_id_is_rejected_before_it_replaces_the_callers_id() {
+        struct NegativeId;
+        impl Backend for NegativeId {
+            fn define(&self, _: &EntityDef) -> Result<DataSchemaInfo, String> {
+                unreachable!()
+            }
+            fn fetch(&self, _: &FetchRequest) -> Result<DataRows, String> {
+                unreachable!()
+            }
+            fn count(&self, _: &FetchRequest) -> Result<u64, String> {
+                unreachable!()
+            }
+            fn watch(&self, _: &FetchRequest, _: WatchMode) -> Result<DataWatchHandle, String> {
+                unreachable!()
+            }
+            fn apply(&self, _: Vec<Mutation>) -> Result<ApplyReport, WriteError> {
+                Ok(ApplyReport {
+                    ids: vec![DataRowId::new(-1)],
+                    ..Default::default()
+                })
+            }
+        }
+        let mut id = None;
+        let error = save(
+            &NegativeId,
+            &HostId::new(HOST),
+            &mut id,
+            &[Message::user("question")],
+            0,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error, "the store returned a negative chat id");
+        assert_eq!(id, None);
     }
 
     #[test]
@@ -753,7 +795,16 @@ mod tests {
         ];
 
         let mut id = None;
-        save(&backend, HOST, &mut id, &messages, 0, None, None).expect("saved");
+        save(
+            &backend,
+            &HostId::new(HOST),
+            &mut id,
+            &messages,
+            0,
+            None,
+            None,
+        )
+        .expect("saved");
         let id = id.expect("an id was allocated");
         assert_eq!(load(&backend, id).expect("loaded"), messages);
     }
@@ -764,7 +815,16 @@ mod tests {
         let messages = [Message::user("one")];
 
         let mut old_id = None;
-        save(&backend, HOST, &mut old_id, &messages, 0, None, None).expect("saved old chat");
+        save(
+            &backend,
+            &HostId::new(HOST),
+            &mut old_id,
+            &messages,
+            0,
+            None,
+            None,
+        )
+        .expect("saved old chat");
         assert_eq!(load_usage(&backend, old_id.expect("old id")), Ok(None));
 
         let usage = TokenUsage {
@@ -772,7 +832,16 @@ mod tests {
             output_tokens: 34,
         };
         let mut id = None;
-        save(&backend, HOST, &mut id, &messages, 0, None, Some(usage)).expect("saved usage");
+        save(
+            &backend,
+            &HostId::new(HOST),
+            &mut id,
+            &messages,
+            0,
+            None,
+            Some(usage),
+        )
+        .expect("saved usage");
         assert_eq!(load_usage(&backend, id.expect("id")), Ok(Some(usage)));
     }
 
@@ -788,11 +857,29 @@ mod tests {
         };
         let mut id = None;
         let mut messages = vec![Message::user("one")];
-        let saved = save(&backend, HOST, &mut id, &messages, 0, None, Some(usage)).expect("saved");
+        let saved = save(
+            &backend,
+            &HostId::new(HOST),
+            &mut id,
+            &messages,
+            0,
+            None,
+            Some(usage),
+        )
+        .expect("saved");
         let id = id.expect("id");
 
         messages.push(Message::assistant("two"));
-        save(&backend, HOST, &mut Some(id), &messages, saved, None, None).expect("saved again");
+        save(
+            &backend,
+            &HostId::new(HOST),
+            &mut Some(id),
+            &messages,
+            saved,
+            None,
+            None,
+        )
+        .expect("saved again");
 
         assert_eq!(load_usage(&backend, id), Ok(Some(usage)));
     }
@@ -836,7 +923,7 @@ mod tests {
         let mut id = None;
         save(
             &backend,
-            HOST,
+            &HostId::new(HOST),
             &mut id,
             &[Message::user("one")],
             0,
@@ -860,11 +947,29 @@ mod tests {
         let backend = backend();
         let mut id = None;
         let messages = vec![Message::user("one")];
-        let saved = save(&backend, HOST, &mut id, &messages, 0, None, None).expect("saved");
+        let saved = save(
+            &backend,
+            &HostId::new(HOST),
+            &mut id,
+            &messages,
+            0,
+            None,
+            None,
+        )
+        .expect("saved");
         let first = id.expect("an id");
 
         let messages = vec![Message::user("one"), Message::assistant("two")];
-        save(&backend, HOST, &mut id, &messages, saved, None, None).expect("saved");
+        save(
+            &backend,
+            &HostId::new(HOST),
+            &mut id,
+            &messages,
+            saved,
+            None,
+            None,
+        )
+        .expect("saved");
         assert_eq!(id, Some(first), "the id must not move");
         assert_eq!(load(&backend, first).expect("loaded").len(), 2);
     }
@@ -876,11 +981,29 @@ mod tests {
         let backend = backend();
         let mut id = None;
         let mut messages = vec![Message::user("one")];
-        let mut saved = save(&backend, HOST, &mut id, &messages, 0, None, None).expect("saved");
+        let mut saved = save(
+            &backend,
+            &HostId::new(HOST),
+            &mut id,
+            &messages,
+            0,
+            None,
+            None,
+        )
+        .expect("saved");
 
         for text in ["two", "three", "four"] {
             messages.push(Message::assistant(text));
-            saved = save(&backend, HOST, &mut id, &messages, saved, None, None).expect("saved");
+            saved = save(
+                &backend,
+                &HostId::new(HOST),
+                &mut id,
+                &messages,
+                saved,
+                None,
+                None,
+            )
+            .expect("saved");
         }
         assert_eq!(load(&backend, id.expect("id")).expect("loaded"), messages);
     }
@@ -892,10 +1015,28 @@ mod tests {
         let backend = backend();
         let mut id = None;
         let mut messages = vec![Message::user("ask"), Message::assistant("par")];
-        let saved = save(&backend, HOST, &mut id, &messages, 0, Some(1), None).expect("saved");
+        let saved = save(
+            &backend,
+            &HostId::new(HOST),
+            &mut id,
+            &messages,
+            0,
+            Some(1),
+            None,
+        )
+        .expect("saved");
 
         messages[1] = Message::assistant("partial reply");
-        save(&backend, HOST, &mut id, &messages, saved, Some(1), None).expect("saved");
+        save(
+            &backend,
+            &HostId::new(HOST),
+            &mut id,
+            &messages,
+            saved,
+            Some(1),
+            None,
+        )
+        .expect("saved");
 
         let loaded = load(&backend, id.expect("id")).expect("loaded");
         assert_eq!(loaded[1].content, "partial reply");
@@ -908,11 +1049,29 @@ mod tests {
         let backend = backend();
         let mut id = None;
         let mut messages = vec![Message::user("ask"), Message::assistant("")];
-        let saved = save(&backend, HOST, &mut id, &messages, 0, Some(1), None).expect("saved");
+        let saved = save(
+            &backend,
+            &HostId::new(HOST),
+            &mut id,
+            &messages,
+            0,
+            Some(1),
+            None,
+        )
+        .expect("saved");
 
         messages[1] = Message::assistant("the reply");
         messages.push(Message::notice("a typed tool"));
-        save(&backend, HOST, &mut id, &messages, saved, Some(1), None).expect("saved");
+        save(
+            &backend,
+            &HostId::new(HOST),
+            &mut id,
+            &messages,
+            saved,
+            Some(1),
+            None,
+        )
+        .expect("saved");
 
         let loaded = load(&backend, id.expect("id")).expect("loaded");
         assert_eq!(loaded[1].content, "the reply");
@@ -931,10 +1090,28 @@ mod tests {
             Message::assistant("two"),
             Message::notice("three"),
         ];
-        let saved = save(&backend, HOST, &mut id, &messages, 0, None, None).expect("saved");
+        let saved = save(
+            &backend,
+            &HostId::new(HOST),
+            &mut id,
+            &messages,
+            0,
+            None,
+            None,
+        )
+        .expect("saved");
 
         let shorter = vec![Message::user("one"), Message::notice("three")];
-        save(&backend, HOST, &mut id, &shorter, saved, None, None).expect("saved");
+        save(
+            &backend,
+            &HostId::new(HOST),
+            &mut id,
+            &shorter,
+            saved,
+            None,
+            None,
+        )
+        .expect("saved");
 
         assert_eq!(load(&backend, id.expect("id")).expect("loaded"), shorter);
     }
@@ -946,7 +1123,7 @@ mod tests {
             let mut id = None;
             save(
                 &backend,
-                HOST,
+                &HostId::new(HOST),
                 &mut id,
                 &[Message::user(text)],
                 0,
@@ -969,7 +1146,7 @@ mod tests {
         let mut id = None;
         let saved = save(
             &backend,
-            HOST,
+            &HostId::new(HOST),
             &mut id,
             &[Message::notice("hello")],
             0,
@@ -980,7 +1157,16 @@ mod tests {
         assert_eq!(list(&backend)[0].title, "(empty)");
 
         let messages = vec![Message::notice("hello"), Message::user("the question")];
-        save(&backend, HOST, &mut id, &messages, saved, None, None).expect("saved");
+        save(
+            &backend,
+            &HostId::new(HOST),
+            &mut id,
+            &messages,
+            saved,
+            None,
+            None,
+        )
+        .expect("saved");
         assert_eq!(list(&backend)[0].title, "the question");
     }
 
@@ -995,8 +1181,8 @@ mod tests {
     #[test]
     fn the_import_runs_once() {
         let backend = backend();
-        assert!(!imported(&backend, HOST, "chats"));
-        open(&backend, HOST).expect("opened");
-        assert!(imported(&backend, HOST, "chats"));
+        assert!(!imported(&backend, &HostId::new(HOST), "chats"));
+        open(&backend, &HostId::new(HOST)).expect("opened");
+        assert!(imported(&backend, &HostId::new(HOST), "chats"));
     }
 }

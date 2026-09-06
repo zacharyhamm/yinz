@@ -6,9 +6,10 @@ use std::{
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
-use zellij_utils::{
-    agent::report::AgentReportState,
-    ipc::{ClientToServerMsg, IpcReceiverWithContext, IpcRecv, ServerToClientMsg},
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcReceiverWithContext,
+    zellij_ipc::ipc::IpcRecv, zellij_ipc::ipc::ServerToClientMsg,
+    zellij_types::agent::report::AgentReportState,
 };
 
 fn command(dir: &std::path::Path) -> Command {
@@ -34,7 +35,7 @@ fn command(dir: &std::path::Path) -> Command {
 }
 
 fn listener(dir: &std::path::Path) -> interprocess::local_socket::Listener {
-    let socket_dir = dir.join(&*zellij_utils::consts::CLIENT_SERVER_CONTRACT_DIR);
+    let socket_dir = dir.join(&*zellij_runtime::consts::CLIENT_SERVER_CONTRACT_DIR);
     std::fs::create_dir_all(&socket_dir).unwrap();
     ListenerOptions::new()
         .name(
@@ -184,7 +185,7 @@ fn oversized_reports_use_the_existing_bounded_payload() {
         IpcRecv::Msg(ClientToServerMsg::AgentReport(report), _) => report,
         _ => panic!("expected a report"),
     };
-    assert!(report.event.unwrap().raw.len() <= zellij_utils::agent::HOOK_BROADCAST_MAX_BYTES);
+    assert!(report.event.unwrap().raw.len() <= zellij_types::agent::HOOK_BROADCAST_MAX_BYTES);
     receiver
         .get_sender::<ServerToClientMsg>()
         .send_server_msg(ServerToClientMsg::AgentReportAccepted {
@@ -258,7 +259,10 @@ fn manual_reports_preserve_explicit_targets_and_do_not_read_stdin() {
             IpcRecv::Msg(ClientToServerMsg::AgentReport(report), _) => report,
             _ => panic!("expected a manual report"),
         };
-        assert_eq!(report.pane_id, zellij_utils::data::PaneId::Terminal(7));
+        assert_eq!(
+            report.pane_id,
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7))
+        );
         assert!(report.event.is_none());
         assert_eq!(matches!(report.state, AgentReportState::Clear), clear);
         receiver

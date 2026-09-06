@@ -8,11 +8,11 @@
 
 use super::*;
 use crate::plugins::PluginInstruction;
-use zellij_utils::data::{Event, NewPanePlacement};
+use {zellij_types::data::Event, zellij_types::data::NewPanePlacement};
 
 fn drain_visible_events(
     plugin_receiver: &Receiver<(PluginInstruction, ErrorContext)>,
-) -> Vec<(Option<zellij_utils::internal_ids::PluginId>, bool)> {
+) -> Vec<(Option<zellij_types::internal_ids::PluginId>, bool)> {
     let mut visible_events = vec![];
     while let Ok((instruction, _)) = plugin_receiver.try_recv() {
         if let PluginInstruction::Update(updates) = instruction {
@@ -35,13 +35,13 @@ fn tab_with_floating_plugin_pane(
     };
     let (mut tab, plugin_receiver) = create_new_tab_with_plugin_receiver(size, ModeInfo::default());
     tab.new_pane(
-        PaneId::Plugin(crate::PluginId(plugin_pid)),
+        PaneId::Plugin(crate::PluginId::new(plugin_pid)),
         None,
         None,
         false,
         true,
         NewPanePlacement::Floating(None),
-        Some(crate::ClientId(1)),
+        Some(crate::ClientId::new(1)),
         None,
     )
     .unwrap();
@@ -57,7 +57,7 @@ fn floating_plugin_panes_are_notified_when_the_floating_surface_is_hidden() {
 
     assert_eq!(
         drain_visible_events(&plugin_receiver),
-        vec![(Some(zellij_utils::internal_ids::PluginId(1)), false)],
+        vec![(Some(zellij_types::internal_ids::PluginId::new(1)), false)],
         "a plugin in a floating pane should be sent Event::Visible(false) when the floating surface is hidden"
     );
 }
@@ -72,7 +72,7 @@ fn floating_plugin_panes_are_notified_when_the_floating_surface_is_shown() {
 
     assert_eq!(
         drain_visible_events(&plugin_receiver),
-        vec![(Some(zellij_utils::internal_ids::PluginId(1)), true)],
+        vec![(Some(zellij_types::internal_ids::PluginId::new(1)), true)],
         "a plugin in a floating pane should be sent Event::Visible(true) when the floating surface is shown"
     );
 }
@@ -90,8 +90,8 @@ fn toggling_the_floating_surface_twice_does_not_repeat_the_visibility_event() {
     assert_eq!(
         drain_visible_events(&plugin_receiver),
         vec![
-            (Some(zellij_utils::internal_ids::PluginId(1)), false),
-            (Some(zellij_utils::internal_ids::PluginId(1)), true)
+            (Some(zellij_types::internal_ids::PluginId::new(1)), false),
+            (Some(zellij_types::internal_ids::PluginId::new(1)), true)
         ],
         "only actual visibility transitions of the floating surface should be reported"
     );
@@ -122,7 +122,7 @@ fn floating_plugin_panes_are_not_shown_again_when_their_tab_returns_with_the_sur
     tab.visible(true).unwrap();
 
     assert!(
-        !drain_visible_events(&plugin_receiver).contains(&(Some(crate::PluginId(1)), true)),
+        !drain_visible_events(&plugin_receiver).contains(&(Some(crate::PluginId::new(1)), true)),
         "a plugin whose floating surface is hidden should not be told it is visible when its tab returns"
     );
 }

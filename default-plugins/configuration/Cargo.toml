@@ -10,7 +10,8 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+zellij-config = { workspace = true }
+zellij-types = { workspace = true }
 zellij-tile = { path = "../../zellij-tile" }
 
 [dev-dependencies]
-zellij-utils = { workspace = true }

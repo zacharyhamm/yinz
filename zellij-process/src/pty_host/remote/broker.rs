@@ -22,12 +22,11 @@ use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::TerminalId;
 
-use zellij_utils::{
-    consts::{VERSION, ZELLIJ_SOCK_DIR},
-    errors::prelude::*,
-};
+use zellij_runtime::errors::prelude::*;
+use {zellij_runtime::consts::VERSION, zellij_runtime::consts::ZELLIJ_SOCK_DIR};
 
 use super::protocol::{
     self, BrokerToServerMsg, ChildSignal, Frame, ResumeRefusal, ServerToBrokerMsg,
@@ -35,9 +34,7 @@ use super::protocol::{
 };
 use super::session::{orphan_timeout, PaneRegistry, PaneSession, ResumeStep};
 use crate::pty_host::client::{self as pty_host_client, SpawnParams};
-use crate::pty_host::protocol::{
-    check_socket_path_length, new_host_id, SpawnFailureKind, WireWinsize,
-};
+use crate::pty_host::protocol::{check_socket_path_length, SpawnFailureKind, WireWinsize};
 use crate::pty_host::{ensure_secure_dir, secure_socket};
 
 /// A socket shared by the several things that need to write to it: the output
@@ -145,7 +142,7 @@ pub fn serve_connection(
             failover_cmd,
             initial_size,
             env,
-            TerminalId(terminal_id),
+            TerminalId::new(terminal_id),
         )?,
         ServerToBrokerMsg::Resume {
             pane_token,
@@ -349,7 +346,7 @@ impl ShellSource {
 /// crossed the wire at all. This is the order sshd effectively lands on, for
 /// the same reasons.
 pub(crate) fn resolve_default_shell(
-    cmd: &mut zellij_utils::input::command::RunCommand,
+    cmd: &mut zellij_types::input::command::RunCommand,
     source: &ShellSource,
 ) -> Option<String> {
     if !cmd.is_remote_default_shell() {
@@ -393,8 +390,8 @@ fn start_pane(
     host_bin: &std::path::Path,
     registry: &Arc<PaneRegistry>,
     wire: &Wire,
-    cmd: zellij_utils::input::command::RunCommand,
-    failover_cmd: Option<zellij_utils::input::command::RunCommand>,
+    cmd: zellij_types::input::command::RunCommand,
+    failover_cmd: Option<zellij_types::input::command::RunCommand>,
     initial_size: Option<WireWinsize>,
     carried_env: Vec<(String, String)>,
     terminal_id: TerminalId,
@@ -419,7 +416,7 @@ fn start_pane(
     let mut env = remote_env::compose(&remote_env::LoginSource::from_user(&user), carried_env);
     // The pane's token, so a hook running inside it can name it to this broker
     // (`report_agent_hook`). Minted before the spawn for exactly that reason.
-    let token = new_host_id();
+    let token = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
     env.push((PANE_TOKEN_ENV.to_owned(), token.clone()));
 
     let pending = match pty_host_client::spawn(SpawnParams {
@@ -992,8 +989,10 @@ fn set_winsize(fd: std::os::unix::io::RawFd, cols: u16, rows: u16, xpixel: u16, 
 /// The pid never crosses the wire in either direction, which is the point: a pid
 /// from the server's machine would name an unrelated process here, and this
 /// child's pid would name an unrelated process there.
-fn signal_child(child_pid: u32, signal: ChildSignal) {
-    let pid = nix::unistd::Pid::from_raw(child_pid as i32);
+fn signal_child(child_pid: ProcessId, signal: ChildSignal) {
+    let Some(pid) = super::super::process_pid(child_pid).to_log().ok() else {
+        return;
+    };
     let sig = match signal {
         ChildSignal::Hup => nix::sys::signal::Signal::SIGHUP,
         ChildSignal::Int => nix::sys::signal::Signal::SIGINT,
@@ -1002,7 +1001,7 @@ fn signal_child(child_pid: u32, signal: ChildSignal) {
         // for why the leader alone is not enough. Unreachable today: no remote
         // pane ever reports a suspend, so nothing asks for this.
         ChildSignal::Cont => {
-            let group = nix::unistd::Pid::from_raw(-(child_pid as i32));
+            let group = nix::unistd::Pid::from_raw(-pid.as_raw());
             if nix::sys::signal::kill(group, Some(nix::sys::signal::Signal::SIGCONT)).is_err() {
                 let _ = nix::sys::signal::kill(pid, Some(nix::sys::signal::Signal::SIGCONT));
             }
@@ -1039,10 +1038,10 @@ fn relay_agent_report(
     kind: String,
     json: String,
 ) -> bool {
-    let mut trace = zellij_utils::agent::report::ReportTrace::new(std::time::Instant::now());
+    let mut trace = zellij_runtime::agent::report::ReportTrace::new(std::time::Instant::now());
     trace.kind = kind.clone();
     trace.payload_bytes = json.len();
-    if let Ok(event) = serde_json::from_str::<zellij_utils::agent::HookEvent>(&json) {
+    if let Ok(event) = serde_json::from_str::<zellij_types::agent::HookEvent>(&json) {
         trace.event = event.hook_event_name;
     }
     trace.enter("relay_resolve");
@@ -1074,7 +1073,7 @@ fn valid_agent_kind(kind: &str) -> bool {
 /// channel, where it is trusted because it came over the transport rather
 /// than out of the pane's bytes.
 pub fn report_agent_hook(started: std::time::Instant) -> Result<()> {
-    let mut trace = zellij_utils::agent::report::ReportTrace::new(started);
+    let mut trace = zellij_runtime::agent::report::ReportTrace::new(started);
     let result = (|| {
         use std::io::Read;
 
@@ -1091,12 +1090,12 @@ pub fn report_agent_hook(started: std::time::Instant) -> Result<()> {
         })?;
         let mut json = Vec::new();
         std::io::stdin()
-            .take(zellij_utils::agent::HOOK_BROADCAST_MAX_BYTES as u64 + 1)
+            .take(zellij_types::agent::HOOK_BROADCAST_MAX_BYTES as u64 + 1)
             .read_to_end(&mut json)?;
-        if json.len() > zellij_utils::agent::HOOK_BROADCAST_MAX_BYTES {
+        if json.len() > zellij_types::agent::HOOK_BROADCAST_MAX_BYTES {
             return Err(anyhow!("agent hook event exceeds the 64 KiB limit"));
         }
-        let event = serde_json::from_slice::<zellij_utils::agent::HookEvent>(&json)
+        let event = serde_json::from_slice::<zellij_types::agent::HookEvent>(&json)
             .context("invalid agent hook JSON")?;
         trace.event = event.hook_event_name.clone();
         trace.payload_bytes = json.len();
@@ -1119,7 +1118,7 @@ pub fn report_agent_hook_to(
     kind: &str,
     json: &str,
 ) -> Result<()> {
-    let mut trace = zellij_utils::agent::report::ReportTrace::new(std::time::Instant::now());
+    let mut trace = zellij_runtime::agent::report::ReportTrace::new(std::time::Instant::now());
     trace.kind = kind.to_owned();
     trace.payload_bytes = json.len();
     let result = report_agent_hook_to_traced(socket, pane_token, kind, json, &mut trace);
@@ -1132,7 +1131,7 @@ fn report_agent_hook_to_traced(
     pane_token: &str,
     kind: &str,
     json: &str,
-    trace: &mut zellij_utils::agent::report::ReportTrace,
+    trace: &mut zellij_runtime::agent::report::ReportTrace,
 ) -> Result<()> {
     trace.enter("connect");
     let mut stream = UnixStream::connect(socket)

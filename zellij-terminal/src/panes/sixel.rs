@@ -9,7 +9,7 @@ use sixel_tokenizer::SixelEvent;
 
 use std::fmt::Debug;
 
-use zellij_utils::pane_size::SizeInPixels;
+use zellij_types::pane_size::SizeInPixels;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct PixelRect {

@@ -7,7 +7,7 @@ use super::{
     Coordinates, Text,
 };
 use crate::panes::terminal_character::{AnsiCode, CharacterStyles, RESET_STYLES};
-use zellij_utils::data::Style;
+use zellij_types::style::Style;
 
 use unicode_width::UnicodeWidthChar;
 

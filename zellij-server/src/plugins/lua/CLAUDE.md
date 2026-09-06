@@ -35,7 +35,7 @@ in `plugin_api/plugin_command.rs` (a test walks `CommandType` to catch drift), a
 needs nothing at all done to it to be callable from Lua.
 
 Replies are the exception, and are still per-command: the response types are prost-generated with
-no serde representation, so `lua/response.rs` decodes each one by hand into the `zellij_utils::data`
+no serde representation, so `lua/response.rs` decodes each one by hand into the `zellij_types::data`
 type the wasm shim would build, and hands back raw bytes for anything it does not know. A test
 lists every reply-returning command and fails when a new one is not decoded.
 `zellij-tile/src/shim.rs` is the reference for what each response means.
@@ -65,7 +65,7 @@ served to its model verbatim by `hocus/src/lua_docs.rs`, cut into sections that 
 `PermissionType` must be nameable from its permission table, and the `Data` section must state
 the `shared:` prefix and every `RESERVED_ATTR_NAMES` entry.
 A new `##` heading in the guide needs a section name there, or a test fails.
-`zellij_utils::plugin_authoring` is the other half of that: the naming rules, the backup name, the
+`zellij_plugin_api::authoring` is the other half of that: the naming rules, the backup name, the
 lexical permission parser, and `lint`, which reads a source for the traps a compile cannot see -
 a permission spelled wrong (granted to nobody, silently), a data namespace that is not
 `shared:`-prefixed, a reserved column declared as an attribute, an extension registering without

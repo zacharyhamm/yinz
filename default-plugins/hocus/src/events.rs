@@ -418,7 +418,7 @@ impl State {
             .find(|session| session.is_current_session);
         // A plugin pane's id is the plugin's id, so the manifest says which instances have a
         // pane; the plugin list alone cannot tell a headless instance from a pane's copy.
-        let pane_ids: BTreeSet<u32> = current
+        let pane_ids: BTreeSet<zellij_tile::prelude::PluginId> = current
             .as_ref()
             .map(|session| {
                 session
@@ -426,8 +426,10 @@ impl State {
                     .panes
                     .values()
                     .flatten()
-                    .filter(|pane| pane.is_plugin)
-                    .map(|pane| pane.id)
+                    .filter_map(|pane| match pane.id {
+                        PaneId::Plugin(id) => Some(id),
+                        _ => None,
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -509,7 +511,11 @@ impl State {
         self.pump_tools();
     }
 
-    pub(crate) fn on_extension_registration(&mut self, owner: u32, payload: Option<&str>) -> bool {
+    pub(crate) fn on_extension_registration(
+        &mut self,
+        owner: zellij_tile::prelude::PluginId,
+        payload: Option<&str>,
+    ) -> bool {
         let Some(payload) = payload else {
             return false;
         };
@@ -589,7 +595,11 @@ impl State {
         true
     }
 
-    pub(crate) fn on_extension_result(&mut self, owner: u32, payload: Option<&str>) -> bool {
+    pub(crate) fn on_extension_result(
+        &mut self,
+        owner: zellij_tile::prelude::PluginId,
+        payload: Option<&str>,
+    ) -> bool {
         let Some(payload) = payload else {
             return false;
         };
@@ -608,7 +618,11 @@ impl State {
         }
     }
 
-    fn finish_extension_result(&mut self, owner: u32, result: extensions::ToolResult) -> bool {
+    fn finish_extension_result(
+        &mut self,
+        owner: zellij_tile::prelude::PluginId,
+        result: extensions::ToolResult,
+    ) -> bool {
         if !matches!(self.status, Status::AwaitingExtension) {
             return false;
         }
@@ -658,7 +672,7 @@ impl State {
             self.agents_tab_index = manifest.panes.iter().find_map(|(tab_index, panes)| {
                 let agents = panes
                     .iter()
-                    .find(|pane| pane.is_plugin && pane.id == agents_id)?;
+                    .find(|pane| pane.id == PaneId::Plugin(agents_id))?;
                 agents_visible = !agents.is_suppressed;
                 agents_focused = agents.is_focused;
                 Some(*tab_index)
@@ -692,10 +706,7 @@ impl State {
         // of it any more - both halves hide together, so a hidden panel is cut as it will return.
         let agents_presence_changed = had_agents != self.agents_plugin.is_some();
         for (tab_index, panes) in &manifest.panes {
-            let Some(own) = panes
-                .iter()
-                .find(|pane| pane.is_plugin && pane.id == own_id)
-            else {
+            let Some(own) = panes.iter().find(|pane| pane.id == PaneId::Plugin(own_id)) else {
                 continue;
             };
             self.own_tab_index = Some(*tab_index);
@@ -1979,7 +1990,7 @@ impl State {
     /// The path is re-resolved rather than carried:
     /// `resolve_plugin_file` is pure and was already given the same folder and name, so it
     /// cannot answer differently here, and a reload must be built from an absolute path -
-    /// `RunPluginLocation::parse` joins a relative `file:` path onto the cwd, which
+    /// `zellij_runtime::plugin_location::parse_plugin_location` joins a relative `file:` path onto the cwd, which
     /// `start_or_reload_plugin` always supplies.
     pub(crate) fn start_plugin_load(&mut self) -> bool {
         let Some(head) = self.pending.front() else {

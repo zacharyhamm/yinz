@@ -1,12 +1,18 @@
-use zellij_utils::consts::{
-    session_info_folder_for_session, ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR,
+use {
+    zellij_runtime::consts::session_info_folder_for_session,
+    zellij_runtime::consts::ZELLIJ_SESSION_INFO_CACHE_DIR, zellij_runtime::consts::ZELLIJ_SOCK_DIR,
 };
 
 use std::str::FromStr;
-use zellij_utils::data::{Event, HttpVerb, LayoutInfo, SessionInfo};
-use zellij_utils::errors::{prelude::*, BackgroundJobContext, ContextType};
-use zellij_utils::input::layout::RunPlugin;
-use zellij_utils::ipc::MAX_IPC_FRAME_LEN;
+use zellij_ipc::ipc::MAX_IPC_FRAME_LEN;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::diagnostics::BackgroundJobContext;
+use zellij_types::diagnostics::ContextType;
+use zellij_types::input::layout::RunPlugin;
+use {
+    zellij_types::data::Event, zellij_types::data::HttpVerb, zellij_types::data::LayoutInfo,
+    zellij_types::data::SessionInfo,
+};
 
 use futures_lite::io::AsyncReadExt;
 use isahc::prelude::*;
@@ -156,7 +162,7 @@ pub enum BackgroundJob {
     /// terminating chunk is always emitted from one place (see `finish_stream`)
     WebRequestStreamFinished(StreamKey, u64, Option<String>), // u64 - generation, Option<String> - error
     HighlightPanesWithMessage(Vec<PaneId>, String),
-    DismissNotification(u64, u64), // notification id, timeout in seconds
+    DismissNotification(zellij_types::internal_ids::NotificationId, u64), // notification id, timeout in seconds
     /// Wake the screen for a frame every `Duration`, until [`BackgroundJob::StopAnimationClock`].
     /// The period is `Screen`'s to choose - see `Screen::animation_clock_period` - because only
     /// the screen knows the coarsest cadence every live surface can live with.
@@ -164,7 +170,11 @@ pub enum BackgroundJob {
     StopAnimationClock,
     /// Give up waiting for a context menu's hook plugin and show the configured items instead.
     /// (request id, client id, timeout in milliseconds)
-    ContextMenuTimeout(u64, ClientId, u64),
+    ContextMenuTimeout(
+        zellij_types::internal_ids::ContextMenuRequestId,
+        ClientId,
+        u64,
+    ),
     RenderToClients,
     ClearHelpText {
         client_id: ClientId,
@@ -175,8 +185,8 @@ pub enum BackgroundJob {
     },
     FlashPaneBell(Vec<PaneId>),
     StopFlashPaneBell(Vec<PaneId>),
-    FlashTabBell(usize),     // usize = tab_id
-    StopFlashTabBell(usize), // usize = tab_id
+    FlashTabBell(zellij_types::internal_ids::TabId), // usize = tab_id
+    StopFlashTabBell(zellij_types::internal_ids::TabId), // usize = tab_id
     StartNestedGuestPing(PaneId),
     StopNestedGuestPing(PaneId),
     Exit,
@@ -273,7 +283,8 @@ pub(crate) fn background_jobs_main(
     let pending_command_output_flash_clear: Arc<Mutex<HashMap<PaneId, Instant>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let mut flashing_pane_bells: HashMap<PaneId, Arc<AtomicBool>> = HashMap::new();
-    let mut flashing_tab_bells: HashMap<usize, Arc<AtomicBool>> = HashMap::new();
+    let mut flashing_tab_bells: HashMap<zellij_types::internal_ids::TabId, Arc<AtomicBool>> =
+        HashMap::new();
     let mut nested_guest_pings: HashMap<PaneId, Arc<AtomicBool>> = HashMap::new();
     let mut active_streams: HashMap<StreamKey, ActiveWebRequestStream> = HashMap::new();
     let mut next_stream_generation = 0u64;
@@ -341,7 +352,7 @@ pub(crate) fn background_jobs_main(
 
     loop {
         let (event, mut err_ctx) = bus.recv().with_context(err_context)?;
-        err_ctx.add_call(ContextType::BackgroundJob((&event).into()));
+        zellij_runtime::errors::add_call(&mut err_ctx, ContextType::BackgroundJob((&event).into()));
         let job = event.clone();
         match event {
             BackgroundJob::DisplayPaneError(pane_ids, text) => {
@@ -1325,9 +1336,10 @@ pub fn write_session_state_to_disk(
     current_session_info: SessionInfo,
     current_session_layout: (String, BTreeMap<String, String>),
 ) -> Result<()> {
-    zellij_utils::session_checkpoint::write_checkpoint(
+    zellij_runtime::session_checkpoint::write_checkpoint(
         &session_info_folder_for_session(&current_session_name),
-        &current_session_info.to_string(),
+        &zellij_session::metadata::session_info::to_string(&current_session_info)
+            .context("Failed to encode session metadata")?,
         &current_session_layout,
     )
 }
@@ -1339,20 +1351,14 @@ pub fn scan_session_list(
     sock_dir: &Path,
     session_info_cache_dir: &Path,
 ) -> (BTreeMap<String, SessionInfo>, BTreeMap<String, Duration>) {
-    let mut session_infos_on_machine = zellij_utils::sessions::read_live_session_states(
+    let mut session_infos_on_machine = zellij_session::sessions::read_live_session_states(
         current_session_name,
         sock_dir,
         session_info_cache_dir,
     );
     for (name, info) in session_infos_on_machine.iter_mut() {
         if name == current_session_name {
-            info.populate_plugin_list(
-                current_session_plugin_list
-                    .clone()
-                    .into_iter()
-                    .map(|(id, plugin)| (id.0, plugin))
-                    .collect(),
-            );
+            info.populate_plugin_list(current_session_plugin_list.clone());
             info.available_layouts = available_layouts.to_vec();
         }
     }
@@ -1392,7 +1398,7 @@ fn find_resurrectable_sessions(
                         return None;
                     }
                     let checkpoint =
-                        zellij_utils::session_checkpoint::SessionCheckpoint::read(&folder_name)
+                        zellij_runtime::session_checkpoint::SessionCheckpoint::read(&folder_name)
                             .to_log()
                             .ok()?;
                     let layout_file_name = checkpoint.layout_path();
@@ -1433,7 +1439,7 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
     use tempfile::tempdir;
-    use zellij_utils::data::SessionInfo;
+    use zellij_types::data::SessionInfo;
 
     fn make_socket(dir: &std::path::Path, name: &str) -> UnixListener {
         UnixListener::bind(dir.join(name)).expect("bind unix socket")
@@ -1442,7 +1448,11 @@ mod tests {
     fn write_metadata(info_dir: &std::path::Path, session: &str, info: &SessionInfo) {
         let folder = info_dir.join(session);
         std::fs::create_dir_all(&folder).unwrap();
-        std::fs::write(folder.join("session-metadata.kdl"), info.to_string()).unwrap();
+        std::fs::write(
+            folder.join("session-metadata.kdl"),
+            zellij_session::metadata::session_info::to_string(info).unwrap(),
+        )
+        .unwrap();
     }
 
     fn write_layout(info_dir: &std::path::Path, session: &str) {
@@ -1457,9 +1467,12 @@ mod tests {
         let info_dir = tempdir().unwrap();
         let _listener = make_socket(sock_dir.path(), "live");
         for name in ["live", "dead"] {
-            zellij_utils::session_checkpoint::write_checkpoint(
+            zellij_runtime::session_checkpoint::write_checkpoint(
                 &info_dir.path().join(name),
-                &SessionInfo::new(name.to_owned()).to_string(),
+                &zellij_session::metadata::session_info::to_string(&SessionInfo::new(
+                    name.to_owned(),
+                ))
+                .unwrap(),
                 &("layout {}".to_owned(), BTreeMap::new()),
             )
             .unwrap();
@@ -1564,11 +1577,11 @@ mod web_request_stream_tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    use zellij_utils::channels::{unbounded, Receiver, SenderWithContext};
-    use zellij_utils::errors::ErrorContext;
+    use zellij_runtime::channels::{unbounded, Receiver, SenderWithContext};
+    use zellij_types::diagnostics::ErrorContext;
 
-    const PLUGIN_ID: PluginId = PluginId(1);
-    const CLIENT_ID: ClientId = ClientId(2);
+    const PLUGIN_ID: PluginId = PluginId::new(1);
+    const CLIENT_ID: ClientId = ClientId::new(2);
     const GENERATION: u64 = 7;
 
     type PluginRx = Receiver<(PluginInstruction, ErrorContext)>;

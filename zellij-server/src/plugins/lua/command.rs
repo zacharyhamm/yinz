@@ -21,8 +21,8 @@
 use std::str::FromStr;
 
 use mlua::{Lua, LuaSerdeExt, Value as LuaValue};
-use zellij_utils::data::{CommandType, PluginCommand};
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
+use {zellij_types::data::CommandType, zellij_types::data::PluginCommand};
 
 /// `name` is the command in `PluginCommand`'s own spelling; `spelling` is how the plugin wrote
 /// it, and appears in errors so that a typo is reported back as typed.

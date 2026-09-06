@@ -20,7 +20,7 @@ pub fn init() -> &'static Path {
             let test_root = create_test_root();
             isolate_process_environment(&test_root);
             record_background_thread_panics();
-            zellij_utils::logging::configure_logger();
+            zellij_runtime::logging::configure_logger();
             test_root
         })
         .as_path()
@@ -336,7 +336,7 @@ fn defaults_overridden_by(extra_config_kdl: &str) -> String {
 
 pub fn log_file_path() -> PathBuf {
     init();
-    zellij_utils::consts::ZELLIJ_TMP_LOG_FILE.clone()
+    zellij_runtime::consts::ZELLIJ_TMP_LOG_FILE.clone()
 }
 
 pub fn log_tail(max_lines: usize) -> String {

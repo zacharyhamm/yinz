@@ -5,14 +5,14 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::ClientScreen;
+use zellij_cli::setup::Setup;
 use zellij_client::os_input_output::SignalEvent;
 use zellij_client::ClientInfo;
-use zellij_utils::cli::{CliAction, CliArgs};
-use zellij_utils::data::{ConnectToSession, LayoutInfo};
-use zellij_utils::input::actions::Action;
-use zellij_utils::input::options::Options;
-use zellij_utils::pane_size::Size;
-use zellij_utils::setup::Setup;
+use zellij_types::input::actions::Action;
+use zellij_types::input::options::Options;
+use zellij_types::pane_size::Size;
+use {zellij_cli::args::CliAction, zellij_cli::args::CliArgs};
+use {zellij_types::data::LayoutInfo, zellij_types::data::SessionConnection};
 
 use crate::client_screen::GridSnapshot;
 use crate::fake_client_os_api::{FakeClientHandle, FakeClientOsApi};
@@ -210,10 +210,10 @@ fn referenced_contents_files(layout: &str) -> impl Iterator<Item = &str> {
 fn spawn_client_thread(
     fake_client_os_api: FakeClientOsApi,
     cli_args: CliArgs,
-    config: zellij_utils::input::config::Config,
+    config: zellij_config::config::Config,
     config_options: Options,
     client_info: ClientInfo,
-) -> JoinHandle<Option<ConnectToSession>> {
+) -> JoinHandle<Option<SessionConnection>> {
     std::thread::Builder::new()
         .name("in_process_zellij_client".to_string())
         .spawn(move || {
@@ -238,7 +238,7 @@ fn spawn_client_thread(
 
 pub struct TestClient {
     fake_client_handle: FakeClientHandle,
-    thread: Option<JoinHandle<Option<ConnectToSession>>>,
+    thread: Option<JoinHandle<Option<SessionConnection>>>,
 }
 
 #[derive(Clone)]
@@ -306,14 +306,14 @@ impl TestClient {
         self.join();
     }
 
-    fn join(&mut self) -> Option<ConnectToSession> {
+    fn join(&mut self) -> Option<SessionConnection> {
         self.thread.take().and_then(join_client_thread_with_timeout)
     }
 }
 
 fn join_client_thread_with_timeout(
-    join_handle: JoinHandle<Option<ConnectToSession>>,
-) -> Option<ConnectToSession> {
+    join_handle: JoinHandle<Option<SessionConnection>>,
+) -> Option<SessionConnection> {
     let (done_tx, done_rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("nested_client_join_watchdog".to_string())
@@ -357,7 +357,7 @@ pub struct TestSession {
     session_name: String,
     size: Size,
     cli_args: CliArgs,
-    config: zellij_utils::input::config::Config,
+    config: zellij_config::config::Config,
     config_options: Options,
     fake_server_os_api: FakeServerOsApi,
     server_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -612,7 +612,7 @@ impl TestSession {
     }
 
     fn spawn_cli_client(&self, cli_action: CliAction) -> (JoinHandle<i32>, ClientScreen) {
-        let actions = Action::actions_from_cli(
+        let actions = zellij_cli::actions::actions_from_cli(
             cli_action,
             Box::new(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))),
             Some(self.config.clone()),
@@ -646,11 +646,12 @@ impl TestSession {
     }
 
     pub fn wait_for_serialized_session(&self) {
-        let session_dir = zellij_utils::consts::session_info_folder_for_session(&self.session_name);
+        let session_dir =
+            zellij_runtime::consts::session_info_folder_for_session(&self.session_name);
         let deadline = std::time::Instant::now() + crate::default_timeout();
         loop {
             if let Ok(checkpoint) =
-                zellij_utils::session_checkpoint::SessionCheckpoint::read(&session_dir)
+                zellij_runtime::session_checkpoint::SessionCheckpoint::read(&session_dir)
             {
                 let layout_path = checkpoint.layout_path();
                 if let Ok(layout) = std::fs::read_to_string(&layout_path) {
@@ -672,9 +673,10 @@ impl TestSession {
     }
 
     pub fn resurrect(&mut self, size: Size) {
-        let layout_path = zellij_utils::consts::session_layout_cache_file_name(&self.session_name);
+        let layout_path =
+            zellij_runtime::consts::session_layout_cache_file_name(&self.session_name);
         {
-            let checkpoint = zellij_utils::session_checkpoint::SessionCheckpoint::read(
+            let checkpoint = zellij_runtime::session_checkpoint::SessionCheckpoint::read(
                 layout_path.parent().unwrap(),
             )
             .unwrap();
@@ -787,7 +789,7 @@ impl TestSession {
     pub fn stream_events(&self, event_types: &[&str]) -> EventsClientHandle {
         let (fake_client_os_api, client) = FakeClientOsApi::new(self.size, None);
         let session_name = self.session_name.clone();
-        let events_cli = zellij_utils::cli::EventsCli {
+        let events_cli = zellij_cli::args::EventsCli {
             event_type: event_types.iter().map(|t| t.to_string()).collect(),
         };
         let thread = std::thread::Builder::new()
@@ -849,7 +851,7 @@ impl TestSession {
             self.main_client.fake_client_handle.kill_session();
             self.main_client.join();
         } else {
-            zellij_utils::sessions::kill_session(&self.session_name)
+            zellij_session::sessions::kill_session(&self.session_name)
                 .expect("failed to deliver the integration-test server shutdown request");
         }
         if let Some(server_thread) = self.server_thread.lock().unwrap().take() {

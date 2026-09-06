@@ -6,9 +6,9 @@ fn focus_follows_mouse_focuses_tiled_pane_on_hover() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     // Create a vertical split: pane 1 (left), pane 2 (right)
     tab.vertical_split(new_pane_id, None, client_id, None, None)
@@ -17,7 +17,7 @@ fn focus_follows_mouse_focuses_tiled_pane_on_hover() {
     // Active pane is pane 2 (right) after split
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 
     // Enable focus follows mouse
@@ -35,7 +35,7 @@ fn focus_follows_mouse_focuses_tiled_pane_on_hover() {
     assert!(effect.state_changed);
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
 }
 
@@ -45,9 +45,9 @@ fn focus_follows_mouse_disabled_does_not_change_focus() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
@@ -55,7 +55,7 @@ fn focus_follows_mouse_disabled_does_not_change_focus() {
     // Active pane is pane 2 (right) after split
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 
     // focus_follows_mouse is false by default — do NOT enable it
@@ -71,7 +71,7 @@ fn focus_follows_mouse_disabled_does_not_change_focus() {
     // Focus should remain on pane 2
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 }
 
@@ -81,10 +81,10 @@ fn focus_follows_mouse_focuses_floating_pane_on_hover() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let floating_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let floating_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
+    let floating_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let floating_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
 
     let coordinates_1 = FloatingPaneCoordinates {
         x: Some(PercentOrFixed::Fixed(5)),
@@ -154,20 +154,20 @@ fn focus_follows_mouse_skips_unselectable_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
     // Mark pane 1 (left) as unselectable
-    tab.set_pane_selectable(PaneId::Terminal(crate::TerminalId(1)), false);
+    tab.set_pane_selectable(PaneId::Terminal(crate::TerminalId::new(1)), false);
 
     // Active pane is pane 2 (right)
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 
     // Enable focus follows mouse
@@ -184,7 +184,7 @@ fn focus_follows_mouse_skips_unselectable_panes() {
     // Focus should remain on pane 2 — unselectable panes are skipped
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 }
 
@@ -194,17 +194,17 @@ fn context_menu_skips_unselectable_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         client_id,
         None,
         None,
     )
     .unwrap();
-    tab.set_pane_selectable(PaneId::Terminal(crate::TerminalId(1)), false);
+    tab.set_pane_selectable(PaneId::Terminal(crate::TerminalId::new(1)), false);
     tab.update_context_menu_on_right_click(true);
 
     let effect = tab
@@ -217,7 +217,7 @@ fn context_menu_skips_unselectable_panes() {
     assert!(effect.open_context_menu.is_none());
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 }
 
@@ -227,9 +227,9 @@ fn focus_follows_mouse_no_op_on_active_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
@@ -237,7 +237,7 @@ fn focus_follows_mouse_no_op_on_active_pane() {
     // Active pane is pane 2 (right)
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 
     // Enable focus follows mouse
@@ -254,7 +254,7 @@ fn focus_follows_mouse_no_op_on_active_pane() {
     // Focus should remain on pane 2
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 }
 
@@ -264,9 +264,9 @@ fn focus_follows_mouse_respects_live_toggle() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
@@ -274,7 +274,7 @@ fn focus_follows_mouse_respects_live_toggle() {
     // Active pane is pane 2 (right)
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 
     // Enable focus follows mouse and hover left — should switch focus
@@ -286,7 +286,7 @@ fn focus_follows_mouse_respects_live_toggle() {
     .unwrap();
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
 
     // Disable focus follows mouse (simulating live config reload)
@@ -302,7 +302,7 @@ fn focus_follows_mouse_respects_live_toggle() {
     // Focus should remain on pane 1 (where it was left)
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
 }
 
@@ -312,16 +312,16 @@ fn focus_follows_mouse_repeated_hover_same_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 
     tab.update_focus_follows_mouse(true);
@@ -334,7 +334,7 @@ fn focus_follows_mouse_repeated_hover_same_pane() {
     .unwrap();
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
 
     // Second hover over same left pane at a different position — focus stays
@@ -345,7 +345,7 @@ fn focus_follows_mouse_repeated_hover_same_pane() {
     .unwrap();
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
 }
 
@@ -355,16 +355,16 @@ fn focus_follows_mouse_ignores_tiled_pane_when_floating_visible() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     // Create a vertical split so there are two tiled panes
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
     // Open floating layer with a floating pane
-    let floating_pane_id = PaneId::Terminal(crate::TerminalId(3));
+    let floating_pane_id = PaneId::Terminal(crate::TerminalId::new(3));
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
     tab.new_pane(
@@ -409,12 +409,12 @@ fn focus_follows_mouse_focuses_floating_pane_when_floating_visible() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
 
     // Open floating layer with two floating panes
-    let floating_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let floating_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
+    let floating_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let floating_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
     tab.new_pane(
@@ -479,7 +479,7 @@ fn focus_follows_mouse_skips_stacked_one_liner_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let swap_layouts = r#"
         layout {
             swap_tiled_layout {
@@ -492,7 +492,13 @@ fn focus_follows_mouse_skips_stacked_one_liner_pane() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -506,9 +512,9 @@ fn focus_follows_mouse_skips_stacked_one_liner_pane() {
     );
 
     // Add panes so the stack has one-liners
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(4));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
     tab.new_pane(
         new_pane_id_1,
         None,
@@ -547,7 +553,7 @@ fn focus_follows_mouse_skips_stacked_one_liner_pane() {
     let _ = tab.move_focus_left(client_id);
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
 
     // Enable focus follows mouse
@@ -582,7 +588,7 @@ fn focus_follows_mouse_skips_stacked_one_liner_pane() {
     // Focus should remain on the left tiled pane — the one-liner should be skipped
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
 }
 
@@ -592,7 +598,7 @@ fn mouse_click_through_sends_click_to_newly_focused_tiled_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -602,20 +608,23 @@ fn mouse_click_through_sends_click_to_newly_focused_tiled_pane() {
     );
     pty_instruction_bus.start();
 
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
     // Active pane is pane 2 (right) after split
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 
     // Enable SGR mouse mode on pane 1 (left, inactive)
     let sgr_mouse_mode = String::from("\u{1b}[?1000;1006h");
-    tab.handle_pty_bytes(crate::TerminalId(1), sgr_mouse_mode.as_bytes().to_vec())
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(1),
+        sgr_mouse_mode.as_bytes().to_vec(),
+    )
+    .unwrap();
 
     // Enable click-through
     tab.update_mouse_click_through(true);
@@ -629,7 +638,7 @@ fn mouse_click_through_sends_click_to_newly_focused_tiled_pane() {
     assert!(effect.state_changed);
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
 
     pty_instruction_bus.exit();
@@ -654,7 +663,7 @@ fn mouse_click_through_disabled_does_not_send_click_to_focused_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -664,14 +673,17 @@ fn mouse_click_through_disabled_does_not_send_click_to_focused_pane() {
     );
     pty_instruction_bus.start();
 
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
     // Enable SGR mouse mode on pane 1 (inactive)
     let sgr_mouse_mode = String::from("\u{1b}[?1000;1006h");
-    tab.handle_pty_bytes(crate::TerminalId(1), sgr_mouse_mode.as_bytes().to_vec())
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(1),
+        sgr_mouse_mode.as_bytes().to_vec(),
+    )
+    .unwrap();
 
     // mouse_click_through is false by default — do NOT enable it
 
@@ -687,7 +699,7 @@ fn mouse_click_through_disabled_does_not_send_click_to_focused_pane() {
     assert!(effect.state_changed);
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
 
     pty_instruction_bus.exit();
@@ -707,7 +719,7 @@ fn mouse_click_through_sends_click_to_newly_focused_floating_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -718,8 +730,8 @@ fn mouse_click_through_sends_click_to_newly_focused_floating_pane() {
     pty_instruction_bus.start();
 
     // Create two floating panes
-    let floating_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let floating_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
+    let floating_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let floating_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
     tab.new_pane(
@@ -747,8 +759,11 @@ fn mouse_click_through_sends_click_to_newly_focused_floating_pane() {
 
     // Enable SGR mouse mode on floating pane 1
     let sgr_mouse_mode = String::from("\u{1b}[?1000;1006h");
-    tab.handle_pty_bytes(crate::TerminalId(2), sgr_mouse_mode.as_bytes().to_vec())
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        sgr_mouse_mode.as_bytes().to_vec(),
+    )
+    .unwrap();
 
     tab.update_mouse_click_through(true);
 
@@ -790,7 +805,7 @@ fn mouse_click_through_does_not_apply_when_focus_follows_mouse_is_enabled() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -800,18 +815,21 @@ fn mouse_click_through_does_not_apply_when_focus_follows_mouse_is_enabled() {
     );
     pty_instruction_bus.start();
 
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 
     // Enable SGR mouse mode on pane 1
     let sgr_mouse_mode = String::from("\u{1b}[?1000;1006h");
-    tab.handle_pty_bytes(crate::TerminalId(1), sgr_mouse_mode.as_bytes().to_vec())
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(1),
+        sgr_mouse_mode.as_bytes().to_vec(),
+    )
+    .unwrap();
 
     // Enable BOTH features
     tab.update_focus_follows_mouse(true);
@@ -826,7 +844,7 @@ fn mouse_click_through_does_not_apply_when_focus_follows_mouse_is_enabled() {
     .unwrap();
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
 
     // Step 2: Click on pane 1 — now this is a click on the ACTIVE pane
@@ -851,15 +869,15 @@ fn mouse_click_through_starts_selection_on_non_mouse_mode_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 
     // Pane 1 is NOT in mouse mode — no SGR escape sent
@@ -877,13 +895,13 @@ fn mouse_click_through_starts_selection_on_non_mouse_mode_pane() {
     assert!(effect.state_changed);
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
 
     // Selection should have started
     assert_eq!(
         tab.selecting_with_mouse_in_pane,
-        Some(PaneId::Terminal(crate::TerminalId(1))),
+        Some(PaneId::Terminal(crate::TerminalId::new(1))),
         "Expected text selection to start on the newly focused pane"
     );
 }
@@ -894,7 +912,7 @@ fn mouse_click_through_respects_live_toggle() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -904,14 +922,17 @@ fn mouse_click_through_respects_live_toggle() {
     );
     pty_instruction_bus.start();
 
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
     // Enable SGR mouse mode on pane 1
     let sgr_mouse_mode = String::from("\u{1b}[?1000;1006h");
-    tab.handle_pty_bytes(crate::TerminalId(1), sgr_mouse_mode.as_bytes().to_vec())
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(1),
+        sgr_mouse_mode.as_bytes().to_vec(),
+    )
+    .unwrap();
 
     // mouse_click_through starts disabled
 
@@ -923,7 +944,7 @@ fn mouse_click_through_respects_live_toggle() {
     .unwrap();
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
 
     // Click pane 2 to refocus it
@@ -934,7 +955,7 @@ fn mouse_click_through_respects_live_toggle() {
     .unwrap();
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 
     // Now enable click-through
@@ -948,7 +969,7 @@ fn mouse_click_through_respects_live_toggle() {
     .unwrap();
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
 
     pty_instruction_bus.exit();

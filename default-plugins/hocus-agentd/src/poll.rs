@@ -25,16 +25,20 @@ fn current_session() -> Option<SessionInfo> {
 /// `None` for every pane the user opened as a shell. The host resolves this one from
 /// the pane's foreground process instead, which is what detection actually wants.
 pub fn pane_running_command(pane_id: u32) -> Option<String> {
-    get_pane_running_command(PaneId::Terminal(pane_id))
-        .ok()
-        .filter(|args| !args.is_empty())
-        .map(|args| args.join(" "))
+    get_pane_running_command(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(
+        pane_id,
+    )))
+    .ok()
+    .filter(|args| !args.is_empty())
+    .map(|args| args.join(" "))
 }
 
 pub fn pane_cwd(pane_id: u32) -> Option<String> {
-    get_pane_cwd(PaneId::Terminal(pane_id))
-        .ok()
-        .map(|path| path.to_string_lossy().into_owned())
+    get_pane_cwd(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(
+        pane_id,
+    )))
+    .ok()
+    .map(|path| path.to_string_lossy().into_owned())
 }
 
 /// What Git said about a remote pane's folder, from its own machine.
@@ -44,7 +48,10 @@ pub fn pane_cwd(pane_id: u32) -> Option<String> {
 /// machine has not reported yet. Callers ask again rather than recording the
 /// silence: both reasons pass on their own.
 pub fn pane_git_probe(pane_id: u32) -> Option<PaneGitProbe> {
-    get_pane_git_probe(PaneId::Terminal(pane_id)).ok()
+    get_pane_git_probe(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(
+        pane_id,
+    )))
+    .ok()
 }
 
 /// One poll's reading of a pane: what it shows, and what that reading is worth.
@@ -85,7 +92,10 @@ impl PaneSample {
 /// What a pane is showing. Only hashed for activity; trailing empty rows are not
 /// content and must not reset the idle counter when the pane is resized.
 pub fn read_pane(pane_id: u32) -> PaneSample {
-    match get_pane_scrollback(PaneId::Terminal(pane_id), false) {
+    match get_pane_scrollback(
+        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+        false,
+    ) {
         Ok(contents) => {
             let is_scrolled = contents.is_scrolled;
             let last_output_ms_ago = contents.last_output_ms_ago;

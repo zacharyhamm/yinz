@@ -1,4 +1,5 @@
 use super::*;
+use zellij_tile::prelude::TabId;
 
 /// A tab is addressed one way only. A display position is not a `tab_id`, so
 /// there is no second field for the model to reach for and no pair of
@@ -143,7 +144,7 @@ fn moving_panes_requires_exactly_one_destination() {
     let by_id = Args::parse(r#"{"panes":[{"pane_id":3,"is_plugin":false}],"tab_id":47}"#).unwrap();
     assert_eq!(
         by_id.move_destination().unwrap(),
-        MoveDestination::ExistingId(47)
+        MoveDestination::ExistingId(TabId::new(47))
     );
 
     let id_and_new =
@@ -159,7 +160,7 @@ fn a_tab_target_is_a_tab_id() {
             .unwrap()
             .tab_target()
             .unwrap(),
-        47
+        TabId::new(47)
     );
     assert!(Args::parse("{}").unwrap().tab_target().is_err());
 }
@@ -187,7 +188,7 @@ fn naming_no_tab_leaves_focus_and_rename_on_the_pane_path() {
             .tab_or_pane_target()
             .unwrap()
             .unwrap(),
-        47
+        TabId::new(47)
     );
 }
 
@@ -214,7 +215,10 @@ fn swapping_requires_exactly_two_panes() {
     .unwrap();
     assert_eq!(
         two.swap_pane_ids().unwrap(),
-        [PaneId::Terminal(3), PaneId::Plugin(4)]
+        [
+            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(3)),
+            PaneId::Plugin(zellij_tile::prelude::PluginId::new(4))
+        ]
     );
 
     let three = Args::parse(

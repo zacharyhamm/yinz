@@ -3,8 +3,8 @@
 use std::time::{Duration, Instant};
 
 use crate::ClientId;
-use zellij_utils::animation::{Easing, Tween};
-use zellij_utils::data::PaletteColor;
+use zellij_types::animation::{Easing, Tween};
+use zellij_types::colors::PaletteColor;
 
 /// How long a bell flash stays at full strength before it starts easing away.
 ///
@@ -153,8 +153,8 @@ mod tests {
     #[test]
     fn a_bell_flash_is_shown_to_every_client() {
         let flash = FrameColorOverride::flashing(COLOR, Instant::now());
-        assert!(flash.applies_to(ClientId(1)));
-        assert!(flash.applies_to(ClientId(2)));
+        assert!(flash.applies_to(ClientId::new(1)));
+        assert!(flash.applies_to(ClientId::new(2)));
         assert!(
             flash.is_cleared_by(None),
             "the background job's unconditional clear takes it down"

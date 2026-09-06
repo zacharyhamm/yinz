@@ -135,7 +135,7 @@ mod tests {
     use super::*;
 
     fn limits() -> PluginResourceLimits {
-        PluginResourceLimits::new(PluginId(1))
+        PluginResourceLimits::new(PluginId::new(1))
     }
 
     /// `LimiterError` carries no `PartialEq`, and the distinction that matters

@@ -1,6 +1,6 @@
 ---
 source: zellij-server/src/plugins/./unit/plugin_tests/open_and_session_commands.rs
-assertion_line: 924
+assertion_line: 925
 expression: "format!(\"{:#?}\", new_tab_event)"
 ---
 Some(
@@ -18,8 +18,12 @@ Some(
                     hold_on_start: false,
                     originating_plugin: Some(
                         OriginatingPlugin {
-                            plugin_id: 0,
-                            client_id: 1,
+                            plugin_id: PluginId(
+                                0,
+                            ),
+                            client_id: ClientId(
+                                1,
+                            ),
                             context: {},
                         },
                     ),

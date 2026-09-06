@@ -9,26 +9,30 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::tempdir;
 use wasmi::Engine;
-use zellij_utils::data::{
-    BareKey, Event, InputMode, KeyWithModifier, ModeInfo, PermissionStatus, PermissionType,
+use zellij_storage::data_access::DataAccess;
+use zellij_types::keys::{BareKey, KeyWithModifier};
+use {
+    zellij_types::data::Event, zellij_types::data::InputMode, zellij_types::data::ModeInfo,
+    zellij_types::data::PermissionStatus, zellij_types::data::PermissionType,
 };
-use zellij_utils::data_access::DataAccess;
 
-use zellij_utils::errors::ErrorContext;
-use zellij_utils::input::actions::Action;
-use zellij_utils::input::keybinds::Keybinds;
-use zellij_utils::input::layout::{
-    PluginAlias, PluginUserConfiguration, RunPlugin, RunPluginLocation, RunPluginOrAlias,
+use zellij_types::diagnostics::ErrorContext;
+use zellij_types::input::actions::Action;
+use zellij_types::input::keybinds::Keybinds;
+use {
+    zellij_types::input::layout::PluginAlias, zellij_types::input::layout::PluginUserConfiguration,
+    zellij_types::input::layout::RunPlugin, zellij_types::input::layout::RunPluginLocation,
+    zellij_types::input::layout::RunPluginOrAlias,
 };
 
 use crate::background_jobs::BackgroundJob;
 use crate::pty_writer::PtyWriteInstruction;
 use crate::{plugins::PluginInstruction, pty::PtyInstruction};
 use std::env::set_var;
-use zellij_utils::channels::{self, ChannelWithContext, Receiver};
-use zellij_utils::input::permission::PermissionCache;
-use zellij_utils::input::plugins::PluginAliases;
-use zellij_utils::pane_size::Size;
+use zellij_config::permission::PermissionCache;
+use zellij_runtime::channels::{self, ChannelWithContext, Receiver};
+use zellij_types::input::plugins::PluginAliases;
+use zellij_types::pane_size::Size;
 
 use crate::ClientId;
 use zellij_test_support::{default_timeout, Watched};
@@ -142,7 +146,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread {
                             if plugin_permission.permissions.contains($permission_type) {
                                 let _ = plugin_thread_sender.send(
                                     PluginInstruction::PermissionRequestResult(
-                                        crate::PluginId(0),
+                                        crate::PluginId::new(0),
                                         Some($client_id),
                                         plugin_permission.permissions,
                                         PermissionStatus::Granted,
@@ -152,7 +156,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread {
                             } else {
                                 let _ = plugin_thread_sender.send(
                                     PluginInstruction::PermissionRequestResult(
-                                        crate::PluginId(0),
+                                        crate::PluginId::new(0),
                                         Some($client_id),
                                         plugin_permission.permissions,
                                         PermissionStatus::Denied,
@@ -373,7 +377,7 @@ fn wait_for_render_containing(log: &Watched<Vec<ScreenInstruction>>, needle: &st
 /// of rendering; the crash report is then the only sign the key was handled at all.
 fn wait_for_plugin_to_handle(
     log: &Watched<Vec<ScreenInstruction>>,
-    plugin_id: u32,
+    plugin_id: zellij_types::internal_ids::PluginId,
     outcomes: &[&str],
 ) {
     log.wait_until_described(
@@ -387,7 +391,7 @@ fn wait_for_plugin_to_handle(
                 matches!(
                     instruction,
                     ScreenInstruction::UpdatePluginLoadingStage(id, indication)
-                        if *id == crate::PluginId(plugin_id) && indication.is_error()
+                        if *id == plugin_id && indication.is_error()
                 )
             });
             (rendered || crashed).then_some(())
@@ -420,7 +424,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread_naked_variant {
                             if plugin_permission.permissions.contains($permission_type) {
                                 let _ = plugin_thread_sender.send(
                                     PluginInstruction::PermissionRequestResult(
-                                        crate::PluginId(0),
+                                        crate::PluginId::new(0),
                                         Some($client_id),
                                         plugin_permission.permissions,
                                         PermissionStatus::Granted,
@@ -430,7 +434,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread_naked_variant {
                             } else {
                                 let _ = plugin_thread_sender.send(
                                     PluginInstruction::PermissionRequestResult(
-                                        crate::PluginId(0),
+                                        crate::PluginId::new(0),
                                         Some($client_id),
                                         plugin_permission.permissions,
                                         PermissionStatus::Denied,
@@ -473,7 +477,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread_struct_variant {
                             if plugin_permission.permissions.contains($permission_type) {
                                 let _ = plugin_thread_sender.send(
                                     PluginInstruction::PermissionRequestResult(
-                                        crate::PluginId(0),
+                                        crate::PluginId::new(0),
                                         Some($client_id),
                                         plugin_permission.permissions,
                                         PermissionStatus::Granted,
@@ -483,7 +487,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread_struct_variant {
                             } else {
                                 let _ = plugin_thread_sender.send(
                                     PluginInstruction::PermissionRequestResult(
-                                        crate::PluginId(0),
+                                        crate::PluginId::new(0),
                                         Some($client_id),
                                         plugin_permission.permissions,
                                         PermissionStatus::Denied,
@@ -545,11 +549,11 @@ fn create_plugin_thread_with_hooks(
     zellij_cwd: Option<PathBuf>,
     session_env_vars: Option<std::collections::BTreeMap<String, String>>,
     user_plugin_dir: Option<PathBuf>,
-    hooks: zellij_utils::input::hooks::Hooks,
+    hooks: zellij_types::input::hooks::Hooks,
 ) -> PluginThreadHarness {
     let zellij_cwd = zellij_cwd.unwrap_or_else(|| PathBuf::from("."));
     let session_env_vars = session_env_vars.unwrap_or_else(|| std::env::vars().collect());
-    let initiating_client_id = ClientId(1);
+    let initiating_client_id = ClientId::new(1);
     let (to_server, _server_receiver): ChannelWithContext<ServerInstruction> =
         channels::bounded(50);
     let to_server = SenderWithContext::new(to_server);
@@ -595,9 +599,12 @@ fn create_plugin_thread_with_hooks(
     let mut plugin_aliases = PluginAliases::default();
     plugin_aliases.aliases.insert(
         "fixture_plugin_for_tests".to_owned(),
-        RunPlugin::from_url(&format!("file:{}", *PLUGIN_FIXTURE)).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_from_url(&format!("file:{}", *PLUGIN_FIXTURE))
+            .unwrap(),
     );
-    let mut modal_fixture = RunPlugin::from_url(&format!("file:{}", *PLUGIN_FIXTURE)).unwrap();
+    let mut modal_fixture =
+        zellij_runtime::plugin_location::run_plugin_from_url(&format!("file:{}", *PLUGIN_FIXTURE))
+            .unwrap();
     modal_fixture.configuration.insert("modal", "true");
     plugin_aliases
         .aliases
@@ -690,7 +697,7 @@ fn create_plugin_thread_with_server_receiver(
     let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let default_shell = PathBuf::from(".");
     let default_shell_action = None; // TODO: change me
-    let initiating_client_id = ClientId(1);
+    let initiating_client_id = ClientId::new(1);
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())
         .spawn(move || {
@@ -788,7 +795,7 @@ fn create_plugin_thread_with_pty_receiver(
     let user_plugin_dir = PathBuf::from(tempdir().unwrap().path());
     let default_shell = PathBuf::from(".");
     let default_shell_action = None; // TODO: change me
-    let initiating_client_id = ClientId(1);
+    let initiating_client_id = ClientId::new(1);
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())
         .spawn(move || {
@@ -878,7 +885,7 @@ fn create_plugin_thread_with_background_jobs_receiver(
     let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let default_shell = PathBuf::from(".");
     let default_shell_action = None; // TODO: change me
-    let initiating_client_id = ClientId(1);
+    let initiating_client_id = ClientId::new(1);
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())
         .spawn(move || {

@@ -7,8 +7,9 @@ use std::time::Instant;
 use zellij_server::panes::kitty_graphics::KittyImageStore;
 pub use zellij_server::panes::terminal_character::AnsiCode;
 use zellij_server::panes::{LinkHandler, TerminalPane};
-use zellij_utils::data::{Palette, Style};
-use zellij_utils::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
+
+use zellij_types::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
+use zellij_types::style::{Palette, Style};
 
 #[derive(Default)]
 struct ReceivedBytes {
@@ -400,7 +401,7 @@ fn build_terminal_pane(win_size: Size) -> TerminalPane {
     let explicitly_disable_keyboard_protocol = false;
     let notification_end = None;
     TerminalPane::new(
-        zellij_server::TerminalId(pid),
+        zellij_server::TerminalId::new(pid),
         position_and_size,
         Style::default(),
         pane_index,

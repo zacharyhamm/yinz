@@ -3,12 +3,10 @@ use crate::{
     ClientId,
 };
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
-use zellij_utils::internal_ids::{PluginId, TerminalId};
-use zellij_utils::{
-    data::{Palette, Style},
-    input::layout::Run,
-    pane_size::{PaneGeom, SizeInPixels},
-};
+use zellij_types::input::layout::Run;
+use zellij_types::internal_ids::{PluginId, TerminalId};
+use zellij_types::pane_size::{PaneGeom, SizeInPixels};
+use zellij_types::style::{Palette, Style};
 
 use super::{KittyImageStore, LinkHandler, PluginPane, SixelImageStore, TerminalPane};
 

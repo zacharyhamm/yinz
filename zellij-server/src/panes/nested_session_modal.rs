@@ -10,7 +10,7 @@
 
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
-use zellij_utils::data::Style;
+use zellij_types::style::Style;
 
 use crate::output::CharacterChunk;
 use crate::panes::terminal_character::{

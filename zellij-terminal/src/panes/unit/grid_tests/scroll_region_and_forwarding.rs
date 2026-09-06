@@ -702,14 +702,14 @@ fn decset_2031_enables_color_palette_notification() {
 fn push_color_palette_dsr_emits_when_enabled() {
     let mut grid = new_grid_for_forwarding_test();
     grid.color_palette_notification_enabled = true;
-    grid.push_color_palette_dsr(zellij_utils::data::HostTerminalThemeMode::Dark);
+    grid.push_color_palette_dsr(zellij_types::style::HostTerminalThemeMode::Dark);
     assert_eq!(grid.pending_messages_to_pty.len(), 1);
     assert_eq!(
         grid.pending_messages_to_pty[0],
         b"\x1b[?997;1n".to_vec(),
         "Dark mode emits ?997;1n"
     );
-    grid.push_color_palette_dsr(zellij_utils::data::HostTerminalThemeMode::Light);
+    grid.push_color_palette_dsr(zellij_types::style::HostTerminalThemeMode::Light);
     assert_eq!(grid.pending_messages_to_pty.len(), 2);
     assert_eq!(
         grid.pending_messages_to_pty[1],
@@ -722,7 +722,7 @@ fn push_color_palette_dsr_emits_when_enabled() {
 fn push_color_palette_dsr_noop_when_disabled() {
     let mut grid = new_grid_for_forwarding_test();
     assert!(!grid.color_palette_notification_enabled);
-    grid.push_color_palette_dsr(zellij_utils::data::HostTerminalThemeMode::Dark);
+    grid.push_color_palette_dsr(zellij_types::style::HostTerminalThemeMode::Dark);
     assert!(
         grid.pending_messages_to_pty.is_empty(),
         "no DSR is queued when the app has not opted in via CSI ?2031h"
@@ -771,7 +771,7 @@ fn nested_session_frame_is_staged_for_dispatch() {
     let message = nested_announce_message();
     vte_parser.advance(
         &mut grid,
-        &zellij_utils::nested_session::encode_frame(&message),
+        &zellij_ipc::nested_session::encode_frame(&message),
     );
     assert_eq!(grid.pending_nested_session_messages, vec![message]);
 }
@@ -781,7 +781,7 @@ fn nested_session_frame_split_across_feeds_is_staged() {
     let mut vte_parser = vte::Parser::new();
     let mut grid = new_grid_for_nested_frames();
     let message = nested_announce_message();
-    let frame = zellij_utils::nested_session::encode_frame(&message);
+    let frame = zellij_ipc::nested_session::encode_frame(&message);
     let (first_half, second_half) = frame.split_at(frame.len() / 2);
     vte_parser.advance(&mut grid, first_half);
     assert!(grid.pending_nested_session_messages.is_empty());

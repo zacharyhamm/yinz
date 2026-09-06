@@ -125,6 +125,7 @@
 
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
+use zellij_tile::prelude::TabPosition;
 
 use zellij_tile::prelude::*;
 
@@ -618,10 +619,7 @@ fn corner_order(
 
 /// The id a manifest entry names.
 pub(crate) fn pane_id_of(pane: &PaneInfo) -> PaneId {
-    match pane.is_plugin {
-        true => PaneId::Plugin(pane.id),
-        false => PaneId::Terminal(pane.id),
-    }
+    pane.id
 }
 
 /// Whether a manifest entry is one of the panes the layout is made of.
@@ -798,9 +796,9 @@ pub(crate) fn surface_of(tab: &TabInfo) -> (usize, usize) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Rejoin {
     /// The list is where the user asked for it. Carry the conversation over to join it.
-    Follow(usize),
+    Follow(TabPosition),
     /// The list was left behind. Bring it back beside the conversation.
-    Drag(usize),
+    Drag(TabPosition),
 }
 
 /// Which way a parted pair should be put back together.
@@ -825,8 +823,8 @@ pub(crate) enum Rejoin {
 /// Converges either way: both arms end with the pair on one tab, and the manifest that follows
 /// reads them as together and asks for nothing.
 pub(crate) fn rejoin(
-    own_tab: usize,
-    agents_tab: usize,
+    own_tab: TabPosition,
+    agents_tab: TabPosition,
     agents_is_focused: bool,
     agents_tab_is_someones: bool,
 ) -> Option<Rejoin> {
@@ -860,10 +858,10 @@ pub(crate) fn rejoin(
 ///   summoned pane on the summoning client's tab, at which point their entry matches and the
 ///   previous client's no longer does - no owner has to be recorded anywhere.
 pub(crate) fn tab_to_follow(
-    own_tab: Option<usize>,
-    client_was_on: Option<usize>,
-    client_is_on: usize,
-) -> Option<usize> {
+    own_tab: Option<TabPosition>,
+    client_was_on: Option<TabPosition>,
+    client_is_on: TabPosition,
+) -> Option<TabPosition> {
     let own = own_tab?;
     (client_was_on == Some(own) && client_is_on != own).then_some(client_is_on)
 }
@@ -1141,11 +1139,11 @@ impl State {
     /// `None` with neither on screen. Both halves together are the panel; one alone has the whole
     /// of it.
     fn reported_panel(&self) -> Option<Rect> {
-        let drawn = |plugin_id: Option<u32>| {
+        let drawn = |plugin_id: Option<zellij_tile::prelude::PluginId>| {
             let plugin_id = plugin_id?;
             self.tab_panes
                 .iter()
-                .find(|pane| pane.is_plugin && pane.id == plugin_id && !pane.is_suppressed)
+                .find(|pane| pane.id == PaneId::Plugin(plugin_id) && !pane.is_suppressed)
                 .map(Rect::of)
         };
         match (drawn(Some(self.own_plugin_id)), drawn(self.agents_plugin)) {
@@ -1174,10 +1172,10 @@ impl State {
         let Some(agents_id) = self.agents_plugin else {
             return;
         };
-        let drawn = |plugin_id: u32| {
+        let drawn = |plugin_id: zellij_tile::prelude::PluginId| {
             panes
                 .iter()
-                .find(|pane| pane.is_plugin && pane.id == plugin_id && !pane.is_suppressed)
+                .find(|pane| pane.id == PaneId::Plugin(plugin_id) && !pane.is_suppressed)
                 .map(Rect::of)
         };
         let (Some(chat), Some(agents)) = (drawn(self.own_plugin_id), drawn(agents_id)) else {
@@ -1571,7 +1569,7 @@ impl State {
     ///
     /// Called when *either* half is on screen, not only when this one is: a hidden conversation
     /// with a visible list still has to bring the list along, or a tab switch strands it.
-    pub(crate) fn follow_tab(&mut self, tab_index: usize) {
+    pub(crate) fn follow_tab(&mut self, tab_index: TabPosition) {
         // A pane in the layout belongs to its tab. Following the user around would take it off the
         // tab they built it into - the opposite of what an overlay following them achieves.
         if !self.is_panel() {

@@ -1,0 +1,342 @@
+//! The shared suite against Postgres: a throwaway schema per test in one shared database.
+//!
+//! Needs a server, so this module exists only with the `postgres-tests` feature, which
+//! `cargo x postgres-test` turns on after bringing one up in docker. The URL comes from
+//! `ZELLIJ_PLUGIN_DATA_TEST_URL`. Every test gets a schema of its own, created by the backend on
+//! first use and dropped by the guard afterwards, so nextest's one-process-per-test can run the
+//! suite as wide as the server's `max_connections` allows.
+
+use std::str::FromStr;
+use std::sync::Arc;
+use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
+
+// The crate, not the backend module a glob import of `super::*` would otherwise find.
+use ::postgres::{Config as PgConfig, NoTls};
+
+use super::*;
+use crate::data_access::DataAccess;
+use crate::plugin_data_store::PostgresPluginDataBackend;
+
+pub(crate) fn test_url() -> String {
+    std::env::var("ZELLIJ_PLUGIN_DATA_TEST_URL").expect(
+        "ZELLIJ_PLUGIN_DATA_TEST_URL is not set; run `cargo x postgres-test --build` and then \
+         `cargo x postgres-test --test`, which sets it",
+    )
+}
+
+/// Drops the test's schema when the test is done. Declared after the store in every fixture, so
+/// that the store's connection is closed before the schema goes.
+pub(crate) struct Guard {
+    url: String,
+    pub(crate) schema: String,
+}
+
+impl Guard {
+    /// A schema nobody else is using, not yet created: the backend creates it on first use.
+    pub(crate) fn fresh() -> Self {
+        Self {
+            url: test_url(),
+            schema: format!("zellij_test_{}", uuid::Uuid::new_v4().simple()),
+        }
+    }
+
+    /// The URL the backend under test connects with. It names the test's schema as the
+    /// session's `application_name`, so that a test which needs to find its own connection in
+    /// `pg_stat_activity` can, without touching the sessions of the tests running beside it.
+    pub(crate) fn backend_url(&self) -> String {
+        let separator = if self.url.contains('?') { '&' } else { '?' };
+        format!("{}{}application_name={}", self.url, separator, self.schema)
+    }
+
+    pub(crate) fn backend(&self) -> PostgresPluginDataBackend {
+        PostgresPluginDataBackend::new(&self.backend_url(), &self.schema)
+    }
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        let dropped = PgConfig::from_str(&self.url)
+            .and_then(|config| config.connect(NoTls))
+            .and_then(|mut client| {
+                client.batch_execute(&format!(
+                    "DROP SCHEMA IF EXISTS \"{}\" CASCADE",
+                    self.schema
+                ))
+            });
+        if let Err(e) = dropped {
+            eprintln!("failed to drop test schema {}: {}", self.schema, e);
+        }
+    }
+}
+
+fn store() -> (PluginDataStore, Guard) {
+    let guard = Guard::fresh();
+    let store = PluginDataStore::from_backend(Arc::new(guard.backend()));
+    (store, guard)
+}
+
+fn defined() -> (PluginDataStore, Guard) {
+    let (store, guard) = store();
+    store.define_entity(NS, OWNER, &agent_def(), false).unwrap();
+    (store, guard)
+}
+
+#[path = "concurrency.rs"]
+mod concurrency;
+#[path = "model.rs"]
+mod model;
+#[path = "oracle.rs"]
+mod oracle;
+#[path = "pagination.rs"]
+mod pagination;
+#[path = "properties.rs"]
+mod properties;
+#[path = "queries.rs"]
+mod queries;
+#[path = "schema.rs"]
+mod schema;
+#[path = "search.rs"]
+mod search;
+#[path = "watches.rs"]
+mod watches;
+#[path = "writes.rs"]
+mod writes;
+
+/// A connection the server drops is reopened on the next call, and the call after the drop
+/// reports the drop rather than hanging or panicking.
+#[test]
+fn a_lost_connection_is_reconnected_on_the_next_call() {
+    let (store, guard) = defined();
+    put(&store, "zellij", "before", 1);
+
+    // Kill the store's session from another connection. Only this test's session: the
+    // application name is the schema, which nothing else on the server is using.
+    let mut killer = PgConfig::from_str(&guard.url)
+        .unwrap()
+        .connect(NoTls)
+        .unwrap();
+    let killed = killer
+        .execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+             WHERE pid <> pg_backend_pid() AND application_name = $1",
+            &[&guard.schema],
+        )
+        .unwrap();
+    assert_eq!(killed, 1, "expected exactly the store's own session");
+
+    // The first call after the kill may fail (the socket is dead) or succeed (the driver noticed
+    // first); either way the one after it works.
+    let _ = store.fetch(NS, &FetchRequest::entity("agent"));
+    let rows = store.fetch(NS, &FetchRequest::entity("agent")).unwrap();
+    assert_eq!(texts(&rows, "summary"), vec!["before"]);
+}
+
+/// The store's own schema is versioned: a second backend pointed at the same schema finds the
+/// tables in place and adopts them rather than recreating them.
+#[test]
+fn two_backends_share_one_schema() {
+    let (store, guard) = defined();
+    put(&store, "zellij", "shared", 1);
+    let other = PluginDataStore::from_backend(Arc::new(guard.backend()));
+    let rows = other.fetch(NS, &FetchRequest::entity("agent")).unwrap();
+    assert_eq!(texts(&rows, "summary"), vec!["shared"]);
+    // and redeclaring through the second one is idempotent
+    let info = other.define_entity(NS, OWNER, &agent_def(), false).unwrap();
+    assert!(!info.created);
+}
+
+/// The reason this backend exists: `DataAccess::from_backends` with two real, different engines.
+/// Plugin data goes to Postgres, the recording to the SQLite file in the data dir, and neither
+/// store touches the other's home.
+#[test]
+fn from_backends_pairs_postgres_plugin_data_with_sqlite_recordings() {
+    let guard = Guard::fresh();
+    let dir = tempfile::tempdir().unwrap();
+    let access = DataAccess::postgres(&guard.backend_url(), &guard.schema, dir.path());
+
+    access
+        .plugin_data()
+        .define_entity(NS, OWNER, &agent_def(), false)
+        .unwrap();
+    access
+        .plugin_data()
+        .apply(
+            NS,
+            &[Mutation::put("agent")
+                .set("project", "zellij")
+                .set("summary", "in postgres")
+                .build()],
+        )
+        .unwrap();
+    let rows = access
+        .plugin_data()
+        .fetch(NS, &FetchRequest::entity("agent"))
+        .unwrap();
+    assert_eq!(texts(&rows, "summary"), vec!["in postgres"]);
+
+    use zellij_types::{
+        internal_ids::TerminalId,
+        units::{ElapsedMicros, UnixMicros},
+    };
+    let mut session = access
+        .recordings()
+        .start_recording("proof", false, UnixMicros::new(1))
+        .unwrap();
+    // A recording is listed by its panes, so give it one and a byte of output.
+    session
+        .update_panes(
+            &[crate::session_recording::PaneMetadata {
+                terminal_id: TerminalId::new(1),
+                tab_id: TabId::new(0),
+                tab_position: TabPosition::new(0),
+                tab_name: "tab".to_owned(),
+                title: "pane".to_owned(),
+                cols: 80,
+                rows: 24,
+            }],
+            ElapsedMicros::new(1),
+        )
+        .unwrap();
+    session
+        .record_events(&[crate::session_recording::RecordedEvent::output(
+            TerminalId::new(1),
+            ElapsedMicros::new(2),
+            b"x".to_vec(),
+        )])
+        .unwrap();
+    session
+        .finish_pane(TerminalId::new(1), ElapsedMicros::new(3))
+        .unwrap();
+    session
+        .finish_session(UnixMicros::new(4), ElapsedMicros::new(3))
+        .unwrap();
+    drop(session);
+    let recordings = access.recordings().list().unwrap();
+    assert_eq!(recordings.len(), 1, "{:?}", recordings);
+
+    assert!(dir.path().join("session-recordings.db").exists());
+    assert!(
+        !dir.path().join("plugin-data.db").exists(),
+        "plugin data must not have touched the SQLite file"
+    );
+    drop(access);
+}
+
+#[test]
+fn a_constraint_violation_includes_the_operation_and_server_explanation() {
+    let (store, _guard) = store();
+    let def = EntityDef::new("agent", 1).attr(AttrDef::text("project").unique());
+    store.define_entity(NS, OWNER, &def, false).unwrap();
+    let mutation = Mutation::put("agent").set("project", "duplicate").build();
+    store.apply(NS, std::slice::from_ref(&mutation)).unwrap();
+    let err = store.apply(NS, &[mutation]).unwrap_err();
+    assert_err!(&err, DataError::Storage(_));
+    let message = err.to_string();
+    assert!(
+        message.contains("failed to write a row of `agent`"),
+        "{message}"
+    );
+    assert!(
+        message.contains("duplicate key value violates unique constraint"),
+        "{message}"
+    );
+    assert_eq!(store.count(NS, &FetchRequest::entity("agent")).unwrap(), 1);
+}
+
+/// A schema created by a zellij from before `rev` existed: at store version 1, with entity tables
+/// that have the four original store columns and no fifth.
+///
+/// The Postgres half of the migration story; the SQLite half is
+/// `sqlite::a_database_from_before_rev_is_migrated_in_place`. Both are engine-specific because
+/// the fixture has to build the old shape in that engine's own DDL.
+#[test]
+fn a_database_from_before_rev_is_migrated_in_place() {
+    let guard = Guard::fresh();
+    let schema = &guard.schema;
+    {
+        let mut client = PgConfig::from_str(&guard.url)
+            .unwrap()
+            .connect(NoTls)
+            .unwrap();
+        client
+            .batch_execute(&format!(
+                r#"CREATE SCHEMA "{schema}";
+                   SET search_path TO "{schema}";
+                   CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                   INSERT INTO store_meta (key, value) VALUES ('schema_version', '1');
+                   CREATE TABLE store_entities (
+                       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                       namespace TEXT COLLATE "C" NOT NULL,
+                       entity TEXT COLLATE "C" NOT NULL,
+                       version BIGINT NOT NULL,
+                       definition TEXT NOT NULL,
+                       owner_plugin TEXT NOT NULL,
+                       UNIQUE (namespace, entity)
+                   );
+                   INSERT INTO store_entities (namespace, entity, version, definition, owner_plugin)
+                   VALUES ('plugin:test', 'agent', 1,
+                           '{{"name":"agent","version":1,"attrs":[{{"name":"project","kind":"Text","indexed":true,"full_text":false,"unique":false,"required":false,"default":null}}]}}',
+                           'zellij:test');
+                   CREATE TABLE "e_1" (
+                       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                       uid TEXT COLLATE "C" UNIQUE,
+                       created_at BIGINT NOT NULL,
+                       updated_at BIGINT NOT NULL,
+                       project TEXT COLLATE "C"
+                   );
+                   INSERT INTO "e_1" (uid, created_at, updated_at, project)
+                   VALUES ('old', 1, 1, 'written-before-rev');"#
+            ))
+            .unwrap();
+    }
+
+    let store = PluginDataStore::from_backend(Arc::new(guard.backend()));
+    let rows = store.fetch(NS, &FetchRequest::entity("agent")).unwrap();
+    assert_eq!(texts(&rows, "project"), vec!["written-before-rev"]);
+    assert_eq!(column(&rows, "rev"), vec![DataValue::Int(1)]);
+
+    store
+        .apply(
+            NS,
+            &[Mutation::update("agent", Pred::eq("uid", "old"))
+                .set("project", "written-after")
+                .build()],
+        )
+        .unwrap();
+    let rows = store.fetch(NS, &FetchRequest::entity("agent")).unwrap();
+    assert_eq!(column(&rows, "rev"), vec![DataValue::Int(2)]);
+}
+
+/// The case a shared database makes real: one machine upgrades zellij first, and the machine
+/// still on the old binary must refuse the database rather than write to a shape it does not
+/// understand.
+#[test]
+fn a_schema_from_a_newer_zellij_is_refused() {
+    let guard = Guard::fresh();
+    let schema = &guard.schema;
+    {
+        let mut client = PgConfig::from_str(&guard.url)
+            .unwrap()
+            .connect(NoTls)
+            .unwrap();
+        client
+            .batch_execute(&format!(
+                r#"CREATE SCHEMA "{schema}";
+                   SET search_path TO "{schema}";
+                   CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                   INSERT INTO store_meta (key, value) VALUES ('schema_version', '9999');"#
+            ))
+            .unwrap();
+    }
+    let store = PluginDataStore::from_backend(Arc::new(guard.backend()));
+    let err = store
+        .define_entity(NS, OWNER, &agent_def(), false)
+        .unwrap_err();
+    assert_err!(err, DataError::Storage(_));
+    assert!(
+        err.to_string().contains("newer than this zellij"),
+        "the error should say what is wrong, got {:?}",
+        err
+    );
+}

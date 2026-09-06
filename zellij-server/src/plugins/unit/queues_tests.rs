@@ -1,8 +1,10 @@
 use super::*;
 use std::collections::BTreeMap;
+use zellij_types::internal_ids::QueueJobId;
 
 fn run_plugin(url: &str) -> RunPluginOrAlias {
-    RunPluginOrAlias::from_url(url, &None, None, None).expect("a valid plugin url")
+    zellij_runtime::plugin_location::run_plugin_or_alias_from_url(url, &None, None, None)
+        .expect("a valid plugin url")
 }
 
 fn enqueue(queues: &mut Queues, queue: &str, job: &str) -> JobId {
@@ -10,7 +12,7 @@ fn enqueue(queues: &mut Queues, queue: &str, job: &str) -> JobId {
     context.insert("job".to_owned(), job.to_owned());
     queues.enqueue(
         queue,
-        (crate::PluginId(1), crate::ClientId(1)),
+        (crate::PluginId::new(1), crate::ClientId::new(1)),
         run_plugin(&format!("file:/plugins/{job}.lua")),
         context,
         None,
@@ -22,7 +24,7 @@ fn launch_all(queues: &mut Queues, queue: &str, next_pid: &mut u32) -> Vec<JobId
     let mut launched = vec![];
     while let Some(job) = queues.pop_launchable(queue) {
         launched.push(job.job_id);
-        queues.on_job_launched(job, crate::PluginId(*next_pid));
+        queues.on_job_launched(job, crate::PluginId::new(*next_pid));
         *next_pid += 1;
     }
     launched
@@ -34,12 +36,18 @@ fn an_unconfigured_queue_runs_one_job_at_a_time() {
     enqueue(&mut queues, "merge", "a");
     enqueue(&mut queues, "merge", "b");
     let mut pid = 10;
-    assert_eq!(launch_all(&mut queues, "merge", &mut pid), vec![1]);
+    assert_eq!(
+        launch_all(&mut queues, "merge", &mut pid),
+        vec![JobId::new(1)]
+    );
     let snapshot = queues.queue_snapshot("merge").unwrap();
     assert_eq!(snapshot.concurrency, DEFAULT_CONCURRENCY);
     assert_eq!(snapshot.running.len(), 1);
     assert_eq!(snapshot.pending.len(), 1);
-    assert_eq!(snapshot.running[0].plugin_id, Some(10));
+    assert_eq!(
+        snapshot.running[0].plugin_id,
+        Some(zellij_types::internal_ids::PluginId::new(10))
+    );
     assert_eq!(snapshot.running[0].state, QueueJobState::Running);
     assert_eq!(snapshot.pending[0].state, QueueJobState::Pending);
     assert_eq!(snapshot.pending[0].plugin_id, None);
@@ -51,9 +59,9 @@ fn job_ids_are_monotonic_and_never_reused() {
     let first = enqueue(&mut queues, "merge", "a");
     let mut pid = 10;
     launch_all(&mut queues, "merge", &mut pid);
-    queues.on_plugin_unloaded(crate::PluginId(10));
+    queues.on_plugin_unloaded(crate::PluginId::new(10));
     let second = enqueue(&mut queues, "other", "b");
-    assert_eq!((first, second), (1, 2));
+    assert_eq!((first, second), (JobId::new(1), JobId::new(2)));
 }
 
 #[test]
@@ -64,7 +72,10 @@ fn pop_launchable_honours_concurrency_and_fifo_order() {
         enqueue(&mut queues, "merge", job);
     }
     let mut pid = 10;
-    assert_eq!(launch_all(&mut queues, "merge", &mut pid), vec![1, 2]);
+    assert_eq!(
+        launch_all(&mut queues, "merge", &mut pid),
+        vec![JobId::new(1), JobId::new(2)]
+    );
     assert!(queues.pop_launchable("merge").is_none());
     let snapshot = queues.queue_snapshot("merge").unwrap();
     assert_eq!(snapshot.pending[0].context["job"], "c");
@@ -78,17 +89,20 @@ fn finishing_a_job_frees_its_slot() {
     let mut pid = 10;
     launch_all(&mut queues, "merge", &mut pid);
     assert!(queues.record_outcome(
-        crate::PluginId(10),
+        crate::PluginId::new(10),
         QueueJobOutcome::Succeeded,
         Some("done".to_owned())
     ));
-    let finished = queues.on_plugin_unloaded(crate::PluginId(10)).unwrap();
-    assert_eq!(finished.job_id, 1);
+    let finished = queues.on_plugin_unloaded(crate::PluginId::new(10)).unwrap();
+    assert_eq!(finished.job_id, QueueJobId::new(1));
     assert_eq!(finished.outcome, QueueJobOutcome::Succeeded);
     assert_eq!(finished.payload.as_deref(), Some("done"));
     assert_eq!(finished.context["job"], "a");
-    assert_eq!(finished.enqueuer, (PluginId(1), ClientId(1)));
-    assert_eq!(launch_all(&mut queues, "merge", &mut pid), vec![2]);
+    assert_eq!(finished.enqueuer, (PluginId::new(1), ClientId::new(1)));
+    assert_eq!(
+        launch_all(&mut queues, "merge", &mut pid),
+        vec![JobId::new(2)]
+    );
 }
 
 #[test]
@@ -97,9 +111,15 @@ fn raising_concurrency_releases_pending_jobs() {
     enqueue(&mut queues, "merge", "a");
     enqueue(&mut queues, "merge", "b");
     let mut pid = 10;
-    assert_eq!(launch_all(&mut queues, "merge", &mut pid), vec![1]);
+    assert_eq!(
+        launch_all(&mut queues, "merge", &mut pid),
+        vec![JobId::new(1)]
+    );
     queues.configure("merge", 2);
-    assert_eq!(launch_all(&mut queues, "merge", &mut pid), vec![2]);
+    assert_eq!(
+        launch_all(&mut queues, "merge", &mut pid),
+        vec![JobId::new(2)]
+    );
 }
 
 #[test]
@@ -110,20 +130,26 @@ fn lowering_concurrency_evicts_nothing_and_zero_means_one() {
         enqueue(&mut queues, "merge", job);
     }
     let mut pid = 10;
-    assert_eq!(launch_all(&mut queues, "merge", &mut pid), vec![1, 2, 3]);
+    assert_eq!(
+        launch_all(&mut queues, "merge", &mut pid),
+        vec![JobId::new(1), JobId::new(2), JobId::new(3)]
+    );
     queues.configure("merge", 0);
     let snapshot = queues.queue_snapshot("merge").unwrap();
     assert_eq!(snapshot.concurrency, 1);
     assert_eq!(snapshot.running.len(), 3);
     assert!(queues.pop_launchable("merge").is_none());
-    queues.on_plugin_unloaded(crate::PluginId(10));
-    queues.on_plugin_unloaded(crate::PluginId(11));
+    queues.on_plugin_unloaded(crate::PluginId::new(10));
+    queues.on_plugin_unloaded(crate::PluginId::new(11));
     assert!(
         queues.pop_launchable("merge").is_none(),
         "still at the limit"
     );
-    queues.on_plugin_unloaded(crate::PluginId(12));
-    assert_eq!(launch_all(&mut queues, "merge", &mut pid), vec![4]);
+    queues.on_plugin_unloaded(crate::PluginId::new(12));
+    assert_eq!(
+        launch_all(&mut queues, "merge", &mut pid),
+        vec![JobId::new(4)]
+    );
 }
 
 #[test]
@@ -152,16 +178,16 @@ fn cancelling_a_running_job_asks_for_an_unload_and_reports_cancelled() {
     launch_all(&mut queues, "merge", &mut pid);
     assert_eq!(
         queues.cancel(first),
-        CancelResult::UnloadRunning(crate::PluginId(10))
+        CancelResult::UnloadRunning(crate::PluginId::new(10))
     );
-    let finished = queues.on_plugin_unloaded(crate::PluginId(10)).unwrap();
+    let finished = queues.on_plugin_unloaded(crate::PluginId::new(10)).unwrap();
     assert_eq!(finished.outcome, QueueJobOutcome::Cancelled);
 }
 
 #[test]
 fn cancelling_an_unknown_job_is_not_found() {
     let mut queues = Queues::default();
-    assert_eq!(queues.cancel(42), CancelResult::NotFound);
+    assert_eq!(queues.cancel(QueueJobId::new(42)), CancelResult::NotFound);
 }
 
 #[test]
@@ -170,18 +196,18 @@ fn a_job_that_unloads_without_reporting_is_aborted() {
     enqueue(&mut queues, "merge", "a");
     let mut pid = 10;
     launch_all(&mut queues, "merge", &mut pid);
-    let finished = queues.on_plugin_unloaded(crate::PluginId(10)).unwrap();
+    let finished = queues.on_plugin_unloaded(crate::PluginId::new(10)).unwrap();
     assert_eq!(finished.outcome, QueueJobOutcome::Aborted);
     assert_eq!(finished.payload, None);
-    assert_eq!(queues.queue_of_plugin(crate::PluginId(10)), None);
+    assert_eq!(queues.queue_of_plugin(crate::PluginId::new(10)), None);
 }
 
 #[test]
 fn unloading_a_plugin_that_is_not_a_job_is_nothing() {
     let mut queues = Queues::default();
     enqueue(&mut queues, "merge", "a");
-    assert_eq!(queues.on_plugin_unloaded(crate::PluginId(99)), None);
-    assert!(!queues.record_outcome(crate::PluginId(99), QueueJobOutcome::Failed, None));
+    assert_eq!(queues.on_plugin_unloaded(crate::PluginId::new(99)), None);
+    assert!(!queues.record_outcome(crate::PluginId::new(99), QueueJobOutcome::Failed, None));
 }
 
 #[test]
@@ -191,11 +217,14 @@ fn a_failed_launch_never_takes_a_slot() {
     enqueue(&mut queues, "merge", "b");
     let job = queues.pop_launchable("merge").unwrap();
     let finished = queues.on_launch_failed(job, "no such file".to_owned());
-    assert_eq!(finished.job_id, 1);
+    assert_eq!(finished.job_id, QueueJobId::new(1));
     assert_eq!(finished.outcome, QueueJobOutcome::Failed);
     assert_eq!(finished.payload.as_deref(), Some("no such file"));
     let mut pid = 10;
-    assert_eq!(launch_all(&mut queues, "merge", &mut pid), vec![2]);
+    assert_eq!(
+        launch_all(&mut queues, "merge", &mut pid),
+        vec![JobId::new(2)]
+    );
 }
 
 #[test]
@@ -205,16 +234,19 @@ fn a_reused_plugin_id_belongs_to_the_new_job() {
     enqueue(&mut queues, "merge", "b");
     let mut pid = 10;
     launch_all(&mut queues, "merge", &mut pid);
-    queues.on_plugin_unloaded(crate::PluginId(10));
+    queues.on_plugin_unloaded(crate::PluginId::new(10));
     let job = queues.pop_launchable("merge").unwrap();
-    queues.on_job_launched(job, crate::PluginId(10));
-    assert_eq!(queues.queue_of_plugin(crate::PluginId(10)), Some("merge"));
+    queues.on_job_launched(job, crate::PluginId::new(10));
+    assert_eq!(
+        queues.queue_of_plugin(crate::PluginId::new(10)),
+        Some("merge")
+    );
     assert_eq!(
         queues
-            .on_plugin_unloaded(crate::PluginId(10))
+            .on_plugin_unloaded(crate::PluginId::new(10))
             .unwrap()
             .job_id,
-        2
+        QueueJobId::new(2)
     );
 }
 
@@ -244,7 +276,7 @@ mod properties {
         Configure(usize),
         LaunchAll,
         Finish(usize),
-        Cancel(u64),
+        Cancel(JobId),
     }
 
     fn any_op(tc: &hegel::TestCase) -> Op {
@@ -253,7 +285,9 @@ mod properties {
             1 => Op::Configure(tc.draw(generators::integers::<usize>().max_value(4))),
             2 => Op::LaunchAll,
             3 => Op::Finish(tc.draw(generators::integers::<usize>().max_value(3))),
-            _ => Op::Cancel(tc.draw(generators::integers::<u64>().max_value(8))),
+            _ => Op::Cancel(JobId::new(
+                tc.draw(generators::integers::<u64>().max_value(8)),
+            )),
         }
     }
 
@@ -294,13 +328,7 @@ mod properties {
                 Op::Finish(nth) => {
                     let running: Vec<PluginId> = queues
                         .queue_snapshot("q")
-                        .map(|s| {
-                            s.running
-                                .iter()
-                                .filter_map(|j| j.plugin_id)
-                                .map(PluginId)
-                                .collect()
-                        })
+                        .map(|s| s.running.iter().filter_map(|j| j.plugin_id).collect())
                         .unwrap_or_default();
                     if let Some(pid) = running.get(nth % running.len().max(1)) {
                         if let Some(finished) = queues.on_plugin_unloaded(*pid) {
@@ -323,7 +351,9 @@ mod properties {
         seen.sort_unstable();
         seen.dedup();
         assert_eq!(seen.len(), ended.len(), "a job ended twice: {ended:?}");
-        assert!(ended.iter().all(|id| *id >= 1 && *id <= enqueued));
+        assert!(ended
+            .iter()
+            .all(|id| *id >= QueueJobId::new(1) && *id <= QueueJobId::new(enqueued)));
     }
 }
 
@@ -333,15 +363,18 @@ fn shut_down_drops_pending_jobs_and_launches_nothing_more() {
     enqueue(&mut queues, "merge", "a");
     enqueue(&mut queues, "merge", "b");
     let mut pid = 10;
-    assert_eq!(launch_all(&mut queues, "merge", &mut pid), vec![1]);
+    assert_eq!(
+        launch_all(&mut queues, "merge", &mut pid),
+        vec![JobId::new(1)]
+    );
 
     queues.shut_down();
     assert!(queues.is_shut_down());
     assert!(queues.queue_snapshot("merge").unwrap().pending.is_empty());
 
     // the running job still ends the normal way when the host unloads it...
-    let finished = queues.on_plugin_unloaded(crate::PluginId(10)).unwrap();
-    assert_eq!(finished.job_id, 1);
+    let finished = queues.on_plugin_unloaded(crate::PluginId::new(10)).unwrap();
+    assert_eq!(finished.job_id, QueueJobId::new(1));
     assert_eq!(finished.outcome, QueueJobOutcome::Aborted);
     // ...but nothing takes its slot, not even a job enqueued afterwards
     assert!(queues.pop_launchable("merge").is_none());

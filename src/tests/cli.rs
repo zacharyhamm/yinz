@@ -1,5 +1,9 @@
 use clap::{CommandFactory, Parser};
-use zellij_utils::cli::{CliArgs, Command};
+use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
+use zellij_types::internal_ids::{RecordingId, TerminalId};
+use zellij_types::units::{ElapsedMicros, UnixMicros};
+use {zellij_cli::args::CliArgs, zellij_cli::args::Command};
 
 const CLI_PARSE_STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -34,7 +38,7 @@ fn verify_cli() {
 fn cli_recordings_list_parses() {
     let args = try_parse_cli(["zellij", "recordings", "list"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_utils::cli::Recordings::List { json: false })) => {},
+        Some(Command::Recordings(zellij_cli::args::Recordings::List { json: false })) => {},
         _ => panic!("Expected Recordings::List"),
     }
 }
@@ -43,7 +47,7 @@ fn cli_recordings_list_parses() {
 fn cli_recordings_list_json_parses() {
     let args = try_parse_cli(["zellij", "recordings", "list", "--json"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_utils::cli::Recordings::List { json: true })) => {},
+        Some(Command::Recordings(zellij_cli::args::Recordings::List { json: true })) => {},
         _ => panic!("Expected Recordings::List with json"),
     }
 }
@@ -52,10 +56,10 @@ fn cli_recordings_list_json_parses() {
 fn cli_recordings_export_parses() {
     let args = try_parse_cli(["zellij", "recordings", "export", "42"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_utils::cli::Recordings::Export {
-            recording_id: 42,
+        Some(Command::Recordings(zellij_cli::args::Recordings::Export {
+            recording_id,
             output: None,
-        })) => {},
+        })) if recording_id == RecordingId::new(42) => {},
         _ => panic!("Expected Recordings::Export without output"),
     }
 }
@@ -90,10 +94,10 @@ fn cli_recordings_export_with_output_parses() {
     ])
     .unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_utils::cli::Recordings::Export {
-            recording_id: 42,
+        Some(Command::Recordings(zellij_cli::args::Recordings::Export {
+            recording_id,
             output: Some(path),
-        })) if path == *"pane.cast" => {},
+        })) if path == *"pane.cast" && recording_id == RecordingId::new(42) => {},
         _ => panic!("Expected Recordings::Export with output"),
     }
 }
@@ -102,7 +106,7 @@ fn cli_recordings_export_with_output_parses() {
 fn cli_recordings_search_parses() {
     let args = try_parse_cli(["zellij", "recordings", "search", "needle"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_utils::cli::Recordings::Search { query, limit, json })) => {
+        Some(Command::Recordings(zellij_cli::args::Recordings::Search { query, limit, json })) => {
             assert_eq!(query, "needle");
             assert_eq!(limit, 50, "default limit");
             assert!(!json, "default is the human-readable table");
@@ -115,7 +119,7 @@ fn cli_recordings_search_parses() {
 fn cli_recordings_search_limit_parses() {
     let args = try_parse_cli(["zellij", "recordings", "search", "needle", "--limit", "5"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_utils::cli::Recordings::Search { limit: 5, .. })) => {},
+        Some(Command::Recordings(zellij_cli::args::Recordings::Search { limit: 5, .. })) => {},
         _ => panic!("Expected Recordings::Search with limit 5"),
     }
 }
@@ -128,17 +132,17 @@ fn cli_recordings_search_missing_query_fails() {
 
 #[test]
 fn recordings_search_output_formats_header_and_rows() {
-    use zellij_utils::session_recording::SearchHit;
+    use zellij_storage::session_recording::SearchHit;
 
     assert_eq!(crate::commands::format_search_results(&[]), "No matches.\n");
 
     let hits = vec![SearchHit {
-        recording_id: 3,
+        recording_id: RecordingId::new(3),
         session_name: "my_session".to_string(),
         tab_name: "my_tab".to_string(),
         pane_title: String::new(),
-        elapsed_us: 2_500_000,
-        started_at_us: 1_000_000,
+        elapsed_us: ElapsedMicros::new(2_500_000),
+        started_at_us: UnixMicros::new(1_000_000),
         text: "hello needle world".to_string(),
     }];
     let output = crate::commands::format_search_results(&hits);
@@ -160,7 +164,7 @@ fn recordings_search_output_formats_header_and_rows() {
 #[test]
 fn recordings_list_output_formats_header_and_rows() {
     use std::fs;
-    use zellij_utils::session_recording::{PaneMetadata, RecordingStore};
+    use zellij_storage::session_recording::{PaneMetadata, RecordingStore};
 
     // create temp recording database with one pane (unique per test invocation to avoid pid collision)
     let dir_path = std::env::temp_dir().join(format!(
@@ -170,18 +174,19 @@ fn recordings_list_output_formats_header_and_rows() {
     ));
     let _ = fs::remove_dir_all(&dir_path);
     fs::create_dir_all(&dir_path).unwrap();
-    let mut store = RecordingStore::open(&dir_path, "my_session", true, 1_000_000).unwrap();
+    let mut store =
+        RecordingStore::open(&dir_path, "my_session", true, UnixMicros::new(1_000_000)).unwrap();
     let meta = PaneMetadata {
-        terminal_id: 7,
-        tab_id: 0,
-        tab_position: 0,
+        terminal_id: TerminalId::new(7),
+        tab_id: TabId::new(0),
+        tab_position: TabPosition::new(0),
         tab_name: "my_tab".to_string(),
         title: "my_pane".to_string(),
         cols: 80,
         rows: 24,
     };
-    store.update_panes(&[meta], 0).unwrap();
-    let summaries = zellij_utils::session_recording::list_recordings(&dir_path).unwrap();
+    store.update_panes(&[meta], ElapsedMicros::new(0)).unwrap();
+    let summaries = zellij_storage::session_recording::list_recordings(&dir_path).unwrap();
     assert_eq!(summaries.len(), 1);
     // call formatting helper (does not exist yet, should fail)
     let output = crate::commands::format_recordings_list(&summaries);
@@ -217,40 +222,40 @@ fn recordings_list_output_formats_header_and_rows() {
 
 #[test]
 fn recordings_state_strings() {
-    use zellij_utils::session_recording::RecordingSummary;
+    use zellij_storage::session_recording::RecordingSummary;
 
     let running = RecordingSummary {
-        id: 1,
+        id: RecordingId::new(1),
         session_name: "s".to_string(),
         tab_name: "t".to_string(),
-        terminal_id: 1,
+        terminal_id: TerminalId::new(1),
         pane_title: "p".to_string(),
-        started_at_us: 0,
-        duration_us: 0,
+        started_at_us: UnixMicros::new(0),
+        duration_us: ElapsedMicros::new(0),
         is_running: true,
         capture_input: true,
         error: None,
     };
     let complete = RecordingSummary {
-        id: 2,
+        id: RecordingId::new(2),
         session_name: "s".to_string(),
         tab_name: "t".to_string(),
-        terminal_id: 2,
+        terminal_id: TerminalId::new(2),
         pane_title: "p".to_string(),
-        started_at_us: 0,
-        duration_us: 5_000_000,
+        started_at_us: UnixMicros::new(0),
+        duration_us: ElapsedMicros::new(5_000_000),
         is_running: false,
         capture_input: false,
         error: None,
     };
     let incomplete = RecordingSummary {
-        id: 3,
+        id: RecordingId::new(3),
         session_name: "s".to_string(),
         tab_name: "t".to_string(),
-        terminal_id: 3,
+        terminal_id: TerminalId::new(3),
         pane_title: "p".to_string(),
-        started_at_us: 0,
-        duration_us: 0,
+        started_at_us: UnixMicros::new(0),
+        duration_us: ElapsedMicros::new(0),
         is_running: false,
         capture_input: false,
         error: Some("oops".to_string()),
@@ -278,7 +283,7 @@ fn recordings_state_strings() {
 
 #[test]
 fn cli_hocus_hooks_parses_its_three_subcommands() {
-    use zellij_utils::cli::{Hocus, HocusHooks};
+    use {zellij_cli::args::Hocus, zellij_cli::args::HocusHooks};
 
     let install = try_parse_cli(["zellij", "hocus", "hooks", "install"]).expect("parsed");
     assert!(matches!(
@@ -331,7 +336,7 @@ fn cli_hocus_hooks_parses_its_three_subcommands() {
     assert!(matches!(
         codex.command,
         Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
-            agent: Some(zellij_utils::cli::HocusHookAgent::Codex),
+            agent: Some(zellij_cli::args::HocusHookAgent::Codex),
             ..
         })))
     ));
@@ -509,4 +514,19 @@ fn server_termios_requires_server() {
         .unwrap()
         .server_termios
         .is_none());
+}
+
+#[test]
+fn explicit_theme_hue_keeps_cli_choices() {
+    use zellij_types::style::ThemeHue;
+    for (value, expected) in [("light", ThemeHue::Light), ("dark", ThemeHue::Dark)] {
+        let args = try_parse_cli(["zellij", "options", "--explicit-theme-hue", value]).unwrap();
+        let Some(Command::Options(options)) = args.command else {
+            panic!("expected options command");
+        };
+        assert_eq!(options.explicit_theme_hue, Some(expected));
+    }
+    for invalid in ["LIGHT", "Dark", "unknown"] {
+        assert!(try_parse_cli(["zellij", "options", "--explicit-theme-hue", invalid]).is_err());
+    }
 }

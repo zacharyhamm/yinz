@@ -5,7 +5,10 @@ use crate::plugins::CLI_EVENTS_ONLY_TARGET;
 use crate::ClientId;
 use std::path::PathBuf;
 use zellij_test_support::{default_timeout, Watched};
-use zellij_utils::data::{InputMode, ModeInfo, PaneId, PaneManifest};
+use {
+    zellij_types::data::InputMode, zellij_types::data::ModeInfo, zellij_types::data::PaneId,
+    zellij_types::data::PaneManifest,
+};
 
 fn forwarded(log: &[ServerInstruction]) -> Vec<(ClientId, String, String)> {
     log.iter()
@@ -19,7 +22,11 @@ fn forwarded(log: &[ServerInstruction]) -> Vec<(ClientId, String, String)> {
 }
 
 fn cwd_changed(pane: u32) -> Event {
-    Event::CwdChanged(PaneId::Terminal(pane), PathBuf::from("/tmp"), vec![1])
+    Event::CwdChanged(
+        PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(pane)),
+        PathBuf::from("/tmp"),
+        vec![ClientId::new(1)],
+    )
 }
 
 /// A subscriber gets what it asked for, once per batch for a state report however many plugins
@@ -37,20 +44,20 @@ pub fn a_cli_subscriber_gets_the_events_it_asked_for_once_each() {
         3
     );
 
-    let client_id: ClientId = ClientId(7);
+    let client_id: ClientId = ClientId::new(7);
     let _ = plugin_thread_sender.send(PluginInstruction::SubscribeCliClientToEvents {
         client_id,
         event_types: vec!["pane_update".to_owned(), "CwdChanged".to_owned()],
     });
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![
         (
-            Some(crate::PluginId(1)),
-            Some(crate::ClientId(1)),
+            Some(crate::PluginId::new(1)),
+            Some(crate::ClientId::new(1)),
             Event::PaneUpdate(PaneManifest::default()),
         ),
         (
-            Some(crate::PluginId(2)),
-            Some(crate::ClientId(1)),
+            Some(crate::PluginId::new(2)),
+            Some(crate::ClientId::new(1)),
             Event::PaneUpdate(PaneManifest::default()),
         ),
         (
@@ -62,9 +69,13 @@ pub fn a_cli_subscriber_gets_the_events_it_asked_for_once_each() {
         (
             None,
             None,
-            Event::CommandPaneExited(3, Some(0), Default::default()),
+            Event::CommandPaneExited(
+                zellij_types::internal_ids::TerminalId::new(3),
+                Some(0),
+                Default::default(),
+            ),
         ),
-        (None, Some(crate::ClientId(1)), Event::InputReceived),
+        (None, Some(crate::ClientId::new(1)), Event::InputReceived),
     ]));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
@@ -112,7 +123,7 @@ pub fn state_reports_collapse_per_run_without_reordering_other_events() {
         })
     };
 
-    let client_id: ClientId = ClientId(7);
+    let client_id: ClientId = ClientId::new(7);
     let _ = plugin_thread_sender.send(PluginInstruction::SubscribeCliClientToEvents {
         client_id,
         event_types: vec!["mode_update".to_owned(), "cwd_changed".to_owned()],
@@ -120,19 +131,19 @@ pub fn state_reports_collapse_per_run_without_reordering_other_events() {
     // one batch, as the plugin thread would merge two `Update`s waiting on its bus into anyway
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![
         (
-            Some(crate::PluginId(1)),
-            Some(crate::ClientId(1)),
+            Some(crate::PluginId::new(1)),
+            Some(crate::ClientId::new(1)),
             mode(InputMode::Locked),
         ),
         (None, None, cwd_changed(3)),
         (
-            Some(crate::PluginId(1)),
-            Some(crate::ClientId(1)),
+            Some(crate::PluginId::new(1)),
+            Some(crate::ClientId::new(1)),
             mode(InputMode::Locked),
         ),
         (
-            Some(crate::PluginId(2)),
-            Some(crate::ClientId(1)),
+            Some(crate::PluginId::new(2)),
+            Some(crate::ClientId::new(1)),
             mode(InputMode::Normal),
         ),
         (None, None, cwd_changed(4)),
@@ -185,11 +196,11 @@ pub fn a_departed_cli_subscriber_stops_receiving_events() {
 
     for client_id in [7, 8] {
         let _ = plugin_thread_sender.send(PluginInstruction::SubscribeCliClientToEvents {
-            client_id: crate::ClientId(client_id),
+            client_id: crate::ClientId::new(client_id),
             event_types: vec![],
         });
     }
-    let _ = plugin_thread_sender.send(PluginInstruction::RemoveClient(crate::ClientId(7)));
+    let _ = plugin_thread_sender.send(PluginInstruction::RemoveClient(crate::ClientId::new(7)));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         None,
@@ -206,7 +217,7 @@ pub fn a_departed_cli_subscriber_stops_receiving_events() {
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(
         events[0].0,
-        crate::ClientId(8),
+        crate::ClientId::new(8),
         "only the remaining subscriber hears it"
     );
 }
@@ -222,7 +233,7 @@ pub fn an_unknown_event_type_is_refused_with_the_streamable_ones() {
         log_actions_in_thread!(received, ServerInstruction::LogError, server_receiver, 1);
 
     let _ = plugin_thread_sender.send(PluginInstruction::SubscribeCliClientToEvents {
-        client_id: crate::ClientId(7),
+        client_id: crate::ClientId::new(7),
         event_types: vec!["Key".to_owned()],
     });
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
@@ -240,7 +251,7 @@ pub fn an_unknown_event_type_is_refused_with_the_streamable_ones() {
     teardown();
     server_thread.join().unwrap();
 
-    assert_eq!(refusal.1, crate::ClientId(7));
+    assert_eq!(refusal.1, crate::ClientId::new(7));
     assert!(refusal.0[0].contains("'Key'"), "{:?}", refusal.0);
     assert!(refusal.0[0].contains("PaneUpdate"), "{:?}", refusal.0);
     assert!(

@@ -9,8 +9,10 @@ use crate::screen::Notification;
 use crate::ui::loading_indication::DOT_PERIOD;
 use crate::ui::notification::EXIT_DURATION;
 use std::time::{Duration, Instant};
-use zellij_utils::animation::{Tween, FRAME_PERIOD};
-use zellij_utils::internal_ids::PluginId;
+use zellij_types::animation::{Tween, FRAME_PERIOD};
+use zellij_types::internal_ids::NotificationId;
+use zellij_types::internal_ids::PluginId;
+use zellij_types::internal_ids::TabId;
 
 const TEXT: &str = "build finished";
 
@@ -19,8 +21,8 @@ fn screen_with_a_settled_toast(
     now: Instant,
 ) -> (Screen, Receiver<(BackgroundJob, ErrorContext)>) {
     let (mut screen, background_jobs) = screen_with_background_jobs(size);
-    new_tab(&mut screen, 1, 0);
-    let mut notification = Notification::new(0, TEXT.to_owned(), None, now);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let mut notification = Notification::new(NotificationId::new(0), TEXT.to_owned(), None, now);
     notification.reveal = Tween::settled(1.0);
     notification.y_offset = Tween::settled(0.0);
     screen.notifications.push(notification);
@@ -48,7 +50,9 @@ fn the_tick_that_finds_everything_settled_still_asks_for_a_frame() {
     let start = Instant::now();
     let (mut screen, background_jobs) = screen_with_a_settled_toast(size, start);
 
-    screen.dismiss_notification(0, start).unwrap();
+    screen
+        .dismiss_notification(NotificationId::new(0), start)
+        .unwrap();
     assert_eq!(
         started_clock_periods(&drain_background_jobs(&background_jobs)),
         vec![FRAME_PERIOD],
@@ -87,7 +91,9 @@ fn a_tick_mid_animation_asks_for_a_frame_and_leaves_the_clock_alone() {
     let start = Instant::now();
     let (mut screen, background_jobs) = screen_with_a_settled_toast(size, start);
 
-    screen.dismiss_notification(0, start).unwrap();
+    screen
+        .dismiss_notification(NotificationId::new(0), start)
+        .unwrap();
     let _ = drain_background_jobs(&background_jobs);
 
     let mid_exit = start + EXIT_DURATION / 2;
@@ -117,7 +123,9 @@ fn a_loading_plugin_wakes_the_clock_at_the_dot_period() {
     let now = Instant::now();
     let (mut screen, background_jobs) = screen_with_background_jobs(size);
 
-    screen.animating_plugin_loads.insert(crate::PluginId(1));
+    screen
+        .animating_plugin_loads
+        .insert(crate::PluginId::new(1));
     screen.sync_animation_clock(now).unwrap();
 
     assert_eq!(screen.animation_clock_period(now), Some(DOT_PERIOD));
@@ -138,11 +146,16 @@ fn a_plugin_load_cannot_slow_the_clock_under_a_moving_toast() {
     let size = Size { cols: 80, rows: 20 };
     let start = Instant::now();
     let (mut screen, _background_jobs) = screen_with_background_jobs(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.notifications.push(Notification::new(
+        NotificationId::new(0),
+        TEXT.to_owned(),
+        None,
+        start,
+    ));
     screen
-        .notifications
-        .push(Notification::new(0, TEXT.to_owned(), None, start));
-    screen.animating_plugin_loads.insert(crate::PluginId(1));
+        .animating_plugin_loads
+        .insert(crate::PluginId::new(1));
 
     assert_eq!(
         screen.animation_clock_period(start),
@@ -157,7 +170,7 @@ fn a_plugin_load_cannot_slow_the_clock_under_a_moving_toast() {
         "once it stops moving, only the dots are left"
     );
 
-    screen.animating_plugin_loads.remove(&PluginId(1));
+    screen.animating_plugin_loads.remove(&PluginId::new(1));
     assert_eq!(
         screen.animation_clock_period(toast_settled),
         None,
@@ -172,9 +185,11 @@ fn quiet_ticks_put_nothing_but_the_frame_on_the_bus() {
     let size = Size { cols: 80, rows: 20 };
     let start = Instant::now();
     let (mut screen, background_jobs) = screen_with_background_jobs(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
-    screen.animating_plugin_loads.insert(crate::PluginId(1));
+    screen
+        .animating_plugin_loads
+        .insert(crate::PluginId::new(1));
     screen.sync_animation_clock(start).unwrap();
     let _ = drain_background_jobs(&background_jobs);
 

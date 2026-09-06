@@ -10,28 +10,47 @@ use crate::{
     ClientId, ServerInstruction, SessionMetaData, ThreadSenders,
 };
 use zellij_test_support::Watched;
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::NotificationId;
+use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
+use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
+use zellij_types::internal_ids::TerminalId;
 
 use insta::assert_snapshot;
 use std::path::PathBuf;
-use zellij_utils::cli::CliAction;
-use zellij_utils::data::WarpedPane;
-use zellij_utils::data::{Event, EventType, Mouse, OverlayPlacement, Resize, Style, Styling};
-use zellij_utils::errors::{prelude::*, ErrorContext};
-use zellij_utils::input::actions::Action;
-use zellij_utils::input::command::{RunCommand, TerminalAction};
-use zellij_utils::input::config::Config;
-use zellij_utils::input::context_menu::ContextMenu;
-use zellij_utils::input::keybinds::Keybinds;
-use zellij_utils::input::layout::{
-    FloatingPaneLayout, Layout, PercentOrFixed, PluginAlias, PluginUserConfiguration, Run,
-    RunPlugin, RunPluginLocation, RunPluginOrAlias, SplitDirection, TiledPaneLayout,
+use zellij_cli::args::CliAction;
+use zellij_config::config::Config;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::data::WarpedPane;
+use zellij_types::diagnostics::ErrorContext;
+use zellij_types::geometry::Resize;
+use zellij_types::geometry::{PercentOrFixed, SplitDirection};
+use zellij_types::input::actions::Action;
+use zellij_types::input::context_menu::ContextMenu;
+use zellij_types::input::keybinds::Keybinds;
+use zellij_types::style::{Style, Styling};
+use {
+    zellij_types::data::Event, zellij_types::data::EventType, zellij_types::data::Mouse,
+    zellij_types::data::OverlayPlacement,
+};
+use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
+use {
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Layout,
+    zellij_types::input::layout::PluginAlias, zellij_types::input::layout::PluginUserConfiguration,
+    zellij_types::input::layout::Run, zellij_types::input::layout::RunPlugin,
+    zellij_types::input::layout::RunPluginLocation, zellij_types::input::layout::RunPluginOrAlias,
+    zellij_types::input::layout::TiledPaneLayout,
 };
 
-use zellij_utils::input::mouse::MouseEvent;
-use zellij_utils::input::options::{
-    HostNotificationProtocol, NestedSessionHandling, NotificationPosition, Options, PaneFrameStyle,
-    DEFAULT_NOTIFICATION_TIMEOUT_SECS, DEFAULT_WORD_SEPARATORS,
+use zellij_types::mouse::MouseEvent;
+use {
+    zellij_types::input::options::HostNotificationProtocol,
+    zellij_types::input::options::NestedSessionHandling,
+    zellij_types::input::options::NotificationPosition, zellij_types::input::options::Options,
+    zellij_types::input::options::PaneFrameStyle,
+    zellij_types::input::options::DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+    zellij_types::input::options::DEFAULT_WORD_SEPARATORS,
 };
 
 use crate::background_jobs::BackgroundJob;
@@ -44,16 +63,19 @@ use crate::{
 use std::collections::{BTreeMap, HashSet};
 use std::env::set_var;
 use std::sync::{Arc, Mutex};
-use zellij_utils::ipc::IpcReceiverWithContext;
-use zellij_utils::pane_size::{Size, SizeInPixels};
-use zellij_utils::position::Position;
+use zellij_ipc::ipc::IpcReceiverWithContext;
+use zellij_types::pane_size::{Size, SizeInPixels};
+use zellij_types::position::Position;
 
 use interprocess::local_socket::Stream as LocalSocketStream;
-use zellij_utils::ipc::PixelDimensions;
-use zellij_utils::{
-    channels::{self, ChannelWithContext, Receiver},
-    data::{Direction, FloatingPaneCoordinates, InputMode, ModeInfo, NewPanePlacement, Palette},
-    ipc::{ClientAttributes, ClientToServerMsg, ServerToClientMsg},
+use zellij_ipc::ipc::PixelDimensions;
+use zellij_runtime::channels::{self, ChannelWithContext, Receiver};
+use zellij_types::geometry::{Direction, FloatingPaneCoordinates};
+use zellij_types::style::Palette;
+use {
+    zellij_ipc::ipc::ClientAttributes, zellij_ipc::ipc::ClientToServerMsg,
+    zellij_ipc::ipc::ServerToClientMsg, zellij_types::data::InputMode,
+    zellij_types::data::ModeInfo, zellij_types::data::NewPanePlacement,
 };
 
 use crate::panes::grid::Grid;
@@ -62,8 +84,8 @@ use crate::panes::sixel::SixelImageStore;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use zellij_utils::data::{PaneContents, PaneRenderReport};
-use zellij_utils::ipc::ExitReason;
+use zellij_ipc::ipc::ExitReason;
+use {zellij_types::data::PaneContents, zellij_types::data::PaneRenderReport};
 
 fn take_snapshot_and_cursor_coordinates(
     ansi_instructions: &str,
@@ -110,7 +132,7 @@ fn take_snapshots_and_cursor_coordinates_from_render_events<'a>(
                 ServerInstruction::Render(output) => {
                     if let Some(output) = output {
                         // note this only takes a snapshot of the first client!
-                        let raw_snapshot = output.get(&ClientId(1)).unwrap();
+                        let raw_snapshot = output.get(&ClientId::new(1)).unwrap();
                         let snapshot =
                             take_snapshot_and_cursor_coordinates(raw_snapshot, &mut grid);
                         Some(snapshot)
@@ -195,7 +217,8 @@ fn send_cli_action_to_server(
     client_id: ClientId,
 ) {
     let get_current_dir = || PathBuf::from(".");
-    let actions = Action::actions_from_cli(cli_action, Box::new(get_current_dir), None).unwrap();
+    let actions =
+        zellij_cli::actions::actions_from_cli(cli_action, Box::new(get_current_dir), None).unwrap();
     let senders = session_metadata.senders.clone();
     let default_shell = None;
     let default_mode = session_metadata
@@ -277,8 +300,8 @@ impl ServerOsApi for FakeInputOutput {
         _file_to_open: TerminalAction,
         _quit_db: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
-        Ok((crate::TerminalId(42), Box::new(NullAsyncReader), None))
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
+        Ok((crate::TerminalId::new(42), Box::new(NullAsyncReader), None))
     }
     fn write_to_tty_stdin(&self, id: TerminalId, buf: &[u8]) -> Result<usize> {
         self.tty_stdin_bytes
@@ -292,10 +315,10 @@ impl ServerOsApi for FakeInputOutput {
     fn tcdrain(&self, _id: TerminalId) -> Result<()> {
         unimplemented!()
     }
-    fn kill(&self, _pid: u32) -> Result<()> {
+    fn kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
-    fn force_kill(&self, _pid: u32) -> Result<()> {
+    fn force_kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
@@ -323,7 +346,7 @@ impl ServerOsApi for FakeInputOutput {
     fn load_palette(&self) -> Palette {
         unimplemented!()
     }
-    fn get_cwd(&self, _pid: u32) -> Option<PathBuf> {
+    fn get_cwd(&self, _pid: ProcessId) -> Option<PathBuf> {
         unimplemented!()
     }
     fn write_to_file(&mut self, contents: String, filename: Option<String>) -> Result<()> {
@@ -340,16 +363,16 @@ impl ServerOsApi for FakeInputOutput {
         _terminal_id: TerminalId,
         _run_command: RunCommand,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         unimplemented!()
     }
     fn clear_terminal_id(&self, _terminal_id: TerminalId) -> Result<()> {
         unimplemented!()
     }
-    fn send_sigint(&self, _pid: u32) -> Result<()> {
+    fn send_sigint(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
-    fn send_sigcont(&self, _pid: u32) -> Result<()> {
+    fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
 }
@@ -470,7 +493,7 @@ fn create_new_screen_with_capture(
 }
 
 fn seed_first_client_size(mut screen: Screen, size: Size) -> Screen {
-    screen.set_client_size(crate::ClientId(1), size);
+    screen.set_client_size(crate::ClientId::new(1), size);
     screen
 }
 
@@ -498,7 +521,7 @@ struct MockScreen {
     pub config: Config,
     default_layout: Box<Layout>,
     advanced_mouse_actions: bool,
-    last_opened_tab_index: Option<usize>,
+    last_opened_tab_index: Option<TabId>,
 }
 
 impl MockScreen {
@@ -555,18 +578,24 @@ impl MockScreen {
         let mut floating_pane_ids = vec![];
         let mut plugin_ids = HashMap::new();
         plugin_ids.insert(
-            RunPluginOrAlias::from_url("file:/path/to/fake/plugin", &None, None, None).unwrap(),
-            vec![zellij_utils::internal_ids::PluginId(1)],
+            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+                "file:/path/to/fake/plugin",
+                &None,
+                None,
+                None,
+            )
+            .unwrap(),
+            vec![zellij_types::internal_ids::PluginId::new(1)],
         );
         for i in 0..pane_count {
-            pane_ids.push((TerminalId(i as u32), None));
+            pane_ids.push((TerminalId::new(i as u32), None));
         }
         for i in 0..floating_pane_count {
-            floating_pane_ids.push((TerminalId(i as u32), None));
+            floating_pane_ids.push((TerminalId::new(i as u32), None));
         }
         let default_shell = None;
         let tab_name = None;
-        let tab_index = self.last_opened_tab_index.map(|l| l + 1).unwrap_or(0);
+        let tab_index = TabId::new(self.last_opened_tab_index.map(|l| l.get() + 1).unwrap_or(0));
         let should_change_focus_to_new_tab = true;
         std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async
                                                                    // render
@@ -650,23 +679,27 @@ impl MockScreen {
                 name: "fixture_plugin_for_tests".to_owned(),
                 configuration: Some(Default::default()),
                 run_plugin: Some(RunPlugin {
-                    location: RunPluginLocation::parse("file:/path/to/fake/plugin", None).unwrap(),
+                    location: zellij_runtime::plugin_location::parse_plugin_location(
+                        "file:/path/to/fake/plugin",
+                        None,
+                    )
+                    .unwrap(),
                     configuration: PluginUserConfiguration::default(),
                     ..Default::default()
                 }),
                 ..Default::default()
             }),
-            vec![zellij_utils::internal_ids::PluginId(1)],
+            vec![zellij_types::internal_ids::PluginId::new(1)],
         );
         for i in 0..pane_count {
-            pane_ids.push((TerminalId(i as u32), None));
+            pane_ids.push((TerminalId::new(i as u32), None));
         }
         for i in 0..floating_pane_count {
-            floating_pane_ids.push((TerminalId(i as u32), None));
+            floating_pane_ids.push((TerminalId::new(i as u32), None));
         }
         let default_shell = None;
         let tab_name = None;
-        let tab_index = self.last_opened_tab_index.map(|l| l + 1).unwrap_or(0);
+        let tab_index = TabId::new(self.last_opened_tab_index.map(|l| l.get() + 1).unwrap_or(0));
         let should_change_focus_to_new_tab = true;
         let _ = self.to_screen.send(ScreenInstruction::NewTab(
             None,
@@ -703,9 +736,9 @@ impl MockScreen {
         let plugin_ids = HashMap::new();
         let default_shell = None;
         let tab_name = None;
-        let tab_index = self.last_opened_tab_index.map(|l| l + 1).unwrap_or(0);
+        let tab_index = TabId::new(self.last_opened_tab_index.map(|l| l.get() + 1).unwrap_or(0));
         for i in 0..pane_count {
-            pane_ids.push((TerminalId(i as u32), None));
+            pane_ids.push((TerminalId::new(i as u32), None));
         }
         let should_change_focus_to_new_tab = true;
         let _ = self.to_screen.send(ScreenInstruction::NewTab(
@@ -728,7 +761,7 @@ impl MockScreen {
             vec![], // floating panes ids
             vec![], // adopted agents
             plugin_ids,
-            0,
+            TabId::new(0),
             true,
             self.main_client_id,
             None,
@@ -738,11 +771,17 @@ impl MockScreen {
     }
     pub fn new_tab_with_plugins(
         &mut self,
-        plugin_pane_ids: Vec<zellij_utils::internal_ids::PluginId>,
+        plugin_pane_ids: Vec<zellij_types::internal_ids::PluginId>,
     ) {
         // Build a layout where each child is a plugin pane
         let fake_plugin_url = "file:/path/to/fake/plugin";
-        let run_plugin = RunPluginOrAlias::from_url(fake_plugin_url, &None, None, None).unwrap();
+        let run_plugin = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            fake_plugin_url,
+            &None,
+            None,
+            None,
+        )
+        .unwrap();
         let tab_layout = TiledPaneLayout {
             children_split_direction: SplitDirection::Vertical,
             children: plugin_pane_ids
@@ -759,7 +798,7 @@ impl MockScreen {
         plugin_ids.insert(run_plugin, plugin_pane_ids);
         let default_shell = None;
         let tab_name = None;
-        let tab_index = self.last_opened_tab_index.map(|l| l + 1).unwrap_or(0);
+        let tab_index = TabId::new(self.last_opened_tab_index.map(|l| l.get() + 1).unwrap_or(0));
         let should_change_focus_to_new_tab = true;
         let _ = self.to_screen.send(ScreenInstruction::NewTab(
             None,
@@ -892,7 +931,7 @@ impl MockScreen {
         let mut config = Config::default();
         config.options.pane_frame_style = Some(PaneFrameStyle::Full);
         config.options.stacked_pane_list = Some(false);
-        let main_client_id = ClientId(1);
+        let main_client_id = ClientId::new(1);
 
         let _ = to_screen.send(ScreenInstruction::RecomputeTabSize(main_client_id, size));
 
@@ -1000,9 +1039,9 @@ macro_rules! log_actions_in_thread {
     };
 }
 
-fn new_tab(screen: &mut Screen, pid: u32, tab_index: usize) {
-    let client_id = ClientId(1);
-    let new_terminal_ids = vec![(TerminalId(pid), None)];
+fn new_tab(screen: &mut Screen, pid: u32, tab_index: TabId) {
+    let client_id = ClientId::new(1);
+    let new_terminal_ids = vec![(TerminalId::new(pid), None)];
     let new_plugin_ids = HashMap::new();
     screen
         .new_tab(tab_index, (vec![], vec![]), None, Some(client_id))
@@ -1316,7 +1355,7 @@ impl ThemeCapture {
     fn drain_plugin_updates(
         &self,
     ) -> Vec<(
-        Option<zellij_utils::internal_ids::PluginId>,
+        Option<zellij_types::internal_ids::PluginId>,
         Option<ClientId>,
         Event,
     )> {
@@ -1440,14 +1479,14 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
 
 use crate::panes::TerminalPane;
 use crate::tab::Pane;
-use zellij_utils::pane_size::PaneGeom;
+use zellij_types::pane_size::PaneGeom;
 
 fn new_terminal_pane_for_pause_test(pid: u32) -> TerminalPane {
     let mut geom = PaneGeom::default();
     geom.cols.set_inner(20);
     geom.rows.set_inner(10);
     TerminalPane::new(
-        crate::TerminalId(pid),
+        crate::TerminalId::new(pid),
         geom,
         Style::default(),
         0,
@@ -1543,9 +1582,11 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
     seed_first_client_size(screen, size)
 }
 
-fn decode_nested_frame(bytes: &[u8]) -> Option<zellij_utils::nested_session::NestedSessionMessage> {
-    use zellij_utils::nested_session::{
-        decode_base64, decode_payload, NESTED_FRAME_HEADER, NESTED_FRAME_TERMINATOR,
+fn decode_nested_frame(bytes: &[u8]) -> Option<zellij_ipc::nested_session::NestedSessionMessage> {
+    use {
+        zellij_ipc::nested_session::decode_base64, zellij_ipc::nested_session::decode_payload,
+        zellij_ipc::nested_session::NESTED_FRAME_HEADER,
+        zellij_ipc::nested_session::NESTED_FRAME_TERMINATOR,
     };
     let encoded_payload = bytes
         .strip_prefix(NESTED_FRAME_HEADER)?
@@ -1553,10 +1594,10 @@ fn decode_nested_frame(bytes: &[u8]) -> Option<zellij_utils::nested_session::Nes
     decode_payload(&decode_base64(encoded_payload)?)
 }
 
-fn guest_announce_message() -> zellij_utils::nested_session::NestedSessionMessage {
-    zellij_utils::nested_session::NestedSessionMessage::Announce {
+fn guest_announce_message() -> zellij_ipc::nested_session::NestedSessionMessage {
+    zellij_ipc::nested_session::NestedSessionMessage::Announce {
         session_name: "guest-session".to_owned(),
-        capabilities: vec![zellij_utils::nested_session::NestedSessionCapability::NestedControl],
+        capabilities: vec![zellij_ipc::nested_session::NestedSessionCapability::NestedControl],
     }
 }
 
@@ -1564,7 +1605,7 @@ fn guest_announce_message() -> zellij_utils::nested_session::NestedSessionMessag
 /// against the whole surface, as an overlay plugin places itself.
 fn open_floating_pane(
     screen: &mut Screen,
-    tab_index: usize,
+    tab_index: TabId,
     pane_id: u32,
     contents: &str,
     overlay: bool,
@@ -1584,18 +1625,21 @@ fn open_floating_pane(
     };
     let tab = screen.tabs.get_mut(&tab_index).expect("TEST");
     tab.new_pane(
-        PaneId::Terminal(crate::TerminalId(pane_id)),
+        PaneId::Terminal(crate::TerminalId::new(pane_id)),
         None,
         None,
         false,
         true,
         placement,
-        Some(crate::ClientId(1)),
+        Some(crate::ClientId::new(1)),
         None,
     )
     .expect("TEST");
-    tab.handle_pty_bytes(crate::TerminalId(pane_id), contents.as_bytes().to_vec())
-        .expect("TEST");
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(pane_id),
+        contents.as_bytes().to_vec(),
+    )
+    .expect("TEST");
 }
 
 /// Like `render_frame_into`, but also reports where the frame left the terminal's cursor.
@@ -1670,7 +1714,7 @@ fn fill_pane_zero(mock_screen: &MockScreen) {
         pane_contents.push_str(&format!("fill pane up with something {}\n\r", i));
     }
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
 }
@@ -1814,7 +1858,7 @@ fn assert_focus_change_syncs_scroll_mode(default_mode: InputMode) {
 /// Adopt a pane with the given placement and return the `NewPane` it asks for.
 fn adopted_pane_placement_target(
     screen: &mut Screen,
-    placement: zellij_utils::data::WarpPlacement,
+    placement: zellij_types::data::WarpPlacement,
     client_id: ClientId,
 ) -> ClientTabIndexOrPaneId {
     let (_, _, target) = adopted_pane_new_pane(screen, placement, client_id, RunCommand::default());
@@ -1825,17 +1869,17 @@ fn adopted_pane_placement_target(
 /// asks for says: the run it was invoked with, its placement, and its target.
 fn adopted_pane_new_pane(
     screen: &mut Screen,
-    placement: zellij_utils::data::WarpPlacement,
+    placement: zellij_types::data::WarpPlacement,
     client_id: ClientId,
     cmd: RunCommand,
 ) -> (Option<Run>, NewPanePlacement, ClientTabIndexOrPaneId) {
-    use zellij_utils::data::WarpedPane;
+    use zellij_types::data::WarpedPane;
 
     let (to_screen, screen_receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
     screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
     screen
         .place_adopted_pane(
-            crate::TerminalId(50),
+            crate::TerminalId::new(50),
             WarpedPane::default(),
             placement,
             client_id,
@@ -1860,15 +1904,15 @@ fn adopted_pane_new_pane(
 /// to its last pane.
 fn screen_with_a_scrollback_editor_open() -> Screen {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
     screen
         .tabs
-        .get_mut(&0)
+        .get_mut(&TabId::new(0))
         .expect("TEST")
         .replace_pane_with_editor_pane(
-            PaneId::Terminal(crate::TerminalId(9)),
-            PaneId::Terminal(crate::TerminalId(1)),
+            PaneId::Terminal(crate::TerminalId::new(9)),
+            PaneId::Terminal(crate::TerminalId::new(1)),
         )
         .expect("TEST");
     screen
@@ -1879,15 +1923,15 @@ fn screen_with_a_scrollback_editor_open() -> Screen {
 /// to exist.
 fn screen_with_a_pane_replaced_in_place() -> Screen {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
     screen
         .tabs
-        .get_mut(&0)
+        .get_mut(&TabId::new(0))
         .expect("TEST")
         .suppress_pane_and_replace_with_pid(
-            PaneId::Terminal(crate::TerminalId(1)),
-            PaneId::Terminal(crate::TerminalId(9)),
+            PaneId::Terminal(crate::TerminalId::new(1)),
+            PaneId::Terminal(crate::TerminalId::new(9)),
             false,
             None,
             None,
@@ -1899,13 +1943,16 @@ fn screen_with_a_pane_replaced_in_place() -> Screen {
 
 /// Drive the second half of a warp: the supervisor has been released, the pane
 /// has to be serialized and taken out of its tab.
-fn released_pane_for_warp(screen: &mut Screen, terminal_id: u32) -> Box<WarpedPane> {
+fn released_pane_for_warp(
+    screen: &mut Screen,
+    terminal_id: zellij_types::internal_ids::TerminalId,
+) -> Box<WarpedPane> {
     screen
         .take_released_pane_for_warp(
-            crate::TerminalId(terminal_id),
+            terminal_id,
             Ok(ReleasedPane::Local(ReleasedPtyHost {
-                host_id: format!("host-{terminal_id}"),
-                host_pid: 1,
+                host_id: SupervisorId::new(format!("host-{terminal_id}")),
+                host_pid: ProcessId::new(1),
                 control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
             })),
         )
@@ -1917,10 +1964,13 @@ fn released_pane_for_warp(screen: &mut Screen, terminal_id: u32) -> Box<WarpedPa
 /// What a remote release hands over is a broker and a token rather than a
 /// socket, and `received` is the byte count the replay has to resume from —
 /// nonzero here so a path that dropped it could not pass by accident.
-fn released_remote_pane_for_warp(screen: &mut Screen, terminal_id: u32) -> Box<WarpedPane> {
+fn released_remote_pane_for_warp(
+    screen: &mut Screen,
+    terminal_id: zellij_types::internal_ids::TerminalId,
+) -> Box<WarpedPane> {
     screen
         .take_released_pane_for_warp(
-            crate::TerminalId(terminal_id),
+            terminal_id,
             Ok(ReleasedPane::Remote(ReleasedRemotePane {
                 host: "build-box".to_owned(),
                 pane_token: format!("token-{terminal_id}"),
@@ -1928,7 +1978,7 @@ fn released_remote_pane_for_warp(screen: &mut Screen, terminal_id: u32) -> Box<W
                 cmd: RunCommand {
                     command: PathBuf::from("/usr/bin/tail"),
                     args: vec!["-f".to_owned(), "/var/log/build".to_owned()],
-                    target: zellij_utils::data::PaneTarget::Ssh {
+                    target: zellij_types::command::PaneTarget::Ssh {
                         host: "build-box".to_owned(),
                     },
                     ..Default::default()
@@ -1956,15 +2006,15 @@ fn released_remote_pane_for_warp(screen: &mut Screen, terminal_id: u32) -> Box<W
 /// visible and 1 and 2 parked in `suppressed_panes` under their own ids.
 fn screen_with_a_stack_list() -> Screen {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     // terminal 9, so that a member left behind in this tab cannot be mistaken
     // for a pane that was always here
-    new_tab(&mut screen, 9, 1);
+    new_tab(&mut screen, 9, TabId::new(1));
     *screen.stacked_pane_list.borrow_mut() = true;
-    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
     for pane_id in [
-        PaneId::Terminal(crate::TerminalId(2)),
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
     ] {
         tab.new_pane(
             pane_id,
@@ -1976,7 +2026,7 @@ fn screen_with_a_stack_list() -> Screen {
                 pane_id_to_stack_under: None,
                 borderless: None,
             },
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .expect("TEST");
@@ -1992,12 +2042,12 @@ fn screen_with_a_stack_list() -> Screen {
 /// running, so the members are the only panes there are.
 fn screen_with_only_a_stack_list() -> Screen {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     *screen.stacked_pane_list.borrow_mut() = true;
-    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
     for pane_id in [
-        PaneId::Terminal(crate::TerminalId(2)),
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
     ] {
         tab.new_pane(
             pane_id,
@@ -2009,7 +2059,7 @@ fn screen_with_only_a_stack_list() -> Screen {
                 pane_id_to_stack_under: None,
                 borderless: None,
             },
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .expect("TEST");
@@ -2022,13 +2072,16 @@ fn screen_with_only_a_stack_list() -> Screen {
 /// hidden, and it is standing in for pane 3 all at once.
 fn screen_with_an_editor_on_a_hidden_stack_list_member() -> Screen {
     let mut screen = screen_with_a_stack_list();
-    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
     tab.replace_pane_with_editor_pane(
-        PaneId::Terminal(crate::TerminalId(8)),
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(8)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
     )
     .expect("TEST");
-    tab.focus_hidden_stack_list_member(PaneId::Terminal(crate::TerminalId(1)), crate::ClientId(1));
+    tab.focus_hidden_stack_list_member(
+        PaneId::Terminal(crate::TerminalId::new(1)),
+        crate::ClientId::new(1),
+    );
     screen
 }
 
@@ -2055,26 +2108,26 @@ fn screen_with_diverged_tab_ids() -> Screen {
         true,
     );
     for tab_id in 0..4 {
-        new_tab(&mut screen, tab_id as u32 + 1, tab_id);
+        new_tab(&mut screen, tab_id as u32 + 1, TabId::new(tab_id));
     }
-    screen.close_tab_by_id(0).expect("TEST");
-    screen.close_tab_by_id(1).expect("TEST");
+    screen.close_tab_by_id(TabId::new(0)).expect("TEST");
+    screen.close_tab_by_id(TabId::new(1)).expect("TEST");
 
     assert_eq!(
-        screen.tabs.get(&2).map(|t| t.position),
-        Some(0),
+        screen.tabs.get(&TabId::new(2)).map(|t| t.position),
+        Some(TabPosition::new(0)),
         "Pre-condition: tab id 2 sits at position 0"
     );
     assert_eq!(
-        screen.tabs.get(&3).map(|t| t.position),
-        Some(1),
+        screen.tabs.get(&TabId::new(3)).map(|t| t.position),
+        Some(TabPosition::new(1)),
         "Pre-condition: tab id 3 sits at position 1"
     );
     screen
 }
 
 /// Adds a pane to a tab by id, so a test does not depend on which tab is focused.
-fn add_pane_to_tab(screen: &mut Screen, tab_id: usize, pane_id: PaneId, floating: bool) {
+fn add_pane_to_tab(screen: &mut Screen, tab_id: TabId, pane_id: PaneId, floating: bool) {
     let placement = if floating {
         NewPanePlacement::Floating(None)
     } else {
@@ -2091,7 +2144,7 @@ fn add_pane_to_tab(screen: &mut Screen, tab_id: usize, pane_id: PaneId, floating
             false,
             false,
             placement,
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .expect("TEST");
@@ -2111,7 +2164,9 @@ fn notification_history_keeps_dismissed_toasts() {
         .unwrap();
     mock_screen
         .to_screen
-        .send(ScreenInstruction::DismissNotification(0))
+        .send(ScreenInstruction::DismissNotification(NotificationId::new(
+            0,
+        )))
         .unwrap();
 
     let (response_tx, response_rx) = crossbeam::channel::bounded(1);
@@ -2129,7 +2184,10 @@ fn notification_history_keeps_dismissed_toasts() {
             .iter()
             .map(|notification| (notification.id, notification.message.as_str()))
             .collect::<Vec<_>>(),
-        vec![(0, "first"), (1, "second")]
+        vec![
+            (NotificationId::new(0), "first"),
+            (NotificationId::new(1), "second")
+        ]
     );
     assert!(history
         .iter()
@@ -2160,6 +2218,7 @@ mod nested_sessions;
 mod new_pane_placement;
 mod notification_animation;
 mod overlays;
+mod override_layout;
 mod pane_state;
 mod plugin_broadcasts;
 mod quit;

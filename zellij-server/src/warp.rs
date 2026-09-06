@@ -22,13 +22,14 @@
 //! worse.
 
 use std::time::{Duration, Instant};
+use zellij_types::internal_ids::TabId;
 
-use zellij_utils::{
-    data::{WarpPlacement, WarpedPane, WarpedTab},
-    envs,
-    errors::prelude::*,
-    input::actions::Action,
-    ipc::{ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg},
+use zellij_runtime::{envs, errors::prelude::*};
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcReceiverWithContext,
+    zellij_ipc::ipc::IpcSenderWithContext, zellij_ipc::ipc::ServerToClientMsg,
+    zellij_types::data::WarpPlacement, zellij_types::data::WarpedPane,
+    zellij_types::data::WarpedTab, zellij_types::input::actions::Action,
 };
 
 use crate::panes::PaneId;
@@ -95,7 +96,7 @@ fn connect_to_session(
     session_name: &str,
     reply_timeout: Duration,
 ) -> Result<IpcSenderWithContext<ClientToServerMsg>> {
-    use zellij_utils::consts::{ipc_connect, ZELLIJ_SOCK_DIR};
+    use {zellij_ipc::consts::ipc_connect, zellij_runtime::consts::ZELLIJ_SOCK_DIR};
 
     let path = ZELLIJ_SOCK_DIR.join(session_name);
     let stream =
@@ -343,7 +344,7 @@ pub fn warp_pane_from_session(
     sender
         .send_client_msg(ClientToServerMsg::Action {
             action: Action::WarpPane {
-                pane_id: Some(pane_id.into()),
+                pane_id: Some(pane_id),
                 to_session: current_session.to_owned(),
                 placement,
             },
@@ -367,7 +368,7 @@ pub fn warp_pane_from_session(
 pub fn warp_tab_to_session(
     senders: &ThreadSenders,
     client_id: ClientId,
-    tab_index: Option<usize>,
+    tab_index: Option<TabId>,
     current_session: &str,
     to_session: &str,
     timeout: Duration,
@@ -469,7 +470,7 @@ pub fn adopt_tab_here(
 pub fn warp_tab_from_session(
     current_session: &str,
     from_session: &str,
-    tab_index: usize,
+    tab_index: TabId,
     timeout: Duration,
 ) -> std::result::Result<String, String> {
     let started_at = std::time::Instant::now();

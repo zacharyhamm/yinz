@@ -1,10 +1,55 @@
 This document details the different components of the code base in plain English. The intention is to provide a high level description rather than a more detailed drill-down of each internal mechanism.
 
+## Shared libraries
+
+Consumers import shared code from its owning crate. The workspace has eight shared libraries:
+
+| Crate | Ownership | Allowed Zellij dependencies |
+|---|---|---|
+| `zellij-types` | Shared models, identities, units, geometry, actions, options, layouts, manifests, plugin commands and events | None |
+| `zellij-runtime` | Errors, channels, logging, paths, environment access, host identity, downloads, checkpoint locks, agent launch support | Types |
+| `zellij-storage` | Recording storage and plugin-data engines for SQLite and Postgres | Types, Runtime |
+| `zellij-config` | Config and layout loading, KDL/Lua parsing, precedence, overlays, themes, plugin resolution, permissions, embedded assets | Types, Runtime |
+| `zellij-plugin-api` | Plugin protobuf schemas, generated code, conversions, protocol validation, authoring helpers | Types, Runtime |
+| `zellij-ipc` | Client/server and nested-session protocols, framing, sockets, connection retries | Types, Runtime, Plugin API |
+| `zellij-session` | Discovery, lifecycle, resurrection, session metadata and layout serialization, warped tabs | Types, Runtime, Config, IPC |
+| `zellij-cli` | Clap arguments, completions, setup, CLI option merging, action conversion, session listings and diagnostics | All preceding libraries |
+
+These lists permit dependencies. They do not require every listed dependency.
+`cargo x ci check` enforces them for normal, optional, target-specific, build, and development dependencies.
+The root binary dispatches commands that start the client or server. The CLI library does not depend on these applications.
+
+Models keep pure operations. Parser-owned free functions read or serialize KDL and Lua.
+`CliAssets` contains serializable input fields. `zellij_config::cli_assets::load_config_and_layout` loads their configuration.
+Config loading receives explicit paths and options. Clap arguments and CLI-specific merging stay in CLI.
+
+`zellij-types::pane_size` owns pane dimensions, offsets, insets, and viewports.
+`zellij-types::geometry` owns directions, resizing, split sizes, percentages, and floating-pane coordinates.
+`zellij-types::agent` owns agent records, hook payloads, and pure hook interpretation.
+Runtime owns tracing, watchdogs, and launch support. Process execution stays in the host crates.
+
+`zellij-types::diagnostics::ErrorContext` holds the serializable six-entry instruction stack.
+Its `add_call` method changes only that value. Runtime's `errors::add_call` also publishes the result to the current task or thread.
+Use `errors::update_thread_ctx` to publish a received context. Use `errors::format_context` to format a diagnostic.
+Runtime key interpretation receives a binding predicate, so runtime does not depend on configuration parsing.
+
+The checkpoint reader retains its lock while configuration loading reads layout and pane-content files.
+Runtime tests cover publication and lock behavior. Parser and session tests cover content loading under that lock.
+
+Plugin protobuf sources and generated code live in `zellij-plugin-api/src` and `zellij-plugin-api/assets`.
+Client/server and nested-session protobufs live in `zellij-ipc/src` and `zellij-ipc/assets`.
+Use `cargo x proto` to regenerate all protocols. Generated fields retain their existing wire numbers.
+Builtin WASM plugins remain under the workspace's `target/wasm32-wasip1/{debug,release}` directories.
+
+Run focused tests with `cargo x test -p <owning-crate>`.
+Run `cargo x postgres-test --build` followed by `cargo x postgres-test --test` for storage against Postgres.
+Run `cargo x ci check` before a branch or PR handoff.
+
 ## Data access
 
 The server constructs one host-only `DataAccess` provider and shares it with the plugin runtime
 and session recorder. Plugin data and recordings use backend-neutral synchronous interfaces
-(`zellij-utils/src/data_access.rs`), and `DataAccess::from_backends` takes one backend for each.
+(`zellij-storage/src/data_access.rs`), and `DataAccess::from_backends` takes one backend for each.
 
 Plugin data has two real backends. SQLite is the default: one `plugin-data.db` in the data dir.
 Setting `plugin_data_url` to a `postgres://` URL (config file only, never the CLI or the client
@@ -12,7 +57,7 @@ socket — it may carry a password) points the store at that database instead, i
 named by `plugin_data_schema`, so every machine using it sees the same rows. Recordings stay in
 SQLite either way; `DataAccess::postgres` is the pairing.
 
-The two backends share one SQL engine (`zellij-utils/src/plugin_data_store/`): the predicate
+The two backends share one SQL engine (`zellij-storage/src/plugin_data_store/`): the predicate
 compiler, query builders, migrations and registry are written once against an `Executor`, and a
 `Dialect` names what the engines spell differently — placeholders, column types, `LIKE` versus
 `ILIKE`, and the full-text index (FTS5 with triggers on SQLite, a generated `tsvector` column
@@ -32,7 +77,7 @@ handed it out, and a session name is unique only within a machine — two machin
 session called `main`. So the entities that are about a live server (`agent_latch`,
 `agent_summary`, `agent_run`, `job`) carry a `host_id` beside `zellij_session_name`, and
 `hocus_proto::agents::rows::Owner` is the pair. The id is resolved once at server startup by
-`zellij_utils::host_identity`: `ZELLIJ_HOST_ID`, then the `host_id` config option, then
+`zellij_runtime::host_identity`: `ZELLIJ_HOST_ID`, then the `host_id` config option, then
 `<data dir>/host-id`, then a newly minted uuid written there. It identifies a *data dir on a
 machine*, which is the granularity that matters — two servers sharing a data dir share the pane
 ids and session names it qualifies. Plugins read it off `PluginIds` beside the hostname, which
@@ -108,10 +153,12 @@ It is in charge of actions such as:
 
 `zellij-terminal` owns the grid and rows, terminal characters, selection and search, hyperlinks, ANSI helpers, Sixel, and Kitty graphics.
 It also owns output serialization, host-query types, component parsing, and damage geometry.
-`PaneId` lives here, with `TerminalId` and `PluginId` payloads. The shared internal IDs
-(`TerminalId(u32)`, `PluginId(u32)`, and `ClientId(u16)`) live in `zellij-utils::internal_ids`
+`PaneId` lives in `zellij-types::pane_id`, with `TerminalId` and `PluginId` payloads,
+and is re-exported here. Host code and the plugin SDK use that same enum. The shared internal IDs
+(`TerminalId(u32)`, `PluginId(u32)`, and `ClientId(u16)`) live in `zellij-types::internal_ids`
 and are re-exported by the consuming crates. The server retains its existing re-export paths.
-Public plugin IDs, IPC, supervisor messages, and persistence records keep primitive numbers;
+The pane enum preserves its JSON variants and protobuf values. Other public plugin IDs,
+IPC, supervisor messages, and persistence records still keep primitive numbers;
 internal code wraps incoming IDs and unwraps them when constructing boundary payloads.
 Neither `zellij-terminal` nor `zellij-process` depends on the server or on the other extracted crate.
 
@@ -148,10 +195,10 @@ The Boundaries refer to those lines that are drawn between terminal panes. A few
   * The Rect trait is here so that different panes can implement it, giving boundaries a generic way to calculate the size of the pane and draw boundaries around it.
   * Here we use the [unicode box drawing characters](https://en.wikipedia.org/wiki/Box-drawing_character) in order to draw the borders. There's some logic here about combining them together for all possible combinations of pane locations.
 
-## Animation (zellij-utils/src/animation.rs, zellij-terminal/src/ui/damage.rs)
+## Animation (zellij-types/src/animation.rs, zellij-terminal/src/ui/damage.rs)
 Anything on screen that moves over time — toast notifications sliding in and out, the bell flash easing off a pane frame, the plugin loading dots — is built from the same two pieces.
 
-`zellij-utils/src/animation.rs` holds the pure part: an `Easing` curve, a `Tween` carrying one scalar from where it is to where it is going, and `blend` for interpolating a `PaletteColor`. The rule that makes it work is that **nothing in it reads the clock** — `now` is always a parameter. One frame therefore samples every live animation at a single instant, and a test drives an animation by handing in fabricated `Instant`s rather than by sleeping.
+`zellij-types/src/animation.rs` holds the pure part: an `Easing` curve, a `Tween` carrying one scalar from where it is to where it is going, and `blend` for interpolating a `PaletteColor`. The rule that makes it work is that **nothing in it reads the clock** — `now` is always a parameter. One frame therefore samples every live animation at a single instant, and a test drives an animation by handing in fabricated `Instant`s rather than by sleeping.
 
 The frames themselves come from one shared clock: `BackgroundJob::StartAnimationClock` runs a `tokio::time::interval` that sends `ScreenInstruction::AnimationTick`. That tick advances *nothing*. It only asks for a render, and `Screen::render_to_clients` samples everything at the instant it composites. This is what makes the result frame-rate independent: a tick that arrives late, twice, or not at all costs a frame and never a position, so an animation always takes the wall-clock time it promised even when the screen thread is busy or renders are being held back.
 

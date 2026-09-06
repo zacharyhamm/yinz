@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use unicode_width::UnicodeWidthStr;
-use zellij_utils::data::StyledText;
+use zellij_types::data::StyledText;
 
 pub enum HintLevel {
     Plain,

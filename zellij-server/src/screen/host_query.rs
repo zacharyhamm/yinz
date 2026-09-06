@@ -1,4 +1,4 @@
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 
 use super::{
     PendingForward, PendingForwardEntry, Screen, ScreenInstruction, ThemePolicy,
@@ -7,8 +7,9 @@ use super::{
 use crate::panes::PaneId;
 use crate::pty_writer::PtyWriteInstruction;
 use crate::ServerInstruction;
-use zellij_utils::data::{HostTerminalThemeMode, ThemeHue};
-use zellij_utils::shared::detect_theme_hue;
+
+use zellij_types::style::detect_theme_hue;
+use zellij_types::style::{HostTerminalThemeMode, ThemeHue};
 
 impl Screen {
     /// Enqueue a whitelisted host-terminal query from pane `pane_id`.

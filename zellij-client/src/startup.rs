@@ -11,17 +11,15 @@ use crate::os_input_output::ClientOsApi;
 use crate::terminal_escapes::ClientTeardown;
 use crate::{create_ipc_pipe, spawn_server_error_message, ClientInfo};
 use std::path::{Path, PathBuf};
-use zellij_utils::cli::CliArgs;
-use zellij_utils::{
-    data::{LayoutInfo, LayoutMetadata},
-    envs,
-    input::{
-        cli_assets::{host_terminal_env, CliAssets},
-        config::Config,
-        options::Options,
-    },
-    ipc::ClientToServerMsg,
-    pane_size::Size,
+use zellij_cli::args::CliArgs;
+use zellij_runtime::envs;
+use zellij_runtime::host_terminal_env::host_terminal_env;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::pane_size::Size;
+use {
+    zellij_config::config::Config, zellij_ipc::ipc::ClientToServerMsg,
+    zellij_types::data::LayoutInfo, zellij_types::data::LayoutMetadata,
+    zellij_types::input::cli_assets::CliAssets, zellij_types::input::options::Options,
 };
 
 /// The window size reported to a server that no client is attached to yet.
@@ -82,13 +80,18 @@ impl<'a> StartupContext<'a> {
                 .layout
                 .as_ref()
                 .and_then(|l| {
-                    LayoutInfo::from_cli(
+                    zellij_config::layout::layout_info_from_cli(
                         &options.layout_dir,
                         &Some(l.clone()),
                         std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                     )
                 })
-                .or_else(|| LayoutInfo::from_config(&options.layout_dir, &options.default_layout))
+                .or_else(|| {
+                    zellij_config::layout::layout_info_from_config(
+                        &options.layout_dir,
+                        &options.default_layout,
+                    )
+                })
         })
     }
 
@@ -100,7 +103,10 @@ impl<'a> StartupContext<'a> {
         cwd: Option<PathBuf>,
     ) -> CliAssets {
         CliAssets {
-            config_file_path: Config::config_file_path(self.cli_args),
+            config_file_path: Config::config_file_path(
+                self.cli_args.config.as_deref(),
+                self.cli_args.config_dir.as_deref(),
+            ),
             config_dir: self.cli_args.config_dir.clone(),
             should_ignore_config: self.cli_args.is_setup_clean(),
             configuration_options: Some(options.clone()),
@@ -155,9 +161,7 @@ impl<'a> StartupContext<'a> {
                     ClientToServerMsg::AttachClient {
                         cli_assets,
                         tab_position_to_focus: focus.tab_position,
-                        pane_to_focus: focus.pane.map(|(pane_id, is_plugin)| {
-                            zellij_utils::ipc::PaneReference { pane_id, is_plugin }
-                        }),
+                        pane_to_focus: focus.pane,
                     },
                     ipc_pipe,
                 )
@@ -221,6 +225,6 @@ impl<'a> StartupContext<'a> {
 /// creating a session, so it defaults to "whatever the layout says".
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct AttachFocus {
-    pub tab_position: Option<usize>,
-    pub pane: Option<(u32, bool)>,
+    pub tab_position: Option<TabNumber>,
+    pub pane: Option<zellij_types::pane_id::PaneId>,
 }

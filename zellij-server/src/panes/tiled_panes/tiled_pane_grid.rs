@@ -7,10 +7,10 @@ use crate::tab::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
 use crate::{panes::PaneId, tab::Pane};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{HashMap, HashSet};
-use zellij_utils::data::{Direction, Resize, ResizeStrategy};
-use zellij_utils::{
-    errors::prelude::*,
-    input::layout::SplitDirection,
+use zellij_runtime::errors::prelude::*;
+use zellij_types::geometry::{Direction, Resize, ResizeStrategy};
+use zellij_types::{
+    geometry::SplitDirection,
     pane_size::{Dimension, PaneGeom, Viewport},
 };
 
@@ -152,10 +152,7 @@ impl<'a> TiledPaneGrid<'a> {
                 .pane_is_flexible(direction.into(), pane_id)
                 .unwrap_or(false)
             {
-                let pane_ids = match pane_id {
-                    PaneId::Terminal(id) => vec![(id.0, true)],
-                    PaneId::Plugin(id) => vec![(id.0, false)],
-                };
+                let pane_ids = vec![*pane_id];
                 return Err(ZellijError::CantResizeFixedPanes { pane_ids })
                     .with_context(err_context);
             }
@@ -169,13 +166,7 @@ impl<'a> TiledPaneGrid<'a> {
                 .copied()
                 .collect();
             if !fixed_panes.is_empty() {
-                let mut pane_ids = vec![];
-                for fixed_pane in fixed_panes {
-                    match fixed_pane {
-                        PaneId::Terminal(id) => pane_ids.push((id.0, true)),
-                        PaneId::Plugin(id) => pane_ids.push((id.0, false)),
-                    };
-                }
+                let pane_ids = fixed_panes;
                 return Err(ZellijError::CantResizeFixedPanes { pane_ids })
                     .with_context(err_context);
             }
@@ -1741,10 +1732,14 @@ impl<'a> TiledPaneGrid<'a> {
                     if !trailing {
                         pane_geom.x = hole_geom.x;
                     }
-                    hole_geom.rows.reduce_by(
-                        pane_geom.rows.as_percent().with_context(err_context)?,
-                        pane_geom.rows.as_usize(),
-                    );
+                    hole_geom
+                        .rows
+                        .reduce_by(
+                            pane_geom.rows.as_percent().with_context(err_context)?,
+                            pane_geom.rows.as_usize(),
+                        )
+                        .with_context(err_context)
+                        .non_fatal();
                     if direction == Direction::Down {
                         hole_geom.y += pane_geom.rows.as_usize();
                     }
@@ -1754,10 +1749,14 @@ impl<'a> TiledPaneGrid<'a> {
                     if !trailing {
                         pane_geom.y = hole_geom.y;
                     }
-                    hole_geom.cols.reduce_by(
-                        pane_geom.cols.as_percent().with_context(err_context)?,
-                        pane_geom.cols.as_usize(),
-                    );
+                    hole_geom
+                        .cols
+                        .reduce_by(
+                            pane_geom.cols.as_percent().with_context(err_context)?,
+                            pane_geom.cols.as_usize(),
+                        )
+                        .with_context(err_context)
+                        .non_fatal();
                     if direction == Direction::Right {
                         hole_geom.x += pane_geom.cols.as_usize();
                     }

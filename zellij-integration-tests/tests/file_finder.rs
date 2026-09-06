@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use zellij_integration_tests::{
     keys, FakePtyHandle, TestRunner, TestSession, PROMPT, TERMINAL_SIZE,
 };
-use zellij_utils::input::command::TerminalAction;
+use zellij_types::input::command::TerminalAction;
 
 const FINDER_TITLE: &str = "Find file";
 

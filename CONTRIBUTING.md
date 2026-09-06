@@ -40,8 +40,6 @@ cargo xtask run
 cargo xtask run -- -l strider
 # Install Zellij to some directory
 cargo xtask install /path/of/zellij/binary
-# Publish the zellij and zellij-tile crates
-cargo xtask publish
 ```
 
 You can see a list of all commands (with supported arguments) with `cargo xtask
@@ -144,7 +142,7 @@ No feature flags are involved: the binary never carries plugins, so the plugins 
 installed into one of the lookup locations above. A plain `cargo install --path .` yields a
 binary with no builtins; use `cargo x install`.
 
-`protoc` is required to regenerate the protobuf definitions in `zellij-utils/assets/prost*`
+`protoc` is required to regenerate the protobuf definitions in `zellij-plugin-api/assets/ and zellij-ipc/assets/`
 via `cargo x proto`. The `vendored_curl` feature is optional and may be dropped with
 `--no-default-features`.
 
@@ -320,7 +318,7 @@ TAP and firewall resources, and removes them whether the test passes or fails.
 
 ## Running the plugin-data store tests against Postgres
 
-The plugin data store (`zellij-utils/src/plugin_data_store/`) composes its SQL once and runs it
+The plugin data store (`zellij-storage/src/plugin_data_store/`) composes its SQL once and runs it
 on two engines, SQLite and Postgres. Its test files are included twice, once per engine, so the
 same suite proves both. The SQLite half runs under `cargo x test`; the Postgres half needs a
 server, sits behind the `postgres-tests` cargo feature, and runs here. Docker is the only
@@ -356,7 +354,7 @@ let my_variable = some_function();
 log::info!("my variable is: {:?}", my_variable);
 ```
 
-Note that the output is truncated at 100KB. This can be adjusted for the purposes of debugging through the `LOG_MAX_BYTES` constant, at the time of writing here: https://github.com/zellij-org/zellij/blob/main/zellij-utils/src/logging.rs#L24
+Note that the output is truncated at 100KB. This can be adjusted for the purposes of debugging through the `LOG_MAX_BYTES` constant, at the time of writing here: [zellij-runtime/src/logging.rs](zellij-runtime/src/logging.rs)
 
 When running Zellij with the `--debug` flag, Zellij will dump a copy of all bytes received over the pty for each pane in: `/$temp_dir/zellij-<UID>/zellij-log/zellij-<pane_id>.log`. These might be useful when troubleshooting terminal issues.
 
@@ -407,7 +405,7 @@ something interesting to work on and guide through.
 
 ### Prefer returning `Result`s instead of `unwrap`ing
 
-- Add `use zellij_utils::errors::prelude::*;` to the file
+- Add `use zellij_runtime::errors::prelude::*;` to the file
 - Make the function return `Result<T>`, with an appropriate `T` (Use `()` if there's nothing to return)
 - Append `.context()` to any `Result` you get with a sensible error description (see [the docs][error-docs-context])
 - Generate ad-hoc errors with `anyhow!(<SOME MESSAGE>)`
@@ -422,7 +420,7 @@ something interesting to work on and guide through.
 
 ### Adding Concrete Errors, Handling Specific Errors
 
-- Add a new variant to `zellij_utils::errors::ZellijError`, if needed
+- Add a new variant to `zellij_runtime::errors::ZellijError`, if needed
 - Use `anyhow::Error::downcast_ref::<ZellijError>()` to recover underlying errors
 - *Further reading*: [See here][error-docs-zellijerror]
 

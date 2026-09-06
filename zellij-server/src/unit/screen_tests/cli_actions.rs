@@ -1,5 +1,10 @@
+#[cfg(test)]
+const TAB_0: TabId = TabId::new(0);
+
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
 
 // Following are tests for sending CLI actions
 // these tests are only partially relevant to Screen
@@ -14,7 +19,7 @@ pub fn send_cli_write_chars_action_to_screen() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let pty_writer_receiver = mock_screen.pty_writer_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -45,7 +50,7 @@ pub fn send_cli_write_chars_action_to_screen() {
         },
     );
     mock_screen.teardown(vec![pty_writer_thread, screen_thread]);
-    assert_eq!(write, (b"input from the cli".to_vec(), TerminalId(0)));
+    assert_eq!(write, (b"input from the cli".to_vec(), TerminalId::new(0)));
 }
 
 #[test]
@@ -54,7 +59,7 @@ pub fn send_cli_write_action_to_screen() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let pty_writer_receiver = mock_screen.pty_writer_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -85,13 +90,13 @@ pub fn send_cli_write_action_to_screen() {
         },
     );
     mock_screen.teardown(vec![pty_writer_thread, screen_thread]);
-    assert_eq!(write, (b"foo".to_vec(), TerminalId(0)));
+    assert_eq!(write, (b"foo".to_vec(), TerminalId::new(0)));
 }
 
 #[test]
 pub fn write_only_requests_a_clear_scroll_render_when_scrolled() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut mock_screen = MockScreen::new(size);
     let session_metadata = mock_screen.clone_session_metadata();
     let pty_writer_receiver = mock_screen.pty_writer_receiver.take().unwrap();
@@ -109,7 +114,7 @@ pub fn write_only_requests_a_clear_scroll_render_when_scrolled() {
         mock_screen
             .to_screen
             .send(ScreenInstruction::GetPaneInfo {
-                pane_id: PaneId::Terminal(crate::TerminalId(0)),
+                pane_id: PaneId::Terminal(crate::TerminalId::new(0)),
                 response_channel: screen_barrier_tx,
             })
             .expect("failed to send screen barrier");
@@ -131,7 +136,7 @@ pub fn write_only_requests_a_clear_scroll_render_when_scrolled() {
         )
     };
 
-    let unscrolled_start = render_count_barrier(crate::ClientId(100));
+    let unscrolled_start = render_count_barrier(crate::ClientId::new(100));
     send_cli_action_to_server(
         &session_metadata,
         CliAction::WriteChars {
@@ -140,7 +145,7 @@ pub fn write_only_requests_a_clear_scroll_render_when_scrolled() {
         },
         client_id,
     );
-    let unscrolled_end = render_count_barrier(crate::ClientId(101));
+    let unscrolled_end = render_count_barrier(crate::ClientId::new(101));
     let unscrolled_render_requests = received_background_jobs.lock()
         [unscrolled_start + 1..unscrolled_end]
         .iter()
@@ -154,7 +159,7 @@ pub fn write_only_requests_a_clear_scroll_render_when_scrolled() {
     mock_screen
         .to_screen
         .send(ScreenInstruction::PtyBytes(
-            crate::TerminalId(0),
+            crate::TerminalId::new(0),
             pane_contents.as_bytes().to_vec(),
         ))
         .expect("failed to fill pane");
@@ -166,7 +171,7 @@ pub fn write_only_requests_a_clear_scroll_render_when_scrolled() {
         );
     }
 
-    let scrolled_start = render_count_barrier(crate::ClientId(102));
+    let scrolled_start = render_count_barrier(crate::ClientId::new(102));
     send_cli_action_to_server(
         &session_metadata,
         CliAction::WriteChars {
@@ -175,7 +180,7 @@ pub fn write_only_requests_a_clear_scroll_render_when_scrolled() {
         },
         client_id,
     );
-    let scrolled_end = render_count_barrier(crate::ClientId(103));
+    let scrolled_end = render_count_barrier(crate::ClientId::new(103));
     let scrolled_render_requests = received_background_jobs.lock()
         [scrolled_start + 1..scrolled_end]
         .iter()
@@ -196,7 +201,7 @@ pub fn send_cli_send_keys_action_to_screen() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let pty_writer_receiver = mock_screen.pty_writer_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -231,7 +236,7 @@ pub fn send_cli_ctrl_c_reaches_pty_writer() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let pty_writer_receiver = mock_screen.pty_writer_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -264,7 +269,7 @@ pub fn send_cli_ctrl_w_reaches_pty_writer() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let pty_writer_receiver = mock_screen.pty_writer_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -294,7 +299,7 @@ pub fn send_cli_ctrl_w_reaches_pty_writer() {
 #[test]
 pub fn send_cli_resize_action_to_screen() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -333,7 +338,7 @@ pub fn send_cli_resize_action_to_screen() {
 #[test]
 pub fn send_cli_focus_next_pane_action() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -368,7 +373,7 @@ pub fn send_cli_focus_next_pane_action() {
 #[test]
 pub fn send_cli_focus_previous_pane_action() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -403,7 +408,7 @@ pub fn send_cli_focus_previous_pane_action() {
 #[test]
 pub fn send_cli_focus_last_pane_action() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![
@@ -454,7 +459,7 @@ pub fn send_cli_focus_last_pane_action() {
 #[test]
 pub fn send_cli_move_focus_pane_action() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -491,7 +496,7 @@ pub fn send_cli_move_focus_pane_action() {
 #[test]
 pub fn send_cli_move_focus_or_tab_pane_action() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -528,7 +533,7 @@ pub fn send_cli_move_focus_or_tab_pane_action() {
 #[test]
 pub fn send_cli_move_pane_action() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -565,7 +570,7 @@ pub fn send_cli_move_pane_action() {
 #[test]
 pub fn send_cli_dump_screen_action() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -588,7 +593,7 @@ pub fn send_cli_dump_screen_action() {
         ansi: false,
     };
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         "fill pane up with something".as_bytes().to_vec(),
     ));
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
@@ -603,7 +608,7 @@ pub fn send_cli_dump_screen_action() {
 #[test]
 pub fn send_cli_edit_scrollback_action() {
     let size = Size { cols: 80, rows: 20 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -624,7 +629,7 @@ pub fn send_cli_edit_scrollback_action() {
         ansi: false,
     };
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         "fill pane up with something".as_bytes().to_vec(),
     ));
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
@@ -652,7 +657,7 @@ pub fn send_cli_edit_scrollback_action() {
             assert_eq!(terminal_id, &Some(1));
             assert_eq!(
                 client_id,
-                &ClientTabIndexOrPaneId::ClientId(crate::ClientId(1))
+                &ClientTabIndexOrPaneId::ClientId(crate::ClientId::new(1))
             );
             found_instruction = true;
         }
@@ -663,7 +668,7 @@ pub fn send_cli_edit_scrollback_action() {
 #[test]
 pub fn send_cli_scroll_up_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -685,7 +690,7 @@ pub fn send_cli_scroll_up_action() {
         pane_contents.push_str(&format!("fill pane up with something {}\n\r", i));
     }
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
     // we send two actions here because only the last line in the pane is empty, so one action
@@ -711,7 +716,7 @@ pub fn send_cli_scroll_up_action() {
 #[test]
 pub fn send_cli_scroll_down_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -734,7 +739,7 @@ pub fn send_cli_scroll_down_action() {
         pane_contents.push_str(&format!("fill pane up with something {}\n\r", i));
     }
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -760,7 +765,7 @@ pub fn send_cli_scroll_down_action() {
 #[test]
 pub fn send_cli_scroll_to_bottom_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -783,7 +788,7 @@ pub fn send_cli_scroll_to_bottom_action() {
         pane_contents.push_str(&format!("fill pane up with something {}\n\r", i));
     }
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -812,7 +817,7 @@ pub fn send_cli_scroll_to_bottom_action() {
 #[test]
 pub fn send_cli_scroll_to_top_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -834,7 +839,7 @@ pub fn send_cli_scroll_to_top_action() {
         pane_contents.push_str(&format!("fill pane up with something {}\n\r", i));
     }
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -856,7 +861,7 @@ pub fn send_cli_scroll_to_top_action() {
 #[test]
 pub fn send_cli_page_scroll_up_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -879,7 +884,7 @@ pub fn send_cli_page_scroll_up_action() {
         pane_contents.push_str(&format!("fill pane up with something {}\n\r", i));
     }
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -900,7 +905,7 @@ pub fn send_cli_page_scroll_up_action() {
 #[test]
 pub fn send_cli_page_scroll_down_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -924,7 +929,7 @@ pub fn send_cli_page_scroll_down_action() {
     }
     std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -954,7 +959,7 @@ pub fn send_cli_page_scroll_down_action() {
 #[test]
 pub fn send_cli_half_page_scroll_up_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -976,7 +981,7 @@ pub fn send_cli_half_page_scroll_up_action() {
         pane_contents.push_str(&format!("fill pane up with something {}\n\r", i));
     }
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -997,7 +1002,7 @@ pub fn send_cli_half_page_scroll_up_action() {
 #[test]
 pub fn send_cli_half_page_scroll_down_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -1021,7 +1026,7 @@ pub fn send_cli_half_page_scroll_down_action() {
         pane_contents.push_str(&format!("fill pane up with something {}\n\r", i));
     }
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         pane_contents.as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1058,7 +1063,7 @@ pub fn send_cli_half_page_scroll_down_action() {
 #[test]
 pub fn send_cli_toggle_full_screen_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -1092,7 +1097,7 @@ pub fn send_cli_toggle_full_screen_action() {
 #[test]
 pub fn send_cli_toggle_pane_frames_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -1129,7 +1134,7 @@ pub fn send_cli_toggle_active_tab_sync_action() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let pty_writer_receiver = mock_screen.pty_writer_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -1174,7 +1179,7 @@ pub fn send_cli_new_pane_action_with_default_parameters() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -1238,7 +1243,7 @@ pub fn web_new_pane_in_tab_action_targets_requested_tab() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10);
+    let client_id = ClientId::new(10);
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -1259,7 +1264,7 @@ pub fn web_new_pane_in_tab_action_targets_requested_tab() {
         near_current_pane: false,
         no_focus: false,
         borderless: None,
-        tab_id: Some(0),
+        tab_id: Some(TabId::new(0)),
     };
     route_arbitrary_action_to_server(&session_metadata, action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1269,7 +1274,7 @@ pub fn web_new_pane_in_tab_action_targets_requested_tab() {
         PtyInstruction::SpawnTerminal(_, _, _, _, client_tab_index_or_pane_id, ..) => {
             matches!(
                 client_tab_index_or_pane_id,
-                ClientTabIndexOrPaneId::TabIndex(0)
+                ClientTabIndexOrPaneId::TabIndex(TAB_0)
             )
         },
         _ => false,
@@ -1287,7 +1292,7 @@ pub fn send_cli_new_pane_action_with_split_direction() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -1351,7 +1356,7 @@ pub fn send_cli_new_pane_action_with_command_and_cwd() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -1422,7 +1427,7 @@ pub fn send_cli_new_pane_action_with_floating_pane_and_coordinates() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -1486,7 +1491,7 @@ pub fn send_cli_edit_action_with_default_parameters() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -1534,7 +1539,7 @@ pub fn send_cli_edit_action_with_line_number() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -1582,7 +1587,7 @@ pub fn send_cli_edit_action_with_split_direction() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -1627,7 +1632,7 @@ pub fn send_cli_edit_action_with_split_direction() {
 #[test]
 pub fn send_cli_switch_mode_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -1664,7 +1669,7 @@ pub fn send_cli_switch_mode_action() {
 #[test]
 pub fn send_cli_toggle_pane_embed_or_float() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -1717,7 +1722,7 @@ pub fn send_cli_toggle_pane_embed_or_float() {
 #[test]
 pub fn send_cli_toggle_floating_panes() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -1759,7 +1764,7 @@ pub fn send_cli_toggle_floating_panes() {
 #[test]
 pub fn send_cli_close_pane_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -1794,7 +1799,7 @@ pub fn send_cli_close_pane_action() {
 #[test]
 pub fn send_cli_new_tab_action_default_params() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -1838,7 +1843,7 @@ pub fn send_cli_new_tab_action_default_params() {
 #[test]
 pub fn send_cli_new_tab_action_with_name_and_layout() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -1895,7 +1900,7 @@ pub fn send_cli_new_tab_action_with_name_and_layout() {
 #[test]
 pub fn send_cli_next_tab_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -1937,7 +1942,7 @@ pub fn send_cli_next_tab_action() {
 #[test]
 pub fn send_cli_previous_tab_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -1977,7 +1982,7 @@ pub fn send_cli_previous_tab_action() {
 #[test]
 pub fn send_cli_goto_tab_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -1999,7 +2004,9 @@ pub fn send_cli_goto_tab_action() {
         ServerInstruction::KillSession,
         server_receiver
     );
-    let goto_tab = CliAction::GoToTab { index: 1 };
+    let goto_tab = CliAction::GoToTab {
+        index: TabNumber::new(1),
+    };
     send_cli_action_to_server(&session_metadata, goto_tab, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -2017,7 +2024,7 @@ pub fn send_cli_goto_tab_action() {
 #[test]
 pub fn send_cli_close_tab_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -2057,7 +2064,7 @@ pub fn send_cli_close_tab_action() {
 #[test]
 pub fn send_cli_rename_tab() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -2103,7 +2110,7 @@ pub fn send_cli_rename_tab() {
 #[test]
 pub fn send_cli_undo_rename_tab() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let initial_layout = TiledPaneLayout {
         children_split_direction: SplitDirection::Vertical,
         children: vec![TiledPaneLayout::default(), TiledPaneLayout::default()],
@@ -2154,7 +2161,7 @@ pub fn send_cli_undo_rename_tab() {
 #[test]
 pub fn send_cli_query_tab_names_action() {
     let size = Size { cols: 80, rows: 10 };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     mock_screen.new_tab(TiledPaneLayout::default());
     let session_metadata = mock_screen.clone_session_metadata();
@@ -2184,7 +2191,7 @@ pub fn send_cli_launch_or_focus_plugin_action() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let pty_receiver = mock_screen.pty_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -2224,7 +2231,7 @@ pub fn send_cli_launch_or_focus_plugin_action_when_plugin_is_already_loaded() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();
@@ -2300,7 +2307,7 @@ pub fn send_cli_launch_or_focus_plugin_action_when_plugin_is_already_loaded_for_
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(10); // fake client id should not appear in the screen's state
+    let client_id = ClientId::new(10); // fake client id should not appear in the screen's state
     let mut mock_screen = MockScreen::new(size);
     let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
     let session_metadata = mock_screen.clone_session_metadata();

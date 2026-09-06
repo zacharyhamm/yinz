@@ -284,13 +284,15 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(i, agent)| PaneInfo {
-                id: i as u32,
+                id: zellij_tile::prelude::PaneId::from_legacy(i as u32, false),
                 agent,
                 ..Default::default()
             })
             .collect();
         PaneManifest {
-            panes: [(0, panes)].into_iter().collect(),
+            panes: [(zellij_tile::prelude::TabPosition::new(0), panes)]
+                .into_iter()
+                .collect(),
         }
     }
 

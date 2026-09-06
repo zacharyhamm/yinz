@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 #[serial(plugin_tests)]
@@ -19,7 +20,7 @@ pub fn close_tab_with_index_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -43,7 +44,7 @@ pub fn close_tab_with_index_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -95,7 +96,7 @@ pub fn break_panes_to_new_tab_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -119,7 +120,7 @@ pub fn break_panes_to_new_tab_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -171,7 +172,7 @@ pub fn break_panes_to_tab_with_index_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -195,7 +196,7 @@ pub fn break_panes_to_tab_with_index_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -247,7 +248,7 @@ pub fn break_panes_to_tab_with_id_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -271,7 +272,7 @@ pub fn break_panes_to_tab_with_id_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,

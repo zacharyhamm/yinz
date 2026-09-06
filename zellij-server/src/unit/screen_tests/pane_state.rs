@@ -4,16 +4,18 @@
 //! of what is asserted here was ever about it.
 
 use super::*;
-use zellij_utils::internal_ids::PluginId;
+use zellij_types::internal_ids::PluginId;
+use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 
 /// `CwdChanged` announces a move once. The manifest says where every pane is
 /// every time, which is what puts right a plugin that was not listening yet.
 #[test]
 fn a_pane_manifest_carries_the_pane_cwd() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.terminal_cwds.insert(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         std::path::PathBuf::from("/work/hocus"),
     );
 
@@ -23,7 +25,7 @@ fn a_pane_manifest_carries_the_pane_cwd() {
         .panes
         .values()
         .flatten()
-        .find(|pane| pane.id == 1 && !pane.is_plugin)
+        .find(|pane| pane.id == PaneId::Terminal(crate::TerminalId::new(1)))
         .expect("the terminal pane is in the manifest");
     assert_eq!(pane.cwd.as_deref(), Some("/work/hocus"));
 }
@@ -34,9 +36,9 @@ fn a_pane_manifest_carries_the_pane_cwd() {
 /// somebody else provisioned asked for a VM by name and nothing else.
 #[test]
 fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
-    use zellij_utils::data::PaneTarget;
-    use zellij_utils::input::command::RunCommand;
-    use zellij_utils::input::layout::Run;
+    use zellij_types::command::PaneTarget;
+    use zellij_types::input::command::RunCommand;
+    use zellij_types::input::layout::Run;
 
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     let joined = RunCommand {
@@ -49,7 +51,12 @@ fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
         ..Default::default()
     };
     screen
-        .new_tab(0, (vec![], vec![]), None, Some(crate::ClientId(1)))
+        .new_tab(
+            TabId::new(0),
+            (vec![], vec![]),
+            None,
+            Some(crate::ClientId::new(1)),
+        )
         .unwrap();
     screen
         .apply_layout(
@@ -58,18 +65,18 @@ fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
                 ..TiledPaneLayout::default()
             },
             vec![],
-            vec![(crate::TerminalId(1), None)],
+            vec![(crate::TerminalId::new(1), None)],
             vec![],
             HashMap::new(),
-            0,
+            TabId::new(0),
             true,
-            crate::ClientId(1),
+            crate::ClientId::new(1),
             None,
         )
         .expect("TEST");
     screen
         .set_pane_host(
-            crate::TerminalId(1),
+            crate::TerminalId::new(1),
             Some("firecracker:review".to_owned()),
             Some(std::path::PathBuf::from("/work/hocus")),
         )
@@ -80,7 +87,7 @@ fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
         .panes
         .values()
         .flatten()
-        .find(|pane| pane.id == 1 && !pane.is_plugin)
+        .find(|pane| pane.id == PaneId::Terminal(crate::TerminalId::new(1)))
         .expect("the terminal pane is in the manifest");
     assert_eq!(
         pane.target.firecracker_worktree(),
@@ -94,9 +101,9 @@ fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
 #[test]
 fn a_plugin_pane_has_no_cwd() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.terminal_cwds.insert(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         std::path::PathBuf::from("/work/hocus"),
     );
 
@@ -107,7 +114,7 @@ fn a_plugin_pane_has_no_cwd() {
             .panes
             .values()
             .flatten()
-            .filter(|pane| pane.is_plugin)
+            .filter(|pane| pane.is_plugin())
             .all(|pane| pane.cwd.is_none()),
         "no plugin pane was given a folder"
     );
@@ -115,30 +122,31 @@ fn a_plugin_pane_has_no_cwd() {
 
 #[test]
 fn recorder_pane_metadata() {
-    use zellij_utils::data::{PaneInfo, PaneManifest, TabInfo};
+    use {
+        zellij_types::data::PaneInfo, zellij_types::data::PaneManifest, zellij_types::data::TabInfo,
+    };
     // Create one tab with one terminal pane and one plugin pane
     let mut pane_manifest = PaneManifest::default();
     let terminal_pane = PaneInfo {
-        id: 5,
-        is_plugin: false,
+        id: zellij_types::pane_id::PaneId::from_legacy(5, false),
         title: "my terminal".to_string(),
         pane_content_rows: 24,
         pane_content_columns: 80,
         ..Default::default()
     };
     let plugin_pane = PaneInfo {
-        id: 6,
-        is_plugin: true,
+        id: zellij_types::pane_id::PaneId::from_legacy(6, true),
         title: "plugin".to_string(),
         pane_content_rows: 24,
         pane_content_columns: 80,
         ..Default::default()
     };
-    pane_manifest
-        .panes
-        .insert(0, vec![terminal_pane.clone(), plugin_pane]);
+    pane_manifest.panes.insert(
+        TabPosition::new(0),
+        vec![terminal_pane.clone(), plugin_pane],
+    );
     let tab_info = TabInfo {
-        position: 0,
+        position: TabPosition::new(0),
         name: "my tab".to_string(),
         ..Default::default()
     };
@@ -147,9 +155,12 @@ fn recorder_pane_metadata() {
         std::slice::from_ref(&tab_info),
     );
     assert_eq!(metadata.len(), 1, "should filter plugin panes");
-    assert_eq!(metadata[0].terminal_id, 5);
-    assert_eq!(metadata[0].tab_id, 0);
-    assert_eq!(metadata[0].tab_position, 0);
+    assert_eq!(
+        metadata[0].terminal_id,
+        zellij_types::internal_ids::TerminalId::new(5)
+    );
+    assert_eq!(metadata[0].tab_id, TabId::new(0));
+    assert_eq!(metadata[0].tab_position, TabPosition::new(0));
     assert_eq!(metadata[0].tab_name, "my tab");
     assert_eq!(metadata[0].title, "my terminal");
     assert_eq!(metadata[0].cols, 80);
@@ -180,8 +191,8 @@ fn plugin_bytes_with_no_pane_still_unblock_cli_pipes() {
         .to_screen
         .send(ScreenInstruction::PluginBytes(vec![
             PluginRenderAsset::new(
-                crate::PluginId(99),
-                crate::ClientId(1),
+                crate::PluginId::new(99),
+                crate::ClientId::new(1),
                 b"ORPHAN_BYTES".to_vec(),
             ),
         ]))
@@ -204,7 +215,7 @@ fn plugin_bytes_with_no_pane_still_unblock_cli_pipes() {
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
     assert!(
-        unblocked_plugin_ids.contains(&PluginId(99)),
+        unblocked_plugin_ids.contains(&PluginId::new(99)),
         "a plugin that rendered without a pane must still unblock, got {unblocked_plugin_ids:?}"
     );
 }

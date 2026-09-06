@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 #[serial(plugin_tests)]
@@ -17,7 +18,7 @@ pub fn set_pane_regex_highlights_via_plugin() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -41,7 +42,7 @@ pub fn set_pane_regex_highlights_via_plugin() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -83,7 +84,7 @@ pub fn set_pane_regex_highlights_via_plugin() {
         "Expected SetPluginRegexHighlights instruction"
     );
     let (pane_id, _plugin_id, highlights) = highlight_instruction.unwrap();
-    assert_eq!(pane_id, PaneId::Terminal(crate::TerminalId(1)));
+    assert_eq!(pane_id, PaneId::Terminal(crate::TerminalId::new(1)));
     assert_eq!(highlights.len(), 1);
     assert_eq!(highlights[0].pattern, "test_pattern");
     assert!(highlights[0].italic);
@@ -106,7 +107,7 @@ pub fn clear_pane_highlights_via_plugin() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -130,7 +131,7 @@ pub fn clear_pane_highlights_via_plugin() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -167,7 +168,7 @@ pub fn clear_pane_highlights_via_plugin() {
         "Expected ClearPluginHighlights instruction"
     );
     let (pane_id, _plugin_id) = clear_instruction.unwrap();
-    assert_eq!(pane_id, PaneId::Terminal(crate::TerminalId(1)));
+    assert_eq!(pane_id, PaneId::Terminal(crate::TerminalId::new(1)));
 }
 
 #[test]
@@ -186,7 +187,7 @@ pub fn highlight_clicked_event_delivered_to_plugin() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -210,7 +211,7 @@ pub fn highlight_clicked_event_delivered_to_plugin() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -226,9 +227,9 @@ pub fn highlight_clicked_event_delivered_to_plugin() {
 
     // Send a HighlightClicked event directly to the plugin
     let _ = plugin_thread_sender.send(PluginInstruction::HighlightClicked {
-        plugin_id: crate::PluginId(0),
+        plugin_id: crate::PluginId::new(0),
         client_id,
-        pane_id: PaneId::Terminal(crate::TerminalId(1)),
+        pane_id: PaneId::Terminal(crate::TerminalId::new(1)),
         pattern: "test".into(),
         matched_string: "test_match".into(),
         context: BTreeMap::new(),

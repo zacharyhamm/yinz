@@ -468,7 +468,7 @@ fn floating_pane_occludes_kitty_image_and_restores_it_without_retransmit() {
     );
     let baseline_after_occlusion = bytes.len();
 
-    zellij.run_cli_action(zellij_utils::cli::CliAction::HideFloatingPanes { tab_id: None });
+    zellij.run_cli_action(zellij_cli::args::CliAction::HideFloatingPanes { tab_id: None });
     let bytes = zellij.wait_until_raw_output(
         "the image is restored after the floating pane goes away",
         |bytes| host_placements(&bytes[baseline_after_occlusion..]).contains(&(image_rect, 1)),

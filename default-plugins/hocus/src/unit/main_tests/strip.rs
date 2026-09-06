@@ -1,5 +1,7 @@
 use super::*;
 use hocus_proto::store::Backend;
+use zellij_tile::prelude::HostId;
+use zellij_tile::prelude::TabId;
 
 /// The strip rows hocus pushes to the agents pane: agents grouped under the
 /// project and branch headers, computed from the snapshot it holds.
@@ -64,8 +66,8 @@ fn a_snapshot_rebuilds_the_strip() {
 
 #[test]
 fn project_changes_push_the_strip_immediately() {
-    let mut state = state_with_tab(9);
-    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+    let mut state = state_with_tab(TabId::new(9));
+    poll(&mut state, vec![agent_in(3, "/work/hocus", TabId::new(9))]);
     assert!(matches!(
         &state.last_strip.rows[0],
         agents::StripRow::Project(name) if name == "hocus"
@@ -93,8 +95,11 @@ fn project_changes_push_the_strip_immediately() {
 /// could only ever say the first of those.
 #[test]
 fn the_strip_carries_the_focused_pane_agent_or_not() {
-    let mut state = state_with_tab(9);
-    let panes = vec![agent_in(3, "/work/hocus", 9), agent_in(7, "/work/hocus", 9)];
+    let mut state = state_with_tab(TabId::new(9));
+    let panes = vec![
+        agent_in(3, "/work/hocus", TabId::new(9)),
+        agent_in(7, "/work/hocus", TabId::new(9)),
+    ];
 
     poll_focused(&mut state, panes.clone(), Some(7));
     assert_eq!(state.last_strip.focused, Some(7));
@@ -109,7 +114,7 @@ fn the_strip_carries_the_focused_pane_agent_or_not() {
 /// The id the agents pane announces itself with. Any number; what matters is
 /// that hocus records it, because it is the only thing that lets hocus place the
 /// list beside itself.
-const AGENTS_PANE: u32 = 11;
+const AGENTS_PANE: PluginId = PluginId::new(11);
 
 /// `state_with_panes` - one `codex` agent on pane 3, one shell on pane 4 - with
 /// the agents pane known and pane 3 holding a summary. `polls` is how long ago
@@ -117,7 +122,7 @@ const AGENTS_PANE: u32 = 11;
 fn state_with_summary(polls: u32) -> State {
     let mut state = state_with_panes();
     state.agents_plugin = Some(AGENTS_PANE);
-    state.focused_plugin = Some(AGENTS_PANE);
+    state.focused_plugin = Some(AGENTS_PANE.get());
     state.activity = agents::Activity::from([(3, (11, polls))]);
     state.summaries = agents::Summaries::from([(
         3,
@@ -180,7 +185,7 @@ fn completed_runs_are_nested_under_the_archive_and_page_on_demand() {
 /// One archive header, as `load_more_agent_runs` puts them in `archived_runs`.
 fn header(session_id: &str, host: Option<&str>) -> agents::AgentRunHeader {
     agents::AgentRunHeader {
-        id: agents::run_id("claude", 3, session_id, 10, "test-host"),
+        id: agents::run_id("claude", 3, session_id, 10, &HostId::new("test-host")),
         pane_id: 3,
         session_id: session_id.to_owned(),
         kind: "claude".to_owned(),
@@ -202,10 +207,10 @@ fn header(session_id: &str, host: Option<&str>) -> agents::AgentRunHeader {
 /// temporary store, so nothing here stands in for the daemon.
 fn seed_run(state: &State, session_id: &str, host: Option<&str>, ended: bool) {
     let run = agents::AgentRun {
-        id: agents::run_id("claude", 3, session_id, 10, "test-host"),
+        id: agents::run_id("claude", 3, session_id, 10, &HostId::new("test-host")),
         pane_id: 3,
         zellij_session_name: "main".to_owned(),
-        host_id: "test-host".to_owned(),
+        host_id: HostId::new("test-host"),
         session_id: session_id.to_owned(),
         kind: "claude".to_owned(),
         cwd: Some("/work/hocus".to_owned()),
@@ -257,7 +262,13 @@ fn a_run_that_cannot_be_resumed_says_why() {
     // and there is nothing in that to resume.
     seed_run(&state, "", None, true);
     let refused = state
-        .resume_plan(&agents::run_id("claude", 3, "", 10, "test-host"))
+        .resume_plan(&agents::run_id(
+            "claude",
+            3,
+            "",
+            10,
+            &HostId::new("test-host"),
+        ))
         .unwrap_err();
     assert!(refused.contains("no session id"), "{refused}");
 
@@ -412,7 +423,7 @@ fn archive_offset_moves_only_for_completions_before_the_loaded_page() {
 }
 
 /// One `AGENT_SELECTION` from the agents pane.
-fn selection(plugin_id: u32, pane_id: Option<u32>) -> PipeMessage {
+fn selection(plugin_id: zellij_tile::prelude::PluginId, pane_id: Option<u32>) -> PipeMessage {
     PipeMessage {
         source: PipeSource::Plugin(plugin_id),
         name: wire::AGENT_SELECTION.to_owned(),
@@ -435,8 +446,11 @@ fn selection(plugin_id: u32, pane_id: Option<u32>) -> PipeMessage {
 /// rows - which would have left the cursor behind.
 #[test]
 fn walking_between_agents_pushes_a_strip_of_identical_rows() {
-    let mut state = state_with_tab(9);
-    let panes = vec![agent_in(3, "/work/hocus", 9), agent_in(7, "/work/hocus", 9)];
+    let mut state = state_with_tab(TabId::new(9));
+    let panes = vec![
+        agent_in(3, "/work/hocus", TabId::new(9)),
+        agent_in(7, "/work/hocus", TabId::new(9)),
+    ];
     poll_focused(&mut state, panes.clone(), Some(3));
     let rows = state.last_strip.rows.clone();
 

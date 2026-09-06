@@ -96,13 +96,16 @@ fn tab_at_the_bar_steps_down_into_the_box() {
 #[test]
 fn shift_tab_at_the_bar_steps_back_to_the_agent_list() {
     let mut state = three_tabs();
-    state.agents_plugin = Some(7);
+    state.agents_plugin = Some(zellij_tile::prelude::PluginId::new(7));
     state.on_key(shift_tab());
 
     assert!(state.on_key(shift_tab()));
     assert_eq!(
         state.ring_focus_calls,
-        [(PaneId::Plugin(7), "history")],
+        [(
+            PaneId::Plugin(zellij_tile::prelude::PluginId::new(7)),
+            "history"
+        )],
         "the keyboard went to the list, landing in its history half"
     );
     assert_eq!(state.chat_tab_focus, None, "and this half is off its stop");
@@ -237,7 +240,7 @@ fn clicking_an_overflow_arrow_reveals_tabs_without_switching() {
 fn overflow_tab_reveal_is_per_client() {
     let mut state = three_tabs();
     state.chat_tab_width = 12;
-    state.client = 1;
+    state.client = ClientId::new(1);
     let right = ui::chat_tabs(&state, state.chat_tab_width)
         .into_iter()
         .find(|cell| cell.target == ui::TabTarget::Reveal(2))
@@ -248,12 +251,12 @@ fn overflow_tab_reveal_is_per_client() {
         .iter()
         .any(|cell| cell.target == ui::TabTarget::Tab(2)));
 
-    state.client = 2;
+    state.client = ClientId::new(2);
     assert!(ui::chat_tabs(&state, state.chat_tab_width)
         .iter()
         .any(|cell| cell.target == ui::TabTarget::Tab(1)));
 
-    state.client = 1;
+    state.client = ClientId::new(1);
     assert!(ui::chat_tabs(&state, state.chat_tab_width)
         .iter()
         .any(|cell| cell.target == ui::TabTarget::Tab(2)));

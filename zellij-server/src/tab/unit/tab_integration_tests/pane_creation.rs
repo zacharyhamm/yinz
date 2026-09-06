@@ -1,6 +1,12 @@
+#[cfg(test)]
+const PLUGIN_2: zellij_types::internal_ids::PluginId = zellij_types::internal_ids::PluginId::new(2);
+#[cfg(test)]
+const TERMINAL_2: zellij_types::internal_ids::TerminalId =
+    zellij_types::internal_ids::TerminalId::new(2);
+
 use super::*;
-use zellij_utils::input::layout::Run;
-use zellij_utils::pane_size::Offset;
+use zellij_types::input::layout::Run;
+use zellij_types::pane_size::Offset;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Placement {
@@ -26,7 +32,7 @@ fn create(
             run,
             suppressed,
             focus,
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
             Some(borderless),
         ),
@@ -36,7 +42,7 @@ fn create(
             run,
             suppressed,
             focus,
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
             Some(borderless),
         ),
@@ -46,8 +52,8 @@ fn create(
             run,
             suppressed,
             focus,
-            Some(PaneId::Terminal(crate::TerminalId(1))),
-            Some(crate::ClientId(1)),
+            Some(PaneId::Terminal(crate::TerminalId::new(1))),
+            Some(crate::ClientId::new(1)),
             None,
             Some(borderless),
         ),
@@ -62,8 +68,8 @@ fn pane_creation_characterization() {
         Placement::Stacked,
     ] {
         for pid in [
-            PaneId::Terminal(crate::TerminalId(2)),
-            PaneId::Plugin(crate::PluginId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
+            PaneId::Plugin(crate::PluginId::new(2)),
         ] {
             for suppressed in [false, true] {
                 for focus in [false, true] {
@@ -91,11 +97,11 @@ fn pane_creation_characterization() {
                         assert_eq!(tab.tiled_panes.get_pane(pid).is_some(), !suppressed);
                         assert!(!tab.floating_panes.panes_contain(&pid));
                         assert_eq!(
-                            tab.get_active_pane_id(crate::ClientId(1)),
+                            tab.get_active_pane_id(crate::ClientId::new(1)),
                             Some(if focus && !suppressed {
                                 pid
                             } else {
-                                PaneId::Terminal(crate::TerminalId(1))
+                                PaneId::Terminal(crate::TerminalId::new(1))
                             })
                         );
                         let pane = if suppressed {
@@ -126,15 +132,11 @@ fn pane_creation_characterization() {
                         if placement == Placement::Stacked && !suppressed && !focus {
                             assert!(!pty_messages.iter().any(|msg| matches!(
                                 msg,
-                                PtyWriteInstruction::ResizePty(TerminalId(2), ..)
+                                PtyWriteInstruction::ResizePty(TERMINAL_2, ..)
                             )));
-                            assert!(!plugin_messages.iter().any(|msg| matches!(
-                                msg,
-                                PluginInstruction::Resize(
-                                    zellij_utils::internal_ids::PluginId(2),
-                                    ..
-                                )
-                            )));
+                            assert!(!plugin_messages
+                                .iter()
+                                .any(|msg| matches!(msg, PluginInstruction::Resize(PLUGIN_2, ..))));
                             continue;
                         }
                         match pid {
@@ -156,8 +158,8 @@ fn pane_creation_failed_resize_does_not_park() {
         Placement::Stacked,
     ] {
         for pid in [
-            PaneId::Terminal(crate::TerminalId(2)),
-            PaneId::Plugin(crate::PluginId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
+            PaneId::Plugin(crate::PluginId::new(2)),
         ] {
             let (mut tab, plugin_rx) = create_new_tab_with_plugin_receiver(
                 Size {
@@ -178,8 +180,8 @@ fn pane_creation_failed_resize_does_not_park() {
             assert!(tab.tiled_panes.get_pane(pid).is_none());
             assert!(!tab.floating_panes.panes_contain(&pid));
             assert_eq!(
-                tab.get_active_pane_id(crate::ClientId(1)),
-                Some(PaneId::Terminal(crate::TerminalId(1)))
+                tab.get_active_pane_id(crate::ClientId::new(1)),
+                Some(PaneId::Terminal(crate::TerminalId::new(1)))
             );
         }
     }

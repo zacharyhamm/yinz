@@ -1083,7 +1083,7 @@ impl State {
         self.hide_the_panel();
         // the host resolves which tab holds the pane, so this works across
         // tabs
-        focus_terminal_pane(pane_id, false, false);
+        focus_terminal_pane(TerminalId::new(pane_id), false, false);
     }
 
     /// Take a fresh strip, staying on the agent the selection was on. The
@@ -2159,7 +2159,7 @@ mod tests {
     /// An `AGENT_STRIP_TAKE` naming `stop`, as hocus sends it when the ring steps in.
     fn take(stop: &str) -> PipeMessage {
         PipeMessage::new(
-            PipeSource::Plugin(0),
+            PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
             wire::AGENT_STRIP_TAKE,
             &None,
             &Some(BTreeMap::from([(
@@ -3059,7 +3059,7 @@ mod tests {
                 detail: detail.to_owned(),
             };
             state.pipe(PipeMessage::new(
-                PipeSource::Plugin(0),
+                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
                 wire::AGENT_RESUME_RESULT,
                 &Some(serde_json::to_string(&result).expect("encoded")),
                 &None,
@@ -3118,7 +3118,7 @@ mod tests {
         state.set_rows(unfocused(archive()));
         state.selected = 1;
         state.pipe(PipeMessage::new(
-            PipeSource::Plugin(0),
+            PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
             wire::AGENT_RUN_DETAIL,
             &Some(serde_json::to_string(&a_run()).expect("encoded")),
             &None,
@@ -3177,7 +3177,7 @@ mod tests {
         run.ended_at_ms = None;
         run.outcome = agents::RunOutcome::Active;
         state.pipe(PipeMessage::new(
-            PipeSource::Plugin(0),
+            PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
             wire::AGENT_RUN_DETAIL,
             &Some(serde_json::to_string(&run).expect("encoded")),
             &None,
@@ -3907,7 +3907,7 @@ mod tests {
             created_at_ms: None,
         });
         state.pipe(PipeMessage::new(
-            PipeSource::Plugin(0),
+            PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
             wire::AGENT_RUN_DETAIL,
             &Some(serde_json::to_string(&run).unwrap()),
             &None,
@@ -3932,7 +3932,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 3,
             zellij_session_name: "zellij".to_owned(),
-            host_id: String::new(),
+            host_id: zellij_tile::prelude::HostId::default(),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),

@@ -1,10 +1,13 @@
 ---
-source: zellij-server/src/plugins/./unit/plugin_tests.rs
+source: zellij-server/src/plugins/./unit/plugin_tests/focused_pane_commands.rs
+assertion_line: 1988
 expression: "format!(\"{:#?}\", toggle_floating_panes_event)"
 ---
 Some(
     ToggleFloatingPanesWithTabId(
-        2,
+        TabId(
+            2,
+        ),
         None,
         Some(
             NotificationEnd {

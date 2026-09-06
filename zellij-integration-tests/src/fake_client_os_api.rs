@@ -6,13 +6,15 @@ use zellij_client::os_input_output::{
     connect_with_deadline, ClientOsApi, ConnectToServerError, ServerConnection, SignalEvent,
     SignalSource, StdioAccess, TtyControl,
 };
-use zellij_utils::data::Palette;
-use zellij_utils::input::actions::Action;
-use zellij_utils::ipc::{
-    ClientToServerMsg, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext, ServerToClientMsg,
+use zellij_types::input::actions::Action;
+use zellij_types::pane_size::Size;
+use zellij_types::style::default_palette;
+use zellij_types::style::Palette;
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcReceiverWithContext,
+    zellij_ipc::ipc::IpcRecv, zellij_ipc::ipc::IpcSenderWithContext,
+    zellij_ipc::ipc::ServerToClientMsg,
 };
-use zellij_utils::pane_size::Size;
-use zellij_utils::shared::default_palette;
 
 use crate::client_screen::ClientScreen;
 

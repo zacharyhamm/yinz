@@ -1,14 +1,20 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::ContextMenuItemId;
+use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
+use zellij_types::internal_ids::TerminalId;
 
 use strum::IntoEnumIterator;
-use zellij_utils::data::{BareKey, CommandType, Event, KeyWithModifier, PermissionType};
-use zellij_utils::data_access::DataAccess;
-use zellij_utils::errors::prelude::*;
-use zellij_utils::input::layout::RunPluginLocation;
-use zellij_utils::input::plugins::PluginConfig;
+use zellij_config::plugins::PluginConfig;
+use zellij_runtime::errors::prelude::*;
+use zellij_storage::data_access::DataAccess;
+use zellij_types::input::layout::RunPluginLocation;
+use zellij_types::keys::{BareKey, KeyWithModifier};
+use {
+    zellij_types::data::CommandType, zellij_types::data::Event, zellij_types::data::PermissionType,
+};
 
 use super::{check_lua_plugin, load_lua_plugin};
 use crate::plugins::plugin_limits::PluginResourceLimits;
@@ -32,7 +38,7 @@ fn agent_exit_queries_skip_operation_logs_and_preserve_failures() {
     let lock = root.join(".git/agent-exit.lock");
     std::fs::create_dir(&logs).unwrap();
     std::fs::create_dir(&lock).unwrap();
-    let source = zellij_utils::consts::builtin_lua_plugin("agent-exit").unwrap().replace(
+    let source = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap().replace(
         "\nfunction M.load(config)",
         "M.test_queries = { state=W, query=must_git, git=git, rebase=rebase_in_progress }\nfunction M.load(config)",
     );
@@ -94,7 +100,7 @@ end)
 
 #[test]
 fn agent_exit_documented_fork_waits_for_permissions() {
-    use zellij_utils::data::PermissionStatus;
+    use zellij_types::data::PermissionStatus;
     let docs = include_str!("../../../../docs/LUA_PLUGINS.md");
     let wrapper = docs
         .split("```lua\nlocal load = M.load\n")
@@ -104,7 +110,7 @@ fn agent_exit_documented_fork_waits_for_permissions() {
         .next()
         .unwrap();
     let wrapper = format!("local load = M.load\n{wrapper}");
-    let builtin = zellij_utils::consts::builtin_lua_plugin("agent-exit").unwrap();
+    let builtin = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap();
     for line in wrapper.lines() {
         assert!(
             builtin.contains(&format!("-- {line}")),
@@ -257,7 +263,7 @@ fn agent_exit_workflow_merges_and_cleans_real_worktrees() {
             std::fs::write(linked.join("shared"), "topic\n").unwrap();
         }
 
-        let source = zellij_utils::consts::builtin_lua_plugin("agent-exit")
+        let source = zellij_config::consts::builtin_lua_plugin("agent-exit")
             .unwrap()
             .replace(
                 "\nfunction M.load(config)",
@@ -309,9 +315,11 @@ fn agent_exit_workflow_merges_and_cleans_real_worktrees() {
                 plugin
                     .lua
                     .create_function(|lua, root: String| {
-                        let snapshot =
-                            zellij_utils::project_config::access(std::path::Path::new(&root), None)
-                                .map_err(mlua::Error::external)?;
+                        let snapshot = zellij_config::project_config::access(
+                            std::path::Path::new(&root),
+                            None,
+                        )
+                        .map_err(mlua::Error::external)?;
                         super::to_lua_value(lua, &snapshot).map_err(mlua::Error::external)
                     })
                     .unwrap(),
@@ -488,10 +496,10 @@ end
 fn test_env() -> PluginEnv {
     PluginEnv {
         response_sink: ResponseSink::WasiStdin,
-        plugin_id: crate::PluginId(1),
+        plugin_id: crate::PluginId::new(1),
         cancel: Default::default(),
-        client_id: crate::ClientId(1),
-        owner_client_id: crate::ClientId(1),
+        client_id: crate::ClientId::new(1),
+        owner_client_id: crate::ClientId::new(1),
         plugin: PluginConfig {
             path: PathBuf::from("test.lua"),
             _allow_exec_host_cmd: false,
@@ -508,7 +516,7 @@ fn test_env() -> PluginEnv {
         data_access: Arc::new(DataAccess::sqlite(&PathBuf::from("."))),
         queues: Default::default(),
         plugin_own_cache_dir: PathBuf::from("."),
-        tab_index: Some(0),
+        tab_index: Some(TabId::new(0)),
         path_to_default_shell: PathBuf::from("."),
         default_shell: None,
         plugin_cwd: PathBuf::from("."),
@@ -526,7 +534,7 @@ fn test_env() -> PluginEnv {
         cancel_tripped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         stdin_pipe: Arc::new(Mutex::new(VecDeque::new())),
         stdout_pipe: Arc::new(Mutex::new(VecDeque::new())),
-        store_limits: PluginResourceLimits::new(crate::PluginId(1)),
+        store_limits: PluginResourceLimits::new(crate::PluginId::new(1)),
     }
 }
 
@@ -704,7 +712,7 @@ fn update_receives_a_normalized_event_and_reports_whether_to_render() {
 /// agent's own words, and the pane as a number - flat on the event, as every struct payload is.
 #[test]
 fn an_agent_event_arrives_flat_and_typed() {
-    use zellij_utils::agent::AgentEvent;
+    use zellij_types::agent::AgentEvent;
     let mut plugin = load(
         r#"
         local zellij = require("zellij")
@@ -726,10 +734,10 @@ fn an_agent_event_arrives_flat_and_typed() {
     .unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
     let event = Event::AgentEvent(AgentEvent {
-        pane_id: 7,
+        pane_id: zellij_types::internal_ids::TerminalId::new(7),
         kind: "claude".to_owned(),
         hook: "Stop".to_owned(),
-        state: Some(zellij_utils::data::AgentState::Idle),
+        state: Some(zellij_types::agent::AgentState::Idle),
         last_message: Some("done".to_owned()),
         raw: "{}".to_owned(),
         ..Default::default()
@@ -746,7 +754,8 @@ fn an_agent_event_arrives_flat_and_typed() {
 /// And a pane that closed is gone from the records, not left at the state it last showed.
 #[test]
 fn agent_records_are_current_on_the_first_ask_and_forget_a_closed_pane() {
-    use zellij_utils::data::{AgentInfo, AgentSource, AgentState, PaneInfo, PaneManifest};
+    use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
+    use {zellij_types::data::PaneInfo, zellij_types::data::PaneManifest};
     let mut plugin = load(
         r#"
         local zellij = require("zellij")
@@ -770,11 +779,11 @@ fn agent_records_are_current_on_the_first_ask_and_forget_a_closed_pane() {
     plugin.load(&BTreeMap::new()).unwrap();
     let manifest_with = |panes: Vec<PaneInfo>| {
         let mut manifest = PaneManifest::default();
-        manifest.panes.insert(0, panes);
+        manifest.panes.insert(TabPosition::new(0), panes);
         Event::PaneUpdate(manifest)
     };
     let agent_pane = PaneInfo {
-        id: 3,
+        id: zellij_types::pane_id::PaneId::from_legacy(3, false),
         agent: Some(AgentInfo {
             kind: "claude".to_owned(),
             state: AgentState::Busy,
@@ -789,7 +798,7 @@ fn agent_records_are_current_on_the_first_ask_and_forget_a_closed_pane() {
         ..Default::default()
     };
     let shell_pane = PaneInfo {
-        id: 4,
+        id: zellij_types::pane_id::PaneId::from_legacy(4, false),
         ..Default::default()
     };
     let ask = Event::Key(KeyWithModifier::new(BareKey::Char('a')));
@@ -1180,8 +1189,8 @@ fn a_default_keybinding_callback_is_dispatched_from_its_reserved_pipe() {
     )
     .unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
-    let message = zellij_utils::data::PipeMessage::new(
-        zellij_utils::data::PipeSource::Keybind,
+    let message = zellij_types::data::PipeMessage::new(
+        zellij_types::data::PipeSource::Keybind,
         "__zellij_default_keybinding:1",
         &None,
         &None,
@@ -1418,7 +1427,7 @@ fn the_agent_harness_example_loads_and_waits_for_its_permissions() {
     assert!(rendered.contains("starting"), "got: {rendered}");
     let subscriptions = plugin.env().subscriptions.lock().unwrap().clone();
     assert!(
-        subscriptions.contains(&zellij_utils::data::EventType::PermissionRequestResult),
+        subscriptions.contains(&zellij_types::data::EventType::PermissionRequestResult),
         "the task awaits the grant: {subscriptions:?}"
     );
 }
@@ -1455,16 +1464,16 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
     // The builtin hook is compiled in rather than read from disk, so nothing else would notice
     // a syntax error in it until an agent exited.
     use crate::background_jobs::BackgroundJob;
-    use zellij_utils::channels::SenderWithContext;
-    use zellij_utils::errors::ErrorContext;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::diagnostics::ErrorContext;
 
     let (to_background_jobs, background_jobs) =
-        zellij_utils::channels::unbounded::<(BackgroundJob, ErrorContext)>();
+        zellij_runtime::channels::unbounded::<(BackgroundJob, ErrorContext)>();
     let mut env = test_env();
     env.senders.to_background_jobs = Some(SenderWithContext::new(to_background_jobs));
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
     let mut plugin = load_lua_plugin(
-        zellij_utils::consts::builtin_lua_plugin("agent-exit").expect("the hook is a builtin"),
+        zellij_config::consts::builtin_lua_plugin("agent-exit").expect("the hook is a builtin"),
         "agent-exit.lua",
         env,
     )
@@ -1701,7 +1710,7 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
 
 #[test]
 fn agent_exit_zero_guest_changes_start_the_workflow() {
-    let source = zellij_utils::consts::builtin_lua_plugin("agent-exit")
+    let source = zellij_config::consts::builtin_lua_plugin("agent-exit")
         .unwrap()
         .replace(
             "\nfunction M.load(config)",
@@ -1744,7 +1753,7 @@ end
 
 #[test]
 fn agent_exit_dialog_keys_do_not_reach_restart_or_close() {
-    let source = zellij_utils::consts::builtin_lua_plugin("agent-exit")
+    let source = zellij_config::consts::builtin_lua_plugin("agent-exit")
         .unwrap()
         .replace(
             "\nfunction M.load(config)",
@@ -1813,7 +1822,7 @@ end
 
 #[test]
 fn agent_exit_handles_missing_metadata_and_unavailable_changes() {
-    let source = zellij_utils::consts::builtin_lua_plugin("agent-exit").unwrap();
+    let source = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap();
     for cwd in [None, Some(""), Some("/guest")] {
         for missing in [
             None,
@@ -1953,14 +1962,14 @@ fn agent_exit_handles_missing_metadata_and_unavailable_changes() {
 fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
     use crate::panes::PaneId;
     use crate::screen::ScreenInstruction;
-    use zellij_utils::channels::SenderWithContext;
-    use zellij_utils::errors::ErrorContext;
-    use zellij_utils::input::hooks::HookPoint;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::diagnostics::ErrorContext;
+    use zellij_types::input::hooks::HookPoint;
 
     let source =
-        zellij_utils::consts::builtin_lua_plugin("agent-policy").expect("the hook is a builtin");
+        zellij_config::consts::builtin_lua_plugin("agent-policy").expect("the hook is a builtin");
     let (to_screen, screen_receiver) =
-        zellij_utils::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
+        zellij_runtime::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
     let mut env = test_env();
     env.senders.to_screen = Some(SenderWithContext::new(to_screen));
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
@@ -1969,7 +1978,7 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
     plugin.load(&BTreeMap::new()).unwrap();
 
     let notifications =
-        |receiver: &zellij_utils::channels::Receiver<(ScreenInstruction, ErrorContext)>| {
+        |receiver: &zellij_runtime::channels::Receiver<(ScreenInstruction, ErrorContext)>| {
             receiver
                 .try_iter()
                 .filter_map(|(instruction, _)| match instruction {
@@ -1979,14 +1988,14 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
                 .collect::<Vec<_>>()
         };
 
-    use zellij_utils::data::AgentState;
+    use zellij_types::agent::AgentState;
     let payload =
-        |state: AgentState, detail: Option<&str>| zellij_utils::data::HookPayload::Agent {
-            pane_id: 7,
-            agent: zellij_utils::data::AgentInfo {
+        |state: AgentState, detail: Option<&str>| zellij_types::data::HookPayload::Agent {
+            pane_id: zellij_types::internal_ids::TerminalId::new(7),
+            agent: zellij_types::agent::AgentInfo {
                 kind: "claude".to_owned(),
                 state,
-                source: zellij_utils::data::AgentSource::Reported,
+                source: zellij_types::agent::AgentSource::Reported,
                 detail: detail.map(str::to_owned),
                 waiting_on: None,
                 wait_needs_a_person: state == AgentState::Waiting,
@@ -2019,7 +2028,7 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
         notifications(&screen_receiver),
         vec![(
             "claude in pane 7: Allow Bash(cargo test)?".to_owned(),
-            Some(PaneId::Terminal(crate::TerminalId(7))),
+            Some(PaneId::Terminal(crate::TerminalId::new(7))),
         )],
         "a waiting agent is announced, and the toast focuses its pane"
     );
@@ -2034,7 +2043,7 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
         notifications(&screen_receiver),
         vec![(
             "claude in pane 7: is waiting for you".to_owned(),
-            Some(PaneId::Terminal(crate::TerminalId(7))),
+            Some(PaneId::Terminal(crate::TerminalId::new(7))),
         )],
         "a wait with no detail still says who is waiting"
     );
@@ -2047,23 +2056,26 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
 #[test]
 fn the_shipped_context_menu_hook_filters_the_items_it_is_given() {
     use crate::screen::ScreenInstruction;
-    use zellij_utils::channels::SenderWithContext;
-    use zellij_utils::data::{ContextMenuContext, ContextMenuItem, ContextMenuLink};
-    use zellij_utils::errors::ErrorContext;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::diagnostics::ErrorContext;
+    use {
+        zellij_types::data::ContextMenuContext, zellij_types::data::ContextMenuItem,
+        zellij_types::data::ContextMenuLink,
+    };
 
     let source =
-        zellij_utils::consts::builtin_lua_plugin("context-menu").expect("the hook is a builtin");
+        zellij_config::consts::builtin_lua_plugin("context-menu").expect("the hook is a builtin");
     let configured = vec![
-        ContextMenuItem::new("Copy", vec![]).with_id(0),
-        ContextMenuItem::separator().with_id(1),
-        ContextMenuItem::new("Close pane", vec![]).with_id(2),
+        ContextMenuItem::new("Copy", vec![]).with_id(ContextMenuItemId::new(0)),
+        ContextMenuItem::separator().with_id(ContextMenuItemId::new(1)),
+        ContextMenuItem::new("Close pane", vec![]).with_id(ContextMenuItemId::new(2)),
     ];
 
     // The answer goes to the screen thread, so the env gets a real channel rather than the
     // silently-failing default every other test here uses.
     let answer_for = |context: ContextMenuContext| -> Vec<ContextMenuItem> {
         let (to_screen, screen_receiver) =
-            zellij_utils::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
+            zellij_runtime::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
         let mut env = test_env();
         env.senders.to_screen = Some(SenderWithContext::new(to_screen));
         env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
@@ -2113,7 +2125,7 @@ fn the_shipped_context_menu_hook_filters_the_items_it_is_given() {
             .iter()
             .find(|item| item.label.starts_with("Copy"))
             .and_then(|item| item.id)
-            == Some(0),
+            == Some(ContextMenuItemId::new(0)),
         "the id has to survive the relabelling, or the actions do not come back"
     );
 
@@ -2158,14 +2170,14 @@ fn the_shipped_context_menu_hook_filters_the_items_it_is_given() {
 #[test]
 fn the_shipped_context_menu_hook_opens_a_link_with_the_opener_the_machine_has() {
     use crate::background_jobs::BackgroundJob;
-    use zellij_utils::channels::SenderWithContext;
-    use zellij_utils::data::ContextMenuContext;
-    use zellij_utils::errors::ErrorContext;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::data::ContextMenuContext;
+    use zellij_types::diagnostics::ErrorContext;
 
     let source =
-        zellij_utils::consts::builtin_lua_plugin("context-menu").expect("the hook is a builtin");
+        zellij_config::consts::builtin_lua_plugin("context-menu").expect("the hook is a builtin");
     let (to_background_jobs, background_jobs) =
-        zellij_utils::channels::unbounded::<(BackgroundJob, ErrorContext)>();
+        zellij_runtime::channels::unbounded::<(BackgroundJob, ErrorContext)>();
     let mut env = test_env();
     env.senders.to_background_jobs = Some(SenderWithContext::new(to_background_jobs));
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
@@ -2173,15 +2185,16 @@ fn the_shipped_context_menu_hook_opens_a_link_with_the_opener_the_machine_has() 
     let mut plugin = load_lua_plugin(source, "context-menu.lua", env).unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
 
-    let commands = |receiver: &zellij_utils::channels::Receiver<(BackgroundJob, ErrorContext)>| {
-        receiver
-            .try_iter()
-            .filter_map(|(job, _)| match job {
-                BackgroundJob::RunCommand(_, _, command, args, ..) => Some((command, args)),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-    };
+    let commands =
+        |receiver: &zellij_runtime::channels::Receiver<(BackgroundJob, ErrorContext)>| {
+            receiver
+                .try_iter()
+                .filter_map(|(job, _)| match job {
+                    BackgroundJob::RunCommand(_, _, command, args, ..) => Some((command, args)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
 
     // Both candidates are probed at load, so the answer is there before the first selection.
     let probes = commands(&background_jobs);
@@ -2329,8 +2342,8 @@ fn the_todo_examples_load_and_the_pane_renders_its_keys() {
         .unwrap();
     // The discover broadcast is how a hocus reload finds an extension that is already running,
     // and re-registering marshals the whole tool list.
-    let discover = zellij_utils::data::PipeMessage::new(
-        zellij_utils::data::PipeSource::Plugin(1),
+    let discover = zellij_types::data::PipeMessage::new(
+        zellij_types::data::PipeSource::Plugin(zellij_types::internal_ids::PluginId::new(1)),
         "hocus_extension_discover",
         &None,
         &None,
@@ -2346,7 +2359,7 @@ fn the_todo_examples_load_and_the_pane_renders_its_keys() {
     unlaunched.load(&BTreeMap::new()).unwrap();
     unlaunched
         .update(&Event::PermissionRequestResult(
-            zellij_utils::data::PermissionStatus::Granted,
+            zellij_types::data::PermissionStatus::Granted,
         ))
         .unwrap();
     unlaunched.pipe(&discover).unwrap();
@@ -2584,7 +2597,7 @@ fn a_nested_payload_is_built_from_a_plain_table() {
 /// cwd, and a `NewBranch` would switch the branch of whatever checkout the tests run in. So the
 /// enum spellings are checked one step earlier, where the question actually is - does serde read
 /// this table as the variant the guide says it does.
-fn command_from_lua(expression: &str) -> Result<zellij_utils::data::PluginCommand> {
+fn command_from_lua(expression: &str) -> Result<zellij_types::data::PluginCommand> {
     let lua = mlua::Lua::new();
     let args: mlua::Value = lua
         .load(expression)
@@ -2604,7 +2617,8 @@ fn command_from_lua(expression: &str) -> Result<zellij_utils::data::PluginComman
 /// on the way through, never a payload. These are the tables `docs/LUA_PLUGINS.md` shows.
 #[test]
 fn a_nested_enum_is_read_as_the_variant_it_names() {
-    use zellij_utils::data::{GitCheckout, PluginCommand};
+    use zellij_types::command::GitCheckout;
+    use zellij_types::data::PluginCommand;
 
     let checkout = |expression: &str| match command_from_lua(expression) {
         Ok(PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(_, source, checkout, false)) => {
@@ -2686,7 +2700,8 @@ fn a_git_checkout_command_takes_named_arguments() {
 /// straight through serde - and every spec field is optional, so an empty spec is a spec.
 #[test]
 fn spawn_agent_is_built_from_a_nested_spec_table() {
-    use zellij_utils::data::{AgentSpawnSpec, PluginCommand};
+    use zellij_types::agent::AgentSpawnSpec;
+    use zellij_types::data::PluginCommand;
 
     let build = |expression: &str| {
         let lua = mlua::Lua::new();
@@ -2890,7 +2905,9 @@ fn the_user_plugin_dir_reaches_lua_as_a_string() {
 /// integration has to hand-thread a `pane_id=` argument.
 #[test]
 fn a_cli_pipes_pane_reaches_lua_on_the_message() {
-    use zellij_utils::data::{PaneId, PipeMessage, PipeSource};
+    use {
+        zellij_types::data::PaneId, zellij_types::data::PipeMessage, zellij_types::data::PipeSource,
+    };
     let mut plugin = load_permitted(
         r#"
         local zellij = require("zellij")
@@ -2912,7 +2929,7 @@ fn a_cli_pipes_pane_reaches_lua_on_the_message() {
         &None,
         false,
     );
-    message.pane_id = Some(PaneId::Terminal(TerminalId(7).0));
+    message.pane_id = Some(PaneId::Terminal(TerminalId::new(7)));
     assert!(plugin.pipe(&message).unwrap());
     assert_eq!(
         String::from_utf8(plugin.render(1, 10).unwrap()).unwrap(),
@@ -2974,11 +2991,11 @@ fn the_plugin_folder_is_a_root_that_needs_author_plugins_to_write() {
 #[test]
 fn reloading_a_plugin_by_url_asks_the_plugin_thread() {
     use crate::plugins::PluginInstruction;
-    use zellij_utils::channels::SenderWithContext;
-    use zellij_utils::errors::ErrorContext;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::diagnostics::ErrorContext;
 
     let (to_plugin, plugin_receiver) =
-        zellij_utils::channels::unbounded::<(PluginInstruction, ErrorContext)>();
+        zellij_runtime::channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let mut env = test_env();
     env.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
@@ -3037,12 +3054,12 @@ fn check_lua_plugin_answers_nil_or_the_compile_error() {
 #[test]
 fn a_plugin_can_set_a_panes_agent_record() {
     use crate::screen::ScreenInstruction;
-    use zellij_utils::channels::SenderWithContext;
-    use zellij_utils::data::{AgentInfo, AgentSource, AgentState};
-    use zellij_utils::errors::ErrorContext;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
+    use zellij_types::diagnostics::ErrorContext;
 
     let (to_screen, screen_receiver) =
-        zellij_utils::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
+        zellij_runtime::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
     let mut env = test_env();
     env.senders.to_screen = Some(SenderWithContext::new(to_screen));
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
@@ -3092,7 +3109,7 @@ fn a_plugin_can_set_a_panes_agent_record() {
     assert_eq!(records.len(), 2, "{records:?}");
     assert_eq!(
         records[0].0,
-        crate::panes::PaneId::Terminal(crate::TerminalId(3))
+        crate::panes::PaneId::Terminal(crate::TerminalId::new(3))
     );
     assert_eq!(
         records[0].1,
@@ -3127,10 +3144,13 @@ fn a_plugin_can_set_a_panes_agent_record() {
         runs,
         vec![
             (
-                crate::panes::PaneId::Terminal(crate::TerminalId(3)),
+                crate::panes::PaneId::Terminal(crate::TerminalId::new(3)),
                 Some("codex:s1".to_owned())
             ),
-            (crate::panes::PaneId::Terminal(crate::TerminalId(3)), None),
+            (
+                crate::panes::PaneId::Terminal(crate::TerminalId::new(3)),
+                None
+            ),
         ],
         "leaving `run_id` out clears it"
     );
@@ -3163,7 +3183,7 @@ fn a_scalar_answer_arrives_as_a_scalar() {
     let rendered = String::from_utf8(plugin.render(1, 40).unwrap()).unwrap();
     assert_eq!(
         rendered,
-        format!("string {}", zellij_utils::consts::VERSION),
+        format!("string {}", zellij_runtime::consts::VERSION),
         "the version should arrive readable, not as protobuf bytes"
     );
 }
@@ -3694,7 +3714,7 @@ fn the_tmp_root_is_zellijs_own_temp_folder() {
         file_permissions(),
     )
     .unwrap();
-    let written = zellij_utils::consts::ZELLIJ_TMP_DIR.join("lua-sandbox-test.txt");
+    let written = zellij_runtime::consts::ZELLIJ_TMP_DIR.join("lua-sandbox-test.txt");
     let _cleanup = RemoveOnDrop(written.clone());
     assert_eq!(std::fs::read_to_string(&written).unwrap(), "shared");
     // and not in /host, which is where a relative path would have gone
@@ -3719,12 +3739,13 @@ fn describe_event(event: Event, body: &str) -> String {
 /// a hook reads `payload.pane_id` and `payload.agent.state` rather than a variant name.
 #[test]
 fn a_hook_event_has_its_point_and_payload() {
-    use zellij_utils::data::{AgentInfo, AgentSource, AgentState, HookPayload};
-    use zellij_utils::input::hooks::HookPoint;
+    use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
+    use zellij_types::data::HookPayload;
+    use zellij_types::input::hooks::HookPoint;
     let event = Event::Hook {
         point: HookPoint::AgentWaiting,
         payload: HookPayload::Agent {
-            pane_id: 7,
+            pane_id: zellij_types::internal_ids::TerminalId::new(7),
             agent: AgentInfo {
                 kind: "claude".to_owned(),
                 state: AgentState::Waiting,
@@ -3751,7 +3772,7 @@ fn a_hook_event_has_its_point_and_payload() {
 
 #[test]
 fn a_hook_handler_registered_with_on_runs() {
-    use zellij_utils::input::hooks::HookPoint;
+    use zellij_types::input::hooks::HookPoint;
     let mut plugin = load(
         r#"
         local zellij = require("zellij")
@@ -3767,17 +3788,17 @@ fn a_hook_handler_registered_with_on_runs() {
     plugin
         .update(&Event::Hook {
             point: HookPoint::SessionStart,
-            payload: zellij_utils::data::HookPayload::SessionStart {
+            payload: zellij_types::data::HookPayload::SessionStart {
                 session_name: "main".to_owned(),
-                client_id: 1,
+                client_id: crate::ClientId::new(1),
             },
         })
         .unwrap();
     plugin
         .update(&Event::Hook {
             point: HookPoint::PaneExit,
-            payload: zellij_utils::data::HookPayload::PaneExit {
-                pane_id: 7,
+            payload: zellij_types::data::HookPayload::PaneExit {
+                pane_id: zellij_types::internal_ids::TerminalId::new(7),
                 exit_code: None,
                 cwd: None,
                 command: None,
@@ -3813,8 +3834,11 @@ fn a_command_result_has_named_fields_and_string_output() {
 /// fields are walked by position rather than read off the list's length.
 #[test]
 fn an_absent_exit_code_does_not_shift_the_fields_after_it() {
-    let event =
-        Event::CommandPaneExited(7, None, BTreeMap::from([("a".to_owned(), "b".to_owned())]));
+    let event = Event::CommandPaneExited(
+        zellij_types::internal_ids::TerminalId::new(7),
+        None,
+        BTreeMap::from([("a".to_owned(), "b".to_owned())]),
+    );
     let out = describe_event(
         event,
         r#"return tostring(event.pane_id) .. "|" .. tostring(event.exit_code) .. "|" .. event.context.a"#,
@@ -3852,12 +3876,12 @@ fn a_web_result_body_is_a_string_and_a_stream_chunk_too() {
 #[test]
 fn a_mouse_event_says_what_kind_and_where() {
     let out = describe_event(
-        Event::Mouse(zellij_utils::data::Mouse::LeftClick(3, 4)),
+        Event::Mouse(zellij_types::data::Mouse::LeftClick(3, 4)),
         r#"return event.kind .. "@" .. event.line .. "," .. event.col"#,
     );
     assert_eq!(out, "left_click@3,4");
     let out = describe_event(
-        Event::Mouse(zellij_utils::data::Mouse::ScrollUp(2)),
+        Event::Mouse(zellij_types::data::Mouse::ScrollUp(2)),
         r#"return event.kind .. "x" .. event.lines"#,
     );
     assert_eq!(out, "scroll_upx2");
@@ -3877,10 +3901,10 @@ fn file_system_events_carry_named_pairs() {
 /// by the `terminal:3` spelling `zellij.pane_key` produces, so a plugin can.
 #[test]
 fn a_render_report_can_be_looked_up_by_pane() {
-    use zellij_utils::data::{PaneContents, PaneId};
+    use {zellij_types::data::PaneContents, zellij_types::data::PaneId};
     let mut report = std::collections::HashMap::new();
     report.insert(
-        PaneId::Terminal(TerminalId(3).0),
+        PaneId::Terminal(TerminalId::new(3)),
         PaneContents {
             viewport: vec!["hello".to_owned()],
             ..Default::default()
@@ -4323,8 +4347,9 @@ fn decode_error(command: CommandType, bytes: &[u8]) -> String {
 #[test]
 fn a_write_conflict_is_marked_and_an_ordinary_failure_is_not() {
     use prost::Message;
-    use zellij_utils::plugin_api::plugin_command::{
-        data_apply_response, ProtobufDataApplyResponse,
+    use {
+        zellij_plugin_api::plugin_command::data_apply_response,
+        zellij_plugin_api::plugin_command::ProtobufDataApplyResponse,
     };
     let reply = |result| {
         ProtobufDataApplyResponse {
@@ -4361,8 +4386,9 @@ fn a_write_conflict_is_marked_and_an_ordinary_failure_is_not() {
 #[test]
 fn a_pane_id_reply_is_the_same_table_the_prelude_builds() {
     use prost::Message;
-    use zellij_utils::plugin_api::plugin_command::{
-        ProtobufOpenCommandPaneNearPluginResponse, ProtobufPaneId,
+    use {
+        zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneNearPluginResponse,
+        zellij_plugin_api::plugin_command::ProtobufPaneId,
     };
     let reply = ProtobufOpenCommandPaneNearPluginResponse {
         pane_id: Some(ProtobufPaneId {
@@ -4395,8 +4421,9 @@ fn a_pane_id_reply_is_the_same_table_the_prelude_builds() {
 #[test]
 fn a_success_or_error_reply_is_true_or_raises() {
     use prost::Message;
-    use zellij_utils::plugin_api::plugin_command::{
-        save_layout_response, ProtobufSaveLayoutResponse,
+    use {
+        zellij_plugin_api::plugin_command::save_layout_response,
+        zellij_plugin_api::plugin_command::ProtobufSaveLayoutResponse,
     };
     let ok = ProtobufSaveLayoutResponse {
         result: Some(save_layout_response::Result::Success(true)),
@@ -4421,8 +4448,9 @@ fn a_success_or_error_reply_is_true_or_raises() {
 #[test]
 fn a_pane_in_a_new_tab_arrives_as_named_fields() {
     use prost::Message;
-    use zellij_utils::plugin_api::plugin_command::{
-        ProtobufOpenPaneInNewTabResponse, ProtobufPaneId,
+    use {
+        zellij_plugin_api::plugin_command::ProtobufOpenPaneInNewTabResponse,
+        zellij_plugin_api::plugin_command::ProtobufPaneId,
     };
     let reply = ProtobufOpenPaneInNewTabResponse {
         tab_id: Some(2),
@@ -4445,8 +4473,11 @@ fn a_pane_in_a_new_tab_arrives_as_named_fields() {
 #[test]
 fn the_session_list_arrives_as_the_snapshot_the_shim_builds() {
     use prost::Message;
-    use zellij_utils::data::{GetSessionListResponse, SessionInfo, SessionListSnapshot};
-    use zellij_utils::plugin_api::plugin_command::ProtobufGetSessionListResponse;
+    use zellij_plugin_api::plugin_command::ProtobufGetSessionListResponse;
+    use {
+        zellij_types::data::GetSessionListResponse, zellij_types::data::SessionInfo,
+        zellij_types::data::SessionListSnapshot,
+    };
     let snapshot = SessionListSnapshot {
         live_sessions: vec![SessionInfo {
             name: "work".to_owned(),
@@ -4482,8 +4513,8 @@ fn the_session_list_arrives_as_the_snapshot_the_shim_builds() {
 #[test]
 fn a_pane_scrollback_reply_is_the_pane_contents() {
     use prost::Message;
-    use zellij_utils::data::{PaneContents, PaneScrollbackResponse};
-    use zellij_utils::plugin_api::event::ProtobufPaneScrollbackResponse;
+    use zellij_plugin_api::event::ProtobufPaneScrollbackResponse;
+    use {zellij_types::data::PaneContents, zellij_types::data::PaneScrollbackResponse};
     let contents = PaneContents {
         viewport: vec!["$ ls".to_owned(), "notes.txt".to_owned()],
         ..Default::default()
@@ -4603,13 +4634,15 @@ fn a_pane_that_could_not_be_opened_is_nil() {
 /// events it subscribes to, and pressed, the way the playground is.
 #[test]
 fn the_dashboard_example_loads_renders_components_and_takes_input() {
-    use zellij_utils::data::{PaneInfo, PaneManifest, TabInfo};
+    use {
+        zellij_types::data::PaneInfo, zellij_types::data::PaneManifest, zellij_types::data::TabInfo,
+    };
     let source = example_plugin("dashboard.lua");
     let mut plugin = load_permitted(&source).unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
 
     let tab = TabInfo {
-        position: 0,
+        position: TabPosition::new(0),
         name: "main".to_owned(),
         active: true,
         ..Default::default()
@@ -4617,9 +4650,9 @@ fn the_dashboard_example_loads_renders_components_and_takes_input() {
     plugin.update(&Event::TabUpdate(vec![tab])).unwrap();
     let mut manifest = PaneManifest::default();
     manifest.panes.insert(
-        0,
+        TabPosition::new(0),
         vec![PaneInfo {
-            id: 3,
+            id: zellij_types::pane_id::PaneId::from_legacy(3, false),
             title: "日本 shell".to_owned(),
             ..Default::default()
         }],
@@ -4642,7 +4675,7 @@ fn the_dashboard_example_loads_renders_components_and_takes_input() {
             .unwrap();
     }
     plugin
-        .update(&Event::Mouse(zellij_utils::data::Mouse::LeftClick(3, 1)))
+        .update(&Event::Mouse(zellij_types::data::Mouse::LeftClick(3, 1)))
         .unwrap();
 
     let rendered = String::from_utf8(plugin.render(20, 60).unwrap()).unwrap();
@@ -4929,7 +4962,10 @@ fn the_catalog_answers_with_the_entities_the_plugin_may_see() {
 /// bridge and no declaration of its own: the store here is seeded the way `hocus-store` seeds it.
 #[test]
 fn the_hocus_todos_example_reads_a_project_list_out_of_the_shared_namespace() {
-    use zellij_utils::data::{AttrDef, EntityDef, Mutation, PermissionStatus};
+    use {
+        zellij_types::data::AttrDef, zellij_types::data::EntityDef, zellij_types::data::Mutation,
+        zellij_types::data::PermissionStatus,
+    };
 
     let store_dir = tempfile::tempdir().unwrap();
     let data_access = Arc::new(DataAccess::sqlite(store_dir.path()));
@@ -5037,7 +5073,10 @@ fn the_hocus_todos_example_reads_a_project_list_out_of_the_shared_namespace() {
 /// three, exactly as `hocus-proto`'s `store::shared_defs()` declares them.
 #[test]
 fn the_hocus_notes_example_reads_a_projects_notes_out_of_the_shared_namespace() {
-    use zellij_utils::data::{AttrDef, EntityDef, Mutation, PermissionStatus};
+    use {
+        zellij_types::data::AttrDef, zellij_types::data::EntityDef, zellij_types::data::Mutation,
+        zellij_types::data::PermissionStatus,
+    };
 
     let store_dir = tempfile::tempdir().unwrap();
     let data_access = Arc::new(DataAccess::sqlite(store_dir.path()));
@@ -5215,8 +5254,8 @@ fn the_catalog_shows_shared_namespaces_only_with_the_permission_and_never_a_priv
             .define_entity(
                 namespace,
                 "zellij:elsewhere",
-                &zellij_utils::data::EntityDef::new(entity, 1)
-                    .attr(zellij_utils::data::AttrDef::text("text")),
+                &zellij_types::data::EntityDef::new(entity, 1)
+                    .attr(zellij_types::data::AttrDef::text("text")),
                 false,
             )
             .unwrap();
@@ -5307,7 +5346,11 @@ fn workflow_context(step: &str) -> BTreeMap<String, String> {
 }
 
 fn step_exited(step: &str, code: Option<i32>) -> Event {
-    Event::CommandPaneExited(7, code, workflow_context(step))
+    Event::CommandPaneExited(
+        zellij_types::internal_ids::TerminalId::new(7),
+        code,
+        workflow_context(step),
+    )
 }
 
 fn logged(plugin: &mut super::LuaPlugin) -> String {
@@ -5316,7 +5359,7 @@ fn logged(plugin: &mut super::LuaPlugin) -> String {
 
 #[test]
 fn a_workflow_subscribes_before_opening_its_first_pane() {
-    use zellij_utils::data::EventType;
+    use zellij_types::data::EventType;
 
     for floating in [false, true] {
         let mut plugin = load(
@@ -5372,7 +5415,10 @@ fn a_workflow_subscribes_before_opening_its_first_pane() {
         plugin.update(&Event::InputReceived).unwrap();
         assert_eq!(logged(&mut plugin), "");
         plugin
-            .update(&Event::CommandPaneOpened(7, workflow_context("1")))
+            .update(&Event::CommandPaneOpened(
+                zellij_types::internal_ids::TerminalId::new(7),
+                workflow_context("1"),
+            ))
             .unwrap();
         assert_eq!(logged(&mut plugin), "stdin:hello timeout");
         plugin.update(&step_exited("1", Some(0))).unwrap();
@@ -5434,7 +5480,7 @@ fn cancelling_interrupts_the_running_step_and_reports_cancelled() {
 
 #[test]
 fn a_workflow_inherits_cwd_only_on_the_same_host() {
-    use zellij_utils::data::{PaneInfo, PaneManifest};
+    use {zellij_types::data::PaneInfo, zellij_types::data::PaneManifest};
 
     let mut plugin = workflow_plugin(
         r#"steps = {
@@ -5447,9 +5493,9 @@ fn a_workflow_inherits_cwd_only_on_the_same_host() {
     let pane_update = |cwd: &str, host: Option<&str>| {
         let mut manifest = PaneManifest::default();
         manifest.panes.insert(
-            0,
+            TabPosition::new(0),
             vec![PaneInfo {
-                id: 7,
+                id: zellij_types::pane_id::PaneId::from_legacy(7, false),
                 cwd: Some(cwd.to_owned()),
                 host: host.map(str::to_owned),
                 ..Default::default()
@@ -5513,7 +5559,10 @@ fn a_step_timeout_escalates_from_sigint_to_sigkill() {
         r#"steps = { { path = "a", timeout = 0 }, { path = "b" } }, kill_grace = 0,"#,
     );
     plugin
-        .update(&Event::CommandPaneOpened(7, workflow_context("1")))
+        .update(&Event::CommandPaneOpened(
+            zellij_types::internal_ids::TerminalId::new(7),
+            workflow_context("1"),
+        ))
         .unwrap();
     plugin.update(&Event::Timer(1.0)).unwrap();
     plugin.update(&Event::Timer(1.0)).unwrap();
@@ -5536,13 +5585,19 @@ fn a_queued_steps_timeout_starts_only_when_that_step_does() {
     // A manual rerun of step 1 is ahead of step 2 in the pane. Neither that stale start nor a
     // timer event may interrupt it on step 2's behalf.
     plugin
-        .update(&Event::CommandPaneReRun(7, workflow_context("1")))
+        .update(&Event::CommandPaneReRun(
+            zellij_types::internal_ids::TerminalId::new(7),
+            workflow_context("1"),
+        ))
         .unwrap();
     plugin.update(&Event::Timer(1.0)).unwrap();
     assert_eq!(logged(&mut plugin), "open:a step1=0 run:b:true");
 
     plugin
-        .update(&Event::CommandPaneReRun(7, workflow_context("2")))
+        .update(&Event::CommandPaneReRun(
+            zellij_types::internal_ids::TerminalId::new(7),
+            workflow_context("2"),
+        ))
         .unwrap();
     plugin.update(&Event::Timer(1.0)).unwrap();
     assert_eq!(logged(&mut plugin), "open:a step1=0 run:b:true sigint");
@@ -5565,7 +5620,9 @@ fn a_step_pushed_while_running_extends_the_workflow() {
 fn the_workflows_pane_closing_ends_it() {
     let mut plugin = workflow_plugin(r#"steps = { { path = "a" }, { path = "b" } },"#);
     plugin
-        .update(&Event::PaneClosed(zellij_utils::data::PaneId::Terminal(7)))
+        .update(&Event::PaneClosed(zellij_types::data::PaneId::Terminal(
+            zellij_types::internal_ids::TerminalId::new(7),
+        )))
         .unwrap();
     assert_eq!(logged(&mut plugin), "open:a done:pane_closed");
 }
@@ -5626,7 +5683,10 @@ fn a_steps_stdin_is_written_when_the_step_starts() {
     let mut plugin =
         workflow_plugin(r#"steps = { { path = "a", stdin = "secret" }, { path = "b" } },"#);
     plugin
-        .update(&Event::CommandPaneOpened(7, workflow_context("1")))
+        .update(&Event::CommandPaneOpened(
+            zellij_types::internal_ids::TerminalId::new(7),
+            workflow_context("1"),
+        ))
         .unwrap();
     assert_eq!(
         logged(&mut plugin),
@@ -5656,8 +5716,8 @@ fn run_command_in_pane_takes_a_numeric_pane_id() {
 #[test]
 fn a_remote_command_pane_keeps_its_guest_cwd() {
     use crate::pty::PtyInstruction;
-    use zellij_utils::channels::SenderWithContext;
-    use zellij_utils::input::command::TerminalAction;
+    use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::input::command::TerminalAction;
 
     let mut plugin = load_permitted(
         r#"
@@ -5683,7 +5743,7 @@ fn a_remote_command_pane_keeps_its_guest_cwd() {
     )
     .unwrap();
     plugin.env_mut().plugin_cwd = PathBuf::from("/plugin/cwd");
-    let (pty_tx, pty_rx) = zellij_utils::channels::unbounded();
+    let (pty_tx, pty_rx) = zellij_runtime::channels::unbounded();
     plugin.env_mut().senders.to_pty = Some(SenderWithContext::new(pty_tx));
     let spawned = Arc::new(Mutex::new(vec![]));
     let sink = spawned.clone();
@@ -5712,7 +5772,7 @@ fn a_remote_command_pane_keeps_its_guest_cwd() {
         .unwrap();
     pump.join().unwrap();
 
-    let ssh = zellij_utils::data::PaneTarget::Ssh {
+    let ssh = zellij_types::command::PaneTarget::Ssh {
         host: "build-box".to_owned(),
     };
     let spawned = spawned.lock().unwrap();
@@ -5728,7 +5788,7 @@ fn a_remote_command_pane_keeps_its_guest_cwd() {
             (
                 PathBuf::from("local"),
                 Some(PathBuf::from("/plugin/cwd/src")),
-                zellij_utils::data::PaneTarget::Local
+                zellij_types::command::PaneTarget::Local
             ),
         ]
     );
@@ -5740,7 +5800,7 @@ fn a_remote_command_pane_keeps_its_guest_cwd() {
     {
         assert_eq!(pair[0].1, Some(PathBuf::from(mount).join("checkout")));
         let translated = match mount {
-            "/tmp" => zellij_utils::consts::ZELLIJ_TMP_DIR.join("checkout"),
+            "/tmp" => zellij_runtime::consts::ZELLIJ_TMP_DIR.join("checkout"),
             "/host" => PathBuf::from("/plugin/cwd/checkout"),
             _ => PathBuf::from("./checkout"),
         };
@@ -5774,9 +5834,9 @@ fn a_remote_replacement_does_not_inherit_the_plugins_cwd() {
     )
     .unwrap();
     plugin.env_mut().plugin_cwd = PathBuf::from("/plugin/cwd");
-    let (screen_tx, screen_rx) = zellij_utils::channels::unbounded();
+    let (screen_tx, screen_rx) = zellij_runtime::channels::unbounded();
     plugin.env_mut().senders.to_screen =
-        Some(zellij_utils::channels::SenderWithContext::new(screen_tx));
+        Some(zellij_runtime::channels::SenderWithContext::new(screen_tx));
     plugin.load(&BTreeMap::new()).unwrap();
 
     let cwds: Vec<Option<PathBuf>> = screen_rx
@@ -6080,8 +6140,8 @@ fn a_task_that_awaits_the_same_pipe_again_waits_for_the_next_message() {
         "#,
     );
     let go = |payload: &str| {
-        zellij_utils::data::PipeMessage::new(
-            zellij_utils::data::PipeSource::Keybind,
+        zellij_types::data::PipeMessage::new(
+            zellij_types::data::PipeSource::Keybind,
             "go",
             &Some(payload.to_owned()),
             &None,
@@ -6177,13 +6237,14 @@ fn race_detaches_its_listeners_without_unregistering_the_losers() {
     assert_eq!(logged(&mut plugin), "done");
 }
 
-fn manifest_with_agent(pane_id: u32, state: zellij_utils::data::AgentState) -> Event {
-    use zellij_utils::data::{AgentInfo, AgentSource, PaneInfo, PaneManifest};
+fn manifest_with_agent(pane_id: u32, state: zellij_types::agent::AgentState) -> Event {
+    use zellij_types::agent::{AgentInfo, AgentSource};
+    use {zellij_types::data::PaneInfo, zellij_types::data::PaneManifest};
     let mut manifest = PaneManifest::default();
     manifest.panes.insert(
-        0,
+        TabPosition::new(0),
         vec![PaneInfo {
-            id: pane_id,
+            id: zellij_types::pane_id::PaneId::from_legacy(pane_id, false),
             agent: Some(AgentInfo {
                 kind: "claude".to_owned(),
                 state,
@@ -6203,7 +6264,7 @@ fn manifest_with_agent(pane_id: u32, state: zellij_utils::data::AgentState) -> E
 
 #[test]
 fn agent_state_resolves_on_the_state_asked_for_and_after_the_edge_when_told_to() {
-    use zellij_utils::data::AgentState;
+    use zellij_types::agent::AgentState;
     let mut plugin = task_plugin(
         r#"
         local pane = zellij.await(zellij.async.agent_state(7, "waiting"))
@@ -6248,14 +6309,24 @@ fn pane_exit_resolves_on_close_as_well_as_on_exit() {
         "#,
     );
     plugin
-        .update(&Event::CommandPaneExited(8, Some(1), BTreeMap::new()))
+        .update(&Event::CommandPaneExited(
+            zellij_types::internal_ids::TerminalId::new(8),
+            Some(1),
+            BTreeMap::new(),
+        ))
         .unwrap();
     assert_eq!(logged(&mut plugin), "", "another pane");
     plugin
-        .update(&Event::CommandPaneExited(7, Some(3), BTreeMap::new()))
+        .update(&Event::CommandPaneExited(
+            zellij_types::internal_ids::TerminalId::new(7),
+            Some(3),
+            BTreeMap::new(),
+        ))
         .unwrap();
     plugin
-        .update(&Event::PaneClosed(zellij_utils::data::PaneId::Terminal(7)))
+        .update(&Event::PaneClosed(zellij_types::data::PaneId::Terminal(
+            zellij_types::internal_ids::TerminalId::new(7),
+        )))
         .unwrap();
     assert_eq!(logged(&mut plugin), "exit:3 closed:true");
 }
@@ -6306,8 +6377,8 @@ fn a_raising_task_does_not_strand_the_others_in_its_batch() {
     .unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
     assert_eq!(logged(&mut plugin), " running:true,true");
-    let go = zellij_utils::data::PipeMessage::new(
-        zellij_utils::data::PipeSource::Keybind,
+    let go = zellij_types::data::PipeMessage::new(
+        zellij_types::data::PipeSource::Keybind,
         "go",
         &Some("x".to_owned()),
         &None,
@@ -6363,8 +6434,8 @@ fn a_raising_task_drains_newly_ready_tasks_before_reporting_the_error() {
             "pipe" => {
                 loaded.unwrap();
                 plugin
-                    .pipe(&zellij_utils::data::PipeMessage::new(
-                        zellij_utils::data::PipeSource::Keybind,
+                    .pipe(&zellij_types::data::PipeMessage::new(
+                        zellij_types::data::PipeSource::Keybind,
                         "go",
                         &None,
                         &None,
@@ -6535,12 +6606,12 @@ fn async_constructors_subscribe_to_the_events_they_need() {
     );
     let subscriptions = plugin.env().subscriptions.lock().unwrap().clone();
     for wanted in [
-        zellij_utils::data::EventType::RunCommandResult,
-        zellij_utils::data::EventType::Timer,
-        zellij_utils::data::EventType::PaneUpdate,
-        zellij_utils::data::EventType::CommandPaneExited,
-        zellij_utils::data::EventType::PaneClosed,
-        zellij_utils::data::EventType::PermissionRequestResult,
+        zellij_types::data::EventType::RunCommandResult,
+        zellij_types::data::EventType::Timer,
+        zellij_types::data::EventType::PaneUpdate,
+        zellij_types::data::EventType::CommandPaneExited,
+        zellij_types::data::EventType::PaneClosed,
+        zellij_types::data::EventType::PermissionRequestResult,
     ] {
         assert!(
             subscriptions.contains(&wanted),
@@ -6588,7 +6659,7 @@ fn permissions_awaitable_resolves_with_the_answer() {
     );
     plugin
         .update(&Event::PermissionRequestResult(
-            zellij_utils::data::PermissionStatus::Granted,
+            zellij_types::data::PermissionStatus::Granted,
         ))
         .unwrap();
     assert_eq!(logged(&mut plugin), "answer:Granted");
@@ -6598,12 +6669,12 @@ fn permissions_awaitable_resolves_with_the_answer() {
 fn concurrent_permission_awaitables_are_dispatched_and_resolved_in_order() {
     for (first, second) in [
         (
-            zellij_utils::data::PermissionStatus::Granted,
-            zellij_utils::data::PermissionStatus::Denied,
+            zellij_types::data::PermissionStatus::Granted,
+            zellij_types::data::PermissionStatus::Denied,
         ),
         (
-            zellij_utils::data::PermissionStatus::Denied,
-            zellij_utils::data::PermissionStatus::Granted,
+            zellij_types::data::PermissionStatus::Denied,
+            zellij_types::data::PermissionStatus::Granted,
         ),
     ] {
         let mut plugin = task_plugin(
@@ -6664,9 +6735,9 @@ fn agent_send_writes_a_bracketed_paste_then_enter() {
     );
 }
 
-fn agent_event(pane_id: u32, hook: &str, state: Option<zellij_utils::data::AgentState>) -> Event {
-    Event::AgentEvent(zellij_utils::agent::AgentEvent {
-        pane_id,
+fn agent_event(pane_id: u32, hook: &str, state: Option<zellij_types::agent::AgentState>) -> Event {
+    Event::AgentEvent(zellij_types::agent::AgentEvent {
+        pane_id: crate::TerminalId::new(pane_id),
         kind: "claude".to_owned(),
         hook: hook.to_owned(),
         state,
@@ -6706,7 +6777,7 @@ fn a_failing_agent_listener_does_not_strand_later_listeners() {
 
 #[test]
 fn a_prompt_sends_and_resolves_when_the_agents_turn_ends() {
-    use zellij_utils::data::AgentState;
+    use zellij_types::agent::AgentState;
     let mut plugin = load_permitted(
         r#"
         local zellij = require("zellij")
@@ -6746,7 +6817,7 @@ fn a_prompt_sends_and_resolves_when_the_agents_turn_ends() {
 
 #[test]
 fn a_turn_ends_on_a_stop_and_not_on_a_session_start() {
-    use zellij_utils::data::AgentState;
+    use zellij_types::agent::AgentState;
     let mut plugin = task_plugin(
         r#"
         for _ = 1, 2 do
@@ -6780,7 +6851,7 @@ fn a_turn_ends_on_a_stop_and_not_on_a_session_start() {
 
 #[test]
 fn a_turn_with_an_idle_fallback_resolves_on_the_records_edge_into_idle() {
-    use zellij_utils::data::AgentState;
+    use zellij_types::agent::AgentState;
     let mut plugin = task_plugin(
         r#"
         local reply = zellij.await(zellij.async.turn(7, { fallback = "idle" }))
@@ -6836,8 +6907,8 @@ fn an_rpc_call_is_answered_by_the_handler_and_the_reply_resumes_the_caller() {
         .expect("the rpc call id was logged")
         .to_owned();
     let call = |name: &str, payload: &str| {
-        zellij_utils::data::PipeMessage::new(
-            zellij_utils::data::PipeSource::Plugin(3),
+        zellij_types::data::PipeMessage::new(
+            zellij_types::data::PipeSource::Plugin(zellij_types::internal_ids::PluginId::new(3)),
             name,
             &Some(payload.to_owned()),
             &None,
@@ -6968,8 +7039,8 @@ fn hocus_tools_registers_once_launched_and_answers_calls_over_rpc() {
         ]))
         .unwrap();
     let pipe = |name: &str, payload: &str| {
-        zellij_utils::data::PipeMessage::new(
-            zellij_utils::data::PipeSource::Plugin(3),
+        zellij_types::data::PipeMessage::new(
+            zellij_types::data::PipeSource::Plugin(zellij_types::internal_ids::PluginId::new(3)),
             name,
             &Some(payload.to_owned()),
             &None,

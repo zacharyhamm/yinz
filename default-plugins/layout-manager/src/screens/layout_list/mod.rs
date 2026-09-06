@@ -418,7 +418,7 @@ impl LayoutListScreen {
             if self.should_default_to_current_tab(display_layouts) {
                 if let Some(&tab_id) = tab_ids.first() {
                     let layout_name = selected.unwrap().name();
-                    rename_tab_with_id(tab_id as u64, layout_name);
+                    rename_tab_with_id(tab_id, layout_name);
                 }
             }
             close_self();

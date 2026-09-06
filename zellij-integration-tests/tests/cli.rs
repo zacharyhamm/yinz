@@ -1,12 +1,12 @@
 #![cfg(unix)]
 
 use insta::assert_snapshot;
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{
     claim_first_terminal_and_wait_for_prompt, col, keys, normalized,
     split_right_and_wait_for_prompt, start_zellij, tab_bar_shows_no_lone_pane_id, Size, TestRunner,
     PROMPT, TERMINAL_SIZE,
 };
-use zellij_utils::cli::CliAction;
 
 #[test]
 fn override_layout_from_default_to_compact() {
@@ -189,7 +189,7 @@ fn an_agent_report_is_carried_on_the_pane() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|pane| pane["id"] == terminal.terminal_id() && pane["is_plugin"] == false)
+        .find(|pane| pane["id"] == terminal.terminal_id().get() && pane["is_plugin"] == false)
         .unwrap_or_else(|| panic!("pane {pane_id} is not listed: {panes}"));
     assert_eq!(reported["agent"]["kind"], "codex", "{reported}");
     assert_eq!(reported["agent"]["state"], "Waiting", "{reported}");
@@ -198,14 +198,16 @@ fn an_agent_report_is_carried_on_the_pane() {
 
     // A hook event - what `--hook-json` reads off stdin - is sent on to `zellij events` typed:
     // the state the session derived and the agent's own words, keyed by the pane's number.
-    let agent_events = zellij.stream_events(&["agent_event"]);
+    let agent_events = zellij.stream_events(&["agent_event", "pane_update"]);
+    // The initial state report confirms the subscription before this one-shot event is sent.
+    agent_events.wait_for_event("PaneUpdate");
     let json =
         r#"{"hook_event_name":"Stop","session_id":"cc-1","last_assistant_message":"all green"}"#;
-    let hook: zellij_utils::agent::HookEvent = serde_json::from_str(json).unwrap();
+    let hook: zellij_types::agent::HookEvent = serde_json::from_str(json).unwrap();
     let (exit_code, reported) =
-        zellij.run_actions_reporting(zellij_utils::input::actions::hook_report_actions(
+        zellij.run_actions_reporting(zellij_types::input::actions::hook_report_actions(
             "claude",
-            zellij_utils::data::PaneId::Terminal(terminal.terminal_id()),
+            zellij_types::data::PaneId::Terminal(terminal.terminal_id()),
             &hook,
             json.to_owned(),
         ));
@@ -218,7 +220,7 @@ fn an_agent_report_is_carried_on_the_pane() {
         .unwrap();
     let event: serde_json::Value = serde_json::from_str(&streamed).unwrap();
     let event = &event["AgentEvent"];
-    assert_eq!(event["pane_id"], terminal.terminal_id(), "{event}");
+    assert_eq!(event["pane_id"], terminal.terminal_id().get(), "{event}");
     assert_eq!(event["kind"], "claude", "{event}");
     assert_eq!(event["hook"], "Stop", "{event}");
     assert_eq!(event["state"], "Idle", "{event}");
@@ -241,7 +243,7 @@ fn an_agent_report_is_carried_on_the_pane() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|pane| pane["id"] == terminal.terminal_id() && pane["is_plugin"] == false)
+        .find(|pane| pane["id"] == terminal.terminal_id().get() && pane["is_plugin"] == false)
         .unwrap();
     assert!(cleared["agent"].is_null(), "{cleared}");
     zellij.quit();
@@ -374,6 +376,8 @@ fn watcher_client_functionality() {
                 && grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("WATCHER_DONE")
                 && grid_snapshot.contains("│")
+                // The tab bar can first replay its old single-pane label.
+                && tab_bar_shows_no_lone_pane_id(grid_snapshot)
         },
     );
     assert_snapshot!(normalized(&main_snapshot));

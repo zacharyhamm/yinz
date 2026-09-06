@@ -12,6 +12,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use zellij_tile::prelude::DataRevision;
+use zellij_tile::prelude::DataRowId;
 use zellij_tile::prelude::{DataRows, DataValue, FetchRequest, Mutation, Pred, SortDir};
 
 /// The file the lists lived in before the store. Read once, by the import.
@@ -48,13 +50,13 @@ pub struct Item {
     /// cannot silently replace an edit somebody else made in between. Zero on an item that came
     /// from the legacy file rather than the store, which has no row to guard.
     #[serde(default, skip_serializing_if = "is_zero")]
-    pub rev: i64,
+    pub rev: DataRevision,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Item>,
 }
 
-fn is_zero(n: &i64) -> bool {
-    *n == 0
+fn is_zero(n: &DataRevision) -> bool {
+    *n == DataRevision::new(0)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,7 +302,7 @@ fn items_json(items: &[Item], include_done: bool) -> Vec<serde_json::Value> {
             // The revision this text was read at, so an edit composed from it can say what it
             // was composed from and be refused if somebody has since rewritten the item. Left
             // out when there is none — an item from the legacy file has no row to guard.
-            if item.rev > 0 {
+            if item.rev > DataRevision::new(0) {
                 value["rev"] = serde_json::json!(item.rev);
             }
             if include_done {
@@ -464,7 +466,7 @@ pub fn add(
         text,
         done: false,
         // Not from a store row: this is the legacy file being read in.
-        rev: 0,
+        rev: DataRevision::new(0),
         children: Vec::new(),
     };
     match parent_id {
@@ -678,7 +680,9 @@ pub fn items_from_rows(rows: &DataRows) -> Vec<(String, Item)> {
                     id,
                     text,
                     done: bool_at(rows, row, "done"),
-                    rev: int_at(rows, row, "rev").unwrap_or(0) as i64,
+                    rev: int_at(rows, row, "rev")
+                        .and_then(|rev| DataRevision::try_from(rev).ok())
+                        .unwrap_or_default(),
                     children: Vec::new(),
                 },
             ))
@@ -721,7 +725,9 @@ pub fn from_rows(rows: &DataRows) -> Store {
                 id,
                 text,
                 done: bool_at(rows, row, "done"),
-                rev: int_at(rows, row, "rev").unwrap_or(0) as i64,
+                rev: int_at(rows, row, "rev")
+                    .and_then(|rev| DataRevision::try_from(rev).ok())
+                    .unwrap_or_default(),
                 children: Vec::new(),
             },
         );
@@ -980,7 +986,7 @@ pub fn plan_edit(
     list: &List,
     id: u64,
     text: &str,
-    expect_rev: Option<i64>,
+    expect_rev: Option<DataRevision>,
 ) -> Result<(Vec<Mutation>, String), String> {
     let text = clean_text(text)?;
     let Some(item) = find_item(&list.items, id) else {
@@ -1069,7 +1075,7 @@ fn collect_level(
 pub fn import_mutations(
     root: &str,
     level: &[Pending],
-    new_ids: &BTreeMap<u64, i64>,
+    new_ids: &BTreeMap<u64, DataRowId>,
 ) -> Vec<Mutation> {
     level
         .iter()
@@ -1097,7 +1103,7 @@ mod tests {
             id,
             text: text.to_owned(),
             done: false,
-            rev: 0,
+            rev: DataRevision::new(0),
             children,
         }
     }
@@ -1171,7 +1177,7 @@ mod tests {
 
     /// Write a whole list in, level by level, as the import will.
     fn import(backend: &impl Backend, root: &str, list: &List) {
-        let mut new_ids: BTreeMap<u64, i64> = BTreeMap::new();
+        let mut new_ids: BTreeMap<u64, DataRowId> = BTreeMap::new();
         for level in levels_for_import(list) {
             let mutations = import_mutations(root, &level, &new_ids);
             let report = backend.apply(mutations).expect("imported a level");
@@ -1515,7 +1521,10 @@ mod tests {
         let read = fetch_list(&local, "/work").unwrap();
         let id = read.items[0].id;
         let saw = read.items[0].rev;
-        assert!(saw > 0, "a listing carries a revision to guard on");
+        assert!(
+            saw > DataRevision::new(0),
+            "a listing carries a revision to guard on"
+        );
         assert_eq!(
             items_json(&read.items, false)[0]["rev"],
             serde_json::json!(saw),
@@ -1658,7 +1667,7 @@ mod tests {
             let list = materialize(&backend, "/work");
             let (mutations, _) = plan_add(&list, "/work", text, parent).expect("planned");
             let report = backend.apply(mutations).expect("applied");
-            parent = Some(report.ids[0] as u64);
+            parent = Some(u64::try_from(report.ids[0].get()).unwrap());
             let under = expected_parent(&expected);
             add(&mut expected, "/work", text, under).expect("added");
         }

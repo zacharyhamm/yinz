@@ -366,11 +366,10 @@ mod tests {
                         .map(|j| crate::ui::PaneUiInfo {
                             name: format!("pane-{}", j),
                             exit_code: None,
-                            pane_id: j as u32,
-                            is_plugin: false,
+                            pane_id: zellij_tile::prelude::PaneId::from_legacy(j as u32, false),
                         })
                         .collect(),
-                    position: i,
+                    position: zellij_tile::prelude::TabPosition::new(i),
                 })
                 .collect(),
             connected_users: connected,

@@ -1,6 +1,7 @@
 pub mod components;
 pub mod welcome_screen;
 use std::time::Duration;
+use zellij_tile::prelude::TabPosition;
 use zellij_tile::prelude::*;
 
 use crate::session_list::{SelectedIndex, SessionList};
@@ -285,7 +286,7 @@ impl SessionUiInfo {
 pub struct TabUiInfo {
     pub name: String,
     pub panes: Vec<PaneUiInfo>,
-    pub position: usize,
+    pub position: TabPosition,
 }
 
 impl TabUiInfo {
@@ -301,7 +302,6 @@ impl TabUiInfo {
                                 name: pane_info.title.clone(),
                                 exit_code: pane_info.exit_status,
                                 pane_id: pane_info.id,
-                                is_plugin: pane_info.is_plugin,
                             })
                         } else {
                             None
@@ -342,8 +342,7 @@ impl TabUiInfo {
 pub struct PaneUiInfo {
     pub name: String,
     pub exit_code: Option<i32>,
-    pub pane_id: u32,
-    pub is_plugin: bool,
+    pub pane_id: zellij_tile::prelude::PaneId,
 }
 
 impl PaneUiInfo {

@@ -13,12 +13,15 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
-use zellij_utils::data::{InputMode, PaletteColor, PaneContents};
-use zellij_utils::errors::prelude::*;
-use zellij_utils::input::layout::Run as LayoutRun;
-use zellij_utils::input::layout::SplitDirection;
-use zellij_utils::pane_size::Offset;
-use zellij_utils::pane_size::{Dimension, PaneGeom};
+use zellij_runtime::errors::prelude::*;
+use zellij_types::geometry::SplitDirection;
+use zellij_types::input::layout::Run as LayoutRun;
+use zellij_types::pane_size::Offset;
+use zellij_types::pane_size::{Dimension, PaneGeom};
+use {
+    zellij_types::data::InputMode, zellij_types::data::PaletteColor,
+    zellij_types::data::PaneContents,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct PaneSpec {
@@ -58,7 +61,7 @@ pub fn dim_fixed(size: usize) -> Dimension {
 
 pub fn spec(id: u32, x: usize, y: usize, cols: Dimension, rows: Dimension) -> PaneSpec {
     PaneSpec {
-        id: PaneId::Terminal(crate::TerminalId(id)),
+        id: PaneId::Terminal(crate::TerminalId::new(id)),
         x,
         y,
         cols,
@@ -78,7 +81,7 @@ pub fn spec_stacked(
     stack_id: usize,
 ) -> PaneSpec {
     PaneSpec {
-        id: PaneId::Terminal(crate::TerminalId(id)),
+        id: PaneId::Terminal(crate::TerminalId::new(id)),
         x,
         y,
         cols,

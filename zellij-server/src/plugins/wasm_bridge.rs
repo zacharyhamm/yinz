@@ -10,6 +10,8 @@ use crate::plugins::pipes::{
 };
 use crate::plugins::plugin_loader::PluginLoader;
 use crate::plugins::plugin_map::{AtomicEvent, PluginEnv, PluginMap, RunningPlugin, Subscriptions};
+use zellij_types::internal_ids::QueueJobId;
+use zellij_types::internal_ids::TabId;
 
 use crate::plugins::plugin_worker::MessageToWorker;
 use crate::plugins::queues::{CancelResult, FinishedJob, QueuedJob, Queues};
@@ -29,16 +31,23 @@ use std::{
 use tokio::sync::mpsc::Sender;
 use url::Url;
 use wasmi::{Engine, Module};
-use zellij_utils::consts::{ZELLIJ_CACHE_DIR, ZELLIJ_SESSION_CACHE_DIR, ZELLIJ_TMP_DIR};
-use zellij_utils::data::{
-    FloatingPaneCoordinates, HostTerminalThemeMode, InputMode, KeybindsVec, LayoutInfo,
-    LayoutWithError, PaneContents, PaneRenderReport, PermissionStatus, PermissionType, PipeMessage,
-    PipeSource, QueueJobOutcome,
+use zellij_config::permission::PermissionCache;
+use zellij_runtime::downloader::Downloader;
+use zellij_storage::data_access::DataAccess;
+use zellij_types::geometry::FloatingPaneCoordinates;
+use zellij_types::input::keybinds::Keybinds;
+use zellij_types::style::HostTerminalThemeMode;
+use {
+    zellij_runtime::consts::ZELLIJ_CACHE_DIR, zellij_runtime::consts::ZELLIJ_SESSION_CACHE_DIR,
+    zellij_runtime::consts::ZELLIJ_TMP_DIR,
 };
-use zellij_utils::data_access::DataAccess;
-use zellij_utils::downloader::Downloader;
-use zellij_utils::input::keybinds::Keybinds;
-use zellij_utils::input::permission::PermissionCache;
+use {
+    zellij_types::data::InputMode, zellij_types::data::KeybindsVec, zellij_types::data::LayoutInfo,
+    zellij_types::data::LayoutWithError, zellij_types::data::PaneContents,
+    zellij_types::data::PaneRenderReport, zellij_types::data::PermissionStatus,
+    zellij_types::data::PermissionType, zellij_types::data::PipeMessage,
+    zellij_types::data::PipeSource, zellij_types::data::QueueJobOutcome,
+};
 
 use crate::panes::PaneId;
 use crate::{
@@ -46,15 +55,14 @@ use crate::{
     thread_bus::ThreadSenders, ui::loading_indication::LoadingIndication, ClientId,
     ServerInstruction,
 };
-use zellij_utils::{
-    data::{Event, EventType},
-    errors::prelude::*,
-    input::{
-        command::TerminalAction,
-        layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation, RunPluginOrAlias},
-        plugins::{PluginAliases, PluginConfig},
-    },
-    pane_size::Size,
+use zellij_runtime::errors::prelude::*;
+use zellij_types::pane_size::Size;
+use {
+    zellij_config::plugins::PluginConfig, zellij_types::data::Event, zellij_types::data::EventType,
+    zellij_types::input::command::TerminalAction,
+    zellij_types::input::layout::PluginUserConfiguration, zellij_types::input::layout::RunPlugin,
+    zellij_types::input::layout::RunPluginLocation, zellij_types::input::layout::RunPluginOrAlias,
+    zellij_types::input::plugins::PluginAliases,
 };
 
 fn make_plugin_url_path_safe(url: String) -> String {
@@ -79,8 +87,8 @@ pub struct PluginRenderAsset {
 impl Default for PluginRenderAsset {
     fn default() -> Self {
         Self {
-            client_id: ClientId(0),
-            plugin_id: PluginId(0),
+            client_id: ClientId::new(0),
+            plugin_id: PluginId::new(0),
             bytes: Vec::new(),
             cli_pipes: HashMap::new(),
         }
@@ -110,7 +118,7 @@ pub struct LoadingContext {
     pub plugin_own_data_dir: PathBuf,
     pub plugin_own_cache_dir: PathBuf,
     pub plugin_config: PluginConfig,
-    pub tab_index: Option<usize>,
+    pub tab_index: Option<TabId>,
     pub path_to_default_shell: PathBuf,
     pub session_env_vars: std::collections::BTreeMap<String, String>,
     pub plugin_aliases: Arc<Mutex<PluginAliases>>,
@@ -134,7 +142,7 @@ impl LoadingContext {
         plugin_config: PluginConfig,
         plugin_id: PluginId,
         client_id: ClientId,
-        tab_index: Option<usize>,
+        tab_index: Option<TabId>,
         size: Size,
     ) -> Self {
         let plugin_own_data_dir = ZELLIJ_SESSION_CACHE_DIR
@@ -350,7 +358,7 @@ impl WasmBridge {
     pub fn load_plugin(
         &mut self,
         run: &Option<RunPlugin>,
-        tab_index: Option<usize>,
+        tab_index: Option<TabId>,
         size: Size,
         cwd: Option<PathBuf>,
         skip_cache: bool,
@@ -386,7 +394,7 @@ impl WasmBridge {
                 "Plugins must have a client id, none was provided and none are connected"
             })?;
 
-        let plugin_id = PluginId(self.next_plugin_id);
+        let plugin_id = PluginId::new(self.next_plugin_id);
 
         match run {
             Some(run) => {
@@ -643,7 +651,7 @@ impl WasmBridge {
             cancel.store(true, Ordering::Relaxed);
         }
         let _ = self.senders.send_to_server(ServerInstruction::RebindKeys {
-            client_id: ClientId(0),
+            client_id: ClientId::new(0),
             keys_to_rebind: vec![],
             keys_to_unbind: vec![],
             write_config_to_disk: false,
@@ -709,7 +717,7 @@ impl WasmBridge {
             // reuse, so leaving them would send a later plugin someone else's rows.
             self.data_access
                 .plugin_data()
-                .drop_watches_for_plugin(plugin_id.0);
+                .drop_watches_for_plugin(plugin_id);
 
             // Send worker exit messages
             for (_worker_name, worker_sender) in workers {
@@ -822,7 +830,7 @@ impl WasmBridge {
         self.pump_queue(queue);
     }
 
-    pub fn queue_cancel(&mut self, job_id: u64) -> Result<()> {
+    pub fn queue_cancel(&mut self, job_id: QueueJobId) -> Result<()> {
         let result = self.queues.lock().unwrap().cancel(job_id);
         match result {
             CancelResult::DroppedPending(finished) => {
@@ -931,7 +939,7 @@ impl WasmBridge {
                     let started = Event::QueueJobStarted {
                         queue: job.queue.clone(),
                         job_id: job.job_id,
-                        plugin_id: plugin_id.0,
+                        plugin_id,
                         context: job.context.clone(),
                     };
                     let enqueuer = job.enqueuer;
@@ -1996,27 +2004,27 @@ impl WasmBridge {
 
         // Remove client from cached pane render report
         if let Some(ref mut prev_report) = self.previous_pane_render_report {
-            prev_report.all_pane_contents.remove(&client_id.0);
+            prev_report.all_pane_contents.remove(&client_id);
         }
     }
 
     fn get_changed_panes_per_client(
         &self,
         new_contents: &HashMap<
-            zellij_utils::data::ClientId,
-            HashMap<zellij_utils::data::PaneId, PaneContents>,
+            zellij_types::data::ClientId,
+            HashMap<zellij_types::data::PaneId, PaneContents>,
         >,
         previous_contents: Option<
             &HashMap<
-                zellij_utils::data::ClientId,
-                HashMap<zellij_utils::data::PaneId, PaneContents>,
+                zellij_types::data::ClientId,
+                HashMap<zellij_types::data::PaneId, PaneContents>,
             >,
         >,
-    ) -> HashMap<zellij_utils::data::ClientId, HashMap<zellij_utils::data::PaneId, PaneContents>>
+    ) -> HashMap<zellij_types::data::ClientId, HashMap<zellij_types::data::PaneId, PaneContents>>
     {
         let mut result: HashMap<
-            zellij_utils::data::ClientId,
-            HashMap<zellij_utils::data::PaneId, PaneContents>,
+            zellij_types::data::ClientId,
+            HashMap<zellij_types::data::PaneId, PaneContents>,
         > = HashMap::new();
 
         // First report - return everything grouped by client
@@ -2029,7 +2037,7 @@ impl WasmBridge {
 
         // Compare each client's panes
         for (client_id, new_panes) in new_contents {
-            let mut client_panes: HashMap<zellij_utils::data::PaneId, PaneContents> =
+            let mut client_panes: HashMap<zellij_types::data::PaneId, PaneContents> =
                 HashMap::new();
             for (pane_id, new_pane_contents) in new_panes {
                 let has_changed = prev_contents
@@ -2064,11 +2072,7 @@ impl WasmBridge {
                 .map(|r| &r.all_pane_contents),
         );
         for (client_id, client_panes) in changed_panes_per_client {
-            let updates = vec![(
-                None,
-                Some(ClientId(client_id)),
-                Event::PaneRenderReport(client_panes),
-            )];
+            let updates = vec![(None, Some(client_id), Event::PaneRenderReport(client_panes))];
             self.update_plugins(updates, shutdown_sender.clone())?;
         }
 
@@ -2579,7 +2583,7 @@ impl WasmBridge {
                 r.env().plugin.clone()
             })
     }
-    fn tab_index_of_plugin_id(&self, plugin_id: PluginId) -> Option<usize> {
+    fn tab_index_of_plugin_id(&self, plugin_id: PluginId) -> Option<TabId> {
         self.plugin_map
             .lock()
             .unwrap()
@@ -2662,7 +2666,7 @@ impl WasmBridge {
         shutdown_sender: Sender<()>,
     ) -> Result<()> {
         let err_context = || format!("Failed to grant permissions to {plugin_url}");
-        let location = RunPluginLocation::parse(plugin_url, None)
+        let location = zellij_runtime::plugin_location::parse_plugin_location(plugin_url, None)
             .map_err(|e| anyhow!("{}", e))
             .with_context(err_context)?;
         let key = location.to_string();
@@ -3476,7 +3480,7 @@ fn instances_of<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zellij_utils::data::{BareKey, KeyWithModifier};
+    use {zellij_types::data::BareKey, zellij_types::data::KeyWithModifier};
 
     fn plugin_config(configuration: &[(&str, &str)]) -> PluginConfig {
         let configuration = configuration
@@ -3486,7 +3490,11 @@ mod tests {
         PluginConfig {
             path: PathBuf::from("test-plugin"),
             _allow_exec_host_cmd: false,
-            location: RunPluginLocation::parse("zellij:tab-bar", None).unwrap(),
+            location: zellij_runtime::plugin_location::parse_plugin_location(
+                "zellij:tab-bar",
+                None,
+            )
+            .unwrap(),
             initial_userspace_configuration: PluginUserConfiguration::new(configuration),
             initial_cwd: None,
             relative_path: None,
@@ -3504,7 +3512,7 @@ mod tests {
     #[test]
     fn intercepted_keypress_batches_are_input_jobs() {
         let events = vec![(
-            ClientId(1),
+            ClientId::new(1),
             Event::InterceptedKeyPress(KeyWithModifier::new(BareKey::Char('x'))),
         )];
 
@@ -3537,7 +3545,8 @@ mod tests {
             ("caller_cwd", "/repo"),
             ("caller_terminal_pane_id", "0"),
         ]);
-        let at_this_location = HashMap::from([(running, vec![(PluginId(7), ClientId(1))])]);
+        let at_this_location =
+            HashMap::from([(running, vec![(PluginId::new(7), ClientId::new(1))])]);
 
         // as asked for by `hocus-agents`, whose message is stamped with `caller_cwd` alone
         let greeting = configuration(&[
@@ -3548,7 +3557,7 @@ mod tests {
         ]);
         assert_eq!(
             instances_of(&at_this_location, &greeting),
-            &[(PluginId(7), ClientId(1))],
+            &[(PluginId::new(7), ClientId::new(1))],
             "the conversation that is already open"
         );
 
@@ -3566,33 +3575,33 @@ mod tests {
         let (plugin_id, owner_client_id, other_client_id) = (1, 1, 2);
         // a message for another client reaches a shared plugin, but not a per-client one
         assert!(WasmBridge::message_is_directed_at_plugin(
-            Some(PluginId(plugin_id)),
-            Some(ClientId(other_client_id)),
-            &PluginId(plugin_id),
-            &ClientId(owner_client_id),
+            Some(PluginId::new(plugin_id)),
+            Some(ClientId::new(other_client_id)),
+            &PluginId::new(plugin_id),
+            &ClientId::new(owner_client_id),
             true,
         ));
         assert!(!WasmBridge::message_is_directed_at_plugin(
-            Some(PluginId(plugin_id)),
-            Some(ClientId(other_client_id)),
-            &PluginId(plugin_id),
-            &ClientId(owner_client_id),
+            Some(PluginId::new(plugin_id)),
+            Some(ClientId::new(other_client_id)),
+            &PluginId::new(plugin_id),
+            &ClientId::new(owner_client_id),
             false,
         ));
         // a message for another plugin never reaches it
         assert!(!WasmBridge::message_is_directed_at_plugin(
-            Some(PluginId(plugin_id + 1)),
-            Some(ClientId(other_client_id)),
-            &PluginId(plugin_id),
-            &ClientId(owner_client_id),
+            Some(PluginId::new(plugin_id + 1)),
+            Some(ClientId::new(other_client_id)),
+            &PluginId::new(plugin_id),
+            &ClientId::new(owner_client_id),
             true,
         ));
         // broadcasts still reach it exactly as before
         assert!(WasmBridge::message_is_directed_at_plugin(
             None,
             None,
-            &PluginId(plugin_id),
-            &ClientId(owner_client_id),
+            &PluginId::new(plugin_id),
+            &ClientId::new(owner_client_id),
             true,
         ));
     }

@@ -5,7 +5,9 @@
 #![allow(clippy::manual_inspect)]
 #![allow(clippy::useless_format)]
 #![allow(clippy::redundant_pattern_matching)]
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::QueueJobId;
+use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TerminalId;
 mod lua;
 pub use lua::check_lua_plugin;
 mod pinned_executor;
@@ -36,44 +38,52 @@ use crate::route::NotificationEnd;
 use crate::screen::ScreenInstruction;
 use crate::session_layout_metadata::SessionLayoutMetadata;
 use crate::{pty::PtyInstruction, thread_bus::Bus, ClientId, ServerInstruction};
-use zellij_utils::data::PaneRenderReport;
-use zellij_utils::data_access::DataAccess;
-use zellij_utils::input::context_menu::ContextMenu;
-use zellij_utils::input::hooks::{HookPoint, HookShape, Hooks};
-use zellij_utils::input::layout::TabLayoutInfo;
+use zellij_storage::data_access::DataAccess;
+use zellij_types::data::PaneRenderReport;
+use zellij_types::input::context_menu::ContextMenu;
+use zellij_types::input::layout::TabLayoutInfo;
+use {
+    zellij_types::input::hooks::HookPoint, zellij_types::input::hooks::HookShape,
+    zellij_types::input::hooks::Hooks,
+};
 
 pub use wasm_bridge::PluginRenderAsset;
 use wasm_bridge::WasmBridge;
 
-use zellij_utils::{
-    data::{
-        ClientInfo, CommandOrPlugin, ContextMenuContext, Event, EventType, FloatingPaneCoordinates,
-        HookPayload, InputMode, LayoutInfo, LayoutWithError, MessageToPlugin, Mouse,
-        OverlayPlacement, PermissionStatus, PermissionType, PipeMessage, PipeSource,
-    },
-    errors::{prelude::*, ContextType, ErrorContext, PluginContext},
-    input::{
-        actions::Action,
-        command::TerminalAction,
-        keybinds::Keybinds,
-        layout::{FloatingPaneLayout, Layout, Run, RunPlugin, RunPluginOrAlias, TiledPaneLayout},
-        plugins::{PluginAliases, PluginConfig},
-    },
-    pane_size::Size,
-    session_serialization,
+use zellij_runtime::errors::prelude::*;
+use zellij_types::diagnostics::ContextType;
+use zellij_types::diagnostics::ErrorContext;
+use zellij_types::diagnostics::PluginContext;
+use zellij_types::geometry::FloatingPaneCoordinates;
+use zellij_types::pane_size::Size;
+use {
+    zellij_config::plugins::PluginConfig, zellij_session::session_serialization,
+    zellij_types::data::ClientInfo, zellij_types::data::CommandOrPlugin,
+    zellij_types::data::ContextMenuContext, zellij_types::data::Event,
+    zellij_types::data::EventType, zellij_types::data::HookPayload, zellij_types::data::InputMode,
+    zellij_types::data::LayoutInfo, zellij_types::data::LayoutWithError,
+    zellij_types::data::MessageToPlugin, zellij_types::data::Mouse,
+    zellij_types::data::OverlayPlacement, zellij_types::data::PermissionStatus,
+    zellij_types::data::PermissionType, zellij_types::data::PipeMessage,
+    zellij_types::data::PipeSource, zellij_types::input::actions::Action,
+    zellij_types::input::command::TerminalAction, zellij_types::input::keybinds::Keybinds,
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Layout,
+    zellij_types::input::layout::Run, zellij_types::input::layout::RunPlugin,
+    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::layout::TiledPaneLayout,
+    zellij_types::input::plugins::PluginAliases,
 };
 
-pub use zellij_utils::internal_ids::PluginId;
+pub use zellij_types::internal_ids::PluginId;
 
 #[derive(Clone, Debug)]
 pub struct DumpSessionLayoutResponse {
     pub layout_result: Result<String, String>,
-    pub metadata: Option<zellij_utils::data::LayoutMetadata>,
+    pub metadata: Option<zellij_types::data::LayoutMetadata>,
 }
 /// The plugin id a state report is addressed to when no plugin wants it but a `zellij events`
 /// client does. No plugin ever has this id, so the plugin thread loads nothing for it and the
 /// report reaches the CLI subscribers alone. See `WasmBridge::forward_events_to_cli_subscribers`.
-pub const CLI_EVENTS_ONLY_TARGET: PluginId = PluginId(u32::MAX);
+pub const CLI_EVENTS_ONLY_TARGET: PluginId = PluginId::new(u32::MAX);
 
 #[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PluginInstruction {
@@ -83,7 +93,7 @@ pub enum PluginInstruction {
         bool,           // close_replaced_pane
         Option<String>, // pane title
         RunPluginOrAlias,
-        Option<usize>,  // tab index
+        Option<TabId>,  // tab index
         Option<PaneId>, // pane id to replace if this is to be opened "in-place"
         ClientId,
         Size,
@@ -131,7 +141,7 @@ pub enum PluginInstruction {
         Option<bool>,   // should float
         Option<String>, // pane title
         RunPluginOrAlias,
-        usize, // tab index
+        TabId, // tab index
         Size,
         Option<NotificationEnd>,
     ),
@@ -146,7 +156,7 @@ pub enum PluginInstruction {
         Option<TerminalAction>,
         Option<TiledPaneLayout>,
         Vec<FloatingPaneLayout>,
-        usize,                        // tab_id
+        TabId,                        // tab_id
         Option<Vec<CommandOrPlugin>>, // initial_panes
         bool,                         // block_on_first_terminal
         bool,                         // should change focus to new tab
@@ -154,11 +164,11 @@ pub enum PluginInstruction {
         Option<NotificationEnd>, // completion signal
     ),
     OverrideLayout(
-        Option<PathBuf>,        // cwd
-        Option<TerminalAction>, // default_shell
-        Vec<TabLayoutInfo>,     // layouts for each tab
-        bool,                   // retain_existing_terminal_panes
-        bool,                   // retain_existing_plugin_panes
+        Option<PathBuf>,             // cwd
+        Option<TerminalAction>,      // default_shell
+        Vec<(TabId, TabLayoutInfo)>, // resolved ID and layout for each tab
+        bool,                        // retain_existing_terminal_panes
+        bool,                        // retain_existing_plugin_panes
         ClientId,
         Option<NotificationEnd>,
     ),
@@ -289,7 +299,7 @@ pub enum PluginInstruction {
         concurrency: usize,
     },
     QueueCancelJob {
-        job_id: u64,
+        job_id: QueueJobId,
     },
     /// A job (`plugin_id`) reported its outcome and wants to be unloaded.
     QueueFinishJob {
@@ -443,7 +453,7 @@ pub(crate) fn plugin_thread_main(
             },
             other => other,
         };
-        err_ctx.add_call(ContextType::Plugin((&event).into()));
+        zellij_runtime::errors::add_call(&mut err_ctx, ContextType::Plugin((&event).into()));
         match event {
             PluginInstruction::Load(
                 should_float,
@@ -835,7 +845,7 @@ pub(crate) fn plugin_thread_main(
                 // 2. Process each tab layout
                 let mut tab_layouts_with_plugin_ids = Vec::new();
 
-                for mut tab_layout_info in tab_layouts {
+                for (tab_id, mut tab_layout_info) in tab_layouts {
                     // Populate plugin aliases in layouts
                     tab_layout_info
                         .tiled_layout
@@ -874,7 +884,7 @@ pub(crate) fn plugin_thread_main(
 
                             match wasm_bridge.load_plugin(
                                 &run_plugin,
-                                Some(tab_layout_info.tab_index),
+                                Some(tab_id),
                                 size,
                                 cwd,
                                 skip_cache,
@@ -894,7 +904,7 @@ pub(crate) fn plugin_thread_main(
                     }
 
                     // Pair this tab's layout with its plugin IDs
-                    tab_layouts_with_plugin_ids.push((tab_layout_info, plugin_ids));
+                    tab_layouts_with_plugin_ids.push((tab_id, tab_layout_info, plugin_ids));
                 }
 
                 // 3. Send to pty thread with all tab layouts and their plugin IDs
@@ -1092,8 +1102,8 @@ pub(crate) fn plugin_thread_main(
                 for (client_metadata_id, client_metadata) in clients_metadata.iter_mut() {
                     let is_current_client = client_metadata_id == &client_id;
                     client_list_for_plugin.push(ClientInfo::new(
-                        client_metadata_id.0,
-                        client_metadata.get_pane_id().into(),
+                        *client_metadata_id,
+                        client_metadata.get_pane_id(),
                         client_metadata.stringify_command(&default_editor),
                         is_current_client,
                     ));
@@ -1171,12 +1181,8 @@ pub(crate) fn plugin_thread_main(
                         );
                     },
                 }
-                let source_pane_id = source_pane_id.map(|pane_id| match pane_id {
-                    PaneId::Terminal(id) => zellij_utils::data::PaneId::Terminal(id.0),
-                    PaneId::Plugin(id) => zellij_utils::data::PaneId::Plugin(id.0),
-                });
                 for (_, _, message) in pipe_messages.iter_mut() {
-                    message.pane_id = source_pane_id.clone();
+                    message.pane_id = source_pane_id;
                 }
                 wasm_bridge.pipe_messages(pipe_messages, shutdown_send.clone(), None)?;
             },
@@ -1280,13 +1286,13 @@ pub(crate) fn plugin_thread_main(
                     (Some(plugin_url), None) => {
                         // send to specific plugin(s)
                         pipe_to_specific_plugins(
-                            PipeSource::Plugin(source_plugin_id.0),
+                            PipeSource::Plugin(source_plugin_id),
                             &plugin_url,
                             &Some(message.plugin_config),
                             &None,
                             skip_cache,
                             should_float,
-                            &pane_id_to_replace.map(|p| p.into()),
+                            &pane_id_to_replace,
                             &pane_title,
                             None,
                             &mut pipe_messages,
@@ -1303,10 +1309,10 @@ pub(crate) fn plugin_thread_main(
                     (None, Some(destination_plugin_id)) => {
                         let is_private = true;
                         pipe_messages.push((
-                            Some(PluginId(destination_plugin_id)),
+                            Some(destination_plugin_id),
                             None,
                             PipeMessage::new(
-                                PipeSource::Plugin(source_plugin_id.0),
+                                PipeSource::Plugin(source_plugin_id),
                                 message.message_name,
                                 &message.message_payload,
                                 &Some(message.message_args),
@@ -1318,10 +1324,10 @@ pub(crate) fn plugin_thread_main(
                         log::warn!("Message contains both a destination plugin url: {plugin_url} and a destination plugin id: {destination_plugin_id}, ignoring the url and prioritizing the id");
                         let is_private = true;
                         pipe_messages.push((
-                            Some(PluginId(destination_plugin_id)),
+                            Some(destination_plugin_id),
                             None,
                             PipeMessage::new(
-                                PipeSource::Plugin(source_plugin_id.0),
+                                PipeSource::Plugin(source_plugin_id),
                                 message.message_name,
                                 &message.message_payload,
                                 &Some(message.message_args),
@@ -1332,7 +1338,7 @@ pub(crate) fn plugin_thread_main(
                     (None, None) => {
                         // send to all plugins
                         pipe_to_all_plugins(
-                            PipeSource::Plugin(source_plugin_id.0),
+                            PipeSource::Plugin(source_plugin_id),
                             &message.message_name,
                             &message.message_payload,
                             &Some(message.message_args),
@@ -1432,12 +1438,7 @@ pub(crate) fn plugin_thread_main(
                 let updates = vec![(
                     None,
                     None,
-                    Event::UserAction(
-                        action,
-                        client_id.0,
-                        terminal_id.map(|id| id.0),
-                        cli_client_id.map(|id| id.0),
-                    ),
+                    Event::UserAction(action, client_id, terminal_id, cli_client_id),
                 )];
                 wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
             },
@@ -1503,7 +1504,7 @@ pub(crate) fn plugin_thread_main(
                 context,
             } => {
                 let event = Event::HighlightClicked {
-                    pane_id: pane_id.into(),
+                    pane_id,
                     pattern,
                     matched_string,
                     context,
@@ -1633,7 +1634,7 @@ fn pipe_to_specific_plugins(
 ) {
     let is_private = true;
     let size = Size::default();
-    match RunPluginOrAlias::from_url(
+    match zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
         &plugin_url,
         configuration,
         Some(plugin_aliases),
@@ -1692,8 +1693,8 @@ fn session_start_payload(client_id: ClientId) -> HookFiring {
     // The name lives in the server's environment; nothing on the bus carries it, and reading
     // it here beats threading it through the thread's signature for one string.
     HookFiring::Headless(HookPayload::SessionStart {
-        session_name: zellij_utils::envs::get_session_name().unwrap_or_default(),
-        client_id: client_id.0,
+        session_name: zellij_runtime::envs::get_session_name().unwrap_or_default(),
+        client_id,
     })
 }
 

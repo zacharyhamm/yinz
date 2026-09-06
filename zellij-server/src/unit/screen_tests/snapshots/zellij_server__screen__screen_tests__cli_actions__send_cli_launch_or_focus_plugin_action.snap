@@ -1,6 +1,6 @@
 ---
 source: zellij-server/src/screen/../unit/screen_tests/cli_actions.rs
-assertion_line: 2218
+assertion_line: 2225
 expression: "format!(\"{:#?}\", pty_fill_plugin_cwd_instruction)"
 ---
 Some(
@@ -24,7 +24,9 @@ Some(
                 relative_path: None,
             },
         ),
-        0,
+        TabId(
+            0,
+        ),
         None,
         ClientId(
             1,

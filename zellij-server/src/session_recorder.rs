@@ -4,22 +4,23 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
+use zellij_types::units::{ElapsedMicros, UnixMicros};
 
-use zellij_utils::data_access::{DataAccess, RecordingSession};
-use zellij_utils::errors::prelude::*;
-use zellij_utils::session_recording::{PaneMetadata, RecordedEvent};
+use zellij_runtime::errors::prelude::*;
+use zellij_storage::data_access::{DataAccess, RecordingSession};
+use zellij_storage::session_recording::{PaneMetadata, RecordedEvent};
 
 #[derive(Debug)]
 pub enum RecorderInstruction {
     Events(Vec<RecordedEvent>),
     PaneMetadata {
-        elapsed_us: i64,
+        elapsed_us: ElapsedMicros,
         panes: Vec<PaneMetadata>,
     },
     PaneClosed {
         terminal_id: TerminalId,
-        elapsed_us: i64,
+        elapsed_us: ElapsedMicros,
     },
     Stop,
 }
@@ -38,8 +39,8 @@ impl SessionRecorderHandle {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        let elapsed_us = self.started_at.elapsed().as_micros() as i64;
-        let event = RecordedEvent::output(terminal_id.0, elapsed_us, data);
+        let elapsed_us = ElapsedMicros::new(self.started_at.elapsed().as_micros() as i64);
+        let event = RecordedEvent::output(terminal_id, elapsed_us, data);
         if let Err(e) = self
             .sender
             .try_send(RecorderInstruction::Events(vec![event]))
@@ -64,8 +65,8 @@ impl SessionRecorderHandle {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        let elapsed_us = self.started_at.elapsed().as_micros() as i64;
-        let event = RecordedEvent::input(terminal_id.0, elapsed_us, data);
+        let elapsed_us = ElapsedMicros::new(self.started_at.elapsed().as_micros() as i64);
+        let event = RecordedEvent::input(terminal_id, elapsed_us, data);
         if let Err(e) = self
             .sender
             .try_send(RecorderInstruction::Events(vec![event]))
@@ -87,8 +88,8 @@ impl SessionRecorderHandle {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        let elapsed_us = self.started_at.elapsed().as_micros() as i64;
-        let event = RecordedEvent::resize(terminal_id.0, elapsed_us, cols, rows);
+        let elapsed_us = ElapsedMicros::new(self.started_at.elapsed().as_micros() as i64);
+        let event = RecordedEvent::resize(terminal_id, elapsed_us, cols, rows);
         if let Err(e) = self
             .sender
             .try_send(RecorderInstruction::Events(vec![event]))
@@ -110,7 +111,7 @@ impl SessionRecorderHandle {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        let elapsed_us = self.started_at.elapsed().as_micros() as i64;
+        let elapsed_us = ElapsedMicros::new(self.started_at.elapsed().as_micros() as i64);
         if let Err(e) = self
             .sender
             .try_send(RecorderInstruction::PaneMetadata { elapsed_us, panes })
@@ -132,7 +133,7 @@ impl SessionRecorderHandle {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        let elapsed_us = self.started_at.elapsed().as_micros() as i64;
+        let elapsed_us = ElapsedMicros::new(self.started_at.elapsed().as_micros() as i64);
         if let Err(e) = self.sender.try_send(RecorderInstruction::PaneClosed {
             terminal_id,
             elapsed_us,
@@ -203,16 +204,18 @@ pub fn spawn_session_recorder(
     let enabled = Arc::new(AtomicBool::new(true));
     let dropped = Arc::new(AtomicUsize::new(0));
     let started_at = Instant::now();
-    let started_at_us = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or_else(|e| {
-            log::warn!(
-                "system clock is before UNIX_EPOCH ({}), using 0 for session start",
-                e
-            );
-            0
-        });
+    let started_at_us = UnixMicros::new(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as i64)
+            .unwrap_or_else(|e| {
+                log::warn!(
+                    "system clock is before UNIX_EPOCH ({}), using 0 for session start",
+                    e
+                );
+                0
+            }),
+    );
     let handle = SessionRecorderHandle {
         sender: sender.clone(),
         started_at,
@@ -324,7 +327,7 @@ impl Recording {
 
     /// Flushes what is left and finishes the session, unless its loss marker cannot be saved:
     /// a session without an end timestamp lists as running, which is more honest than complete.
-    fn finish(&mut self, ended_at_us: i64, ended_elapsed_us: i64) {
+    fn finish(&mut self, ended_at_us: UnixMicros, ended_elapsed_us: ElapsedMicros) {
         self.flush();
         if let Err(error) = self.sync_loss_marker() {
             Err::<(), _>(error)
@@ -347,7 +350,7 @@ fn recorder_thread(
     session_name: String,
     capture_input: bool,
     started_at: Instant,
-    started_at_us: i64,
+    started_at_us: UnixMicros,
     receiver: crossbeam::channel::Receiver<RecorderInstruction>,
     enabled: Arc<AtomicBool>,
     dropped: Arc<AtomicUsize>,
@@ -418,7 +421,7 @@ fn recorder_thread(
                 recording.flush();
                 let result = recording
                     .store
-                    .finish_pane(terminal_id.0, elapsed_us)
+                    .finish_pane(terminal_id, elapsed_us)
                     .with_context(|| format!("failed to finish pane {terminal_id}"));
                 recording.remember_and_save(result);
             },
@@ -427,17 +430,19 @@ fn recorder_thread(
             Err(crossbeam::channel::RecvTimeoutError::Timeout) => recording.flush(),
         }
     }
-    let ended_at_us = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or_else(|e| {
-            log::warn!(
-                "system clock is before UNIX_EPOCH on session end ({}), using 0",
-                e
-            );
-            0
-        });
-    let ended_elapsed_us = started_at.elapsed().as_micros() as i64;
+    let ended_at_us = UnixMicros::new(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as i64)
+            .unwrap_or_else(|e| {
+                log::warn!(
+                    "system clock is before UNIX_EPOCH on session end ({}), using 0",
+                    e
+                );
+                0
+            }),
+    );
+    let ended_elapsed_us = ElapsedMicros::new(started_at.elapsed().as_micros() as i64);
     recording.finish(ended_at_us, ended_elapsed_us);
 }
 
@@ -445,9 +450,10 @@ fn recorder_thread(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    use zellij_storage::data_access::{PluginDataBackend, RecordingBackend, RecordingSession};
     use zellij_test_support::{default_timeout, Watched};
-    use zellij_utils::data_access::{PluginDataBackend, RecordingBackend, RecordingSession};
-    use zellij_utils::plugin_data::{
+    use zellij_types::internal_ids::RecordingId;
+    use zellij_types::plugin_data::{
         ApplyReport, DataEntityInfo, DataError, DataRows, DataSchemaInfo, EntityDef, FetchRequest,
         Mutation,
     };
@@ -521,21 +527,21 @@ mod tests {
             &self,
             _: &str,
             _: bool,
-            _: i64,
+            _: UnixMicros,
         ) -> anyhow::Result<Box<dyn RecordingSession>> {
             self.0.lock().calls.push("start");
             Ok(Box::new(MemoryRecordingSession(self.0.clone())))
         }
 
-        fn list(&self) -> anyhow::Result<Vec<zellij_utils::data::RecordingSummary>> {
+        fn list(&self) -> anyhow::Result<Vec<zellij_types::data::RecordingSummary>> {
             Ok(Vec::new())
         }
 
-        fn search(&self, _: &str, _: usize) -> anyhow::Result<Vec<zellij_utils::data::SearchHit>> {
+        fn search(&self, _: &str, _: usize) -> anyhow::Result<Vec<zellij_types::data::SearchHit>> {
             Ok(Vec::new())
         }
 
-        fn export(&self, _: i64, _: &mut dyn std::io::Write) -> anyhow::Result<()> {
+        fn export(&self, _: RecordingId, _: &mut dyn std::io::Write) -> anyhow::Result<()> {
             Ok(())
         }
     }
@@ -547,15 +553,15 @@ mod tests {
             Ok(())
         }
 
-        fn update_panes(&mut self, _: &[PaneMetadata], _: i64) -> anyhow::Result<()> {
+        fn update_panes(&mut self, _: &[PaneMetadata], _: ElapsedMicros) -> anyhow::Result<()> {
             self.call("panes")
         }
 
-        fn finish_pane(&mut self, _: u32, _: i64) -> anyhow::Result<()> {
+        fn finish_pane(&mut self, _: TerminalId, _: ElapsedMicros) -> anyhow::Result<()> {
             self.call("pane")
         }
 
-        fn finish_session(&mut self, _: i64, _: i64) -> anyhow::Result<()> {
+        fn finish_session(&mut self, _: UnixMicros, _: ElapsedMicros) -> anyhow::Result<()> {
             self.call("session")
         }
 
@@ -580,7 +586,7 @@ mod tests {
             "test".to_owned(),
             false,
             Instant::now(),
-            0,
+            UnixMicros::new(0),
             receiver,
             Arc::new(AtomicBool::new(enabled)),
             Arc::new(AtomicUsize::new(dropped)),
@@ -592,17 +598,17 @@ mod tests {
         let log = Watched::new(RecordingLog::default());
         let (sender, receiver) = crossbeam::channel::unbounded();
         sender.send(RecorderInstruction::Events(vec![RecordedEvent::output(
-            1,
-            1,
+            TerminalId::new(1),
+            ElapsedMicros::new(1),
             b"x".to_vec(),
         )]))?;
         sender.send(RecorderInstruction::PaneMetadata {
-            elapsed_us: 2,
+            elapsed_us: ElapsedMicros::new(2),
             panes: Vec::new(),
         })?;
         sender.send(RecorderInstruction::PaneClosed {
-            terminal_id: crate::TerminalId(1),
-            elapsed_us: 3,
+            terminal_id: crate::TerminalId::new(1),
+            elapsed_us: ElapsedMicros::new(3),
         })?;
         sender.send(RecorderInstruction::Stop)?;
 
@@ -630,21 +636,29 @@ mod tests {
                     ..Default::default()
                 });
                 let (sender, receiver) = crossbeam::channel::unbounded();
-                let first = RecordedEvent::output(1, 1, b"first".to_vec());
-                let last = RecordedEvent::output(1, 4, b"last".to_vec());
+                let first = RecordedEvent::output(
+                    TerminalId::new(1),
+                    ElapsedMicros::new(1),
+                    b"first".to_vec(),
+                );
+                let last = RecordedEvent::output(
+                    TerminalId::new(1),
+                    ElapsedMicros::new(4),
+                    b"last".to_vec(),
+                );
                 sender
                     .send(RecorderInstruction::Events(vec![first.clone()]))
                     .unwrap();
                 sender
                     .send(RecorderInstruction::PaneMetadata {
-                        elapsed_us: 2,
+                        elapsed_us: ElapsedMicros::new(2),
                         panes: vec![],
                     })
                     .unwrap();
                 sender
                     .send(RecorderInstruction::PaneClosed {
-                        elapsed_us: 3,
-                        terminal_id: crate::TerminalId(1),
+                        elapsed_us: ElapsedMicros::new(3),
+                        terminal_id: crate::TerminalId::new(1),
                     })
                     .unwrap();
                 sender
@@ -721,8 +735,8 @@ mod tests {
             sender
                 .send(RecorderInstruction::Events(vec![
                     RecordedEvent::output(
-                        1,
-                        1,
+                        TerminalId::new(1),
+                        ElapsedMicros::new(1),
                         vec![1]
                     );
                     count
@@ -760,15 +774,15 @@ mod tests {
         let (sender, receiver) = crossbeam::channel::unbounded();
         sender
             .send(RecorderInstruction::Events(vec![RecordedEvent::output(
-                1,
-                1,
+                TerminalId::new(1),
+                ElapsedMicros::new(1),
                 b"lost".to_vec(),
             )]))
             .unwrap();
         sender
             .send(RecorderInstruction::PaneClosed {
-                terminal_id: crate::TerminalId(1),
-                elapsed_us: 2,
+                terminal_id: crate::TerminalId::new(1),
+                elapsed_us: ElapsedMicros::new(2),
             })
             .unwrap();
         sender.send(RecorderInstruction::Stop).unwrap();
@@ -796,8 +810,13 @@ mod tests {
             let log = log.clone();
             std::thread::spawn(move || run_recorder(&log, receiver, true, 1))
         };
-        let first = RecordedEvent::output(1, 1, b"first".to_vec());
-        let second = RecordedEvent::output(1, 2, b"second".to_vec());
+        let first =
+            RecordedEvent::output(TerminalId::new(1), ElapsedMicros::new(1), b"first".to_vec());
+        let second = RecordedEvent::output(
+            TerminalId::new(1),
+            ElapsedMicros::new(2),
+            b"second".to_vec(),
+        );
         sender
             .send(RecorderInstruction::Events(vec![first.clone()]))
             .unwrap();
@@ -851,8 +870,8 @@ mod tests {
         let (sender, receiver) = crossbeam::channel::unbounded();
         sender
             .send(RecorderInstruction::Events(vec![RecordedEvent::output(
-                1,
-                1,
+                TerminalId::new(1),
+                ElapsedMicros::new(1),
                 b"x".to_vec(),
             )]))
             .unwrap();
@@ -878,18 +897,18 @@ mod tests {
         )
         .unwrap();
         let metadata = PaneMetadata {
-            terminal_id: 1,
-            tab_id: 0,
-            tab_position: 0,
+            terminal_id: TerminalId::new(1),
+            tab_id: zellij_types::internal_ids::TabId::new(0),
+            tab_position: zellij_types::internal_ids::TabPosition::new(0),
             tab_name: "tab".to_string(),
             title: "pane".to_string(),
             cols: 80,
             rows: 24,
         };
         handle.pane_metadata(vec![metadata]);
-        handle.output(crate::TerminalId(1), b"hello".to_vec());
-        handle.input(crate::TerminalId(1), b"input".to_vec());
-        handle.resize(crate::TerminalId(1), 100, 30);
+        handle.output(crate::TerminalId::new(1), b"hello".to_vec());
+        handle.input(crate::TerminalId::new(1), b"input".to_vec());
+        handle.resize(crate::TerminalId::new(1), 100, 30);
         handle.stop();
         thread.join().unwrap();
         // open DB and assert
@@ -925,8 +944,8 @@ mod tests {
         // fill it
         sender
             .try_send(RecorderInstruction::Events(vec![RecordedEvent::output(
-                1,
-                0,
+                TerminalId::new(1),
+                ElapsedMicros::new(0),
                 b"x".to_vec(),
             )]))
             .unwrap();
@@ -942,7 +961,7 @@ mod tests {
         };
         // this should not block, should drop and metric increment, but not disable
         let start = Instant::now();
-        handle.output(crate::TerminalId(1), b"y".to_vec());
+        handle.output(crate::TerminalId::new(1), b"y".to_vec());
         let elapsed = start.elapsed();
         assert!(elapsed < Duration::from_millis(100), "should not block");
         assert!(
@@ -951,7 +970,7 @@ mod tests {
         );
         assert_eq!(dropped.load(Ordering::Relaxed), 1);
         // second call should also try and drop, not be no-op due to disabled
-        handle.output(crate::TerminalId(1), b"z".to_vec());
+        handle.output(crate::TerminalId::new(1), b"z".to_vec());
         assert_eq!(sender.len(), 1); // still full, not increased
         assert_eq!(dropped.load(Ordering::Relaxed), 2);
         assert!(enabled.load(Ordering::Relaxed));
@@ -967,7 +986,7 @@ mod tests {
             enabled: enabled2.clone(),
             dropped: dropped2.clone(),
         };
-        handle2.output(crate::TerminalId(1), b"a".to_vec());
+        handle2.output(crate::TerminalId::new(1), b"a".to_vec());
         assert!(
             !enabled2.load(Ordering::Relaxed),
             "disconnected should disable"
@@ -984,7 +1003,7 @@ mod tests {
             "test".to_string(),
             false,
             Instant::now(),
-            1_000,
+            UnixMicros::new(1_000),
             receiver,
             Arc::new(AtomicBool::new(true)),
             Arc::new(AtomicUsize::new(1)),
@@ -1022,13 +1041,13 @@ mod tests {
             enabled: enabled.clone(),
             dropped: dropped.clone(),
         };
-        handle.input(crate::TerminalId(1), b"secret".to_vec());
+        handle.input(crate::TerminalId::new(1), b"secret".to_vec());
         assert!(
             receiver.is_empty(),
             "input should be ignored when capture_input false"
         );
         // output should still work
-        handle.output(crate::TerminalId(1), b"hello".to_vec());
+        handle.output(crate::TerminalId::new(1), b"hello".to_vec());
         assert_eq!(receiver.len(), 1);
     }
 }

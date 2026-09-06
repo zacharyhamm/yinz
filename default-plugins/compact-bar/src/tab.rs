@@ -137,13 +137,13 @@ pub fn tab_style(
 
 pub(crate) fn get_tab_to_focus(
     tab_line: &[LinePart],
-    active_tab_idx: usize,
+    active_tab_idx: TabNumber,
     mouse_click_col: usize,
-) -> Option<usize> {
+) -> Option<TabNumber> {
     let clicked_line_part = get_clicked_line_part(tab_line, mouse_click_col)?;
     let clicked_tab_idx = clicked_line_part.tab_index?;
     // tabs are indexed starting from 1 so we need to add 1
-    let clicked_tab_idx = clicked_tab_idx + 1;
+    let clicked_tab_idx = TabNumber::try_from(clicked_tab_idx).ok()?;
     if clicked_tab_idx != active_tab_idx {
         return Some(clicked_tab_idx);
     }

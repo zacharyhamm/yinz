@@ -1,6 +1,7 @@
 use crate::os_input_output::{command_exists, AsyncReader};
 use crate::panes::PaneId;
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::TerminalId;
 
 use nix::{
     fcntl::{fcntl, FcntlArg, OFlag},
@@ -36,7 +37,8 @@ use std::{
     time::Duration,
 };
 
-use zellij_utils::{errors::prelude::*, input::command::RunCommand};
+use zellij_runtime::errors::prelude::*;
+use zellij_types::input::command::RunCommand;
 
 use crate::pty_host::remote::{
     conn::RemoteGitProbe, protocol::ChildSignal, RemoteConn, RemoteStatus,
@@ -159,7 +161,7 @@ fn set_terminal_size_using_fd(
 /// Handle some signals for the child process. This will loop until the child
 /// process exits.
 fn handle_command_exit(mut child: Child) -> Result<Option<i32>> {
-    let id = child.id();
+    let id = ProcessId::new(child.id());
     let err_context = || {
         format!(
             "failed to handle signals and command exit for child process pid {}",
@@ -196,11 +198,8 @@ fn handle_command_exit(mut child: Child) -> Result<Option<i32>> {
         } else if attempts > 0 {
             // let's try nicely first...
             attempts -= 1;
-            kill(
-                unistd::Pid::from_raw(child.id() as i32),
-                Some(Signal::SIGTERM),
-            )
-            .with_context(err_context)?;
+            kill(crate::pty_host::process_pid(id)?, Some(Signal::SIGTERM))
+                .with_context(err_context)?;
             continue;
         } else {
             // when I say whoa, I mean WHOA!
@@ -219,11 +218,11 @@ fn handle_command_exit(mut child: Child) -> Result<Option<i32>> {
 /// the same reason: on XNU nothing wakes a blocking wait for a continue, so the
 /// pane would never learn it had resumed. See that function for the detail.
 fn wait_reporting_stops(
-    child_pid: u32,
+    child_pid: ProcessId,
     terminal_id: TerminalId,
     child_state_cb: Option<&ChildStateCb>,
 ) -> Option<i32> {
-    let pid = unistd::Pid::from_raw(child_pid as i32);
+    let pid = crate::pty_host::process_pid(child_pid).ok()?;
     let flags = WaitPidFlag::WUNTRACED | WaitPidFlag::WCONTINUED;
     let mut stopped = false;
     loop {
@@ -264,7 +263,7 @@ fn handle_openpty(
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     child_state_cb: Option<ChildStateCb>,
     terminal_id: TerminalId,
-) -> Result<(RawFd, RawFd)> {
+) -> Result<(RawFd, ProcessId)> {
     let err_context = |cmd: &RunCommand| {
         format!(
             "failed to open PTY for command '{}'",
@@ -278,7 +277,7 @@ fn handle_openpty(
 
     if !command_exists(&cmd) {
         return Err(ZellijError::CommandNotFound {
-            terminal_id: terminal_id.0,
+            terminal_id,
             command: cmd.command.to_string_lossy().to_string(),
         })
         .with_context(|| err_context(&cmd));
@@ -318,13 +317,13 @@ fn handle_openpty(
             .expect("failed to spawn")
     };
 
-    let child_id = child.id();
+    let child_id = ProcessId::new(child.id());
     thread::spawn(move || {
         // `Child::wait` is `waitpid` without `WUNTRACED`, so it cannot tell a
         // stopped child from a busy one — and a `^Z`'d command pane looks
         // exactly like a hang. Wait for the stops too, and only then hand the
         // now-reaped child to `handle_command_exit` for its signal handling.
-        let exit_status = wait_reporting_stops(child.id(), terminal_id, child_state_cb.as_ref());
+        let exit_status = wait_reporting_stops(child_id, terminal_id, child_state_cb.as_ref());
         handle_command_exit(child)
             .with_context(|| err_context(&cmd))
             .fatal();
@@ -332,7 +331,7 @@ fn handle_openpty(
         quit_cb(PaneId::Terminal(terminal_id), exit_status, cmd);
     });
 
-    Ok((pid_primary, child_id as RawFd))
+    Ok((pid_primary, child_id))
 }
 
 /// Spawns a new terminal from the parent terminal with [`termios`](termios::Termios)
@@ -344,7 +343,7 @@ fn handle_terminal(
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     child_state_cb: Option<ChildStateCb>,
     terminal_id: TerminalId,
-) -> Result<(RawFd, RawFd)> {
+) -> Result<(RawFd, ProcessId)> {
     let err_context = || "failed to spawn child terminal".to_string();
 
     // Create a pipe to allow the child the communicate the shell's pid to its
@@ -361,7 +360,7 @@ fn handle_terminal(
                 terminal_id,
             )
             .with_context(err_context),
-            None => Err::<(i32, i32), _>(e)
+            None => Err::<(i32, ProcessId), _>(e)
                 .context("failed to start pty")
                 .with_context(err_context)
                 .to_log(),
@@ -543,7 +542,7 @@ impl UnixPtyBackend {
         // rather than dying on — without paying for a process spawn.
         if !command_exists(cmd) {
             return Err(ZellijError::CommandNotFound {
-                terminal_id: terminal_id.0,
+                terminal_id,
                 command: cmd.command.to_string_lossy().to_string(),
             }
             .into());
@@ -551,7 +550,7 @@ impl UnixPtyBackend {
         pty_host_client::spawn(SpawnParams {
             host_bin,
             terminal_id,
-            session_name: zellij_utils::envs::get_session_name().ok(),
+            session_name: zellij_runtime::envs::get_session_name().ok(),
             cmd: cmd.clone(),
             failover_cmd: failover_cmd.clone(),
             termios: self.wire_termios.clone(),
@@ -601,7 +600,7 @@ impl UnixPtyBackend {
         failover_cmd: Option<RunCommand>,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         terminal_id: TerminalId,
-    ) -> Result<(Box<dyn AsyncReader>, RawFd)> {
+    ) -> Result<(Box<dyn AsyncReader>, ProcessId)> {
         // A re-run reuses the terminal_id, so an earlier supervisor for it would
         // otherwise be orphaned with nobody left holding its control channel.
         self.terminate_host(terminal_id);
@@ -625,7 +624,7 @@ impl UnixPtyBackend {
                             RawFdAsyncReader::new(master_fd)
                                 .map_err(|e| anyhow!("failed to create async reader: {}", e))?,
                         ) as Box<dyn AsyncReader>;
-                        return Ok((async_reader, spawned.child_pid as RawFd));
+                        return Ok((async_reader, spawned.child_pid));
                     },
                     Err(e) => {
                         if e.downcast_ref::<ZellijError>().is_some() {
@@ -650,7 +649,7 @@ impl UnixPtyBackend {
             .lock()
             .to_anyhow()
             .context("failed to lock orig_termios")?;
-        let (pid_primary, child_fd) = handle_terminal(
+        let (pid_primary, child_pid) = handle_terminal(
             cmd,
             failover_cmd,
             orig_termios.clone(),
@@ -666,7 +665,7 @@ impl UnixPtyBackend {
             RawFdAsyncReader::new(pid_primary)
                 .map_err(|e| anyhow::anyhow!("failed to create async reader: {}", e))?,
         ) as Box<dyn AsyncReader>;
-        Ok((async_reader, child_fd))
+        Ok((async_reader, child_pid))
     }
 
     pub fn set_terminal_size(
@@ -790,18 +789,18 @@ impl UnixPtyBackend {
             .map(|pgid| pgid.as_raw())
     }
 
-    pub fn kill(&self, pid: u32) -> Result<()> {
-        let _ = kill(unistd::Pid::from_raw(pid as i32), Some(Signal::SIGHUP));
+    pub fn kill(&self, pid: ProcessId) -> Result<()> {
+        let _ = kill(crate::pty_host::process_pid(pid)?, Some(Signal::SIGHUP));
         Ok(())
     }
 
-    pub fn force_kill(&self, pid: u32) -> Result<()> {
-        let _ = kill(unistd::Pid::from_raw(pid as i32), Some(Signal::SIGKILL));
+    pub fn force_kill(&self, pid: ProcessId) -> Result<()> {
+        let _ = kill(crate::pty_host::process_pid(pid)?, Some(Signal::SIGKILL));
         Ok(())
     }
 
-    pub fn send_sigint(&self, pid: u32) -> Result<()> {
-        let _ = kill(unistd::Pid::from_raw(pid as i32), Some(Signal::SIGINT));
+    pub fn send_sigint(&self, pid: ProcessId) -> Result<()> {
+        let _ = kill(crate::pty_host::process_pid(pid)?, Some(Signal::SIGINT));
         Ok(())
     }
 
@@ -812,10 +811,11 @@ impl UnixPtyBackend {
     /// foreground group, not just the leader. Continuing only the leader would
     /// leave the rest of a pipeline asleep. The bare pid is a fallback for the
     /// case where the child never got a group of its own.
-    pub fn send_sigcont(&self, pid: u32) -> Result<()> {
-        let group = unistd::Pid::from_raw(-(pid as i32));
+    pub fn send_sigcont(&self, pid: ProcessId) -> Result<()> {
+        let pid = crate::pty_host::process_pid(pid)?;
+        let group = unistd::Pid::from_raw(-pid.as_raw());
         if kill(group, Some(Signal::SIGCONT)).is_err() {
-            let _ = kill(unistd::Pid::from_raw(pid as i32), Some(Signal::SIGCONT));
+            let _ = kill(pid, Some(Signal::SIGCONT));
         }
         Ok(())
     }
@@ -999,7 +999,7 @@ impl UnixPtyBackend {
     }
 
     pub fn next_terminal_id(&self) -> Option<TerminalId> {
-        Some(TerminalId(
+        Some(TerminalId::new(
             self.next_terminal_id_counter
                 .fetch_add(1, Ordering::Relaxed),
         ))
@@ -1202,7 +1202,7 @@ impl UnixPtyBackend {
         let pending = pty_host_client::attach(pty_host_client::AttachParams {
             control_socket,
             terminal_id,
-            session_name: zellij_utils::envs::get_session_name().ok(),
+            session_name: zellij_runtime::envs::get_session_name().ok(),
         })?;
         let attached = pending.finish(terminal_exit_callback(quit_cb), self.child_state_cb());
         let master_fd = attached.master.into_raw_fd();
@@ -1237,7 +1237,7 @@ pub struct AdoptedTerminal {
     /// `None` for a pane adopted from another machine. Its child's pid is
     /// meaningful only there, and recording one here would put it in
     /// `id_to_child_pid`, where every consumer would act on it locally.
-    pub child_pid: Option<u32>,
+    pub child_pid: Option<ProcessId>,
     /// The command the supervisor is running, for rebuilding a `quit_cb` that
     /// holds or closes the pane the way the original did.
     pub cmd: RunCommand,
@@ -1299,7 +1299,7 @@ mod tests {
                     .unwrap();
             backend.host_bin = Some(supervisor.clone());
             backend.pty_host_enabled.store(detachable, Ordering::SeqCst);
-            let id = TerminalId(0);
+            let id = TerminalId::new(0);
             let (mut reader, pid) = backend
                 .spawn_terminal(
                     RunCommand {
@@ -1354,7 +1354,7 @@ mod tests {
                 }
             })
             .await;
-            backend.kill(pid as u32).unwrap();
+            backend.kill(pid).unwrap();
             backend.clear_terminal_id(id).unwrap();
             assert!(
                 outcome.is_ok(),
@@ -1499,13 +1499,13 @@ mod tests {
             .terminal_id_to_transport
             .lock()
             .unwrap()
-            .insert(TerminalId(7), PaneTransport::Remote(Arc::new(conn)));
+            .insert(TerminalId::new(7), PaneTransport::Remote(Arc::new(conn)));
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let releasing = backend.clone();
         std::thread::spawn(move || {
             let outcome =
-                releasing.release_terminal_for_warp(TerminalId(7), Duration::from_secs(1));
+                releasing.release_terminal_for_warp(TerminalId::new(7), Duration::from_secs(1));
             let _ = done_tx.send(outcome.map(|_| ()).map_err(|e| format!("{e:#}")));
         });
 
@@ -1519,7 +1519,7 @@ mod tests {
                 .terminal_id_to_transport
                 .lock()
                 .unwrap()
-                .contains_key(&TerminalId(7)),
+                .contains_key(&TerminalId::new(7)),
             "a released pane leaves the transport table whether or not the broker confirmed"
         );
     }
@@ -1551,10 +1551,14 @@ mod callback_tests {
             ..Default::default()
         };
         for status in [Some(17), None] {
-            callback(TerminalId(42), status, command.clone());
+            callback(TerminalId::new(42), status, command.clone());
             assert_eq!(
                 receiver.recv().unwrap(),
-                (PaneId::Terminal(TerminalId(42)), status, command.clone())
+                (
+                    PaneId::Terminal(TerminalId::new(42)),
+                    status,
+                    command.clone()
+                )
             );
         }
     }

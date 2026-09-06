@@ -15,9 +15,10 @@ fn extension_state(safety: &str, consequence: Option<&str>) -> State {
     state
         .extension_files
         .insert("weather".to_owned(), path.to_owned());
-    state
-        .extension_instances
-        .insert(7, ("weather".to_owned(), path.to_owned()));
+    state.extension_instances.insert(
+        zellij_tile::prelude::PluginId::new(7),
+        ("weather".to_owned(), path.to_owned()),
+    );
     let mut tool = serde_json::json!({
         "name": "forecast",
         "description": "Read the forecast.",
@@ -34,14 +35,14 @@ fn extension_state(safety: &str, consequence: Option<&str>) -> State {
         "tools": [tool],
     })
     .to_string();
-    state.on_extension_registration(7, Some(&payload));
+    state.on_extension_registration(zellij_tile::prelude::PluginId::new(7), Some(&payload));
     state
 }
 
 #[test]
 fn an_extension_call_waits_for_its_registered_owner_and_finishes_normally() {
     let mut state = extension_state("automatic", None);
-    state.own_plugin_id = 3;
+    state.own_plugin_id = zellij_tile::prelude::PluginId::new(3);
     let call = call("call_1", "weather_forecast", r#"{"city":"Chicago"}"#);
     state.pending.push_back(call.clone());
 
@@ -56,10 +57,10 @@ fn an_extension_call_waits_for_its_registered_owner_and_finishes_normally() {
     })
     .to_string();
     assert!(
-        !state.on_extension_result(8, Some(&payload)),
+        !state.on_extension_result(zellij_tile::prelude::PluginId::new(8), Some(&payload)),
         "a spoofed owner answered"
     );
-    assert!(state.on_extension_result(7, Some(&payload)));
+    assert!(state.on_extension_result(zellij_tile::prelude::PluginId::new(7), Some(&payload)));
     assert!(matches!(state.status, Status::Idle));
     assert_eq!(tool_results(&state)[0].content, "sunny");
 }
@@ -78,7 +79,7 @@ fn an_extension_error_reaches_the_model_named_as_a_failure() {
         "error": "no forecast today",
     })
     .to_string();
-    assert!(state.on_extension_result(7, Some(&payload)));
+    assert!(state.on_extension_result(zellij_tile::prelude::PluginId::new(7), Some(&payload)));
     assert_eq!(tool_results(&state)[0].content, "failed: no forecast today");
 }
 
@@ -256,7 +257,7 @@ fn extension_registration_is_bound_to_the_running_plugin_instance() {
     state.on_sessions(vec![SessionInfo {
         is_current_session: true,
         plugins: BTreeMap::from([(
-            7,
+            PluginId::new(7),
             PluginInfo {
                 location: format!("file:{path}"),
                 configuration: BTreeMap::from([
@@ -269,10 +270,10 @@ fn extension_registration_is_bound_to_the_running_plugin_instance() {
     }]);
 
     assert_eq!(
-        state.extension_instances.get(&7),
+        state.extension_instances.get(&PluginId::new(7)),
         Some(&("weather".to_owned(), path.to_owned()))
     );
-    assert!(!state.extension_instances.contains_key(&8));
+    assert!(!state.extension_instances.contains_key(&PluginId::new(8)));
 }
 
 #[test]
@@ -289,7 +290,7 @@ fn extension_results_are_bounded_before_deserialization() {
     })
     .to_string();
     assert!(payload.len() > crate::extensions::MAX_RESULT_BYTES);
-    assert!(!state.on_extension_result(7, Some(&payload)));
+    assert!(!state.on_extension_result(zellij_tile::prelude::PluginId::new(7), Some(&payload)));
     assert!(matches!(state.status, Status::AwaitingExtension));
     assert!(tool_results(&state).is_empty());
 }
@@ -391,9 +392,10 @@ fn a_registration_report_names_the_tools_and_asks_for_them_to_be_called() {
     state
         .extension_files
         .insert("weather".to_owned(), path.to_owned());
-    state
-        .extension_instances
-        .insert(7, ("weather".to_owned(), path.to_owned()));
+    state.extension_instances.insert(
+        zellij_tile::prelude::PluginId::new(7),
+        ("weather".to_owned(), path.to_owned()),
+    );
     state.pending.push_back(call(
         "call_1",
         "plugin_reload",
@@ -420,7 +422,7 @@ fn a_registration_report_names_the_tools_and_asks_for_them_to_be_called() {
         }],
     })
     .to_string();
-    assert!(state.on_extension_registration(7, Some(&payload)));
+    assert!(state.on_extension_registration(zellij_tile::prelude::PluginId::new(7), Some(&payload)));
 
     let results = tool_results(&state);
     let answer = results

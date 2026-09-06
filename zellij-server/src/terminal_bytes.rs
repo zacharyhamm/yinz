@@ -5,11 +5,11 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use tokio::task;
-use zellij_utils::internal_ids::TerminalId;
-use zellij_utils::{
-    errors::{get_current_ctx, prelude::*, ContextType},
-    logging::debug_to_file,
-};
+use zellij_runtime::errors::get_current_ctx;
+use zellij_runtime::errors::prelude::*;
+use zellij_runtime::logging::debug_to_file;
+use zellij_types::diagnostics::ContextType;
+use zellij_types::internal_ids::TerminalId;
 
 pub(crate) struct TerminalBytes {
     terminal_id: TerminalId,
@@ -50,7 +50,7 @@ impl TerminalBytes {
         let err_context = || "failed to listen for bytes from PTY".to_string();
 
         let mut err_ctx = get_current_ctx();
-        err_ctx.add_call(ContextType::AsyncTask);
+        zellij_runtime::errors::add_call(&mut err_ctx, ContextType::AsyncTask);
         struct PaneClosedGuard {
             recorder: Option<crate::session_recorder::SessionRecorderHandle>,
             terminal_id: TerminalId,
@@ -82,7 +82,7 @@ impl TerminalBytes {
                     self.activity_flag.store(true, Ordering::Relaxed);
                     let bytes = &buf[..n_bytes];
                     if self.debug {
-                        let _ = debug_to_file(bytes, self.terminal_id.0 as i32);
+                        let _ = debug_to_file(bytes, self.terminal_id.get() as i32);
                     }
                     // record output if enabled, before sending to screen
                     if let Some(recorder) = &self.senders.session_recorder {
@@ -180,7 +180,7 @@ mod tests {
             ..Default::default()
         };
         let mut terminal_bytes = TerminalBytes::new(
-            crate::TerminalId(1),
+            crate::TerminalId::new(1),
             Box::new(FakeReader {
                 data: Some(b"hello".to_vec()),
             }),
@@ -200,13 +200,16 @@ mod tests {
             }
         }
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].terminal_id, 1);
+        assert_eq!(
+            events[0].terminal_id,
+            zellij_types::internal_ids::TerminalId::new(1)
+        );
         assert_eq!(events[0].data, b"hello");
         assert_eq!(
             events[0].kind,
-            zellij_utils::session_recording::EventKind::Output
+            zellij_storage::session_recording::EventKind::Output
         );
-        assert_eq!(closed, Some(TerminalId(1)));
+        assert_eq!(closed, Some(TerminalId::new(1)));
         Ok(())
     }
 }

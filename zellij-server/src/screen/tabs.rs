@@ -1,6 +1,9 @@
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 
-use super::Screen;
+use super::{find_already_running_panes, Screen};
 use crate::background_jobs::BackgroundJob;
 use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
@@ -9,27 +12,125 @@ use crate::route::NotificationEnd;
 use crate::tab::{AcceptedPane, ExtractedPanePlacement, Pane, SuppressedPanes, Tab};
 use crate::{ClientId, ServerInstruction};
 use std::collections::{HashMap, HashSet};
-use zellij_utils::data::{Direction, Event, ModeInfo};
-use zellij_utils::input::command::RunCommand;
+use std::path::PathBuf;
+use zellij_types::geometry::Direction;
+use zellij_types::input::command::{RunCommand, TerminalAction};
+use zellij_types::input::layout::TabLayoutInfo;
+use {zellij_types::data::Event, zellij_types::data::ModeInfo};
 
 impl Screen {
-    pub(super) fn get_new_tab_id(&self) -> usize {
-        if let Some(id) = self.tabs.keys().last() {
-            *id + 1
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn override_layout(
+        &mut self,
+        cwd: Option<PathBuf>,
+        default_shell: Option<TerminalAction>,
+        mut tab_layouts: Vec<TabLayoutInfo>,
+        retain_existing_terminal_panes: bool,
+        retain_existing_plugin_panes: bool,
+        apply_only_to_focused_tab: bool,
+        client_id: ClientId,
+        completion_tx: Option<NotificationEnd>,
+    ) -> Result<()> {
+        let focused_tab_id = if apply_only_to_focused_tab {
+            if tab_layouts.is_empty() {
+                log::error!("No tab layouts found, cannot override.");
+                return Ok(());
+            }
+            tab_layouts.truncate(1);
+            match self.get_active_tab(client_id) {
+                Ok(tab) => Some(tab.id),
+                Err(e) => {
+                    log::error!("Failed to override layout of active tab: {}", e);
+                    return Ok(());
+                },
+            }
         } else {
-            0
+            None
+        };
+
+        // Resolve all positions before creating or closing tabs changes their positions.
+        let tab_layouts: Vec<_> = tab_layouts
+            .into_iter()
+            .map(|layout| {
+                let id = focused_tab_id.or_else(|| self.get_tab_id_at_position(layout.tab_index));
+                (id, layout)
+            })
+            .collect();
+        let mut tabs_to_close: HashSet<TabId> = self.tabs.keys().copied().collect();
+        let mut processed_tab_layouts = Vec::new();
+        for (tab_id, mut layout) in tab_layouts {
+            let tab_id = match tab_id {
+                Some(id) => id,
+                None => {
+                    // Reserve the ID before asynchronous plugin and PTY work starts.
+                    let id = self.get_new_tab_id();
+                    self.new_tab(
+                        id,
+                        (
+                            layout.swap_tiled_layouts.clone().unwrap_or_default(),
+                            layout.swap_floating_layouts.clone().unwrap_or_default(),
+                        ),
+                        layout.tab_name.clone(),
+                        None,
+                    )?;
+                    id
+                },
+            };
+            tabs_to_close.remove(&tab_id);
+            let tab = self
+                .tabs
+                .get_mut(&tab_id)
+                .context("override tab is missing")?;
+            if let Some(name) = layout.tab_name.take() {
+                tab.name = name;
+            }
+            let (tiled_to_ignore, floating_indices) =
+                find_already_running_panes(&layout.tiled_layout, &layout.floating_layouts, tab);
+            for run_instruction in tiled_to_ignore {
+                layout.tiled_layout.ignore_run_instruction(run_instruction);
+            }
+            for idx in floating_indices {
+                layout.floating_layouts[idx].already_running = true;
+            }
+            processed_tab_layouts.push((tab_id, layout));
+        }
+
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::OverrideLayout(
+                cwd,
+                default_shell,
+                processed_tab_layouts,
+                retain_existing_terminal_panes,
+                retain_existing_plugin_panes,
+                client_id,
+                completion_tx,
+            ))?;
+        if !apply_only_to_focused_tab {
+            for tab_id in tabs_to_close {
+                self.close_tab_by_id(tab_id)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn get_new_tab_id(&self) -> TabId {
+        if let Some(id) = self.tabs.keys().last() {
+            TabId::new(id.get() + 1)
+        } else {
+            TabId::new(0)
         }
     }
 
     /// Gets a tab by its stable ID (BTreeMap key).
     ///
     /// Use this when you have a tab ID from active_tab_ids, tab_history, or tab.id.
-    pub(super) fn get_tab_by_id(&self, id: usize) -> Option<&Tab> {
+    pub(super) fn get_tab_by_id(&self, id: TabId) -> Option<&Tab> {
         self.tabs.get(&id)
     }
 
     /// Gets a mutable tab by its stable ID (BTreeMap key).
-    pub(super) fn get_tab_by_id_mut(&mut self, id: usize) -> Option<&mut Tab> {
+    pub(super) fn get_tab_by_id_mut(&mut self, id: TabId) -> Option<&mut Tab> {
         self.tabs.get_mut(&id)
     }
 
@@ -54,13 +155,13 @@ impl Screen {
     }
 
     /// The stable id of the tab holding `pane_id`.
-    pub(super) fn tab_id_containing_pane(&self, pane_id: PaneId) -> Option<usize> {
+    pub(super) fn tab_id_containing_pane(&self, pane_id: PaneId) -> Option<TabId> {
         self.tab_containing_pane(pane_id).map(|tab| tab.id)
     }
 
     /// The display position of the tab holding `pane_id`, for the callers that go on to look the
     /// tab up by position rather than by id.
-    pub(super) fn tab_position_containing_pane(&self, pane_id: PaneId) -> Option<usize> {
+    pub(super) fn tab_position_containing_pane(&self, pane_id: PaneId) -> Option<TabPosition> {
         self.tab_containing_pane(pane_id).map(|tab| tab.position)
     }
 
@@ -101,7 +202,7 @@ impl Screen {
     }
 
     /// Gets a mutable tab by its display position (0-based).
-    pub(super) fn get_tab_by_position_mut(&mut self, position: usize) -> Option<&mut Tab> {
+    pub(super) fn get_tab_by_position_mut(&mut self, position: TabPosition) -> Option<&mut Tab> {
         self.tabs.values_mut().find(|t| t.position == position)
     }
 
@@ -116,7 +217,7 @@ impl Screen {
     /// Gets the stable ID of the tab at the given display position.
     ///
     /// Use this to convert position → ID for BTreeMap lookups.
-    pub(super) fn get_tab_id_at_position(&self, position: usize) -> Option<usize> {
+    pub(super) fn get_tab_id_at_position(&self, position: TabPosition) -> Option<TabId> {
         self.tabs
             .values()
             .find(|t| t.position == position)
@@ -126,7 +227,7 @@ impl Screen {
     /// Gets the display position of the tab with the given ID.
     ///
     /// Use this to convert ID → position for user-facing operations.
-    pub(super) fn get_tab_position_by_id(&self, id: usize) -> Option<usize> {
+    pub(super) fn get_tab_position_by_id(&self, id: TabId) -> Option<TabPosition> {
         self.tabs.get(&id).map(|t| t.position)
     }
 
@@ -293,8 +394,8 @@ impl Screen {
 
     fn move_clients_between_tabs(
         &mut self,
-        source_tab_index: usize,
-        destination_tab_index: usize,
+        source_tab_index: TabId,
+        destination_tab_index: TabId,
         update_mode_infos: bool,
         clients_to_move: Option<Vec<ClientId>>,
     ) -> Result<()> {
@@ -331,7 +432,7 @@ impl Screen {
         Ok(())
     }
 
-    pub(super) fn update_client_tab_focus(&mut self, client_id: ClientId, new_tab_index: usize) {
+    pub(super) fn update_client_tab_focus(&mut self, client_id: ClientId, new_tab_index: TabId) {
         match self.active_tab_ids.remove(&client_id) {
             Some(old_active_index) => {
                 self.active_tab_ids.insert(client_id, new_tab_index);
@@ -357,7 +458,7 @@ impl Screen {
     /// which is right: the pane belongs to that tab. But the tab being entered renders diff-based,
     /// so if nothing in it changed it emits nothing and the pane stays on the host terminal over a
     /// tab it is not in.
-    fn repaint_after_leaving_tab(&mut self, left_tab_id: usize, entered_tab_id: usize) {
+    fn repaint_after_leaving_tab(&mut self, left_tab_id: TabId, entered_tab_id: TabId) {
         if !self
             .tabs
             .get(&left_tab_id)
@@ -375,7 +476,7 @@ impl Screen {
     /// A helper function to switch to a new tab at specified position.
     pub(super) fn switch_active_tab(
         &mut self,
-        new_tab_pos: usize,
+        new_tab_pos: TabPosition,
         should_change_pane_focus: Option<Direction>,
         update_mode_infos: bool,
         client_id: ClientId,
@@ -525,7 +626,8 @@ impl Screen {
             match self.get_active_tab(client_id) {
                 Ok(active_tab) => {
                     let active_tab_pos = active_tab.position;
-                    let new_tab_pos = (active_tab_pos + 1) % self.tabs.len();
+                    let new_tab_pos =
+                        TabPosition::new((active_tab_pos.get() + 1) % self.tabs.len());
                     return self.switch_active_tab(
                         new_tab_pos,
                         should_change_pane_focus,
@@ -558,11 +660,11 @@ impl Screen {
             match self.get_active_tab(client_id) {
                 Ok(active_tab) => {
                     let active_tab_pos = active_tab.position;
-                    let new_tab_pos = if active_tab_pos == 0 {
+                    let new_tab_pos = TabPosition::new(if active_tab_pos.get() == 0 {
                         self.tabs.len() - 1
                     } else {
-                        active_tab_pos - 1
-                    };
+                        active_tab_pos.get() - 1
+                    });
 
                     return self.switch_active_tab(
                         new_tab_pos,
@@ -577,15 +679,15 @@ impl Screen {
         Ok(())
     }
 
-    pub fn go_to_tab(&mut self, tab_index: usize, client_id: ClientId) -> Result<()> {
-        self.switch_active_tab(tab_index.saturating_sub(1), None, true, client_id)
+    pub fn go_to_tab(&mut self, tab_index: TabNumber, client_id: ClientId) -> Result<()> {
+        self.switch_active_tab(tab_index.position(), None, true, client_id)
     }
 
     pub fn go_to_tab_name(&mut self, name: String, client_id: ClientId) -> Result<bool> {
         self.switch_active_tab_name(name, client_id)
     }
 
-    pub(super) fn close_tab_by_id(&mut self, tab_id: usize) -> Result<()> {
+    pub(super) fn close_tab_by_id(&mut self, tab_id: TabId) -> Result<()> {
         let err_context = || format!("failed to close tab at index {tab_id:?}");
 
         let mut tab_to_close = self.tabs.remove(&tab_id).with_context(err_context)?;
@@ -689,7 +791,7 @@ impl Screen {
                 overlay_respawns,
                 overlay_client,
             );
-            let visible_tab_indices: HashSet<usize> =
+            let visible_tab_indices: HashSet<TabId> =
                 self.active_tab_ids.values().copied().collect();
             for t in self.tabs.values_mut() {
                 if visible_tab_indices.contains(&t.id) {
@@ -697,7 +799,7 @@ impl Screen {
                     t.visible(true).with_context(err_context)?;
                 }
                 if t.position > tab_to_close.position {
-                    t.position -= 1;
+                    t.position = TabPosition::new(t.position.get() - 1);
                 }
             }
             for tab_id in visible_tab_indices {

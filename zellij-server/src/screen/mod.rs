@@ -52,9 +52,9 @@
 //!
 //! # Key Data Structures
 //!
-//! - `tabs: BTreeMap<usize, Tab>`: Keyed by tab.id (stable identifier)
-//! - `active_tab_ids: BTreeMap<ClientId, usize>`: Maps clients to active tab ID
-//! - `tab_history: BTreeMap<ClientId, Vec<usize>>`: History of tab IDs per client
+//! - `tabs: BTreeMap<TabId, Tab>`: Keyed by tab.id (stable identifier)
+//! - `active_tab_ids: BTreeMap<ClientId, TabId>`: Maps clients to active tab ID
+//! - `tab_history: BTreeMap<ClientId, Vec<TabId>>`: History of tab IDs per client
 
 use crate::ui::loading_indication::DOT_PERIOD;
 use crate::ui::notification::{ENTER_DURATION, ENTER_EASING};
@@ -64,35 +64,54 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::str;
 use std::time::{Duration, Instant};
-use zellij_utils::animation::{Tween, BLINK_TICK, FRAME_PERIOD};
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::animation::{Tween, BLINK_TICK, FRAME_PERIOD};
+use zellij_types::internal_ids::ContextMenuRequestId;
+use zellij_types::internal_ids::NotificationId;
+use zellij_types::internal_ids::SupervisorId;
+use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
+use zellij_types::internal_ids::TerminalId;
 
 use crate::route::NotificationEnd;
 
 use log::{debug, warn};
-use zellij_utils::data::{
-    AgentInfo, AgentState, ContextMenuContext, ContextMenuItem, Direction, EventType,
-    FloatingPaneCoordinates, HookPayload, HostTerminalThemeMode, KeyWithModifier, LayoutInfo,
-    LayoutWithError, NotificationInfo, OverlayPlacement, PaneInfo, PluginTag, RemotePaneHandoff,
-    ResizeStrategy, SessionInfo, Styling, TabInfo, ThemeHue, WarpedPane, WarpedTab,
-    HOCUS_AGENT_PANE_CONTEXT,
+use zellij_runtime::errors::prelude::*;
+use zellij_types::input::context_menu::ContextMenu;
+use zellij_types::input::hooks::HookPoint;
+use zellij_types::input::keybinds::Keybinds;
+use zellij_types::keys::KeyWithModifier;
+use zellij_types::pane_size::{Size, SizeInPixels};
+use zellij_types::position::Position;
+use zellij_types::style::{HostTerminalThemeMode, Styling, ThemeHue};
+use zellij_types::text::clean_string_from_control_and_linebreak;
+use zellij_types::{
+    agent::{AgentInfo, AgentState},
+    geometry::{Direction, FloatingPaneCoordinates, ResizeStrategy},
 };
-use zellij_utils::errors::prelude::*;
-use zellij_utils::input::command::{RunCommand, TerminalAction};
-use zellij_utils::input::context_menu::ContextMenu;
-use zellij_utils::input::hooks::HookPoint;
-use zellij_utils::input::keybinds::Keybinds;
-use zellij_utils::input::layout::{
-    FloatingPaneLayout, Layout, PluginUserConfiguration, Run, RunPlugin, RunPluginLocation,
-    RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout, TiledPaneLayout,
+use {
+    zellij_types::data::ContextMenuContext, zellij_types::data::ContextMenuItem,
+    zellij_types::data::EventType, zellij_types::data::HookPayload, zellij_types::data::LayoutInfo,
+    zellij_types::data::LayoutWithError, zellij_types::data::NotificationInfo,
+    zellij_types::data::OverlayPlacement, zellij_types::data::PaneInfo,
+    zellij_types::data::PluginTag, zellij_types::data::RemotePaneHandoff,
+    zellij_types::data::SessionInfo, zellij_types::data::TabInfo, zellij_types::data::WarpedPane,
+    zellij_types::data::WarpedTab, zellij_types::data::HOCUS_AGENT_PANE_CONTEXT,
 };
-use zellij_utils::input::options::{
-    Clipboard, HostNotificationProtocol, NestedSessionHandling, NotificationPosition,
-    PaneFrameStyle,
+use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
+use {
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Layout,
+    zellij_types::input::layout::PluginUserConfiguration, zellij_types::input::layout::Run,
+    zellij_types::input::layout::RunPlugin, zellij_types::input::layout::RunPluginLocation,
+    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::layout::SwapFloatingLayout,
+    zellij_types::input::layout::SwapTiledLayout, zellij_types::input::layout::TiledPaneLayout,
 };
-use zellij_utils::pane_size::{Size, SizeInPixels};
-use zellij_utils::position::Position;
-use zellij_utils::shared::clean_string_from_control_and_linebreak;
+use {
+    zellij_types::input::options::Clipboard,
+    zellij_types::input::options::HostNotificationProtocol,
+    zellij_types::input::options::NestedSessionHandling,
+    zellij_types::input::options::NotificationPosition,
+    zellij_types::input::options::PaneFrameStyle,
+};
 
 use crate::background_jobs::BackgroundJob;
 use crate::notifications::NotificationProtocol;
@@ -117,9 +136,10 @@ use crate::{
     ui::loading_indication::LoadingIndication,
     ClientId, ServerInstruction,
 };
-use zellij_utils::{
-    data::{Event, InputMode, ModeInfo, Palette, Style},
-    ipc::{ClientAttributes, PixelDimensions},
+use zellij_types::style::{Palette, Style};
+use {
+    zellij_ipc::ipc::ClientAttributes, zellij_ipc::ipc::PixelDimensions, zellij_types::data::Event,
+    zellij_types::data::InputMode, zellij_types::data::ModeInfo,
 };
 
 mod agent_placement;
@@ -235,7 +255,7 @@ pub(crate) fn denormalize_notification_response(payload: &[u8]) -> Option<Notifi
     let restored_metadata = restored_parts.join(":");
     let full_response = format!("\x1b]99;{}{}\x1b\\", restored_metadata, response_payload);
     Some(NotificationResponse {
-        terminal_id: TerminalId(terminal_id),
+        terminal_id: TerminalId::new(terminal_id),
         forward_to_pane: app_wants_report || payload_type.is_control_request(),
         focus_pane: !payload_type.is_control_request(),
         bytes: full_response.into_bytes(),
@@ -385,7 +405,7 @@ type HoldForCommand = Option<RunCommand>;
 /// Result of overriding a single tab's layout
 #[derive(Debug, Clone)]
 pub struct TabOverrideResult {
-    pub tab_index: usize,
+    pub tab_index: TabId,
     pub tab_name: Option<String>,
     pub tiled_layout: TiledPaneLayout,
     pub floating_layouts: Vec<FloatingPaneLayout>,
@@ -534,8 +554,8 @@ impl WatcherState {
 }
 
 struct PaneRenderSubscription {
-    pane_ids: HashSet<zellij_utils::data::PaneId>,
-    previous_viewports: HashMap<zellij_utils::data::PaneId, Vec<String>>,
+    pane_ids: HashSet<zellij_types::data::PaneId>,
+    previous_viewports: HashMap<zellij_types::data::PaneId, Vec<String>>,
     ansi: bool,
 }
 
@@ -593,7 +613,7 @@ pub(crate) struct PreparedTabWarp {
 /// shapes is meaningful: a local supervisor socket, or a broker and a token.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct WarpAddress {
-    host_id: String,
+    host_id: SupervisorId,
     control_socket: PathBuf,
     remote: Option<RemotePaneHandoff>,
 }
@@ -609,7 +629,7 @@ pub(crate) struct WarpAddress {
 pub(crate) struct BreakPanesToTabOutcome {
     /// `None` when there is no tab with the requested id. Nothing was extracted and the
     /// session is unchanged.
-    pub destination_tab_id: Option<usize>,
+    pub destination_tab_id: Option<TabId>,
     /// Panes extracted from another tab and now in the destination.
     pub moved: Vec<PaneId>,
     /// Panes that were already in the destination and were left alone.
@@ -637,7 +657,7 @@ impl BreakPanesToTabOutcome {
             && !(self.moved.is_empty() && self.already_in_destination.is_empty())
     }
     /// The value the plugin API reports back: `Some(tab_id)` only on a real move.
-    pub fn affected_tab_id(&self) -> Option<usize> {
+    pub fn affected_tab_id(&self) -> Option<TabId> {
         if self.succeeded() {
             self.destination_tab_id
         } else {
@@ -662,7 +682,7 @@ pub(crate) struct Screen {
     /// An optional maximal amount of panes allowed per [`Tab`] in this [`Screen`] instance.
     max_panes: Option<usize>,
     /// A map between this [`Screen`]'s tabs and their ID/key.
-    tabs: BTreeMap<usize, Tab>,
+    tabs: BTreeMap<TabId, Tab>,
     /// Where each terminal pane's process is, as pty last reported it. Stamped
     /// onto every pane manifest so a plugin that missed the announcement — or
     /// loaded after it — is put right by the next update rather than never.
@@ -676,14 +696,14 @@ pub(crate) struct Screen {
     /// The name each tab last showed a plugin, so a change to one that no other
     /// event reports — a lone pane retitling itself, a project arriving, a
     /// collision forming or clearing — still redraws the tab bar.
-    last_plugin_tab_names: HashMap<usize, String>,
+    last_plugin_tab_names: HashMap<TabId, String>,
     /// The project each tab is working on, as the last `SetTabProjects` had it.
     ///
     /// Only a plugin knows what a project is, so this is told to us rather than
     /// worked out. Held raw — without the `#1`/`#2` a collision earns — because
     /// the suffixes depend on tab order, which changes without anyone sending us
     /// anything.
-    tab_projects: HashMap<usize, String>,
+    tab_projects: HashMap<TabId, String>,
     pixel_dimensions: PixelDimensions,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     stacked_resize: Rc<RefCell<bool>>,
@@ -697,7 +717,7 @@ pub(crate) struct Screen {
     terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
     connected_clients: Rc<RefCell<HashSet<ClientId>>>,
     /// The indices of this [`Screen`]'s active [`Tab`]s.
-    active_tab_ids: BTreeMap<ClientId, usize>,
+    active_tab_ids: BTreeMap<ClientId, TabId>,
     client_sizes: HashMap<ClientId, Size>,
     /// The surface every tab was last laid out over, for when no client contributes a size at all:
     /// before the first client reports one, and after every client has detached - a
@@ -733,8 +753,8 @@ pub(crate) struct Screen {
     /// so `sync_animation_clock` is a no-op on the overwhelming majority of ticks rather than a
     /// message on the bus sixty times a second.
     animation_clock: Option<Duration>,
-    global_last_active_tab_id: usize,
-    tab_history: BTreeMap<ClientId, Vec<usize>>,
+    global_last_active_tab_id: TabId,
+    tab_history: BTreeMap<ClientId, Vec<TabId>>,
     pane_history: BTreeMap<ClientId, Vec<PaneId>>,
     mode_info: BTreeMap<ClientId, ModeInfo>,
     default_mode_info: ModeInfo, // TODO: restructure ModeInfo to prevent this duplication
@@ -751,7 +771,7 @@ pub(crate) struct Screen {
     /// in `remove_client` alongside `notification_mouse_captures`. See `screen::context_menu`.
     context_menus: HashMap<ClientId, ContextMenuState>,
     /// Correlates a plugin's answer with the menu that asked for it. Monotonic per session.
-    next_context_menu_request_id: u64,
+    next_context_menu_request_id: ContextMenuRequestId,
     /// The items a right-click menu offers before its hook plugin has had its say.
     ///
     /// Held here, rather than only in the plugin thread, because the screen needs them for two
@@ -762,7 +782,7 @@ pub(crate) struct Screen {
     /// ponytail: intentionally unbounded because the feature promises "all" notifications;
     /// add a configurable cap only if long-lived sessions show meaningful memory pressure.
     notification_history: Vec<NotificationInfo>,
-    next_notification_id: u64,
+    next_notification_id: NotificationId,
     notification_position: NotificationPosition,
     notification_timeout_secs: u64,
     /// The floor a spawned agent pane's equal share of a tab must clear, columns by rows;
@@ -803,7 +823,7 @@ pub(crate) struct Screen {
     /// serialization finished, which is exactly what the reserve exists to rule
     /// out.
     pending_tab_warps: HashMap<
-        usize,
+        TabId,
         (
             crossbeam::channel::Sender<Result<Box<WarpedTab>, String>>,
             PreparedTabWarp,
@@ -1080,7 +1100,7 @@ impl Screen {
 
 #[derive(Debug, Clone)]
 struct Notification {
-    id: u64,
+    id: NotificationId,
     text: String,
     pane_id: Option<PaneId>,
     /// `0.0` = hidden at the anchored edge, `1.0` = fully slid into place. Re-aimed at `0.0` on
@@ -1097,7 +1117,7 @@ struct Notification {
 }
 
 impl Notification {
-    fn new(id: u64, text: String, pane_id: Option<PaneId>, now: Instant) -> Self {
+    fn new(id: NotificationId, text: String, pane_id: Option<PaneId>, now: Instant) -> Self {
         Notification {
             id,
             text,
@@ -1131,7 +1151,7 @@ impl Notification {
 pub(crate) struct ContextMenuState {
     /// Matched against the `request_id` in a plugin's answer. An answer for a menu that has since
     /// closed - or been replaced by a newer one - names a stale id and is dropped.
-    request_id: u64,
+    request_id: ContextMenuRequestId,
     /// The clicked cell in surface coordinates. The menu is anchored here every frame rather than
     /// storing a resolved box, because a client's viewport can change under an open menu.
     anchor: Position,
@@ -1305,7 +1325,7 @@ impl Screen {
             blinking_agent_panes: HashSet::new(),
             animating_plugin_loads: HashSet::new(),
             animation_clock: None,
-            global_last_active_tab_id: 0,
+            global_last_active_tab_id: TabId::new(0),
             tabs: BTreeMap::new(),
             terminal_cwds: HashMap::new(),
             terminal_hosts: HashMap::new(),
@@ -1322,10 +1342,10 @@ impl Screen {
             notifications: vec![],
             notification_mouse_captures: HashSet::new(),
             context_menus: HashMap::new(),
-            next_context_menu_request_id: 0,
+            next_context_menu_request_id: ContextMenuRequestId::new(0),
             context_menu,
             notification_history: vec![],
-            next_notification_id: 0,
+            next_notification_id: NotificationId::new(0),
             notification_position,
             notification_timeout_secs,
             agent_pane_min_size,
@@ -1462,7 +1482,7 @@ impl Screen {
     }
 
     /// Returns a mutable reference to this [`Screen`]'s tabs.
-    pub fn get_tabs_mut(&mut self) -> &mut BTreeMap<usize, Tab> {
+    pub fn get_tabs_mut(&mut self) -> &mut BTreeMap<TabId, Tab> {
         &mut self.tabs
     }
 
@@ -1516,8 +1536,8 @@ impl Screen {
     fn resolve_tab_and_client(
         &self,
         requested_client_id: ClientId,
-        explicit_tab_id: Option<usize>,
-    ) -> Option<(usize, ClientId)> {
+        explicit_tab_id: Option<TabId>,
+    ) -> Option<(TabId, ClientId)> {
         let client_id = self
             .active_tab_ids
             .contains_key(&requested_client_id)
@@ -1564,7 +1584,7 @@ impl Screen {
     /// Clear bell notification for the currently focused pane of the given client.
     /// Also cancels any running flash jobs if applicable.
     pub fn clear_bell_for_focused_pane(&mut self, client_id: ClientId) {
-        let tab_id_and_pane_id: Option<(usize, PaneId)> =
+        let tab_id_and_pane_id: Option<(TabId, PaneId)> =
             self.get_active_tab_mut(client_id).ok().and_then(|tab| {
                 tab.get_active_pane_id(client_id)
                     .map(|pane_id| (tab.id, pane_id))
@@ -1594,7 +1614,7 @@ impl Screen {
 
     /// Clear bell notification for a specific pane ID in the given client's active tab.
     pub fn clear_bell_for_pane_id(&mut self, pane_id: PaneId, client_id: ClientId) {
-        let tab_id: Option<usize> = self.get_active_tab_mut(client_id).ok().map(|tab| tab.id);
+        let tab_id: Option<TabId> = self.get_active_tab_mut(client_id).ok().map(|tab| tab.id);
         if let Some(tab_id) = tab_id {
             if let Some(tab) = self.tabs.get_mut(&tab_id) {
                 if tab.panes_with_pending_bell.contains(&pane_id) {
@@ -1619,7 +1639,7 @@ impl Screen {
     pub fn show_floating_panes_in_tab(
         &mut self,
         client_id: ClientId,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
         completion: Option<NotificationEnd>,
     ) -> Result<()> {
         let tab = match tab_id {
@@ -1643,7 +1663,7 @@ impl Screen {
     pub fn hide_floating_panes_in_tab(
         &mut self,
         client_id: ClientId,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
         completion: Option<NotificationEnd>,
     ) -> Result<()> {
         let tab = match tab_id {
@@ -1667,7 +1687,7 @@ impl Screen {
     pub fn are_floating_panes_visible_in_tab(
         &self,
         client_id: ClientId,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
         completion: Option<NotificationEnd>,
     ) -> Result<()> {
         let tab = match tab_id {
@@ -1700,7 +1720,7 @@ impl Screen {
     /// Creates a new [`Tab`] in this [`Screen`]
     pub fn new_tab(
         &mut self,
-        tab_id: usize,
+        tab_id: TabId,
         swap_layouts: (Vec<SwapTiledLayout>, Vec<SwapFloatingLayout>),
         tab_name: Option<String>,
         client_id: Option<ClientId>,
@@ -1719,7 +1739,7 @@ impl Screen {
 
         let tab_name = tab_name.unwrap_or_else(String::new);
 
-        let position = self.tabs.len();
+        let position = TabPosition::new(self.tabs.len());
         let tab_size = self.size_for_client(client_id);
         let mut tab = Tab::new(
             tab_id,
@@ -1788,7 +1808,7 @@ impl Screen {
         new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
         new_floating_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
         new_plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
-        tab_id: usize,
+        tab_id: TabId,
         should_change_client_focus: bool,
         client_id: ClientId,
         blocking_terminal: Option<(TerminalId, NotificationEnd)>,
@@ -1940,8 +1960,8 @@ impl Screen {
             *first_active_tab_index
         } else if self.tabs.contains_key(&self.global_last_active_tab_id) {
             self.global_last_active_tab_id
-        } else if self.tabs.contains_key(&0) {
-            0
+        } else if self.tabs.contains_key(&TabId::new(0)) {
+            TabId::new(0)
         } else if let Some(tab_index) = self.tabs.keys().next() {
             tab_index.to_owned()
         } else {
@@ -2236,10 +2256,13 @@ impl Screen {
         match self.get_active_tab(client_id) {
             Ok(active_tab) => {
                 let active_tab_pos = active_tab.position;
-                if active_tab_pos == 0 {
+                if active_tab_pos == TabPosition::new(0) {
                     self.rotate_tab_positions_left();
                 } else {
-                    self.switch_tabs(active_tab_pos, active_tab_pos.saturating_sub(1));
+                    self.switch_tabs(
+                        active_tab_pos,
+                        TabPosition::new(active_tab_pos.get().saturating_sub(1)),
+                    );
                 }
                 self.log_and_report_session_state()
                     .context("failed to move tab to left")?;
@@ -2264,7 +2287,7 @@ impl Screen {
     /// * `other_tab_pos` - Position to swap with (0-based)
     ///
     /// NOTE: this expects positions rather than IDs (see distinction at top of file)
-    fn switch_tabs(&mut self, active_tab_pos: usize, other_tab_pos: usize) {
+    fn switch_tabs(&mut self, active_tab_pos: TabPosition, other_tab_pos: TabPosition) {
         let Some(active_tab_id) = self
             .tabs
             .values()
@@ -2314,12 +2337,12 @@ impl Screen {
     }
 
     fn rotate_tab_positions_left(&mut self) {
-        let last_position = self.tabs.len().saturating_sub(1);
+        let last_position = TabPosition::new(self.tabs.len().saturating_sub(1));
         for tab in self.tabs.values_mut() {
-            tab.position = if tab.position == 0 {
+            tab.position = if tab.position == TabPosition::new(0) {
                 last_position
             } else {
-                tab.position.saturating_sub(1)
+                TabPosition::new(tab.position.get().saturating_sub(1))
             };
         }
     }
@@ -2327,7 +2350,7 @@ impl Screen {
     fn rotate_tab_positions_right(&mut self) {
         let num_tabs = self.tabs.len();
         for tab in self.tabs.values_mut() {
-            tab.position = (tab.position + 1) % num_tabs;
+            tab.position = TabPosition::new((tab.position.get() + 1) % num_tabs);
         }
     }
 
@@ -2344,10 +2367,10 @@ impl Screen {
         match self.get_active_tab(client_id) {
             Ok(active_tab) => {
                 let active_tab_pos = active_tab.position;
-                if active_tab_pos == self.tabs.len().saturating_sub(1) {
+                if active_tab_pos.get() == self.tabs.len().saturating_sub(1) {
                     self.rotate_tab_positions_right();
                 } else {
-                    self.switch_tabs(active_tab_pos, active_tab_pos + 1);
+                    self.switch_tabs(active_tab_pos, TabPosition::new(active_tab_pos.get() + 1));
                 }
                 self.log_and_report_session_state()
                     .context("failed to move tab to the right")?;
@@ -2357,7 +2380,7 @@ impl Screen {
         Ok(())
     }
 
-    pub fn move_tab_by_id(&mut self, tab_id: usize, direction: Direction) -> Result<()> {
+    pub fn move_tab_by_id(&mut self, tab_id: TabId, direction: Direction) -> Result<()> {
         if self.tabs.len() < 2 {
             return Ok(());
         }
@@ -2366,17 +2389,20 @@ impl Screen {
             let num_tabs = self.tabs.len();
             match direction {
                 Direction::Left => {
-                    if tab_pos == 0 {
+                    if tab_pos == TabPosition::new(0) {
                         self.rotate_tab_positions_left();
                     } else {
-                        self.switch_tabs(tab_pos, tab_pos.saturating_sub(1));
+                        self.switch_tabs(
+                            tab_pos,
+                            TabPosition::new(tab_pos.get().saturating_sub(1)),
+                        );
                     }
                 },
                 Direction::Right => {
-                    if tab_pos == num_tabs.saturating_sub(1) {
+                    if tab_pos.get() == num_tabs.saturating_sub(1) {
                         self.rotate_tab_positions_right();
                     } else {
-                        self.switch_tabs(tab_pos, tab_pos + 1);
+                        self.switch_tabs(tab_pos, TabPosition::new(tab_pos.get() + 1));
                     }
                 },
                 _ => return Ok(()),
@@ -2529,7 +2555,7 @@ impl Screen {
             .context("failed to toggle tabs")?;
         if let Some(t) = tab {
             let position = t.position;
-            self.go_to_tab(position + 1, client_id)
+            self.switch_active_tab(position, None, true, client_id)
                 .context("failed to toggle tabs")?;
         };
 
@@ -2669,7 +2695,7 @@ impl Screen {
                 let tab_position = self
                     .get_tab_position_by_id(tab_id)
                     .with_context(err_context)?;
-                self.go_to_tab(tab_position + 1, client_id)?;
+                self.switch_active_tab(tab_position, None, true, client_id)?;
                 self.tabs
                     .get_mut(&tab_id)
                     .with_context(err_context)?
@@ -2761,7 +2787,7 @@ impl Screen {
         let tab_index = self.tab_position_containing_pane(pane_id);
         match tab_index {
             Some(tab_index) => {
-                self.go_to_tab(tab_index + 1, client_id)?;
+                self.switch_active_tab(tab_index, None, true, client_id)?;
                 // The tab's own result is what gets logged. Mapping over the lookup used to
                 // produce an `Option<Result>` whose *outer* layer was the only thing
                 // `non_fatal` ever looked at, so a tab that failed to focus the pane was
@@ -2955,7 +2981,7 @@ impl Screen {
     fn hook_client_id(&self, run_command: Option<&RunCommand>) -> Option<ClientId> {
         run_command
             .and_then(|run_command| run_command.originating_plugin.as_ref())
-            .map(|plugin| ClientId(plugin.client_id))
+            .map(|plugin| plugin.client_id)
             .or_else(|| self.get_first_client_id())
     }
     /// Hand an exited agent pane to the `agent_exit` hook.
@@ -3034,9 +3060,9 @@ impl Screen {
         payload.insert(
             "agent_target".to_owned(),
             match &run_command.target {
-                zellij_utils::data::PaneTarget::Local => "local",
-                zellij_utils::data::PaneTarget::Ssh { .. } => "ssh",
-                zellij_utils::data::PaneTarget::Firecracker { .. } => "firecracker",
+                zellij_types::command::PaneTarget::Local => "local",
+                zellij_types::command::PaneTarget::Ssh { .. } => "ssh",
+                zellij_types::command::PaneTarget::Firecracker { .. } => "firecracker",
             }
             .to_owned(),
         );
@@ -3107,7 +3133,7 @@ impl Screen {
             return;
         };
         let payload = HookPayload::PaneExit {
-            pane_id: terminal_pane_id.0,
+            pane_id: terminal_pane_id,
             exit_code: exit_status,
             cwd: run_command.cwd.clone(),
             command: Some(run_command.to_string()),
@@ -3155,7 +3181,7 @@ impl Screen {
                 .map(|cwd| cwd.display().to_string());
         }
         let payload = HookPayload::Agent {
-            pane_id: terminal_pane_id.0,
+            pane_id: terminal_pane_id,
             agent,
             previous_state: previous.map(|previous| previous.state),
             command: run_command
@@ -3882,7 +3908,7 @@ impl Screen {
         // linked as a panel are placed as that panel (`Tab::change_overlay_coordinates_batch`),
         // which they cannot be one pane at a time. An id on no tab is silently skipped, as it
         // always was - a plugin placing a pane that is not on a tab yet is the common case.
-        let mut per_tab: BTreeMap<usize, Vec<(PaneId, FloatingPaneCoordinates)>> = BTreeMap::new();
+        let mut per_tab: BTreeMap<TabId, Vec<(PaneId, FloatingPaneCoordinates)>> = BTreeMap::new();
         for (pane_id, coordinates) in pane_ids_and_coordinates {
             if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
                 per_tab
@@ -4012,7 +4038,7 @@ impl Screen {
     fn get_layout_metadata(
         &self,
         default_shell: Option<PathBuf>,
-        tab_index: Option<usize>,
+        tab_index: Option<TabId>,
     ) -> SessionLayoutMetadata {
         let mut session_layout_metadata = SessionLayoutMetadata::new(self.default_layout.clone());
         if let Some(default_shell) = default_shell {
@@ -4063,7 +4089,7 @@ impl Screen {
     /// in the background, whereas a warp is something the user asked for by name.
     fn tab_panes_for_layout(
         &self,
-        tab_index: usize,
+        tab_index: TabId,
         tab: &Tab,
         with_contents: bool,
     ) -> (
@@ -4524,7 +4550,7 @@ impl Screen {
         None
     }
 
-    fn get_tab_info(&self, tab_id: usize) -> Option<TabInfo> {
+    fn get_tab_info(&self, tab_id: TabId) -> Option<TabInfo> {
         // Look up tab by its stable ID
         self.tabs.get(&tab_id).map(|tab| {
             let all_focused_clients: Vec<ClientId> = self
@@ -4548,7 +4574,7 @@ impl Screen {
                 is_fullscreen_active: tab.is_fullscreen_active(),
                 is_sync_panes_active: tab.is_sync_panes_active(),
                 are_floating_panes_visible: tab.are_floating_panes_visible(),
-                other_focused_clients: all_focused_clients.into_iter().map(|id| id.0).collect(),
+                other_focused_clients: all_focused_clients.into_iter().collect(),
                 active_swap_layout_name,
                 is_swap_layout_dirty,
                 viewport_rows: tab_viewport.rows,

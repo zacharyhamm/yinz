@@ -1,9 +1,10 @@
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TabId;
 
 use super::Screen;
 use crate::ClientId;
-use zellij_utils::ipc::PixelDimensions;
-use zellij_utils::pane_size::Size;
+use zellij_ipc::ipc::PixelDimensions;
+use zellij_types::pane_size::Size;
 
 impl Screen {
     pub fn set_client_size(&mut self, client_id: ClientId, size: Size) {
@@ -77,7 +78,7 @@ impl Screen {
             .unwrap_or_else(|| self.size_for_client(Some(client_id)))
     }
 
-    pub fn recompute_tab_size(&mut self, tab_id: usize) -> Result<()> {
+    pub fn recompute_tab_size(&mut self, tab_id: TabId) -> Result<()> {
         self.reflow_tab(tab_id)
             .with_context(|| format!("failed to recompute size for tab {tab_id}"))
     }

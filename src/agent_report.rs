@@ -3,15 +3,14 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
-use zellij_utils::{
-    agent::report::{
-        reporting_watchdog, AgentReport, AgentReportState, ReportTrace, REPORT_DEADLINE,
-    },
-    cli::CliAction,
-    data::PaneId,
-    errors::prelude::*,
-    input::actions::Action,
-    ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg},
+use zellij_runtime::errors::prelude::*;
+use {
+    zellij_cli::args::CliAction, zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcRecv,
+    zellij_ipc::ipc::IpcSenderWithContext, zellij_ipc::ipc::ServerToClientMsg,
+    zellij_runtime::agent::report::reporting_watchdog, zellij_runtime::agent::report::ReportTrace,
+    zellij_runtime::agent::report::REPORT_DEADLINE, zellij_types::agent::report::AgentReport,
+    zellij_types::agent::report::AgentReportState, zellij_types::data::PaneId,
+    zellij_types::input::actions::Action,
 };
 
 pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant) -> Result<()> {
@@ -29,7 +28,7 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
             }
             t.session = session
                 .clone()
-                .or_else(|| zellij_utils::envs::get_session_name().ok())
+                .or_else(|| zellij_runtime::envs::get_session_name().ok())
                 .unwrap_or_default();
             t.enter("pane_owner");
         }
@@ -61,8 +60,9 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
         }
         // Reuse the same parser, state mapping, and bounded event construction as manual
         // actions. These values are packaged, never dispatched as generic actions.
-        let actions = Action::actions_from_cli(action, Box::new(std::path::PathBuf::new), None)
-            .map_err(|_| anyhow!("invalid agent report input"))?;
+        let actions =
+            zellij_cli::actions::actions_from_cli(action, Box::new(std::path::PathBuf::new), None)
+                .map_err(|_| anyhow!("invalid agent report input"))?;
         let (pane_id, state, event) = report_parts(actions)?;
         let report = {
             let mut t = trace.lock().map_err(|_| anyhow!("report trace poisoned"))?;
@@ -86,11 +86,11 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
                 kind: t.kind.clone(),
             }
         };
-        let session = session.or_else(|| zellij_utils::envs::get_session_name().ok());
+        let session = session.or_else(|| zellij_runtime::envs::get_session_name().ok());
         let session = match session {
             Some(session) => session,
             None => {
-                let sessions = zellij_utils::sessions::get_sessions()
+                let sessions = zellij_session::sessions::get_sessions()
                     .map_err(|_| anyhow!("cannot discover sessions"))?;
                 if sessions.len() != 1 {
                     return Err(anyhow!("specify a session for the report"));
@@ -98,8 +98,8 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
                 sessions[0].0.clone()
             },
         };
-        zellij_utils::sessions::validate_session_name(&session).map_err(|e| anyhow!(e))?;
-        report.validate()?;
+        zellij_session::sessions::validate_session_name(&session).map_err(|e| anyhow!(e))?;
+        zellij_runtime::agent::report::validate_report(&report)?;
         trace
             .lock()
             .map_err(|_| anyhow!("report trace poisoned"))?
@@ -109,7 +109,7 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
             .map_err(|_| anyhow!("report trace poisoned"))?
             .enter("connect");
         let socket =
-            zellij_utils::consts::ipc_connect(&zellij_utils::consts::ZELLIJ_SOCK_DIR.join(session))
+            zellij_ipc::consts::ipc_connect(&zellij_runtime::consts::ZELLIJ_SOCK_DIR.join(session))
                 .context("connect report session")?;
         let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(socket);
         let mut receiver = sender.get_receiver::<ServerToClientMsg>();
@@ -168,7 +168,7 @@ fn report_parts(
 ) -> Result<(
     PaneId,
     AgentReportState,
-    Option<zellij_utils::agent::AgentEvent>,
+    Option<zellij_types::agent::AgentEvent>,
 )> {
     let mut pane = None;
     let mut state = AgentReportState::Unchanged;

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use mlua::{Lua, StdLib, Table, Value as LuaValue};
 use uuid::Uuid;
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 
 use super::{LuaPlugin, PRELUDE};
 use crate::plugins::plugin_map::PluginEnv;

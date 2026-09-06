@@ -6,9 +6,9 @@
 #![allow(clippy::field_reassign_with_default)]
 #![allow(clippy::needless_return)]
 #![allow(clippy::question_mark)]
-use zellij_utils::errors::prelude::*;
-use zellij_utils::internal_ids::PluginId;
-use zellij_utils::internal_ids::TerminalId;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::PluginId;
+use zellij_types::internal_ids::TerminalId;
 
 use crate::resize_pty;
 use crate::tab::{get_next_terminal_position, HoldForCommand, Pane};
@@ -27,11 +27,12 @@ use crate::{
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
-use zellij_utils::{
-    data::{Palette, Style},
-    input::layout::{FloatingPaneLayout, Run, RunPluginOrAlias, TiledPaneLayout},
-    input::options::PaneFrameStyle,
-    pane_size::{PaneGeom, Size, SizeInPixels, Viewport},
+use zellij_types::pane_size::{PaneGeom, Size, SizeInPixels, Viewport};
+use zellij_types::style::{Palette, Style};
+use {
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Run,
+    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::layout::TiledPaneLayout,
+    zellij_types::input::options::PaneFrameStyle,
 };
 
 pub struct LayoutApplier<'a> {

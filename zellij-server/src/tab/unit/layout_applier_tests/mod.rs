@@ -14,17 +14,21 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
-use zellij_utils::input::options::PaneFrameStyle;
-use zellij_utils::internal_ids::TerminalId;
-use zellij_utils::{
+use zellij_runtime::{
     channels::{self, ChannelWithContext, Receiver, SenderWithContext},
-    data::{ModeInfo, Palette, Style},
     errors::prelude::*,
-    input::command::{RunCommand, TerminalAction},
-    input::layout::RunPluginOrAlias,
-    input::layout::{FloatingPaneLayout, Layout, Run, TiledPaneLayout},
-    ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg},
-    pane_size::{Size, SizeInPixels, Viewport},
+};
+use zellij_types::input::options::PaneFrameStyle;
+use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::TerminalId;
+use zellij_types::pane_size::{Size, SizeInPixels, Viewport};
+use zellij_types::style::{Palette, Style};
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcReceiverWithContext,
+    zellij_ipc::ipc::ServerToClientMsg, zellij_types::data::ModeInfo,
+    zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction,
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Run,
+    zellij_types::input::layout::TiledPaneLayout,
 };
 
 #[derive(Clone)]
@@ -47,7 +51,7 @@ impl ServerOsApi for FakeInputOutput {
         _file_to_open: TerminalAction,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         unimplemented!()
     }
 
@@ -59,11 +63,11 @@ impl ServerOsApi for FakeInputOutput {
         unimplemented!()
     }
 
-    fn kill(&self, _pid: u32) -> Result<()> {
+    fn kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
 
-    fn force_kill(&self, _pid: u32) -> Result<()> {
+    fn force_kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
 
@@ -90,7 +94,7 @@ impl ServerOsApi for FakeInputOutput {
         unimplemented!()
     }
 
-    fn get_cwd(&self, _pid: u32) -> Option<PathBuf> {
+    fn get_cwd(&self, _pid: ProcessId) -> Option<PathBuf> {
         unimplemented!()
     }
 
@@ -103,7 +107,7 @@ impl ServerOsApi for FakeInputOutput {
         _terminal_id: TerminalId,
         _run_command: RunCommand,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         unimplemented!()
     }
 
@@ -111,18 +115,19 @@ impl ServerOsApi for FakeInputOutput {
         unimplemented!()
     }
 
-    fn send_sigint(&self, _pid: u32) -> Result<()> {
+    fn send_sigint(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
-    fn send_sigcont(&self, _pid: u32) -> Result<()> {
+    fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
 }
 
 /// Parse KDL layout string and extract tiled and floating layouts
 fn parse_kdl_layout(kdl_str: &str) -> (TiledPaneLayout, Vec<FloatingPaneLayout>) {
-    let layout = Layout::from_kdl(kdl_str, Some("test_layout".into()), None, None)
-        .expect("Failed to parse KDL layout");
+    let layout =
+        zellij_config::kdl::layout::from_kdl(kdl_str, Some("test_layout".into()), None, None)
+            .expect("Failed to parse KDL layout");
     layout.new_tab()
 }
 
@@ -168,7 +173,7 @@ fn create_layout_applier_fixtures(
     let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
     let character_cell_size = Rc::new(RefCell::new(None));
 
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut connected_clients_map = HashSet::new();
     connected_clients_map.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients_map));
@@ -279,8 +284,8 @@ fn create_layout_applier_fixtures_with_receivers(
     bool,
     bool,
     bool,
-    Receiver<(PtyInstruction, zellij_utils::errors::ErrorContext)>,
-    Receiver<(PluginInstruction, zellij_utils::errors::ErrorContext)>,
+    Receiver<(PtyInstruction, zellij_types::diagnostics::ErrorContext)>,
+    Receiver<(PluginInstruction, zellij_types::diagnostics::ErrorContext)>,
 ) {
     let viewport = Rc::new(RefCell::new(Viewport {
         x: 0,
@@ -304,7 +309,7 @@ fn create_layout_applier_fixtures_with_receivers(
     let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
     let character_cell_size = Rc::new(RefCell::new(None));
 
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut connected_clients_map = HashSet::new();
     connected_clients_map.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients_map));
@@ -530,7 +535,7 @@ fn format_run_instruction(run: &Option<Run>) -> String {
 
 /// Collect all close pane messages from the pty receiver
 fn collect_close_pane_messages(
-    pty_receiver: &Receiver<(PtyInstruction, zellij_utils::errors::ErrorContext)>,
+    pty_receiver: &Receiver<(PtyInstruction, zellij_types::diagnostics::ErrorContext)>,
 ) -> Vec<PaneId> {
     let mut closed_panes = Vec::new();
     while let Ok((instruction, _)) = pty_receiver.try_recv() {
@@ -543,8 +548,8 @@ fn collect_close_pane_messages(
 
 /// Collect all unload plugin messages from the plugin receiver
 fn collect_unload_plugin_messages(
-    plugin_receiver: &Receiver<(PluginInstruction, zellij_utils::errors::ErrorContext)>,
-) -> Vec<zellij_utils::internal_ids::PluginId> {
+    plugin_receiver: &Receiver<(PluginInstruction, zellij_types::diagnostics::ErrorContext)>,
+) -> Vec<zellij_types::internal_ids::PluginId> {
     let mut unloaded_plugins = Vec::new();
     while let Ok((instruction, _)) = plugin_receiver.try_recv() {
         if let PluginInstruction::Unload(plugin_id) = instruction {

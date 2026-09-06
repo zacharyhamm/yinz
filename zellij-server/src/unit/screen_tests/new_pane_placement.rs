@@ -1,19 +1,20 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 /// A plugin that has a pane is still the anchor: "near me" means beside it, and the fallback
 /// must not quietly take over the case it was not written for.
 #[test]
 fn a_placement_near_a_pane_that_exists_resolves_to_that_pane() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     assert_eq!(
         screen.resolve_pane_placement(ClientTabIndexOrPaneId::PaneIdOrClient(
-            PaneId::Terminal(crate::TerminalId(1)),
-            crate::ClientId(1)
+            PaneId::Terminal(crate::TerminalId::new(1)),
+            crate::ClientId::new(1)
         )),
-        ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(crate::TerminalId(1))),
+        ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(crate::TerminalId::new(1))),
     );
 }
 
@@ -22,15 +23,15 @@ fn a_placement_near_a_pane_that_exists_resolves_to_that_pane() {
 #[test]
 fn a_placement_near_a_pane_that_does_not_exist_falls_back_to_the_client() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     assert_eq!(
         screen.resolve_pane_placement(ClientTabIndexOrPaneId::PaneIdOrClient(
-            PaneId::Plugin(crate::PluginId(999)),
-            crate::ClientId(1)
+            PaneId::Plugin(crate::PluginId::new(999)),
+            crate::ClientId::new(1)
         )),
         // NoFocus: the `PaneId` placement this stands in for does not steal focus either
-        ClientTabIndexOrPaneId::ClientIdNoFocus(crate::ClientId(1)),
+        ClientTabIndexOrPaneId::ClientIdNoFocus(crate::ClientId::new(1)),
     );
 }
 
@@ -38,14 +39,14 @@ fn a_placement_near_a_pane_that_does_not_exist_falls_back_to_the_client() {
 #[test]
 fn other_placements_pass_through_untouched() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     for target in [
-        ClientTabIndexOrPaneId::ClientId(crate::ClientId(1)),
-        ClientTabIndexOrPaneId::ClientIdNoFocus(crate::ClientId(1)),
-        ClientTabIndexOrPaneId::TabIndex(0),
-        ClientTabIndexOrPaneId::TabIndexNoFocus(0),
-        ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(crate::PluginId(999))),
+        ClientTabIndexOrPaneId::ClientId(crate::ClientId::new(1)),
+        ClientTabIndexOrPaneId::ClientIdNoFocus(crate::ClientId::new(1)),
+        ClientTabIndexOrPaneId::TabIndex(TabId::new(0)),
+        ClientTabIndexOrPaneId::TabIndexNoFocus(TabId::new(0)),
+        ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(crate::PluginId::new(999))),
     ] {
         assert_eq!(screen.resolve_pane_placement(target), target);
     }
@@ -79,13 +80,16 @@ fn a_pane_opened_near_a_plugin_with_no_pane_is_placed_rather_than_closed() {
 
     // No tab holds `Plugin(999)`: this is a plugin whose own `AddPlugin` never landed.
     let _ = mock_screen.to_screen.send(ScreenInstruction::NewPane(
-        PaneId::Terminal(crate::TerminalId(9)),
+        PaneId::Terminal(crate::TerminalId::new(9)),
         Some("spawned_by_a_headless_plugin".to_owned()),
         None,
         None,
         NewPanePlacement::default(),
         false, // start_suppressed
-        ClientTabIndexOrPaneId::PaneIdOrClient(PaneId::Plugin(crate::PluginId(999)), client_id),
+        ClientTabIndexOrPaneId::PaneIdOrClient(
+            PaneId::Plugin(crate::PluginId::new(999)),
+            client_id,
+        ),
         None,
         false, // set_blocking
     ));

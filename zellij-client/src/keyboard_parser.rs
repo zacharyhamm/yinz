@@ -1,5 +1,6 @@
 // for more info, please see: https://sw.kovidgoyal.net/kitty/keyboard-protocol
-use zellij_utils::data::{BareKey, KeyModifier, KeyWithModifier};
+
+use zellij_types::keys::{BareKey, KeyModifier, KeyWithModifier};
 
 #[derive(Debug)]
 enum KittyKeysParsingState {
@@ -113,7 +114,7 @@ fn resolve_shifted(key: KeyWithModifier, shifted_key_bytes: &[u8]) -> KeyWithMod
     if !key.has_only_modifiers(&[KeyModifier::Shift]) {
         return key;
     }
-    let shifted_bare_key = BareKey::from_bytes_with_u(shifted_key_bytes);
+    let shifted_bare_key = zellij_runtime::keys::bare_key_from_bytes_with_u(shifted_key_bytes);
     match (shifted_bare_key, key.bare_key) {
         (Some(shifted), _) => KeyWithModifier::new(shifted),
         // The terminal ignored `REPORT_ALTERNATE_KEYS`, or reported an empty shifted field. An
@@ -187,7 +188,7 @@ impl KittyKeyboardParser {
         match self.state {
             KittyKeysParsingState::DoneParsingWithU => {
                 // The modifier keys are checked before the general decode, because
-                // `BareKey::from_bytes_with_u` would otherwise turn 57443 into a private-use
+                // `zellij_runtime::keys::bare_key_from_bytes_with_u` would otherwise turn 57443 into a private-use
                 // `Char` and it would be typed into whatever pane has focus.
                 if let Some(modifier) = modifier_from_keycode(&self.number_bytes) {
                     let event = self.event_kind();
@@ -195,9 +196,11 @@ impl KittyKeyboardParser {
                     return KittyParseOutcome::ModifierKey { modifier, event };
                 }
                 let event = self.event_kind();
-                let result =
-                    KeyWithModifier::from_bytes_with_u(&self.number_bytes, &self.modifier_bytes)
-                        .map(|k| resolve_shifted(k, &self.shifted_key_bytes));
+                let result = zellij_runtime::keys::key_from_bytes_with_u(
+                    &self.number_bytes,
+                    &self.modifier_bytes,
+                )
+                .map(|k| resolve_shifted(k, &self.shifted_key_bytes));
                 self.reset();
                 match result {
                     Some(k) => KittyParseOutcome::Complete(k, event),
@@ -206,7 +209,7 @@ impl KittyKeyboardParser {
             },
             KittyKeysParsingState::DoneParsingWithTilde => {
                 let event = self.event_kind();
-                let result = KeyWithModifier::from_bytes_with_tilde(
+                let result = zellij_runtime::keys::key_from_bytes_with_tilde(
                     &self.number_bytes,
                     &self.modifier_bytes,
                 )
@@ -224,7 +227,7 @@ impl KittyKeyboardParser {
                 match self.number_bytes.last().copied() {
                     Some(last) if is_csi_final_letter(last) => {
                         let event = self.event_kind();
-                        let result = KeyWithModifier::from_bytes_with_no_ending_byte(
+                        let result = zellij_runtime::keys::key_from_bytes_with_no_ending_byte(
                             &self.number_bytes,
                             &self.modifier_bytes,
                         );
@@ -246,7 +249,7 @@ impl KittyKeyboardParser {
                     Some(last) if is_csi_final_letter(last) => {
                         let event = self.event_kind();
                         let last_modifier = self.modifier_bytes.pop().unwrap();
-                        let result = KeyWithModifier::from_bytes_with_no_ending_byte(
+                        let result = zellij_runtime::keys::key_from_bytes_with_no_ending_byte(
                             &[last_modifier],
                             &self.modifier_bytes,
                         );
@@ -267,7 +270,7 @@ impl KittyKeyboardParser {
                     Some(last) if is_csi_final_letter(last) => {
                         self.event_type_bytes.pop();
                         let event = self.event_kind();
-                        let result = KeyWithModifier::from_bytes_with_no_ending_byte(
+                        let result = zellij_runtime::keys::key_from_bytes_with_no_ending_byte(
                             &[last],
                             &self.modifier_bytes,
                         );
@@ -395,7 +398,7 @@ mod props {
     use super::*;
     use hegel::generators::{self, Generator};
     use std::collections::BTreeSet;
-    use zellij_utils::data::{BareKey, KeyModifier};
+    use {zellij_types::data::BareKey, zellij_types::data::KeyModifier};
 
     #[hegel::composite]
     fn keys_with_modifiers(tc: &hegel::TestCase) -> KeyWithModifier {
@@ -467,7 +470,7 @@ mod props {
                 return;
             }
         }
-        let Some(serialized) = key.serialize_kitty() else {
+        let Some(serialized) = zellij_runtime::keys::serialize_kitty(&key) else {
             // Not every keycode has a Kitty encoding; nothing to check.
             return;
         };
@@ -498,7 +501,7 @@ mod props {
     #[hegel::test]
     fn splitting_a_sequence_across_chunks_parses_the_same_key(tc: hegel::TestCase) {
         let key = tc.draw(keys_with_modifiers());
-        let Some(serialized) = key.serialize_kitty() else {
+        let Some(serialized) = zellij_runtime::keys::serialize_kitty(&key) else {
             return;
         };
         let bytes = serialized.as_bytes();
@@ -582,7 +585,7 @@ mod props {
 
 #[test]
 fn fragmented_kitty_csi_u_emits_one_event() {
-    use zellij_utils::data::BareKey;
+    use zellij_types::keys::BareKey;
     let mut p = KittyKeyboardParser::new();
     let r1 = p.feed(b"\x1b[97;");
     assert!(matches!(r1, KittyParseOutcome::Incomplete));
@@ -599,7 +602,7 @@ fn fragmented_kitty_csi_u_emits_one_event() {
 
 #[test]
 fn fragmented_kitty_byte_by_byte() {
-    use zellij_utils::data::BareKey;
+    use zellij_types::keys::BareKey;
     let full = b"\x1b[97;5u"; // ctrl+a
     let mut p = KittyKeyboardParser::new();
     for &b in &full[..full.len() - 1] {
@@ -631,7 +634,7 @@ fn fragmented_kitty_byte_by_byte() {
 
 #[test]
 fn an_event_type_is_read_off_the_modifier_field() {
-    use zellij_utils::data::BareKey;
+    use zellij_types::keys::BareKey;
     let mut p = KittyKeyboardParser::new();
     match p.feed(b"\x1b[97;5:3u") {
         KittyParseOutcome::Complete(k, KeyEventKind::Release) => {
@@ -729,7 +732,7 @@ fn an_empty_shifted_field_leaves_the_primary_key_alone() {
 
 #[test]
 fn a_chord_keeps_the_base_key_and_its_shift() {
-    use zellij_utils::data::KeyModifier;
+    use zellij_types::keys::KeyModifier;
     // Ctrl+Shift+1. Flag-1 mode reports this as `CSI 49;6u` too, so resolving it to `!` would
     // move the key out from under any keybind written against it.
     let mut p = KittyKeyboardParser::new();
@@ -799,7 +802,7 @@ fn a_shifted_key_resolves_the_same_way_when_split_across_chunks() {
 
 #[test]
 fn a_bare_modifier_is_never_a_key() {
-    use zellij_utils::data::KeyModifier;
+    use zellij_types::keys::KeyModifier;
     let mut p = KittyKeyboardParser::new();
     // Left alt down, then up. Both halves of a modifier map to the same answer.
     for (bytes, expected, event) in [
@@ -844,7 +847,7 @@ fn an_event_type_survives_being_split_across_chunks() {
 
 #[test]
 fn a_letter_terminated_sequence_can_carry_an_event_type() {
-    use zellij_utils::data::BareKey;
+    use zellij_types::keys::BareKey;
     // `\x1b[1;2:3A` - shift+up, released.
     let mut p = KittyKeyboardParser::new();
     match p.feed(b"\x1b[1;2:3A") {

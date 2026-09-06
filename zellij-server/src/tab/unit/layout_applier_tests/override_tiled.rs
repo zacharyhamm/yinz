@@ -21,8 +21,8 @@ fn test_override_layout_basic_with_both_tiled_and_floating() {
     "#;
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(TerminalId(1), None), (TerminalId(2), None)];
-    let floating_terminal_ids = vec![(TerminalId(3), None)];
+    let terminal_ids = vec![(TerminalId::new(1), None), (TerminalId::new(2), None)];
+    let floating_terminal_ids = vec![(TerminalId::new(3), None)];
 
     let size = Size {
         cols: 120,
@@ -85,7 +85,7 @@ fn test_override_layout_basic_with_both_tiled_and_floating() {
             terminal_ids,
             floating_terminal_ids,
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -108,8 +108,8 @@ fn test_override_layout_basic_with_both_tiled_and_floating() {
     "#;
 
     let (override_tiled, override_floating) = parse_kdl_layout(override_kdl);
-    let new_terminal_ids = vec![(TerminalId(4), None)];
-    let new_floating_terminal_ids = vec![(TerminalId(5), None)];
+    let new_terminal_ids = vec![(TerminalId::new(4), None)];
+    let new_floating_terminal_ids = vec![(TerminalId::new(5), None)];
 
     let retain_existing_terminal_panes = false;
     let retain_existing_plugin_panes = false;
@@ -122,7 +122,7 @@ fn test_override_layout_basic_with_both_tiled_and_floating() {
             HashMap::new(),
             retain_existing_terminal_panes,
             retain_existing_plugin_panes,
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -132,8 +132,8 @@ fn test_override_layout_basic_with_both_tiled_and_floating() {
     // Verify close messages were sent for vim (Terminal(2)) and tail (Terminal(3))
     let closed_panes = collect_close_pane_messages(&pty_receiver);
     assert_eq!(closed_panes.len(), 2);
-    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId(2)))); // vim
-    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId(3)))); // tail
+    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId::new(2)))); // vim
+    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId::new(3)))); // tail
 
     // No plugins should be unloaded
     let unloaded_plugins = collect_unload_plugin_messages(&plugin_receiver);
@@ -166,8 +166,8 @@ fn test_override_layout_hide_floating_panes_true() {
     "#;
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(TerminalId(1), None)];
-    let floating_terminal_ids = vec![(TerminalId(2), None)];
+    let terminal_ids = vec![(TerminalId::new(1), None)];
+    let floating_terminal_ids = vec![(TerminalId::new(2), None)];
 
     let size = Size {
         cols: 100,
@@ -230,7 +230,7 @@ fn test_override_layout_hide_floating_panes_true() {
             terminal_ids,
             floating_terminal_ids,
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -252,8 +252,8 @@ fn test_override_layout_hide_floating_panes_true() {
     "#;
 
     let (override_tiled, override_floating) = parse_kdl_layout(override_kdl);
-    let new_terminal_ids = vec![(TerminalId(3), None)];
-    let new_floating_terminal_ids = vec![(TerminalId(4), None)];
+    let new_terminal_ids = vec![(TerminalId::new(3), None)];
+    let new_floating_terminal_ids = vec![(TerminalId::new(4), None)];
 
     let retain_existing_terminal_panes = false;
     let retain_existing_plugin_panes = false;
@@ -266,7 +266,7 @@ fn test_override_layout_hide_floating_panes_true() {
             HashMap::new(),
             retain_existing_terminal_panes,
             retain_existing_plugin_panes,
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -300,7 +300,7 @@ fn test_override_layout_show_floating_panes() {
     "#;
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(TerminalId(1), None), (TerminalId(2), None)];
+    let terminal_ids = vec![(TerminalId::new(1), None), (TerminalId::new(2), None)];
 
     let size = Size {
         cols: 100,
@@ -363,7 +363,7 @@ fn test_override_layout_show_floating_panes() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -383,7 +383,7 @@ fn test_override_layout_show_floating_panes() {
     "#;
 
     let (override_tiled, override_floating) = parse_kdl_layout(override_kdl);
-    let new_floating_terminal_ids = vec![(TerminalId(3), None)];
+    let new_floating_terminal_ids = vec![(TerminalId::new(3), None)];
 
     let retain_existing_terminal_panes = false;
     let retain_existing_plugin_panes = false;
@@ -396,7 +396,7 @@ fn test_override_layout_show_floating_panes() {
             HashMap::new(),
             retain_existing_terminal_panes,
             retain_existing_plugin_panes,
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -406,7 +406,7 @@ fn test_override_layout_show_floating_panes() {
     // Verify close message was sent for one tiled pane (Terminal(2))
     let closed_panes = collect_close_pane_messages(&pty_receiver);
     assert_eq!(closed_panes.len(), 1);
-    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId(2))));
+    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId::new(2))));
 
     // No plugins should be unloaded
     let unloaded_plugins = collect_unload_plugin_messages(&plugin_receiver);
@@ -440,9 +440,9 @@ fn test_override_tiled_exact_match_preservation_commands() {
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
     let terminal_ids = vec![
-        (TerminalId(1), None),
-        (TerminalId(2), None),
-        (TerminalId(3), None),
+        (TerminalId::new(1), None),
+        (TerminalId::new(2), None),
+        (TerminalId::new(3), None),
     ];
 
     let size = Size {
@@ -506,7 +506,7 @@ fn test_override_tiled_exact_match_preservation_commands() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -527,7 +527,7 @@ fn test_override_tiled_exact_match_preservation_commands() {
             &mut HashMap::new(),
             false,
             false,
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -538,7 +538,7 @@ fn test_override_tiled_exact_match_preservation_commands() {
     // Verify close message was sent for tail pane (Terminal(3))
     let closed_panes = collect_close_pane_messages(&pty_receiver);
     assert_eq!(closed_panes.len(), 1);
-    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId(3)))); // tail
+    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId::new(3)))); // tail
 
     // No plugins should be unloaded
     let unloaded_plugins = collect_unload_plugin_messages(&plugin_receiver);
@@ -567,13 +567,19 @@ fn test_override_tiled_exact_match_preservation_plugins() {
     "#;
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(TerminalId(1), None), (TerminalId(2), None)];
+    let terminal_ids = vec![(TerminalId::new(1), None), (TerminalId::new(2), None)];
 
     let mut initial_plugin_ids = HashMap::new();
-    let tab_bar_plugin = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
+    let tab_bar_plugin = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "zellij:tab-bar",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
     initial_plugin_ids.insert(
         tab_bar_plugin.clone(),
-        vec![zellij_utils::internal_ids::PluginId(100)],
+        vec![zellij_types::internal_ids::PluginId::new(100)],
     );
 
     let size = Size {
@@ -637,7 +643,7 @@ fn test_override_tiled_exact_match_preservation_plugins() {
             terminal_ids,
             vec![],
             initial_plugin_ids,
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -659,7 +665,7 @@ fn test_override_tiled_exact_match_preservation_plugins() {
             &mut HashMap::new(),
             false,
             false,
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -670,8 +676,8 @@ fn test_override_tiled_exact_match_preservation_plugins() {
     // Verify close messages were sent for both terminal panes (Terminal(1) and Terminal(2))
     let closed_panes = collect_close_pane_messages(&pty_receiver);
     assert_eq!(closed_panes.len(), 2);
-    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId(1))));
-    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId(2))));
+    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId::new(1))));
+    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId::new(2))));
 
     // No plugins should be unloaded (plugin is preserved)
     let unloaded_plugins = collect_unload_plugin_messages(&plugin_receiver);
@@ -701,9 +707,9 @@ fn test_override_tiled_all_panes_closed_no_matches() {
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
     let terminal_ids = vec![
-        (TerminalId(1), None),
-        (TerminalId(2), None),
-        (TerminalId(3), None),
+        (TerminalId::new(1), None),
+        (TerminalId::new(2), None),
+        (TerminalId::new(3), None),
     ];
 
     let size = Size {
@@ -767,7 +773,7 @@ fn test_override_tiled_all_panes_closed_no_matches() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -788,9 +794,9 @@ fn test_override_tiled_all_panes_closed_no_matches() {
 
     let (override_tiled, _) = parse_kdl_layout(override_kdl);
     let new_terminal_ids = vec![
-        (TerminalId(4), None),
-        (TerminalId(5), None),
-        (TerminalId(6), None),
+        (TerminalId::new(4), None),
+        (TerminalId::new(5), None),
+        (TerminalId::new(6), None),
     ];
 
     applier
@@ -800,7 +806,7 @@ fn test_override_tiled_all_panes_closed_no_matches() {
             &mut HashMap::new(),
             false,
             false,
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -811,9 +817,9 @@ fn test_override_tiled_all_panes_closed_no_matches() {
     // Verify close messages were sent for all original panes (Terminal(1), Terminal(2), Terminal(3))
     let closed_panes = collect_close_pane_messages(&pty_receiver);
     assert_eq!(closed_panes.len(), 3);
-    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId(1)))); // htop
-    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId(2)))); // vim
-    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId(3)))); // tail
+    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId::new(1)))); // htop
+    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId::new(2)))); // vim
+    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId::new(3)))); // tail
 
     // No plugins should be unloaded
     let unloaded_plugins = collect_unload_plugin_messages(&plugin_receiver);
@@ -839,7 +845,7 @@ fn test_override_tiled_mixed_some_matches_some_new() {
     "#;
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(TerminalId(1), None), (TerminalId(2), None)];
+    let terminal_ids = vec![(TerminalId::new(1), None), (TerminalId::new(2), None)];
 
     let size = Size {
         cols: 120,
@@ -902,7 +908,7 @@ fn test_override_tiled_mixed_some_matches_some_new() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -916,7 +922,7 @@ fn test_override_tiled_mixed_some_matches_some_new() {
     "#;
 
     let (override_tiled, _) = parse_kdl_layout(override_kdl);
-    let new_terminal_ids = vec![(TerminalId(3), None), (TerminalId(4), None)];
+    let new_terminal_ids = vec![(TerminalId::new(3), None), (TerminalId::new(4), None)];
 
     applier
         .override_tiled_panes_layout_for_existing_panes(
@@ -925,7 +931,7 @@ fn test_override_tiled_mixed_some_matches_some_new() {
             &mut HashMap::new(),
             false,
             false,
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -961,7 +967,7 @@ fn test_override_tiled_new_panes_for_unmatched_positions() {
     "#;
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(TerminalId(1), None)];
+    let terminal_ids = vec![(TerminalId::new(1), None)];
 
     let size = Size {
         cols: 150,
@@ -1022,7 +1028,7 @@ fn test_override_tiled_new_panes_for_unmatched_positions() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -1038,9 +1044,9 @@ fn test_override_tiled_new_panes_for_unmatched_positions() {
 
     let (override_tiled, _) = parse_kdl_layout(override_kdl);
     let new_terminal_ids = vec![
-        (TerminalId(2), None),
-        (TerminalId(3), None),
-        (TerminalId(4), None),
+        (TerminalId::new(2), None),
+        (TerminalId::new(3), None),
+        (TerminalId::new(4), None),
     ];
 
     applier
@@ -1050,7 +1056,7 @@ fn test_override_tiled_new_panes_for_unmatched_positions() {
             &mut HashMap::new(),
             false,
             false,
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -1077,7 +1083,7 @@ fn test_override_tiled_focus_on_new_pane() {
     "#;
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
-    let terminal_ids = vec![(TerminalId(1), None), (TerminalId(2), None)];
+    let terminal_ids = vec![(TerminalId::new(1), None), (TerminalId::new(2), None)];
 
     let size = Size {
         cols: 100,
@@ -1138,7 +1144,7 @@ fn test_override_tiled_focus_on_new_pane() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -1152,7 +1158,7 @@ fn test_override_tiled_focus_on_new_pane() {
     "#;
 
     let (override_tiled, _) = parse_kdl_layout(override_kdl);
-    let new_terminal_ids = vec![(TerminalId(3), None)];
+    let new_terminal_ids = vec![(TerminalId::new(3), None)];
 
     applier
         .override_tiled_panes_layout_for_existing_panes(
@@ -1161,7 +1167,7 @@ fn test_override_tiled_focus_on_new_pane() {
             &mut HashMap::new(),
             false,
             false,
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -1190,9 +1196,9 @@ fn test_override_tiled_focus_when_focused_pane_closed() {
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
     let terminal_ids = vec![
-        (TerminalId(1), None),
-        (TerminalId(2), None),
-        (TerminalId(3), None),
+        (TerminalId::new(1), None),
+        (TerminalId::new(2), None),
+        (TerminalId::new(3), None),
     ];
 
     let size = Size {
@@ -1256,7 +1262,7 @@ fn test_override_tiled_focus_when_focused_pane_closed() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -1271,7 +1277,7 @@ fn test_override_tiled_focus_when_focused_pane_closed() {
     "#;
 
     let (override_tiled, _) = parse_kdl_layout(override_kdl);
-    let new_terminal_ids = vec![(TerminalId(4), None)];
+    let new_terminal_ids = vec![(TerminalId::new(4), None)];
 
     applier
         .override_tiled_panes_layout_for_existing_panes(
@@ -1280,7 +1286,7 @@ fn test_override_tiled_focus_when_focused_pane_closed() {
             &mut HashMap::new(),
             false,
             false,
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -1290,8 +1296,8 @@ fn test_override_tiled_focus_when_focused_pane_closed() {
     // Verify close messages were sent for vim (Terminal(2)) and tail (Terminal(3))
     let closed_panes = collect_close_pane_messages(&pty_receiver);
     assert_eq!(closed_panes.len(), 2);
-    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId(2)))); // vim (focused)
-    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId(3)))); // tail
+    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId::new(2)))); // vim (focused)
+    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId::new(3)))); // tail
 
     // No plugins should be unloaded
     let unloaded_plugins = collect_unload_plugin_messages(&plugin_receiver);
@@ -1321,9 +1327,9 @@ fn test_override_tiled_empty_layout_closes_all() {
 
     let (initial_tiled, initial_floating) = parse_kdl_layout(initial_kdl);
     let terminal_ids = vec![
-        (TerminalId(1), None),
-        (TerminalId(2), None),
-        (TerminalId(3), None),
+        (TerminalId::new(1), None),
+        (TerminalId::new(2), None),
+        (TerminalId::new(3), None),
     ];
 
     let size = Size {
@@ -1387,7 +1393,7 @@ fn test_override_tiled_empty_layout_closes_all() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -1406,7 +1412,7 @@ fn test_override_tiled_empty_layout_closes_all() {
             &mut HashMap::new(),
             false,
             false,
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -1416,9 +1422,9 @@ fn test_override_tiled_empty_layout_closes_all() {
     // Verify close messages were sent for all panes (Terminal(1), Terminal(2), Terminal(3))
     let closed_panes = collect_close_pane_messages(&pty_receiver);
     assert_eq!(closed_panes.len(), 3);
-    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId(1)))); // htop
-    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId(2)))); // vim
-    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId(3)))); // tail
+    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId::new(1)))); // htop
+    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId::new(2)))); // vim
+    assert!(closed_panes.contains(&PaneId::Terminal(crate::TerminalId::new(3)))); // tail
 
     // No plugins should be unloaded
     let unloaded_plugins = collect_unload_plugin_messages(&plugin_receiver);

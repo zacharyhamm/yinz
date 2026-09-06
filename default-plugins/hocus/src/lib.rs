@@ -24,6 +24,10 @@ mod tool_loop;
 mod tools;
 mod transitions;
 pub use transitions::{Confirmation, PromptKind};
+use zellij_tile::prelude::DataWatchId;
+use zellij_tile::prelude::HostId;
+use zellij_tile::prelude::TabId;
+use zellij_tile::prelude::TabPosition;
 pub mod ui;
 mod wand;
 mod worker;
@@ -360,10 +364,10 @@ pub struct State {
     /// Valid `hocus/*.lua` files from the latest scan, keyed by their namespace.
     extension_files: BTreeMap<String, String>,
     /// Running plugin ids whose resolved file location agrees with their Hocus launch config.
-    extension_instances: BTreeMap<u32, (String, String)>,
+    extension_instances: BTreeMap<zellij_tile::prelude::PluginId, (String, String)>,
     /// Every running plugin by id, from the session's plugin list - what a headless
     /// `plugin_reload` looks the running instance up in.
-    plugin_instances: BTreeMap<u32, PluginInstance>,
+    plugin_instances: BTreeMap<zellij_tile::prelude::PluginId, PluginInstance>,
     /// `mono_ms` when the foreground chat's awaited extension call was sent;
     /// `poll_extension_call` gives up on it after `extensions::CALL_TIMEOUT_MS`. Parked chats
     /// carry their own in `Chat::extension_call_started_ms`.
@@ -575,7 +579,7 @@ pub struct State {
     zellij_session_name: String,
     /// The machine this hocus runs on, read once at load. With `zellij_session_name` it is what
     /// owns this session's rows in the shared store — see `agents::rows::Owner`.
-    host_id: String,
+    host_id: HostId,
     /// Whether `restore_pane_rows` has run. It waits for the session name, so it cannot ride
     /// on `restore_persisted`'s single call at load.
     restored_pane_rows: bool,
@@ -624,7 +628,7 @@ pub struct State {
     projects: projects::Registry,
     /// The watch feeding `projects`, so a change event can be told from another
     /// plugin's.
-    project_watch: u64,
+    project_watch: DataWatchId,
     /// The data store, on builds that have no host to ask for one.
     ///
     /// A real engine over a temporary directory, so the tests exercise the same
@@ -636,20 +640,20 @@ pub struct State {
     ///
     /// Only what the user assigned. The poll writes `auto_tab_projects`, so an
     /// assignment the user made can never be overwritten.
-    tab_projects: BTreeMap<usize, String>,
+    tab_projects: BTreeMap<TabId, String>,
     /// Tab id to project name, as the poll worked it out from the agents in the
     /// tab. Rebuilt on every poll. `tab_projects` wins over this map.
-    auto_tab_projects: BTreeMap<usize, String>,
+    auto_tab_projects: BTreeMap<TabId, String>,
     /// `tab_projects` as the daemon last heard it, so an unchanged map costs no
     /// message. See `send_tab_assignments`.
-    sent_tab_projects: BTreeMap<usize, String>,
+    sent_tab_projects: BTreeMap<TabId, String>,
     /// What each tab is called after the project in it, as last told to the host.
     ///
     /// Not the same map as the two above: a tab whose agents are in two projects
     /// is named after both, where an *assignment* has to pick one and so picks
     /// neither. Kept so the host is only told when the answer changes — this is
     /// recomputed on every poll and the answer is usually the same one.
-    tab_project_labels: BTreeMap<usize, String>,
+    tab_project_labels: BTreeMap<TabId, String>,
     /// The tabs as of the last `TabUpdate`.
     ///
     /// The host sends one per client, so with every client served by this one
@@ -687,7 +691,7 @@ pub struct State {
     ///
     /// Cached rather than asked for each time: `get_plugin_ids` is a host round-trip, and the
     /// overlay paths want it on every `TabUpdate`. It never changes for the life of the plugin.
-    pub(crate) own_plugin_id: u32,
+    pub(crate) own_plugin_id: zellij_tile::prelude::PluginId,
     /// The pane title last asserted with `rename_plugin_pane`, so a render that
     /// would restate the same one does not.
     ///
@@ -706,7 +710,7 @@ pub struct State {
     /// Which tab this pane is currently on. An overlay lives on a tab, so hocus carries whichever
     /// halves are on screen to the tab that became active - `None` until the first `TabUpdate`
     /// says.
-    pub(crate) own_tab_index: Option<usize>,
+    pub(crate) own_tab_index: Option<TabPosition>,
     /// Whether our own pane is an overlay, as the manifest reports it - and so whether this
     /// instance is a *panel* at all. `None` until a `PaneUpdate` has named our pane.
     ///
@@ -744,7 +748,7 @@ pub struct State {
     /// `c` keybindings carry `move_to_focused_tab`, which moves only the pane the binding names,
     /// so a reveal from another tab brings the conversation across and leaves the list behind.
     /// `on_panes` is what notices and drags it after us.
-    pub(crate) agents_tab_index: Option<usize>,
+    pub(crate) agents_tab_index: Option<TabPosition>,
     /// Whether the agent list was drawn - not suppressed - in the last `PaneUpdate`.
     ///
     /// Not a state hocus keeps in step with its own: both halves hide and reveal together, so
@@ -760,7 +764,7 @@ pub struct State {
     /// every client's update is a move order: two clients on different tabs would drag the panes
     /// back and forth between them for as long as they stayed attached, each move provoking the
     /// report that causes the next one. See `overlay::tab_to_follow` for the rule this feeds.
-    pub(crate) client_tabs: BTreeMap<ClientId, usize>,
+    pub(crate) client_tabs: BTreeMap<ClientId, TabPosition>,
     /// Whether the **panel** has been set aside with Esc - both halves, since there is only ever
     /// one answer for the two of them.
     ///
@@ -849,7 +853,7 @@ pub struct State {
     /// Learned from the first `AGENT_SELECTION` rather than assumed, because a plugin
     /// pane is only known by its id — a title is a name the user can change, and a url
     /// cannot tell two instances apart.
-    agents_plugin: Option<u32>,
+    agents_plugin: Option<zellij_tile::prelude::PluginId>,
     /// Whether a list has been asked for and not yet announced itself.
     ///
     /// The panel is both halves or it is nothing, so a revealed conversation with no list beside
@@ -962,7 +966,7 @@ impl Default for State {
             view: View::default(),
             // Overwritten by the host on the first event or render; nothing
             // reads it before then.
-            client: 0,
+            client: ClientId::new(0),
             transcript_rows: 0,
             transcript_cache: None,
             plan_cache: None,
@@ -987,7 +991,7 @@ impl Default for State {
             repositories: BTreeMap::new(),
             manual_kinds: BTreeMap::new(),
             zellij_session_name: String::new(),
-            host_id: String::new(),
+            host_id: HostId::default(),
             restored_pane_rows: false,
             pending_agent_panes: BTreeSet::new(),
             activity: BTreeMap::new(),
@@ -1005,7 +1009,7 @@ impl Default for State {
             log_seq: 0,
             granted: false,
             projects: BTreeMap::new(),
-            project_watch: 0,
+            project_watch: DataWatchId::new(0),
             #[cfg(not(target_family = "wasm"))]
             store: {
                 // Declared here rather than in `open_store`, which the tests do
@@ -1023,7 +1027,7 @@ impl Default for State {
             last_focused_agent: None,
             focused_pane: None,
             focused_plugin: None,
-            own_plugin_id: 0,
+            own_plugin_id: zellij_tile::prelude::PluginId::new(0),
             last_pane_title: None,
             surface_rows: 0,
             surface_cols: 0,

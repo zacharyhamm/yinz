@@ -9,8 +9,8 @@
 //! in force from `request_permission` on, so a gated call made from `load` is not refused.
 
 use std::fs;
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{default_timeout, LayoutInfo, TestRunner, TERMINAL_SIZE};
-use zellij_utils::cli::CliAction;
 
 const HARNESS: &str = r#"
 local zellij = require("zellij")
@@ -80,7 +80,10 @@ fn wait_for_log_line(what: &str) -> Vec<String> {
 }
 
 /// The agent's source and state as one `pane_update` event reports them for `terminal_id`.
-fn agent_in(event_json: &str, terminal_id: u32) -> Option<(String, String)> {
+fn agent_in(
+    event_json: &str,
+    terminal_id: zellij_types::internal_ids::TerminalId,
+) -> Option<(String, String)> {
     let event: serde_json::Value = serde_json::from_str(event_json).ok()?;
     let agent = event
         .get("PaneUpdate")?
@@ -89,7 +92,7 @@ fn agent_in(event_json: &str, terminal_id: u32) -> Option<(String, String)> {
         .values()
         .filter_map(|panes| panes.as_array())
         .flatten()
-        .find(|pane| pane["id"] == terminal_id && pane["is_plugin"] == false)?
+        .find(|pane| pane["id"] == terminal_id.get() && pane["is_plugin"] == false)?
         .get("agent")?;
     Some((
         agent.get("source")?.as_str()?.to_owned(),
@@ -158,7 +161,10 @@ fn a_lua_harness_spawns_an_agent_waits_on_it_prompts_it_and_sees_it_exit() {
     assert_eq!(exit_code, 0, "{reported}");
     wait_for_log_line("waiting pane=");
     let typed = agent_pty.wait_for_stdin("the prompt reaches the agent's pty", |bytes| {
-        bytes.windows(2).any(|pair| pair == b"go")
+        // Paste and Enter are separate writes; observe both before asserting.
+        bytes
+            .windows(b"\x1b[200~go\x1b[201~\r".len())
+            .any(|part| part == b"\x1b[200~go\x1b[201~\r")
     });
     let typed = String::from_utf8_lossy(&typed);
     assert!(

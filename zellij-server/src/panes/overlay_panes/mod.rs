@@ -191,16 +191,17 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
-use zellij_utils::{
-    data::{
-        FloatingPaneCoordinates, ModeInfo, OverlayKind, OverlayPlacement, PaneInfo, ResizeStrategy,
-        Style, Styling,
-    },
-    errors::prelude::*,
-    input::layout::{PercentOrFixed, RunPluginOrAlias},
-    input::options::PaneFrameStyle,
+use zellij_runtime::errors::prelude::*;
+use zellij_types::position::Position;
+use zellij_types::style::{Style, Styling};
+use zellij_types::{
+    geometry::{FloatingPaneCoordinates, PercentOrFixed, ResizeStrategy},
     pane_size::{Offset, PaneGeom, Size, SizeInPixels, Viewport},
-    position::Position,
+};
+use {
+    zellij_types::data::ModeInfo, zellij_types::data::OverlayKind,
+    zellij_types::data::OverlayPlacement, zellij_types::data::PaneInfo,
+    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::options::PaneFrameStyle,
 };
 
 use crate::panes::kitty_graphics::KittyHostSupport;

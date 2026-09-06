@@ -7,11 +7,16 @@
 //! event is still delivered, in order, with its count - the tests here read them back off a Lua
 //! plugin that logs each one and renders the log.
 
+#[cfg(test)]
+const CLIENT_7: zellij_types::internal_ids::ClientId = zellij_types::internal_ids::ClientId::new(7);
+
 use super::*;
 use crate::plugins::{coalesce_hovers, drain_reloads, drain_updates};
 use crate::ClientId;
 use zellij_test_support::Watched;
-use zellij_utils::data::{BareKey, KeyWithModifier, Mouse, PermissionStatus};
+use zellij_types::internal_ids::TabId;
+use zellij_types::keys::{BareKey, KeyWithModifier};
+use {zellij_types::data::Mouse, zellij_types::data::PermissionStatus};
 
 const WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -102,7 +107,7 @@ impl Harness {
         let cache_path = dir.path().join("permissions_test.kdl");
         let (to_plugin, server_receiver, screen_receiver, teardown) =
             create_plugin_thread_with_server_receiver(Some(PathBuf::from(dir.path())), None);
-        let client_id = ClientId(1);
+        let client_id = ClientId::new(1);
         let screen = Watched::new(vec![]);
         let server = Watched::new(vec![]);
         let screen_thread = std::thread::Builder::new()
@@ -162,7 +167,9 @@ impl Harness {
         let path = self.dir.path().join("logger.lua");
         std::fs::write(&path, logger_source(permissions)).unwrap();
         let url = format!("file:{}", path.display());
-        let mut run_plugin = RunPluginOrAlias::from_url(&url, &None, None, None).unwrap();
+        let mut run_plugin =
+            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(&url, &None, None, None)
+                .unwrap();
         if let RunPluginOrAlias::RunPlugin(run_plugin) = &mut run_plugin {
             for (key, value) in configuration {
                 run_plugin.configuration.insert(*key, *value);
@@ -174,7 +181,7 @@ impl Harness {
             false,
             Some("batching_test_plugin".to_owned()),
             run_plugin,
-            Some(1),
+            Some(TabId::new(1)),
             None,
             self.client_id,
             Size { cols: 80, rows: 20 },
@@ -301,7 +308,7 @@ pub fn a_batch_of_scrolls_renders_once() {
     let harness = Harness::new();
     harness.load_logger(&[], &[]);
 
-    harness.update((0..20).map(|_| (ClientId(1), scroll_up(3))).collect());
+    harness.update((0..20).map(|_| (ClientId::new(1), scroll_up(3))).collect());
 
     let frame = harness.wait_for(&format!("{}", "scroll_up 3 client=1\n".repeat(19)));
     assert_eq!(
@@ -335,12 +342,12 @@ pub fn a_batch_of_scrolls_renders_once() {
 pub fn a_shared_plugin_sees_each_event_under_its_acting_client() {
     let harness = Harness::new();
     harness.load_logger(&[("shared", "true")], &[]);
-    harness.add_client(crate::ClientId(2));
+    harness.add_client(crate::ClientId::new(2));
 
     harness.update(vec![
-        (crate::ClientId(1), scroll_up(3)),
-        (crate::ClientId(2), key('x')),
-        (crate::ClientId(1), scroll_up(3)),
+        (crate::ClientId::new(1), scroll_up(3)),
+        (crate::ClientId::new(2), key('x')),
+        (crate::ClientId::new(1), scroll_up(3)),
     ]);
 
     let frame = harness.wait_for("key x client=2\nscroll_up 3 client=1");
@@ -367,7 +374,7 @@ pub fn a_shared_plugin_sees_each_event_under_its_acting_client() {
     clients.sort();
     assert_eq!(
         clients,
-        vec![ClientId(1), ClientId(2)],
+        vec![ClientId::new(1), ClientId::new(2)],
         "with a frame for every attached client"
     );
 }
@@ -386,9 +393,9 @@ pub fn a_shared_plugin_sees_each_event_under_its_acting_client() {
 pub fn a_shared_plugin_renders_every_client_at_one_size() {
     let harness = Harness::new();
     harness.load_logger(&[("shared", "true")], &[]);
-    harness.add_client(crate::ClientId(2));
+    harness.add_client(crate::ClientId::new(2));
 
-    harness.update(vec![(crate::ClientId(1), scroll_up(3))]);
+    harness.update(vec![(crate::ClientId::new(1), scroll_up(3))]);
 
     harness.wait_for("scroll_up 3 client=1");
     let batch = harness
@@ -424,7 +431,7 @@ pub fn a_batch_that_renders_nothing_still_unblocks_cli_pipes() {
     harness.cli_pipe("hold");
     harness.wait_for("pipe hold");
 
-    harness.update(vec![(crate::ClientId(1), key(UNBLOCK))]);
+    harness.update(vec![(crate::ClientId::new(1), key(UNBLOCK))]);
 
     harness.server.wait_until_described(
         "the pipe to be unblocked by a batch that did not render",
@@ -460,8 +467,8 @@ pub fn an_error_mid_batch_still_delivers_the_unblocks_before_it() {
     harness.wait_for("pipe hold");
 
     harness.update(vec![
-        (crate::ClientId(1), key(UNBLOCK)),
-        (crate::ClientId(1), key(RAISE)),
+        (crate::ClientId::new(1), key(UNBLOCK)),
+        (crate::ClientId::new(1), key(RAISE)),
     ]);
 
     harness.server.wait_until_described(
@@ -485,18 +492,18 @@ pub fn the_last_change_to_a_pipe_in_a_batch_wins() {
     harness.wait_for("pipe hold");
 
     harness.update(vec![
-        (crate::ClientId(1), key(UNBLOCK)),
-        (crate::ClientId(1), key(BLOCK)),
+        (crate::ClientId::new(1), key(UNBLOCK)),
+        (crate::ClientId::new(1), key(BLOCK)),
     ]);
     // a rendering batch behind it, to know the first has been handled in full
-    harness.update(vec![(crate::ClientId(1), key('x'))]);
+    harness.update(vec![(crate::ClientId::new(1), key('x'))]);
     harness.wait_for("key b client=1\nkey x client=1");
     assert!(
         !unblocks_of(&harness.server.lock(), PIPE),
         "the block came last, so the pipe stays held"
     );
 
-    harness.update(vec![(crate::ClientId(1), key(UNBLOCK))]);
+    harness.update(vec![(crate::ClientId::new(1), key(UNBLOCK))]);
     harness.server.wait_until_described(
         "the pipe to be released by a later batch",
         WAIT,
@@ -520,9 +527,9 @@ pub fn hovers_in_a_batch_keep_only_the_last() {
     harness.load_logger(&[], &[]);
 
     let mut batch: Vec<(ClientId, Event)> = (1..=5)
-        .map(|n| (ClientId(1), Event::Mouse(Mouse::Hover(n, n as usize))))
+        .map(|n| (ClientId::new(1), Event::Mouse(Mouse::Hover(n, n as usize))))
         .collect();
-    batch.push((crate::ClientId(1), scroll_up(3)));
+    batch.push((crate::ClientId::new(1), scroll_up(3)));
     harness.update(batch);
 
     let frame = harness.wait_for("scroll_up 3 client=1");
@@ -537,7 +544,7 @@ fn update_of(events: &[Event]) -> PluginInstruction {
     PluginInstruction::Update(
         events
             .iter()
-            .map(|event| (None, Some(ClientId(1)), event.clone()))
+            .map(|event| (None, Some(ClientId::new(1)), event.clone()))
             .collect(),
     )
 }
@@ -555,14 +562,14 @@ fn bus_with(instructions: Vec<PluginInstruction>) -> Bus<PluginInstruction> {
 pub fn drain_merges_adjacent_updates_and_stops_at_the_first_other_kind() {
     let bus = bus_with(vec![
         update_of(&[scroll_up(2)]),
-        PluginInstruction::AddClient(crate::ClientId(7)),
+        PluginInstruction::AddClient(crate::ClientId::new(7)),
         update_of(&[scroll_up(3)]),
     ]);
     let mut queued = None;
 
     let merged = drain_updates(
         &bus,
-        vec![(None, Some(crate::ClientId(1)), scroll_up(1))],
+        vec![(None, Some(crate::ClientId::new(1)), scroll_up(1))],
         &mut queued,
     );
 
@@ -573,7 +580,7 @@ pub fn drain_merges_adjacent_updates_and_stops_at_the_first_other_kind() {
         "the adjacent update was merged in, in order"
     );
     assert!(
-        matches!(queued, Some((PluginInstruction::AddClient(ClientId(7)), _))),
+        matches!(queued, Some((PluginInstruction::AddClient(CLIENT_7), _))),
         "the first other kind was pulled and set aside for the next iteration"
     );
     let (left_behind, _) = bus
@@ -599,8 +606,9 @@ fn reload_of(url: &str) -> PluginInstruction {
     PluginInstruction::Reload(
         Some(false),
         None,
-        RunPluginOrAlias::from_url(url, &None, None, None).unwrap(),
-        1,
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(url, &None, None, None)
+            .unwrap(),
+        TabId::new(1),
         Size::default(),
         None,
     )
@@ -608,7 +616,8 @@ fn reload_of(url: &str) -> PluginInstruction {
 
 fn reload_by_url_of(url: &str) -> PluginInstruction {
     PluginInstruction::ReloadPluginByUrl(
-        RunPluginOrAlias::from_url(url, &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(url, &None, None, None)
+            .unwrap(),
     )
 }
 
@@ -674,24 +683,42 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
         PluginInstruction::Reload(
             Some(true), // floating rather than tiled
             None,
-            RunPluginOrAlias::from_url("file:/plugins/keys.lua", &None, None, None).unwrap(),
-            1,
+            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+                "file:/plugins/keys.lua",
+                &None,
+                None,
+                None,
+            )
+            .unwrap(),
+            TabId::new(1),
             Size::default(),
             None,
         ),
         PluginInstruction::Reload(
             Some(false),
             Some("titled".to_owned()),
-            RunPluginOrAlias::from_url("file:/plugins/keys.lua", &None, None, None).unwrap(),
-            1,
+            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+                "file:/plugins/keys.lua",
+                &None,
+                None,
+                None,
+            )
+            .unwrap(),
+            TabId::new(1),
             Size::default(),
             None,
         ),
         PluginInstruction::Reload(
             Some(false),
             None,
-            RunPluginOrAlias::from_url("file:/plugins/keys.lua", &None, None, None).unwrap(),
-            2, // another tab
+            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+                "file:/plugins/keys.lua",
+                &None,
+                None,
+                None,
+            )
+            .unwrap(),
+            TabId::new(2), // another tab
             Size::default(),
             None,
         ),
@@ -712,13 +739,21 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
 /// they would report success before the reload they were folded into had run.
 #[test]
 pub fn collapsed_reloads_hand_their_completion_handles_to_the_caller() {
-    let run = || RunPluginOrAlias::from_url("file:/plugins/keys.lua", &None, None, None).unwrap();
+    let run = || {
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "file:/plugins/keys.lua",
+            &None,
+            None,
+            None,
+        )
+        .unwrap()
+    };
     let (tx, mut rx) = tokio::sync::oneshot::channel();
     let waiting = PluginInstruction::Reload(
         Some(false),
         None,
         run(),
-        1,
+        TabId::new(1),
         Size::default(),
         Some(crate::route::NotificationEnd::new(tx)),
     );
@@ -758,7 +793,7 @@ pub fn joined_completions_are_answered_together_with_the_primarys_payload() {
         vec![NotificationEnd::new(tx_b), NotificationEnd::new(tx_c)],
     )
     .expect("a primary always yields a handle");
-    joined.set_affected_pane_id(PaneId::Plugin(crate::PluginId(7)));
+    joined.set_affected_pane_id(PaneId::Plugin(crate::PluginId::new(7)));
     assert!(
         rx_a.try_recv().is_err() && rx_b.try_recv().is_err() && rx_c.try_recv().is_err(),
         "nobody is answered while the joined handle is held"
@@ -771,7 +806,7 @@ pub fn joined_completions_are_answered_together_with_the_primarys_payload() {
             .expect("answered when the joined handle drops");
         assert_eq!(
             result.affected_pane_id,
-            Some(PaneId::Plugin(crate::PluginId(7)))
+            Some(PaneId::Plugin(crate::PluginId::new(7)))
         );
     }
 
@@ -793,7 +828,10 @@ pub fn joined_completions_are_answered_together_with_the_primarys_payload() {
 #[serial(plugin_tests)]
 pub fn collapsed_reloads_of_an_unloaded_plugin_are_answered_by_the_add_plugin() {
     use crate::route::NotificationEnd;
-    use zellij_utils::input::layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation};
+    use {
+        zellij_types::input::layout::PluginUserConfiguration,
+        zellij_types::input::layout::RunPlugin, zellij_types::input::layout::RunPluginLocation,
+    };
 
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -812,13 +850,13 @@ pub fn collapsed_reloads_of_an_unloaded_plugin_are_answered_by_the_add_plugin() 
     let (tx_second, mut rx_second) = tokio::sync::oneshot::channel();
     // The client the plugin loads for. Handling it also keeps the thread busy while both reloads
     // land on the bus behind it, so the second is there to collapse when the first is taken.
-    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(crate::ClientId(1)));
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(crate::ClientId::new(1)));
     for tx in [tx_first, tx_second] {
         let _ = plugin_thread_sender.send(PluginInstruction::Reload(
             Some(false),
             None,
             run_plugin(),
-            1,
+            TabId::new(1),
             Size { rows: 20, cols: 80 },
             Some(NotificationEnd::new(tx)),
         ));
@@ -879,17 +917,17 @@ pub fn coalescing_hovers_keeps_the_newest_per_client_and_nothing_else_moves() {
     let hover =
         |client: ClientId, at: isize| (None, Some(client), Event::Mouse(Mouse::Hover(at, 0)));
     let updates = vec![
-        hover(crate::ClientId(1), 1),
-        hover(crate::ClientId(2), 1),
-        (None, Some(crate::ClientId(1)), scroll_up(3)),
-        hover(crate::ClientId(1), 2),
+        hover(crate::ClientId::new(1), 1),
+        hover(crate::ClientId::new(2), 1),
+        (None, Some(crate::ClientId::new(1)), scroll_up(3)),
+        hover(crate::ClientId::new(1), 2),
         (
-            Some(zellij_utils::internal_ids::PluginId(4)),
-            Some(crate::ClientId(1)),
+            Some(zellij_types::internal_ids::PluginId::new(4)),
+            Some(crate::ClientId::new(1)),
             Event::Mouse(Mouse::Hover(9, 9)),
         ),
-        hover(crate::ClientId(2), 2),
-        (None, Some(crate::ClientId(1)), scroll_up(3)),
+        hover(crate::ClientId::new(2), 2),
+        (None, Some(crate::ClientId::new(1)), scroll_up(3)),
     ];
 
     let coalesced = coalesce_hovers(updates);
@@ -897,15 +935,15 @@ pub fn coalescing_hovers_keeps_the_newest_per_client_and_nothing_else_moves() {
     assert_eq!(
         coalesced,
         vec![
-            (None, Some(ClientId(1)), scroll_up(3)),
-            hover(crate::ClientId(1), 2),
+            (None, Some(ClientId::new(1)), scroll_up(3)),
+            hover(crate::ClientId::new(1), 2),
             (
-                Some(zellij_utils::internal_ids::PluginId(4)),
-                Some(ClientId(1)),
+                Some(zellij_types::internal_ids::PluginId::new(4)),
+                Some(ClientId::new(1)),
                 Event::Mouse(Mouse::Hover(9, 9))
             ),
-            hover(crate::ClientId(2), 2),
-            (None, Some(ClientId(1)), scroll_up(3)),
+            hover(crate::ClientId::new(2), 2),
+            (None, Some(ClientId::new(1)), scroll_up(3)),
         ],
         "each client's last hover survives, keyed by plugin too; scrolls are untouched"
     );
