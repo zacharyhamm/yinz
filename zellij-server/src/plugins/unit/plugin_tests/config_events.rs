@@ -540,9 +540,9 @@ pub fn get_session_environment_variables_plugin_command() {
 #[test]
 #[serial(plugin_tests)]
 pub fn a_reload_replaces_the_hooks_and_the_configured_context_menu() {
-    use zellij_utils::data::{ContextMenuContext, ContextMenuItem};
-    use zellij_utils::input::context_menu::ContextMenu;
-    use zellij_utils::input::hooks::Hooks;
+    use zellij_types::input::context_menu::ContextMenu;
+    use zellij_types::input::hooks::Hooks;
+    use {zellij_types::data::ContextMenuContext, zellij_types::data::ContextMenuItem};
 
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -614,8 +614,8 @@ pub fn a_reload_replaces_the_hooks_and_the_configured_context_menu() {
 #[serial(plugin_tests)]
 pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
     use std::collections::BTreeMap;
-    use zellij_utils::data::ContextMenuContext;
-    use zellij_utils::input::hooks::{HookPoint, Hooks};
+    use zellij_types::data::ContextMenuContext;
+    use {zellij_types::input::hooks::HookPoint, zellij_types::input::hooks::Hooks};
 
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -623,7 +623,8 @@ pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
         create_plugin_thread(Some(plugin_host_folder), None);
 
     let hook_plugin = RunPluginOrAlias::RunPlugin(
-        RunPlugin::from_url(&format!("file:{}", *PLUGIN_FIXTURE)).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_from_url(&format!("file:{}", *PLUGIN_FIXTURE))
+            .unwrap(),
     );
     let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
         client_id: crate::ClientId(1),
@@ -699,8 +700,8 @@ pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
 #[serial(plugin_tests)]
 pub fn a_shared_context_menu_hook_is_loaded_on_the_first_request() {
     use std::collections::BTreeMap;
-    use zellij_utils::data::ContextMenuContext;
-    use zellij_utils::input::hooks::{HookPoint, Hooks};
+    use zellij_types::data::ContextMenuContext;
+    use {zellij_types::input::hooks::HookPoint, zellij_types::input::hooks::Hooks};
 
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -708,7 +709,7 @@ pub fn a_shared_context_menu_hook_is_loaded_on_the_first_request() {
         create_plugin_thread(Some(plugin_host_folder), None);
 
     let hook_plugin = RunPluginOrAlias::RunPlugin(
-        RunPlugin::from_url(&format!("file:{}", *PLUGIN_FIXTURE))
+        zellij_runtime::plugin_location::run_plugin_from_url(&format!("file:{}", *PLUGIN_FIXTURE))
             .unwrap()
             .with_configuration(BTreeMap::from([("shared".to_owned(), "true".to_owned())])),
     );

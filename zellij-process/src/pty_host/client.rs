@@ -16,7 +16,7 @@ use zellij_types::internal_ids::TerminalId;
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::{consts::VERSION, input::command::RunCommand};
+use {zellij_runtime::consts::VERSION, zellij_types::input::command::RunCommand};
 
 use super::fdpass::{clear_cloexec, recv_fd};
 use super::protocol::{

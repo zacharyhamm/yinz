@@ -1,7 +1,7 @@
 //! Wire format between zellij-server and a pane's pty-host supervisor.
 //!
 //! Framing is a 4-byte little-endian length prefix followed by a JSON body, the
-//! same shape as the client/server contract in `zellij_utils::ipc` but without
+//! same shape as the client/server contract in `zellij_ipc::ipc` but without
 //! prost — the message volume here is a handful per pane lifetime, and staying
 //! off the protobuf assets keeps `cargo x proto` / `assets --check` out of the
 //! loop for every protocol tweak.
@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::{consts::ZELLIJ_SOCK_DIR, input::command::RunCommand};
+use {zellij_runtime::consts::ZELLIJ_SOCK_DIR, zellij_types::input::command::RunCommand};
 
 /// Bumped whenever the message set changes incompatibly. A supervisor outlives
 /// the server that spawned it, so a later zellij may well find itself talking to
@@ -324,7 +324,7 @@ pub const SSH_CONTROL_PATH_RENAME_MARGIN: usize = 20;
 /// a longer temp name first (see [`SSH_CONTROL_PATH_RENAME_MARGIN`]), so `path` alone
 /// fitting is not enough.
 pub fn check_socket_path_length(path: &std::path::Path, margin: usize) -> Result<()> {
-    use zellij_utils::consts::ZELLIJ_SOCK_MAX_LENGTH;
+    use zellij_runtime::consts::ZELLIJ_SOCK_MAX_LENGTH;
     let len = path.as_os_str().len() + margin;
     if len >= ZELLIJ_SOCK_MAX_LENGTH {
         return Err(anyhow!(

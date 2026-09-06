@@ -17,10 +17,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use zellij_runtime::channels::SenderWithContext;
 use zellij_types::diagnostics::ContextType;
-use zellij_utils::{
-    data::ConnectToSession,
-    ipc::{ClientToServerMsg, ExitReason},
-    nested_session,
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ExitReason, zellij_ipc::nested_session,
+    zellij_types::data::ConnectToSession,
 };
 
 /// Why the loop stopped, and what the caller should do next.

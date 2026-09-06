@@ -11,8 +11,8 @@ use crate::os_input_output::{StdioAccess, TtyControl};
 use crate::stdin_ansi_parser::SyncOutput;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
+use zellij_ipc::nested_session;
 use zellij_runtime::errors::FatalError;
-use zellij_utils::nested_session;
 
 pub const ENTER_ALTERNATE_SCREEN: &str = "\u{1b}[?1049h";
 pub const EXIT_ALTERNATE_SCREEN: &str = "\u{1b}[?1049l";

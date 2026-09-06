@@ -9,6 +9,7 @@ description = "Shared domain contracts for Zellij"
 workspace = true
 
 [dependencies]
+url = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -20,3 +21,6 @@ strum_macros = { workspace = true }
 
 [dev-dependencies]
 hegeltest = "0.29.3"
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+base64 = { version = "0.22", default-features = false, features = ["std"] }

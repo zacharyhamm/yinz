@@ -52,7 +52,7 @@ use nix::{
     unistd::Pid,
 };
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::{consts::VERSION, input::command::RunCommand};
+use {zellij_runtime::consts::VERSION, zellij_types::input::command::RunCommand};
 
 use super::fdpass::{self, send_fd};
 use super::protocol::{

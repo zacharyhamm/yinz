@@ -167,3 +167,12 @@ fn recording_units_preserve_scalars_and_recording_map_keys() {
     assert!(serde_json::from_str::<ElapsedMicros>("-9223372036854775809").is_err());
     assert!(serde_json::from_str::<UnixMicros>("9223372036854775808").is_err());
 }
+
+#[test]
+fn layout_diagnostic_keeps_its_serialized_fields() {
+    use crate::data::LayoutParsingError;
+    // KdlError's diagnostic source was never serialized. It remains separate from the payload.
+    let json = r#"{"KdlError":{"kdl_error":{"error_message":"invalid layout","offset":9,"len":5,"help_message":null},"file_name":"layout.kdl","source_code":"layout { bad }"}}"#;
+    let error: LayoutParsingError = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_string(&error).unwrap(), json);
+}

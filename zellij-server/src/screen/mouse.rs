@@ -6,7 +6,7 @@ use super::Screen;
 use crate::plugins::PluginInstruction;
 use crate::ClientId;
 use zellij_types::mouse::{MouseEvent, MouseEventType};
-use zellij_utils::data::{Event, EventType};
+use {zellij_types::data::Event, zellij_types::data::EventType};
 
 impl Screen {
     /// Copy this client's selection.

@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use std::io;
 use std::io::Write;
 use std::path::Path;
-use zellij_utils::ipc::{IpcReceiverWithContext, IpcSenderWithContext};
+use {zellij_ipc::ipc::IpcReceiverWithContext, zellij_ipc::ipc::IpcSenderWithContext};
 
 /// Async signal listener that maps Unix signals to `SignalEvent` variants.
 pub(crate) struct AsyncSignalListener {
@@ -81,8 +81,8 @@ pub(crate) fn setup_ipc(
     socket: interprocess::local_socket::Stream,
     _path: &Path,
 ) -> (
-    IpcSenderWithContext<zellij_utils::ipc::ClientToServerMsg>,
-    IpcReceiverWithContext<zellij_utils::ipc::ServerToClientMsg>,
+    IpcSenderWithContext<zellij_ipc::ipc::ClientToServerMsg>,
+    IpcReceiverWithContext<zellij_ipc::ipc::ServerToClientMsg>,
 ) {
     let sender = IpcSenderWithContext::new(socket);
     let receiver = sender.get_receiver();

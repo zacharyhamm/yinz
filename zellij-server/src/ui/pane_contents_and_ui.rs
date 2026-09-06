@@ -12,7 +12,10 @@ use zellij_runtime::errors::prelude::*;
 use zellij_types::animation::blend;
 use zellij_types::pane_size::PaneGeom;
 use zellij_types::style::Style;
-use zellij_utils::data::{client_id_to_colors, InputMode, PaletteColor};
+use {
+    zellij_types::data::client_id_to_colors, zellij_types::data::InputMode,
+    zellij_types::data::PaletteColor,
+};
 
 pub fn dim_character_chunks(character_chunks: &mut Vec<CharacterChunk>) {
     for chunk in character_chunks.iter_mut() {

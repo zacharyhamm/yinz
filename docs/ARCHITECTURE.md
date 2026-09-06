@@ -1,42 +1,49 @@
 This document details the different components of the code base in plain English. The intention is to provide a high level description rather than a more detailed drill-down of each internal mechanism.
 
-## Shared library extraction
+## Shared libraries
 
-The extraction from `zellij-utils` is in progress. These crates now own independent parts of the shared library:
+Consumers import shared code from its owning crate. The workspace has eight shared libraries:
 
-| Crate | Current ownership |
-|---|---|
-| `zellij-types` | Canonical pane IDs, terminal, plugin, and client ID wrappers, positions, mouse input, environment models, plugin-data contracts, recording summaries, Kitty placeholders, keys, palettes and styles, animation, text helpers, diagnostic context payloads, pane geometry, direction and resizing models, agent records and launch inputs, and command targets |
-| `zellij-runtime` | Error presentation, thread-local context, channels, logging, paths, environment access and host-terminal capture, host identity, downloads, checkpoint publication, terminal key interpretation and encoding, and vendored terminal input parsing |
-| `zellij-storage` | Plugin-data engine, SQLite and Postgres backends, recording storage, and `DataAccess` interfaces |
+| Crate | Ownership | Allowed Zellij dependencies |
+|---|---|---|
+| `zellij-types` | Shared models, identities, units, geometry, actions, options, layouts, manifests, plugin commands and events | None |
+| `zellij-runtime` | Errors, channels, logging, paths, environment access, host identity, downloads, checkpoint locks, agent launch support | Types |
+| `zellij-storage` | Recording storage and plugin-data engines for SQLite and Postgres | Types, Runtime |
+| `zellij-config` | Config and layout loading, KDL/Lua parsing, precedence, overlays, themes, plugin resolution, permissions, embedded assets | Types, Runtime |
+| `zellij-plugin-api` | Plugin protobuf schemas, generated code, conversions, protocol validation, authoring helpers | Types, Runtime |
+| `zellij-ipc` | Client/server and nested-session protocols, framing, sockets, connection retries | Types, Runtime, Plugin API |
+| `zellij-session` | Discovery, lifecycle, resurrection, session metadata and layout serialization, warped tabs | Types, Runtime, Config, IPC |
+| `zellij-cli` | Clap arguments, completions, setup, CLI option merging, action conversion, session listings and diagnostics | All preceding libraries |
 
-`zellij-types` has no Zellij dependencies. Runtime depends on types. Storage depends on types, without configuration parsing.
-Consumers import moved modules from their owning crates. Temporary re-exports in `zellij-utils` support the remaining migration.
-Configuration, plugin API, IPC, session, and CLI extraction remain unfinished. Most shared models still reside in `zellij-utils`.
-Public domain scalars also need further migration to semantic newtypes.
+These lists permit dependencies. They do not require every listed dependency.
+`cargo x ci check` enforces them for normal, optional, target-specific, build, and development dependencies.
+The root binary dispatches commands that start the client or server. The CLI library does not depend on these applications.
 
-`zellij-types::pane_size` owns pane dimensions, sizes, offsets, insets, and viewports.
-`zellij-types::geometry` owns directions, resize strategies, split sizes, percentages, and floating-pane coordinates.
-`zellij-types::agent` owns agent records and launch inputs. Hook interpretation remains in utils.
-`zellij-types::command` owns command payloads, process targets, and Git checkout requests. Process execution remains in the host crates.
-Consumers and the SDK import these models from types. Utils no longer re-exports them.
-Fixed JSON and protobuf fixtures cover their existing representations.
+Models keep pure operations. Parser-owned free functions read or serialize KDL and Lua.
+`CliAssets` contains serializable input fields. `zellij_config::cli_assets::load_config_and_layout` loads their configuration.
+Config loading receives explicit paths and options. Clap arguments and CLI-specific merging stay in CLI.
+
+`zellij-types::pane_size` owns pane dimensions, offsets, insets, and viewports.
+`zellij-types::geometry` owns directions, resizing, split sizes, percentages, and floating-pane coordinates.
+`zellij-types::agent` owns agent records, hook payloads, and pure hook interpretation.
+Runtime owns tracing, watchdogs, and launch support. Process execution stays in the host crates.
 
 `zellij-types::diagnostics::ErrorContext` holds the serializable six-entry instruction stack.
 Its `add_call` method changes only that value. Runtime's `errors::add_call` also publishes the result to the current task or thread.
-Use `errors::update_thread_ctx` to publish a received context and `errors::format_context` to format it for a diagnostic.
-Color KDL parsing and serialization remain parser-owned free functions. Color models and pure conversion helpers reside in types.
-Style KDL serialization also uses parser-owned free functions. Key string forms live in types and serve config and protocol adapters.
-Runtime key interpretation receives a binding predicate, so runtime does not depend on configuration or actions.
-Clap validates theme hue choices in the options adapter. The shared `ThemeHue` model has no Clap dependency.
+Use `errors::update_thread_ctx` to publish a received context. Use `errors::format_context` to format a diagnostic.
+Runtime key interpretation receives a binding predicate, so runtime does not depend on configuration parsing.
 
 The checkpoint reader retains its lock while configuration loading reads layout and pane-content files.
-Runtime tests cover publication and lock behavior. Parser tests cover pane-content loading under that lock.
+Runtime tests cover publication and lock behavior. Parser and session tests cover content loading under that lock.
 
-Run `cargo x test -p zellij-types -p zellij-runtime -p zellij-storage` for the extracted crates.
+Plugin protobuf sources and generated code live in `zellij-plugin-api/src` and `zellij-plugin-api/assets`.
+Client/server and nested-session protobufs live in `zellij-ipc/src` and `zellij-ipc/assets`.
+Use `cargo x proto` to regenerate all protocols. Generated fields retain their existing wire numbers.
+Builtin WASM plugins remain under the workspace's `target/wasm32-wasip1/{debug,release}` directories.
+
+Run focused tests with `cargo x test -p <owning-crate>`.
 Run `cargo x postgres-test --build` followed by `cargo x postgres-test --test` for storage against Postgres.
-The full handoff gate remains `cargo x ci check`.
-
+Run `cargo x ci check` before a branch or PR handoff.
 
 ## Data access
 

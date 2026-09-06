@@ -71,32 +71,42 @@ use crate::route::NotificationEnd;
 
 use log::{debug, warn};
 use zellij_runtime::errors::prelude::*;
+use zellij_types::input::context_menu::ContextMenu;
+use zellij_types::input::hooks::HookPoint;
+use zellij_types::input::keybinds::Keybinds;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::pane_size::{Size, SizeInPixels};
 use zellij_types::position::Position;
 use zellij_types::style::{HostTerminalThemeMode, Styling, ThemeHue};
+use zellij_types::text::clean_string_from_control_and_linebreak;
 use zellij_types::{
     agent::{AgentInfo, AgentState},
     geometry::{Direction, FloatingPaneCoordinates, ResizeStrategy},
 };
-use zellij_utils::data::{
-    ContextMenuContext, ContextMenuItem, EventType, HookPayload, LayoutInfo, LayoutWithError,
-    NotificationInfo, OverlayPlacement, PaneInfo, PluginTag, RemotePaneHandoff, SessionInfo,
-    TabInfo, WarpedPane, WarpedTab, HOCUS_AGENT_PANE_CONTEXT,
+use {
+    zellij_types::data::ContextMenuContext, zellij_types::data::ContextMenuItem,
+    zellij_types::data::EventType, zellij_types::data::HookPayload, zellij_types::data::LayoutInfo,
+    zellij_types::data::LayoutWithError, zellij_types::data::NotificationInfo,
+    zellij_types::data::OverlayPlacement, zellij_types::data::PaneInfo,
+    zellij_types::data::PluginTag, zellij_types::data::RemotePaneHandoff,
+    zellij_types::data::SessionInfo, zellij_types::data::TabInfo, zellij_types::data::WarpedPane,
+    zellij_types::data::WarpedTab, zellij_types::data::HOCUS_AGENT_PANE_CONTEXT,
 };
-use zellij_utils::input::command::{RunCommand, TerminalAction};
-use zellij_utils::input::context_menu::ContextMenu;
-use zellij_utils::input::hooks::HookPoint;
-use zellij_utils::input::keybinds::Keybinds;
-use zellij_utils::input::layout::{
-    FloatingPaneLayout, Layout, PluginUserConfiguration, Run, RunPlugin, RunPluginLocation,
-    RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout, TiledPaneLayout,
+use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
+use {
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Layout,
+    zellij_types::input::layout::PluginUserConfiguration, zellij_types::input::layout::Run,
+    zellij_types::input::layout::RunPlugin, zellij_types::input::layout::RunPluginLocation,
+    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::layout::SwapFloatingLayout,
+    zellij_types::input::layout::SwapTiledLayout, zellij_types::input::layout::TiledPaneLayout,
 };
-use zellij_utils::input::options::{
-    Clipboard, HostNotificationProtocol, NestedSessionHandling, NotificationPosition,
-    PaneFrameStyle,
+use {
+    zellij_types::input::options::Clipboard,
+    zellij_types::input::options::HostNotificationProtocol,
+    zellij_types::input::options::NestedSessionHandling,
+    zellij_types::input::options::NotificationPosition,
+    zellij_types::input::options::PaneFrameStyle,
 };
-use zellij_utils::shared::clean_string_from_control_and_linebreak;
 
 use crate::background_jobs::BackgroundJob;
 use crate::notifications::NotificationProtocol;
@@ -122,9 +132,9 @@ use crate::{
     ClientId, ServerInstruction,
 };
 use zellij_types::style::{Palette, Style};
-use zellij_utils::{
-    data::{Event, InputMode, ModeInfo},
-    ipc::{ClientAttributes, PixelDimensions},
+use {
+    zellij_ipc::ipc::ClientAttributes, zellij_ipc::ipc::PixelDimensions, zellij_types::data::Event,
+    zellij_types::data::InputMode, zellij_types::data::ModeInfo,
 };
 
 mod agent_placement;
@@ -539,8 +549,8 @@ impl WatcherState {
 }
 
 struct PaneRenderSubscription {
-    pane_ids: HashSet<zellij_utils::data::PaneId>,
-    previous_viewports: HashMap<zellij_utils::data::PaneId, Vec<String>>,
+    pane_ids: HashSet<zellij_types::data::PaneId>,
+    previous_viewports: HashMap<zellij_types::data::PaneId, Vec<String>>,
     ansi: bool,
 }
 

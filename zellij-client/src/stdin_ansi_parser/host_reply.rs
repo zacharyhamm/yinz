@@ -9,7 +9,7 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use zellij_types::pane_size::SizeInPixels;
-use zellij_utils::{data::HostTerminalThemeMode, ipc::PixelDimensions};
+use {zellij_ipc::ipc::PixelDimensions, zellij_types::data::HostTerminalThemeMode};
 
 /// A classified host-terminal reply received on stdin.
 ///

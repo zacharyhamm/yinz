@@ -37,20 +37,20 @@ use zellij_types::diagnostics::ContextType;
 use zellij_types::diagnostics::PtyContext;
 use zellij_types::pane_size::Size;
 use zellij_types::{agent::AgentInfo, command::PaneTarget, geometry::FloatingPaneCoordinates};
-use zellij_utils::{
-    data::{
-        CommandOrPlugin, Event, GetPaneCwdResponse, GetPaneGitProbeResponse, GetPanePidResponse,
-        GetPaneRunningCommandResponse, NewPanePlacement, OriginatingPlugin, OverlayPlacement,
-        PaneGitProbe, SessionInfo, WarpPlacement, WarpedPane, WarpedTab,
-    },
-    input::{
-        command::{OpenFilePayload, RunCommand, TerminalAction},
-        layout::{
-            FloatingPaneLayout, Layout, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout,
-            TabLayoutInfo, TiledPaneLayout,
-        },
-    },
-    session_serialization,
+use {
+    zellij_session::session_serialization, zellij_types::data::CommandOrPlugin,
+    zellij_types::data::Event, zellij_types::data::GetPaneCwdResponse,
+    zellij_types::data::GetPaneGitProbeResponse, zellij_types::data::GetPanePidResponse,
+    zellij_types::data::GetPaneRunningCommandResponse, zellij_types::data::NewPanePlacement,
+    zellij_types::data::OriginatingPlugin, zellij_types::data::OverlayPlacement,
+    zellij_types::data::PaneGitProbe, zellij_types::data::SessionInfo,
+    zellij_types::data::WarpPlacement, zellij_types::data::WarpedPane,
+    zellij_types::data::WarpedTab, zellij_types::input::command::OpenFilePayload,
+    zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction,
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Layout,
+    zellij_types::input::layout::Run, zellij_types::input::layout::RunPluginOrAlias,
+    zellij_types::input::layout::SwapFloatingLayout, zellij_types::input::layout::SwapTiledLayout,
+    zellij_types::input::layout::TabLayoutInfo, zellij_types::input::layout::TiledPaneLayout,
 };
 
 pub type VteBytes = Vec<u8>;
@@ -557,7 +557,7 @@ fn handle_remote_agent_report(
     kind: &str,
     json: String,
 ) -> Result<()> {
-    use zellij_utils::agent::{self, HookEvent, HookOutcome};
+    use {zellij_types::agent, zellij_types::agent::HookEvent, zellij_types::agent::HookOutcome};
     if json.len() > agent::HOOK_BROADCAST_MAX_BYTES {
         return Err(anyhow!("agent hook event exceeds the 64 KiB limit"));
     }

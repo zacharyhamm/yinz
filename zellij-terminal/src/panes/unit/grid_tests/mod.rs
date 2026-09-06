@@ -11,11 +11,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use vte;
+use zellij_runtime::consts::SCROLL_BUFFER_SIZE;
+use zellij_types::input::options::DEFAULT_WORD_SEPARATORS;
 use zellij_types::pane_size::SizeInPixels;
 use zellij_types::position::Position;
 use zellij_types::style::{Palette, Style};
-use zellij_utils::consts::SCROLL_BUFFER_SIZE;
-use zellij_utils::input::options::DEFAULT_WORD_SEPARATORS;
 
 use std::fmt::Write;
 
@@ -85,7 +85,10 @@ use crate::panes::grid::MouseTracking;
 use crate::panes::terminal_character::AnsiCode;
 use std::collections::BTreeMap;
 use zellij_types::geometry::Direction;
-use zellij_utils::data::{HighlightLayer, HighlightStyle, RegexHighlight};
+use {
+    zellij_types::data::HighlightLayer, zellij_types::data::HighlightStyle,
+    zellij_types::data::RegexHighlight,
+};
 
 #[test]
 fn keyboard_selection_remembers_copies_until_select_mode_finishes() {
@@ -459,10 +462,10 @@ fn new_grid_for_nested_frames() -> Grid {
     )
 }
 
-fn nested_announce_message() -> zellij_utils::nested_session::NestedSessionMessage {
-    zellij_utils::nested_session::NestedSessionMessage::Announce {
+fn nested_announce_message() -> zellij_ipc::nested_session::NestedSessionMessage {
+    zellij_ipc::nested_session::NestedSessionMessage::Announce {
         session_name: "guest-session".to_owned(),
-        capabilities: vec![zellij_utils::nested_session::NestedSessionCapability::NestedControl],
+        capabilities: vec![zellij_ipc::nested_session::NestedSessionCapability::NestedControl],
     }
 }
 
@@ -990,7 +993,7 @@ fn ui_component_dcs_payload_is_bounded_and_recovers() {
 
 #[test]
 fn nested_frame_dcs_payload_is_bounded_and_recovers() {
-    let prefix = format!("\x1bP{}n", zellij_utils::nested_session::NESTED_DCS_PARAM);
+    let prefix = format!("\x1bP{}n", zellij_ipc::nested_session::NESTED_DCS_PARAM);
     assert_dcs_payload_is_bounded(prefix.as_bytes(), BufferedDcs::NestedFrame);
 }
 

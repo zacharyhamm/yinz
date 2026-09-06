@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::screen::PluginId;
-use zellij_utils::data::{OverlayKind, OverlayPlacement};
+use {zellij_types::data::OverlayKind, zellij_types::data::OverlayPlacement};
 
 type ScreenReceiver = Receiver<(ScreenInstruction, ErrorContext)>;
 

@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use zellij_utils::input::options::HostNotificationProtocol;
+use zellij_types::input::options::HostNotificationProtocol;
 
 /// The protocol notifications are sent to one host terminal with, once `auto` is resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

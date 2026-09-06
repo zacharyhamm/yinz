@@ -128,10 +128,12 @@ use zellij_runtime::envs;
 use zellij_storage::data_access::DataAccess;
 use zellij_types::pane_size::Size;
 
-use zellij_utils::input::cli_assets::CliAssets;
-use zellij_utils::input::options::{
-    PaneFrameStyle, DEFAULT_AGENT_PANE_MIN_COLUMNS, DEFAULT_AGENT_PANE_MIN_ROWS,
-    DEFAULT_WORD_SEPARATORS,
+use zellij_types::input::cli_assets::CliAssets;
+use {
+    zellij_types::input::options::PaneFrameStyle,
+    zellij_types::input::options::DEFAULT_AGENT_PANE_MIN_COLUMNS,
+    zellij_types::input::options::DEFAULT_AGENT_PANE_MIN_ROWS,
+    zellij_types::input::options::DEFAULT_WORD_SEPARATORS,
 };
 
 use wasmi::Engine;
@@ -159,21 +161,21 @@ use zellij_types::diagnostics::ServerContext;
 use zellij_types::geometry::Direction;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::style::Style;
-use zellij_utils::{
-    consts::{
-        DEFAULT_SCROLL_BUFFER_SIZE, SCROLL_BUFFER_SIZE, ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE,
-    },
-    data::{ConnectToSession, InputMode, LayoutInfo, LayoutWithError},
-    input::{
-        actions::Action,
-        command::{RunCommand, TerminalAction},
-        config::{watch_config_file_changes, watch_layout_dir_changes, Config},
-        keybinds::Keybinds,
-        layout::{FloatingPaneLayout, Layout, PluginAlias, Run, RunPluginOrAlias},
-        options::Options,
-        plugins::PluginAliases,
-    },
-    ipc::{ClientAttributes, ExitReason, ServerToClientMsg},
+use {
+    zellij_config::config::watch_config_file_changes,
+    zellij_config::config::watch_layout_dir_changes, zellij_config::config::Config,
+    zellij_ipc::ipc::ClientAttributes, zellij_ipc::ipc::ExitReason,
+    zellij_ipc::ipc::ServerToClientMsg, zellij_runtime::consts::DEFAULT_SCROLL_BUFFER_SIZE,
+    zellij_runtime::consts::SCROLL_BUFFER_SIZE,
+    zellij_runtime::consts::ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE,
+    zellij_types::data::ConnectToSession, zellij_types::data::InputMode,
+    zellij_types::data::LayoutInfo, zellij_types::data::LayoutWithError,
+    zellij_types::input::actions::Action, zellij_types::input::command::RunCommand,
+    zellij_types::input::command::TerminalAction, zellij_types::input::keybinds::Keybinds,
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Layout,
+    zellij_types::input::layout::PluginAlias, zellij_types::input::layout::Run,
+    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::options::Options,
+    zellij_types::input::plugins::PluginAliases,
 };
 
 pub use zellij_types::internal_ids::{ClientId, PluginId, TerminalId};
@@ -528,8 +530,8 @@ impl SessionMetaData {
             let pane_still_active = self.key_passthrough_clients.values().any(|p| *p == pane_id);
             if !pane_still_active && notify_guest {
                 if let PaneId::Terminal(terminal_id) = pane_id {
-                    let frame = zellij_utils::nested_session::encode_frame(
-                        &zellij_utils::nested_session::NestedSessionMessage::FocusLost,
+                    let frame = zellij_ipc::nested_session::encode_frame(
+                        &zellij_ipc::nested_session::NestedSessionMessage::FocusLost,
                     );
                     let _ = self.senders.send_to_pty_writer(PtyWriteInstruction::Write(
                         frame,
@@ -987,8 +989,8 @@ pub fn start_server_impl(
         .name("server_listener".to_string())
         .spawn({
             use interprocess::local_socket::prelude::*;
-            use zellij_utils::consts::ipc_bind;
-            use zellij_utils::shared::set_permissions;
+            use zellij_ipc::consts::ipc_bind;
+            use zellij_runtime::shared::set_permissions;
 
             let os_input = os_input.clone();
             let session_data = session_data.clone();
@@ -1158,25 +1160,26 @@ pub fn start_server_impl(
         match instruction {
             ServerInstruction::FirstClientConnected(cli_assets, client_id) => {
                 let host_terminal_env = cli_assets.host_terminal_env.clone();
-                let (config, layout) = match cli_assets.load_config_and_layout() {
-                    Ok(config_and_layout) => config_and_layout,
-                    Err(error) => {
-                        let _ = os_input.send_to_client(
-                            client_id,
-                            ServerToClientMsg::Exit {
-                                exit_reason: ExitReason::Error(format!(
-                                    "failed to load session checkpoint: {error:#}"
-                                )),
-                            },
-                        );
-                        Err::<(), _>(error)
-                            .context("failed to load session checkpoint")
-                            .non_fatal();
-                        remove_client!(client_id, os_input, session_state, session_data);
-                        exit_reason = "failed to load session checkpoint";
-                        break;
-                    },
-                };
+                let (config, layout) =
+                    match zellij_config::cli_assets::load_config_and_layout(&cli_assets) {
+                        Ok(config_and_layout) => config_and_layout,
+                        Err(error) => {
+                            let _ = os_input.send_to_client(
+                                client_id,
+                                ServerToClientMsg::Exit {
+                                    exit_reason: ExitReason::Error(format!(
+                                        "failed to load session checkpoint: {error:#}"
+                                    )),
+                                },
+                            );
+                            Err::<(), _>(error)
+                                .context("failed to load session checkpoint")
+                                .non_fatal();
+                            remove_client!(client_id, os_input, session_state, session_data);
+                            exit_reason = "failed to load session checkpoint";
+                            break;
+                        },
+                    };
                 let layout_is_welcome_screen = cli_assets.layout
                     == Some(LayoutInfo::BuiltIn("welcome".to_owned()))
                     || config.options.default_layout == Some(PathBuf::from("welcome"));
@@ -2242,8 +2245,8 @@ pub fn start_server_impl(
                                     if let crate::panes::PaneId::Terminal(terminal_id) =
                                         previous_pane_id
                                     {
-                                        let frame = zellij_utils::nested_session::encode_frame(
-                                            &zellij_utils::nested_session::NestedSessionMessage::FocusLost,
+                                        let frame = zellij_ipc::nested_session::encode_frame(
+                                            &zellij_ipc::nested_session::NestedSessionMessage::FocusLost,
                                         );
                                         let _ = session_data.senders.send_to_pty_writer(
                                             PtyWriteInstruction::Write(frame, terminal_id, None),
@@ -2260,8 +2263,8 @@ pub fn start_server_impl(
                                 .insert(client_id, new_pane_id);
                             if !pane_already_active {
                                 if let crate::panes::PaneId::Terminal(terminal_id) = new_pane_id {
-                                    let frame = zellij_utils::nested_session::encode_frame(
-                                        &zellij_utils::nested_session::NestedSessionMessage::FocusGained {
+                                    let frame = zellij_ipc::nested_session::encode_frame(
+                                        &zellij_ipc::nested_session::NestedSessionMessage::FocusGained {
                                             from_direction: entered_from_direction,
                                         },
                                     );
@@ -2539,11 +2542,11 @@ fn init_session(
     // Expose them to plugins so their child CLI commands use this session's config.
     for (key, path) in [
         (
-            zellij_utils::consts::ZELLIJ_CONFIG_FILE_ENV,
+            zellij_runtime::consts::ZELLIJ_CONFIG_FILE_ENV,
             cli_assets.config_file_path.as_ref(),
         ),
         (
-            zellij_utils::consts::ZELLIJ_CONFIG_DIR_ENV,
+            zellij_runtime::consts::ZELLIJ_CONFIG_DIR_ENV,
             cli_assets.config_dir.as_ref(),
         ),
     ] {
@@ -2881,7 +2884,7 @@ fn update_new_saved_config(
             let written = match overlay_dir {
                 Some(dir) => Config::write_managed_fragment(&dir, &fragment).map_err(|e| {
                     log::error!("Failed to persist the config fragment: {}", e);
-                    Some(dir.join(zellij_utils::input::config::MANAGED_CONFIG_FILE_NAME))
+                    Some(dir.join(zellij_config::config::MANAGED_CONFIG_FILE_NAME))
                 }),
                 None => {
                     log::error!("No config directory to persist the config fragment in.");
@@ -3044,7 +3047,7 @@ fn get_available_layouts(config_options: &Options) -> (Vec<LayoutInfo>, Vec<Layo
         .default_layout
         .as_ref()
         .map(|l| format!("{}", l.display()));
-    Layout::list_available_layouts(layout_dir, &default_layout_name)
+    zellij_config::layout::list_available_layouts(layout_dir, &default_layout_name)
 }
 
 #[cfg(test)]

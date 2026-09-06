@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use zellij_types::internal_ids::TerminalId;
 
 use tokio::io::unix::AsyncFd;
-use zellij_utils::input::command::RunCommand;
+use zellij_types::input::command::RunCommand;
 
 use super::conn::{RemoteConn, RemoteGitProbe, RemoteStatus};
 use super::protocol::{self, BrokerToServerMsg, Frame};

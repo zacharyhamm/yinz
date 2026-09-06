@@ -9,8 +9,11 @@ use std::path::PathBuf;
 use zellij_types::geometry::{Direction, Resize};
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::style::Palette;
-use zellij_utils::input::command::{RunCommand, TerminalAction};
-use zellij_utils::ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg};
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcReceiverWithContext,
+    zellij_ipc::ipc::ServerToClientMsg,
+};
+use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
 
 #[derive(Clone)]
 struct FakeInputOutput {}

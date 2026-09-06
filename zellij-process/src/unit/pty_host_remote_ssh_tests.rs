@@ -231,7 +231,7 @@ fn a_missing_remote_command_arrives_as_command_not_found() {
             &mut theirs,
             &BrokerToServerMsg::HelloAck {
                 protocol_version: REMOTE_PROTOCOL_VERSION,
-                zellij_version: zellij_utils::consts::VERSION.to_owned(),
+                zellij_version: zellij_runtime::consts::VERSION.to_owned(),
             },
         )
         .expect("write failed");
@@ -275,7 +275,7 @@ fn a_confirmed_spawn_completes_the_handshake() {
             &mut theirs,
             &BrokerToServerMsg::HelloAck {
                 protocol_version: REMOTE_PROTOCOL_VERSION,
-                zellij_version: zellij_utils::consts::VERSION.to_owned(),
+                zellij_version: zellij_runtime::consts::VERSION.to_owned(),
             },
         )
         .expect("write failed");
@@ -314,7 +314,7 @@ fn a_default_shell_pane_ships_no_command_of_its_own() {
             &mut theirs,
             &BrokerToServerMsg::HelloAck {
                 protocol_version: REMOTE_PROTOCOL_VERSION,
-                zellij_version: zellij_utils::consts::VERSION.to_owned(),
+                zellij_version: zellij_runtime::consts::VERSION.to_owned(),
             },
         )
         .expect("write failed");
@@ -534,7 +534,7 @@ fn a_pane_carries_this_sides_terminal_and_its_own_id() {
             &mut theirs,
             &BrokerToServerMsg::HelloAck {
                 protocol_version: REMOTE_PROTOCOL_VERSION,
-                zellij_version: zellij_utils::consts::VERSION.to_owned(),
+                zellij_version: zellij_runtime::consts::VERSION.to_owned(),
             },
         )
         .expect("write failed");

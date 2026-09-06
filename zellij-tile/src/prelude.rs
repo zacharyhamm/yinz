@@ -3,14 +3,13 @@ pub use crate::clock::{
 };
 pub use crate::shim::*;
 pub use crate::*;
+pub use zellij_runtime::consts::VERSION;
 pub use zellij_runtime::errors::prelude::*;
-pub use zellij_types::keys::*;
+pub use zellij_types::data::*;
+pub use zellij_types::input::actions;
 pub use zellij_types::pane_size::Size;
 pub use zellij_types::style::*;
 pub use zellij_types::{agent::*, command::*, geometry::*};
-pub use zellij_utils::consts::VERSION;
-pub use zellij_utils::data::*;
-pub use zellij_utils::input::actions;
 
 pub use zellij_types::internal_ids::{ClientId, PluginId, RecordingId, TerminalId};
 pub use zellij_types::units::{ElapsedMicros, UnixMicros};

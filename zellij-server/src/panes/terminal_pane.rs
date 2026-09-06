@@ -27,6 +27,9 @@ use zellij_runtime::errors::prelude::*;
 use zellij_runtime::shared::make_terminal_title;
 use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
 use zellij_types::animation::blink_is_lit;
+use zellij_types::data::PaneContents;
+use zellij_types::data::HOCUS_AGENT_PANE_CONTEXT;
+use zellij_types::input::command::RunCommand;
 use zellij_types::internal_ids::PluginId;
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::keys::{BareKey, KeyWithModifier};
@@ -36,13 +39,10 @@ use zellij_types::pane_size::PaneGeom;
 use zellij_types::position::Position;
 use zellij_types::style::{Palette, Style, Styling};
 use zellij_types::{geometry::Direction, pane_size::SizeInPixels};
-use zellij_utils::data::PaneContents;
-use zellij_utils::data::HOCUS_AGENT_PANE_CONTEXT;
-use zellij_utils::input::command::RunCommand;
-use zellij_utils::{
-    data::{InputMode, PaletteColor, RegexHighlight},
-    input::layout::Run,
-    nested_session::NestedSessionMessage,
+use {
+    zellij_ipc::nested_session::NestedSessionMessage, zellij_types::data::InputMode,
+    zellij_types::data::PaletteColor, zellij_types::data::RegexHighlight,
+    zellij_types::input::layout::Run,
 };
 
 use crate::ui::pane_boundaries_frame::{FrameParams, PaneFrame};
@@ -1674,7 +1674,7 @@ fn agent_from_run(invoked_with: Option<&Run>) -> Option<AgentInfo> {
     let context = &run_command.originating_plugin.as_ref()?.context;
     let marker = context.get(HOCUS_AGENT_PANE_CONTEXT)?;
     let kind = match marker.trim() {
-        "" | "true" => zellij_utils::agent::agent_kind_of(&run_command.command, &run_command.args)?,
+        "" | "true" => zellij_types::agent::agent_kind_of(&run_command.command, &run_command.args)?,
         kind => kind.to_owned(),
     };
     Some(AgentInfo {

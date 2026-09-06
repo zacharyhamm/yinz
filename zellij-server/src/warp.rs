@@ -24,10 +24,11 @@
 use std::time::{Duration, Instant};
 
 use zellij_runtime::{envs, errors::prelude::*};
-use zellij_utils::{
-    data::{WarpPlacement, WarpedPane, WarpedTab},
-    input::actions::Action,
-    ipc::{ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg},
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcReceiverWithContext,
+    zellij_ipc::ipc::IpcSenderWithContext, zellij_ipc::ipc::ServerToClientMsg,
+    zellij_types::data::WarpPlacement, zellij_types::data::WarpedPane,
+    zellij_types::data::WarpedTab, zellij_types::input::actions::Action,
 };
 
 use crate::panes::PaneId;
@@ -94,7 +95,7 @@ fn connect_to_session(
     session_name: &str,
     reply_timeout: Duration,
 ) -> Result<IpcSenderWithContext<ClientToServerMsg>> {
-    use zellij_utils::consts::{ipc_connect, ZELLIJ_SOCK_DIR};
+    use {zellij_ipc::consts::ipc_connect, zellij_runtime::consts::ZELLIJ_SOCK_DIR};
 
     let path = ZELLIJ_SOCK_DIR.join(session_name);
     let stream =

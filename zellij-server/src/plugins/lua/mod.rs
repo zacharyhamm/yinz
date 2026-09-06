@@ -27,7 +27,10 @@ use std::cell::RefCell;
 
 use mlua::{Lua, Table, Value as LuaValue};
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::data::{CommandType, Event, PermissionStatus, PipeMessage};
+use {
+    zellij_types::data::CommandType, zellij_types::data::Event,
+    zellij_types::data::PermissionStatus, zellij_types::data::PipeMessage,
+};
 
 use crate::plugins::plugin_map::{PluginEnv, ResponseSink};
 use crate::plugins::zellij_exports::{

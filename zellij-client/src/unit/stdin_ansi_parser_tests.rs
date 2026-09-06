@@ -1738,8 +1738,10 @@ fn unsolicited_theme_notification_classifies_without_outstanding_query() {
 }
 
 fn announce_frame_and_payload() -> (Vec<u8>, Vec<u8>) {
-    use zellij_utils::nested_session::{
-        encode_frame, encode_payload, NestedSessionCapability, NestedSessionMessage,
+    use {
+        zellij_ipc::nested_session::encode_frame, zellij_ipc::nested_session::encode_payload,
+        zellij_ipc::nested_session::NestedSessionCapability,
+        zellij_ipc::nested_session::NestedSessionMessage,
     };
     let message = NestedSessionMessage::Announce {
         session_name: "guest-session".to_owned(),

@@ -285,25 +285,22 @@ impl<'de> Deserialize<'de> for CommandToRun {
 }
 
 /// Git setup Zellij performs before opening a command pane.
-///
-/// `New` in both branch variants means *the one named*, created when it is not
-/// there already: a branch or a worktree that exists is reused rather than
-/// refused, and `base` then has nothing to say - an existing branch has its own
-/// history. See `prepare_git_checkout_in` in the server for the exact order the
-/// two kinds of reuse are tried in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GitCheckout {
     Current,
-    /// The branch, in the checkout the request came from. Reuse means switching
-    /// to it, or - when another worktree holds it, which git allows only one of
-    /// - running in that worktree instead.
+    /// The branch, in the checkout the request came from. Whether an existing
+    /// branch is reused - switched to, or run in whichever worktree holds it,
+    /// which git allows only one of - is the *caller's* to say; without that,
+    /// the host cuts the next free name instead.
     NewBranch {
         branch: String,
         base: String,
     },
-    /// The branch, in a worktree of its own at `path`. A worktree already at
-    /// `path` is used as it stands; failing that, the worktree already holding
-    /// `branch` is.
+    /// The branch, in a worktree of its own at `path`. Reuse is again the
+    /// caller's to ask for: with it, a worktree already at `path` is used as it
+    /// stands and failing that the one already holding `branch` is; without it,
+    /// a taken name means the next free one, for the branch and the worktree
+    /// together.
     NewWorktree {
         branch: String,
         base: String,

@@ -1,8 +1,8 @@
 //! Helpers shared by the plugin's tests: a `ModeInfo` off the shipped config, and a way to read
 //! a rendered line back as text.
 
+use zellij_config::config::Config;
 use zellij_tile::prelude::*;
-use zellij_utils::input::config::Config;
 
 use crate::LinePart;
 

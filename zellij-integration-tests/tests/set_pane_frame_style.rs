@@ -1,11 +1,11 @@
 #![cfg(unix)]
 
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{
     claim_first_terminal_and_wait_for_prompt, split_right_and_wait_for_prompt, start_zellij, Size,
     TestRunner,
 };
-use zellij_utils::cli::CliAction;
-use zellij_utils::input::options::PaneFrameStyle;
+use zellij_types::input::options::PaneFrameStyle;
 
 const FULL_FRAME_CORNER: &str = "┌";
 

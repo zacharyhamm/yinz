@@ -15,7 +15,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::input::command::RunCommand;
+use zellij_types::input::command::RunCommand;
 
 use super::protocol::{
     self, BrokerToServerMsg, ChildSignal, Frame, ServerToBrokerMsg, FRAME_HEADER_LEN,

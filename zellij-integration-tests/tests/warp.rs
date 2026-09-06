@@ -18,10 +18,10 @@
 //! owner while it is in flight — that the pane leaves one session, arrives in the
 //! other keeping everything it had, and is never told to exit.
 
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{
     keys, FakePtyHandle, LayoutInfo, TestRunner, TestSession, WarpFailure, PROMPT, TERMINAL_SIZE,
 };
-use zellij_utils::cli::CliAction;
 
 /// Keep each session to its shell pane: the default background plugins would
 /// otherwise be spawning panes of their own while the test watches for one.
@@ -349,7 +349,7 @@ fn a_remote_pane_keeps_its_process_when_it_moves_between_sessions() {
     // The adopted pane is still a remote pane: it knows which machine it is on,
     // which is what a later re-run and the pane's own title read.
     let arrived_command = match arrived.terminal_action() {
-        Some(zellij_utils::input::command::TerminalAction::RunCommand(run_command)) => run_command,
+        Some(zellij_types::input::command::TerminalAction::RunCommand(run_command)) => run_command,
         other => panic!("an adopted remote pane should carry a command, got {other:?}"),
     };
     assert_eq!(

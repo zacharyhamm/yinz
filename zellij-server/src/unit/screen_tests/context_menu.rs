@@ -7,11 +7,11 @@
 //! draws nothing at all, and that an answer for a menu that has since closed is ignored.
 
 use super::*;
+use zellij_types::input::actions::Action;
+use zellij_types::input::context_menu::ContextMenu;
 use zellij_types::keys::{BareKey, KeyWithModifier};
 use zellij_types::pane_size::Viewport;
-use zellij_utils::data::{ContextMenuContext, ContextMenuItem};
-use zellij_utils::input::actions::Action;
-use zellij_utils::input::context_menu::ContextMenu;
+use {zellij_types::data::ContextMenuContext, zellij_types::data::ContextMenuItem};
 
 /// A small configured menu, so these tests do not depend on what the shipped default happens to
 /// contain. `ContextMenu::from_items` assigns the ids, exactly as parsing a config block does.

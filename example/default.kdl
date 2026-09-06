@@ -438,7 +438,7 @@ load_plugins {
 //               agent_exit_code, agent_command.
 //
 // The default is a Lua plugin shipped with zellij. Your own is a plugin you
-// write into your plugin folder - `zellij-utils/assets/plugins/agent-exit.lua`
+// write into your plugin folder - `zellij-config/assets/plugins/agent-exit.lua`
 // is the reference implementation to read - and then bind here by name. See
 // docs/LUA_PLUGINS.md.
 hooks {

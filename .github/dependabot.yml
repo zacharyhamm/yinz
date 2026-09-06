@@ -16,14 +16,16 @@ updates:
       # Allow only direct updates
       - dependency-name: "log"
   - package-ecosystem: "cargo"
-    directory: "/zellij-utils/"
+    directory: "/zellij-runtime/"
     schedule:
       interval: "monthly"
     allow:
-      # Allow only direct updates
       - dependency-name: "log"
       - dependency-name: "log4rs"
+  - package-ecosystem: "cargo"
+    directory: "/zellij-cli/"
+    schedule:
+      interval: "monthly"
+    allow:
       - dependency-name: "clap"
       - dependency-name: "clap_complete"
-
-

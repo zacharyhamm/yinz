@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use zellij_server::os_input_output::AsyncReader;
 use zellij_server::panes::PaneId;
-use zellij_utils::input::command::{RunCommand, TerminalAction};
+use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
 
 pub(crate) type QuitCb = Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>;
 

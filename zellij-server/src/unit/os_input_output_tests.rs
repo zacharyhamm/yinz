@@ -2,7 +2,7 @@ const AMPLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 use super::*;
 use zellij_types::command::PaneTarget;
-use zellij_utils::input::command::RunCommand;
+use zellij_types::input::command::RunCommand;
 
 fn make_server() -> ServerOsInputOutput {
     get_server_os_input().expect("failed to create server os input")
@@ -424,7 +424,7 @@ fn send_sigint_to_process() {
 #[test]
 fn spawn_and_read_output() {
     use crate::panes::PaneId;
-    use zellij_utils::input::command::TerminalAction;
+    use zellij_types::input::command::TerminalAction;
 
     let server = make_server();
     let test_message = "hello_zellij_test";
@@ -721,7 +721,7 @@ fn firecracker_panes_are_refused_a_warp_and_remote_panes_are_not() {
 #[test]
 fn tcgetpgrp_returns_foreground_group() {
     use crate::panes::PaneId;
-    use zellij_utils::input::command::TerminalAction;
+    use zellij_types::input::command::TerminalAction;
 
     let server = make_server();
 
@@ -776,7 +776,7 @@ fn tcgetpgrp_returns_foreground_group() {
 
 mod coalescing_send_queue {
     use super::*;
-    use zellij_utils::data::PaneId as DataPaneId;
+    use zellij_types::data::PaneId as DataPaneId;
 
     fn render(content: &str) -> ServerToClientMsg {
         ServerToClientMsg::Render {
@@ -1127,9 +1127,10 @@ mod client_writer_flush {
     use interprocess::local_socket::{prelude::*, ListenerOptions};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
-    use zellij_utils::ipc::{
-        ClientToServerMsg, ExitReason, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext,
-        ServerToClientMsg,
+    use {
+        zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ExitReason,
+        zellij_ipc::ipc::IpcReceiverWithContext, zellij_ipc::ipc::IpcRecv,
+        zellij_ipc::ipc::IpcSenderWithContext, zellij_ipc::ipc::ServerToClientMsg,
     };
 
     fn socket_pair() -> (

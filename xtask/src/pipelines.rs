@@ -191,7 +191,7 @@ fn provider_excluded_by_args(args: &[std::ffi::OsString]) -> bool {
 ///
 /// Asked of the binary rather than recomputed here, because every input is the binary's -
 /// `PREFIX` is baked in at compile time, the XDG answer is platform-specific, and the
-/// `builtins/<version>` shape is zellij-utils' to define. xtask cannot depend on zellij-utils
+/// `builtins/<version>` shape is zellij-config' to define. xtask cannot depend on zellij-config
 /// without compiling the whole tree to run anything.
 fn builtin_dirs_of(sh: &Shell, binary: &Path) -> anyhow::Result<(PathBuf, PathBuf)> {
     let output = cmd!(sh, "{binary} setup --print-builtin-plugin-dir")
@@ -555,7 +555,7 @@ pub fn publish(sh: &Shell, flags: flags::Publish) -> anyhow::Result<()> {
         // Update default config
         sh.copy_file(
             project_dir
-                .join("zellij-utils")
+                .join("zellij-config")
                 .join("assets")
                 .join("config")
                 .join("default.kdl"),

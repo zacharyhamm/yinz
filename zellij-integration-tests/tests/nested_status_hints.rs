@@ -1,7 +1,7 @@
 #![cfg(unix)]
 use zellij_integration_tests::nested::NestedHarness;
+use zellij_ipc::nested_session::NestedSessionMessage;
 use zellij_types::pane_size::Size;
-use zellij_utils::nested_session::NestedSessionMessage;
 
 const TERMINAL_SIZE: Size = Size {
     cols: 121,

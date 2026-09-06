@@ -18,11 +18,11 @@ use zellij_types::diagnostics::ErrorContext;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::mouse::{MouseEvent, MouseEventType};
 use zellij_types::position::Position;
-use zellij_utils::{
-    data::InputMode,
-    input::{actions::Action, config::Config, options::Options},
-    ipc::{ClientToServerMsg, ExitReason},
-    nested_session::{self, NestedSessionMessage},
+use {
+    zellij_config::config::Config, zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ExitReason,
+    zellij_ipc::nested_session, zellij_ipc::nested_session::NestedSessionMessage,
+    zellij_types::data::InputMode, zellij_types::input::actions::Action,
+    zellij_types::input::options::Options,
 };
 
 /// Handles the dispatching of [`Action`]s according to the current
@@ -343,7 +343,7 @@ impl InputHandler {
             AnsiStdinInstruction::ColorRegisters(color_registers) => {
                 let color_registers: Vec<_> = color_registers
                     .into_iter()
-                    .map(|(index, color)| zellij_utils::ipc::ColorRegister { index, color })
+                    .map(|(index, color)| zellij_ipc::ipc::ColorRegister { index, color })
                     .collect();
                 self.os_input
                     .send_to_server(ClientToServerMsg::ColorRegisters { color_registers });

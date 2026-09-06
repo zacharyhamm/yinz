@@ -12,13 +12,15 @@ use crate::session_layout_metadata::PaneLayoutMetadata;
 use crate::ClientId;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use zellij_utils::data::{
-    NewPanePlacement, RemotePaneHandoff, WarpPlacement, WarpedPane, WarpedTab,
+use zellij_session::warped_tab::layout_for_warped_tab;
+use zellij_types::input::command::RunCommand;
+use zellij_types::input::layout::Run;
+use zellij_types::session_manifest::PaneLayoutManifest;
+use {
+    zellij_types::data::NewPanePlacement, zellij_types::data::RemotePaneHandoff,
+    zellij_types::data::WarpPlacement, zellij_types::data::WarpedPane,
+    zellij_types::data::WarpedTab,
 };
-use zellij_utils::input::command::RunCommand;
-use zellij_utils::input::layout::Run;
-use zellij_utils::session_serialization::PaneLayoutManifest;
-use zellij_utils::warped_tab::layout_for_warped_tab;
 
 /// What Screen keeps back from a tab warp's budget for its own work.
 ///

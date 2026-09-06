@@ -37,10 +37,13 @@ use crate::screen::ScreenInstruction;
 use crate::session_layout_metadata::SessionLayoutMetadata;
 use crate::{pty::PtyInstruction, thread_bus::Bus, ClientId, ServerInstruction};
 use zellij_storage::data_access::DataAccess;
-use zellij_utils::data::PaneRenderReport;
-use zellij_utils::input::context_menu::ContextMenu;
-use zellij_utils::input::hooks::{HookPoint, HookShape, Hooks};
-use zellij_utils::input::layout::TabLayoutInfo;
+use zellij_types::data::PaneRenderReport;
+use zellij_types::input::context_menu::ContextMenu;
+use zellij_types::input::layout::TabLayoutInfo;
+use {
+    zellij_types::input::hooks::HookPoint, zellij_types::input::hooks::HookShape,
+    zellij_types::input::hooks::Hooks,
+};
 
 pub use wasm_bridge::PluginRenderAsset;
 use wasm_bridge::WasmBridge;
@@ -51,20 +54,21 @@ use zellij_types::diagnostics::ErrorContext;
 use zellij_types::diagnostics::PluginContext;
 use zellij_types::geometry::FloatingPaneCoordinates;
 use zellij_types::pane_size::Size;
-use zellij_utils::{
-    data::{
-        ClientInfo, CommandOrPlugin, ContextMenuContext, Event, EventType, HookPayload, InputMode,
-        LayoutInfo, LayoutWithError, MessageToPlugin, Mouse, OverlayPlacement, PermissionStatus,
-        PermissionType, PipeMessage, PipeSource,
-    },
-    input::{
-        actions::Action,
-        command::TerminalAction,
-        keybinds::Keybinds,
-        layout::{FloatingPaneLayout, Layout, Run, RunPlugin, RunPluginOrAlias, TiledPaneLayout},
-        plugins::{PluginAliases, PluginConfig},
-    },
-    session_serialization,
+use {
+    zellij_config::plugins::PluginConfig, zellij_session::session_serialization,
+    zellij_types::data::ClientInfo, zellij_types::data::CommandOrPlugin,
+    zellij_types::data::ContextMenuContext, zellij_types::data::Event,
+    zellij_types::data::EventType, zellij_types::data::HookPayload, zellij_types::data::InputMode,
+    zellij_types::data::LayoutInfo, zellij_types::data::LayoutWithError,
+    zellij_types::data::MessageToPlugin, zellij_types::data::Mouse,
+    zellij_types::data::OverlayPlacement, zellij_types::data::PermissionStatus,
+    zellij_types::data::PermissionType, zellij_types::data::PipeMessage,
+    zellij_types::data::PipeSource, zellij_types::input::actions::Action,
+    zellij_types::input::command::TerminalAction, zellij_types::input::keybinds::Keybinds,
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Layout,
+    zellij_types::input::layout::Run, zellij_types::input::layout::RunPlugin,
+    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::layout::TiledPaneLayout,
+    zellij_types::input::plugins::PluginAliases,
 };
 
 pub use zellij_types::internal_ids::PluginId;
@@ -72,7 +76,7 @@ pub use zellij_types::internal_ids::PluginId;
 #[derive(Clone, Debug)]
 pub struct DumpSessionLayoutResponse {
     pub layout_result: Result<String, String>,
-    pub metadata: Option<zellij_utils::data::LayoutMetadata>,
+    pub metadata: Option<zellij_types::data::LayoutMetadata>,
 }
 /// The plugin id a state report is addressed to when no plugin wants it but a `zellij events`
 /// client does. No plugin ever has this id, so the plugin thread loads nothing for it and the
@@ -1628,7 +1632,7 @@ fn pipe_to_specific_plugins(
 ) {
     let is_private = true;
     let size = Size::default();
-    match RunPluginOrAlias::from_url(
+    match zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
         &plugin_url,
         configuration,
         Some(plugin_aliases),

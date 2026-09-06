@@ -11,23 +11,28 @@ use tempfile::tempdir;
 use wasmi::Engine;
 use zellij_storage::data_access::DataAccess;
 use zellij_types::keys::{BareKey, KeyWithModifier};
-use zellij_utils::data::{Event, InputMode, ModeInfo, PermissionStatus, PermissionType};
+use {
+    zellij_types::data::Event, zellij_types::data::InputMode, zellij_types::data::ModeInfo,
+    zellij_types::data::PermissionStatus, zellij_types::data::PermissionType,
+};
 
 use zellij_types::diagnostics::ErrorContext;
-use zellij_utils::input::actions::Action;
-use zellij_utils::input::keybinds::Keybinds;
-use zellij_utils::input::layout::{
-    PluginAlias, PluginUserConfiguration, RunPlugin, RunPluginLocation, RunPluginOrAlias,
+use zellij_types::input::actions::Action;
+use zellij_types::input::keybinds::Keybinds;
+use {
+    zellij_types::input::layout::PluginAlias, zellij_types::input::layout::PluginUserConfiguration,
+    zellij_types::input::layout::RunPlugin, zellij_types::input::layout::RunPluginLocation,
+    zellij_types::input::layout::RunPluginOrAlias,
 };
 
 use crate::background_jobs::BackgroundJob;
 use crate::pty_writer::PtyWriteInstruction;
 use crate::{plugins::PluginInstruction, pty::PtyInstruction};
 use std::env::set_var;
+use zellij_config::permission::PermissionCache;
 use zellij_runtime::channels::{self, ChannelWithContext, Receiver};
+use zellij_types::input::plugins::PluginAliases;
 use zellij_types::pane_size::Size;
-use zellij_utils::input::permission::PermissionCache;
-use zellij_utils::input::plugins::PluginAliases;
 
 use crate::ClientId;
 use zellij_test_support::{default_timeout, Watched};
@@ -544,7 +549,7 @@ fn create_plugin_thread_with_hooks(
     zellij_cwd: Option<PathBuf>,
     session_env_vars: Option<std::collections::BTreeMap<String, String>>,
     user_plugin_dir: Option<PathBuf>,
-    hooks: zellij_utils::input::hooks::Hooks,
+    hooks: zellij_types::input::hooks::Hooks,
 ) -> PluginThreadHarness {
     let zellij_cwd = zellij_cwd.unwrap_or_else(|| PathBuf::from("."));
     let session_env_vars = session_env_vars.unwrap_or_else(|| std::env::vars().collect());
@@ -594,9 +599,12 @@ fn create_plugin_thread_with_hooks(
     let mut plugin_aliases = PluginAliases::default();
     plugin_aliases.aliases.insert(
         "fixture_plugin_for_tests".to_owned(),
-        RunPlugin::from_url(&format!("file:{}", *PLUGIN_FIXTURE)).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_from_url(&format!("file:{}", *PLUGIN_FIXTURE))
+            .unwrap(),
     );
-    let mut modal_fixture = RunPlugin::from_url(&format!("file:{}", *PLUGIN_FIXTURE)).unwrap();
+    let mut modal_fixture =
+        zellij_runtime::plugin_location::run_plugin_from_url(&format!("file:{}", *PLUGIN_FIXTURE))
+            .unwrap();
     modal_fixture.configuration.insert("modal", "true");
     plugin_aliases
         .aliases

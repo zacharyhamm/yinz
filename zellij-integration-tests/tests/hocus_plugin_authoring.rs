@@ -319,8 +319,8 @@ fn agent_state_in(event_json: &str, terminal_id: u32) -> Option<String> {
 /// would drive it: it reports busy, reports waiting, and exits.
 #[test]
 fn a_written_hook_is_bound_and_fired_by_a_reporting_agent_end_to_end() {
+    use zellij_cli::args::CliAction;
     use zellij_integration_tests::{claim_first_terminal_and_wait_for_prompt, default_timeout};
-    use zellij_utils::cli::CliAction;
 
     // A config dir of its own, so `--write` has a `config.d` to land in and the plugin folder
     // is where a real install would keep it.

@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::data::{RemotePaneHandoff, WarpedPane};
-use zellij_utils::input::command::RunCommand;
+use zellij_types::input::command::RunCommand;
+use {zellij_types::data::RemotePaneHandoff, zellij_types::data::WarpedPane};
 
 use super::client;
 use super::protocol::{self, HostStatus};

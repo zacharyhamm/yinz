@@ -4,59 +4,122 @@ use std::{
     io,
     path::{Path, PathBuf},
 };
+pub use zellij_plugin_api as plugin_api;
+use zellij_plugin_api::event::ProtobufPaneScrollbackResponse;
 use zellij_runtime::errors::prelude::*;
 use zellij_types::agent::{AgentInfo, AgentSpawnSpec};
 use zellij_types::command::{CommandToRun, GitCheckout};
+use zellij_types::data::*;
 pub use zellij_types::geometry::PercentOrFixed;
 use zellij_types::geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy};
-use zellij_utils::data::*;
-use zellij_utils::input::actions::Action;
-pub use zellij_utils::plugin_api;
-use zellij_utils::plugin_api::event::ProtobufPaneScrollbackResponse;
-use zellij_utils::plugin_api::generated_api::api::plugin_command::{
-    hide_floating_panes_response, save_session_response, show_floating_panes_response,
+use zellij_types::input::actions::Action;
+use {
+    zellij_plugin_api::generated_api::api::plugin_command::hide_floating_panes_response,
+    zellij_plugin_api::generated_api::api::plugin_command::save_session_response,
+    zellij_plugin_api::generated_api::api::plugin_command::show_floating_panes_response,
 };
-use zellij_utils::plugin_api::plugin_command::{
-    dump_layout_response, dump_session_layout_response, fs_list_response, fs_metadata_response,
-    fs_mutate_response, fs_read_response, get_focused_pane_info_response, get_pane_cwd_response,
-    get_pane_git_probe_response, get_pane_running_command_response, parse_layout_response,
-    read_plugin_log_response, ProtobufBreakPanesToNewTabResponse,
-    ProtobufBreakPanesToTabWithIdResponse, ProtobufBreakPanesToTabWithIndexResponse,
-    ProtobufCheckLuaPluginResponse, ProtobufCurrentSessionLastSavedTimeResponse,
-    ProtobufDataApplyResponse, ProtobufDataCatalogResponse, ProtobufDataCountResponse,
-    ProtobufDataDefineResponse, ProtobufDataFetchResponse, ProtobufDataUnwatchResponse,
-    ProtobufDataWatchResponse, ProtobufDeleteAllDeadSessionsResponse,
-    ProtobufDeleteDeadSessionResponse, ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse,
-    ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse,
-    ProtobufFocusOrCreateTabResponse, ProtobufFsListResponse, ProtobufFsMetadataResponse,
-    ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
-    ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse,
-    ProtobufGetLocalUtcOffsetResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
-    ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
-    ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
-    ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
-    ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
-    ProtobufListNotificationsResponse, ProtobufListOrphanedPanesResponse,
-    ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse,
-    ProtobufNewTabsResponse, ProtobufNewTiledPaneInTabResponse,
-    ProtobufOpenCommandPaneBackgroundResponse, ProtobufOpenCommandPaneFloatingNearPluginResponse,
-    ProtobufOpenCommandPaneFloatingResponse, ProtobufOpenCommandPaneInGitCheckoutResponse,
-    ProtobufOpenCommandPaneInPlaceOfPaneIdResponse, ProtobufOpenCommandPaneInPlaceOfPluginResponse,
-    ProtobufOpenCommandPaneInPlaceResponse, ProtobufOpenCommandPaneNearPluginResponse,
-    ProtobufOpenCommandPaneOverlayResponse, ProtobufOpenCommandPaneResponse,
-    ProtobufOpenEditPaneInPlaceOfPaneIdResponse, ProtobufOpenFileFloatingNearPluginResponse,
-    ProtobufOpenFileFloatingResponse, ProtobufOpenFileInPlaceOfPluginResponse,
-    ProtobufOpenFileInPlaceResponse, ProtobufOpenFileNearPluginResponse, ProtobufOpenFileResponse,
-    ProtobufOpenPaneInNewTabResponse, ProtobufOpenPluginPaneFloatingResponse,
-    ProtobufOpenTerminalFloatingNearPluginResponse, ProtobufOpenTerminalFloatingResponse,
-    ProtobufOpenTerminalInPlaceOfPluginResponse, ProtobufOpenTerminalInPlaceResponse,
-    ProtobufOpenTerminalNearPluginResponse, ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
-    ProtobufOpenTerminalResponse, ProtobufParseLayoutResponse, ProtobufPluginCommand,
-    ProtobufQueueStatusResponse, ProtobufReadPluginLogResponse, ProtobufRenameLayoutResponse,
-    ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse, ProtobufSearchRecordingsResponse,
-    ProtobufShowFloatingPanesResponse, ProtobufSpawnAgentResponse, ProtobufWarpPaneResponse,
+use {
+    zellij_plugin_api::plugin_command::dump_layout_response,
+    zellij_plugin_api::plugin_command::dump_session_layout_response,
+    zellij_plugin_api::plugin_command::fs_list_response,
+    zellij_plugin_api::plugin_command::fs_metadata_response,
+    zellij_plugin_api::plugin_command::fs_mutate_response,
+    zellij_plugin_api::plugin_command::fs_read_response,
+    zellij_plugin_api::plugin_command::get_focused_pane_info_response,
+    zellij_plugin_api::plugin_command::get_pane_cwd_response,
+    zellij_plugin_api::plugin_command::get_pane_git_probe_response,
+    zellij_plugin_api::plugin_command::get_pane_running_command_response,
+    zellij_plugin_api::plugin_command::parse_layout_response,
+    zellij_plugin_api::plugin_command::read_plugin_log_response,
+    zellij_plugin_api::plugin_command::ProtobufBreakPanesToNewTabResponse,
+    zellij_plugin_api::plugin_command::ProtobufBreakPanesToTabWithIdResponse,
+    zellij_plugin_api::plugin_command::ProtobufBreakPanesToTabWithIndexResponse,
+    zellij_plugin_api::plugin_command::ProtobufCheckLuaPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufCurrentSessionLastSavedTimeResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataApplyResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataCatalogResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataCountResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataDefineResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataFetchResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataUnwatchResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataWatchResponse,
+    zellij_plugin_api::plugin_command::ProtobufDeleteAllDeadSessionsResponse,
+    zellij_plugin_api::plugin_command::ProtobufDeleteDeadSessionResponse,
+    zellij_plugin_api::plugin_command::ProtobufDeleteLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufDumpLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufDumpSessionLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufEditLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufEnqueueQueueJobResponse,
+    zellij_plugin_api::plugin_command::ProtobufFocusOrCreateTabResponse,
+    zellij_plugin_api::plugin_command::ProtobufFsListResponse,
+    zellij_plugin_api::plugin_command::ProtobufFsMetadataResponse,
+    zellij_plugin_api::plugin_command::ProtobufFsMutateResponse,
+    zellij_plugin_api::plugin_command::ProtobufFsReadResponse,
+    zellij_plugin_api::plugin_command::ProtobufGenerateRandomNameResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetFocusedPaneInfoResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetLayoutDirResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetLocalUtcOffsetResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPaneCwdResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPaneGitProbeResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPaneInfoResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPanePidResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPaneRunningCommandResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPluginAliasConfigurationResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetSessionEnvironmentVariablesResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetSessionListResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetTabInfoResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetUserPluginDirResponse,
+    zellij_plugin_api::plugin_command::ProtobufHideFloatingPanesResponse,
+    zellij_plugin_api::plugin_command::ProtobufKillSessionsResponse,
+    zellij_plugin_api::plugin_command::ProtobufListNotificationsResponse,
+    zellij_plugin_api::plugin_command::ProtobufListOrphanedPanesResponse,
+    zellij_plugin_api::plugin_command::ProtobufListRecordingsResponse,
+    zellij_plugin_api::plugin_command::ProtobufNewTabResponse,
+    zellij_plugin_api::plugin_command::ProtobufNewTabUnfocusedResponse,
+    zellij_plugin_api::plugin_command::ProtobufNewTabsResponse,
+    zellij_plugin_api::plugin_command::ProtobufNewTiledPaneInTabResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneBackgroundResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneFloatingNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneFloatingResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneInGitCheckoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneInPlaceOfPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneInPlaceResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneOverlayResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenEditPaneInPlaceOfPaneIdResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileFloatingNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileFloatingResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileInPlaceOfPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileInPlaceResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenPaneInNewTabResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenPluginPaneFloatingResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalFloatingNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalFloatingResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalInPlaceOfPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalInPlaceResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalResponse,
+    zellij_plugin_api::plugin_command::ProtobufParseLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufPluginCommand,
+    zellij_plugin_api::plugin_command::ProtobufQueueStatusResponse,
+    zellij_plugin_api::plugin_command::ProtobufReadPluginLogResponse,
+    zellij_plugin_api::plugin_command::ProtobufRenameLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufSaveLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufSaveSessionResponse,
+    zellij_plugin_api::plugin_command::ProtobufSearchRecordingsResponse,
+    zellij_plugin_api::plugin_command::ProtobufShowFloatingPanesResponse,
+    zellij_plugin_api::plugin_command::ProtobufSpawnAgentResponse,
+    zellij_plugin_api::plugin_command::ProtobufWarpPaneResponse,
 };
-use zellij_utils::plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion};
+use {
+    zellij_plugin_api::plugin_ids::ProtobufPluginIds,
+    zellij_plugin_api::plugin_ids::ProtobufZellijVersion,
+};
 
 pub use super::ui_components::*;
 pub use prost::{self, *};
@@ -725,7 +788,7 @@ pub fn open_command_pane_in_git_checkout_near_plugin_with_automatic_firecracker_
 }
 
 /// Start a coding agent in a command pane near this plugin: the launch planner
-/// (`zellij_utils::agent::launch::plan`) decides the argv, the host makes the branch or
+/// (`zellij_runtime::agent::launch::plan`) decides the argv, the host makes the branch or
 /// worktree `spec` names, opens the pane there and records it as an agent pane. Answers with
 /// the pane and what it got - the branch and folder it actually landed on, which are not
 /// always the ones asked for - or the error text. See `PluginCommand::SpawnAgent` for the arguments, and for
@@ -2368,7 +2431,7 @@ pub fn data_unwatch(watch_id: u64) -> Result<(), String> {
 /// Terminal operations on a [`FetchRequest`], so that a query reads as one expression.
 ///
 /// An extension trait rather than inherent methods because `FetchRequest` is defined in
-/// `zellij-utils`, which cannot reach the host-call shims here.
+/// `zellij-plugin-api`, which cannot reach the host-call shims here.
 ///
 /// ```no_run
 /// use zellij_tile::prelude::*;
@@ -4106,7 +4169,7 @@ unsafe fn host_run_plugin_command() {}
 /// Read project workflow settings; requires ReadFiles.
 pub fn project_config_read(
     directory: PathBuf,
-) -> Result<zellij_utils::project_config::Snapshot, String> {
+) -> Result<zellij_config::project_config::Snapshot, String> {
     project_config_response(PluginCommand::ProjectConfigRead { directory })
 }
 
@@ -4115,7 +4178,7 @@ pub fn project_config_write(
     directory: PathBuf,
     source: String,
     expected: Option<String>,
-) -> Result<zellij_utils::project_config::Snapshot, String> {
+) -> Result<zellij_config::project_config::Snapshot, String> {
     project_config_response(PluginCommand::ProjectConfigWrite {
         directory,
         source,
@@ -4125,7 +4188,7 @@ pub fn project_config_write(
 
 fn project_config_response(
     command: PluginCommand,
-) -> Result<zellij_utils::project_config::Snapshot, String> {
+) -> Result<zellij_config::project_config::Snapshot, String> {
     let response: ProtobufFsReadResponse = fs_command_response(command)?;
     match response.result {
         Some(fs_read_response::Result::Contents(contents)) => {

@@ -12,11 +12,11 @@ use crate::screen::{agent_hook_edges, apply_pane_agent_report};
 use std::collections::BTreeMap;
 use std::path::Path;
 use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
+use zellij_types::data::HookPayload;
+use zellij_types::data::OriginatingPlugin;
+use zellij_types::data::HOCUS_AGENT_PANE_CONTEXT;
+use zellij_types::input::hooks::HookPoint;
 use zellij_types::keys::{BareKey, KeyWithModifier};
-use zellij_utils::data::HookPayload;
-use zellij_utils::data::OriginatingPlugin;
-use zellij_utils::data::HOCUS_AGENT_PANE_CONTEXT;
-use zellij_utils::input::hooks::HookPoint;
 
 type Fired = (HookPoint, Option<PaneId>, HookFiring);
 
@@ -1046,7 +1046,7 @@ fn an_env_wrapped_agent_is_named_for_the_agent() {
 
 #[test]
 fn accepted_hook_reports_keep_events_and_state_in_arrival_order_across_creation() {
-    use zellij_utils::agent::report::{AgentReport, AgentReportState};
+    use {zellij_types::agent::report::AgentReport, zellij_types::agent::report::AgentReportState};
     let mut mock = MockScreen::new(Size { cols: 80, rows: 20 });
     // No plugin consumer runs: screen delivery must only enqueue its events.
     let plugins = mock.plugin_receiver.take().unwrap();
@@ -1056,11 +1056,11 @@ fn accepted_hook_reports_keep_events_and_state_in_arrival_order_across_creation(
         ScreenInstruction::AgentReport(
             AgentReport {
                 report_id: "00000000-0000-4000-8000-000000000001".into(),
-                pane_id: zellij_utils::data::PaneId::Terminal(
+                pane_id: zellij_types::data::PaneId::Terminal(
                     zellij_types::internal_ids::TerminalId(2),
                 ),
                 state,
-                event: Some(zellij_utils::agent::AgentEvent::from_hook(
+                event: Some(zellij_types::agent::AgentEvent::from_hook(
                     "claude", 2, &event, json,
                 )),
                 trace: false,
@@ -1136,8 +1136,8 @@ fn report_router_acknowledges_with_screen_and_plugins_paused_and_no_active_clien
     use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
     use std::sync::RwLock;
     use std::time::Duration;
-    use zellij_utils::agent::report::{AgentReport, AgentReportState};
-    use zellij_utils::ipc::IpcSenderWithContext;
+    use zellij_ipc::ipc::IpcSenderWithContext;
+    use {zellij_types::agent::report::AgentReport, zellij_types::agent::report::AgentReportState};
     let mut mock = MockScreen::new(Size { cols: 80, rows: 20 });
     mock.screen_receiver
         .as_ref()
@@ -1157,7 +1157,7 @@ fn report_router_acknowledges_with_screen_and_plugins_paused_and_no_active_clien
     let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(client);
     let report = AgentReport {
         report_id: "00000000-0000-4000-8000-000000000001".into(),
-        pane_id: zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(2)),
+        pane_id: zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(2)),
         state: AgentReportState::Clear,
         event: None,
         trace: false,

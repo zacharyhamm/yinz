@@ -35,11 +35,9 @@ pub fn nested_guest_announce_gets_announce_ack_with_ancestry() {
         .expect("an announce_ack frame written to the guest pane");
     assert_eq!(
         announce_ack,
-        zellij_utils::nested_session::NestedSessionMessage::AnnounceAck {
+        zellij_ipc::nested_session::NestedSessionMessage::AnnounceAck {
             ancestry: vec!["zellij-test".to_owned()],
-            capabilities: vec![
-                zellij_utils::nested_session::NestedSessionCapability::NestedControl
-            ],
+            capabilities: vec![zellij_ipc::nested_session::NestedSessionCapability::NestedControl],
             descend_keys: vec![],
         }
     );
@@ -84,7 +82,7 @@ pub fn nested_guest_announce_in_never_mode_still_completes_handshake() {
         .expect("an announce_ack frame written to the guest pane even in never mode");
     assert!(matches!(
         announce_ack,
-        zellij_utils::nested_session::NestedSessionMessage::AnnounceAck { .. }
+        zellij_ipc::nested_session::NestedSessionMessage::AnnounceAck { .. }
     ));
     assert!(received_background_jobs.lock().iter().any(|job| matches!(
         job,
@@ -118,7 +116,7 @@ pub fn nested_guest_bye_stops_liveness_pings() {
         .to_screen
         .send(ScreenInstruction::NestedSessionMessageFromPane {
             pane_id: PaneId::Terminal(crate::TerminalId(0)),
-            message: zellij_utils::nested_session::NestedSessionMessage::Bye,
+            message: zellij_ipc::nested_session::NestedSessionMessage::Bye,
         });
     let _ = mock_screen
         .to_screen
@@ -133,7 +131,7 @@ pub fn nested_guest_bye_stops_liveness_pings() {
         .filter(|instruction| match instruction {
             PtyWriteInstruction::Write(bytes, TerminalId(0), None) => matches!(
                 decode_nested_frame(bytes),
-                Some(zellij_utils::nested_session::NestedSessionMessage::Ping)
+                Some(zellij_ipc::nested_session::NestedSessionMessage::Ping)
             ),
             _ => false,
         })

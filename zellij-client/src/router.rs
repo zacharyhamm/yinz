@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use zellij_runtime::channels::SenderWithContext;
 use zellij_types::diagnostics::ErrorContext;
-use zellij_utils::{ipc::IpcRecv, ipc::ServerToClientMsg};
+use {zellij_ipc::ipc::IpcRecv, zellij_ipc::ipc::ServerToClientMsg};
 
 /// How many unreadable messages in a row we tolerate before concluding the
 /// stream is not going to recover and tearing the client down. A single

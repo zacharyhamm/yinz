@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::plugins::PluginInstruction;
-use zellij_utils::data::{Event, NewPanePlacement};
+use {zellij_types::data::Event, zellij_types::data::NewPanePlacement};
 
 fn drain_visible_events(
     plugin_receiver: &Receiver<(PluginInstruction, ErrorContext)>,

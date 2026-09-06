@@ -12,11 +12,10 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::{io, thread, time};
-use zellij_utils::{
-    data::Palette,
-    ipc::{
-        ClientToServerMsg, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext, ServerToClientMsg,
-    },
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcReceiverWithContext,
+    zellij_ipc::ipc::IpcRecv, zellij_ipc::ipc::IpcSenderWithContext,
+    zellij_ipc::ipc::ServerToClientMsg, zellij_types::data::Palette,
 };
 
 const SIGWINCH_CB_THROTTLE_DURATION: time::Duration = time::Duration::from_millis(50);
@@ -202,7 +201,7 @@ pub fn connect_with_deadline(
     let deadline = std::time::Instant::now() + timeout;
     loop {
         attempts += 1;
-        match zellij_utils::consts::ipc_connect(path) {
+        match zellij_ipc::consts::ipc_connect(path) {
             Ok(socket) => {
                 log::info!(
                     "attach trace: client pid={} IPC connect succeeded after {:?} attempts={attempts}",

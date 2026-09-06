@@ -12,7 +12,7 @@ use crate::panes::PaneId;
 use crate::ClientId;
 use zellij_test_support::Watched;
 use zellij_types::keys::{BareKey, KeyWithModifier};
-use zellij_utils::data::{MessageToPlugin, PermissionStatus};
+use {zellij_types::data::MessageToPlugin, zellij_types::data::PermissionStatus};
 
 const WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -239,7 +239,9 @@ impl Harness {
     }
 
     fn load_with_configuration(&self, url: &str, configuration: &[(&str, &str)]) {
-        let mut run_plugin = RunPluginOrAlias::from_url(url, &None, None, None).unwrap();
+        let mut run_plugin =
+            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(url, &None, None, None)
+                .unwrap();
         if let RunPluginOrAlias::RunPlugin(run_plugin) = &mut run_plugin {
             for (key, value) in configuration {
                 run_plugin.configuration.insert(*key, *value);

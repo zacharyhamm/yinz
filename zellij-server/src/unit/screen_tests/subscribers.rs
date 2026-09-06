@@ -9,7 +9,7 @@ fn subscriber_receives_initial_delivery() {
 
     screen.subscribe_to_pane_renders(
         crate::ClientId(100),
-        vec![zellij_utils::data::PaneId::Terminal(
+        vec![zellij_types::data::PaneId::Terminal(
             zellij_types::internal_ids::TerminalId(1),
         )],
         None,
@@ -40,7 +40,7 @@ fn subscriber_receives_initial_with_scrollback() {
 
     screen.subscribe_to_pane_renders(
         crate::ClientId(100),
-        vec![zellij_utils::data::PaneId::Terminal(
+        vec![zellij_types::data::PaneId::Terminal(
             zellij_types::internal_ids::TerminalId(1),
         )],
         Some(0),
@@ -71,7 +71,7 @@ fn subscriber_no_update_on_unchanged_viewport() {
 
     screen.subscribe_to_pane_renders(
         crate::ClientId(100),
-        vec![zellij_utils::data::PaneId::Terminal(
+        vec![zellij_types::data::PaneId::Terminal(
             zellij_types::internal_ids::TerminalId(1),
         )],
         None,
@@ -89,7 +89,7 @@ fn subscriber_no_update_on_unchanged_viewport() {
 
     let mut pane_map = HashMap::new();
     pane_map.insert(
-        zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         PaneContents {
             viewport: initial_viewport,
             ..Default::default()
@@ -110,7 +110,7 @@ fn subscriber_receives_update_on_changed_viewport() {
 
     screen.subscribe_to_pane_renders(
         crate::ClientId(100),
-        vec![zellij_utils::data::PaneId::Terminal(
+        vec![zellij_types::data::PaneId::Terminal(
             zellij_types::internal_ids::TerminalId(1),
         )],
         None,
@@ -119,7 +119,7 @@ fn subscriber_receives_update_on_changed_viewport() {
 
     let mut pane_map = HashMap::new();
     pane_map.insert(
-        zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         PaneContents {
             viewport: vec!["changed line".to_string()],
             ..Default::default()
@@ -153,7 +153,7 @@ fn subscriber_error_for_nonexistent_pane() {
 
     screen.subscribe_to_pane_renders(
         crate::ClientId(100),
-        vec![zellij_utils::data::PaneId::Terminal(
+        vec![zellij_types::data::PaneId::Terminal(
             zellij_types::internal_ids::TerminalId(999),
         )],
         None,
@@ -190,8 +190,8 @@ fn subscriber_state_registered_for_multiple_panes() {
     screen.subscribe_to_pane_renders(
         crate::ClientId(100),
         vec![
-            zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
-            zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(2)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(2)),
         ],
         None,
         false,
@@ -199,10 +199,10 @@ fn subscriber_state_registered_for_multiple_panes() {
 
     let sub = screen.pane_render_subscribers.get(&ClientId(100)).unwrap();
     assert_eq!(sub.pane_ids.len(), 2);
-    assert!(sub.pane_ids.contains(&zellij_utils::data::PaneId::Terminal(
+    assert!(sub.pane_ids.contains(&zellij_types::data::PaneId::Terminal(
         zellij_types::internal_ids::TerminalId(1)
     )));
-    assert!(sub.pane_ids.contains(&zellij_utils::data::PaneId::Terminal(
+    assert!(sub.pane_ids.contains(&zellij_types::data::PaneId::Terminal(
         zellij_types::internal_ids::TerminalId(2)
     )));
 }
@@ -215,7 +215,7 @@ fn multiple_subscribers_receive_updates() {
 
     screen.subscribe_to_pane_renders(
         crate::ClientId(100),
-        vec![zellij_utils::data::PaneId::Terminal(
+        vec![zellij_types::data::PaneId::Terminal(
             zellij_types::internal_ids::TerminalId(1),
         )],
         None,
@@ -223,7 +223,7 @@ fn multiple_subscribers_receive_updates() {
     );
     screen.subscribe_to_pane_renders(
         crate::ClientId(101),
-        vec![zellij_utils::data::PaneId::Terminal(
+        vec![zellij_types::data::PaneId::Terminal(
             zellij_types::internal_ids::TerminalId(1),
         )],
         None,
@@ -232,7 +232,7 @@ fn multiple_subscribers_receive_updates() {
 
     let mut pane_map = HashMap::new();
     pane_map.insert(
-        zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         PaneContents {
             viewport: vec!["new content".to_string()],
             ..Default::default()
@@ -255,7 +255,7 @@ fn subscriber_removed_on_remove_client() {
 
     screen.subscribe_to_pane_renders(
         crate::ClientId(100),
-        vec![zellij_utils::data::PaneId::Terminal(
+        vec![zellij_types::data::PaneId::Terminal(
             zellij_types::internal_ids::TerminalId(1),
         )],
         None,
@@ -275,14 +275,14 @@ fn subscriber_removed_when_all_panes_closed() {
 
     screen.subscribe_to_pane_renders(
         crate::ClientId(100),
-        vec![zellij_utils::data::PaneId::Terminal(
+        vec![zellij_types::data::PaneId::Terminal(
             zellij_types::internal_ids::TerminalId(1),
         )],
         None,
         false,
     );
 
-    screen.notify_pane_closed_to_subscribers(zellij_utils::data::PaneId::Terminal(
+    screen.notify_pane_closed_to_subscribers(zellij_types::data::PaneId::Terminal(
         zellij_types::internal_ids::TerminalId(1),
     ));
 
@@ -292,7 +292,7 @@ fn subscriber_removed_when_all_panes_closed() {
         matches!(
             m,
             ServerToClientMsg::SubscribedPaneClosed {
-                pane_id: zellij_utils::data::PaneId::Terminal(
+                pane_id: zellij_types::data::PaneId::Terminal(
                     zellij_types::internal_ids::TerminalId(1)
                 ),
             }
@@ -321,14 +321,14 @@ fn subscriber_partial_close() {
     screen.subscribe_to_pane_renders(
         crate::ClientId(100),
         vec![
-            zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
-            zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(2)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(2)),
         ],
         None,
         false,
     );
 
-    screen.notify_pane_closed_to_subscribers(zellij_utils::data::PaneId::Terminal(
+    screen.notify_pane_closed_to_subscribers(zellij_types::data::PaneId::Terminal(
         zellij_types::internal_ids::TerminalId(1),
     ));
 
@@ -338,7 +338,7 @@ fn subscriber_partial_close() {
         matches!(
             m,
             ServerToClientMsg::SubscribedPaneClosed {
-                pane_id: zellij_utils::data::PaneId::Terminal(
+                pane_id: zellij_types::data::PaneId::Terminal(
                     zellij_types::internal_ids::TerminalId(1)
                 ),
             }
@@ -374,17 +374,17 @@ fn subscriber_full_close_sequence() {
     screen.subscribe_to_pane_renders(
         crate::ClientId(100),
         vec![
-            zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
-            zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(2)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(2)),
         ],
         None,
         false,
     );
 
-    screen.notify_pane_closed_to_subscribers(zellij_utils::data::PaneId::Terminal(
+    screen.notify_pane_closed_to_subscribers(zellij_types::data::PaneId::Terminal(
         zellij_types::internal_ids::TerminalId(1),
     ));
-    screen.notify_pane_closed_to_subscribers(zellij_utils::data::PaneId::Terminal(
+    screen.notify_pane_closed_to_subscribers(zellij_types::data::PaneId::Terminal(
         zellij_types::internal_ids::TerminalId(2),
     ));
 
@@ -418,7 +418,7 @@ fn delivery_path_a_and_b_produce_same_content() {
 
     screen.subscribe_to_pane_renders(
         crate::ClientId(100),
-        vec![zellij_utils::data::PaneId::Terminal(
+        vec![zellij_types::data::PaneId::Terminal(
             zellij_types::internal_ids::TerminalId(1),
         )],
         None,
@@ -450,13 +450,13 @@ fn delivery_path_a_and_b_produce_same_content() {
         .unwrap()
         .previous_viewports
         .insert(
-            zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
             vec!["old".to_string()],
         );
 
     let mut pane_map = HashMap::new();
     pane_map.insert(
-        zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         contents.clone(),
     );
     let mut all_pane_contents = HashMap::new();
@@ -488,7 +488,7 @@ fn delivery_path_a_and_b_produce_same_content() {
         .unwrap()
         .previous_viewports
         .insert(
-            zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
             vec!["old".to_string()],
         );
 
@@ -518,7 +518,7 @@ fn close_tab_notifies_subscribers() {
 
     screen.subscribe_to_pane_renders(
         crate::ClientId(100),
-        vec![zellij_utils::data::PaneId::Terminal(
+        vec![zellij_types::data::PaneId::Terminal(
             zellij_types::internal_ids::TerminalId(1),
         )],
         None,
@@ -541,7 +541,7 @@ fn close_tab_notifies_subscribers() {
         matches!(
             m,
             ServerToClientMsg::SubscribedPaneClosed {
-                pane_id: zellij_utils::data::PaneId::Terminal(
+                pane_id: zellij_types::data::PaneId::Terminal(
                     zellij_types::internal_ids::TerminalId(1)
                 ),
             }
@@ -588,8 +588,8 @@ fn close_pane_notifies_subscribers_via_instruction() {
         .send(ScreenInstruction::SubscribeToPaneRenders {
             client_id: crate::ClientId(100),
             pane_ids: vec![
-                zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(0)),
-                zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+                zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(0)),
+                zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
             ],
             scrollback: None,
             ansi: false,
@@ -648,7 +648,7 @@ fn integration_pty_bytes_delivered_to_subscriber() {
         .to_screen
         .send(ScreenInstruction::SubscribeToPaneRenders {
             client_id: crate::ClientId(100),
-            pane_ids: vec![zellij_utils::data::PaneId::Terminal(
+            pane_ids: vec![zellij_types::data::PaneId::Terminal(
                 zellij_types::internal_ids::TerminalId(0),
             )],
             scrollback: None,
@@ -725,7 +725,7 @@ fn integration_pty_bytes_not_delivered_when_viewport_unchanged() {
         .to_screen
         .send(ScreenInstruction::SubscribeToPaneRenders {
             client_id: crate::ClientId(100),
-            pane_ids: vec![zellij_utils::data::PaneId::Terminal(
+            pane_ids: vec![zellij_types::data::PaneId::Terminal(
                 zellij_types::internal_ids::TerminalId(0),
             )],
             scrollback: None,
@@ -794,7 +794,7 @@ fn integration_scrollback_from_pre_subscription_pty_bytes() {
         .to_screen
         .send(ScreenInstruction::SubscribeToPaneRenders {
             client_id: crate::ClientId(100),
-            pane_ids: vec![zellij_utils::data::PaneId::Terminal(
+            pane_ids: vec![zellij_types::data::PaneId::Terminal(
                 zellij_types::internal_ids::TerminalId(0),
             )],
             scrollback: Some(0),
@@ -914,7 +914,7 @@ fn integration_no_scrollback_when_not_requested() {
         .to_screen
         .send(ScreenInstruction::SubscribeToPaneRenders {
             client_id: crate::ClientId(100),
-            pane_ids: vec![zellij_utils::data::PaneId::Terminal(
+            pane_ids: vec![zellij_types::data::PaneId::Terminal(
                 zellij_types::internal_ids::TerminalId(0),
             )],
             scrollback: None,
@@ -977,7 +977,7 @@ fn integration_subscriber_survives_after_regular_client_detach() {
         .to_screen
         .send(ScreenInstruction::SubscribeToPaneRenders {
             client_id: crate::ClientId(100),
-            pane_ids: vec![zellij_utils::data::PaneId::Terminal(
+            pane_ids: vec![zellij_types::data::PaneId::Terminal(
                 zellij_types::internal_ids::TerminalId(0),
             )],
             scrollback: None,

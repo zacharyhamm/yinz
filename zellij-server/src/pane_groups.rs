@@ -5,7 +5,6 @@ use zellij_types::internal_ids::{PluginId, TerminalId};
 use zellij_types::geometry::FloatingPaneCoordinates;
 use zellij_types::geometry::PercentOrFixed;
 use zellij_types::pane_size::Size;
-use zellij_utils::input::layout::RunPluginOrAlias;
 
 use crate::{panes::PaneId, pty::PtyInstruction, thread_bus::ThreadSenders, ClientId};
 
@@ -147,9 +146,12 @@ impl PaneGroups {
         should_launch || previous_groups.get(client_id).is_none()
     }
     fn launch_plugin(&self, screen_size: Size, client_id: &ClientId) {
-        if let Ok(run_plugin) =
-            RunPluginOrAlias::from_url("zellij:multiple-select", &None, None, None)
-        {
+        if let Ok(run_plugin) = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:multiple-select",
+            &None,
+            None,
+            None,
+        ) {
             let tab_index = 1;
             let size = Size::default();
             let should_float = Some(true);

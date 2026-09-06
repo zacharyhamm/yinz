@@ -11,11 +11,14 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use zellij_runtime::channels::{self, SenderWithContext};
 use zellij_types::command::PaneTarget;
+use zellij_types::data::Event;
 use zellij_types::diagnostics::ErrorContext;
+use zellij_types::input::command::RunCommand;
 use zellij_types::style::Palette;
-use zellij_utils::data::Event;
-use zellij_utils::input::command::RunCommand;
-use zellij_utils::ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg};
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcReceiverWithContext,
+    zellij_ipc::ipc::ServerToClientMsg,
+};
 
 #[derive(Clone)]
 struct MockOsApi {
@@ -2913,8 +2916,8 @@ fn a_tab_release_that_fails_part_way_tells_every_pane_in_it() {
 // original one. The rule: an incoming `originating_plugin` wins and becomes the pane's record;
 // the stored record is only a fallback for a command that carries none (a user's ENTER re-run).
 
-fn step_origin(step: &str) -> zellij_utils::data::OriginatingPlugin {
-    zellij_utils::data::OriginatingPlugin::new(
+fn step_origin(step: &str) -> zellij_types::data::OriginatingPlugin {
+    zellij_types::data::OriginatingPlugin::new(
         2,
         crate::ClientId::new(1),
         std::collections::BTreeMap::from([("__step".to_owned(), step.to_owned())]),

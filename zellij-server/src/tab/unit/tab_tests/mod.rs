@@ -10,23 +10,23 @@ use zellij_runtime::channels::{unbounded, Receiver, SenderWithContext};
 use zellij_runtime::errors::prelude::*;
 use zellij_types::geometry::{Direction, Resize, ResizeStrategy};
 use zellij_types::geometry::{SplitDirection, SplitSize};
+use zellij_types::input::layout::TiledPaneLayout;
 use zellij_types::internal_ids::TerminalId;
-use zellij_utils::data::{NewPanePlacement, OverlayPlacement};
-use zellij_utils::input::layout::TiledPaneLayout;
+use {zellij_types::data::NewPanePlacement, zellij_types::data::OverlayPlacement};
 
 use crate::os_input_output::AsyncReader;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use zellij_ipc::ipc::IpcReceiverWithContext;
+use zellij_types::input::options::PaneFrameStyle;
 use zellij_types::pane_size::{PaneGeom, Size, SizeInPixels, Viewport};
 use zellij_types::style::{Palette, Style};
-use zellij_utils::input::options::PaneFrameStyle;
-use zellij_utils::ipc::IpcReceiverWithContext;
-use zellij_utils::{
-    data::ModeInfo,
-    input::command::{RunCommand, TerminalAction},
-    ipc::{ClientToServerMsg, ServerToClientMsg},
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ServerToClientMsg,
+    zellij_types::data::ModeInfo, zellij_types::input::command::RunCommand,
+    zellij_types::input::command::TerminalAction,
 };
 
 #[derive(Clone)]

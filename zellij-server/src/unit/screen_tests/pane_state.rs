@@ -35,8 +35,8 @@ fn a_pane_manifest_carries_the_pane_cwd() {
 #[test]
 fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
     use zellij_types::command::PaneTarget;
-    use zellij_utils::input::command::RunCommand;
-    use zellij_utils::input::layout::Run;
+    use zellij_types::input::command::RunCommand;
+    use zellij_types::input::layout::Run;
 
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     let joined = RunCommand {
@@ -115,7 +115,9 @@ fn a_plugin_pane_has_no_cwd() {
 
 #[test]
 fn recorder_pane_metadata() {
-    use zellij_utils::data::{PaneInfo, PaneManifest, TabInfo};
+    use {
+        zellij_types::data::PaneInfo, zellij_types::data::PaneManifest, zellij_types::data::TabInfo,
+    };
     // Create one tab with one terminal pane and one plugin pane
     let mut pane_manifest = PaneManifest::default();
     let terminal_pane = PaneInfo {

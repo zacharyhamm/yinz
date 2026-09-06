@@ -2,7 +2,7 @@ use super::{PluginId, PluginInstruction};
 use crate::plugins::plugin_map::RunningPlugin;
 use crate::plugins::wasm_bridge::{render_plugin_for_clients, PluginRenderAsset};
 use std::collections::{HashMap, HashSet};
-use zellij_utils::data::{PipeMessage, PipeSource};
+use {zellij_types::data::PipeMessage, zellij_types::data::PipeSource};
 
 use zellij_runtime::errors::prelude::*;
 

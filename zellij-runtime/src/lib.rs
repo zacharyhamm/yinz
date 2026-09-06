@@ -25,5 +25,11 @@ pub mod keys;
 #[cfg(not(target_family = "wasm"))]
 pub mod host_terminal_env;
 
+pub mod agent;
 #[cfg(unix)]
 pub mod termios;
+
+pub mod plugin_location;
+
+#[cfg(target_os = "windows")]
+compile_error!("Zellij does not support Windows");

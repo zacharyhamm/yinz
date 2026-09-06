@@ -9,12 +9,10 @@ compile_error!("Zellij does not support Windows");
 
 use clap::Parser;
 use zellij_runtime::{envs, logging::*};
-use zellij_utils::{
-    cli::{CliAction, CliArgs, Command, Sessions},
-    consts::create_config_and_cache_folders,
-    data::UnblockCondition,
-    input::config::Config,
-    setup::Setup,
+use {
+    zellij_cli::args::CliAction, zellij_cli::args::CliArgs, zellij_cli::args::Command,
+    zellij_cli::args::Sessions, zellij_cli::setup::Setup,
+    zellij_runtime::consts::create_config_and_cache_folders, zellij_types::data::UnblockCondition,
 };
 
 fn main() {
@@ -71,7 +69,7 @@ fn main() {
     // exiting here.
     #[cfg(unix)]
     if let Some(Command::PtyHosts(pty_hosts)) = opts.command.clone() {
-        if !matches!(pty_hosts, zellij_utils::cli::PtyHosts::Adopt { .. }) {
+        if !matches!(pty_hosts, zellij_cli::args::PtyHosts::Adopt { .. }) {
             if let Err(e) = commands::pty_hosts(pty_hosts) {
                 eprintln!("Error: {e:#}");
                 std::process::exit(1);
@@ -81,7 +79,7 @@ fn main() {
     }
 
     if let Some(Command::Firecracker(command)) = opts.command.clone() {
-        let config = match Config::try_from(&opts) {
+        let config = match zellij_cli::setup::load_config(&opts) {
             Ok(config) => config,
             Err(error) => {
                 eprintln!("Error: {error}");
@@ -129,7 +127,7 @@ fn main() {
     }
 
     {
-        let config = Config::try_from(&opts).ok();
+        let config = zellij_cli::setup::load_config(&opts).ok();
         if let Some(Command::Action(cli_action)) = opts.command {
             commands::send_action_to_session(*cli_action, opts.session, config);
             std::process::exit(0);
@@ -415,7 +413,7 @@ fn main() {
             .cloned()
             .or_else(|| envs::get_session_name().ok())
         {
-            let config = Config::try_from(&opts).ok();
+            let config = zellij_cli::setup::load_config(&opts).ok();
             let options = Setup::from_cli_args(&opts).ok().map(|r| r.2);
             let new_layout_cli_action = CliAction::NewTab {
                 layout: opts.layout.clone(),

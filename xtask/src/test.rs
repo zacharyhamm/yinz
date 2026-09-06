@@ -34,7 +34,7 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     println!("{}", msg);
 
     // One invocation for the whole workspace, rather than one per crate. Cargo resolves features
-    // once, so `zellij-utils` - and everything above it - is compiled once instead of once per
+    // once, so `zellij-types` - and everything above it - is compiled once instead of once per
     // distinct feature set, and there is a single build/link tail rather than eight.
     //
     // The plugin crates pin themselves to wasm32-wasip1 in their own `.cargo/config.toml`, but
@@ -358,12 +358,12 @@ mod tests {
             packages(&["-p", "zellij-server"])
         );
         assert_eq!(
-            selection(&["--package=zellij-utils"]),
-            packages(&["--package=zellij-utils"])
+            selection(&["--package=zellij-types"]),
+            packages(&["--package=zellij-types"])
         );
         assert_eq!(
-            selection(&["--exclude", "zellij-server", "-p", "zellij-utils"]),
-            packages(&["--exclude", "zellij-server", "-p", "zellij-utils"])
+            selection(&["--exclude", "zellij-server", "-p", "zellij-types"]),
+            packages(&["--exclude", "zellij-server", "-p", "zellij-types"])
         );
     }
 
@@ -400,8 +400,8 @@ mod tests {
         assert_eq!(selection(&["--no-capture"]), workspace(&[]));
         assert_eq!(selection(&["-j", "1"]), workspace(&[]));
         assert_eq!(
-            selection(&["--no-capture", "-j", "1", "-p", "zellij-utils"]),
-            packages(&["-p", "zellij-utils"])
+            selection(&["--no-capture", "-j", "1", "-p", "zellij-types"]),
+            packages(&["-p", "zellij-types"])
         );
     }
 
@@ -413,14 +413,14 @@ mod tests {
                     "--exclude",
                     "zellij-server",
                     "-p",
-                    "zellij-utils",
+                    "zellij-types",
                     "--package=zellij-tile"
                 ]
                 .iter()
                 .map(OsString::from)
                 .collect::<Vec<_>>()
             ),
-            ["zellij-utils", "zellij-tile"]
+            ["zellij-types", "zellij-tile"]
         );
     }
 

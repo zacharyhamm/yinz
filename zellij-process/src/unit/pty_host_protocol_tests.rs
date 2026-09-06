@@ -25,7 +25,7 @@ fn framed_messages_round_trip() {
     let msgs = vec![
         ServerToHostMsg::Hello {
             protocol_version: PROTOCOL_VERSION,
-            zellij_version: zellij_utils::consts::VERSION.to_owned(),
+            zellij_version: zellij_runtime::consts::VERSION.to_owned(),
         },
         ServerToHostMsg::Spawn {
             job_control: true,
@@ -593,7 +593,7 @@ fn control_chars_are_truncated_to_what_a_terminal_can_hold(tc: hegel::TestCase) 
 /// wrong surfaces as an opaque `EINVAL` from `bind` rather than our own message.
 #[test]
 fn a_socket_path_at_the_length_limit_is_refused_and_one_under_it_is_accepted() {
-    use zellij_utils::consts::ZELLIJ_SOCK_MAX_LENGTH;
+    use zellij_runtime::consts::ZELLIJ_SOCK_MAX_LENGTH;
 
     let just_fits = PathBuf::from("a".repeat(ZELLIJ_SOCK_MAX_LENGTH - 1));
     check_socket_path_length(&just_fits, 0)
@@ -611,7 +611,7 @@ fn a_socket_path_at_the_length_limit_is_refused_and_one_under_it_is_accepted() {
 #[test]
 fn a_control_path_that_only_fits_without_the_ssh_rename_margin_is_refused() {
     use crate::pty_host::protocol::SSH_CONTROL_PATH_RENAME_MARGIN;
-    use zellij_utils::consts::ZELLIJ_SOCK_MAX_LENGTH;
+    use zellij_runtime::consts::ZELLIJ_SOCK_MAX_LENGTH;
 
     let control_path =
         PathBuf::from("a".repeat(ZELLIJ_SOCK_MAX_LENGTH - SSH_CONTROL_PATH_RENAME_MARGIN));

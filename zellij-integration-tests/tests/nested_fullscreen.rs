@@ -1,13 +1,13 @@
 #![cfg(unix)]
 
 use insta::assert_snapshot;
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{
     claim_first_terminal_and_wait_for_prompt, col, host_descended_bar_with_ascend_keys_settled,
     keys, normalized, split_right_and_wait_for_prompt, start_zellij, GridSnapshot,
     NestedDepthThreeHarness, NestedHarness, TERMINAL_SIZE,
 };
-use zellij_utils::cli::CliAction;
-use zellij_utils::nested_session::NestedSessionMessage;
+use zellij_ipc::nested_session::NestedSessionMessage;
 
 const ASCEND_KEY: &[u8] = b"]";
 const DESCEND_KEY: &[u8] = b"[";

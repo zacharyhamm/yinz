@@ -15,9 +15,9 @@
 //! it, and the assertion is read off hocus's own `agent_list` on the grid.
 
 use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE};
-use zellij_utils::cli::CliAction;
-use zellij_utils::data::PaneId;
-use zellij_utils::input::actions::hook_report_actions;
+use zellij_cli::args::CliAction;
+use zellij_types::data::PaneId;
+use zellij_types::input::actions::hook_report_actions;
 
 /// hocus and the daemon, both shared, with the daemon loaded in the background as the
 /// real config has it. `zellij:` rather than `file:` for the reason `hocus_store.rs`

@@ -929,7 +929,7 @@ fn subscriber_ansi_flag_preserved_in_subscription() {
 
     screen.subscribe_to_pane_renders(
         crate::ClientId(100),
-        vec![zellij_utils::data::PaneId::Terminal(
+        vec![zellij_types::data::PaneId::Terminal(
             zellij_types::internal_ids::TerminalId(1),
         )],
         None,
@@ -937,7 +937,7 @@ fn subscriber_ansi_flag_preserved_in_subscription() {
     );
     screen.subscribe_to_pane_renders(
         crate::ClientId(101),
-        vec![zellij_utils::data::PaneId::Terminal(
+        vec![zellij_types::data::PaneId::Terminal(
             zellij_types::internal_ids::TerminalId(1),
         )],
         None,
@@ -971,7 +971,7 @@ fn subscriber_ansi_and_plain_receive_different_content() {
     // Subscribe plain and ansi subscribers
     screen.subscribe_to_pane_renders(
         crate::ClientId(100),
-        vec![zellij_utils::data::PaneId::Terminal(
+        vec![zellij_types::data::PaneId::Terminal(
             zellij_types::internal_ids::TerminalId(1),
         )],
         None,
@@ -979,7 +979,7 @@ fn subscriber_ansi_and_plain_receive_different_content() {
     );
     screen.subscribe_to_pane_renders(
         crate::ClientId(101),
-        vec![zellij_utils::data::PaneId::Terminal(
+        vec![zellij_types::data::PaneId::Terminal(
             zellij_types::internal_ids::TerminalId(1),
         )],
         None,
@@ -1007,7 +1007,7 @@ fn subscriber_ansi_and_plain_receive_different_content() {
         .unwrap()
         .previous_viewports
         .insert(
-            zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
             vec!["old".to_string()],
         );
     screen
@@ -1016,14 +1016,14 @@ fn subscriber_ansi_and_plain_receive_different_content() {
         .unwrap()
         .previous_viewports
         .insert(
-            zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
             vec!["old".to_string()],
         );
 
     // Build plain and ansi maps with different content
     let mut plain_map = HashMap::new();
     plain_map.insert(
-        zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         PaneContents {
             viewport: vec!["plain text".to_string()],
             ..Default::default()
@@ -1031,7 +1031,7 @@ fn subscriber_ansi_and_plain_receive_different_content() {
     );
     let mut ansi_map = HashMap::new();
     ansi_map.insert(
-        zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         PaneContents {
             viewport: vec!["\x1b[31mred text\x1b[0m".to_string()],
             ..Default::default()
@@ -1094,7 +1094,7 @@ fn integration_subscribe_with_ansi_flag() {
         .to_screen
         .send(ScreenInstruction::SubscribeToPaneRenders {
             client_id: crate::ClientId(100),
-            pane_ids: vec![zellij_utils::data::PaneId::Terminal(
+            pane_ids: vec![zellij_types::data::PaneId::Terminal(
                 zellij_types::internal_ids::TerminalId(0),
             )],
             scrollback: None,

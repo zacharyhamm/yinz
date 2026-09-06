@@ -44,7 +44,7 @@ fn layout_with_plugins_and_commands_swaped_properly() {
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -63,16 +63,33 @@ fn layout_with_plugins_and_commands_swaped_properly() {
     let new_floating_terminal_ids = vec![];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:tab-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:status-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(2)],
     );
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -156,7 +173,7 @@ fn base_layout_is_included_in_swap_layouts() {
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -173,16 +190,33 @@ fn base_layout_is_included_in_swap_layouts() {
     let new_floating_terminal_ids = vec![];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:tab-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:status-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(2)],
     );
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -267,7 +301,7 @@ fn swap_layouts_including_command_panes_absent_from_existing_layout() {
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -280,16 +314,33 @@ fn swap_layouts_including_command_panes_absent_from_existing_layout() {
     let new_floating_terminal_ids = vec![];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:tab-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:status-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(2)],
     );
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -373,7 +424,7 @@ fn swap_layouts_not_including_command_panes_present_in_existing_layout() {
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -390,16 +441,33 @@ fn swap_layouts_not_including_command_panes_present_in_existing_layout() {
     let new_floating_terminal_ids = vec![];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:tab-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:status-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(2)],
     );
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -479,7 +547,7 @@ fn swap_layouts_including_plugin_panes_absent_from_existing_layout() {
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -492,8 +560,13 @@ fn swap_layouts_including_plugin_panes_absent_from_existing_layout() {
     let new_floating_terminal_ids = vec![];
     let new_plugin_ids = HashMap::new();
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -567,7 +640,7 @@ fn swap_layouts_not_including_plugin_panes_present_in_existing_layout() {
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -584,16 +657,33 @@ fn swap_layouts_not_including_plugin_panes_present_in_existing_layout() {
     let new_floating_terminal_ids = vec![];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:tab-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:status-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(2)],
     );
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -663,7 +753,7 @@ fn new_pane_in_auto_layout() {
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -676,8 +766,13 @@ fn new_pane_in_auto_layout() {
     let new_floating_terminal_ids = vec![];
     let new_plugin_ids = HashMap::new();
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -748,7 +843,7 @@ fn new_pane_in_stacked_resizes() {
         layout
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -840,7 +935,7 @@ fn when_swapping_tiled_layouts_in_a_damaged_state_layout_and_pane_focus_are_unch
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -853,8 +948,13 @@ fn when_swapping_tiled_layouts_in_a_damaged_state_layout_and_pane_focus_are_unch
     let new_floating_terminal_ids = vec![];
     let new_plugin_ids = HashMap::new();
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -925,7 +1025,7 @@ fn when_swapping_tiled_layouts_in_an_undamaged_state_pane_focuses_on_focused_nod
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -938,8 +1038,13 @@ fn when_swapping_tiled_layouts_in_an_undamaged_state_pane_focuses_on_focused_nod
     let new_floating_terminal_ids = vec![];
     let new_plugin_ids = HashMap::new();
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1006,7 +1111,7 @@ fn when_swapping_tiled_layouts_in_an_undamaged_state_with_no_focus_node_pane_foc
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -1019,8 +1124,13 @@ fn when_swapping_tiled_layouts_in_an_undamaged_state_with_no_focus_node_pane_foc
     let new_floating_terminal_ids = vec![];
     let new_plugin_ids = HashMap::new();
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1087,7 +1197,7 @@ fn when_closing_a_pane_in_auto_layout_the_focus_goes_to_last_focused_pane() {
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -1100,8 +1210,13 @@ fn when_closing_a_pane_in_auto_layout_the_focus_goes_to_last_focused_pane() {
     let new_floating_terminal_ids = vec![];
     let new_plugin_ids = HashMap::new();
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1180,7 +1295,7 @@ fn floating_layout_with_plugins_and_commands_swaped_properly() {
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -1197,16 +1312,33 @@ fn floating_layout_with_plugins_and_commands_swaped_properly() {
     let new_terminal_ids = vec![(TerminalId(4), None)];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:tab-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:status-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(2)],
     );
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1288,7 +1420,7 @@ fn base_floating_layout_is_included_in_swap_layouts() {
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -1305,16 +1437,33 @@ fn base_floating_layout_is_included_in_swap_layouts() {
     let new_terminal_ids = vec![(TerminalId(4), None)];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:tab-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:status-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(2)],
     );
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1399,7 +1548,7 @@ fn swap_floating_layouts_including_command_panes_absent_from_existing_layout() {
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -1412,16 +1561,33 @@ fn swap_floating_layouts_including_command_panes_absent_from_existing_layout() {
     let new_terminal_ids = vec![(TerminalId(4), None)];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:tab-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:status-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(2)],
     );
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1505,7 +1671,7 @@ fn swap_floating_layouts_not_including_command_panes_present_in_existing_layout(
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -1522,16 +1688,33 @@ fn swap_floating_layouts_not_including_command_panes_present_in_existing_layout(
     let new_terminal_ids = vec![(TerminalId(4), None)];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:tab-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:status-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(2)],
     );
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1604,7 +1787,7 @@ fn swap_floating_layouts_including_plugin_panes_absent_from_existing_layout() {
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -1617,8 +1800,13 @@ fn swap_floating_layouts_including_plugin_panes_absent_from_existing_layout() {
     let new_terminal_ids = vec![(TerminalId(4), None)];
     let new_plugin_ids = HashMap::new();
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1684,7 +1872,7 @@ fn swap_floating_layouts_not_including_plugin_panes_present_in_existing_layout()
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -1701,16 +1889,33 @@ fn swap_floating_layouts_not_including_plugin_panes_present_in_existing_layout()
     let new_terminal_ids = vec![(TerminalId(4), None)];
     let mut new_plugin_ids = HashMap::new();
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:tab-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(1)],
     );
     new_plugin_ids.insert(
-        RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "zellij:status-bar",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         vec![zellij_types::internal_ids::PluginId(2)],
     );
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1780,7 +1985,7 @@ fn new_floating_pane_in_auto_layout() {
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -1789,8 +1994,13 @@ fn new_floating_pane_in_auto_layout() {
     let new_floating_terminal_ids = vec![];
     let new_plugin_ids = HashMap::new();
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1870,7 +2080,7 @@ fn when_swapping_floating_layouts_in_a_damaged_state_layout_and_pane_focus_are_u
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -1883,8 +2093,13 @@ fn when_swapping_floating_layouts_in_a_damaged_state_layout_and_pane_focus_are_u
     let new_terminal_ids = vec![(TerminalId(4), None)];
     let new_plugin_ids = HashMap::new();
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1954,7 +2169,7 @@ fn when_swapping_floating_layouts_in_an_undamaged_state_pane_focuses_on_focused_
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -1967,8 +2182,13 @@ fn when_swapping_floating_layouts_in_an_undamaged_state_pane_focuses_on_focused_
     let new_terminal_ids = vec![(TerminalId(4), None)];
     let new_plugin_ids = HashMap::new();
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2034,7 +2254,7 @@ fn when_swapping_floating_layouts_in_an_undamaged_state_with_no_focus_node_pane_
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -2047,8 +2267,13 @@ fn when_swapping_floating_layouts_in_an_undamaged_state_with_no_focus_node_pane_
     let new_terminal_ids = vec![(TerminalId(4), None)];
     let new_plugin_ids = HashMap::new();
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2113,7 +2338,7 @@ fn when_closing_a_floating_pane_in_auto_layout_the_focus_goes_to_last_focused_pa
         }
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -2126,8 +2351,13 @@ fn when_closing_a_floating_pane_in_auto_layout_the_focus_goes_to_last_focused_pa
     let new_terminal_ids = vec![(TerminalId(4), None)];
     let new_plugin_ids = HashMap::new();
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2185,7 +2415,7 @@ fn when_resizing_whole_tab_with_auto_layout_and_floating_panes_the_layout_is_mai
         layout
     "#;
     let (base_layout, base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
@@ -2198,8 +2428,13 @@ fn when_resizing_whole_tab_with_auto_layout_and_floating_panes_the_layout_is_mai
     let new_terminal_ids = vec![(TerminalId(4), None)];
     let new_plugin_ids = HashMap::new();
 
-    let swap_layout =
-        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let swap_layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = swap_layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = swap_layout.swap_floating_layouts.clone();
     let stacked_resize = true;

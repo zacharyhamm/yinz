@@ -29,12 +29,15 @@ use std::thread;
 use zellij_types::internal_ids::PluginId;
 
 use zellij_runtime::errors::prelude::*;
+use zellij_types::input::actions::Action;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::mouse::{MouseEvent, MouseEventType};
 use zellij_types::pane_size::Viewport;
 use zellij_types::position::Position;
-use zellij_utils::data::{ContextMenuContext, ContextMenuItem, Event};
-use zellij_utils::input::actions::Action;
+use {
+    zellij_types::data::ContextMenuContext, zellij_types::data::ContextMenuItem,
+    zellij_types::data::Event,
+};
 
 use super::{ContextMenuItems, ContextMenuState, Screen, ScreenInstruction};
 use crate::background_jobs::BackgroundJob;

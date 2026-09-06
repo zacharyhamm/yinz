@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use zellij_utils::data::{PaneContents, PaneRenderReport};
-use zellij_utils::ipc::{ExitReason, ServerToClientMsg};
+use {zellij_ipc::ipc::ExitReason, zellij_ipc::ipc::ServerToClientMsg};
+use {zellij_types::data::PaneContents, zellij_types::data::PaneRenderReport};
 
 use crate::{panes::PaneId, ClientId};
 
@@ -11,7 +11,7 @@ impl Screen {
     pub(super) fn subscribe_to_pane_renders(
         &mut self,
         subscriber_client_id: ClientId,
-        pane_ids: Vec<zellij_utils::data::PaneId>,
+        pane_ids: Vec<zellij_types::data::PaneId>,
         scrollback: Option<usize>,
         ansi: bool,
     ) {
@@ -106,7 +106,7 @@ impl Screen {
     }
     pub(super) fn deliver_to_pane_subscribers_directly(&mut self) {
         // Collect unique pane IDs across all subscribers
-        let all_subscribed_ids: HashSet<zellij_utils::data::PaneId> = self
+        let all_subscribed_ids: HashSet<zellij_types::data::PaneId> = self
             .pane_render_subscribers
             .values()
             .flat_map(|sub| sub.pane_ids.iter().copied())
@@ -115,8 +115,8 @@ impl Screen {
         let has_ansi_subscribers = self.pane_render_subscribers.values().any(|s| s.ansi);
 
         // Query pane contents directly from tabs
-        let mut pane_map: HashMap<zellij_utils::data::PaneId, PaneContents> = HashMap::new();
-        let mut ansi_pane_map: HashMap<zellij_utils::data::PaneId, PaneContents> = HashMap::new();
+        let mut pane_map: HashMap<zellij_types::data::PaneId, PaneContents> = HashMap::new();
+        let mut ansi_pane_map: HashMap<zellij_types::data::PaneId, PaneContents> = HashMap::new();
         for pane_id in &all_subscribed_ids {
             let server_pane_id: PaneId = (*pane_id).into();
             for tab in self.tabs.values() {
@@ -140,8 +140,8 @@ impl Screen {
     }
     pub(super) fn deliver_subscriber_updates_from_map(
         &mut self,
-        pane_map: &HashMap<zellij_utils::data::PaneId, PaneContents>,
-        ansi_pane_map: Option<&HashMap<zellij_utils::data::PaneId, PaneContents>>,
+        pane_map: &HashMap<zellij_types::data::PaneId, PaneContents>,
+        ansi_pane_map: Option<&HashMap<zellij_types::data::PaneId, PaneContents>>,
     ) {
         // Collect updates to send, avoiding borrow conflicts
         let mut updates_to_send: Vec<(ClientId, ServerToClientMsg)> = Vec::new();
@@ -210,7 +210,7 @@ impl Screen {
     }
     pub(super) fn notify_pane_closed_to_subscribers(
         &mut self,
-        pane_id: zellij_utils::data::PaneId,
+        pane_id: zellij_types::data::PaneId,
     ) {
         let mut dead_subscribers = Vec::new();
 

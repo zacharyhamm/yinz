@@ -12,7 +12,7 @@ use crate::plugins::{coalesce_hovers, drain_reloads, drain_updates};
 use crate::ClientId;
 use zellij_test_support::Watched;
 use zellij_types::keys::{BareKey, KeyWithModifier};
-use zellij_utils::data::{Mouse, PermissionStatus};
+use {zellij_types::data::Mouse, zellij_types::data::PermissionStatus};
 
 const WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -163,7 +163,9 @@ impl Harness {
         let path = self.dir.path().join("logger.lua");
         std::fs::write(&path, logger_source(permissions)).unwrap();
         let url = format!("file:{}", path.display());
-        let mut run_plugin = RunPluginOrAlias::from_url(&url, &None, None, None).unwrap();
+        let mut run_plugin =
+            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(&url, &None, None, None)
+                .unwrap();
         if let RunPluginOrAlias::RunPlugin(run_plugin) = &mut run_plugin {
             for (key, value) in configuration {
                 run_plugin.configuration.insert(*key, *value);
@@ -600,7 +602,8 @@ fn reload_of(url: &str) -> PluginInstruction {
     PluginInstruction::Reload(
         Some(false),
         None,
-        RunPluginOrAlias::from_url(url, &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(url, &None, None, None)
+            .unwrap(),
         1,
         Size::default(),
         None,
@@ -609,7 +612,8 @@ fn reload_of(url: &str) -> PluginInstruction {
 
 fn reload_by_url_of(url: &str) -> PluginInstruction {
     PluginInstruction::ReloadPluginByUrl(
-        RunPluginOrAlias::from_url(url, &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(url, &None, None, None)
+            .unwrap(),
     )
 }
 
@@ -675,7 +679,13 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
         PluginInstruction::Reload(
             Some(true), // floating rather than tiled
             None,
-            RunPluginOrAlias::from_url("file:/plugins/keys.lua", &None, None, None).unwrap(),
+            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+                "file:/plugins/keys.lua",
+                &None,
+                None,
+                None,
+            )
+            .unwrap(),
             1,
             Size::default(),
             None,
@@ -683,7 +693,13 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
         PluginInstruction::Reload(
             Some(false),
             Some("titled".to_owned()),
-            RunPluginOrAlias::from_url("file:/plugins/keys.lua", &None, None, None).unwrap(),
+            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+                "file:/plugins/keys.lua",
+                &None,
+                None,
+                None,
+            )
+            .unwrap(),
             1,
             Size::default(),
             None,
@@ -691,7 +707,13 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
         PluginInstruction::Reload(
             Some(false),
             None,
-            RunPluginOrAlias::from_url("file:/plugins/keys.lua", &None, None, None).unwrap(),
+            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+                "file:/plugins/keys.lua",
+                &None,
+                None,
+                None,
+            )
+            .unwrap(),
             2, // another tab
             Size::default(),
             None,
@@ -713,7 +735,15 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
 /// they would report success before the reload they were folded into had run.
 #[test]
 pub fn collapsed_reloads_hand_their_completion_handles_to_the_caller() {
-    let run = || RunPluginOrAlias::from_url("file:/plugins/keys.lua", &None, None, None).unwrap();
+    let run = || {
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "file:/plugins/keys.lua",
+            &None,
+            None,
+            None,
+        )
+        .unwrap()
+    };
     let (tx, mut rx) = tokio::sync::oneshot::channel();
     let waiting = PluginInstruction::Reload(
         Some(false),
@@ -794,7 +824,10 @@ pub fn joined_completions_are_answered_together_with_the_primarys_payload() {
 #[serial(plugin_tests)]
 pub fn collapsed_reloads_of_an_unloaded_plugin_are_answered_by_the_add_plugin() {
     use crate::route::NotificationEnd;
-    use zellij_utils::input::layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation};
+    use {
+        zellij_types::input::layout::PluginUserConfiguration,
+        zellij_types::input::layout::RunPlugin, zellij_types::input::layout::RunPluginLocation,
+    };
 
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());

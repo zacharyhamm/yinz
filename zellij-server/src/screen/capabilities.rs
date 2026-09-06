@@ -3,10 +3,10 @@ use crate::panes::alacritty_functions::xparse_color;
 use crate::panes::kitty_graphics::KittyHostSupport;
 use crate::panes::terminal_character::AnsiCode;
 use crate::ClientId;
+use zellij_ipc::ipc::PixelDimensions;
 use zellij_runtime::errors::prelude::*;
 use zellij_types::colors::PaletteColor;
 use zellij_types::pane_size::SizeInPixels;
-use zellij_utils::ipc::PixelDimensions;
 
 impl Screen {
     /// Returns whether the character cell size changed, so the caller can re-apply

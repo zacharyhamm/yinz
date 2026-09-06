@@ -6,7 +6,7 @@ use zellij_integration_tests::{
     split_down_and_wait_for_prompt, start_zellij, FakePtyHandle, GridSnapshot, LayoutInfo, Size,
     TestRunner, TestSession, PROMPT, TERMINAL_SIZE,
 };
-use zellij_utils::input::command::TerminalAction;
+use zellij_types::input::command::TerminalAction;
 
 const STACKED_LAYOUT: &str = r#"
 layout {

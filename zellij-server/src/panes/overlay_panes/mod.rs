@@ -198,9 +198,10 @@ use zellij_types::{
     geometry::{FloatingPaneCoordinates, PercentOrFixed, ResizeStrategy},
     pane_size::{Offset, PaneGeom, Size, SizeInPixels, Viewport},
 };
-use zellij_utils::{
-    data::{ModeInfo, OverlayKind, OverlayPlacement, PaneInfo},
-    input::{layout::RunPluginOrAlias, options::PaneFrameStyle},
+use {
+    zellij_types::data::ModeInfo, zellij_types::data::OverlayKind,
+    zellij_types::data::OverlayPlacement, zellij_types::data::PaneInfo,
+    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::options::PaneFrameStyle,
 };
 
 use crate::panes::kitty_graphics::KittyHostSupport;

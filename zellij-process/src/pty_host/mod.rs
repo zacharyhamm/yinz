@@ -30,12 +30,12 @@ pub(crate) fn ensure_secure_dir(
 
     std::fs::create_dir_all(path)
         .with_context(|| format!("failed to create {}", path.display()))?;
-    zellij_utils::shared::set_permissions(path, 0o700)
+    zellij_runtime::shared::set_permissions(path, 0o700)
         .with_context(|| format!("failed to secure {}", path.display()))
 }
 
 fn secure_socket(path: &std::path::Path, mode: u32) -> zellij_runtime::errors::prelude::Result<()> {
-    secure_socket_with(path, mode, zellij_utils::shared::set_permissions)
+    secure_socket_with(path, mode, zellij_runtime::shared::set_permissions)
 }
 
 fn secure_socket_with(

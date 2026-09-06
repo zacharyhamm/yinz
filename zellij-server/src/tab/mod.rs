@@ -29,21 +29,24 @@ use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
 use zellij_runtime::errors::prelude::*;
 use zellij_types::agent::AgentInfo;
+use zellij_types::data::PaneContents;
 use zellij_types::geometry::{Direction, ResizeStrategy};
+use zellij_types::input::command::RunCommand;
+use zellij_types::input::options::DEFAULT_WORD_SEPARATORS;
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::mouse::MouseEvent;
 use zellij_types::position::Position;
 use zellij_types::position::{Column, Line};
 use zellij_types::style::Style;
-use zellij_utils::data::PaneContents;
-use zellij_utils::data::{
-    NewPanePlacement, OverlayKind, OverlayPlacement, PaneInfo, PermissionStatus, PermissionType,
-    PluginPermission, RegexHighlight, StyledText,
+use zellij_types::text::clean_string_from_control_and_linebreak;
+use {
+    zellij_types::data::NewPanePlacement, zellij_types::data::OverlayKind,
+    zellij_types::data::OverlayPlacement, zellij_types::data::PaneInfo,
+    zellij_types::data::PermissionStatus, zellij_types::data::PermissionType,
+    zellij_types::data::PluginPermission, zellij_types::data::RegexHighlight,
+    zellij_types::data::StyledText,
 };
-use zellij_utils::input::command::RunCommand;
-use zellij_utils::input::options::DEFAULT_WORD_SEPARATORS;
-use zellij_utils::shared::clean_string_from_control_and_linebreak;
 
 use crate::background_jobs::BackgroundJob;
 use crate::pane_groups::PaneGroups;
@@ -89,17 +92,13 @@ use zellij_types::{
     geometry::{FloatingPaneCoordinates, PercentOrFixed, SplitDirection},
     pane_size::{Dimension, Offset, PaneGeom, Size, SizeInPixels, Viewport},
 };
-use zellij_utils::{
-    data::{Event, InputMode, ModeInfo, PaletteColor},
-    input::{
-        command::TerminalAction,
-        layout::{
-            FloatingPaneLayout, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout,
-            TiledPaneLayout,
-        },
-        options::PaneFrameStyle,
-    },
-    nested_session::NestedSessionMessage,
+use {
+    zellij_ipc::nested_session::NestedSessionMessage, zellij_types::data::Event,
+    zellij_types::data::InputMode, zellij_types::data::ModeInfo, zellij_types::data::PaletteColor,
+    zellij_types::input::command::TerminalAction, zellij_types::input::layout::FloatingPaneLayout,
+    zellij_types::input::layout::Run, zellij_types::input::layout::RunPluginOrAlias,
+    zellij_types::input::layout::SwapFloatingLayout, zellij_types::input::layout::SwapTiledLayout,
+    zellij_types::input::layout::TiledPaneLayout, zellij_types::input::options::PaneFrameStyle,
 };
 
 #[macro_export]

@@ -3,7 +3,7 @@
 use super::*;
 use crate::notifications::NotificationProtocol;
 use crate::panes::grid::PendingNotification;
-use zellij_utils::input::options::HostNotificationProtocol;
+use zellij_types::input::options::HostNotificationProtocol;
 
 fn collect_forwarded_notifications(server_receiver: &ServerReceiver) -> String {
     let mut output = String::new();

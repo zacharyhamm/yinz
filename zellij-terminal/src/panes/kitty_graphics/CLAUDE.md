@@ -34,6 +34,6 @@ here:
   plugin has to transmit into each of them - see hocus's `wand_transmitted`.
 
 The plugin-side helpers are `zellij-tile/src/ui_components/image.rs`; the diacritic table they
-share with this module lives in `zellij_utils::kitty_placeholders`. hocus's empty-chat wand is the
+share with this module lives in `zellij_types::kitty_placeholders`. hocus's empty-chat wand is the
 first consumer, and it is also the first thing to drive frames off its own timer, which is what
 the "no playback clock" note below means in practice.

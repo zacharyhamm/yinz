@@ -1433,7 +1433,7 @@ still under way is held for the loading instance and delivered once it is up, in
 points firing within a few milliseconds of each other reach one plugin, not two.
 
 **Quickstart.** A headless hook ships with zellij, `zellij:agent-policy`
-(`zellij-utils/assets/plugins/agent-policy.lua` in the source tree). It logs every firing it
+(`zellij-config/assets/plugins/agent-policy.lua` in the source tree). It logs every firing it
 receives and raises a notification when an agent stops for a question. Nothing binds it by
 default. To see the shape work, from a shell in the session:
 
@@ -1568,7 +1568,7 @@ Answer with an empty list to say "no menu here".
 **`context_menu_item_selected` goes to the plugin that offered the item, and to nobody else.** An
 item's `context` is yours; no other plugin sees it, however it is subscribed.
 
-The shipped hook is `zellij-utils/assets/plugins/context-menu.lua`. A copy loaded from a `file:`
+The shipped hook is `zellij-config/assets/plugins/context-menu.lua`. A copy loaded from a `file:`
 location needs `zellij.request_permission { "run_actions_as_user", "run_commands" }` in its `load`
 - `run_commands` because its "Open" item shells out to the platform's link opener, which it finds
 by probing `xdg-open` and `open` once at load.
@@ -1585,7 +1585,7 @@ hooks {
 
 which leaves the pane simply holding, as any other command pane does.
 
-The shipped `agent_exit` hook is itself a Lua plugin - `zellij-utils/assets/plugins/agent-exit.lua`
+The shipped `agent_exit` hook is itself a Lua plugin - `zellij-config/assets/plugins/agent-exit.lua`
 in the source tree. `example-plugins/agent-commit.lua` is a small commit-only example
 (`plugin_docs section=example_agent_commit`). Read them; do not copy them. Your own hook is a
 plugin you write: `plugin_write name=my-agent-exit`, then bind it. A file-loaded copy needs

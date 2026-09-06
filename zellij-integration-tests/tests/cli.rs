@@ -1,12 +1,12 @@
 #![cfg(unix)]
 
 use insta::assert_snapshot;
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{
     claim_first_terminal_and_wait_for_prompt, col, keys, normalized,
     split_right_and_wait_for_prompt, start_zellij, tab_bar_shows_no_lone_pane_id, Size, TestRunner,
     PROMPT, TERMINAL_SIZE,
 };
-use zellij_utils::cli::CliAction;
 
 #[test]
 fn override_layout_from_default_to_compact() {
@@ -203,11 +203,11 @@ fn an_agent_report_is_carried_on_the_pane() {
     agent_events.wait_for_event("PaneUpdate");
     let json =
         r#"{"hook_event_name":"Stop","session_id":"cc-1","last_assistant_message":"all green"}"#;
-    let hook: zellij_utils::agent::HookEvent = serde_json::from_str(json).unwrap();
+    let hook: zellij_types::agent::HookEvent = serde_json::from_str(json).unwrap();
     let (exit_code, reported) =
-        zellij.run_actions_reporting(zellij_utils::input::actions::hook_report_actions(
+        zellij.run_actions_reporting(zellij_types::input::actions::hook_report_actions(
             "claude",
-            zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(
                 terminal.terminal_id(),
             )),
             &hook,

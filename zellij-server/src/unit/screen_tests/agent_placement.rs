@@ -11,7 +11,7 @@ use crate::route::{wait_for_action_completion, NotificationEnd};
 use crate::screen::agent_placement::{choose_tab, floor_of, projected_share, Candidate};
 use std::collections::BTreeMap;
 use zellij_types::pane_size::Viewport;
-use zellij_utils::data::{OriginatingPlugin, HOCUS_AGENT_PANE_CONTEXT};
+use {zellij_types::data::OriginatingPlugin, zellij_types::data::HOCUS_AGENT_PANE_CONTEXT};
 
 const SURFACE: Size = Size { cols: 80, rows: 20 };
 const FLOOR: Size = Size { cols: 40, rows: 10 };

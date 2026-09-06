@@ -165,7 +165,7 @@ fn an_adopted_pane_still_follows_a_client_looking_at_a_tab() {
     assert_eq!(
         adopted_pane_placement_target(
             &mut screen,
-            zellij_utils::data::WarpPlacement::FocusedTab,
+            zellij_types::data::WarpPlacement::FocusedTab,
             client_id
         ),
         ClientTabIndexOrPaneId::TabIndex(0),
@@ -187,7 +187,7 @@ fn an_adopted_pane_from_a_client_with_no_screen_goes_to_the_attached_clients_tab
     assert_eq!(
         adopted_pane_placement_target(
             &mut screen,
-            zellij_utils::data::WarpPlacement::FocusedTab,
+            zellij_types::data::WarpPlacement::FocusedTab,
             crate::ClientId(requester)
         ),
         ClientTabIndexOrPaneId::TabIndex(1),
@@ -227,7 +227,7 @@ fn an_adopted_focused_tab_pane_gets_focus_and_leaves_scroll_mode() {
                 .send(ScreenInstruction::AdoptedPaneReady {
                     terminal_id: crate::TerminalId(50),
                     payload: Box::default(),
-                    placement: zellij_utils::data::WarpPlacement::FocusedTab,
+                    placement: zellij_types::data::WarpPlacement::FocusedTab,
                     client_id: crate::ClientId(requester),
                     cmd: RunCommand {
                         command: PathBuf::from("claude"),
@@ -287,7 +287,7 @@ fn an_adopted_focused_tab_pane_without_attached_clients_is_placed_without_focus(
         .place_adopted_pane(
             crate::TerminalId(50),
             WarpedPane::default(),
-            zellij_utils::data::WarpPlacement::FocusedTab,
+            zellij_types::data::WarpPlacement::FocusedTab,
             crate::ClientId(7),
             RunCommand::default(),
             vec![],
@@ -336,7 +336,7 @@ fn an_adopted_agent_pane_lands_in_the_focused_tab_however_crowded_it_is() {
 
     let (invoked_with, mut placement, target) = adopted_pane_new_pane(
         &mut screen,
-        zellij_utils::data::WarpPlacement::FocusedTab,
+        zellij_types::data::WarpPlacement::FocusedTab,
         client_id,
         RunCommand {
             command: PathBuf::from("claude"),
@@ -912,7 +912,7 @@ fn a_pane_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
         .send(ScreenInstruction::WarpPane {
             pane_id: Some(PaneId::Terminal(crate::TerminalId(1))),
             to_session: "elsewhere".to_owned(),
-            placement: zellij_utils::data::WarpPlacement::NewTab,
+            placement: zellij_types::data::WarpPlacement::NewTab,
             client_id,
             response_channel: response_tx,
             deadline: std::time::Instant::now() - std::time::Duration::from_secs(1),
@@ -1907,7 +1907,7 @@ fn a_tabs_panes_share_one_frames_worth_of_scrollback() {
     for panes in [1, 2, 8, 16, 64, 256] {
         let total = Screen::warp_budget_per_pane(panes) * panes;
         assert!(
-            total < zellij_utils::ipc::MAX_IPC_FRAME_LEN,
+            total < zellij_ipc::ipc::MAX_IPC_FRAME_LEN,
             "a tab of {panes} panes would not fit in a frame",
         );
     }

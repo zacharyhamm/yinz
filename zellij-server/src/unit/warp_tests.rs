@@ -419,7 +419,7 @@ fn remote_pane(host: &str, pane_token: &str) -> WarpedPane {
         title: None,
         contents: None,
         borderless: false,
-        remote: Some(zellij_utils::data::RemotePaneHandoff {
+        remote: Some(zellij_types::data::RemotePaneHandoff {
             host: host.to_owned(),
             pane_token: pane_token.to_owned(),
             received: 0,

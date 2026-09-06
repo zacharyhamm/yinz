@@ -32,14 +32,11 @@ use zellij_storage::data_access::DataAccess;
 use crate::plugins::queues::Queues;
 use zellij_runtime::errors::prelude::*;
 use zellij_types::pane_size::Size;
-use zellij_utils::{
-    consts::ZELLIJ_TMP_DIR,
-    data::InputMode,
-    input::{
-        command::TerminalAction,
-        keybinds::Keybinds,
-        plugins::{PluginAliases, PluginConfig, PluginRuntime},
-    },
+use {
+    zellij_config::plugins::PluginConfig, zellij_config::plugins::PluginRuntime,
+    zellij_runtime::consts::ZELLIJ_TMP_DIR, zellij_types::data::InputMode,
+    zellij_types::input::command::TerminalAction, zellij_types::input::keybinds::Keybinds,
+    zellij_types::input::plugins::PluginAliases,
 };
 
 fn open_dir(path: &std::path::Path) -> std::io::Result<std::fs::File> {
@@ -659,9 +656,9 @@ mod tests {
     use std::collections::VecDeque;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
-    use zellij_utils::data::PluginTag;
-    use zellij_utils::input::layout::{RunPlugin, RunPluginLocation};
-    use zellij_utils::input::plugins::PluginConfig;
+    use zellij_config::plugins::PluginConfig;
+    use zellij_types::data::PluginTag;
+    use {zellij_types::input::layout::RunPlugin, zellij_types::input::layout::RunPluginLocation};
 
     #[test]
     fn builtin_plugin_cache_key_includes_only_its_configured_source_directory() {

@@ -19,19 +19,17 @@ use crate::pty_host::remote::{
 pub use crate::os_input_output_unix::AdoptedTerminal;
 use crate::pty_host::client::{AgentReportCb, ChildStateCb, ReleasedPane};
 use zellij_types::command::PaneTarget;
-use zellij_utils::data::RemotePaneHandoff;
+use zellij_types::data::RemotePaneHandoff;
 
 use interprocess;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tempfile::tempfile;
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::{
-    data::Palette,
-    input::command::{RunCommand, TerminalAction},
-    ipc::{
-        ClientToServerMsg, ExitReason, IpcReceiverWithContext, IpcSenderWithContext,
-        ServerToClientMsg,
-    },
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ExitReason,
+    zellij_ipc::ipc::IpcReceiverWithContext, zellij_ipc::ipc::IpcSenderWithContext,
+    zellij_ipc::ipc::ServerToClientMsg, zellij_types::data::Palette,
+    zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction,
 };
 
 use std::{
@@ -209,7 +207,7 @@ struct CoalescingSendQueue {
 #[derive(Default)]
 struct SendQueueState {
     control: VecDeque<ServerToClientMsg>,
-    pending_pane_renders: BTreeMap<zellij_utils::data::PaneId, ServerToClientMsg>,
+    pending_pane_renders: BTreeMap<zellij_types::data::PaneId, ServerToClientMsg>,
     pending_render: Option<ServerToClientMsg>,
     closed: bool,
 }
@@ -217,7 +215,7 @@ struct SendQueueState {
 /// Which slot of the queue a message belongs in.
 enum SendQueueSlot {
     FullRender,
-    PaneRender(zellij_utils::data::PaneId),
+    PaneRender(zellij_types::data::PaneId),
     Control,
 }
 

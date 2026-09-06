@@ -1,7 +1,7 @@
 use std::ops::Bound;
 use std::ops::Range;
 use std::ops::RangeBounds;
-use zellij_utils::data::StyledText;
+use zellij_types::data::StyledText;
 
 /// Char-index ranges of every non-overlapping occurrence of `substr` in `text`.
 ///

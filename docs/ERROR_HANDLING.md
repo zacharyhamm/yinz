@@ -555,14 +555,14 @@ match pty
 
 
 [tracking_issue]: https://github.com/zellij-org/zellij/issues/1753
-[handle_panic]: https://docs.rs/zellij-utils/latest/zellij_utils/errors/fn.handle_panic.html
+[handle_panic]: ../zellij-runtime/src/errors.rs
 [miette]: https://crates.io/crates/miette
 [anyhow]: https://crates.io/crates/anyhow
 [thiserror]: https://crates.io/crates/thiserror
 [context]: https://docs.rs/anyhow/latest/anyhow/trait.Context.html
 [result]: https://doc.rust-lang.org/stable/std/result/enum.Result.html
-[fatal]: https://docs.rs/zellij-utils/latest/zellij_utils/errors/trait.FatalError.html#tymethod.fatal
-[non_fatal]: https://docs.rs/zellij-utils/latest/zellij_utils/errors/trait.FatalError.html#tymethod.non_fatal
+[fatal]: ../zellij-runtime/src/errors.rs
+[non_fatal]: ../zellij-runtime/src/errors.rs
 [1]: https://github.com/zellij-org/zellij/commit/99e2bef8c68bd166cf89e90c8ffe8c02272ab4d3
 [2]: https://doc.rust-lang.org/stable/std/io/enum.ErrorKind.html#variant.NotFound
 [3]: https://github.com/zellij-org/zellij/issues/1753

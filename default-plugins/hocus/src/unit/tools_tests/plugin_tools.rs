@@ -81,7 +81,7 @@ fn a_name_resolves_with_or_without_its_extension() {
 
 /// The path a reload is built from must be absolute, and this is the guard on that.
 ///
-/// `RunPluginLocation::parse` joins a *relative* `file:` path onto the cwd whenever one is
+/// `zellij_runtime::plugin_location::parse_plugin_location` joins a *relative* `file:` path onto the cwd whenever one is
 /// supplied, and `start_or_reload_plugin` always supplies one — so a relative URL would be
 /// resolved against the session's cwd and never reach the plugin folder at all. It would fail
 /// only at load time, in a pane, which is exactly where nobody is looking.

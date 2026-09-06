@@ -41,6 +41,7 @@ use crate::{
     command_is_executing::CommandIsExecuting, input_handler::input_loop,
     os_input_output::ClientOsApi, stdin_handler::stdin_loop,
 };
+use zellij_cli::args::CliArgs;
 use zellij_runtime::channels;
 use zellij_runtime::channels::ChannelWithContext;
 use zellij_runtime::channels::SenderWithContext;
@@ -49,12 +50,12 @@ use zellij_runtime::errors::ErrorInstruction;
 use zellij_runtime::vendored::termwiz::input::InputEvent;
 use zellij_types::diagnostics::ClientContext;
 use zellij_types::keys::{KeyModifier, KeyWithModifier};
-use zellij_utils::cli::CliArgs;
-use zellij_utils::{
-    consts::{set_permissions, ZELLIJ_SOCK_DIR},
-    data::{ClientId, ConnectToSession, LayoutInfo},
-    input::{config::Config, options::Options},
-    ipc::{ClientToServerMsg, ExitReason, ServerToClientMsg},
+use {
+    zellij_config::config::Config, zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ExitReason,
+    zellij_ipc::ipc::ServerToClientMsg, zellij_runtime::consts::set_permissions,
+    zellij_runtime::consts::ZELLIJ_SOCK_DIR, zellij_types::data::ClientId,
+    zellij_types::data::ConnectToSession, zellij_types::data::LayoutInfo,
+    zellij_types::input::options::Options,
 };
 
 /// Instructions related to the client-side application
@@ -173,7 +174,7 @@ fn install_early_terminal_panic_guard(teardown: ClientTeardown) {
 }
 
 fn check_ipc_pipe_length(ipc_pipe: &Path, teardown: Option<ClientTeardown>) {
-    use zellij_utils::consts::ZELLIJ_SOCK_MAX_LENGTH;
+    use zellij_runtime::consts::ZELLIJ_SOCK_MAX_LENGTH;
     let path_len = ipc_pipe.as_os_str().len();
     if path_len >= ZELLIJ_SOCK_MAX_LENGTH {
         ClientTeardown::exit_after_startup_error(

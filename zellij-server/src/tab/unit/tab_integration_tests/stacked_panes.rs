@@ -24,7 +24,13 @@ fn can_swap_tiled_layout_at_runtime() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -88,7 +94,13 @@ fn can_swap_floating_layout_at_runtime() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let stacked_resize = true;
@@ -164,7 +176,13 @@ fn swapping_layouts_after_resize_snaps_to_current_layout() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -223,7 +241,13 @@ fn swap_tiled_layout_with_stacked_children() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -299,7 +323,13 @@ fn swap_tiled_layout_with_only_stacked_children() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -378,7 +408,13 @@ fn swap_tiled_layout_with_stacked_children_and_no_pane_frames() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -457,7 +493,13 @@ fn move_focus_up_with_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -538,7 +580,13 @@ fn move_focus_down_with_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -623,7 +671,13 @@ fn move_focus_right_into_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -701,7 +755,13 @@ fn move_focus_left_into_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -781,7 +841,13 @@ fn move_focus_up_into_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -862,7 +928,13 @@ fn move_focus_down_into_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -937,7 +1009,13 @@ fn focus_last_stacked_pane() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1020,7 +1098,13 @@ fn close_main_stacked_pane() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1100,7 +1184,13 @@ fn close_main_stacked_pane_in_mid_stack() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1207,7 +1297,13 @@ fn close_one_liner_stacked_pane_below_main_pane() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1315,7 +1411,13 @@ fn close_one_liner_stacked_pane_above_main_pane() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1422,7 +1524,13 @@ fn can_increase_size_of_main_pane_in_stack_horizontally() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1533,7 +1641,13 @@ fn can_increase_size_of_main_pane_in_stack_vertically() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1644,7 +1758,13 @@ fn can_increase_size_of_main_pane_in_stack_non_directionally() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = false;
@@ -1750,7 +1870,13 @@ fn can_increase_size_into_pane_stack_horizontally() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1860,7 +1986,13 @@ fn can_increase_size_into_pane_stack_vertically() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -1973,7 +2105,13 @@ fn can_increase_size_into_pane_stack_non_directionally() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = false;
@@ -2078,7 +2216,13 @@ fn decreasing_size_of_whole_tab_treats_stacked_panes_properly() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2185,7 +2329,13 @@ fn increasing_size_of_whole_tab_treats_stacked_panes_properly() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2297,7 +2447,13 @@ fn cannot_decrease_stack_size_beyond_minimum_height() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2409,7 +2565,13 @@ fn focus_stacked_pane_over_flexible_pane_with_the_mouse() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2523,7 +2685,13 @@ fn focus_stacked_pane_under_flexible_pane_with_the_mouse() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2637,7 +2805,13 @@ fn close_stacked_pane_with_previously_focused_other_pane() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2767,7 +2941,13 @@ fn close_pane_near_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2878,7 +3058,13 @@ fn focus_next_pane_expands_stacked_panes() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;
@@ -2985,7 +3171,13 @@ fn stacked_panes_can_become_fullscreen() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;

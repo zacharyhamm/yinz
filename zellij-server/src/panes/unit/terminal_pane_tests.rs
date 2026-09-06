@@ -16,7 +16,7 @@ use zellij_types::{
     agent::{AgentInfo, AgentSource, AgentState},
     pane_size::{Offset, PaneGeom, SizeInPixels},
 };
-use zellij_utils::{data::InputMode, input::command::RunCommand};
+use {zellij_types::data::InputMode, zellij_types::input::command::RunCommand};
 
 use std::fmt::Write;
 
@@ -1092,7 +1092,7 @@ pub fn guest_modal_navigation_wraps() {
 
 #[test]
 pub fn guest_modal_tab_is_ignored() {
-    use zellij_utils::data::{BareKey, KeyWithModifier};
+    use {zellij_types::data::BareKey, zellij_types::data::KeyWithModifier};
     let mut pane = create_guest_modal_pane();
     let client_id = ClientId(1);
     pane.set_guest_modal(&[client_id]);
