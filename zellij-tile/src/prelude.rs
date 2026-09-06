@@ -12,6 +12,7 @@ pub use zellij_types::style::*;
 pub use zellij_types::{agent::*, command::*, geometry::*};
 
 pub use zellij_types::internal_ids::{
-    ClientId, PluginId, RecordingId, TabId, TabNumber, TabPosition, TerminalId,
+    ClientId, ContextMenuItemId, ContextMenuRequestId, DataWatchId, NotificationId, PluginId,
+    QueueJobId, RecordingId, TabId, TabNumber, TabPosition, TerminalId,
 };
 pub use zellij_types::units::{ElapsedMicros, UnixMicros};

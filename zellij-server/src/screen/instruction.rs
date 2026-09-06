@@ -1,4 +1,6 @@
 use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::ContextMenuRequestId;
+use zellij_types::internal_ids::NotificationId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
@@ -606,13 +608,13 @@ pub enum ScreenInstruction {
     SerializeLayoutForResurrection,
     RenameSession(String, ClientId, Option<NotificationEnd>), // String -> new name
     Notify(String, Option<PaneId>, Option<NotificationEnd>),  // message, click target, completion
-    DismissNotification(u64),                                 // u64 -> the notification's id
+    DismissNotification(NotificationId),                      // u64 -> the notification's id
     AnimationTick,
     /// A context menu's hook plugin did not answer in time; show the configured items.
-    ContextMenuTimedOut(u64, ClientId), // u64 -> the menu's request id
+    ContextMenuTimedOut(ContextMenuRequestId, ClientId), // u64 -> the menu's request id
     /// The hook plugin's answer for the menu identified by the request id.
     SetContextMenu {
-        request_id: u64,
+        request_id: ContextMenuRequestId,
         items: Vec<ContextMenuItem>,
         /// The plugin that answered, so an item's echoed context goes back to it and to nothing
         /// else. `None` when the plugin thread answered from the configuration - no plugin was

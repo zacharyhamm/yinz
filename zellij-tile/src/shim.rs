@@ -16,6 +16,7 @@ use zellij_types::input::actions::Action;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
+use zellij_types::internal_ids::{ContextMenuRequestId, DataWatchId, QueueJobId};
 use {
     zellij_plugin_api::generated_api::api::plugin_command::hide_floating_panes_response,
     zellij_plugin_api::generated_api::api::plugin_command::save_session_response,
@@ -2422,7 +2423,7 @@ pub fn data_watch(request: &FetchRequest, mode: WatchMode) -> Result<DataWatchHa
 /// # Permissions Required
 ///
 /// `PermissionType::PluginData`
-pub fn data_unwatch(watch_id: u64) -> Result<(), String> {
+pub fn data_unwatch(watch_id: DataWatchId) -> Result<(), String> {
     let response: DataUnwatchResponse = data_request::<_, ProtobufDataUnwatchResponse>(
         PluginCommand::DataUnwatch { watch_id },
         "unwatch",
@@ -3612,7 +3613,7 @@ pub fn enqueue_queue_job<Q, U>(
     plugin_url: U,
     config: BTreeMap<String, String>,
     context: BTreeMap<String, String>,
-) -> Result<u64, String>
+) -> Result<QueueJobId, String>
 where
     Q: ToString,
     U: ToString,
@@ -3646,7 +3647,7 @@ pub fn configure_queue<Q: ToString>(queue: Q, concurrency: usize) {
 
 /// Drop a pending job, or unload a running one. Its enqueuer is told `Cancelled`. Needs
 /// `ChangeApplicationState`.
-pub fn cancel_queue_job(job_id: u64) {
+pub fn cancel_queue_job(job_id: QueueJobId) {
     let plugin_command = PluginCommand::CancelQueueJob { job_id };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -4144,7 +4145,7 @@ pub fn set_pane_regex_highlights(pane_id: PaneId, highlights: Vec<RegexHighlight
 /// carrying its `context` - from where `run_action` can do anything an action could.
 ///
 /// Requires `RunActionsAsUser` permission.
-pub fn set_context_menu(request_id: u64, items: Vec<ContextMenuItem>) {
+pub fn set_context_menu(request_id: ContextMenuRequestId, items: Vec<ContextMenuItem>) {
     let plugin_command = PluginCommand::SetContextMenu { request_id, items };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -4217,7 +4218,7 @@ mod tests {
         set_test_command_response(Err("stdin closed".to_owned()));
     }
 
-    fn enqueue_test_job() -> Result<u64, String> {
+    fn enqueue_test_job() -> Result<QueueJobId, String> {
         enqueue_queue_job(
             "test-queue",
             "file:/plugin.wasm",
@@ -4380,8 +4381,8 @@ mod tests {
         );
 
         respond(ProtobufEnqueueQueueJobResponse::from(
-            EnqueueQueueJobResponse::Ok(99),
+            EnqueueQueueJobResponse::Ok(zellij_types::internal_ids::QueueJobId::new(99)),
         ));
-        assert_eq!(enqueue_test_job(), Ok(99));
+        assert_eq!(enqueue_test_job(), Ok(QueueJobId::new(99)));
     }
 }

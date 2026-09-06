@@ -38,6 +38,8 @@ use zellij_runtime::home::{absolute_lexical, default_layout_dir, default_user_pl
 use zellij_storage::plugin_data_store;
 use zellij_types::agent::SpawnedAgent;
 use zellij_types::data::EnqueueQueueJobResponse;
+use zellij_types::internal_ids::DataWatchId;
+use zellij_types::internal_ids::QueueJobId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
@@ -3780,7 +3782,7 @@ fn configure_queue(env: &PluginEnv, queue: String, concurrency: usize) {
         .non_fatal();
 }
 
-fn cancel_queue_job(env: &PluginEnv, job_id: u64) {
+fn cancel_queue_job(env: &PluginEnv, job_id: QueueJobId) {
     env.senders
         .send_to_plugin(PluginInstruction::QueueCancelJob { job_id })
         .with_context(|| "failed to cancel queue job".to_string())
@@ -5181,7 +5183,7 @@ fn data_watch(env: &mut PluginEnv, request: FetchRequest, mode: WatchMode) {
     );
 }
 
-fn data_unwatch(env: &mut PluginEnv, watch_id: u64) {
+fn data_unwatch(env: &mut PluginEnv, watch_id: DataWatchId) {
     let response = match env
         .data_access
         .plugin_data()

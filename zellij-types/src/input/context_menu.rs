@@ -25,6 +25,7 @@
 //! The plugin never sees the `Action`s - see `data::ContextMenuItem` for why, and for what it sees
 //! instead.
 
+use crate::internal_ids::ContextMenuItemId;
 use serde::{Deserialize, Serialize};
 
 use crate::data::ContextMenuItem;
@@ -78,7 +79,7 @@ impl ContextMenu {
             items: items
                 .into_iter()
                 .enumerate()
-                .map(|(index, item)| item.with_id(index as u64))
+                .map(|(index, item)| item.with_id(ContextMenuItemId::new(index as u64)))
                 .collect(),
         }
     }
@@ -109,7 +110,7 @@ mod tests {
     fn the_default_menu_identifies_every_item_by_position() {
         let menu = ContextMenu::defaults();
         for (index, item) in menu.items().iter().enumerate() {
-            assert_eq!(item.id, Some(index as u64));
+            assert_eq!(item.id, Some(ContextMenuItemId::new(index as u64)));
         }
     }
 

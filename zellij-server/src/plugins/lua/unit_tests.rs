@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use zellij_types::internal_ids::ContextMenuItemId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
@@ -2065,9 +2066,9 @@ fn the_shipped_context_menu_hook_filters_the_items_it_is_given() {
     let source =
         zellij_config::consts::builtin_lua_plugin("context-menu").expect("the hook is a builtin");
     let configured = vec![
-        ContextMenuItem::new("Copy", vec![]).with_id(0),
-        ContextMenuItem::separator().with_id(1),
-        ContextMenuItem::new("Close pane", vec![]).with_id(2),
+        ContextMenuItem::new("Copy", vec![]).with_id(ContextMenuItemId::new(0)),
+        ContextMenuItem::separator().with_id(ContextMenuItemId::new(1)),
+        ContextMenuItem::new("Close pane", vec![]).with_id(ContextMenuItemId::new(2)),
     ];
 
     // The answer goes to the screen thread, so the env gets a real channel rather than the
@@ -2124,7 +2125,7 @@ fn the_shipped_context_menu_hook_filters_the_items_it_is_given() {
             .iter()
             .find(|item| item.label.starts_with("Copy"))
             .and_then(|item| item.id)
-            == Some(0),
+            == Some(ContextMenuItemId::new(0)),
         "the id has to survive the relabelling, or the actions do not come back"
     );
 

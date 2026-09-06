@@ -33,7 +33,7 @@ use {
 use super::PluginId;
 use crate::ClientId;
 
-pub type JobId = u64;
+pub use zellij_types::internal_ids::QueueJobId as JobId;
 
 /// A queue that nobody configured runs one job at a time.
 pub const DEFAULT_CONCURRENCY: usize = 1;
@@ -169,7 +169,7 @@ impl Queues {
         context: BTreeMap<String, String>,
         cwd: Option<PathBuf>,
     ) -> JobId {
-        self.next_job_id += 1;
+        self.next_job_id = JobId::new(self.next_job_id.get() + 1);
         let job_id = self.next_job_id;
         self.queue_mut(queue).pending.push_back(QueuedJob {
             job_id,

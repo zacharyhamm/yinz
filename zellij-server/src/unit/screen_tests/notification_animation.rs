@@ -10,6 +10,7 @@ use crate::ui::damage::CellRect;
 use crate::ui::notification::{notification_height, notification_lines, notification_width};
 use std::time::{Duration, Instant};
 use zellij_types::animation::Tween;
+use zellij_types::internal_ids::NotificationId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::pane_size::Viewport;
 
@@ -18,7 +19,7 @@ const TEXT: &str = "build finished";
 fn screen_with_a_settled_toast(size: Size, now: Instant) -> Screen {
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, TabId::new(0));
-    let mut notification = Notification::new(0, TEXT.to_owned(), None, now);
+    let mut notification = Notification::new(NotificationId::new(0), TEXT.to_owned(), None, now);
     notification.reveal = Tween::settled(1.0);
     notification.y_offset = Tween::settled(0.0);
     screen.notifications.push(notification);
@@ -57,7 +58,9 @@ fn every_frame_of_a_slide_out_reports_the_columns_it_just_uncovered() {
         "a toast that has not moved damages nothing"
     );
 
-    screen.dismiss_notification(0, start).unwrap();
+    screen
+        .dismiss_notification(NotificationId::new(0), start)
+        .unwrap();
 
     let mut uncovered_so_far = 0;
     let mut frames_with_damage = 0;
@@ -96,9 +99,12 @@ fn a_toast_sliding_in_never_asks_for_a_repaint() {
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, TabId::new(0));
     let surface = screen.surface_size();
-    screen
-        .notifications
-        .push(Notification::new(0, TEXT.to_owned(), None, start));
+    screen.notifications.push(Notification::new(
+        NotificationId::new(0),
+        TEXT.to_owned(),
+        None,
+        start,
+    ));
 
     for frame in 0..=20 {
         let now = start + Duration::from_millis(frame * 16);
@@ -132,7 +138,7 @@ fn a_second_toast_arriving_mid_glide_never_jumps_the_survivors() {
         screen
             .notification_layout(viewport, now)
             .iter()
-            .find(|layout| layout.notification.id == 0)
+            .find(|layout| layout.notification.id == NotificationId::new(0))
             .expect("the first toast is still in the stack")
             .y
     };
@@ -140,18 +146,20 @@ fn a_second_toast_arriving_mid_glide_never_jumps_the_survivors() {
     // a second toast arrives, pushing the first away from the corner
     let arrival = start + Duration::from_millis(16);
     screen.with_notification_stack_change(arrival, |screen| {
-        screen
-            .notifications
-            .insert(0, Notification::new(1, "second".to_owned(), None, arrival));
+        screen.notifications.insert(
+            0,
+            Notification::new(NotificationId::new(1), "second".to_owned(), None, arrival),
+        );
     });
 
     // ...and a third arrives while the first is still travelling
     let mid_glide = arrival + Duration::from_millis(80);
     let before_the_third = painted_row(&screen, mid_glide);
     screen.with_notification_stack_change(mid_glide, |screen| {
-        screen
-            .notifications
-            .insert(0, Notification::new(2, "third".to_owned(), None, mid_glide));
+        screen.notifications.insert(
+            0,
+            Notification::new(NotificationId::new(2), "third".to_owned(), None, mid_glide),
+        );
     });
     let after_the_third = painted_row(&screen, mid_glide);
     assert_eq!(
@@ -193,9 +201,12 @@ fn animations_stop_being_live_once_everything_has_settled() {
     let start = Instant::now();
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, TabId::new(0));
-    screen
-        .notifications
-        .push(Notification::new(0, TEXT.to_owned(), None, start));
+    screen.notifications.push(Notification::new(
+        NotificationId::new(0),
+        TEXT.to_owned(),
+        None,
+        start,
+    ));
 
     assert!(screen.animations_are_live(start), "it is still sliding in");
     assert!(
@@ -204,7 +215,7 @@ fn animations_stop_being_live_once_everything_has_settled() {
     );
 
     screen
-        .dismiss_notification(0, start + Duration::from_secs(1))
+        .dismiss_notification(NotificationId::new(0), start + Duration::from_secs(1))
         .unwrap();
     assert!(screen.animations_are_live(start + Duration::from_secs(1)));
 
@@ -225,14 +236,21 @@ fn a_toast_dismissed_before_it_arrived_leaves_sooner_than_a_settled_one() {
     let start = Instant::now();
 
     let mut early = create_non_mirrored_screen(size);
-    early
-        .notifications
-        .push(Notification::new(0, TEXT.to_owned(), None, start));
+    early.notifications.push(Notification::new(
+        NotificationId::new(0),
+        TEXT.to_owned(),
+        None,
+        start,
+    ));
     let killed_at = start + Duration::from_millis(32);
-    early.dismiss_notification(0, killed_at).unwrap();
+    early
+        .dismiss_notification(NotificationId::new(0), killed_at)
+        .unwrap();
 
     let mut settled = screen_with_a_settled_toast(size, start);
-    settled.dismiss_notification(0, killed_at).unwrap();
+    settled
+        .dismiss_notification(NotificationId::new(0), killed_at)
+        .unwrap();
 
     let gone_by = |screen: &mut Screen| -> u64 {
         (1..=60)
@@ -358,7 +376,9 @@ fn a_toast_covering_the_cursor_hides_it_until_it_leaves() {
     );
 
     // and it comes back the moment the toast is gone
-    screen.dismiss_notification(0, start).unwrap();
+    screen
+        .dismiss_notification(NotificationId::new(0), start)
+        .unwrap();
     let gone_at = start + Duration::from_secs(1);
     screen.pinned_now = Some(gone_at);
     screen.reap_settled_notifications(gone_at);

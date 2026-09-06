@@ -187,6 +187,10 @@ pub use super::generated_api::api::{
     plugin_permission::PermissionType as ProtobufPermissionType,
     resize::ResizeAction as ProtobufResizeAction,
 };
+use zellij_types::internal_ids::ContextMenuRequestId;
+use zellij_types::internal_ids::DataWatchId;
+use zellij_types::internal_ids::NotificationId;
+use zellij_types::internal_ids::QueueJobId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
@@ -3138,7 +3142,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::SetContextMenu) => match protobuf_plugin_command.payload {
                 Some(Payload::SetContextMenuPayload(payload)) => {
                     Ok(PluginCommand::SetContextMenu {
-                        request_id: payload.request_id,
+                        request_id: ContextMenuRequestId::new(payload.request_id),
                         items: payload.items.into_iter().map(Into::into).collect(),
                     })
                 },
@@ -3379,7 +3383,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::DataUnwatch) => match protobuf_plugin_command.payload {
                 Some(Payload::DataUnwatchPayload(payload)) => Ok(PluginCommand::DataUnwatch {
-                    watch_id: payload.watch_id,
+                    watch_id: DataWatchId::new(payload.watch_id),
                 }),
                 _ => Err("Mismatched payload for DataUnwatch"),
             },
@@ -3428,7 +3432,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::CancelQueueJob) => match protobuf_plugin_command.payload {
                 Some(Payload::CancelQueueJobPayload(payload)) => {
                     Ok(PluginCommand::CancelQueueJob {
-                        job_id: payload.job_id,
+                        job_id: QueueJobId::new(payload.job_id),
                     })
                 },
                 _ => Err("Mismatched payload for CancelQueueJob"),
@@ -5431,7 +5435,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::SetContextMenu { request_id, items } => Ok(ProtobufPluginCommand {
                 name: CommandName::SetContextMenu as i32,
                 payload: Some(Payload::SetContextMenuPayload(SetContextMenuPayload {
-                    request_id,
+                    request_id: request_id.get(),
                     items: items.into_iter().map(Into::into).collect(),
                 })),
             }),
@@ -5671,7 +5675,9 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             }),
             PluginCommand::DataUnwatch { watch_id } => Ok(ProtobufPluginCommand {
                 name: CommandName::DataUnwatch as i32,
-                payload: Some(Payload::DataUnwatchPayload(DataUnwatchPayload { watch_id })),
+                payload: Some(Payload::DataUnwatchPayload(DataUnwatchPayload {
+                    watch_id: watch_id.get(),
+                })),
             }),
             PluginCommand::DataCatalog { namespace } => Ok(ProtobufPluginCommand {
                 name: CommandName::DataCatalog as i32,
@@ -5709,7 +5715,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::CancelQueueJob { job_id } => Ok(ProtobufPluginCommand {
                 name: CommandName::CancelQueueJob as i32,
                 payload: Some(Payload::CancelQueueJobPayload(CancelQueueJobPayload {
-                    job_id,
+                    job_id: job_id.get(),
                 })),
             }),
             PluginCommand::QueueStatus { queue } => Ok(ProtobufPluginCommand {
@@ -5736,7 +5742,7 @@ impl From<EnqueueQueueJobResponse> for ProtobufEnqueueQueueJobResponse {
         ProtobufEnqueueQueueJobResponse {
             result: Some(match response {
                 EnqueueQueueJobResponse::Ok(job_id) => {
-                    enqueue_queue_job_response::Result::JobId(job_id)
+                    enqueue_queue_job_response::Result::JobId(job_id.get())
                 },
                 EnqueueQueueJobResponse::Err(error) => {
                     enqueue_queue_job_response::Result::Error(error)
@@ -5751,7 +5757,7 @@ impl TryFrom<ProtobufEnqueueQueueJobResponse> for EnqueueQueueJobResponse {
     fn try_from(protobuf: ProtobufEnqueueQueueJobResponse) -> Result<Self, &'static str> {
         match protobuf.result {
             Some(enqueue_queue_job_response::Result::JobId(job_id)) => {
-                Ok(EnqueueQueueJobResponse::Ok(job_id))
+                Ok(EnqueueQueueJobResponse::Ok(QueueJobId::new(job_id)))
             },
             Some(enqueue_queue_job_response::Result::Error(error)) => {
                 Ok(EnqueueQueueJobResponse::Err(error))
@@ -6931,7 +6937,7 @@ impl From<ProtobufRecordingSummary> for RecordingSummary {
 impl From<ProtobufNotificationInfo> for NotificationInfo {
     fn from(notification: ProtobufNotificationInfo) -> Self {
         NotificationInfo {
-            id: notification.id,
+            id: NotificationId::new(notification.id),
             message: notification.message,
             received_at_unix_ms: notification.received_at_unix_ms,
         }
@@ -6941,7 +6947,7 @@ impl From<ProtobufNotificationInfo> for NotificationInfo {
 impl From<NotificationInfo> for ProtobufNotificationInfo {
     fn from(notification: NotificationInfo) -> Self {
         ProtobufNotificationInfo {
-            id: notification.id,
+            id: notification.id.get(),
             message: notification.message,
             received_at_unix_ms: notification.received_at_unix_ms,
         }
@@ -7409,7 +7415,7 @@ mod tests {
         assert!(matches!(decoded, PluginCommand::ListNotifications));
 
         let notification = NotificationInfo {
-            id: 7,
+            id: NotificationId::new(7),
             message: "build finished".to_owned(),
             received_at_unix_ms: 42,
         };

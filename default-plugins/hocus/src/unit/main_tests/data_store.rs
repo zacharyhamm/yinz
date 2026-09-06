@@ -1,4 +1,5 @@
 use super::*;
+use zellij_tile::prelude::DataWatchId;
 
 /// A change to rows this plugin is not watching is somebody else's.
 #[test]
@@ -6,7 +7,7 @@ fn a_change_for_another_watch_is_ignored() {
     let mut state = state_with_project();
     let rows = projects::to_rows(&projects::Registry::new());
 
-    assert!(!state.on_projects_changed(state.project_watch + 1, &rows));
+    assert!(!state.on_projects_changed(DataWatchId::new(state.project_watch.get() + 1), &rows));
     assert_eq!(
         state.active_project.as_deref(),
         Some("hocus"),

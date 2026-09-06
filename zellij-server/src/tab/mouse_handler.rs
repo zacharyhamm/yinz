@@ -3,6 +3,7 @@ use std::time::Instant;
 use zellij_runtime::errors::prelude::*;
 use zellij_types::geometry::{Direction, Resize, ResizeStrategy};
 use zellij_types::input::layout::Run;
+use zellij_types::internal_ids::ContextMenuRequestId;
 #[cfg(test)]
 use zellij_types::internal_ids::{PluginId, TerminalId};
 use zellij_types::mouse::{MouseEvent, MouseEventType};
@@ -1209,7 +1210,7 @@ impl MouseHandler {
         };
         let context = ContextMenuContext {
             // Filled in by `Screen::open_context_menu`, which owns the counter.
-            request_id: 0,
+            request_id: ContextMenuRequestId::new(0),
             client_id,
             pane_id,
             tab_position,

@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::io::prelude::*;
 #[allow(unused_imports)] // Action is used in non-test code paths (run_action call)
 use zellij_tile::prelude::actions::Action;
+use zellij_tile::prelude::DataWatchId;
 use zellij_tile::prelude::*;
 
 // This is a fixture plugin used only for tests in Zellij
@@ -1235,6 +1236,6 @@ fn data_store_roundtrip() -> Result<String, String> {
         found,
         hits.len(),
         count,
-        watch.watch_id > 0,
+        watch.watch_id > DataWatchId::new(0),
     ))
 }

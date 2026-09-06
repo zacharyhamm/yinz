@@ -216,7 +216,7 @@ impl TryFrom<usize> for ClientId {
     }
 }
 
-macro_rules! unsigned_identity {
+macro_rules! numeric_identity {
     ($(#[$doc:meta])* $name:ident($raw:ty)) => {
         $(#[$doc])*
         #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -234,6 +234,21 @@ macro_rules! unsigned_identity {
             type Err = std::num::ParseIntError;
             fn from_str(value: &str) -> Result<Self, Self::Err> { value.parse().map(Self::new) }
         }
+    };
+}
+
+macro_rules! unsigned_identity {
+    ($(#[$doc:meta])* $name:ident(u64)) => {
+        numeric_identity!($(#[$doc])* $name(u64));
+        impl TryFrom<i64> for $name {
+            type Error = std::num::TryFromIntError;
+            fn try_from(value: i64) -> Result<Self, Self::Error> {
+                u64::try_from(value).map(Self::new)
+            }
+        }
+    };
+    ($(#[$doc:meta])* $name:ident($raw:ty)) => {
+        numeric_identity!($(#[$doc])* $name($raw));
         impl TryFrom<u64> for $name {
             type Error = std::num::TryFromIntError;
             fn try_from(value: u64) -> Result<Self, Self::Error> { <$raw>::try_from(value).map(Self::new) }
@@ -269,6 +284,52 @@ unsigned_identity!(
     TabNumber(u32)
 );
 
+unsigned_identity!(
+    /// A plugin data watch identity, scoped to the server process.
+    ///
+    /// ```compile_fail
+    /// use zellij_types::internal_ids::{DataWatchId, QueueJobId};
+    /// let _: DataWatchId = QueueJobId::new(0);
+    /// ```
+    DataWatchId(u64)
+);
+unsigned_identity!(
+    /// A queued plugin job identity, separate from its running plugin.
+    ///
+    /// ```compile_fail
+    /// use zellij_types::internal_ids::{QueueJobId, PluginId};
+    /// let _: QueueJobId = PluginId::new(0);
+    /// ```
+    QueueJobId(u64)
+);
+unsigned_identity!(
+    /// A notification identity, including zero for the first notification.
+    ///
+    /// ```compile_fail
+    /// use zellij_types::internal_ids::{NotificationId, ContextMenuRequestId};
+    /// let _: NotificationId = ContextMenuRequestId::new(0);
+    /// ```
+    NotificationId(u64)
+);
+unsigned_identity!(
+    /// A context menu request identity, echoed by its responding plugin.
+    ///
+    /// ```compile_fail
+    /// use zellij_types::internal_ids::{ContextMenuRequestId, ContextMenuItemId};
+    /// let _: ContextMenuRequestId = ContextMenuItemId::new(0);
+    /// ```
+    ContextMenuRequestId(u64)
+);
+unsigned_identity!(
+    /// A configured context menu item identity, retained across a plugin hook.
+    ///
+    /// ```compile_fail
+    /// use zellij_types::internal_ids::{ContextMenuItemId, ContextMenuRequestId};
+    /// let _: ContextMenuItemId = ContextMenuRequestId::new(0);
+    /// ```
+    ContextMenuItemId(u64)
+);
+
 impl TryFrom<usize> for TabNumber {
     type Error = std::num::TryFromIntError;
     fn try_from(value: usize) -> Result<Self, Self::Error> {
@@ -296,6 +357,38 @@ impl TryFrom<TabPosition> for TabNumber {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asynchronous_ids_keep_numeric_values_and_map_keys() {
+        type Ids = (
+            DataWatchId,
+            QueueJobId,
+            NotificationId,
+            ContextMenuRequestId,
+            ContextMenuItemId,
+        );
+        let json = "[0,18446744073709551615,7,8,9]";
+        let ids: Ids = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            ids,
+            (
+                DataWatchId::new(0),
+                QueueJobId::new(u64::MAX),
+                NotificationId::new(7),
+                ContextMenuRequestId::new(8),
+                ContextMenuItemId::new(9)
+            )
+        );
+        assert_eq!(serde_json::to_string(&ids).unwrap(), json);
+        let json = r#"{"0":"first","18446744073709551615":"last"}"#;
+        let ids: std::collections::BTreeMap<DataWatchId, String> =
+            serde_json::from_str(json).unwrap();
+        assert_eq!(ids[&DataWatchId::new(u64::MAX)], "last");
+        assert_eq!(serde_json::to_string(&ids).unwrap(), json);
+        assert!(DataWatchId::try_from(-1_i64).is_err());
+        assert!(serde_json::from_str::<QueueJobId>("-1").is_err());
+        assert!(serde_json::from_str::<ContextMenuRequestId>("18446744073709551616").is_err());
+    }
 
     #[test]
     fn tab_identities_preserve_values_and_check_conversion() {

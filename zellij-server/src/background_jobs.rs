@@ -162,7 +162,7 @@ pub enum BackgroundJob {
     /// terminating chunk is always emitted from one place (see `finish_stream`)
     WebRequestStreamFinished(StreamKey, u64, Option<String>), // u64 - generation, Option<String> - error
     HighlightPanesWithMessage(Vec<PaneId>, String),
-    DismissNotification(u64, u64), // notification id, timeout in seconds
+    DismissNotification(zellij_types::internal_ids::NotificationId, u64), // notification id, timeout in seconds
     /// Wake the screen for a frame every `Duration`, until [`BackgroundJob::StopAnimationClock`].
     /// The period is `Screen`'s to choose - see `Screen::animation_clock_period` - because only
     /// the screen knows the coarsest cadence every live surface can live with.
@@ -170,7 +170,11 @@ pub enum BackgroundJob {
     StopAnimationClock,
     /// Give up waiting for a context menu's hook plugin and show the configured items instead.
     /// (request id, client id, timeout in milliseconds)
-    ContextMenuTimeout(u64, ClientId, u64),
+    ContextMenuTimeout(
+        zellij_types::internal_ids::ContextMenuRequestId,
+        ClientId,
+        u64,
+    ),
     RenderToClients,
     ClearHelpText {
         client_id: ClientId,

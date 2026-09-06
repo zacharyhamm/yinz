@@ -6,6 +6,7 @@
 //! `render_notifications` there.
 
 use std::time::Duration;
+use zellij_types::internal_ids::NotificationId;
 
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
@@ -287,12 +288,12 @@ pub fn notification_origins(
 /// a top-anchored toast is placed by its top edge and a bottom-anchored one by its bottom.
 pub fn settled_row_delta(
     position: NotificationPosition,
-    before: &[(u64, usize)],
-    after: &[(u64, usize)],
-    id: u64,
+    before: &[(NotificationId, usize)],
+    after: &[(NotificationId, usize)],
+    id: NotificationId,
 ) -> Option<isize> {
     // distance from the anchored edge to this toast's own anchored edge
-    let distance = |stack: &[(u64, usize)]| -> Option<isize> {
+    let distance = |stack: &[(NotificationId, usize)]| -> Option<isize> {
         let mut used = 0usize;
         for (candidate, height) in stack {
             if *candidate == id {
@@ -958,8 +959,16 @@ mod tests {
         let width = 20;
         // ids 1..=3 at differing heights, then the newest (id 4) arrives at the corner and id 2 is
         // dismissed - so the survivors are re-ordered *and* pushed by a toast of a different size
-        let before: Vec<(u64, usize)> = vec![(3, 3), (2, 5), (1, 4)];
-        let after: Vec<(u64, usize)> = vec![(4, 6), (3, 3), (1, 4)];
+        let before: Vec<(NotificationId, usize)> = vec![
+            (NotificationId::new(3), 3),
+            (NotificationId::new(2), 5),
+            (NotificationId::new(1), 4),
+        ];
+        let after: Vec<(NotificationId, usize)> = vec![
+            (NotificationId::new(4), 6),
+            (NotificationId::new(3), 3),
+            (NotificationId::new(1), 4),
+        ];
 
         for position in [
             NotificationPosition::TopLeft,
@@ -967,7 +976,7 @@ mod tests {
             NotificationPosition::BottomLeft,
             NotificationPosition::BottomRight,
         ] {
-            let heights = |stack: &[(u64, usize)]| -> Vec<usize> {
+            let heights = |stack: &[(NotificationId, usize)]| -> Vec<usize> {
                 stack.iter().map(|(_, height)| *height).collect()
             };
             let origins_before = notification_origins(viewport, position, &heights(&before), width);
@@ -993,24 +1002,40 @@ mod tests {
 
     #[test]
     fn a_settled_row_delta_is_zero_when_nothing_moved() {
-        let stack: Vec<(u64, usize)> = vec![(1, 3), (2, 4)];
+        let stack: Vec<(NotificationId, usize)> =
+            vec![(NotificationId::new(1), 3), (NotificationId::new(2), 4)];
         for position in [
             NotificationPosition::TopLeft,
             NotificationPosition::BottomRight,
         ] {
-            assert_eq!(settled_row_delta(position, &stack, &stack, 1), Some(0));
-            assert_eq!(settled_row_delta(position, &stack, &stack, 2), Some(0));
+            assert_eq!(
+                settled_row_delta(position, &stack, &stack, NotificationId::new(1)),
+                Some(0)
+            );
+            assert_eq!(
+                settled_row_delta(position, &stack, &stack, NotificationId::new(2)),
+                Some(0)
+            );
         }
     }
 
     #[test]
     fn a_settled_row_delta_has_no_answer_for_a_toast_outside_either_stack() {
-        let before: Vec<(u64, usize)> = vec![(1, 3)];
-        let after: Vec<(u64, usize)> = vec![(2, 3)];
+        let before: Vec<(NotificationId, usize)> = vec![(NotificationId::new(1), 3)];
+        let after: Vec<(NotificationId, usize)> = vec![(NotificationId::new(2), 3)];
         let position = NotificationPosition::TopRight;
-        assert_eq!(settled_row_delta(position, &before, &after, 1), None);
-        assert_eq!(settled_row_delta(position, &before, &after, 2), None);
-        assert_eq!(settled_row_delta(position, &before, &after, 9), None);
+        assert_eq!(
+            settled_row_delta(position, &before, &after, NotificationId::new(1)),
+            None
+        );
+        assert_eq!(
+            settled_row_delta(position, &before, &after, NotificationId::new(2)),
+            None
+        );
+        assert_eq!(
+            settled_row_delta(position, &before, &after, NotificationId::new(9)),
+            None
+        );
     }
 
     /// A toast growing taller pushes what is behind it away from the corner, in whichever
@@ -1019,20 +1044,37 @@ mod tests {
     /// in the stack.
     #[test]
     fn a_height_change_displaces_what_is_stacked_behind_it() {
-        let before: Vec<(u64, usize)> = vec![(1, 3), (2, 4)];
-        let after: Vec<(u64, usize)> = vec![(1, 5), (2, 4)];
+        let before: Vec<(NotificationId, usize)> =
+            vec![(NotificationId::new(1), 3), (NotificationId::new(2), 4)];
+        let after: Vec<(NotificationId, usize)> =
+            vec![(NotificationId::new(1), 5), (NotificationId::new(2), 4)];
         assert_eq!(
-            settled_row_delta(NotificationPosition::TopLeft, &before, &after, 2),
+            settled_row_delta(
+                NotificationPosition::TopLeft,
+                &before,
+                &after,
+                NotificationId::new(2)
+            ),
             Some(2),
             "a top-anchored stack grows downwards, so the one behind moves down"
         );
         assert_eq!(
-            settled_row_delta(NotificationPosition::BottomLeft, &before, &after, 2),
+            settled_row_delta(
+                NotificationPosition::BottomLeft,
+                &before,
+                &after,
+                NotificationId::new(2)
+            ),
             Some(-2),
             "a bottom-anchored stack grows upwards, so the one behind moves up"
         );
         assert_eq!(
-            settled_row_delta(NotificationPosition::TopLeft, &before, &after, 1),
+            settled_row_delta(
+                NotificationPosition::TopLeft,
+                &before,
+                &after,
+                NotificationId::new(1)
+            ),
             Some(0),
             "the toast in the corner does not move, however tall it gets"
         );

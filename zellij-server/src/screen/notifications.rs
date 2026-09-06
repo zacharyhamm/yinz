@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
+use zellij_types::internal_ids::NotificationId;
 use zellij_types::internal_ids::TabId;
 
 use zellij_runtime::errors::prelude::*;
@@ -97,7 +98,7 @@ impl Screen {
     /// client's *settled* position is computed against that client's own viewport regardless. A
     /// client whose tab centre is narrower than the session surface can therefore be a row out
     /// mid-glide, and is never out at rest.
-    fn canonical_stack_heights(&self) -> Vec<(u64, usize)> {
+    fn canonical_stack_heights(&self) -> Vec<(NotificationId, usize)> {
         let cols = self.surface_size().cols;
         let Some(width) = self
             .notifications
@@ -127,8 +128,8 @@ impl Screen {
     /// layout, so nothing can snap to a position it was never at.
     fn retarget_notification_displacement(
         &mut self,
-        before: &[(u64, usize)],
-        after: &[(u64, usize)],
+        before: &[(NotificationId, usize)],
+        after: &[(NotificationId, usize)],
         now: Instant,
     ) {
         let position = self.notification_position;
@@ -326,7 +327,7 @@ impl Screen {
         viewport: Viewport,
         position: Position,
         now: Instant,
-    ) -> Option<(u64, PaneId)> {
+    ) -> Option<(NotificationId, PaneId)> {
         let line = usize::try_from(position.line()).ok()?;
         self.notification_layout(viewport, now)
             .into_iter()
@@ -352,7 +353,7 @@ impl Screen {
     /// The exit is re-aimed from wherever the toast currently is and given a duration proportional
     /// to how much of it is showing, so one dismissed a third of the way in leaves in about a third
     /// of the time rather than snapping to full width and sliding back out from there.
-    pub(super) fn dismiss_notification(&mut self, id: u64, now: Instant) -> Result<()> {
+    pub(super) fn dismiss_notification(&mut self, id: NotificationId, now: Instant) -> Result<()> {
         if let Some(notification) = self.notifications.iter_mut().find(|n| n.id == id) {
             if !notification.is_dismissing() {
                 let revealed = notification.reveal.value(now);

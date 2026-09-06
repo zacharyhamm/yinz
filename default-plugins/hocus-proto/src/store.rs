@@ -26,6 +26,7 @@
 //! truncation rules under test are the same code that runs in a session. There
 //! is no second implementation to keep honest.
 
+use zellij_tile::prelude::DataWatchId;
 use zellij_tile::prelude::*;
 
 /// The namespace hocus and hocus-store share.
@@ -707,7 +708,7 @@ mod local {
 
     /// The id [`Local`] hands back from `watch`. Non-zero so that a plugin
     /// storing "no watch" as zero can still tell the two apart.
-    pub const LOCAL_WATCH_ID: u64 = 1;
+    pub const LOCAL_WATCH_ID: DataWatchId = DataWatchId::new(1);
 
     /// The real store over a temporary file, for tests and for anything that
     /// wants to exercise this crate without a running zellij.

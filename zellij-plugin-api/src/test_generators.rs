@@ -12,6 +12,10 @@ use std::path::PathBuf;
 use strum::IntoEnumIterator;
 use zellij_types::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use zellij_types::input::options::PaneFrameStyle;
+use zellij_types::internal_ids::ContextMenuItemId;
+use zellij_types::internal_ids::ContextMenuRequestId;
+use zellij_types::internal_ids::DataWatchId;
+use zellij_types::internal_ids::QueueJobId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
@@ -1502,7 +1506,7 @@ pub(crate) fn regex_highlights(tc: &hegel::TestCase) -> RegexHighlight {
 /// wire drops it is part of the type's contract, and the property asserts the drop.
 pub(crate) fn context_menu_items(tc: &hegel::TestCase) -> ContextMenuItem {
     ContextMenuItem {
-        id: booleans(tc).then(|| u64s(tc)),
+        id: booleans(tc).then(|| u64s(tc)).map(ContextMenuItemId::new),
         label: strings(tc),
         shortcut: optional_strings(tc),
         actions: up_to(tc, 2, any_action),
@@ -2109,7 +2113,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             PluginCommand::SetPaneRegexHighlights(pane_id(tc), up_to(tc, 3, regex_highlights))
         },
         CommandType::SetContextMenu => PluginCommand::SetContextMenu {
-            request_id: u64s(tc),
+            request_id: ContextMenuRequestId::new(u64s(tc)),
             items: up_to(tc, 3, context_menu_items),
         },
         CommandType::ClearPaneHighlights => PluginCommand::ClearPaneHighlights(pane_id(tc)),
@@ -2179,7 +2183,9 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             request: fetch_requests(tc),
             mode: watch_modes(tc),
         },
-        CommandType::DataUnwatch => PluginCommand::DataUnwatch { watch_id: u64s(tc) },
+        CommandType::DataUnwatch => PluginCommand::DataUnwatch {
+            watch_id: DataWatchId::new(u64s(tc)),
+        },
         CommandType::DataCatalog => PluginCommand::DataCatalog {
             namespace: optional_strings(tc),
         },
@@ -2198,7 +2204,9 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             queue: strings(tc),
             concurrency: usize_as_u32(tc),
         },
-        CommandType::CancelQueueJob => PluginCommand::CancelQueueJob { job_id: u64s(tc) },
+        CommandType::CancelQueueJob => PluginCommand::CancelQueueJob {
+            job_id: QueueJobId::new(u64s(tc)),
+        },
         CommandType::QueueStatus => PluginCommand::QueueStatus {
             queue: optional_strings(tc),
         },
