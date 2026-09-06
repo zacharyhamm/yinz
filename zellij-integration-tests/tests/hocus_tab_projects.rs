@@ -83,3 +83,61 @@ fn a_tab_is_named_after_the_project_its_agent_is_in() {
         "the project replaced the default name rather than sitting beside it:\n{screen}"
     );
 }
+
+#[test]
+fn a_lone_shell_gets_a_project_name_after_tab_creation() {
+    let folder = tempfile::tempdir().expect("shell folder");
+    let layout = format!(
+        r#"layout {{
+    pane size=1 borderless=true {{
+        plugin location="zellij:tab-bar"
+    }}
+    pane cwd="{}"
+}}
+"#,
+        folder.path().display()
+    );
+    let zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_PROJECT_CONFIG)
+        .with_layout(LayoutInfo::Stringified(layout))
+        .start();
+    let shell = zellij.expect_pty_spawn();
+    shell.output(b"$ ");
+    zellij.wait_until("the shell tab has its default name", |screen| {
+        screen
+            .lines()
+            .first()
+            .is_some_and(|bar| bar.contains("Tab #1"))
+    });
+
+    let payload = serde_json::json!({
+        "op": "project_remember",
+        "args": {"name": "quiet-shell-project", "root": folder.path()},
+    });
+    assert_eq!(
+        zellij.run_cli_action(zellij_utils::cli::CliAction::Pipe {
+            name: Some("store_mutate".to_owned()),
+            payload: Some(payload.to_string()),
+            args: None,
+            plugin: None,
+            plugin_configuration: None,
+            force_launch_plugin: false,
+            skip_plugin_cache: false,
+            floating_plugin: None,
+            in_place_plugin: None,
+            plugin_cwd: None,
+            plugin_title: None,
+        }),
+        0
+    );
+    // No focus change or further shell output: the background plugins must publish it.
+    zellij.wait_until(
+        "the quiet shell tab takes the newly known project",
+        |screen| {
+            screen
+                .lines()
+                .first()
+                .is_some_and(|bar| bar.contains("quiet-shell-project"))
+        },
+    );
+}

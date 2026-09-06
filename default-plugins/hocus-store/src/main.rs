@@ -37,10 +37,13 @@ use hocus_proto::{agents, notes, projects, store, todos};
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
+const RETRY_SECONDS: f64 = 5.0;
+
 #[derive(Default)]
 struct State {
     project_watch_id: Option<u64>,
     latest_snapshot: Option<PollReply>,
+    retry_snapshot: bool,
     /// The tab names last handed to the host, so an unchanged map costs no host
     /// call. The daemon already drops a snapshot identical to the last one, but
     /// two different snapshots routinely name the tabs the same way — a pane
@@ -62,6 +65,8 @@ impl ZellijPlugin for State {
             eprintln!("hocus-store: {error}");
             return;
         }
+        subscribe(&[EventType::Timer]);
+        set_timeout(RETRY_SECONDS);
         import_legacy(&backend, &get_plugin_ids().host_id);
         match backend.watch(
             &FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT),
@@ -80,6 +85,10 @@ impl ZellijPlugin for State {
     }
 
     fn update(&mut self, event: Event) -> bool {
+        if let Event::Timer(_) = event {
+            self.retry_snapshot(&Host::shared());
+            set_timeout(RETRY_SECONDS);
+        }
         if let Event::PluginDataChanged { watch_id, rows, .. } = event {
             if self.project_watch_id == Some(watch_id) {
                 if let Some(reply) = self.latest_snapshot.take() {
@@ -121,16 +130,28 @@ impl State {
         let Ok(reply) = serde_json::from_str::<PollReply>(payload) else {
             return;
         };
-        let Some(panes) = reply.panes.as_deref() else {
+        if reply.panes.is_none() {
+            return;
+        }
+        self.latest_snapshot = Some(reply);
+        self.retry_snapshot = true;
+        self.retry_snapshot(backend);
+    }
+
+    fn retry_snapshot(&mut self, backend: &impl Backend) {
+        if !self.retry_snapshot {
+            return;
+        }
+        let Some(reply) = self.latest_snapshot.take() else {
             return;
         };
-        // A store that could not be read names nothing: publishing against an empty
-        // registry would strip every project's name off its tabs, and the next snapshot
-        // would put them back, for one transient error.
-        let Some(registry) = discover_from(backend, &reply, panes) else {
-            return;
-        };
-        self.publish_tab_names(&registry, &reply, panes);
+        if let Some(panes) = reply.panes.as_deref() {
+            // A failed read must preserve displayed names and retry the latest snapshot.
+            if let Some(registry) = discover_from(backend, &reply, panes) {
+                self.publish_tab_names(&registry, &reply, panes);
+                self.retry_snapshot = false;
+            }
+        }
         self.latest_snapshot = Some(reply);
     }
 
@@ -589,6 +610,42 @@ mod tests {
             state.published_tab_names[&1], "the-workspace",
             "a failed fetch is not an empty registry"
         );
+    }
+
+    #[test]
+    fn a_failed_initial_read_recovers_without_another_snapshot() {
+        let backend = backend();
+        let mut state = State::default();
+        state.on_snapshot(
+            &Unreachable,
+            &snapshot_of_panes(
+                vec![pane_on_tab(3, "zsh", "/work/hocus", 1)],
+                BTreeMap::new(),
+            ),
+        );
+        assert!(state.latest_snapshot.is_some());
+        assert!(state.published_tab_names.is_empty());
+        state.retry_snapshot(&Unreachable);
+        assert!(state.retry_snapshot);
+        state.retry_snapshot(&backend);
+        assert_eq!(state.published_tab_names[&1], "hocus");
+        assert!(!state.retry_snapshot);
+    }
+
+    #[test]
+    fn a_newer_snapshot_supersedes_a_failed_read() {
+        let backend = backend();
+        let mut state = State::default();
+        for folder in ["/work/old", "/work/current"] {
+            state.on_snapshot(
+                &Unreachable,
+                &snapshot_of_panes(vec![pane_on_tab(3, "zsh", folder, 1)], BTreeMap::new()),
+            );
+        }
+        state.on_snapshot(&Unreachable, "invalid");
+        state.retry_snapshot(&backend);
+        assert_eq!(state.published_tab_names[&1], "current");
+        assert!(!state.retry_snapshot);
     }
 
     /// The registered name, not the folder's, when the folder is a project. The
