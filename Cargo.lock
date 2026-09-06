@@ -4924,6 +4924,7 @@ dependencies = [
  "futures-lite",
  "hegeltest",
  "highway",
+ "hocus-proto",
  "insta",
  "interprocess",
  "isahc",

@@ -613,7 +613,91 @@ local reply = zellij.await(zellij.rpc.call {
 The wire is two plugin messages, `zellij_rpc_call` and `zellij_rpc_reply`, correlated by a
 call id and answered to the plugin id the call came from; the prelude handles both, and neither
 reaches a plugin's own `pipe`. Both sides need `message_and_launch_other_plugins`. It is what
-hocus calls an extension's tools over (see *Hocus extensions*).
+hocus calls an extension's tools over (see *Hocus extensions*). To ask hocus's model a
+question of your own rather than answer one, see *Hocus completions*.
+
+## Hocus completions
+
+`zellij.hocus.tools` gives the model in hocus's conversation a tool to call.
+`zellij.hocus.complete` is the other direction: the plugin's own turn at the model.
+
+```lua
+local reply = zellij.await(zellij.hocus.complete {
+  system = "You name panes. One short noun phrase.",
+  messages = { { role = "user", content = screen } },
+  timeout = 60,                              -- seconds; 60 by default
+})
+if reply.error then zellij.log(reply.error) else zellij.rename_terminal_pane { pane_id = id, name = reply.content } end
+```
+
+It is served by **hocus-agentd**, the half of hocus that is always running, so no hocus pane
+need be open and the call never contends with the user's conversation. It is also **stateless**:
+whatever you send is everything the model sees. There is no transcript, no hocus system prompt
+and none of hocus's own tools — only what is in the request.
+
+Which is what makes a tool loop yours to drive. Pass `tools` (OpenAI-shaped specs, passed to the
+endpoint verbatim), get `reply.tool_calls` back as a list of `{ id, name, arguments }` —
+`arguments` the raw JSON string the model wrote, undecoded, so a model that emits nonsense is
+something you are told about rather than something that fails to parse — run them yourself, and
+call again with the round appended:
+
+```lua
+local messages = { { role = "user", content = "what am I running?" } }
+for _ = 1, 5 do                              -- a bound, not `while true`: it is a real key
+  local reply = zellij.await(zellij.hocus.complete { messages = messages, tools = TOOLS })
+  if reply.error then zellij.log(reply.error) break end
+  if #(reply.tool_calls or {}) == 0 then zellij.log(reply.content) break end
+  -- `content` travels beside the calls even when empty: providers require it.
+  table.insert(messages, { role = "assistant", content = reply.content, tool_calls = reply.tool_calls })
+  for _, call in ipairs(reply.tool_calls) do
+    table.insert(messages, { role = "tool", tool_call_id = call.id, content = run(call) })
+  end
+end
+```
+
+`example-plugins/hocus-complete.lua` is that loop as a working pane.
+
+**The reply.** `{ content, tool_calls, finish_reason, usage, model }` on success, and
+`{ error = "..." }` on anything else — no API key, a rate limit, a refusal, a timeout. `error`
+is `nil` on success (the prelude converts the wire's empty string), so `if reply.error then` is the whole of the branching. `usage` is `nil`
+for a provider that reports none, which is not the same as zero.
+
+**Options.** `messages` (required) and `system`, `model`, `tools`, `tool_choice`, `temperature`,
+`max_tokens`, `timeout`. `temperature` and `max_tokens` are left off the request entirely unless
+you name them: providers disagree about both, and a rejected request buys nothing. You never
+name an endpoint, a key, a header or a provider — those are the user's, and hocus's config is
+where they live.
+
+**Permissions and configuration.** Needs `message_and_launch_other_plugins` for addressed requests
+and replies, and `read_application_state` to discover the daemon. It needs a
+session with hocus configured — a model and an API key — and the user can switch the whole lane
+off with `plugin_completions "false"` on hocus's config block, or pin what it may spend with
+`plugin_completion_model "gpt-4o-mini"`, which overrides any `model` a caller names. A request
+carries at most 64000 bytes, 200 messages and 64 tools; one caller may have 2 completions in
+flight and the session 8, so a plugin in a loop stalls on its own answers rather than fanning out
+across the user's key. A request the daemon never hears back about is answered with an error
+after two minutes.
+
+**On the wire** it is `hocus_complete` and `hocus_complete_result`. Each completion queries
+`get_session_list()` and requires exactly one plugin in the current session whose location is
+`zellij:hocus-agentd`. The request uses that plugin's `destination_plugin_id`. Failed or
+ambiguous discovery returns an error without sending the transcript. No daemon is launched.
+Replies must match both the request ID and the host-provided source plugin ID. Forged, stale,
+and unrelated replies are ignored. The prelude reserves both message names, so neither reaches
+a plugin's own `pipe` handler.
+
+**From a shell**, the same thing without a plugin. The pipe blocks and prints one line of the
+reply as JSON:
+
+```sh
+zellij pipe --name hocus_complete -- \
+  '{"messages":[{"role":"user","content":"one line on why builds go red"}]}' |
+  jq -r 'if .error == "" then .content else .error end'
+```
+
+**From a wasm plugin**, depend on `hocus-proto` and use `wire::COMPLETE` /
+`wire::COMPLETE_RESULT` with `wire::CompletionRequest` and `wire::CompletionReply`; the shapes
+are the same JSON. Discover and address the daemon by ID, and check the reply source as above.
 
 ## Rendering
 

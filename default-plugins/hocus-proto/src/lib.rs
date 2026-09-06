@@ -15,6 +15,7 @@
 /// The session's reading of a Claude Code hook event, for plugins that link only this crate.
 pub use zellij_tile::agent;
 pub mod agents;
+pub mod completion;
 pub mod envelope;
 pub mod jobs;
 pub mod launch;

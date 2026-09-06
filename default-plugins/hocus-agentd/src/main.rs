@@ -9,6 +9,7 @@ mod messages;
 mod poll;
 
 use hocus_proto::agents::now_ms;
+use hocus_proto::completion;
 use hocus_proto::envelope;
 use hocus_proto::llm::Endpoint;
 use hocus_proto::location::Location;
@@ -82,6 +83,29 @@ const SUMMARY_ID: &str = "summary_id";
 /// `finish_summary` reads to tell them apart, so a reply can never be taken up by the wrong
 /// half.
 const SUMMARY_RUN: &str = "summary_run";
+
+/// Context key correlating a completion's `WebRequestResult` back to the caller waiting on
+/// it.
+///
+/// A key of its own rather than a reused [`SUMMARY_ID`], for the reason [`SUMMARY_RUN`] is
+/// one: which key is present is what routes the reply, and an answer taken up by the wrong
+/// lane would rename somebody's pane after another plugin's question.
+const COMPLETE_ID: &str = "complete_id";
+/// How many heartbeats a completion may be outstanding before its caller is told nothing
+/// came and the slot is reclaimed.
+///
+/// Twenty-four ticks is two minutes — longer than [`SUMMARY_TICKS`] because a caller
+/// driving its own tool loop may be asking a reasoning model something slow, and shorter
+/// than any caller's patience. Anyone who wants less has their own timeout: the Lua helper
+/// arms one, and a `zellij pipe` can be interrupted.
+const COMPLETE_TICKS: u32 = 24;
+/// How many completions one caller may have in flight.
+///
+/// Not a budget so much as a brake: a plugin in a loop should stall on its own answers
+/// rather than fan out across the user's key.
+const COMPLETIONS_PER_CALLER: usize = 2;
+/// And how many across every caller at once.
+const COMPLETIONS_TOTAL: usize = 8;
 
 /// How much of the user's request is kept to give the summary its question.
 ///
@@ -289,6 +313,14 @@ struct State {
     /// holds that number now.
     run_summary_requests: BTreeMap<String, InFlight>,
     summary_seq: u64,
+    /// Completions in flight on another plugin's behalf, keyed by the id in their
+    /// `WebRequestResult` context.
+    ///
+    /// Keyed by the daemon's own sequence rather than by the caller's `request_id`: two
+    /// plugins picking the same id must not collide, and a caller's id is echoed rather
+    /// than trusted.
+    completions: BTreeMap<u64, Completion>,
+    completion_seq: u64,
     /// How long one poll interval is, in milliseconds, with slack: how recently a pane must
     /// have written to its pty for this poll's picture to be explained by output. Taken from
     /// the timer's own reported elapsed time because plugin timers drift.
@@ -311,6 +343,22 @@ struct InFlight {
     /// Heartbeats this has been outstanding. A `WebRequestResult` that never arrives -
     /// a dropped event, a host that gave up - would otherwise leave the pane looking
     /// permanently mid-request and never summarised again for the life of the session.
+    ticks: u32,
+}
+
+/// A completion that has gone out on somebody else's behalf and not yet come back.
+///
+/// Where [`InFlight`] can simply be forgotten — the pane will go idle again and ask again —
+/// this one is somebody's blocked call, and a `zellij pipe` caller is a blocked process. So
+/// everything needed to *answer* it is held here, because the reply arrives on a
+/// `WebRequestResult` that knows nothing about the pipe that started it.
+struct Completion {
+    /// Where the answer goes.
+    reply_to: PipeSource,
+    /// The caller's own id, echoed on the reply untouched.
+    request_id: String,
+    /// Heartbeats outstanding, for the reason [`InFlight::ticks`] exists — except that
+    /// ageing out here *sends* a reply rather than merely forgetting.
     ticks: u32,
 }
 
@@ -508,7 +556,15 @@ impl ZellijPlugin for State {
                 self.finish_git_probe(exit_code, stdout, context);
             },
             Event::WebRequestResult(status, _, body, context) => {
-                self.finish_summary(status, &body, &context);
+                // Which key is present is what says which lane asked, exactly as
+                // `finish_summary` does for its own two halves. Split here rather than in
+                // there because a completion has a caller blocked on it and a summary has
+                // nobody, so the two disagree about what a reply that fits neither costs.
+                if context.contains_key(COMPLETE_ID) {
+                    self.finish_completion(status, &body, &context);
+                } else {
+                    self.finish_summary(status, &body, &context);
+                }
             },
             Event::Timer(elapsed) => {
                 // A load that ran before the session was there left us with no
@@ -521,6 +577,9 @@ impl ZellijPlugin for State {
                 // read a pane's real output as too old to explain what it shows.
                 self.poll_window_ms = (elapsed.get().max(ACTIVITY_SECONDS) * 1500.0) as u64;
                 self.observe_activity();
+                // Not inside `observe_activity_with`, which prunes by pane and has nobody
+                // to answer: every one of these is somebody's blocked call.
+                self.age_completions_with(answer_completion);
                 self.repair_commands();
                 self.repair_cwds();
                 self.retry_repositories((elapsed).get());
@@ -554,6 +613,10 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if pipe_message.name == wire::COMPLETE {
+            self.on_complete(&pipe_message);
+            return false;
+        }
         if pipe_message.name == wire::AGENT_SUMMARIZE {
             // A person asked for this, so it skips the timing guards the automatic paths
             // keep. Nothing is answered back: the summary arrives the way every other change
@@ -2877,6 +2940,220 @@ impl State {
         self.publish();
     }
 
+    // -- Completions on another plugin's behalf -----------------------------------------
+    //
+    // The other thing a plugin might want from a session that has a model: not a summary of
+    // an agent, but its own turn. Everything the model sees arrives in the request and
+    // nothing is kept between them, so a caller drives its own tool loop by sending the
+    // whole thing back each round. The daemon serves it because it is the half of hocus
+    // that is always running and has no conversation of its own to contend with.
+
+    /// Take a completion request from a plugin or a `zellij pipe`.
+    fn on_complete(&mut self, message: &PipeMessage) {
+        // Read once: each of these is a host call, and hocus's block is what configures
+        // them, for the reason `HOCUS_ALIAS` gives.
+        let configuration = get_plugin_alias_configuration(HOCUS_ALIAS);
+        let allowed = hocus_proto::llm::plugin_completions_enabled(&configuration);
+        let pinned = hocus_proto::llm::pinned_completion_model(&configuration);
+        let endpoint = Endpoint::resolve_for_completion(&configuration, &self.env);
+        self.on_complete_with(
+            &message.source,
+            message.payload.as_deref(),
+            endpoint.as_ref(),
+            allowed,
+            pinned.as_deref(),
+            |url, verb, headers, body, context| {
+                web_request(url, verb, headers, body, context, None)
+            },
+            answer_completion,
+            block_cli_pipe_input,
+        );
+    }
+
+    /// The body of [`Self::on_complete`], with the host calls injected for the tests — the
+    /// same shape `summarize_pane_now_with` and `finish_summary_with` take.
+    ///
+    /// Every path answers, refusals included, for the reason hocus's `on_ask` acknowledges
+    /// even the questions it will not take: a caller cannot tell a daemon that heard and
+    /// said nothing from a session with no daemon in it. Answering is also what releases a
+    /// blocked `zellij pipe`, so a silent path would hang a terminal.
+    ///
+    /// Returns whether the request went out, for the tests.
+    fn on_complete_with(
+        &mut self,
+        source: &PipeSource,
+        payload: Option<&str>,
+        endpoint: Option<&Endpoint>,
+        allowed: bool,
+        pinned: Option<&str>,
+        send: impl FnOnce(&str, HttpVerb, BTreeMap<String, String>, Vec<u8>, BTreeMap<String, String>),
+        answer: impl FnOnce(&PipeSource, &wire::CompletionReply),
+        block: impl FnOnce(&str),
+    ) -> bool {
+        // Before anything that can answer, so the block and its release are always paired.
+        if let PipeSource::Cli(pipe_id) = source {
+            block(pipe_id);
+        }
+        let payload = payload.unwrap_or_default();
+        // Length first, on the JSON as it arrived: a caller that sends a megabyte should
+        // pay for one comparison rather than a megabyte of parsing.
+        let request = match completion::within_size(payload)
+            .and_then(|()| {
+                serde_json::from_str::<wire::CompletionRequest>(payload)
+                    .map_err(|error| format!("that is not a completion request: {error}"))
+            })
+            .and_then(|request| completion::validate(&request).map(|()| request))
+        {
+            Ok(request) => request,
+            Err(detail) => {
+                // A malformed payload has no `request_id` to echo, which is itself the
+                // answer: a caller correlating on one will time out, and the reason is on
+                // the reply for anyone who looks.
+                let request_id = serde_json::from_str::<wire::CompletionRequest>(payload)
+                    .map(|request| request.request_id)
+                    .unwrap_or_default();
+                answer(source, &completion::error_reply(&request_id, &detail));
+                return false;
+            },
+        };
+        let refusal = self.refuse_completion(source, endpoint, allowed);
+        if let Some(detail) = refusal {
+            answer(
+                source,
+                &completion::error_reply(&request.request_id, &detail),
+            );
+            return false;
+        }
+        let endpoint = endpoint.expect("refuse_completion answers a missing endpoint");
+        // A pinned model is the session's answer to "not at a caller's choice of price", so
+        // it beats the caller's; with none pinned the caller's beats the configured one,
+        // because a plugin that knows it needs a reasoning model should be able to say so.
+        let model = pinned
+            .or(request.model.as_deref())
+            .unwrap_or(&endpoint.model);
+
+        self.completion_seq += 1;
+        let id = self.completion_seq;
+        self.completions.insert(
+            id,
+            Completion {
+                reply_to: source.clone(),
+                request_id: request.request_id.clone(),
+                ticks: 0,
+            },
+        );
+        send(
+            &endpoint.url,
+            HttpVerb::Post,
+            endpoint.headers(),
+            completion::completion_request_body(&request, model),
+            BTreeMap::from([(COMPLETE_ID.to_owned(), id.to_string())]),
+        );
+        true
+    }
+
+    /// Why this request will not go out, or `None`.
+    ///
+    /// Split out so the order is readable: what the user switched off, then what the caller
+    /// asked for, then what the session can afford, then whether there is a model at all.
+    fn refuse_completion(
+        &self,
+        source: &PipeSource,
+        endpoint: Option<&Endpoint>,
+        allowed: bool,
+    ) -> Option<String> {
+        if !allowed {
+            return Some(
+                "hocus is configured with plugin_completions \"false\"; no completion was made"
+                    .to_owned(),
+            );
+        }
+        if self.completions.len() >= COMPLETIONS_TOTAL {
+            return Some(format!(
+                "hocus-agentd already has {COMPLETIONS_TOTAL} completions in flight; try again \
+                 when one finishes"
+            ));
+        }
+        // Equality on the source is equality on the caller: a plugin id names one plugin,
+        // and two `zellij pipe` invocations carry different pipe ids. Only `Keybind`, which
+        // is never answered and so never gets this far twice, is indistinguishable.
+        let mine = self
+            .completions
+            .values()
+            .filter(|pending| pending.reply_to == *source)
+            .count();
+        if mine >= COMPLETIONS_PER_CALLER {
+            return Some(format!(
+                "one caller may have {COMPLETIONS_PER_CALLER} completions in flight at a time"
+            ));
+        }
+        // Last, because it is the only refusal that is about the session rather than about
+        // what was asked, and a caller reading one reason wants the actionable one first.
+        if endpoint.is_none() {
+            return Some(
+                "hocus has no API key configured; set OPENAI_API_KEY or point api_key_env at \
+                 the variable that holds one"
+                    .to_owned(),
+            );
+        }
+        None
+    }
+
+    /// Take a completion reply and hand it to whoever asked.
+    fn finish_completion(&mut self, status: u16, body: &[u8], context: &BTreeMap<String, String>) {
+        self.finish_completion_with(status, body, context, answer_completion);
+    }
+
+    /// The body of [`Self::finish_completion`], with the reply injected for the tests.
+    fn finish_completion_with(
+        &mut self,
+        status: u16,
+        body: &[u8],
+        context: &BTreeMap<String, String>,
+        answer: impl FnOnce(&PipeSource, &wire::CompletionReply),
+    ) {
+        let Some(id) = context.get(COMPLETE_ID).and_then(|v| v.parse::<u64>().ok()) else {
+            return;
+        };
+        // Removed whatever happens next: the request is over either way, and leaving it
+        // would hold a slot against this caller for the life of the session.
+        let Some(pending) = self.completions.remove(&id) else {
+            return;
+        };
+        // No staleness rule, for the reason `finish_summary_with` gives for a key press,
+        // only more so: somebody is blocked on this answer.
+        answer(
+            &pending.reply_to,
+            &completion::parse_completion(status, body, &pending.request_id),
+        );
+    }
+
+    /// Answer and clear every completion that has been outstanding too long.
+    ///
+    /// Where the two summary lanes simply forget, this replies: the caller is blocked — a
+    /// `zellij pipe` literally so — and a `WebRequestResult` the host dropped would
+    /// otherwise hang a terminal for the life of the session.
+    fn age_completions_with(
+        &mut self,
+        mut answer: impl FnMut(&PipeSource, &wire::CompletionReply),
+    ) {
+        let mut expired = Vec::new();
+        self.completions.retain(|_, pending| {
+            pending.ticks += 1;
+            if pending.ticks > COMPLETE_TICKS {
+                expired.push((pending.reply_to.clone(), pending.request_id.clone()));
+                return false;
+            }
+            true
+        });
+        for (source, request_id) in expired {
+            answer(
+                &source,
+                &completion::error_reply(&request_id, "no answer from the model in time"),
+            );
+        }
+    }
+
     /// Forget everything this daemon holds about a pane *as an agent*.
     ///
     /// For the two verdicts that end an agent rather than pause one: a latch released because
@@ -3256,6 +3533,32 @@ impl State {
             );
         }
         self.last_published = Some(payload);
+    }
+}
+
+/// Reply to whoever asked for a completion, in the way that kind of caller can hear.
+///
+/// A plugin gets a [`wire::COMPLETE_RESULT`] addressed to its id, the way hocus's `ack_ask`
+/// answers an ask: a caller is one of possibly several and must not read somebody else's
+/// answer. A `zellij pipe` is a blocked process waiting on stdout, and answering it the
+/// other way would hang the terminal. A keybind is neither and gets nothing — there is just
+/// nobody to tell, the same stance `on_ask` takes.
+fn answer_completion(source: &PipeSource, reply: &wire::CompletionReply) {
+    let Ok(json) = serde_json::to_string(reply) else {
+        return;
+    };
+    match source {
+        PipeSource::Plugin(id) => pipe_message_to_plugin(
+            MessageToPlugin::new(wire::COMPLETE_RESULT)
+                .with_destination_plugin_id(*id)
+                .with_payload(json),
+        ),
+        PipeSource::Cli(pipe_id) => {
+            // One line, so a shell can read it without counting braces.
+            cli_pipe_output(pipe_id, &format!("{json}\n"));
+            unblock_cli_pipe_input(pipe_id);
+        },
+        PipeSource::Keybind => {},
     }
 }
 
@@ -8698,5 +9001,514 @@ mod tests {
             4,
             "another turn keeps its Stop fallback"
         );
+    }
+
+    // -- Completions on another plugin's behalf ------------------------------------------
+
+    /// One completion request as it left the daemon: the correlation id it will be answered
+    /// on, and the body. Same shape as [`Asked`], and for the same reason — `completion_seq`
+    /// is the daemon's, so a test that guessed at it would be asserting on its own setup.
+    struct Requested {
+        id: u64,
+        body: serde_json::Value,
+    }
+
+    /// Everything one `on_complete_with` did: whether it went out, what went out, what was
+    /// answered, and which pipes it blocked.
+    struct Completed {
+        sent: bool,
+        requests: Vec<Requested>,
+        replies: Vec<wire::CompletionReply>,
+        blocked: Vec<String>,
+    }
+
+    fn complete(
+        state: &mut State,
+        source: &PipeSource,
+        request: &wire::CompletionRequest,
+    ) -> Completed {
+        complete_configured(state, source, request, Some(&endpoint()), true, None)
+    }
+
+    /// The same, for the tests that are about the session's configuration rather than the
+    /// caller's request.
+    fn complete_configured(
+        state: &mut State,
+        source: &PipeSource,
+        request: &wire::CompletionRequest,
+        endpoint: Option<&Endpoint>,
+        allowed: bool,
+        pinned: Option<&str>,
+    ) -> Completed {
+        complete_raw(
+            state,
+            source,
+            &serde_json::to_string(request).expect("encoded"),
+            endpoint,
+            allowed,
+            pinned,
+        )
+    }
+
+    /// The same again, from a payload that need not be a valid request.
+    fn complete_raw(
+        state: &mut State,
+        source: &PipeSource,
+        payload: &str,
+        endpoint: Option<&Endpoint>,
+        allowed: bool,
+        pinned: Option<&str>,
+    ) -> Completed {
+        let mut requests = Vec::new();
+        let mut replies = Vec::new();
+        let mut blocked = Vec::new();
+        let sent = state.on_complete_with(
+            source,
+            Some(payload),
+            endpoint,
+            allowed,
+            pinned,
+            |_, _, _, body, context| {
+                requests.push(Requested {
+                    id: context[COMPLETE_ID].parse().expect("a correlation id"),
+                    body: serde_json::from_slice(&body).expect("a request body"),
+                });
+            },
+            |_, reply| replies.push(reply.clone()),
+            |pipe_id| blocked.push(pipe_id.to_owned()),
+        );
+        Completed {
+            sent,
+            requests,
+            replies,
+            blocked,
+        }
+    }
+
+    /// The reply `finish_completion_with` handed back, and who it was addressed to.
+    fn finish_completion(
+        state: &mut State,
+        status: u16,
+        body: &[u8],
+        id: u64,
+    ) -> Option<(PipeSource, wire::CompletionReply)> {
+        let mut answered = None;
+        state.finish_completion_with(
+            status,
+            body,
+            &BTreeMap::from([(COMPLETE_ID.to_owned(), id.to_string())]),
+            |source, reply| answered = Some((source.clone(), reply.clone())),
+        );
+        answered
+    }
+
+    fn asking(text: &str) -> wire::CompletionRequest {
+        wire::CompletionRequest {
+            request_id: "hc1".to_owned(),
+            messages: vec![wire::CompletionMessage {
+                role: "user".to_owned(),
+                content: text.to_owned(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// One ordinary completion body, as a provider would answer it.
+    fn completion_body(content: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "model": "test-model",
+            "choices": [{ "finish_reason": "stop", "message": { "content": content } }],
+        }))
+        .expect("encoded")
+    }
+
+    #[test]
+    fn a_completion_goes_out_correlated_and_comes_back_to_the_caller_that_asked() {
+        let mut state = State::default();
+        let caller = PipeSource::Plugin(PluginId::new(9));
+
+        let out = complete(&mut state, &caller, &asking("why is the build red?"));
+
+        assert!(out.sent);
+        assert!(
+            out.replies.is_empty(),
+            "nothing to say until the model does"
+        );
+        assert_eq!(out.requests.len(), 1);
+        assert_eq!(out.requests[0].body["model"], "test-model");
+        assert_eq!(out.requests[0].body["stream"], false);
+        assert_eq!(
+            out.requests[0].body["messages"][0]["content"],
+            "why is the build red?"
+        );
+
+        let (source, reply) = finish_completion(
+            &mut state,
+            200,
+            &completion_body("a stale lockfile"),
+            out.requests[0].id,
+        )
+        .expect("answered");
+
+        assert_eq!(source, caller);
+        assert_eq!(reply.request_id, "hc1", "the caller's own id, echoed");
+        assert_eq!(reply.content, "a stale lockfile");
+        assert!(reply.error.is_empty());
+        assert!(
+            state.completions.is_empty(),
+            "the slot is given back once the answer is in"
+        );
+    }
+
+    /// The context key is the whole of what keeps the two lanes apart, so the request must
+    /// carry this one and none of the summary lane's.
+    #[test]
+    fn a_completion_carries_its_own_correlation_key_and_not_a_summarys() {
+        let mut state = State::default();
+        let mut context = None;
+        state.on_complete_with(
+            &PipeSource::Plugin(PluginId::new(9)),
+            Some(&serde_json::to_string(&asking("why?")).unwrap()),
+            Some(&endpoint()),
+            true,
+            None,
+            |_, _, _, _, sent| context = Some(sent),
+            |_, _| {},
+            |_| {},
+        );
+        let context = context.expect("sent");
+        assert!(context.contains_key(COMPLETE_ID));
+        assert!(!context.contains_key(SUMMARY_PANE));
+        assert!(!context.contains_key(SUMMARY_ID));
+        assert!(!context.contains_key(SUMMARY_RUN));
+    }
+
+    /// The split in the `WebRequestResult` arm, from the other side: a summary's context
+    /// names no completion, so the completion lane must leave it entirely alone.
+    #[test]
+    fn a_summarys_answer_is_not_taken_up_by_the_completion_lane() {
+        let mut state = State::default();
+        let out = complete(
+            &mut state,
+            &PipeSource::Plugin(PluginId::new(9)),
+            &asking("why?"),
+        );
+        assert!(out.sent);
+
+        let mut answered = false;
+        state.finish_completion_with(
+            200,
+            &completion_body("not yours"),
+            &BTreeMap::from([
+                (SUMMARY_PANE.to_owned(), "7".to_owned()),
+                (SUMMARY_ID.to_owned(), "1".to_owned()),
+            ]),
+            |_, _| answered = true,
+        );
+
+        assert!(!answered);
+        assert_eq!(state.completions.len(), 1, "still waiting for its own");
+    }
+
+    /// A reply for a request that has already been answered or aged out is nobody's, and
+    /// must not be handed to whoever holds that slot next.
+    #[test]
+    fn a_reply_for_a_completion_nobody_is_waiting_for_is_dropped() {
+        let mut state = State::default();
+        assert!(finish_completion(&mut state, 200, &completion_body("late"), 99).is_none());
+    }
+
+    #[test]
+    fn a_completion_is_refused_when_the_session_switched_them_off() {
+        let mut state = State::default();
+        let out = complete_configured(
+            &mut state,
+            &PipeSource::Plugin(PluginId::new(9)),
+            &asking("why?"),
+            Some(&endpoint()),
+            false,
+            None,
+        );
+
+        assert!(!out.sent);
+        assert!(out.requests.is_empty());
+        assert_eq!(out.replies.len(), 1);
+        assert_eq!(out.replies[0].request_id, "hc1");
+        assert!(out.replies[0].error.contains("plugin_completions"));
+        assert!(state.completions.is_empty(), "nothing is holding a slot");
+    }
+
+    /// A refusal, not silence: a caller cannot tell an unconfigured session from one with no
+    /// daemon in it, and the reply is the only thing that says which.
+    #[test]
+    fn a_completion_is_refused_with_no_api_key_and_says_what_to_set() {
+        let mut state = State::default();
+        let out = complete_configured(
+            &mut state,
+            &PipeSource::Plugin(PluginId::new(9)),
+            &asking("why?"),
+            None,
+            true,
+            None,
+        );
+
+        assert!(!out.sent);
+        assert_eq!(out.replies.len(), 1);
+        assert!(out.replies[0].error.contains("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn a_malformed_payload_is_answered_rather_than_ignored() {
+        let mut state = State::default();
+        let out = complete_raw(
+            &mut state,
+            &PipeSource::Plugin(PluginId::new(9)),
+            "{not json",
+            Some(&endpoint()),
+            true,
+            None,
+        );
+
+        assert!(!out.sent);
+        assert_eq!(out.replies.len(), 1);
+        assert!(out.replies[0].error.contains("not a completion request"));
+    }
+
+    /// `validate`'s refusals reach the caller in the daemon's reply rather than as silence.
+    #[test]
+    fn a_request_with_no_messages_is_refused_in_words() {
+        let mut state = State::default();
+        let out = complete(
+            &mut state,
+            &PipeSource::Plugin(PluginId::new(9)),
+            &wire::CompletionRequest {
+                request_id: "hc1".to_owned(),
+                ..Default::default()
+            },
+        );
+
+        assert!(!out.sent);
+        assert!(out.replies[0].error.contains("at least one message"));
+        assert_eq!(out.replies[0].request_id, "hc1", "echoed even in a refusal");
+    }
+
+    /// The brake, not a budget: a plugin in a loop stalls on its own answers.
+    #[test]
+    fn one_caller_may_only_have_so_many_completions_in_flight() {
+        let mut state = State::default();
+        let caller = PipeSource::Plugin(PluginId::new(9));
+        for _ in 0..COMPLETIONS_PER_CALLER {
+            assert!(complete(&mut state, &caller, &asking("why?")).sent);
+        }
+
+        let out = complete(&mut state, &caller, &asking("why?"));
+        assert!(!out.sent);
+        assert!(out.replies[0].error.contains("at a time"));
+
+        // Another plugin is another caller, and is not held up by this one.
+        assert!(
+            complete(
+                &mut state,
+                &PipeSource::Plugin(PluginId::new(10)),
+                &asking("why?")
+            )
+            .sent
+        );
+        // Nor is somebody at a shell.
+        assert!(
+            complete(
+                &mut state,
+                &PipeSource::Cli("pipe-1".to_owned()),
+                &asking("why?")
+            )
+            .sent
+        );
+    }
+
+    #[test]
+    fn the_session_as_a_whole_has_a_ceiling_too() {
+        let mut state = State::default();
+        for caller in 0..(COMPLETIONS_TOTAL / COMPLETIONS_PER_CALLER) {
+            for _ in 0..COMPLETIONS_PER_CALLER {
+                assert!(
+                    complete(
+                        &mut state,
+                        &PipeSource::Plugin(PluginId::new(caller as u32)),
+                        &asking("why?")
+                    )
+                    .sent
+                );
+            }
+        }
+
+        let out = complete(
+            &mut state,
+            &PipeSource::Plugin(PluginId::new(99)),
+            &asking("why?"),
+        );
+
+        assert!(!out.sent);
+        assert!(out.replies[0].error.contains("in flight"));
+    }
+
+    /// With nothing pinned the caller's model wins, because a plugin that knows it needs a
+    /// reasoning model should be able to say so.
+    #[test]
+    fn a_callers_model_is_used_unless_the_session_pinned_one() {
+        let mut state = State::default();
+        let mut request = asking("why?");
+        request.model = Some("gpt-5".to_owned());
+
+        let out = complete(&mut state, &PipeSource::Plugin(PluginId::new(9)), &request);
+        assert_eq!(out.requests[0].body["model"], "gpt-5");
+
+        let mut state = State::default();
+        let out = complete_configured(
+            &mut state,
+            &PipeSource::Plugin(PluginId::new(9)),
+            &request,
+            Some(&endpoint()),
+            true,
+            Some("cheap-model"),
+        );
+        assert_eq!(
+            out.requests[0].body["model"], "cheap-model",
+            "the session's answer to a caller's choice of price"
+        );
+    }
+
+    /// The caller's tools travel verbatim, which is what makes a plugin-driven tool loop
+    /// possible at all.
+    #[test]
+    fn a_callers_tools_and_their_results_make_the_round_trip() {
+        let mut state = State::default();
+        let mut request = asking("where is Oslo?");
+        request.tools = vec![serde_json::json!({
+            "type": "function",
+            "function": { "name": "lookup", "parameters": { "type": "object" } },
+        })];
+
+        let out = complete(&mut state, &PipeSource::Plugin(PluginId::new(9)), &request);
+        assert_eq!(
+            out.requests[0].body["tools"][0]["function"]["name"],
+            "lookup"
+        );
+
+        let body = serde_json::to_vec(&serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": { "content": null, "tool_calls": [{
+                    "id": "call_1", "type": "function",
+                    "function": { "name": "lookup", "arguments": "{\"city\":\"Oslo\"}" },
+                }] },
+            }],
+        }))
+        .expect("encoded");
+        let (_, reply) =
+            finish_completion(&mut state, 200, &body, out.requests[0].id).expect("answered");
+
+        assert_eq!(reply.finish_reason, "tool_calls");
+        assert_eq!(reply.tool_calls.len(), 1);
+        assert_eq!(reply.tool_calls[0].name, "lookup");
+        assert_eq!(reply.tool_calls[0].arguments, r#"{"city":"Oslo"}"#);
+    }
+
+    /// A provider's refusal is the caller's answer, not the daemon's silence.
+    #[test]
+    fn a_rate_limit_reaches_the_caller_in_the_providers_words() {
+        let mut state = State::default();
+        let out = complete(
+            &mut state,
+            &PipeSource::Plugin(PluginId::new(9)),
+            &asking("why?"),
+        );
+
+        let (_, reply) = finish_completion(
+            &mut state,
+            429,
+            br#"{"error":{"message":"Rate limit reached"}}"#,
+            out.requests[0].id,
+        )
+        .expect("answered");
+
+        assert!(reply.error.contains("Rate limit reached"));
+        assert_eq!(reply.request_id, "hc1");
+        assert!(state.completions.is_empty(), "a failure frees the slot too");
+    }
+
+    /// The whole reason this lane ages out at all: a `zellij pipe` is a blocked process, and
+    /// a `WebRequestResult` the host dropped would hang it for the life of the session.
+    #[test]
+    fn a_completion_that_never_answers_is_timed_out_and_its_slot_freed() {
+        let mut state = State::default();
+        let caller = PipeSource::Cli("pipe-1".to_owned());
+        assert!(complete(&mut state, &caller, &asking("why?")).sent);
+
+        let mut answered = Vec::new();
+        for _ in 0..COMPLETE_TICKS {
+            state.age_completions_with(|source, reply| {
+                answered.push((source.clone(), reply.clone()))
+            });
+        }
+        assert!(answered.is_empty(), "still within its patience");
+
+        state.age_completions_with(|source, reply| answered.push((source.clone(), reply.clone())));
+
+        assert_eq!(answered.len(), 1);
+        assert_eq!(answered[0].0, caller);
+        assert_eq!(answered[0].1.request_id, "hc1");
+        assert!(answered[0].1.error.contains("no answer"));
+        assert!(state.completions.is_empty());
+        // And the caller may ask again, which is what freeing the slot was for.
+        assert!(complete(&mut state, &caller, &asking("why?")).sent);
+    }
+
+    /// Blocked before anything that can answer, so the block and its release are paired on
+    /// every path — including the refusals, which answer immediately.
+    #[test]
+    fn a_cli_caller_is_blocked_on_every_path_including_a_refusal() {
+        let mut state = State::default();
+        let caller = PipeSource::Cli("pipe-1".to_owned());
+
+        let out = complete(&mut state, &caller, &asking("why?"));
+        assert_eq!(out.blocked, vec!["pipe-1".to_owned()]);
+
+        let refused = complete_configured(
+            &mut state,
+            &PipeSource::Cli("pipe-2".to_owned()),
+            &asking("why?"),
+            None,
+            true,
+            None,
+        );
+        assert_eq!(refused.blocked, vec!["pipe-2".to_owned()]);
+        assert_eq!(refused.replies.len(), 1, "answered, so released");
+    }
+
+    /// Somebody at a shell has nothing to correlate — the answer comes back down their own
+    /// pipe — so an empty id must be an ordinary request rather than a refusal.
+    #[test]
+    fn a_request_with_no_id_is_ordinary() {
+        let mut state = State::default();
+        let out = complete_raw(
+            &mut state,
+            &PipeSource::Cli("pipe-1".to_owned()),
+            r#"{"messages":[{"role":"user","content":"why?"}]}"#,
+            Some(&endpoint()),
+            true,
+            None,
+        );
+
+        assert!(out.sent);
+        let (_, reply) = finish_completion(
+            &mut state,
+            200,
+            &completion_body("because"),
+            out.requests[0].id,
+        )
+        .expect("answered");
+        assert!(reply.request_id.is_empty());
+        assert_eq!(reply.content, "because");
     }
 }

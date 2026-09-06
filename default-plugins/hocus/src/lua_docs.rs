@@ -33,6 +33,7 @@ const EXAMPLE_AGENT_COMMIT: &str = include_str!("../../../example-plugins/agent-
 const EXAMPLE_DASHBOARD: &str = include_str!("../../../example-plugins/dashboard.lua");
 const EXAMPLE_WORKFLOW: &str = include_str!("../../../example-plugins/workflow.lua");
 const EXAMPLE_TODO_EXTENSION: &str = include_str!("../../../example-plugins/todo-extension.lua");
+const EXAMPLE_HOCUS_COMPLETE: &str = include_str!("../../../example-plugins/hocus-complete.lua");
 const EXAMPLE_TODO_PANE: &str = include_str!("../../../example-plugins/todo-pane.lua");
 const EXAMPLE_HOCUS_TODOS: &str = include_str!("../../../example-plugins/hocus-todos.lua");
 const EXAMPLE_HOCUS_NOTES: &str = include_str!("../../../example-plugins/hocus-notes.lua");
@@ -71,7 +72,7 @@ fn prelude_part(index: usize) -> &'static str {
 ///
 /// Each guide section is named by the `##` heading it is cut at rather than by a byte offset, so
 /// editing the guide cannot silently start returning the wrong text — it fails a test instead.
-pub const SECTIONS: [&str; 46] = [
+pub const SECTIONS: [&str; 48] = [
     "index",
     "quickstart",
     "contract",
@@ -82,6 +83,7 @@ pub const SECTIONS: [&str; 46] = [
     "tasks",
     "agents",
     "plugin_calls",
+    "hocus_completions",
     "rendering",
     "modules",
     "data",
@@ -106,6 +108,7 @@ pub const SECTIONS: [&str; 46] = [
     "example_dashboard",
     "example_workflow",
     "example_todo_extension",
+    "example_hocus_complete",
     "example_todo_pane",
     "example_hocus_todos",
     "example_hocus_notes",
@@ -130,6 +133,7 @@ fn heading(section: &str) -> Option<&'static str> {
         "tasks" => "Tasks",
         "agents" => "Agents",
         "plugin_calls" => "Plugin-to-plugin calls",
+        "hocus_completions" => "Hocus completions",
         "rendering" => "Rendering",
         "modules" => "Modules",
         "data" => "Data",
@@ -265,6 +269,7 @@ fn index() -> String {
             "example_dashboard" => "example: a themed dashboard - zellij.ui, a timer, a command, keys and the mouse".to_owned(),
             "example_workflow" => "example: a multi-step command sequence in one pane (pane_workflow)".to_owned(),
             "example_todo_extension" => "example: a hocus extension owning a shared: data namespace - permissions, schema, registration, tools".to_owned(),
+            "example_hocus_complete" => "example: a plugin's own model turn, looping on the tool calls it gets back".to_owned(),
             "example_todo_pane" => "example: the pane half of the same shared data - a watch, keys, and an input mode".to_owned(),
             "example_hocus_todos" => "example: reading hocus's own todo rows out of the shared data store".to_owned(),
             "example_hocus_notes" => "example: hocus's notes, tags and todo links".to_owned(),
@@ -281,6 +286,7 @@ fn index() -> String {
             "tasks" => "zellij.task/await: straight-line code over commands, panes, agents and timers".to_owned(),
             "agents" => "spawning, observing and steering coding agents in panes".to_owned(),
             "plugin_calls" => "zellij.rpc: a call with an answer, between plugins".to_owned(),
+            "hocus_completions" => "zellij.hocus.complete: a plugin's own model turn".to_owned(),
             "commands_workflows" => "pane_workflow: a command sequence in one pane".to_owned(),
             "permissions" => "every permission a plugin can request, and what each allows"
                 .to_owned(),
@@ -322,6 +328,7 @@ pub fn section(name: &str) -> Option<String> {
         "example_dashboard" => Some(fenced(EXAMPLE_DASHBOARD)),
         "example_workflow" => Some(fenced(EXAMPLE_WORKFLOW)),
         "example_todo_extension" => Some(fenced(EXAMPLE_TODO_EXTENSION)),
+        "example_hocus_complete" => Some(fenced(EXAMPLE_HOCUS_COMPLETE)),
         "example_todo_pane" => Some(fenced(EXAMPLE_TODO_PANE)),
         "example_hocus_todos" => Some(fenced(EXAMPLE_HOCUS_TODOS)),
         "example_hocus_notes" => Some(fenced(EXAMPLE_HOCUS_NOTES)),
@@ -529,10 +536,10 @@ mod tests {
         let index = docs(None);
         assert!(!index.contains("## A plugin"), "{index}");
         assert!(index.contains("quickstart"), "but it still points at it");
-        // The budget grew with the tasks, agents and rpc parts of the prelude and the guide
-        // sections that go with them; it is still one short listing.
+        // The budget grew with the tasks, agents, rpc and completion parts of the prelude and
+        // the guide sections that go with them; it is still one short listing.
         assert!(
-            index.len() < 4_000,
+            index.len() < 4_100,
             "the index is {} bytes and is paid for on every later turn",
             index.len()
         );

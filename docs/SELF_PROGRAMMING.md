@@ -285,8 +285,16 @@ own source, prompts it, awaits its exit, and on reload finds its permissions in 
 `load`. Loop it after touching any of the above:
 `cargo x integration-test -- -j 16 -E 'test(/harness/) | test(a_written_hook)'`.
 
-Not done, for later: an offline `zellij plugins test` runner with a scripted host; a
-`zellij.hocus.complete` one-shot completion served by hocus-agentd over the rpc wire; the
+- **`zellij.hocus.complete`**: a one-shot, tool-capable completion served by hocus-agentd, so a
+  plugin can run its own model turn rather than only give hocus's model a tool. Stateless — the
+  request carries everything the model sees — which is what lets a caller drive its own tool
+  loop, and what keeps the daemon free of a transcript to get out of step with. It is
+  `hocus_complete` / `hocus_complete_result`. The prelude uses `get_session_list()` to find
+  exactly one `zellij:hocus-agentd` in the current session and addresses its plugin ID.
+  Replies must come from that ID. This needs `read_application_state` as well as
+  `message_and_launch_other_plugins`. See *Hocus completions* in `docs/LUA_PLUGINS.md`.
+
+Not done, for later: an offline `zellij plugins test` runner with a scripted host; the
 permission cache keyed by resolved path; `zellij plugins run --headless` from the CLI.
 
 ## Not done, by decision
