@@ -3,6 +3,7 @@
 //! file commands are stubs that say so, which is what the file tools answer here.
 
 use super::*;
+use zellij_tile::prelude::TabPosition;
 
 fn plugin_state() -> State {
     let mut state = ready_state();
@@ -364,7 +365,7 @@ fn session_running(path: &str, id: u32, pane: bool) -> SessionInfo {
     let mut panes = PaneManifest::default();
     if pane {
         panes.panes.insert(
-            0,
+            TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(id, true),
                 ..PaneInfo::default()

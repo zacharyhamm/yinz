@@ -1,5 +1,6 @@
 use zellij_runtime::errors::prelude::*;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 
 use super::agent_placement::AgentPlacement;
 use super::warp_ops::{PANE_WARP_SCREEN_RESERVE, TAB_WARP_SCREEN_RESERVE};
@@ -385,8 +386,7 @@ pub(crate) fn screen_thread_main(
     }
     screen.set_host_notification_protocol(host_notification_protocol);
 
-    let mut pending_tab_switches: HashSet<(usize, ClientId)> = HashSet::new(); // usize is the
-                                                                               // tab_index
+    let mut pending_tab_switches: HashSet<(TabPosition, ClientId)> = HashSet::new();
     let mut pending_events_waiting_for_tab: Vec<ScreenInstruction> = vec![];
     let mut pending_events_waiting_for_client: Vec<ScreenInstruction> = vec![];
     let mut pending_events_waiting_for_pane: HashMap<PaneId, Vec<ScreenInstruction>> =
@@ -2061,13 +2061,12 @@ pub(crate) fn screen_thread_main(
                     }
                 }
                 if !screen.has_pending_tabs() {
-                    for (tab_index, client_id) in pending_tab_switches.drain() {
-                        screen.go_to_tab(tab_index + 1, client_id)?;
+                    for (tab_position, client_id) in pending_tab_switches.drain() {
+                        screen.switch_active_tab(tab_position, None, true, client_id)?;
                     }
                     if should_change_focus_to_new_tab {
-                        // Convert ID → position for go_to_tab (which expects 1-based position)
                         if let Some(tab_position) = screen.get_tab_position_by_id(tab_id) {
-                            screen.go_to_tab(tab_position + 1, client_id)?;
+                            screen.switch_active_tab(tab_position, None, true, client_id)?;
                         }
                     }
                 } else if should_change_focus_to_new_tab {
@@ -2141,12 +2140,12 @@ pub(crate) fn screen_thread_main(
                     // the client focus, which should have happened before this instruction and not
                     // after)
                     Some(client_id) if !screen.has_pending_tabs() => {
-                        screen.go_to_tab(tab_index as usize, client_id)?;
+                        screen.go_to_tab(tab_index, client_id)?;
                         screen.render(None)?;
                     },
                     _ => {
                         if let Some(client_id) = client_id {
-                            pending_tab_switches.insert((tab_index as usize, client_id));
+                            pending_tab_switches.insert((tab_index.position(), client_id));
                         }
                     },
                 }
@@ -3654,7 +3653,7 @@ pub(crate) fn screen_thread_main(
                                 // waiting for it
             ) => {
                 // tab_index here is 1-based user input representing display position
-                let tab_position = tab_index.saturating_sub(1); // Convert to 0-based
+                let tab_position = tab_index.position();
 
                 match screen.get_tab_by_position_mut(tab_position) {
                     Some(tab) => {

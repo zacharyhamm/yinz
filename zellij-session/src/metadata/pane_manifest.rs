@@ -1,7 +1,8 @@
 use super::*;
+use zellij_types::internal_ids::TabPosition;
 
 pub fn decode_from_kdl(kdl_doucment: &KdlDocument) -> PaneManifest {
-    let mut panes: HashMap<usize, Vec<PaneInfo>> = HashMap::new();
+    let mut panes: HashMap<TabPosition, Vec<PaneInfo>> = HashMap::new();
     for node in kdl_doucment.nodes() {
         if node.name().to_string() == "pane" {
             if let Some(pane_document) = node.children() {
@@ -16,7 +17,7 @@ pub fn decode_from_kdl(kdl_doucment: &KdlDocument) -> PaneManifest {
     }
     PaneManifest { panes }
 }
-pub fn encode_to_kdl(value: &PaneManifest) -> KdlDocument {
+pub fn encode_to_kdl(value: &PaneManifest) -> anyhow::Result<KdlDocument> {
     let mut kdl_doucment = KdlDocument::new();
     for (tab_position, panes) in &value.panes {
         for pane in panes {
@@ -24,12 +25,12 @@ pub fn encode_to_kdl(value: &PaneManifest) -> KdlDocument {
             let mut pane = pane_info::encode_to_kdl(pane);
 
             let mut position_node = KdlNode::new("tab_position");
-            position_node.push(*tab_position as i64);
+            position_node.push(i64::try_from(tab_position.get())?);
             pane.nodes_mut().push(position_node);
 
             pane_node.set_children(pane);
             kdl_doucment.nodes_mut().push(pane_node);
         }
     }
-    kdl_doucment
+    Ok(kdl_doucment)
 }

@@ -1,5 +1,7 @@
 use super::*;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 
 #[test]
 fn open_new_tab() {
@@ -18,7 +20,7 @@ fn open_new_tab() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        1,
+        TabPosition::new(1),
         "Active tab switched to new tab"
     );
 }
@@ -42,7 +44,7 @@ pub fn switch_to_prev_tab() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        0,
+        TabPosition::new(0),
         "Active tab switched to previous tab"
     );
 }
@@ -69,7 +71,7 @@ pub fn switch_to_next_tab() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        1,
+        TabPosition::new(1),
         "Active tab switched to next tab"
     );
 }
@@ -123,7 +125,7 @@ pub fn close_tab() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        0,
+        TabPosition::new(0),
         "Active tab switched to previous tab"
     );
 }
@@ -150,7 +152,7 @@ pub fn close_the_middle_tab() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        1,
+        TabPosition::new(1),
         "Active tab switched to previous tab"
     );
 }
@@ -178,7 +180,7 @@ fn move_focus_left_at_left_screen_edge_changes_tab() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        0,
+        TabPosition::new(0),
         "Active tab switched to previous"
     );
 }
@@ -193,7 +195,7 @@ fn basic_move_of_active_tab_to_left() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        1
+        TabPosition::new(1)
     );
 
     screen
@@ -205,7 +207,7 @@ fn basic_move_of_active_tab_to_left() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        0,
+        TabPosition::new(0),
         "Active tab moved to left"
     );
 }
@@ -219,7 +221,7 @@ fn move_of_active_tab_to_left_when_there_is_only_one_tab() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        0
+        TabPosition::new(0)
     );
 
     screen
@@ -231,7 +233,7 @@ fn move_of_active_tab_to_left_when_there_is_only_one_tab() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        0,
+        TabPosition::new(0),
         "Active tab moved to left"
     );
 }
@@ -247,7 +249,7 @@ fn move_of_active_tab_to_left_multiple_times() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        2
+        TabPosition::new(2)
     );
 
     screen
@@ -262,7 +264,7 @@ fn move_of_active_tab_to_left_multiple_times() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        0,
+        TabPosition::new(0),
         "Active tab moved to left twice"
     );
 }
@@ -284,7 +286,7 @@ fn wrapping_move_of_active_tab_to_left() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        0
+        TabPosition::new(0)
     );
 
     screen
@@ -296,7 +298,7 @@ fn wrapping_move_of_active_tab_to_left() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        2,
+        TabPosition::new(2),
         "Active tab moved to left until wrapped around"
     );
 }
@@ -314,7 +316,7 @@ fn basic_move_of_active_tab_to_right() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        0
+        TabPosition::new(0)
     );
 
     screen
@@ -326,7 +328,7 @@ fn basic_move_of_active_tab_to_right() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        1,
+        TabPosition::new(1),
         "Active tab moved to right"
     );
 }
@@ -340,7 +342,7 @@ fn move_of_active_tab_to_right_when_there_is_only_one_tab() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        0
+        TabPosition::new(0)
     );
 
     screen
@@ -352,7 +354,7 @@ fn move_of_active_tab_to_right_when_there_is_only_one_tab() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        0,
+        TabPosition::new(0),
         "Active tab moved to left"
     );
 }
@@ -374,7 +376,7 @@ fn move_of_active_tab_to_right_multiple_times() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        0
+        TabPosition::new(0)
     );
 
     screen
@@ -389,7 +391,7 @@ fn move_of_active_tab_to_right_multiple_times() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        2,
+        TabPosition::new(2),
         "Active tab moved to right twice"
     );
 }
@@ -405,7 +407,7 @@ fn wrapping_move_of_active_tab_to_right() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        2
+        TabPosition::new(2)
     );
 
     screen
@@ -417,7 +419,7 @@ fn wrapping_move_of_active_tab_to_right() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        0,
+        TabPosition::new(0),
         "Active tab moved to right until wrapped around"
     );
 }
@@ -441,11 +443,20 @@ fn tab_id_remains_stable_after_switch() {
 
     // Verify initial positions match IDs
     assert_eq!(screen.tabs.get(&TabId::new(0)).unwrap().id, TabId::new(0));
-    assert_eq!(screen.tabs.get(&TabId::new(0)).unwrap().position, 0);
+    assert_eq!(
+        screen.tabs.get(&TabId::new(0)).unwrap().position,
+        TabPosition::new(0)
+    );
     assert_eq!(screen.tabs.get(&TabId::new(1)).unwrap().id, TabId::new(1));
-    assert_eq!(screen.tabs.get(&TabId::new(1)).unwrap().position, 1);
+    assert_eq!(
+        screen.tabs.get(&TabId::new(1)).unwrap().position,
+        TabPosition::new(1)
+    );
     assert_eq!(screen.tabs.get(&TabId::new(2)).unwrap().id, TabId::new(2));
-    assert_eq!(screen.tabs.get(&TabId::new(2)).unwrap().position, 2);
+    assert_eq!(
+        screen.tabs.get(&TabId::new(2)).unwrap().position,
+        TabPosition::new(2)
+    );
 
     // Move active tab (position 2, ID 2) to right, which wraps to position 0 and rotates the
     // others right by one (IDs stay stable, only positions change)
@@ -470,7 +481,7 @@ fn tab_id_remains_stable_after_switch() {
     );
     assert_eq!(
         screen.tabs.get(&TabId::new(0)).unwrap().position,
-        1,
+        TabPosition::new(1),
         "Tab with ID 0 should now be at position 1"
     );
 
@@ -482,7 +493,7 @@ fn tab_id_remains_stable_after_switch() {
     );
     assert_eq!(
         screen.tabs.get(&TabId::new(1)).unwrap().position,
-        2,
+        TabPosition::new(2),
         "Tab with ID 1 should now be at position 2"
     );
 
@@ -494,26 +505,38 @@ fn tab_id_remains_stable_after_switch() {
     );
     assert_eq!(
         screen.tabs.get(&TabId::new(2)).unwrap().position,
-        0,
+        TabPosition::new(0),
         "Tab with ID 2 should now be at position 0"
     );
 
     // Verify that lookup by position works correctly after the rotation
-    let tab_at_pos_0 = screen.tabs.values().find(|t| t.position == 0).unwrap();
+    let tab_at_pos_0 = screen
+        .tabs
+        .values()
+        .find(|t| t.position == TabPosition::new(0))
+        .unwrap();
     assert_eq!(
         tab_at_pos_0.id,
         TabId::new(2),
         "Tab at position 0 should have ID 2"
     );
 
-    let tab_at_pos_1 = screen.tabs.values().find(|t| t.position == 1).unwrap();
+    let tab_at_pos_1 = screen
+        .tabs
+        .values()
+        .find(|t| t.position == TabPosition::new(1))
+        .unwrap();
     assert_eq!(
         tab_at_pos_1.id,
         TabId::new(0),
         "Tab at position 1 should have ID 0"
     );
 
-    let tab_at_pos_2 = screen.tabs.values().find(|t| t.position == 2).unwrap();
+    let tab_at_pos_2 = screen
+        .tabs
+        .values()
+        .find(|t| t.position == TabPosition::new(2))
+        .unwrap();
     assert_eq!(
         tab_at_pos_2.id,
         TabId::new(1),
@@ -544,7 +567,7 @@ fn move_focus_right_at_right_screen_edge_changes_tab() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        2,
+        TabPosition::new(2),
         "Active tab switched to next"
     );
 }
@@ -559,8 +582,12 @@ pub fn toggle_to_previous_tab_simple() {
 
     new_tab(&mut screen, 1, TabId::new(1));
     new_tab(&mut screen, 2, TabId::new(2));
-    screen.go_to_tab(1, crate::ClientId::new(1)).expect("TEST");
-    screen.go_to_tab(2, crate::ClientId::new(1)).expect("TEST");
+    screen
+        .go_to_tab(TabNumber::new(1), crate::ClientId::new(1))
+        .expect("TEST");
+    screen
+        .go_to_tab(TabNumber::new(2), crate::ClientId::new(1))
+        .expect("TEST");
 
     screen.toggle_tab(crate::ClientId::new(1)).expect("TEST");
     assert_eq!(
@@ -568,7 +595,7 @@ pub fn toggle_to_previous_tab_simple() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        0,
+        TabPosition::new(0),
         "Active tab toggler to previous tab"
     );
 
@@ -578,7 +605,7 @@ pub fn toggle_to_previous_tab_simple() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        1,
+        TabPosition::new(1),
         "Active tab toggler to previous tab"
     );
 }
@@ -607,7 +634,7 @@ pub fn toggle_to_previous_tab_create_tabs_only() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        1,
+        TabPosition::new(1),
         "Active tab toggler to previous tab"
     );
     assert_eq!(
@@ -622,7 +649,7 @@ pub fn toggle_to_previous_tab_create_tabs_only() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        2,
+        TabPosition::new(2),
         "Active tab toggler to previous tab"
     );
     assert_eq!(
@@ -637,7 +664,7 @@ pub fn toggle_to_previous_tab_create_tabs_only() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        1,
+        TabPosition::new(1),
         "Active tab toggler to previous tab"
     );
 }
@@ -665,7 +692,7 @@ pub fn toggle_to_previous_tab_delete() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        3,
+        TabPosition::new(3),
         "Active tab toggler to previous tab"
     );
 
@@ -680,7 +707,7 @@ pub fn toggle_to_previous_tab_delete() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        2,
+        TabPosition::new(2),
         "Active tab toggler to previous tab"
     );
 
@@ -695,7 +722,7 @@ pub fn toggle_to_previous_tab_delete() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        3,
+        TabPosition::new(3),
         "Active tab toggler to previous tab"
     );
 
@@ -712,7 +739,7 @@ pub fn toggle_to_previous_tab_delete() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        2,
+        TabPosition::new(2),
         "Active tab toggler to previous tab"
     );
     screen
@@ -728,7 +755,7 @@ pub fn toggle_to_previous_tab_delete() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        1,
+        TabPosition::new(1),
         "Active tab toggler to previous tab"
     );
 
@@ -743,7 +770,7 @@ pub fn toggle_to_previous_tab_delete() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        1,
+        TabPosition::new(1),
         "Active tab toggler to previous tab"
     );
 
@@ -753,7 +780,7 @@ pub fn toggle_to_previous_tab_delete() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        2,
+        TabPosition::new(2),
         "Active tab toggler to previous tab"
     );
     assert_eq!(
@@ -799,7 +826,7 @@ fn switch_to_tab_with_fullscreen() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        0,
+        TabPosition::new(0),
         "Active tab switched to previous"
     );
     assert_eq!(
@@ -1012,7 +1039,7 @@ fn layout_metadata_lists_tabs_in_position_order() {
             .get_active_tab(crate::ClientId::new(1))
             .unwrap()
             .position,
-        1
+        TabPosition::new(1)
     );
 
     let layout_metadata = screen.get_layout_metadata(None, None).to_layout_metadata();
@@ -1030,4 +1057,67 @@ fn layout_metadata_lists_tabs_in_position_order() {
         ],
         "the dumped layout should follow tab positions, not creation order"
     );
+}
+
+#[test]
+fn a_tab_number_queued_while_a_tab_loads_keeps_its_position() {
+    let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 24 });
+    let screen_thread = mock_screen.run(None, vec![]);
+    let client_id = mock_screen.main_client_id;
+    // These instructions share a FIFO: the switch arrives before the new tab's layout.
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewTab(
+            None,
+            None,
+            Some(TiledPaneLayout::default()),
+            vec![],
+            None,
+            (Some(vec![]), Some(vec![])),
+            None,
+            false,
+            false,
+            client_id,
+            None,
+        ))
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::GoToTab(
+            TabNumber::new(1),
+            Some(client_id),
+            None,
+        ))
+        .unwrap();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::ApplyLayout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(TerminalId::new(1), None)],
+            vec![],
+            vec![],
+            HashMap::new(),
+            TabId::new(1),
+            false,
+            client_id,
+            None,
+            None,
+        ))
+        .unwrap();
+    let (response_tx, response_rx) = crossbeam::channel::bounded(1);
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::GetCurrentTabInfo {
+            client_id,
+            response_channel: response_tx,
+        })
+        .unwrap();
+    let focused = response_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the screen processed the layout and query")
+        .expect("a focused tab");
+    mock_screen.teardown(vec![screen_thread]);
+    assert_eq!(focused.tab_id, TabId::new(0));
+    assert_eq!(focused.position, TabPosition::new(0));
 }

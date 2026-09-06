@@ -3,6 +3,7 @@ use super::{command::RunCommand, plugins::PluginAliases};
 use crate::data::{OverlayPlacement, PluginTag};
 use crate::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use crate::internal_ids::TabId;
+use crate::internal_ids::TabPosition;
 use crate::pane_size::{Dimension, PaneGeom};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -672,7 +673,7 @@ pub type SwapFloatingLayout = (
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 pub struct Layout {
     pub tabs: Vec<(Option<String>, TiledPaneLayout, Vec<FloatingPaneLayout>)>,
-    pub focused_tab_index: Option<usize>,
+    pub focused_tab_index: Option<TabPosition>,
     pub template: Option<(TiledPaneLayout, Vec<FloatingPaneLayout>)>,
     pub swap_layouts: Vec<(TiledPaneLayout, Vec<FloatingPaneLayout>)>,
     pub swap_tiled_layouts: Vec<SwapTiledLayout>,
@@ -1154,7 +1155,7 @@ impl Layout {
         self.tabs.clone()
     }
 
-    pub fn focused_tab_index(&self) -> Option<usize> {
+    pub fn focused_tab_index(&self) -> Option<TabPosition> {
         self.focused_tab_index
     }
 

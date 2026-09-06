@@ -13,6 +13,8 @@ use strum::IntoEnumIterator;
 use zellij_types::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use zellij_types::input::options::PaneFrameStyle;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::keys::{BareKey, KeyModifier, KeyWithModifier};
 use zellij_types::mouse::{MouseEvent, MouseEventType};
 use zellij_types::{
@@ -937,7 +939,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         ActionKind::GoToPreviousTab => Action::GoToPreviousTab,
         ActionKind::CloseTab => Action::CloseTab,
         ActionKind::GoToTab => Action::GoToTab {
-            index: tc.draw(generators::integers::<u32>()),
+            index: TabNumber::new(tc.draw(generators::integers::<u32>())),
         },
         ActionKind::GoToTabName => Action::GoToTabName {
             name: strings(tc),
@@ -974,7 +976,10 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         ActionKind::ToggleTheme => Action::ToggleTheme,
         ActionKind::SwitchSession => Action::SwitchSession {
             name: strings(tc),
-            tab_position: optional_usize_as_u32(tc),
+            tab_position: optional_usize_as_u32(tc)
+                .map(|p| u32::try_from(p).map(TabNumber::new))
+                .transpose()
+                .unwrap(),
             pane_id: booleans(tc)
                 .then(|| PaneId::from_legacy(tc.draw(generators::integers::<u32>()), booleans(tc))),
             layout: booleans(tc).then(|| layout_infos(tc)),
@@ -1110,7 +1115,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             name: bytes(tc),
         },
         ActionKind::RenameTab => Action::RenameTab {
-            tab_index: tc.draw(generators::integers::<u32>()),
+            tab_index: TabNumber::new(tc.draw(generators::integers::<u32>())),
             name: bytes(tc),
         },
         ActionKind::GoToTabById => Action::GoToTabById {
@@ -1390,7 +1395,7 @@ pub(crate) fn plugin_messages(tc: &hegel::TestCase) -> PluginMessage {
 pub(crate) fn connect_to_sessions(tc: &hegel::TestCase) -> ConnectToSession {
     ConnectToSession {
         name: optional_strings(tc),
-        tab_position: optional_usize_as_u32(tc),
+        tab_position: optional_usize_as_u32(tc).map(TabPosition::new),
         pane_id: booleans(tc).then(|| PaneId::from_legacy(u32s(tc), booleans(tc))),
         layout: booleans(tc).then(|| layout_infos(tc)),
         cwd: optional_paths(tc),
@@ -1642,7 +1647,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             overlay_placements(tc),
             context(tc),
         ),
-        CommandType::SwitchTabTo => PluginCommand::SwitchTabTo(u32s(tc)),
+        CommandType::SwitchTabTo => PluginCommand::SwitchTabTo(TabNumber::new(u32s(tc))),
         CommandType::SetTimeout => PluginCommand::SetTimeout(seconds(tc)),
         CommandType::ExecCmd => PluginCommand::ExecCmd(up_to(tc, 3, strings)),
         CommandType::PostMessageTo => PluginCommand::PostMessageTo(plugin_messages(tc)),
@@ -1711,7 +1716,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::NextSwapLayout => PluginCommand::NextSwapLayout,
         CommandType::GoToTabName => PluginCommand::GoToTabName(strings(tc)),
         CommandType::FocusOrCreateTab => PluginCommand::FocusOrCreateTab(strings(tc)),
-        CommandType::GoToTab => PluginCommand::GoToTab(u32s(tc)),
+        CommandType::GoToTab => PluginCommand::GoToTab(TabPosition::new(u32s(tc) as usize)),
         CommandType::StartOrReloadPlugin => PluginCommand::StartOrReloadPlugin(strings(tc)),
         CommandType::CloseTerminalPane => {
             PluginCommand::CloseTerminalPane(zellij_types::internal_ids::TerminalId::new(u32s(tc)))
@@ -1737,7 +1742,9 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             zellij_types::internal_ids::PluginId::new(u32s(tc)),
             strings(tc),
         ),
-        CommandType::RenameTab => PluginCommand::RenameTab(u32s(tc), strings(tc)),
+        CommandType::RenameTab => {
+            PluginCommand::RenameTab(TabPosition::new(u32s(tc) as usize), strings(tc))
+        },
         CommandType::ReportPanic => PluginCommand::ReportPanic(strings(tc)),
         CommandType::RequestPluginPermissions => {
             PluginCommand::RequestPluginPermissions(permission_types(tc))
@@ -1878,14 +1885,18 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             PluginCommand::TogglePaneEmbedOrEjectForPaneId(pane_id(tc))
         },
         // `CloseTabWithIndexPayload.tab_index` is a `uint32`.
-        CommandType::CloseTabWithIndex => PluginCommand::CloseTabWithIndex(usize_as_u32(tc)),
+        CommandType::CloseTabWithIndex => {
+            PluginCommand::CloseTabWithIndex(TabPosition::new(usize_as_u32(tc)))
+        },
         CommandType::BreakPanesToNewTab => {
             PluginCommand::BreakPanesToNewTab(pane_ids(tc), optional_strings(tc), booleans(tc))
         },
         // `BreakPanesToTabWithIndexPayload.tab_index` is a `uint32`.
-        CommandType::BreakPanesToTabWithIndex => {
-            PluginCommand::BreakPanesToTabWithIndex(pane_ids(tc), usize_as_u32(tc), booleans(tc))
-        },
+        CommandType::BreakPanesToTabWithIndex => PluginCommand::BreakPanesToTabWithIndex(
+            pane_ids(tc),
+            TabPosition::new(usize_as_u32(tc)),
+            booleans(tc),
+        ),
         CommandType::SwitchTabToId => {
             PluginCommand::SwitchTabToId(TabId::try_from(u64s(tc)).unwrap())
         },

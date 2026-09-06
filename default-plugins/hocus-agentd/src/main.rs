@@ -3619,7 +3619,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         state.manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
@@ -3663,7 +3663,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         state.manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
@@ -3762,7 +3762,7 @@ mod tests {
             ..State::default()
         };
         state.manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
@@ -3774,7 +3774,10 @@ mod tests {
         let run_id = state.runs[&7].id.clone();
         assert_eq!(run_id, "claude:cc-session-1");
 
-        state.manifest.panes.insert(0, vec![]);
+        state
+            .manifest
+            .panes
+            .insert(zellij_tile::prelude::TabPosition::new(0), vec![]);
         state.rebuild_panes();
 
         assert!(
@@ -3808,7 +3811,7 @@ mod tests {
 
         // `kill -9`: no `SessionEnd`, and the pane's record goes to `Exited` on its own.
         state.manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
@@ -3851,7 +3854,7 @@ mod tests {
     fn a_pane_that_reports_some_other_way_is_read_off_the_manifest() {
         let mut state = State::default();
         state.manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
@@ -3880,7 +3883,7 @@ mod tests {
     fn command_and_cwd_events_survive_the_next_pane_snapshot() {
         let mut state = State::default();
         state.manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
@@ -4045,7 +4048,10 @@ mod tests {
         vm.target =
             PaneTarget::firecracker("review", None, Some(std::path::Path::new("/work/hocus")))
                 .expect("a valid VM name and an absolute worktree");
-        state.manifest.panes.insert(0, vec![vm]);
+        state
+            .manifest
+            .panes
+            .insert(zellij_tile::prelude::TabPosition::new(0), vec![vm]);
         state.rebuild_panes();
 
         assert!(
@@ -4054,7 +4060,10 @@ mod tests {
         );
         assert_eq!(state.location_of(7), Some(local("/work/hocus")));
 
-        state.manifest.panes.insert(0, vec![]);
+        state
+            .manifest
+            .panes
+            .insert(zellij_tile::prelude::TabPosition::new(0), vec![]);
         state.rebuild_panes();
         assert_eq!(state.location_of(7), None);
     }
@@ -4076,7 +4085,10 @@ mod tests {
         vm.target =
             PaneTarget::firecracker("review", None, Some(std::path::Path::new("/work/hocus")))
                 .expect("a valid VM name and an absolute worktree");
-        state.manifest.panes.insert(0, vec![vm]);
+        state
+            .manifest
+            .panes
+            .insert(zellij_tile::prelude::TabPosition::new(0), vec![vm]);
         state.cwds.insert(7, "/workspace".to_owned());
         state.rebuild_panes();
         assert_eq!(state.location_of(7), Some(local("/work/hocus")));
@@ -4084,7 +4096,7 @@ mod tests {
         // Re-run here: the same pane id, a local target, and no host — which is exactly
         // what the server reports, since it retracts both when the pane is respawned.
         state.manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
@@ -4118,7 +4130,10 @@ mod tests {
         vm.target =
             PaneTarget::firecracker("review", None, Some(std::path::Path::new("/work/hocus")))
                 .expect("a valid VM name and an absolute worktree");
-        state.manifest.panes.insert(0, vec![vm]);
+        state
+            .manifest
+            .panes
+            .insert(zellij_tile::prelude::TabPosition::new(0), vec![vm]);
         state.cwds.insert(7, "/workspace".to_owned());
         state.rebuild_panes();
         assert_eq!(state.location_of(7), Some(local("/work/hocus")));
@@ -4130,7 +4145,10 @@ mod tests {
             ..PaneInfo::default()
         };
         moved.target = PaneTarget::firecracker("dev", None, None).expect("a valid VM name");
-        state.manifest.panes.insert(0, vec![moved]);
+        state
+            .manifest
+            .panes
+            .insert(zellij_tile::prelude::TabPosition::new(0), vec![moved]);
         state.rebuild_panes();
 
         assert!(
@@ -4159,7 +4177,10 @@ mod tests {
             ..PaneInfo::default()
         };
         joining.target = PaneTarget::firecracker("review", None, None).expect("a valid VM name");
-        state.manifest.panes.insert(0, vec![joining]);
+        state
+            .manifest
+            .panes
+            .insert(zellij_tile::prelude::TabPosition::new(0), vec![joining]);
         state.firecracker_worktrees.insert(
             7,
             VmCheckout {
@@ -4638,7 +4659,7 @@ mod tests {
     fn a_manifest_without_a_cwd_does_not_clobber_a_known_one() {
         let mut state = State::default();
         state.manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "codex".to_owned(),
@@ -4837,7 +4858,7 @@ mod tests {
             .repositories
             .insert(local("/work"), projects::Repository::folder("/work"));
         state.manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "codex".to_owned(),
@@ -4858,7 +4879,7 @@ mod tests {
         // Back in front, and still the same process: it has not re-run, so it
         // does not have to earn its latch again.
         state.manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "codex".to_owned(),
@@ -4882,7 +4903,7 @@ mod tests {
     fn a_rerun_pane_earns_its_latch_again() {
         let mut state = ran_codex(7);
         state.manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
@@ -4901,7 +4922,7 @@ mod tests {
         // manifest's last word rather than the agent's.
         state.commands.insert(7, "zsh".to_owned());
         state.manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
@@ -4931,7 +4952,7 @@ mod tests {
             },
         );
         state.manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
@@ -4944,7 +4965,7 @@ mod tests {
         // Re-run: the same pane id, running again.
         state.commands.insert(7, "zsh".to_owned());
         state.manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
@@ -4966,7 +4987,7 @@ mod tests {
         let manifest = |id: u32| {
             let mut manifest = PaneManifest::default();
             manifest.panes.insert(
-                0,
+                zellij_tile::prelude::TabPosition::new(0),
                 vec![PaneInfo {
                     id: zellij_tile::prelude::PaneId::from_legacy(id, false),
                     title: "Pane #1".to_owned(),
@@ -5114,7 +5135,7 @@ mod tests {
     fn a_pane_update_does_not_cancel_the_bootstrap_retry() {
         let mut state = State::default();
         state.manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
@@ -5253,7 +5274,7 @@ mod tests {
     fn sized_manifest(pane_id: u32, rows: usize, columns: usize) -> PaneManifest {
         let mut manifest = PaneManifest::default();
         manifest.panes.insert(
-            0,
+            zellij_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(pane_id, false),
                 title: "claude".to_owned(),
@@ -7799,7 +7820,10 @@ mod tests {
         vm.target =
             PaneTarget::firecracker("review", None, Some(std::path::Path::new("/work/hocus")))
                 .expect("a valid VM name and an absolute worktree");
-        state.manifest.panes.insert(0, vec![vm]);
+        state
+            .manifest
+            .panes
+            .insert(zellij_tile::prelude::TabPosition::new(0), vec![vm]);
         state.rebuild_panes();
 
         let run = state.runs.get(&7).expect("the pane's run");

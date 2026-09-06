@@ -2,6 +2,7 @@ use unicode_width::UnicodeWidthStr;
 use zellij_runtime::errors::prelude::*;
 use zellij_tile_utils::ellipsize;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::pane_id::PaneId;
 
 use super::Screen;
@@ -375,7 +376,7 @@ impl Screen {
         use zellij_storage::session_recording::PaneMetadata;
         let mut result = Vec::new();
         // Build a map from tab position to TabInfo for quick lookup
-        let tab_by_position: std::collections::HashMap<usize, &TabInfo> =
+        let tab_by_position: std::collections::HashMap<TabPosition, &TabInfo> =
             tab_infos.iter().map(|t| (t.position, t)).collect();
         for (tab_position_key, pane_infos) in &pane_manifest.panes {
             if let Some(tab_info) = tab_by_position.get(tab_position_key) {

@@ -8,6 +8,7 @@
 use crate::agents;
 use std::collections::{BTreeMap, BTreeSet};
 use zellij_tile::prelude::TabId;
+use zellij_tile::prelude::TabPosition;
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
 /// The terminal panes of a manifest, as the agent module wants them.
@@ -19,7 +20,7 @@ use zellij_tile::prelude::{PaneManifest, TabInfo};
 pub fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::AgentPane> {
     // The manifest is keyed by tab *position*, not tab id — same join as
     // tools::list_session.
-    let by_position: BTreeMap<usize, (TabId, &str)> = tabs
+    let by_position: BTreeMap<TabPosition, (TabId, &str)> = tabs
         .iter()
         .map(|tab| (tab.position, (tab.tab_id, tab.name.as_str())))
         .collect();
@@ -128,7 +129,7 @@ mod tests {
     fn terminal_panes_carry_the_reported_firecracker_location() {
         let mut manifest = PaneManifest::default();
         manifest.panes.insert(
-            0,
+            TabPosition::new(0),
             vec![
                 PaneInfo {
                     id: zellij_tile::prelude::PaneId::from_legacy(3, false),
@@ -168,7 +169,7 @@ mod tests {
     fn manifest_pane_ids_include_a_suppressed_pane() {
         let mut manifest = PaneManifest::default();
         manifest.panes.insert(
-            0,
+            TabPosition::new(0),
             vec![
                 PaneInfo {
                     id: zellij_tile::prelude::PaneId::from_legacy(3, false),
@@ -200,7 +201,7 @@ mod tests {
 
     fn tab(position: usize, active: bool, floating_visible: bool) -> TabInfo {
         TabInfo {
-            position,
+            position: TabPosition::new(position),
             tab_id: TabId::new(position + 100),
             active,
             are_floating_panes_visible: floating_visible,
@@ -219,8 +220,8 @@ mod tests {
     #[test]
     fn the_focused_pane_is_the_one_in_the_active_tab() {
         let mut manifest = PaneManifest::default();
-        manifest.panes.insert(0, vec![focused(3)]);
-        manifest.panes.insert(1, vec![focused(4)]);
+        manifest.panes.insert(TabPosition::new(0), vec![focused(3)]);
+        manifest.panes.insert(TabPosition::new(1), vec![focused(4)]);
 
         let tabs = [tab(0, false, false), tab(1, true, false)];
 
@@ -230,7 +231,7 @@ mod tests {
     #[test]
     fn no_active_tab_means_no_focused_pane() {
         let mut manifest = PaneManifest::default();
-        manifest.panes.insert(0, vec![focused(3)]);
+        manifest.panes.insert(TabPosition::new(0), vec![focused(3)]);
 
         assert_eq!(focused_pane(&manifest, &[tab(0, false, false)]), None);
     }
@@ -240,7 +241,7 @@ mod tests {
     fn the_visible_layer_decides_between_two_focused_panes() {
         let mut manifest = PaneManifest::default();
         manifest.panes.insert(
-            0,
+            TabPosition::new(0),
             vec![
                 focused(3),
                 PaneInfo {
@@ -259,7 +260,7 @@ mod tests {
     fn a_plugin_pane_is_never_the_focused_pane() {
         let mut manifest = PaneManifest::default();
         manifest.panes.insert(
-            0,
+            TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(3, true),
                 ..focused(3)
@@ -279,7 +280,7 @@ mod tests {
         };
         let mut manifest = PaneManifest::default();
         manifest.panes.insert(
-            0,
+            TabPosition::new(0),
             vec![
                 PaneInfo {
                     is_focused: false,
@@ -300,7 +301,7 @@ mod tests {
     #[test]
     fn a_focused_terminal_is_not_a_focused_plugin_pane() {
         let mut manifest = PaneManifest::default();
-        manifest.panes.insert(0, vec![focused(3)]);
+        manifest.panes.insert(TabPosition::new(0), vec![focused(3)]);
 
         assert_eq!(focused_plugin_pane(&manifest, &[tab(0, true, false)]), None);
     }

@@ -2,6 +2,7 @@ use super::*;
 use hocus_proto::notes;
 use hocus_proto::panes::terminal_panes;
 use zellij_tile::prelude::TabId;
+use zellij_tile::prelude::TabPosition;
 
 fn state_with(messages: Vec<Message>, status: Status) -> State {
     State {
@@ -631,13 +632,13 @@ fn pane_info(id: u32, title: &str, command: Option<&str>) -> PaneInfo {
 
 fn manifest(panes: Vec<PaneInfo>) -> PaneManifest {
     PaneManifest {
-        panes: std::collections::HashMap::from([(0, panes)]),
+        panes: std::collections::HashMap::from([(TabPosition::new(0), panes)]),
     }
 }
 
 fn tab_info(position: usize, tab_id: TabId, name: &str) -> TabInfo {
     TabInfo {
-        position,
+        position: TabPosition::new(position),
         tab_id,
         name: name.to_owned(),
         ..TabInfo::default()

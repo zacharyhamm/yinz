@@ -19,7 +19,7 @@ use zellij_runtime::channels::SenderWithContext;
 use zellij_types::diagnostics::ContextType;
 use {
     zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ExitReason, zellij_ipc::nested_session,
-    zellij_types::data::ConnectToSession,
+    zellij_types::data::SessionConnection,
 };
 
 /// Why the loop stopped, and what the caller should do next.
@@ -28,7 +28,7 @@ pub(crate) struct LoopOutcome {
     pub exit_msg: String,
     /// Set when the client should reconnect to a different session rather
     /// than exiting.
-    pub reconnect_to_session: Option<ConnectToSession>,
+    pub reconnect_to_session: Option<SessionConnection>,
 }
 
 pub(crate) struct ClientLoop<'a> {

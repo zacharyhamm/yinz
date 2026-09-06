@@ -3,6 +3,7 @@
 
 use super::*;
 use zellij_tile::prelude::TabId;
+use zellij_tile::prelude::TabPosition;
 
 fn config(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs
@@ -395,7 +396,7 @@ fn pane(id: u32, is_suppressed: bool) -> PaneInfo {
 
 fn manifest(tab_index: usize, panes: Vec<PaneInfo>) -> PaneManifest {
     let mut all = std::collections::HashMap::new();
-    all.insert(tab_index, panes);
+    all.insert(TabPosition::new(tab_index), panes);
     PaneManifest { panes: all }
 }
 
@@ -415,7 +416,11 @@ fn a_pane_update_reporting_us_suppressed_confirms_the_hide() {
         state.hide_pending == 0,
         "the hide we asked for has been seen to land"
     );
-    assert_eq!(state.own_tab_index, Some(0), "and we learn where we are");
+    assert_eq!(
+        state.own_tab_index,
+        Some(TabPosition::new(0)),
+        "and we learn where we are"
+    );
 }
 
 #[test]
@@ -470,7 +475,7 @@ fn a_pane_update_while_visible_only_tracks_which_tab_we_are_on() {
     assert!(!state.hidden);
     assert_eq!(
         state.own_tab_index,
-        Some(3),
+        Some(TabPosition::new(3)),
         "which is what `follow_tab` needs before it will move anything"
     );
 }
@@ -665,7 +670,7 @@ fn placed_state() -> State {
         ..Default::default()
     };
     state.on_tabs(vec![TabInfo {
-        position: 0,
+        position: TabPosition::new(0),
         tab_id: TabId::new(0),
         active: true,
         display_area_rows: 50,
@@ -755,11 +760,11 @@ fn a_reopened_list_is_placed_again() {
 fn a_tab_update_retries_the_lists_placement() {
     let mut state = placed_state();
     state.agents_plugin = Some(zellij_tile::prelude::PluginId::new(9));
-    state.agents_tab_index = Some(0);
+    state.agents_tab_index = Some(TabPosition::new(0));
     state.agents_placed = false;
 
     state.on_tabs(vec![TabInfo {
-        position: 0,
+        position: TabPosition::new(0),
         tab_id: TabId::new(0),
         active: true,
         display_area_rows: 50,
@@ -789,7 +794,7 @@ fn a_resize_while_both_halves_are_hidden_is_still_placed() {
     assert!(state.hidden && !state.agents_visible);
 
     state.on_tabs(vec![TabInfo {
-        position: 0,
+        position: TabPosition::new(0),
         tab_id: TabId::new(0),
         active: true,
         display_area_rows: 25,
@@ -983,14 +988,22 @@ fn the_clear_placement_is_the_same_size_as_the_corner_one() {
 fn only_the_client_the_panes_are_sitting_with_may_move_them() {
     // We are on tab 0 with client A. B is on tab 1 and switches to tab 3.
     assert_eq!(
-        tab_to_follow(Some(0), Some(1), 3),
+        tab_to_follow(
+            Some(TabPosition::new(0)),
+            Some(TabPosition::new(1)),
+            TabPosition::new(3)
+        ),
         None,
         "a client who was never on our tab cannot pull the column onto theirs"
     );
     // A, who is on our tab, switches to tab 3.
     assert_eq!(
-        tab_to_follow(Some(0), Some(0), 3),
-        Some(3),
+        tab_to_follow(
+            Some(TabPosition::new(0)),
+            Some(TabPosition::new(0)),
+            TabPosition::new(3)
+        ),
+        Some(TabPosition::new(3)),
         "the client we are sitting with takes us along"
     );
 }
@@ -1000,7 +1013,11 @@ fn only_the_client_the_panes_are_sitting_with_may_move_them() {
 /// the second look at the same update come back empty.
 #[test]
 fn a_move_does_not_ask_for_another_one() {
-    let (own, was_on, is_on) = (Some(0), Some(0), 3);
+    let (own, was_on, is_on) = (
+        Some(TabPosition::new(0)),
+        Some(TabPosition::new(0)),
+        TabPosition::new(3),
+    );
     let moved = tab_to_follow(own, was_on, is_on).expect("the sitting client moves us");
     assert_eq!(
         tab_to_follow(Some(moved), Some(moved), is_on),
@@ -1012,12 +1029,12 @@ fn a_move_does_not_ask_for_another_one() {
 #[test]
 fn nothing_is_followed_until_we_know_where_we_are() {
     assert_eq!(
-        tab_to_follow(None, Some(0), 3),
+        tab_to_follow(None, Some(TabPosition::new(0)), TabPosition::new(3)),
         None,
         "`PaneUpdate` is the authority on our own tab, and it has not spoken yet"
     );
     assert_eq!(
-        tab_to_follow(Some(0), None, 3),
+        tab_to_follow(Some(TabPosition::new(0)), None, TabPosition::new(3)),
         None,
         "and a client heard from for the first time is not known to have been anywhere"
     );
@@ -1031,13 +1048,13 @@ fn nothing_is_followed_until_we_know_where_we_are() {
 fn two_clients_on_different_tabs_leave_the_panes_alone() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_tab_index: Some(0),
+        own_tab_index: Some(TabPosition::new(0)),
         ..State::default()
     };
     let tabs = |active: usize| {
         (0..4)
             .map(|position| TabInfo {
-                position,
+                position: TabPosition::new(position),
                 tab_id: TabId::new(position),
                 active: position == active,
                 display_area_rows: 50,
@@ -1056,12 +1073,15 @@ fn two_clients_on_different_tabs_leave_the_panes_alone() {
 
     assert_eq!(
         state.own_tab_index,
-        Some(0),
+        Some(TabPosition::new(0)),
         "the column stayed on the tab it started on"
     );
     assert_eq!(
         state.client_tabs,
-        BTreeMap::from([(ClientId::new(1), 0), (ClientId::new(2), 1)]),
+        BTreeMap::from([
+            (ClientId::new(1), TabPosition::new(0)),
+            (ClientId::new(2), TabPosition::new(1))
+        ]),
         "and both clients were recorded where they actually are"
     );
 }
@@ -1078,10 +1098,10 @@ fn the_agent_lists_tab_is_tracked_beside_our_own() {
     };
 
     state.on_panes(manifest(3, vec![pane(7, false), pane(9, false)]));
-    assert_eq!(state.own_tab_index, Some(3));
+    assert_eq!(state.own_tab_index, Some(TabPosition::new(3)));
     assert_eq!(
         state.agents_tab_index,
-        Some(3),
+        Some(TabPosition::new(3)),
         "the pair are together, which is what says there is nothing to rejoin"
     );
 }
@@ -1102,7 +1122,7 @@ fn a_placement_that_could_not_land_is_made_again_when_the_pane_appears() {
         ..Default::default()
     };
     let tabs = vec![TabInfo {
-        position: 0,
+        position: TabPosition::new(0),
         tab_id: TabId::new(0),
         active: true,
         display_area_rows: 50,
@@ -1144,13 +1164,16 @@ fn a_reveal_stays_on_the_tab_the_server_put_us_on() {
     let mut state = State {
         own_is_floating: Some(true),
         own_plugin_id: zellij_tile::prelude::PluginId::new(7),
-        own_tab_index: Some(3),
+        own_tab_index: Some(TabPosition::new(3)),
         hidden: true,
         hide_pending: 0,
         client: ClientId::new(1),
-        client_tabs: BTreeMap::from([(ClientId::new(1), 0), (ClientId::new(2), 3)]),
+        client_tabs: BTreeMap::from([
+            (ClientId::new(1), TabPosition::new(0)),
+            (ClientId::new(2), TabPosition::new(3)),
+        ]),
         tabs: vec![TabInfo {
-            position: 0,
+            position: TabPosition::new(0),
             tab_id: TabId::new(0),
             active: true,
             ..TabInfo::default()
@@ -1162,7 +1185,7 @@ fn a_reveal_stays_on_the_tab_the_server_put_us_on() {
     assert!(!state.hidden, "the reveal was noticed");
     assert_eq!(
         state.own_tab_index,
-        Some(3),
+        Some(TabPosition::new(3)),
         "and the column stayed where `move_to_focused_tab` had already put it"
     );
 }
@@ -1182,7 +1205,7 @@ fn a_visible_agent_list_brings_the_conversation_back_with_it() {
         own_is_floating: Some(true),
         own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         agents_plugin: Some(zellij_tile::prelude::PluginId::new(9)),
-        own_tab_index: Some(3),
+        own_tab_index: Some(TabPosition::new(3)),
         hidden: true,
         hide_pending: 0,
         ..Default::default()
@@ -1192,7 +1215,7 @@ fn a_visible_agent_list_brings_the_conversation_back_with_it() {
 
     assert!(!state.hidden, "the panel is up, so both halves are");
     assert!(state.agents_visible);
-    assert_eq!(state.own_tab_index, Some(3));
+    assert_eq!(state.own_tab_index, Some(TabPosition::new(3)));
 }
 
 /// And the frame between the two hides landing is not that: one Esc suppresses both halves and
@@ -1207,7 +1230,7 @@ fn a_hide_only_half_landed_is_not_read_as_a_reveal() {
         own_is_floating: Some(true),
         own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         agents_plugin: Some(zellij_tile::prelude::PluginId::new(9)),
-        own_tab_index: Some(3),
+        own_tab_index: Some(TabPosition::new(3)),
         hidden: true,
         hide_pending: 2,
         ..Default::default()
@@ -1277,7 +1300,7 @@ fn a_greeting_to_a_conversation_that_was_already_open_claims_nothing() {
     let mut state = State {
         own_is_floating: Some(true),
         own_plugin_id: zellij_tile::prelude::PluginId::new(7),
-        own_tab_index: Some(0),
+        own_tab_index: Some(TabPosition::new(0)),
         ..Default::default()
     };
 
@@ -1366,7 +1389,7 @@ fn a_list_that_never_arrives_is_asked_for_again_on_the_next_reveal() {
 /// A tab over the whole session surface.
 fn a_tab() -> TabInfo {
     TabInfo {
-        position: 0,
+        position: TabPosition::new(0),
         tab_id: TabId::new(0),
         active: true,
         display_area_rows: 50,
@@ -1409,26 +1432,38 @@ fn the_surface_is_what_a_tab_update_caches() {
 
 #[test]
 fn a_summoned_agent_list_is_followed_rather_than_dragged_back() {
-    assert_eq!(rejoin(0, 1, true, true), Some(Rejoin::Follow(1)));
+    assert_eq!(
+        rejoin(TabPosition::new(0), TabPosition::new(1), true, true),
+        Some(Rejoin::Follow(TabPosition::new(1)))
+    );
 }
 
 #[test]
 fn an_agent_list_left_behind_by_a_summoned_conversation_is_dragged_over() {
-    assert_eq!(rejoin(1, 0, false, true), Some(Rejoin::Drag(1)));
+    assert_eq!(
+        rejoin(TabPosition::new(1), TabPosition::new(0), false, true),
+        Some(Rejoin::Drag(TabPosition::new(1)))
+    );
 }
 
 /// Focus outlives the client that set it, so a list focused and then abandoned on a tab nobody is
 /// looking at must not get to pull the column onto it.
 #[test]
 fn a_focused_agent_list_on_a_tab_nobody_is_on_is_still_dragged_over() {
-    assert_eq!(rejoin(0, 1, true, false), Some(Rejoin::Drag(0)));
+    assert_eq!(
+        rejoin(TabPosition::new(0), TabPosition::new(1), true, false),
+        Some(Rejoin::Drag(TabPosition::new(0)))
+    );
 }
 
 #[test]
 fn a_pair_that_is_already_together_asks_for_nothing() {
     for focused in [true, false] {
         for someones in [true, false] {
-            assert_eq!(rejoin(2, 2, focused, someones), None);
+            assert_eq!(
+                rejoin(TabPosition::new(2), TabPosition::new(2), focused, someones),
+                None
+            );
         }
     }
 }
@@ -2101,7 +2136,7 @@ fn ctrl_o_does_nothing_when_every_corner_is_the_same_rectangle() {
         ..Default::default()
     };
     state.on_tabs(vec![TabInfo {
-        position: 0,
+        position: TabPosition::new(0),
         tab_id: TabId::new(0),
         active: true,
         display_area_rows: 8,
@@ -2319,7 +2354,7 @@ fn arriving_on_another_tab_drops_the_anchor() {
         ],
     ));
 
-    assert_eq!(state.own_tab_index, Some(1));
+    assert_eq!(state.own_tab_index, Some(TabPosition::new(1)));
     assert_eq!((state.panel.anchor, state.panel.anchor_rect), (None, None));
     assert_eq!(state.last_placement, None, "the move carried the geometry");
     assert_eq!(state.panel.placed_rect, Some(parked));
@@ -2681,7 +2716,7 @@ fn a_list_that_is_not_here_is_not_repositioned() {
     assert_eq!(state.last_placement, None, "there is no list to move");
 
     let mut state = agents_beside_state();
-    state.agents_tab_index = Some(1);
+    state.agents_tab_index = Some(TabPosition::new(1));
     state.pipe(list_reposition());
     assert_eq!(
         state.last_placement, None,
@@ -3124,7 +3159,7 @@ fn a_hocus_in_the_layout_grows_no_agent_list() {
         ..Default::default()
     };
     state.on_tabs(vec![TabInfo {
-        position: 0,
+        position: TabPosition::new(0),
         active: true,
         display_area_rows: 50,
         display_area_columns: 200,
@@ -3157,7 +3192,7 @@ fn a_hocus_in_the_layout_grows_no_agent_list() {
     );
     assert_eq!(
         state.own_tab_index,
-        Some(0),
+        Some(TabPosition::new(0)),
         "what it does still read off the manifest is where it is"
     );
 }
@@ -3196,18 +3231,18 @@ fn a_dismissed_panel_does_not_follow_a_tab_switch() {
     let mut state = State {
         own_is_floating: Some(true),
         own_plugin_id: zellij_tile::prelude::PluginId::new(7),
-        own_tab_index: Some(0),
+        own_tab_index: Some(TabPosition::new(0)),
         agents_plugin: Some(zellij_tile::prelude::PluginId::new(9)),
         hidden: true,
         agents_visible: true,
         client: ClientId::new(1),
-        client_tabs: BTreeMap::from([(ClientId::new(1), 0)]),
+        client_tabs: BTreeMap::from([(ClientId::new(1), TabPosition::new(0))]),
         ..Default::default()
     };
 
     state.on_tabs(vec![
         TabInfo {
-            position: 0,
+            position: TabPosition::new(0),
             tab_id: TabId::new(0),
             active: false,
             display_area_rows: 50,
@@ -3215,7 +3250,7 @@ fn a_dismissed_panel_does_not_follow_a_tab_switch() {
             ..TabInfo::default()
         },
         TabInfo {
-            position: 1,
+            position: TabPosition::new(1),
             tab_id: TabId::new(1),
             active: true,
             display_area_rows: 50,
@@ -3226,7 +3261,7 @@ fn a_dismissed_panel_does_not_follow_a_tab_switch() {
 
     assert_eq!(
         state.own_tab_index,
-        Some(0),
+        Some(TabPosition::new(0)),
         "the panel stays where it will be asked back from"
     );
 }

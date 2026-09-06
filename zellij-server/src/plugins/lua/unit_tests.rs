@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
 
 use strum::IntoEnumIterator;
@@ -777,7 +778,7 @@ fn agent_records_are_current_on_the_first_ask_and_forget_a_closed_pane() {
     plugin.load(&BTreeMap::new()).unwrap();
     let manifest_with = |panes: Vec<PaneInfo>| {
         let mut manifest = PaneManifest::default();
-        manifest.panes.insert(0, panes);
+        manifest.panes.insert(TabPosition::new(0), panes);
         Event::PaneUpdate(manifest)
     };
     let agent_pane = PaneInfo {
@@ -4640,7 +4641,7 @@ fn the_dashboard_example_loads_renders_components_and_takes_input() {
     plugin.load(&BTreeMap::new()).unwrap();
 
     let tab = TabInfo {
-        position: 0,
+        position: TabPosition::new(0),
         name: "main".to_owned(),
         active: true,
         ..Default::default()
@@ -4648,7 +4649,7 @@ fn the_dashboard_example_loads_renders_components_and_takes_input() {
     plugin.update(&Event::TabUpdate(vec![tab])).unwrap();
     let mut manifest = PaneManifest::default();
     manifest.panes.insert(
-        0,
+        TabPosition::new(0),
         vec![PaneInfo {
             id: zellij_types::pane_id::PaneId::from_legacy(3, false),
             title: "日本 shell".to_owned(),
@@ -5491,7 +5492,7 @@ fn a_workflow_inherits_cwd_only_on_the_same_host() {
     let pane_update = |cwd: &str, host: Option<&str>| {
         let mut manifest = PaneManifest::default();
         manifest.panes.insert(
-            0,
+            TabPosition::new(0),
             vec![PaneInfo {
                 id: zellij_types::pane_id::PaneId::from_legacy(7, false),
                 cwd: Some(cwd.to_owned()),
@@ -6240,7 +6241,7 @@ fn manifest_with_agent(pane_id: u32, state: zellij_types::agent::AgentState) -> 
     use {zellij_types::data::PaneInfo, zellij_types::data::PaneManifest};
     let mut manifest = PaneManifest::default();
     manifest.panes.insert(
-        0,
+        TabPosition::new(0),
         vec![PaneInfo {
             id: zellij_types::pane_id::PaneId::from_legacy(pane_id, false),
             agent: Some(AgentInfo {

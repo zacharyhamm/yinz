@@ -269,6 +269,13 @@ unsigned_identity!(
     TabNumber(u32)
 );
 
+impl TryFrom<usize> for TabNumber {
+    type Error = std::num::TryFromIntError;
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(Self::new)
+    }
+}
+
 impl TabNumber {
     pub fn position(self) -> TabPosition {
         TabPosition::new(self.get().saturating_sub(1) as usize)

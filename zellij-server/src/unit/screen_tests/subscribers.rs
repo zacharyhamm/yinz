@@ -5,6 +5,7 @@ const TERMINAL_1: zellij_types::internal_ids::TerminalId =
 use super::*;
 use zellij_test_support::Watched;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
 
 #[test]
 fn subscriber_receives_initial_delivery() {
@@ -548,7 +549,7 @@ fn close_tab_notifies_subscribers() {
         .unwrap()
         .clear();
 
-    let _ = screen.go_to_tab(1, crate::ClientId::new(1));
+    let _ = screen.go_to_tab(TabNumber::new(1), crate::ClientId::new(1));
     let _ = screen.close_tab(crate::ClientId::new(1));
 
     let msgs = messages.lock().unwrap();

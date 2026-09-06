@@ -290,7 +290,9 @@ mod tests {
             })
             .collect();
         PaneManifest {
-            panes: [(0, panes)].into_iter().collect(),
+            panes: [(zellij_tile::prelude::TabPosition::new(0), panes)]
+                .into_iter()
+                .collect(),
         }
     }
 

@@ -39,6 +39,8 @@ use zellij_storage::plugin_data_store;
 use zellij_types::agent::SpawnedAgent;
 use zellij_types::data::EnqueueQueueJobResponse;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::{PluginId, TerminalId};
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::{
@@ -64,7 +66,7 @@ use {
     zellij_types::data::BreakPanesToNewTabResponse,
     zellij_types::data::BreakPanesToTabWithIdResponse,
     zellij_types::data::BreakPanesToTabWithIndexResponse, zellij_types::data::CommandType,
-    zellij_types::data::ConnectToSession, zellij_types::data::DeleteAllDeadSessionsResponse,
+    zellij_types::data::DeleteAllDeadSessionsResponse,
     zellij_types::data::DeleteDeadSessionResponse, zellij_types::data::DeleteLayoutResponse,
     zellij_types::data::EditLayoutResponse, zellij_types::data::Event,
     zellij_types::data::FileMetadata, zellij_types::data::FocusOrCreateTabResponse,
@@ -105,9 +107,9 @@ use {
     zellij_types::data::PermissionStatus, zellij_types::data::PermissionType,
     zellij_types::data::PluginPermission, zellij_types::data::RegexHighlight,
     zellij_types::data::RenameLayoutResponse, zellij_types::data::SaveLayoutResponse,
-    zellij_types::data::SpawnAgentResponse, zellij_types::data::TabMetadata,
-    zellij_types::data::WarpPaneResponse, zellij_types::data::WarpPlacement,
-    zellij_types::data::HOCUS_AGENT_PANE_CONTEXT,
+    zellij_types::data::SessionConnection, zellij_types::data::SpawnAgentResponse,
+    zellij_types::data::TabMetadata, zellij_types::data::WarpPaneResponse,
+    zellij_types::data::WarpPlacement, zellij_types::data::HOCUS_AGENT_PANE_CONTEXT,
 };
 
 use crate::{panes::PaneId, screen::ScreenInstruction};
@@ -584,7 +586,10 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::NextSwapLayout => next_swap_layout(env),
             PluginCommand::GoToTabName(tab_name) => go_to_tab_name(env, tab_name),
             PluginCommand::FocusOrCreateTab(tab_name) => focus_or_create_tab(env, tab_name),
-            PluginCommand::GoToTab(tab_index) => go_to_tab(env, tab_index),
+            PluginCommand::GoToTab(tab_index) => go_to_tab(
+                env,
+                TabNumber::try_from(tab_index).map_err(anyhow::Error::msg)?,
+            ),
             PluginCommand::StartOrReloadPlugin(plugin_url) => {
                 start_or_reload_plugin(env, &plugin_url)?
             },
@@ -623,7 +628,11 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::SetPaneTitlePrefix { pane_id, prefix } => {
                 set_pane_title_prefix(env, pane_id.into(), prefix)
             },
-            PluginCommand::RenameTab(tab_index, new_name) => rename_tab(env, tab_index, &new_name),
+            PluginCommand::RenameTab(tab_index, new_name) => rename_tab(
+                env,
+                TabNumber::try_from(tab_index).map_err(anyhow::Error::msg)?,
+                &new_name,
+            ),
             PluginCommand::ReportPanic(crash_payload) => report_panic(env, &crash_payload),
             PluginCommand::RequestPluginPermissions(permissions) => {
                 request_permission(env, permissions)?
@@ -3446,7 +3455,7 @@ fn run_command_in_pane(
         ));
 }
 
-fn switch_tab_to(env: &PluginEnv, tab_idx: u32) {
+fn switch_tab_to(env: &PluginEnv, tab_idx: TabNumber) {
     env.senders
         .send_to_screen(ScreenInstruction::GoToTab(
             tab_idx,
@@ -4067,11 +4076,11 @@ fn apply_layout(env: &mut PluginEnv, layout: Layout) {
         };
         tabs_to_open.push(action);
     } else {
-        let focused_tab_index = layout.focused_tab_index().unwrap_or(0);
+        let focused_tab_index = layout.focused_tab_index().unwrap_or(TabPosition::new(0));
         for (tab_index, (tab_name, tiled_pane_layout, floating_pane_layout)) in
             layout.tabs().into_iter().enumerate()
         {
-            let should_focus_tab = tab_index == focused_tab_index;
+            let should_focus_tab = TabPosition::new(tab_index) == focused_tab_index;
             let swap_tiled_layouts = Some(layout.swap_tiled_layouts.clone());
             let swap_floating_layouts = Some(layout.swap_floating_layouts.clone());
             let action = Action::NewTab {
@@ -4262,7 +4271,7 @@ fn detach(env: &PluginEnv) {
 fn switch_session(
     env: &PluginEnv,
     session_name: Option<String>,
-    tab_position: Option<usize>,
+    tab_position: Option<TabPosition>,
     pane_id: Option<zellij_types::pane_id::PaneId>,
     layout: Option<LayoutInfo>,
     cwd: Option<PathBuf>,
@@ -4282,11 +4291,14 @@ fn switch_session(
         log::error!("Session names cannot contain \'/\'");
     } else {
         let client_id = env.client_id;
-        let tab_position = tab_position.map(|p| p + 1); // ¯\_()_/¯
+        let tab_position = tab_position
+            .map(TabNumber::try_from)
+            .transpose()
+            .map_err(anyhow::Error::msg)?;
         let cwd = cwd
             .map(|c| translate_plugin_path(env, c))
             .or_else(|| Some(env.plugin_cwd.clone()));
-        let connect_to_session = ConnectToSession {
+        let connect_to_session = SessionConnection {
             name: session_name,
             tab_position,
             pane_id,
@@ -4588,11 +4600,9 @@ fn focus_or_create_tab(env: &mut PluginEnv, tab_name: String) {
     wasi_write_object(env, &response.encode_to_vec()).non_fatal();
 }
 
-fn go_to_tab(env: &PluginEnv, tab_index: u32) {
+fn go_to_tab(env: &PluginEnv, tab_index: TabNumber) {
     let error_msg = || format!("failed to change tab focus in plugin {}", env.name());
-    let action = Action::GoToTab {
-        index: tab_index + 1,
-    };
+    let action = Action::GoToTab { index: tab_index };
     apply_action!(action, error_msg, env);
 }
 
@@ -4692,13 +4702,11 @@ fn rename_plugin_pane(env: &PluginEnv, plugin_pane_id: PluginId, new_name: &str)
     apply_action!(rename_pane_action, error_msg, env);
 }
 
-fn rename_tab(env: &PluginEnv, tab_position: u32, new_name: &str) {
+fn rename_tab(env: &PluginEnv, tab_position: TabNumber, new_name: &str) {
     let error_msg = || "Failed to rename tab".to_string();
     let rename_tab_action = Action::RenameTab {
-        // The plugin API speaks 0-based display positions, as `go_to_tab` does,
-        // while `Action::RenameTab` is 1-based and subtracts one again in
-        // `Screen`. Convert here so the two plugin calls agree.
-        tab_index: tab_position + 1,
+        // The command dispatcher converts the plugin position to a tab number.
+        tab_index: tab_position,
         name: new_name.as_bytes().to_vec(),
     };
     apply_action!(rename_tab_action, error_msg, env);
@@ -7168,7 +7176,7 @@ fn toggle_pane_embed_or_eject_for_pane_id(env: &PluginEnv, pane_id: PaneId) {
         .send_to_screen(ScreenInstruction::TogglePaneEmbedOrEjectForPaneId(pane_id));
 }
 
-fn close_tab_with_index(env: &PluginEnv, tab_index: usize) {
+fn close_tab_with_index(env: &PluginEnv, tab_index: TabPosition) {
     let _ = env
         .senders
         .send_to_screen(ScreenInstruction::CloseTabWithIndex(tab_index));
@@ -7217,7 +7225,7 @@ fn break_panes_to_tab_with_index(
     env: &mut PluginEnv,
     pane_ids: Vec<PaneId>,
     should_change_focus_to_new_tab: bool,
-    tab_index: usize,
+    tab_index: TabPosition,
 ) {
     // Create completion channel to receive tab ID
     let (tx, rx) = tokio::sync::oneshot::channel();

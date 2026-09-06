@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use zellij_cli::args::CliArgs;
 use zellij_runtime::envs;
 use zellij_runtime::host_terminal_env::host_terminal_env;
+use zellij_types::internal_ids::TabNumber;
 use zellij_types::pane_size::Size;
 use {
     zellij_config::config::Config, zellij_ipc::ipc::ClientToServerMsg,
@@ -224,6 +225,6 @@ impl<'a> StartupContext<'a> {
 /// creating a session, so it defaults to "whatever the layout says".
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct AttachFocus {
-    pub tab_position: Option<usize>,
+    pub tab_position: Option<TabNumber>,
     pub pane: Option<zellij_types::pane_id::PaneId>,
 }

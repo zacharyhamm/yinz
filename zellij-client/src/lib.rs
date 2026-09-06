@@ -29,6 +29,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use zellij_runtime::errors::FatalError;
+use zellij_types::internal_ids::TabNumber;
 
 use crate::terminal_escapes::{
     announce_nested, claim_terminal, say_bye, write_seqs, ClientTeardown, CLEAR_SCREEN,
@@ -54,7 +55,7 @@ use {
     zellij_config::config::Config, zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ExitReason,
     zellij_ipc::ipc::ServerToClientMsg, zellij_runtime::consts::set_permissions,
     zellij_runtime::consts::ZELLIJ_SOCK_DIR, zellij_types::data::ClientId,
-    zellij_types::data::ConnectToSession, zellij_types::data::LayoutInfo,
+    zellij_types::data::LayoutInfo, zellij_types::data::SessionConnection,
     zellij_types::input::options::Options,
 };
 
@@ -68,7 +69,7 @@ pub(crate) enum ClientInstruction {
     Connected,
     Log(Vec<String>),
     LogError(Vec<String>),
-    SwitchSession(ConnectToSession),
+    SwitchSession(SessionConnection),
     SetSynchronizedOutput(Option<SyncOutput>),
     UnblockCliPipeInput(()), // String -> pipe name
     CliPipeOutput((), ()),   // String -> pipe name, String -> output
@@ -372,11 +373,11 @@ pub fn start_client(
     config: Config,          // saved to disk (or default?)
     config_options: Options, // CLI options merged into (getting priority over) saved config options
     info: ClientInfo,
-    tab_position_to_focus: Option<usize>,
+    tab_position_to_focus: Option<TabNumber>,
     pane_id_to_focus: Option<zellij_types::pane_id::PaneId>,
     is_a_reconnect: bool,
     start_detached_and_exit: bool,
-) -> Option<ConnectToSession> {
+) -> Option<SessionConnection> {
     if start_detached_and_exit {
         start_server_detached(os_input, cli_args, config, config_options, info);
         return None;

@@ -1,5 +1,6 @@
 ---
 source: zellij-cli/src/setup.rs
+assertion_line: 567
 expression: "format!(\"{:#?}\", config)"
 ---
 Config {
@@ -1688,7 +1689,9 @@ Config {
                 key_modifiers: {},
             }: [
                 GoToTab {
-                    index: 1,
+                    index: TabNumber(
+                        1,
+                    ),
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -1701,7 +1704,9 @@ Config {
                 key_modifiers: {},
             }: [
                 GoToTab {
-                    index: 2,
+                    index: TabNumber(
+                        2,
+                    ),
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -1714,7 +1719,9 @@ Config {
                 key_modifiers: {},
             }: [
                 GoToTab {
-                    index: 3,
+                    index: TabNumber(
+                        3,
+                    ),
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -1727,7 +1734,9 @@ Config {
                 key_modifiers: {},
             }: [
                 GoToTab {
-                    index: 4,
+                    index: TabNumber(
+                        4,
+                    ),
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -1740,7 +1749,9 @@ Config {
                 key_modifiers: {},
             }: [
                 GoToTab {
-                    index: 5,
+                    index: TabNumber(
+                        5,
+                    ),
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -1753,7 +1764,9 @@ Config {
                 key_modifiers: {},
             }: [
                 GoToTab {
-                    index: 6,
+                    index: TabNumber(
+                        6,
+                    ),
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -1766,7 +1779,9 @@ Config {
                 key_modifiers: {},
             }: [
                 GoToTab {
-                    index: 7,
+                    index: TabNumber(
+                        7,
+                    ),
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -1779,7 +1794,9 @@ Config {
                 key_modifiers: {},
             }: [
                 GoToTab {
-                    index: 8,
+                    index: TabNumber(
+                        8,
+                    ),
                 },
                 SwitchToMode {
                     input_mode: Normal,
@@ -1792,7 +1809,9 @@ Config {
                 key_modifiers: {},
             }: [
                 GoToTab {
-                    index: 9,
+                    index: TabNumber(
+                        9,
+                    ),
                 },
                 SwitchToMode {
                     input_mode: Normal,

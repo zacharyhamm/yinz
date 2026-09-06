@@ -7,6 +7,8 @@ use crate::input::layout::{
 };
 pub use crate::input::options::PaneFrameStyle;
 use crate::internal_ids::TabId;
+use crate::internal_ids::TabNumber;
+use crate::internal_ids::TabPosition;
 // The data store's types are part of the plugin API, so they belong in the prelude alongside
 // everything else here. They live in their own module because the engine behind them cannot build
 // for wasm and these types must.
@@ -797,7 +799,7 @@ pub struct ContextMenuContext {
     pub request_id: u64,
     pub client_id: ClientId,
     pub pane_id: PaneId,
-    pub tab_position: usize,
+    pub tab_position: TabPosition,
     /// The clicked cell in surface coordinates - where the menu is anchored.
     pub click: (usize, usize),
     /// The same cell relative to the pane, which is what a plugin reasoning about pane content
@@ -1169,7 +1171,7 @@ use crate::agent::{AgentInfo, AgentState};
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct TabInfo {
     /// The Tab's 0 indexed position
-    pub position: usize,
+    pub position: TabPosition,
     /// The name of the tab as it appears in the UI (if there's enough room for it)
     pub name: String,
     /// Whether this tab is focused
@@ -1212,7 +1214,7 @@ pub struct TabInfo {
 /// `suppressed` panes.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PaneManifest {
-    pub panes: HashMap<usize, Vec<PaneInfo>>, // usize is the tab position
+    pub panes: HashMap<TabPosition, Vec<PaneInfo>>, // keyed by display position
 }
 
 /// Contains all the information for a currently open pane
@@ -1312,7 +1314,7 @@ pub struct PaneListEntry {
     #[serde(flatten)]
     pub pane_info: PaneInfo,
     pub tab_id: TabId,
-    pub tab_position: usize,
+    pub tab_position: TabPosition,
     pub tab_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pane_command: Option<String>,
@@ -2017,17 +2019,29 @@ impl MessageToPlugin {
     }
 }
 
+/// A plugin session-switch request. The requested tab position is zero-based.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ConnectToSession {
     pub name: Option<String>,
-    pub tab_position: Option<usize>,
+    pub tab_position: Option<TabPosition>,
     #[serde(default, with = "crate::pane_id::legacy_tuple")]
     pub pane_id: Option<PaneId>,
     pub layout: Option<LayoutInfo>,
     pub cwd: Option<PathBuf>,
 }
 
-impl ConnectToSession {
+/// A client reconnect target. Tab numbers are one-based on the client/server protocol.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionConnection {
+    pub name: Option<String>,
+    pub tab_position: Option<TabNumber>,
+    #[serde(default, with = "crate::pane_id::legacy_tuple")]
+    pub pane_id: Option<PaneId>,
+    pub layout: Option<LayoutInfo>,
+    pub cwd: Option<PathBuf>,
+}
+
+impl SessionConnection {
     pub fn apply_layout_dir(&mut self, layout_dir: &Path) {
         if let Some(LayoutInfo::File(file_path, _layout_metadata)) = self.layout.as_mut() {
             *file_path = Path::join(layout_dir, &file_path)
@@ -2517,8 +2531,8 @@ pub enum PluginCommand {
     /// pane carries no plugin configuration, so the placement is the only thing that can say it
     /// is an overlay - and which kind.
     OpenCommandPaneOverlay(CommandToRun, OverlayPlacement, Context),
-    SwitchTabTo(u32), // tab index
-    SetTimeout(f64),  // seconds
+    SwitchTabTo(TabNumber), // tab index
+    SetTimeout(f64),        // seconds
     ExecCmd(Vec<String>),
     PostMessageTo(PluginMessage),
     PostMessageToPlugin(PluginMessage),
@@ -2579,7 +2593,7 @@ pub enum PluginCommand {
     NextSwapLayout,
     GoToTabName(String),
     FocusOrCreateTab(String),
-    GoToTab(u32),                                                   // tab index
+    GoToTab(TabPosition),                                           // tab index
     StartOrReloadPlugin(String), // plugin url (eg. file:/path/to/plugin.wasm)
     CloseTerminalPane(crate::internal_ids::TerminalId), // terminal pane id
     ClosePluginPane(crate::internal_ids::PluginId), // plugin pane id
@@ -2587,7 +2601,7 @@ pub enum PluginCommand {
     FocusPluginPane(crate::internal_ids::PluginId, bool, bool), // plugin pane id, should_float_if_hidden, should_be_in_place_if_hidden
     RenameTerminalPane(crate::internal_ids::TerminalId, String), // terminal pane id, new name
     RenamePluginPane(crate::internal_ids::PluginId, String),    // plugin pane id, new name
-    RenameTab(u32, String),                                     // tab index, new name
+    RenameTab(TabPosition, String),                             // tab index, new name
     ReportPanic(String),                                        // stringified panic
     RequestPluginPermissions(Vec<PermissionType>),
     SwitchSession(ConnectToSession),
@@ -2736,12 +2750,12 @@ pub enum PluginCommand {
     PageScrollDownInPaneId(PaneId),
     TogglePaneIdFullscreen(PaneId),
     TogglePaneEmbedOrEjectForPaneId(PaneId),
-    CloseTabWithIndex(usize), // usize - tab_index
+    CloseTabWithIndex(TabPosition), // usize - tab_index
     BreakPanesToNewTab(Vec<PaneId>, Option<String>, bool), // bool -
     // should_change_focus_to_new_tab,
     // Option<String> - optional name for
     // the new tab
-    BreakPanesToTabWithIndex(Vec<PaneId>, usize, bool), // usize - tab_index, bool -
+    BreakPanesToTabWithIndex(Vec<PaneId>, TabPosition, bool), // usize - tab_index, bool -
     // should_change_focus_to_new_tab
     SwitchTabToId(TabId),           // stable tab id
     GoToTabWithId(TabId),           // stable tab id

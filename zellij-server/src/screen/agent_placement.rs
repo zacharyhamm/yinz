@@ -22,6 +22,7 @@
 
 use zellij_runtime::errors::prelude::*;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 
 use super::Screen;
 use crate::pty::ClientTabIndexOrPaneId;
@@ -87,7 +88,7 @@ pub(super) fn floor_of(min_size: Size) -> Option<usize> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Candidate {
     pub tab_id: TabId,
-    pub position: usize,
+    pub position: TabPosition,
     pub share: usize,
 }
 

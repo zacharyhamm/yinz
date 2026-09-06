@@ -34,6 +34,7 @@ use zellij_types::geometry::{Direction, ResizeStrategy};
 use zellij_types::input::command::RunCommand;
 use zellij_types::input::options::DEFAULT_WORD_SEPARATORS;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::mouse::MouseEvent;
@@ -287,7 +288,7 @@ enum BufferedTabInstruction {
 
 pub(crate) struct Tab {
     pub id: TabId,
-    pub position: usize,
+    pub position: TabPosition,
     pub name: String,
     pub prev_name: String,
     default_name: String,
@@ -1133,7 +1134,7 @@ impl Tab {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: TabId,
-        position: usize,
+        position: TabPosition,
         name: String,
         display_area: Size,
         character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,

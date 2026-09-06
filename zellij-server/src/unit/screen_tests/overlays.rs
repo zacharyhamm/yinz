@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use zellij_types::geometry::{Resize, ResizeStrategy};
 use zellij_types::internal_ids::PluginId;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 use {zellij_types::data::OverlayKind, zellij_types::data::OverlayPlacement};
 
 #[test]
@@ -313,7 +315,7 @@ fn an_overlay_popup_stays_an_overlay_when_it_follows_the_client_to_another_tab()
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     screen
-        .switch_active_tab(0, None, true, crate::ClientId::new(1))
+        .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(1))
         .expect("TEST");
     let (server_sender, server_receiver) = channels::unbounded();
     screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
@@ -336,7 +338,7 @@ fn an_overlay_popup_stays_an_overlay_when_it_follows_the_client_to_another_tab()
 
     // the client moves to the other tab and asks for the popup again
     screen
-        .switch_active_tab(1, None, true, crate::ClientId::new(1))
+        .switch_active_tab(TabPosition::new(1), None, true, crate::ClientId::new(1))
         .expect("TEST");
     assert!(screen
         .focus_plugin_pane(
@@ -1669,16 +1671,16 @@ fn a_client_switching_into_a_tab_with_a_modal_lands_on_it() {
     new_tab(&mut screen, 2, TabId::new(1));
     screen.add_client(crate::ClientId::new(2)).expect("TEST");
     screen
-        .switch_active_tab(1, None, true, crate::ClientId::new(2))
+        .switch_active_tab(TabPosition::new(1), None, true, crate::ClientId::new(2))
         .expect("TEST");
     screen
-        .switch_active_tab(0, None, true, crate::ClientId::new(1))
+        .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(1))
         .expect("TEST");
 
     let modal_id =
         add_modal_plugin_overlay(&mut screen, zellij_types::internal_ids::PluginId::new(7));
     screen
-        .switch_active_tab(0, None, true, crate::ClientId::new(2))
+        .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(2))
         .expect("TEST");
 
     let tab = screen.get_active_tab_mut(crate::ClientId::new(2)).unwrap();
@@ -3817,7 +3819,7 @@ fn a_focus_move_at_the_edge_under_a_modal_does_not_switch_tabs() {
             .get_active_tab(crate::ClientId::new(1))
             .expect("TEST")
             .position,
-        1
+        TabPosition::new(1)
     );
 
     screen
@@ -3829,7 +3831,7 @@ fn a_focus_move_at_the_edge_under_a_modal_does_not_switch_tabs() {
             .get_active_tab(crate::ClientId::new(1))
             .expect("TEST")
             .position,
-        1,
+        TabPosition::new(1),
         "the modal owns the keyboard, so the keypress is a no-op rather than a tab switch"
     );
     assert_eq!(
@@ -4273,7 +4275,7 @@ fn a_moved_and_resized_overlay_keeps_its_geometry_across_a_tab_move() {
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     screen
-        .switch_active_tab(0, None, true, crate::ClientId::new(1))
+        .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(1))
         .expect("TEST");
     let opened_with = overlay_coordinates();
     open_overlay_with(&mut screen, 3, opened_with);
@@ -4378,7 +4380,7 @@ fn a_dragged_overlay_revealed_onto_another_tab_arrives_shown_and_still_dragged()
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     screen
-        .switch_active_tab(0, None, true, crate::ClientId::new(1))
+        .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(1))
         .expect("TEST");
     let coordinates = popup_coordinates();
     let (run_plugin, popup_id) = open_overlay_plugin(
@@ -4418,7 +4420,7 @@ fn a_dragged_overlay_revealed_onto_another_tab_arrives_shown_and_still_dragged()
         .expect("TEST")
         .hide_overlay_pane(popup_id));
     screen
-        .switch_active_tab(1, None, true, crate::ClientId::new(1))
+        .switch_active_tab(TabPosition::new(1), None, true, crate::ClientId::new(1))
         .expect("TEST");
     assert!(screen
         .focus_plugin_pane(
@@ -4632,7 +4634,9 @@ fn an_overlay_in_a_background_tab_is_still_a_broadcast_target() {
         .expect("TEST");
 
     // client 1 is looking at tab 1, so the overlay in tab 0 is in nobody's active tab
-    screen.go_to_tab(2, crate::ClientId::new(1)).expect("TEST");
+    screen
+        .go_to_tab(TabNumber::new(2), crate::ClientId::new(1))
+        .expect("TEST");
     assert_eq!(
         screen.active_tab_ids.get(&ClientId::new(1)),
         Some(&TabId::new(1))
@@ -4800,16 +4804,16 @@ fn screen_with_diverging_tab_ids(size: Size) -> Screen {
     new_tab(&mut screen, 3, TabId::new(2));
     screen.close_tab_by_id(TabId::new(0)).expect("TEST");
     screen
-        .switch_active_tab(0, None, true, crate::ClientId::new(1))
+        .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(1))
         .expect("TEST");
     assert_eq!(
         screen.get_tab_position_by_id(TabId::new(1)),
-        Some(0),
+        Some(TabPosition::new(0)),
         "TEST"
     );
     assert_eq!(
         screen.get_tab_position_by_id(TabId::new(2)),
-        Some(1),
+        Some(TabPosition::new(1)),
         "TEST"
     );
     assert_eq!(
@@ -4877,7 +4881,7 @@ fn revealing_a_plugin_overlay_in_the_focused_tab_does_not_switch_tabs() {
 fn focusing_a_plugin_without_moving_it_goes_to_the_tab_that_holds_it() {
     let mut screen = screen_with_diverging_tab_ids(Size { cols: 80, rows: 12 });
     screen
-        .switch_active_tab(1, None, true, crate::ClientId::new(1))
+        .switch_active_tab(TabPosition::new(1), None, true, crate::ClientId::new(1))
         .expect("TEST"); // tab id 2
     let (run_plugin, popup_id) = open_overlay_plugin(
         &mut screen,
@@ -4886,7 +4890,7 @@ fn focusing_a_plugin_without_moving_it_goes_to_the_tab_that_holds_it() {
         popup_coordinates(),
     );
     screen
-        .switch_active_tab(0, None, true, crate::ClientId::new(1))
+        .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(1))
         .expect("TEST"); // back to tab id 1
 
     assert!(screen
@@ -4927,7 +4931,7 @@ fn focusing_a_plugin_without_moving_it_goes_to_the_tab_that_holds_it() {
 fn a_plugin_overlay_still_moves_to_the_focused_tab_when_ids_and_positions_disagree() {
     let mut screen = screen_with_diverging_tab_ids(Size { cols: 80, rows: 12 });
     screen
-        .switch_active_tab(1, None, true, crate::ClientId::new(1))
+        .switch_active_tab(TabPosition::new(1), None, true, crate::ClientId::new(1))
         .expect("TEST"); // tab id 2
     let (run_plugin, popup_id) = open_overlay_plugin(
         &mut screen,
@@ -4936,7 +4940,7 @@ fn a_plugin_overlay_still_moves_to_the_focused_tab_when_ids_and_positions_disagr
         popup_coordinates(),
     );
     screen
-        .switch_active_tab(0, None, true, crate::ClientId::new(1))
+        .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(1))
         .expect("TEST"); // back to tab id 1
 
     assert!(screen
@@ -5445,7 +5449,7 @@ fn an_overlay_on_a_tab_nobody_is_on_falls_back_to_the_first_tab() {
     );
     // the client leaves the overlay behind on a tab of its own
     screen
-        .switch_active_tab(0, None, true, crate::ClientId::new(1))
+        .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(1))
         .expect("TEST");
 
     screen.close_tab_by_id(TabId::new(2)).expect("TEST");

@@ -1,5 +1,6 @@
 use super::*;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
 
 #[allow(clippy::result_large_err)]
 pub fn new_from_bytes(
@@ -24,7 +25,9 @@ pub fn new_from_bytes(
                     action_node.span().len(),
                 )
             })? as u32;
-            Ok(Action::GoToTab { index: tab_index })
+            Ok(Action::GoToTab {
+                index: TabNumber::new(tab_index),
+            })
         },
         _ => Err(ConfigError::new_kdl_error(
             "Failed to parse action".into(),
@@ -467,7 +470,7 @@ pub fn to_kdl(value: &Action) -> Option<KdlNode> {
         Action::CloseTab => Some(KdlNode::new("CloseTab")),
         Action::GoToTab { index } => {
             let mut node = KdlNode::new("GoToTab");
-            node.push(KdlValue::Base10(*index as i64));
+            node.push(KdlValue::Base10(i64::from(index.get())));
             Some(node)
         },
         Action::ToggleTab => Some(KdlNode::new("ToggleTab")),
@@ -745,7 +748,7 @@ pub fn to_kdl(value: &Action) -> Option<KdlNode> {
             let mut node = KdlNode::new("SwitchSession");
             node.push(KdlEntry::new_prop("name", name.clone()));
             if let Some(pos) = tab_position {
-                node.push(KdlEntry::new_prop("tab_position", *pos as i64));
+                node.push(KdlEntry::new_prop("tab_position", i64::from(pos.get())));
             }
             if let Some(pane_id) = pane_id {
                 let (id, is_plugin) = pane_id.legacy_parts();
@@ -1151,7 +1154,15 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                 ))?;
             let tab_position =
                 crate::kdl_get_int_property_or_child_value!(kdl_action, "tab_position")
-                    .map(|i| i as usize);
+                    .map(TabNumber::try_from)
+                    .transpose()
+                    .map_err(|_| {
+                        ConfigError::new_kdl_error(
+                            "Tab number is out of range".to_owned(),
+                            kdl_action.span().offset(),
+                            kdl_action.span().len(),
+                        )
+                    })?;
             let pane_id = crate::kdl_get_int_property_or_child_value!(kdl_action, "pane_id")
                 .map(u32::try_from)
                 .transpose()

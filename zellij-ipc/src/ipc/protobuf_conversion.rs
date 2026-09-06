@@ -1,6 +1,7 @@
 #![allow(clippy::unnecessary_fallible_conversions)]
 use std::str::FromStr;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -134,7 +135,7 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                 pane_to_focus,
             } => client_to_server_msg::Message::AttachClient(AttachClientMsg {
                 cli_assets: Some(cli_assets.into()),
-                tab_position_to_focus: tab_position_to_focus.map(|pos| pos as u32),
+                tab_position_to_focus: tab_position_to_focus.map(|pos| pos.get()),
                 pane_to_focus: pane_to_focus.map(|p| p.into()),
             }),
             ClientToServerMsg::AttachWatcherClient { terminal_size } => {
@@ -331,7 +332,7 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                         .cli_assets
                         .ok_or_else(|| anyhow!("Missing cli_assets"))?
                         .try_into()?,
-                    tab_position_to_focus: attach.tab_position_to_focus.map(|pos| pos as usize),
+                    tab_position_to_focus: attach.tab_position_to_focus.map(TabNumber::new),
                     pane_to_focus: attach.pane_to_focus.map(|p| p.try_into()).transpose()?,
                 })
             },
@@ -1828,7 +1829,7 @@ impl TryFrom<zellij_types::input::actions::Action>
                 ActionType::CloseTab(CloseTabAction {})
             },
             zellij_types::input::actions::Action::GoToTab { index } => {
-                ActionType::GoToTab(GoToTabAction { index })
+                ActionType::GoToTab(GoToTabAction { index: index.get() })
             },
             zellij_types::input::actions::Action::GoToTabName { name, create } => {
                 ActionType::GoToTabName(GoToTabNameAction { name, create })
@@ -1876,7 +1877,7 @@ impl TryFrom<zellij_types::input::actions::Action>
                 cwd,
             } => ActionType::SwitchSession(SwitchSessionAction {
                 name: name.clone(),
-                tab_position: tab_position.map(|p| p as u32),
+                tab_position: tab_position.map(|p| p.get()),
                 pane_id: pane_id.map(|pane| {
                     let (pane_id, is_plugin) = pane.legacy_parts();
                     PaneIdWithPlugin { pane_id, is_plugin }
@@ -2146,7 +2147,7 @@ impl TryFrom<zellij_types::input::actions::Action>
             },
             zellij_types::input::actions::Action::RenameTab { tab_index, name } => {
                 ActionType::RenameTab(RenameTabAction {
-                    tab_index,
+                    tab_index: tab_index.get(),
                     name: name.into_iter().map(|b| b as u32).collect(),
                 })
             },
@@ -2899,7 +2900,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             ActionType::CloseTab(_) => Ok(zellij_types::input::actions::Action::CloseTab),
             ActionType::GoToTab(go_to_tab_action) => {
                 Ok(zellij_types::input::actions::Action::GoToTab {
-                    index: go_to_tab_action.index,
+                    index: TabNumber::new(go_to_tab_action.index),
                 })
             },
             ActionType::GoToTabName(go_to_tab_name_action) => {
@@ -2935,7 +2936,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             ActionType::SwitchSession(switch_session_action) => {
                 Ok(zellij_types::input::actions::Action::SwitchSession {
                     name: switch_session_action.name.clone(),
-                    tab_position: switch_session_action.tab_position.map(|p| p as usize),
+                    tab_position: switch_session_action.tab_position.map(TabNumber::new),
                     pane_id: switch_session_action
                         .pane_id
                         .as_ref()
@@ -3216,7 +3217,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::RenameTab(rename_tab_action) => {
                 Ok(zellij_types::input::actions::Action::RenameTab {
-                    tab_index: rename_tab_action.tab_index,
+                    tab_index: TabNumber::new(rename_tab_action.tab_index),
                     name: rename_tab_action
                         .name
                         .into_iter()
@@ -3703,13 +3704,13 @@ impl TryFrom<crate::client_server_contract::client_server_contract::KeyWithModif
     }
 }
 
-impl From<zellij_types::data::ConnectToSession>
+impl From<zellij_types::data::SessionConnection>
     for crate::client_server_contract::client_server_contract::ConnectToSession
 {
-    fn from(connect: zellij_types::data::ConnectToSession) -> Self {
+    fn from(connect: zellij_types::data::SessionConnection) -> Self {
         Self {
             name: connect.name,
-            tab_position: connect.tab_position.map(|p| p as u32),
+            tab_position: connect.tab_position.map(|p| p.get()),
             pane_id: connect.pane_id.map(|pane| {
                 let (id, is_plugin) = pane.legacy_parts();
                 crate::client_server_contract::client_server_contract::PaneIdWithPlugin {
@@ -3724,7 +3725,7 @@ impl From<zellij_types::data::ConnectToSession>
 }
 
 impl TryFrom<crate::client_server_contract::client_server_contract::ConnectToSession>
-    for zellij_types::data::ConnectToSession
+    for zellij_types::data::SessionConnection
 {
     type Error = anyhow::Error;
     fn try_from(
@@ -3732,7 +3733,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::ConnectToSes
     ) -> Result<Self> {
         Ok(Self {
             name: connect.name,
-            tab_position: connect.tab_position.map(|p| p as usize),
+            tab_position: connect.tab_position.map(TabNumber::new),
             pane_id: connect
                 .pane_id
                 .map(|p| PaneId::from_legacy(p.pane_id, p.is_plugin)),

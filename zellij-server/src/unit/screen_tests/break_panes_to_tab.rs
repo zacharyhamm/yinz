@@ -1,5 +1,6 @@
 use super::*;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 
 #[test]
 fn break_panes_to_tab_with_id_moves_a_pane_when_id_and_position_diverge() {
@@ -169,7 +170,7 @@ fn break_panes_to_tab_with_id_focuses_the_destination_tab() {
     let pane_to_move = PaneId::Terminal(crate::TerminalId::new(42));
     add_pane_to_tab(&mut screen, TabId::new(2), pane_to_move, false);
     screen
-        .switch_active_tab(0, None, true, crate::ClientId::new(1))
+        .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(1))
         .expect("TEST");
 
     screen
@@ -225,7 +226,7 @@ fn break_panes_to_tab_with_index_resolves_a_position_and_not_an_id() {
     add_pane_to_tab(&mut screen, TabId::new(2), pane_to_move, false);
 
     let tab_id = screen
-        .get_tab_id_at_position(1)
+        .get_tab_id_at_position(TabPosition::new(1))
         .expect("TEST: position 1 exists");
     assert_eq!(
         tab_id,
@@ -257,7 +258,7 @@ fn break_panes_to_tab_with_index_resolves_a_position_and_not_an_id() {
 fn break_panes_to_tab_with_index_has_no_tab_to_resolve_when_the_position_is_out_of_range() {
     let screen = screen_with_diverged_tab_ids();
     assert_eq!(
-        screen.get_tab_id_at_position(7),
+        screen.get_tab_id_at_position(TabPosition::new(7)),
         None,
         "so the handler refuses before extracting anything"
     );

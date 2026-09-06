@@ -1,6 +1,9 @@
 use super::*;
+use zellij_types::internal_ids::TabPosition;
 
-pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<(Option<usize>, PaneInfo), String> {
+pub fn decode_from_kdl(
+    kdl_document: &KdlDocument,
+) -> Result<(Option<TabPosition>, PaneInfo), String> {
     macro_rules! int_node {
         ($name:expr, $type:ident) => {{
             kdl_document
@@ -48,7 +51,10 @@ pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<(Option<usize>, Pan
                 .map(|s| s.to_owned())
         }};
     }
-    let tab_position = optional_int_node!("tab_position", usize);
+    let tab_position = optional_int_node!("tab_position", i64)
+        .map(TabPosition::try_from)
+        .transpose()
+        .map_err(|_| "Tab position is out of range")?;
     let id = u32::try_from(int_node!("id", i64)).map_err(|_| "Pane id is out of range")?;
 
     let is_plugin = bool_node!("is_plugin");

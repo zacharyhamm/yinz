@@ -55,6 +55,7 @@ pub use super::generated_api::api::{
 };
 use crate::plugin_data::ProtobufRows as ProtobufDataRows;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::keys::{KeyModifier, KeyWithModifier};
 use zellij_types::style::{HostTerminalThemeMode, Style};
 #[allow(hidden_glob_reexports)]
@@ -112,9 +113,9 @@ impl TryFrom<ProtobufEvent> for Event {
             },
             Ok(ProtobufEventType::PaneUpdate) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::PaneUpdatePayload(protobuf_pane_update_payload)) => {
-                    let mut pane_manifest: HashMap<usize, Vec<PaneInfo>> = HashMap::new();
+                    let mut pane_manifest: HashMap<TabPosition, Vec<PaneInfo>> = HashMap::new();
                     for protobuf_pane_manifest in protobuf_pane_update_payload.pane_manifest {
-                        let tab_index = protobuf_pane_manifest.tab_index as usize;
+                        let tab_index = TabPosition::new(protobuf_pane_manifest.tab_index as usize);
                         let mut panes = vec![];
                         for protobuf_pane_info in protobuf_pane_manifest.panes {
                             panes.push(protobuf_pane_info.try_into()?);
@@ -893,7 +894,8 @@ impl TryFrom<Event> for ProtobufEvent {
                         protobuf_pane_infos.push(pane_info.try_into()?);
                     }
                     protobuf_pane_manifests.push(ProtobufPaneManifest {
-                        tab_index: tab_index as u32,
+                        tab_index: u32::try_from(tab_index.get())
+                            .map_err(|_| "Tab position is outside u32 range")?,
                         panes: protobuf_pane_infos,
                     });
                 }
@@ -1610,7 +1612,8 @@ impl TryFrom<SessionInfo> for ProtobufSessionManifest {
                 protobuf_pane_infos.push(pane_info.try_into()?);
             }
             protobuf_pane_manifests.push(ProtobufPaneManifest {
-                tab_index: tab_index as u32,
+                tab_index: u32::try_from(tab_index.get())
+                    .map_err(|_| "Tab position is outside u32 range")?,
                 panes: protobuf_pane_infos,
             });
         }
@@ -1620,8 +1623,8 @@ impl TryFrom<SessionInfo> for ProtobufSessionManifest {
             tabs: session_info
                 .tabs
                 .iter()
-                .filter_map(|t| t.clone().try_into().ok())
-                .collect(),
+                .map(|t| t.clone().try_into())
+                .collect::<Result<_, _>>()?,
             connected_clients: session_info.connected_clients as u32,
             is_current_session: session_info.is_current_session,
             available_layouts: session_info
@@ -1693,9 +1696,9 @@ impl From<(zellij_types::internal_ids::PluginId, PluginInfo)> for ProtobufPlugin
 impl TryFrom<ProtobufSessionManifest> for SessionInfo {
     type Error = &'static str;
     fn try_from(protobuf_session_manifest: ProtobufSessionManifest) -> Result<Self, &'static str> {
-        let mut pane_manifest: HashMap<usize, Vec<PaneInfo>> = HashMap::new();
+        let mut pane_manifest: HashMap<TabPosition, Vec<PaneInfo>> = HashMap::new();
         for protobuf_pane_manifest in protobuf_session_manifest.panes {
-            let tab_index = protobuf_pane_manifest.tab_index as usize;
+            let tab_index = TabPosition::new(protobuf_pane_manifest.tab_index as usize);
             let mut panes = vec![];
             for protobuf_pane_info in protobuf_pane_manifest.panes {
                 panes.push(protobuf_pane_info.try_into()?);
@@ -1753,8 +1756,8 @@ impl TryFrom<ProtobufSessionManifest> for SessionInfo {
             tabs: protobuf_session_manifest
                 .tabs
                 .iter()
-                .filter_map(|t| t.clone().try_into().ok())
-                .collect(),
+                .map(|t| t.clone().try_into())
+                .collect::<Result<_, _>>()?,
             panes,
             connected_clients: protobuf_session_manifest.connected_clients as usize,
             is_current_session: protobuf_session_manifest.is_current_session,
@@ -2345,7 +2348,7 @@ impl TryFrom<ProtobufTabInfo> for TabInfo {
     type Error = &'static str;
     fn try_from(protobuf_tab_info: ProtobufTabInfo) -> Result<Self, &'static str> {
         Ok(TabInfo {
-            position: protobuf_tab_info.position as usize,
+            position: TabPosition::new(protobuf_tab_info.position as usize),
             name: protobuf_tab_info.name,
             active: protobuf_tab_info.active,
             panes_to_hide: protobuf_tab_info.panes_to_hide as usize,
@@ -2379,7 +2382,8 @@ impl TryFrom<TabInfo> for ProtobufTabInfo {
     type Error = &'static str;
     fn try_from(tab_info: TabInfo) -> Result<Self, &'static str> {
         Ok(ProtobufTabInfo {
-            position: tab_info.position as u32,
+            position: u32::try_from(tab_info.position.get())
+                .map_err(|_| "Tab position is outside u32 range")?,
             name: tab_info.name,
             active: tab_info.active,
             panes_to_hide: tab_info.panes_to_hide as u32,
@@ -3027,7 +3031,7 @@ fn serialize_tab_update_event_with_non_default_values() {
     use prost::Message;
     let tab_update_event = Event::TabUpdate(vec![
         TabInfo {
-            position: 0,
+            position: TabPosition::new(0),
             name: "First tab".to_owned(),
             active: true,
             panes_to_hide: 2,
@@ -3051,7 +3055,7 @@ fn serialize_tab_update_event_with_non_default_values() {
             // agreed
         },
         TabInfo {
-            position: 1,
+            position: TabPosition::new(1),
             name: "Secondtab".to_owned(),
             active: false,
             panes_to_hide: 5,
@@ -3090,7 +3094,7 @@ fn serialize_pane_update_event() {
 
     let mut panes = HashMap::new();
     panes.insert(
-        0,
+        TabPosition::new(0),
         vec![PaneInfo {
             id: zellij_types::pane_id::PaneId::from_legacy(42, false),
             ..Default::default()
@@ -3238,7 +3242,7 @@ fn serialize_session_update_event_with_non_default_values() {
     use prost::Message;
     let tab_infos = vec![
         TabInfo {
-            position: 0,
+            position: TabPosition::new(0),
             name: "First tab".to_owned(),
             active: true,
             panes_to_hide: 2,
@@ -3262,7 +3266,7 @@ fn serialize_session_update_event_with_non_default_values() {
             // agreed
         },
         TabInfo {
-            position: 1,
+            position: TabPosition::new(1),
             name: "Secondtab".to_owned(),
             active: false,
             panes_to_hide: 5,
@@ -3359,7 +3363,7 @@ fn serialize_session_update_event_with_non_default_values() {
             cwd: None,
         },
     ];
-    panes.insert(0, panes_list);
+    panes.insert(TabPosition::new(0), panes_list);
     let mut plugins = BTreeMap::new();
     let mut plugin_configuration = BTreeMap::new();
     plugin_configuration.insert("config_key".to_owned(), "config_value".to_owned());
@@ -3860,7 +3864,7 @@ impl TryFrom<ProtobufContextMenuContext> for ContextMenuContext {
             client_id: ClientId::try_from(context.client_id)
                 .map_err(|_| "client_id is outside u16 range")?,
             pane_id,
-            tab_position: context.tab_position as usize,
+            tab_position: TabPosition::new(context.tab_position as usize),
             click: (context.click_x as usize, context.click_y as usize),
             click_in_pane: (
                 context.click_in_pane_x as usize,
@@ -3896,7 +3900,8 @@ impl TryFrom<ContextMenuContext> for ProtobufContextMenuContext {
             request_id: context.request_id,
             client_id: u32::from(context.client_id.get()),
             pane_id: Some(context.pane_id.try_into()?),
-            tab_position: context.tab_position as u32,
+            tab_position: u32::try_from(context.tab_position.get())
+                .map_err(|_| "Tab position is outside u32 range")?,
             click_x: context.click.0 as u32,
             click_y: context.click.1 as u32,
             click_in_pane_x: context.click_in_pane.0 as u32,
@@ -3920,6 +3925,21 @@ impl TryFrom<ContextMenuContext> for ProtobufContextMenuContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn tab_position_overflow_is_rejected_without_dropping_session_tabs() {
+        let tab = TabInfo {
+            position: TabPosition::new(usize::MAX),
+            ..Default::default()
+        };
+        assert!(ProtobufTabInfo::try_from(tab.clone()).is_err());
+        let session = SessionInfo {
+            tabs: vec![tab],
+            ..Default::default()
+        };
+        assert!(ProtobufSessionManifest::try_from(session).is_err());
+    }
 
     #[test]
     #[cfg(target_pointer_width = "64")]
@@ -4058,7 +4078,7 @@ mod tests {
                 request_id: tc.draw(generators::integers::<u64>()),
                 client_id: ClientId::new(tc.draw(generators::integers::<u16>())),
                 pane_id: pane_id(tc),
-                tab_position: tc.draw(generators::integers::<u16>()) as usize,
+                tab_position: TabPosition::new(tc.draw(generators::integers::<u16>()) as usize),
                 click: (
                     tc.draw(generators::integers::<u16>()) as usize,
                     tc.draw(generators::integers::<u16>()) as usize,

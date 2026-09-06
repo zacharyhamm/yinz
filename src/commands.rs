@@ -39,7 +39,7 @@ use zellij_server::{
 use {
     zellij_cli::args::CliArgs, zellij_cli::args::Command, zellij_cli::args::SessionCommand,
     zellij_cli::args::Sessions, zellij_cli::setup::Setup, zellij_config::config::Config,
-    zellij_config::config::ConfigError, zellij_types::data::ConnectToSession,
+    zellij_config::config::ConfigError, zellij_types::data::SessionConnection,
     zellij_types::input::actions::Action, zellij_types::input::options::Options,
 };
 
@@ -834,7 +834,7 @@ pub(crate) fn start_client(opts: CliArgs) {
         },
     };
 
-    let mut reconnect_to_session: Option<ConnectToSession> = None;
+    let mut reconnect_to_session: Option<SessionConnection> = None;
     let os_input = get_os_input(get_client_os_input);
     loop {
         let os_input = os_input.clone();

@@ -8,6 +8,8 @@ const TAB_0: TabId = TabId::new(0);
 use super::*;
 use zellij_test_support::Watched;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 
 /// Far enough out that no test is racing it. The deadline's own effect — a
 /// release landing after the caller gave up — is asserted by the tests that
@@ -170,7 +172,9 @@ fn an_adopted_pane_still_follows_a_client_looking_at_a_tab() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
-    screen.go_to_tab(1, client_id).expect("TEST");
+    screen
+        .go_to_tab(TabNumber::new(1), client_id)
+        .expect("TEST");
 
     assert_eq!(
         adopted_pane_placement_target(
@@ -191,7 +195,7 @@ fn an_adopted_pane_from_a_client_with_no_screen_goes_to_the_attached_clients_tab
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     screen
-        .go_to_tab(2, crate::ClientId::new(attached))
+        .go_to_tab(TabNumber::new(2), crate::ClientId::new(attached))
         .expect("TEST");
 
     assert_eq!(
@@ -254,13 +258,16 @@ fn an_adopted_focused_tab_pane_gets_focus_and_leaves_scroll_mode() {
                     jobs.iter().find_map(|job| match job {
                         BackgroundJob::ReportSessionInfo(_, info)
                             if info.tabs.len() == 1
-                                && info.panes.panes.get(&0).is_some_and(|panes| {
-                                    panes.len() == 2
-                                        && panes.iter().any(|pane| {
-                                            pane.id == PaneId::Terminal(crate::TerminalId::new(50))
-                                                && pane.is_focused
-                                        })
-                                }) =>
+                                && info.panes.panes.get(&TabPosition::new(0)).is_some_and(
+                                    |panes| {
+                                        panes.len() == 2
+                                            && panes.iter().any(|pane| {
+                                                pane.id
+                                                    == PaneId::Terminal(crate::TerminalId::new(50))
+                                                    && pane.is_focused
+                                            })
+                                    },
+                                ) =>
                         {
                             Some(())
                         },
@@ -1232,7 +1239,9 @@ fn a_tab_warp_defaults_to_the_focused_tab() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
-    screen.go_to_tab(1, crate::ClientId::new(1)).expect("TEST");
+    screen
+        .go_to_tab(TabNumber::new(1), crate::ClientId::new(1))
+        .expect("TEST");
 
     let (tab_index, terminal_ids, _) = screen
         .check_tab_can_be_warped(None, crate::ClientId::new(1))

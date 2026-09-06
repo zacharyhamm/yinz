@@ -9,6 +9,7 @@
 use std::str::FromStr;
 use std::sync::Arc;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 
 // The crate, not the backend module a glob import of `super::*` would otherwise find.
 use ::postgres::{Config as PgConfig, NoTls};
@@ -188,7 +189,7 @@ fn from_backends_pairs_postgres_plugin_data_with_sqlite_recordings() {
             &[crate::session_recording::PaneMetadata {
                 terminal_id: TerminalId::new(1),
                 tab_id: TabId::new(0),
-                tab_position: 0,
+                tab_position: TabPosition::new(0),
                 tab_name: "tab".to_owned(),
                 title: "pane".to_owned(),
                 cols: 80,

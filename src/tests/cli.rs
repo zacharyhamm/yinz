@@ -1,5 +1,6 @@
 use clap::{CommandFactory, Parser};
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::{RecordingId, TerminalId};
 use zellij_types::units::{ElapsedMicros, UnixMicros};
 use {zellij_cli::args::CliArgs, zellij_cli::args::Command};
@@ -178,7 +179,7 @@ fn recordings_list_output_formats_header_and_rows() {
     let meta = PaneMetadata {
         terminal_id: TerminalId::new(7),
         tab_id: TabId::new(0),
-        tab_position: 0,
+        tab_position: TabPosition::new(0),
         tab_name: "my_tab".to_string(),
         title: "my_pane".to_string(),
         cols: 80,

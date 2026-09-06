@@ -31,7 +31,7 @@ fn swap_planner_rejects_panes_that_cannot_be_safely_swapped() {
     );
 
     let mut other_tab = target.clone();
-    other_tab.tab_position = Some(1);
+    other_tab.tab_position = Some(zellij_tile::prelude::TabPosition::new(1));
     assert_eq!(
         plan_swap(&[source.clone(), other_tab], source.id, target.id).unwrap_err(),
         "swap_panes needs both panes in the same tab"

@@ -1,5 +1,7 @@
 use zellij_runtime::errors::prelude::*;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 
 use super::Screen;
 use crate::background_jobs::BackgroundJob;
@@ -62,7 +64,7 @@ impl Screen {
 
     /// The display position of the tab holding `pane_id`, for the callers that go on to look the
     /// tab up by position rather than by id.
-    pub(super) fn tab_position_containing_pane(&self, pane_id: PaneId) -> Option<usize> {
+    pub(super) fn tab_position_containing_pane(&self, pane_id: PaneId) -> Option<TabPosition> {
         self.tab_containing_pane(pane_id).map(|tab| tab.position)
     }
 
@@ -103,7 +105,7 @@ impl Screen {
     }
 
     /// Gets a mutable tab by its display position (0-based).
-    pub(super) fn get_tab_by_position_mut(&mut self, position: usize) -> Option<&mut Tab> {
+    pub(super) fn get_tab_by_position_mut(&mut self, position: TabPosition) -> Option<&mut Tab> {
         self.tabs.values_mut().find(|t| t.position == position)
     }
 
@@ -118,7 +120,7 @@ impl Screen {
     /// Gets the stable ID of the tab at the given display position.
     ///
     /// Use this to convert position → ID for BTreeMap lookups.
-    pub(super) fn get_tab_id_at_position(&self, position: usize) -> Option<TabId> {
+    pub(super) fn get_tab_id_at_position(&self, position: TabPosition) -> Option<TabId> {
         self.tabs
             .values()
             .find(|t| t.position == position)
@@ -128,7 +130,7 @@ impl Screen {
     /// Gets the display position of the tab with the given ID.
     ///
     /// Use this to convert ID → position for user-facing operations.
-    pub(super) fn get_tab_position_by_id(&self, id: TabId) -> Option<usize> {
+    pub(super) fn get_tab_position_by_id(&self, id: TabId) -> Option<TabPosition> {
         self.tabs.get(&id).map(|t| t.position)
     }
 
@@ -377,7 +379,7 @@ impl Screen {
     /// A helper function to switch to a new tab at specified position.
     pub(super) fn switch_active_tab(
         &mut self,
-        new_tab_pos: usize,
+        new_tab_pos: TabPosition,
         should_change_pane_focus: Option<Direction>,
         update_mode_infos: bool,
         client_id: ClientId,
@@ -527,7 +529,8 @@ impl Screen {
             match self.get_active_tab(client_id) {
                 Ok(active_tab) => {
                     let active_tab_pos = active_tab.position;
-                    let new_tab_pos = (active_tab_pos + 1) % self.tabs.len();
+                    let new_tab_pos =
+                        TabPosition::new((active_tab_pos.get() + 1) % self.tabs.len());
                     return self.switch_active_tab(
                         new_tab_pos,
                         should_change_pane_focus,
@@ -560,11 +563,11 @@ impl Screen {
             match self.get_active_tab(client_id) {
                 Ok(active_tab) => {
                     let active_tab_pos = active_tab.position;
-                    let new_tab_pos = if active_tab_pos == 0 {
+                    let new_tab_pos = TabPosition::new(if active_tab_pos.get() == 0 {
                         self.tabs.len() - 1
                     } else {
-                        active_tab_pos - 1
-                    };
+                        active_tab_pos.get() - 1
+                    });
 
                     return self.switch_active_tab(
                         new_tab_pos,
@@ -579,8 +582,8 @@ impl Screen {
         Ok(())
     }
 
-    pub fn go_to_tab(&mut self, tab_index: usize, client_id: ClientId) -> Result<()> {
-        self.switch_active_tab(tab_index.saturating_sub(1), None, true, client_id)
+    pub fn go_to_tab(&mut self, tab_index: TabNumber, client_id: ClientId) -> Result<()> {
+        self.switch_active_tab(tab_index.position(), None, true, client_id)
     }
 
     pub fn go_to_tab_name(&mut self, name: String, client_id: ClientId) -> Result<bool> {
@@ -699,7 +702,7 @@ impl Screen {
                     t.visible(true).with_context(err_context)?;
                 }
                 if t.position > tab_to_close.position {
-                    t.position -= 1;
+                    t.position = TabPosition::new(t.position.get() - 1);
                 }
             }
             for tab_id in visible_tab_indices {
