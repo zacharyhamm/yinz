@@ -40,8 +40,35 @@ Deno.test("Zellij methods preserve argv, validate snapshots, and fail without wr
             return Promise.resolve({ name });
         },
     };
+    const session = {
+        name: "example-session",
+        is_current_session: true,
+        panes: {}, // Headless daemon has no pane.
+        plugins: {
+            "42": { location: "zellij:hocus-agentd" },
+            "7": { location: "zellij:hocus" },
+            "8": { location: "file:unrelated.lua" },
+        },
+    };
+    const snapshot = (sessions: unknown[] = [
+        { ...session, name: "other-session", is_current_session: false },
+        session,
+    ]) =>
+        JSON.stringify({
+            event: "SessionUpdate",
+            payload: { SessionUpdate: [sessions, []] },
+        }) + "\n";
+    let discovery = snapshot();
+    let discoveryCode: number | undefined;
+    let discoveries = 0;
+    let killed = 0;
+    let reaped = 0;
+    let cancelled = 0;
     class FakeCommand {
+        options: Deno.CommandOptions;
+
         constructor(binary: string | URL, options: Deno.CommandOptions) {
+            this.options = options;
             equal(binary, "zellij");
             equal(
                 options.stdin,
@@ -52,6 +79,59 @@ Deno.test("Zellij methods preserve argv, validate snapshots, and fail without wr
             calls.push(options.args ?? []);
         }
         spawn() {
+            if (this.options.args?.includes("events")) {
+                discoveries++;
+                onOutput();
+                let close: () => void;
+                let resolve: (status: Deno.CommandStatus) => void;
+                const status = new Promise<Deno.CommandStatus>((done) => {
+                    resolve = done;
+                });
+                return {
+                    stdout: new ReadableStream<Uint8Array>({
+                        start(controller) {
+                            close = () => controller.close();
+                            if (discovery !== "pending") {
+                                const bytes = encoder.encode(discovery);
+                                controller.enqueue(bytes.slice(0, 17));
+                                controller.enqueue(bytes.slice(17));
+                            }
+                            if (discovery === "") {
+                                controller.close();
+                                resolve({
+                                    success: false,
+                                    code: 1,
+                                    signal: null,
+                                });
+                            }
+                        },
+                        cancel() {
+                            cancelled++;
+                        },
+                    }),
+                    stderr: new ReadableStream<Uint8Array>({
+                        start(c) {
+                            c.close();
+                        },
+                    }),
+                    kill(signal: string) {
+                        equal(signal, "SIGKILL");
+                        killed++;
+                        if (discovery === "pending") close();
+                        resolve({
+                            success: false,
+                            code: discoveryCode ?? 137,
+                            signal: discoveryCode === undefined
+                                ? "SIGKILL"
+                                : null,
+                        });
+                    },
+                    get status() {
+                        reaped++;
+                        return status;
+                    },
+                };
+            }
             return {
                 stdin: new WritableStream<Uint8Array>({
                     write(bytes) {
@@ -182,7 +262,16 @@ Deno.test("Zellij methods preserve argv, validate snapshots, and fail without wr
                 "pipe",
                 "--name",
                 "hocus_complete",
+                "--plugin",
+                "plugin_42",
                 "--",
+            ]);
+            equal(calls.pop(), [
+                "--session",
+                "example-session",
+                "events",
+                "--type",
+                "session_update",
             ]);
             equal(JSON.parse(argv.at(-1)!), completion.arguments.parse(input));
             const saved = writes.pop()!;
@@ -289,6 +378,89 @@ Deno.test("Zellij methods preserve argv, validate snapshots, and fail without wr
             equal(calls.length, count + (during ? 1 : 0));
             equal(writes.length, 0);
         }
+
+        for (
+            const invalid of [
+                "not json\n",
+                "{}\n",
+                "null\n",
+                "",
+                snapshot([]),
+                snapshot([{ ...session, is_current_session: false }]),
+                snapshot([{ ...session, name: "another-session" }]),
+                snapshot([session, session]),
+                snapshot([{ ...session, plugins: {} }]),
+                snapshot([{
+                    ...session,
+                    plugins: { "7": { location: "zellij:hocus" } },
+                }]),
+                snapshot([{
+                    ...session,
+                    plugins: {
+                        ...session.plugins,
+                        "99": { location: "zellij:hocus-agentd" },
+                    },
+                }]),
+                ...["bad", "-1", "1.5", "01", "4294967296"].map((id) =>
+                    snapshot([{
+                        ...session,
+                        plugins: { [id]: { location: "zellij:hocus-agentd" } },
+                    }])
+                ),
+                snapshot([{ ...session, plugins: null }]),
+                "pending",
+            ]
+        ) {
+            discovery = invalid;
+            const count = calls.length;
+            let failed = false;
+            try {
+                await completion.execute(input, {
+                    ...context,
+                    globalArgs: { ...context.globalArgs, timeoutMs: 10 },
+                });
+            } catch {
+                failed = true;
+            }
+            equal(failed, true);
+            equal(calls.length, count + 1);
+            equal(calls.at(-1), [
+                "--session",
+                "example-session",
+                "events",
+                "--type",
+                "session_update",
+            ]);
+            equal(writes.length, 0);
+        }
+        for (const mode of ["cancel", "failed"]) {
+            discovery = mode === "cancel" ? "pending" : snapshot();
+            discoveryCode = mode === "failed" ? 2 : undefined;
+            const controller = new AbortController();
+            const timer = mode === "cancel"
+                ? setTimeout(() => controller.abort(), 10)
+                : undefined;
+            const count = calls.length;
+            let error: unknown;
+            try {
+                await completion.execute(input, {
+                    ...context,
+                    signal: controller.signal,
+                });
+            } catch (caught) {
+                error = caught;
+            } finally {
+                clearTimeout(timer);
+            }
+            equal(error instanceof Error, true);
+            equal(calls.length, count + 1);
+            equal(writes.length, 0);
+        }
+        discoveryCode = undefined;
+        equal(killed, discoveries);
+        equal(reaped >= discoveries, true);
+        equal(cancelled > 0, true);
+        discovery = snapshot();
 
         const pane = {
             id: 42,

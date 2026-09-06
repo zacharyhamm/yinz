@@ -2997,25 +2997,30 @@ impl State {
         let payload = payload.unwrap_or_default();
         // Length first, on the JSON as it arrived: a caller that sends a megabyte should
         // pay for one comparison rather than a megabyte of parsing.
-        let request = match completion::within_size(payload)
-            .and_then(|()| {
-                serde_json::from_str::<wire::CompletionRequest>(payload)
-                    .map_err(|error| format!("that is not a completion request: {error}"))
-            })
-            .and_then(|request| completion::validate(&request).map(|()| request))
-        {
+        if let Err(detail) = completion::within_size(payload) {
+            answer(source, &completion::error_reply("", &detail));
+            return false;
+        }
+        let request = match serde_json::from_str::<wire::CompletionRequest>(payload) {
             Ok(request) => request,
-            Err(detail) => {
-                // A malformed payload has no `request_id` to echo, which is itself the
-                // answer: a caller correlating on one will time out, and the reason is on
-                // the reply for anyone who looks.
-                let request_id = serde_json::from_str::<wire::CompletionRequest>(payload)
-                    .map(|request| request.request_id)
-                    .unwrap_or_default();
-                answer(source, &completion::error_reply(&request_id, &detail));
+            Err(error) => {
+                answer(
+                    source,
+                    &completion::error_reply(
+                        "",
+                        &format!("that is not a completion request: {error}"),
+                    ),
+                );
                 return false;
             },
         };
+        if let Err(detail) = completion::validate(&request) {
+            answer(
+                source,
+                &completion::error_reply(&request.request_id, &detail),
+            );
+            return false;
+        }
         let refusal = self.refuse_completion(source, endpoint, allowed);
         if let Some(detail) = refusal {
             answer(
@@ -9273,6 +9278,53 @@ mod tests {
         assert!(!out.sent);
         assert_eq!(out.replies.len(), 1);
         assert!(out.replies[0].error.contains("not a completion request"));
+        assert_eq!(out.replies[0].request_id, "");
+    }
+
+    #[test]
+    fn oversized_json_is_rejected_before_parsing_or_claiming_a_completion_slot() {
+        let mut large_array = asking("why?");
+        large_array.messages = vec![large_array.messages[0].clone(); completion::MAX_REQUEST_BYTES];
+        large_array.tools = vec![serde_json::json!({}); completion::MAX_REQUEST_BYTES];
+        for request in [
+            asking(&"x".repeat(completion::MAX_REQUEST_BYTES)),
+            large_array,
+        ] {
+            let payload = serde_json::to_string(&request).expect("valid JSON with a request ID");
+            for (allowed, full) in [(true, false), (false, false), (true, true)] {
+                let mut state = State::default();
+                if full {
+                    for id in 0..COMPLETIONS_TOTAL {
+                        assert!(
+                            complete(
+                                &mut state,
+                                &PipeSource::Cli(format!("busy-{id}")),
+                                &asking("why?"),
+                            )
+                            .sent
+                        );
+                    }
+                }
+                let slots = state.completions.len();
+                let sequence = state.completion_seq;
+                let out = complete_raw(
+                    &mut state,
+                    &PipeSource::Cli("oversized".to_owned()),
+                    &payload,
+                    Some(&endpoint()),
+                    allowed,
+                    None,
+                );
+                assert!(!out.sent);
+                assert!(out.requests.is_empty());
+                assert_eq!(out.blocked, ["oversized"]);
+                assert_eq!(out.replies.len(), 1);
+                assert_eq!(out.replies[0].request_id, "");
+                assert!(out.replies[0].error.contains("at most 64000 bytes"));
+                assert_eq!(state.completions.len(), slots);
+                assert_eq!(state.completion_seq, sequence);
+            }
+        }
     }
 
     /// `validate`'s refusals reach the caller in the daemon's reply rather than as silence.

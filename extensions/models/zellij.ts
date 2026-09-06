@@ -130,6 +130,96 @@ async function command(
     return { session, stdout, stderr, exitCode: output.code };
 }
 
+async function completionDaemon(context: Omit<Context, "writeResource">) {
+    const { session, binary, timeoutMs } = GlobalArgs.parse(context.globalArgs);
+    const signal = AbortSignal.any([
+        context.signal,
+        AbortSignal.timeout(timeoutMs),
+    ]);
+    signal.throwIfAborted();
+    const child = new Deno.Command(binary, {
+        args: ["--session", session, "events", "--type", "session_update"],
+        stdin: "null",
+        stdout: "piped",
+        stderr: "piped",
+    }).spawn();
+    let stopped = false;
+    const stop = () => {
+        if (stopped) return;
+        stopped = true;
+        try {
+            child.kill("SIGKILL");
+        } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
+    };
+    signal.addEventListener("abort", stop, { once: true });
+    const stderr = new Response(child.stderr).text();
+    const reader = child.stdout.getReader();
+    try {
+        signal.throwIfAborted();
+        const decoder = new TextDecoder("utf-8", { fatal: true });
+        let snapshot = "";
+        while (!snapshot.includes("\n")) {
+            const { value, done } = await reader.read();
+            signal.throwIfAborted();
+            if (done) {
+                const status = await child.status;
+                throw new Error(
+                    `Zellij discovery ended (${status.code}): ${await stderr}`,
+                );
+            }
+            snapshot += decoder.decode(value, { stream: true });
+        }
+        const event = z.object({
+            event: z.literal("SessionUpdate"),
+            payload: z.object({
+                SessionUpdate: z.tuple([
+                    z.array(z.object({
+                        name: z.string(),
+                        is_current_session: z.boolean(),
+                        plugins: z.record(
+                            z.string(),
+                            z.object({ location: z.string() }),
+                        ),
+                    })),
+                    z.array(z.unknown()),
+                ]),
+            }),
+        }).parse(JSON.parse(snapshot.slice(0, snapshot.indexOf("\n"))));
+        const sessions = event.payload.SessionUpdate[0].filter((candidate) =>
+            candidate.name === session && candidate.is_current_session
+        );
+        if (sessions.length !== 1) {
+            throw new Error("Expected exactly one current session");
+        }
+        const daemons = Object.entries(sessions[0].plugins).filter((
+            [, plugin],
+        ) => plugin.location === "zellij:hocus-agentd");
+        if (daemons.length !== 1) {
+            throw new Error("Expected exactly one hocus-agentd plugin");
+        }
+        const id = daemons[0][0];
+        if (!/^(0|[1-9][0-9]*)$/.test(id) || Number(id) > 4294967295) {
+            throw new Error("Invalid hocus-agentd plugin ID");
+        }
+        return `plugin_${id}`;
+    } finally {
+        signal.removeEventListener("abort", stop);
+        stop();
+        await reader.cancel();
+        reader.releaseLock();
+        const status = await child.status;
+        const detail = await stderr;
+        signal.throwIfAborted();
+        if (!status.success && status.signal !== "SIGKILL") {
+            throw new Error(
+                `Zellij discovery failed (${status.code}): ${detail}`,
+            );
+        }
+    }
+}
+
 /** Reusable CLI methods; action and pipe calls are not automatically retried. */
 export const model = {
     type: "@hammz/zellij",
@@ -193,10 +283,13 @@ export const model = {
                         "A completion request is at most 64000 bytes",
                     );
                 }
+                const plugin = await completionDaemon(context);
                 const result = await command(context, [
                     "pipe",
                     "--name",
                     "hocus_complete",
+                    "--plugin",
+                    plugin,
                     "--",
                     payload,
                 ]);
