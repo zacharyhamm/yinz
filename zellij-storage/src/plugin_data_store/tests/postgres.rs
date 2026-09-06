@@ -173,15 +173,19 @@ fn from_backends_pairs_postgres_plugin_data_with_sqlite_recordings() {
         .unwrap();
     assert_eq!(texts(&rows, "summary"), vec!["in postgres"]);
 
+    use zellij_types::{
+        internal_ids::TerminalId,
+        units::{ElapsedMicros, UnixMicros},
+    };
     let mut session = access
         .recordings()
-        .start_recording("proof", false, 1)
+        .start_recording("proof", false, UnixMicros::new(1))
         .unwrap();
     // A recording is listed by its panes, so give it one and a byte of output.
     session
         .update_panes(
             &[crate::session_recording::PaneMetadata {
-                terminal_id: 1,
+                terminal_id: TerminalId::new(1),
                 tab_id: 0,
                 tab_position: 0,
                 tab_name: "tab".to_owned(),
@@ -189,18 +193,22 @@ fn from_backends_pairs_postgres_plugin_data_with_sqlite_recordings() {
                 cols: 80,
                 rows: 24,
             }],
-            1,
+            ElapsedMicros::new(1),
         )
         .unwrap();
     session
         .record_events(&[crate::session_recording::RecordedEvent::output(
-            1,
-            2,
+            TerminalId::new(1),
+            ElapsedMicros::new(2),
             b"x".to_vec(),
         )])
         .unwrap();
-    session.finish_pane(1, 3).unwrap();
-    session.finish_session(4, 3).unwrap();
+    session
+        .finish_pane(TerminalId::new(1), ElapsedMicros::new(3))
+        .unwrap();
+    session
+        .finish_session(UnixMicros::new(4), ElapsedMicros::new(3))
+        .unwrap();
     drop(session);
     let recordings = access.recordings().list().unwrap();
     assert_eq!(recordings.len(), 1, "{:?}", recordings);

@@ -1,4 +1,6 @@
 use clap::{CommandFactory, Parser};
+use zellij_types::internal_ids::{RecordingId, TerminalId};
+use zellij_types::units::{ElapsedMicros, UnixMicros};
 use zellij_utils::cli::{CliArgs, Command};
 
 const CLI_PARSE_STACK_SIZE: usize = 32 * 1024 * 1024;
@@ -53,9 +55,9 @@ fn cli_recordings_export_parses() {
     let args = try_parse_cli(["zellij", "recordings", "export", "42"]).unwrap();
     match args.command {
         Some(Command::Recordings(zellij_utils::cli::Recordings::Export {
-            recording_id: 42,
+            recording_id,
             output: None,
-        })) => {},
+        })) if recording_id == RecordingId::new(42) => {},
         _ => panic!("Expected Recordings::Export without output"),
     }
 }
@@ -91,9 +93,9 @@ fn cli_recordings_export_with_output_parses() {
     .unwrap();
     match args.command {
         Some(Command::Recordings(zellij_utils::cli::Recordings::Export {
-            recording_id: 42,
+            recording_id,
             output: Some(path),
-        })) if path == *"pane.cast" => {},
+        })) if path == *"pane.cast" && recording_id == RecordingId::new(42) => {},
         _ => panic!("Expected Recordings::Export with output"),
     }
 }
@@ -133,12 +135,12 @@ fn recordings_search_output_formats_header_and_rows() {
     assert_eq!(crate::commands::format_search_results(&[]), "No matches.\n");
 
     let hits = vec![SearchHit {
-        recording_id: 3,
+        recording_id: RecordingId::new(3),
         session_name: "my_session".to_string(),
         tab_name: "my_tab".to_string(),
         pane_title: String::new(),
-        elapsed_us: 2_500_000,
-        started_at_us: 1_000_000,
+        elapsed_us: ElapsedMicros::new(2_500_000),
+        started_at_us: UnixMicros::new(1_000_000),
         text: "hello needle world".to_string(),
     }];
     let output = crate::commands::format_search_results(&hits);
@@ -170,9 +172,10 @@ fn recordings_list_output_formats_header_and_rows() {
     ));
     let _ = fs::remove_dir_all(&dir_path);
     fs::create_dir_all(&dir_path).unwrap();
-    let mut store = RecordingStore::open(&dir_path, "my_session", true, 1_000_000).unwrap();
+    let mut store =
+        RecordingStore::open(&dir_path, "my_session", true, UnixMicros::new(1_000_000)).unwrap();
     let meta = PaneMetadata {
-        terminal_id: 7,
+        terminal_id: TerminalId::new(7),
         tab_id: 0,
         tab_position: 0,
         tab_name: "my_tab".to_string(),
@@ -180,7 +183,7 @@ fn recordings_list_output_formats_header_and_rows() {
         cols: 80,
         rows: 24,
     };
-    store.update_panes(&[meta], 0).unwrap();
+    store.update_panes(&[meta], ElapsedMicros::new(0)).unwrap();
     let summaries = zellij_storage::session_recording::list_recordings(&dir_path).unwrap();
     assert_eq!(summaries.len(), 1);
     // call formatting helper (does not exist yet, should fail)
@@ -220,37 +223,37 @@ fn recordings_state_strings() {
     use zellij_storage::session_recording::RecordingSummary;
 
     let running = RecordingSummary {
-        id: 1,
+        id: RecordingId::new(1),
         session_name: "s".to_string(),
         tab_name: "t".to_string(),
-        terminal_id: 1,
+        terminal_id: TerminalId::new(1),
         pane_title: "p".to_string(),
-        started_at_us: 0,
-        duration_us: 0,
+        started_at_us: UnixMicros::new(0),
+        duration_us: ElapsedMicros::new(0),
         is_running: true,
         capture_input: true,
         error: None,
     };
     let complete = RecordingSummary {
-        id: 2,
+        id: RecordingId::new(2),
         session_name: "s".to_string(),
         tab_name: "t".to_string(),
-        terminal_id: 2,
+        terminal_id: TerminalId::new(2),
         pane_title: "p".to_string(),
-        started_at_us: 0,
-        duration_us: 5_000_000,
+        started_at_us: UnixMicros::new(0),
+        duration_us: ElapsedMicros::new(5_000_000),
         is_running: false,
         capture_input: false,
         error: None,
     };
     let incomplete = RecordingSummary {
-        id: 3,
+        id: RecordingId::new(3),
         session_name: "s".to_string(),
         tab_name: "t".to_string(),
-        terminal_id: 3,
+        terminal_id: TerminalId::new(3),
         pane_title: "p".to_string(),
-        started_at_us: 0,
-        duration_us: 0,
+        started_at_us: UnixMicros::new(0),
+        duration_us: ElapsedMicros::new(0),
         is_running: false,
         capture_input: false,
         error: Some("oops".to_string()),

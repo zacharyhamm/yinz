@@ -23,6 +23,14 @@ impl TerminalId {
     }
 }
 
+impl TryFrom<i64> for TerminalId {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(Self::new)
+    }
+}
+
 impl fmt::Display for TerminalId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -102,6 +110,41 @@ impl ClientId {
 impl fmt::Display for ClientId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+/// A persisted recording-pane identity, including legacy signed values.
+///
+/// ```compile_fail
+/// use zellij_types::internal_ids::{RecordingId, TerminalId};
+/// let _: RecordingId = TerminalId::new(1);
+/// ```
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+#[repr(transparent)]
+pub struct RecordingId(i64);
+
+impl RecordingId {
+    pub const fn new(value: i64) -> Self {
+        Self(value)
+    }
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+}
+
+impl fmt::Display for RecordingId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::str::FromStr for RecordingId {
+    type Err = std::num::ParseIntError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.parse().map(Self::new)
     }
 }
 

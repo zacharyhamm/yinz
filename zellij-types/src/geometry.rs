@@ -449,49 +449,45 @@ impl FloatingPaneCoordinates {
         self.x = Some(PercentOrFixed::Fixed(x));
         self
     }
-    pub fn with_x_percent(mut self, x: usize) -> Self {
+    pub fn with_x_percent(mut self, x: usize) -> Result<Self, &'static str> {
         if x > 100 {
-            eprintln!("x must be between 0 and 100");
-            return self;
+            return Err("x must be between 0 and 100");
         }
         self.x = Some(PercentOrFixed::Percent(x));
-        self
+        Ok(self)
     }
     pub fn with_y_fixed(mut self, y: usize) -> Self {
         self.y = Some(PercentOrFixed::Fixed(y));
         self
     }
-    pub fn with_y_percent(mut self, y: usize) -> Self {
+    pub fn with_y_percent(mut self, y: usize) -> Result<Self, &'static str> {
         if y > 100 {
-            eprintln!("y must be between 0 and 100");
-            return self;
+            return Err("y must be between 0 and 100");
         }
         self.y = Some(PercentOrFixed::Percent(y));
-        self
+        Ok(self)
     }
     pub fn with_width_fixed(mut self, width: usize) -> Self {
         self.width = Some(PercentOrFixed::Fixed(width));
         self
     }
-    pub fn with_width_percent(mut self, width: usize) -> Self {
+    pub fn with_width_percent(mut self, width: usize) -> Result<Self, &'static str> {
         if width > 100 {
-            eprintln!("width must be between 0 and 100");
-            return self;
+            return Err("width must be between 0 and 100");
         }
         self.width = Some(PercentOrFixed::Percent(width));
-        self
+        Ok(self)
     }
     pub fn with_height_fixed(mut self, height: usize) -> Self {
         self.height = Some(PercentOrFixed::Fixed(height));
         self
     }
-    pub fn with_height_percent(mut self, height: usize) -> Self {
+    pub fn with_height_percent(mut self, height: usize) -> Result<Self, &'static str> {
         if height > 100 {
-            eprintln!("height must be between 0 and 100");
-            return self;
+            return Err("height must be between 0 and 100");
         }
         self.height = Some(PercentOrFixed::Percent(height));
-        self
+        Ok(self)
     }
 }
 

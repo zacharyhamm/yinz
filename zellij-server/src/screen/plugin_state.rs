@@ -384,7 +384,7 @@ impl Screen {
                         continue;
                     }
                     result.push(PaneMetadata {
-                        terminal_id: pane.id,
+                        terminal_id: zellij_types::internal_ids::TerminalId::new(pane.id),
                         tab_id: tab_info.tab_id,
                         tab_position: tab_info.position,
                         tab_name: tab_info.name.clone(),

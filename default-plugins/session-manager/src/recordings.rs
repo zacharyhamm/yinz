@@ -1,14 +1,20 @@
+use zellij_tile::prelude::ElapsedMicros;
+use zellij_tile::prelude::RecordingId;
+#[cfg(test)]
+use zellij_tile::prelude::TerminalId;
+#[cfg(test)]
+use zellij_tile::prelude::UnixMicros;
 use zellij_tile::prelude::{RecordingSummary, SearchHit};
 use zellij_tile::shim::*;
 
 #[derive(Debug, Default)]
 pub struct RecordingRow {
-    pub id: i64,
+    pub id: RecordingId,
     pub session_name: String,
     pub tab_name: String,
     pub pane_title: String,
-    pub duration_us: i64,
-    pub elapsed_us: i64,
+    pub duration_us: ElapsedMicros,
+    pub elapsed_us: ElapsedMicros,
     pub text: Option<String>,
 }
 
@@ -166,7 +172,7 @@ impl Recordings {
     }
     /// The `recording_id` under the cursor, for `zellij recordings export` (and, later, replay).
     #[allow(dead_code)] // the hook replay will hang off
-    pub fn selected_recording_id(&self) -> Option<i64> {
+    pub fn selected_recording_id(&self) -> Option<RecordingId> {
         self.selected_index
             .and_then(|i| self.rows.get(i))
             .map(|r| r.id)
@@ -193,7 +199,7 @@ fn time_label(row: &RecordingRow) -> String {
     } else {
         row.duration_us
     };
-    let total_seconds = micros.max(0) / 1_000_000;
+    let total_seconds = micros.get().max(0) / 1_000_000;
     let (hours, minutes, seconds) = (
         total_seconds / 3600,
         (total_seconds % 3600) / 60,
@@ -238,11 +244,11 @@ mod tests {
 
     fn row(id: i64) -> RecordingRow {
         RecordingRow {
-            id,
+            id: RecordingId::new(id),
             session_name: "s".to_string(),
             tab_name: "t".to_string(),
             pane_title: "zsh".to_string(),
-            duration_us: 65_000_000,
+            duration_us: ElapsedMicros::new(65_000_000),
             ..Default::default()
         }
     }
@@ -250,13 +256,13 @@ mod tests {
     #[test]
     fn converts_typed_rows_and_labels_them() {
         let list_row = RecordingRow::from(RecordingSummary {
-            id: 7,
+            id: RecordingId::new(7),
             session_name: "s".to_string(),
             tab_name: "t".to_string(),
-            terminal_id: 1,
+            terminal_id: TerminalId::new(1),
             pane_title: "zsh".to_string(),
-            started_at_us: 0,
-            duration_us: 65_000_000,
+            started_at_us: UnixMicros::new(0),
+            duration_us: ElapsedMicros::new(65_000_000),
             is_running: false,
             capture_input: false,
             error: None,
@@ -265,15 +271,15 @@ mod tests {
         assert_eq!(pane_label(&list_row), "t/zsh");
 
         let search_row = RecordingRow::from(SearchHit {
-            recording_id: 9,
+            recording_id: RecordingId::new(9),
             session_name: "s".to_string(),
             tab_name: "t".to_string(),
             pane_title: "zsh".to_string(),
-            elapsed_us: 3_661_000_000,
-            started_at_us: 0,
+            elapsed_us: ElapsedMicros::new(3_661_000_000),
+            started_at_us: UnixMicros::new(0),
             text: "error: boom".to_string(),
         });
-        assert_eq!(search_row.id, 9);
+        assert_eq!(search_row.id, RecordingId::new(9));
         assert_eq!(time_label(&search_row), "1:01:01");
     }
 
@@ -285,9 +291,15 @@ mod tests {
             ..Default::default()
         };
         recordings.move_selection_down();
-        assert_eq!(recordings.selected_recording_id(), Some(7));
+        assert_eq!(
+            recordings.selected_recording_id(),
+            Some(RecordingId::new(7))
+        );
         recordings.move_selection_up();
-        assert_eq!(recordings.selected_recording_id(), Some(7));
+        assert_eq!(
+            recordings.selected_recording_id(),
+            Some(RecordingId::new(7))
+        );
     }
 
     #[hegel::test]

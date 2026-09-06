@@ -187,6 +187,8 @@ pub use super::generated_api::api::{
     plugin_permission::PermissionType as ProtobufPermissionType,
     resize::ResizeAction as ProtobufResizeAction,
 };
+use zellij_types::internal_ids::{RecordingId, TerminalId};
+use zellij_types::units::{ElapsedMicros, UnixMicros};
 
 use crate::plugin_api::plugin_data::{watch_mode_from_i32, ProtobufMutation, ProtobufWatchMode};
 
@@ -6773,13 +6775,13 @@ impl From<OpenPluginPaneFloatingResponse> for ProtobufOpenPluginPaneFloatingResp
 impl From<ProtobufRecordingSummary> for RecordingSummary {
     fn from(protobuf: ProtobufRecordingSummary) -> Self {
         RecordingSummary {
-            id: protobuf.id,
+            id: RecordingId::new(protobuf.id),
             session_name: protobuf.session_name,
             tab_name: protobuf.tab_name,
-            terminal_id: protobuf.terminal_id,
+            terminal_id: TerminalId::new(protobuf.terminal_id),
             pane_title: protobuf.pane_title,
-            started_at_us: protobuf.started_at_us,
-            duration_us: protobuf.duration_us,
+            started_at_us: UnixMicros::new(protobuf.started_at_us),
+            duration_us: ElapsedMicros::new(protobuf.duration_us),
             is_running: protobuf.is_running,
             capture_input: protobuf.capture_input,
             error: protobuf.error,
@@ -6810,13 +6812,13 @@ impl From<NotificationInfo> for ProtobufNotificationInfo {
 impl From<RecordingSummary> for ProtobufRecordingSummary {
     fn from(summary: RecordingSummary) -> Self {
         ProtobufRecordingSummary {
-            id: summary.id,
+            id: summary.id.get(),
             session_name: summary.session_name,
             tab_name: summary.tab_name,
-            terminal_id: summary.terminal_id,
+            terminal_id: summary.terminal_id.get(),
             pane_title: summary.pane_title,
-            started_at_us: summary.started_at_us,
-            duration_us: summary.duration_us,
+            started_at_us: summary.started_at_us.get(),
+            duration_us: summary.duration_us.get(),
             is_running: summary.is_running,
             capture_input: summary.capture_input,
             error: summary.error,
@@ -6827,12 +6829,12 @@ impl From<RecordingSummary> for ProtobufRecordingSummary {
 impl From<ProtobufSearchHit> for SearchHit {
     fn from(protobuf: ProtobufSearchHit) -> Self {
         SearchHit {
-            recording_id: protobuf.recording_id,
+            recording_id: RecordingId::new(protobuf.recording_id),
             session_name: protobuf.session_name,
             tab_name: protobuf.tab_name,
             pane_title: protobuf.pane_title,
-            elapsed_us: protobuf.elapsed_us,
-            started_at_us: protobuf.started_at_us,
+            elapsed_us: ElapsedMicros::new(protobuf.elapsed_us),
+            started_at_us: UnixMicros::new(protobuf.started_at_us),
             text: protobuf.text,
         }
     }
@@ -6841,12 +6843,12 @@ impl From<ProtobufSearchHit> for SearchHit {
 impl From<SearchHit> for ProtobufSearchHit {
     fn from(hit: SearchHit) -> Self {
         ProtobufSearchHit {
-            recording_id: hit.recording_id,
+            recording_id: hit.recording_id.get(),
             session_name: hit.session_name,
             tab_name: hit.tab_name,
             pane_title: hit.pane_title,
-            elapsed_us: hit.elapsed_us,
-            started_at_us: hit.started_at_us,
+            elapsed_us: hit.elapsed_us.get(),
+            started_at_us: hit.started_at_us.get(),
             text: hit.text,
         }
     }
@@ -7182,30 +7184,32 @@ mod tests {
     #[test]
     fn recording_results_protobuf_round_trip() {
         let summary = RecordingSummary {
-            id: 3,
+            id: RecordingId::new(3),
             session_name: "session".to_owned(),
             tab_name: "tab".to_owned(),
-            terminal_id: 5,
+            terminal_id: TerminalId::new(5),
             pane_title: "title".to_owned(),
-            started_at_us: 1_000,
-            duration_us: 2_000,
+            started_at_us: UnixMicros::new(1_000),
+            duration_us: ElapsedMicros::new(2_000),
             is_running: true,
             capture_input: false,
             error: Some("boom".to_owned()),
         };
         let protobuf: ProtobufRecordingSummary = summary.clone().into();
+        assert_eq!(prost::Message::encode_to_vec(&protobuf), b"\x08\x03\x12\x07session\x1a\x03tab\x20\x05\x2a\x05title\x30\xe8\x07\x38\xd0\x0f\x40\x01\x52\x04boom");
         assert_eq!(RecordingSummary::from(protobuf), summary);
 
         let hit = SearchHit {
-            recording_id: 3,
+            recording_id: RecordingId::new(3),
             session_name: "session".to_owned(),
             tab_name: "tab".to_owned(),
             pane_title: "title".to_owned(),
-            elapsed_us: 42,
-            started_at_us: 1_000,
+            elapsed_us: ElapsedMicros::new(42),
+            started_at_us: UnixMicros::new(1_000),
             text: "needle in a haystack".to_owned(),
         };
         let protobuf: ProtobufSearchHit = hit.clone().into();
+        assert_eq!(prost::Message::encode_to_vec(&protobuf), b"\x08\x03\x12\x07session\x1a\x03tab\x22\x05title\x28\x2a\x30\xe8\x07\x3a\x14needle in a haystack");
         assert_eq!(SearchHit::from(protobuf), hit);
     }
 

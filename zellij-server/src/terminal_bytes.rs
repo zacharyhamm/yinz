@@ -200,7 +200,10 @@ mod tests {
             }
         }
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].terminal_id, 1);
+        assert_eq!(
+            events[0].terminal_id,
+            zellij_types::internal_ids::TerminalId::new(1)
+        );
         assert_eq!(events[0].data, b"hello");
         assert_eq!(
             events[0].kind,
