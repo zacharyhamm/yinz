@@ -23,6 +23,7 @@ use zellij_types::command::PaneTarget;
 use zellij_types::data::Event;
 use zellij_types::diagnostics::ErrorContext;
 use zellij_types::input::command::RunCommand;
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::style::Palette;
 use {
@@ -32,13 +33,13 @@ use {
 
 #[derive(Clone)]
 struct MockOsApi {
-    cwds: Arc<Mutex<HashMap<u32, PathBuf>>>,
-    cmds: Arc<Mutex<HashMap<u32, Vec<String>>>>,
+    cwds: Arc<Mutex<HashMap<ProcessId, PathBuf>>>,
+    cmds: Arc<Mutex<HashMap<ProcessId, Vec<String>>>>,
     cmds_by_ppid: Arc<Mutex<HashMap<String, Vec<String>>>>,
     /// Every pid-addressed signal, recorded so a test can assert one was never
     /// sent. This is the whole point for remote panes: the failure being guarded
     /// against is a signal that *is* delivered, to the wrong process.
-    local_signals: Arc<Mutex<Vec<(u32, &'static str)>>>,
+    local_signals: Arc<Mutex<Vec<(ProcessId, &'static str)>>>,
     remote_panes: Arc<Mutex<std::collections::HashSet<TerminalId>>>,
     remote_signals: Arc<Mutex<Vec<(TerminalId, ChildSignal)>>>,
     remote_status: Arc<Mutex<HashMap<TerminalId, RemoteStatus>>>,
@@ -178,25 +179,25 @@ impl MockOsApi {
     fn mark_remote(&self, terminal_id: TerminalId) {
         self.remote_panes.lock().unwrap().insert(terminal_id);
     }
-    fn local_signals(&self) -> Vec<(u32, &'static str)> {
+    fn local_signals(&self) -> Vec<(ProcessId, &'static str)> {
         self.local_signals.lock().unwrap().clone()
     }
     fn remote_signals(&self) -> Vec<(TerminalId, ChildSignal)> {
         self.remote_signals.lock().unwrap().clone()
     }
-    fn set_cwd(&self, pid: u32, path: PathBuf) {
+    fn set_cwd(&self, pid: ProcessId, path: PathBuf) {
         self.cwds.lock().unwrap().insert(pid, path);
     }
-    fn set_cmd(&self, pid: u32, cmd: Vec<String>) {
+    fn set_cmd(&self, pid: ProcessId, cmd: Vec<String>) {
         self.cmds.lock().unwrap().insert(pid, cmd);
     }
-    fn set_foreground_cmd(&self, ppid: u32, cmd: Vec<String>) {
+    fn set_foreground_cmd(&self, ppid: ProcessId, cmd: Vec<String>) {
         self.cmds_by_ppid
             .lock()
             .unwrap()
             .insert(ppid.to_string(), cmd);
     }
-    fn clear_foreground_cmd(&self, ppid: u32) {
+    fn clear_foreground_cmd(&self, ppid: ProcessId) {
         self.cmds_by_ppid.lock().unwrap().remove(&ppid.to_string());
     }
 }
@@ -217,7 +218,7 @@ impl ServerOsApi for MockOsApi {
         _: TerminalAction,
         _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _: Option<PathBuf>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         let mut allowed = self.local_spawns_to_allow.lock().unwrap();
         if *allowed > 0 {
             *allowed -= 1;
@@ -227,7 +228,7 @@ impl ServerOsApi for MockOsApi {
             return Ok((
                 crate::TerminalId::new(terminal_id),
                 Box::new(crate::os_input_output::NullAsyncReader),
-                Some(1000 + terminal_id),
+                Some(ProcessId::new(1000 + terminal_id)),
             ));
         }
         if *self.fail_local_spawns.lock().unwrap() {
@@ -262,7 +263,7 @@ impl ServerOsApi for MockOsApi {
         &self,
         resolved: crate::os_input_output::ResolvedSpawn,
         _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         self.transport_started.wait();
         self.transport_release.wait();
         self.resolved_spawns
@@ -306,7 +307,7 @@ impl ServerOsApi for MockOsApi {
         &self,
         resolved: crate::os_input_output::ResolvedSpawn,
         _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> anyhow::Result<(Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> anyhow::Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         self.transport_started.wait();
         self.transport_release.wait();
         self.resolved_spawns
@@ -321,19 +322,19 @@ impl ServerOsApi for MockOsApi {
     fn tcdrain(&self, _: TerminalId) -> anyhow::Result<()> {
         Ok(())
     }
-    fn kill(&self, pid: u32) -> anyhow::Result<()> {
+    fn kill(&self, pid: ProcessId) -> anyhow::Result<()> {
         self.local_signals.lock().unwrap().push((pid, "SIGHUP"));
         Ok(())
     }
-    fn force_kill(&self, pid: u32) -> anyhow::Result<()> {
+    fn force_kill(&self, pid: ProcessId) -> anyhow::Result<()> {
         self.local_signals.lock().unwrap().push((pid, "SIGKILL"));
         Ok(())
     }
-    fn send_sigint(&self, pid: u32) -> anyhow::Result<()> {
+    fn send_sigint(&self, pid: ProcessId) -> anyhow::Result<()> {
         self.local_signals.lock().unwrap().push((pid, "SIGINT"));
         Ok(())
     }
-    fn send_sigcont(&self, pid: u32) -> anyhow::Result<()> {
+    fn send_sigcont(&self, pid: ProcessId) -> anyhow::Result<()> {
         self.local_signals.lock().unwrap().push((pid, "SIGCONT"));
         Ok(())
     }
@@ -396,10 +397,13 @@ impl ServerOsApi for MockOsApi {
     fn load_palette(&self) -> Palette {
         Palette::default()
     }
-    fn get_cwd(&self, pid: u32) -> Option<PathBuf> {
+    fn get_cwd(&self, pid: ProcessId) -> Option<PathBuf> {
         self.cwds.lock().unwrap().get(&pid).cloned()
     }
-    fn get_cwds(&self, pids: Vec<u32>) -> (HashMap<u32, PathBuf>, HashMap<u32, Vec<String>>) {
+    fn get_cwds(
+        &self,
+        pids: Vec<ProcessId>,
+    ) -> (HashMap<ProcessId, PathBuf>, HashMap<ProcessId, Vec<String>>) {
         let cwds_lock = self.cwds.lock().unwrap();
         let cmds_lock = self.cmds.lock().unwrap();
         let cwds = pids
@@ -417,7 +421,7 @@ impl ServerOsApi for MockOsApi {
     }
     fn get_foreground_cmds(
         &self,
-        panes: &[(TerminalId, u32)],
+        panes: &[(TerminalId, ProcessId)],
         _: &Option<String>,
     ) -> HashMap<TerminalId, Vec<String>> {
         let cmds_by_ppid = self.cmds_by_ppid.lock().unwrap();
@@ -438,7 +442,7 @@ impl ServerOsApi for MockOsApi {
         terminal_id: TerminalId,
         run_command: RunCommand,
         _: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> anyhow::Result<(Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> anyhow::Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         let next_host = run_command.target.display();
         self.rerun_commands.lock().unwrap().push(run_command);
         if self.rerun_failures.lock().unwrap().contains(&terminal_id) {
@@ -489,7 +493,7 @@ impl ServerOsApi for MockOsApi {
         Ok(ReleasedPane::Local(
             crate::pty_host::client::ReleasedPtyHost {
                 host_id: format!("host-{terminal_id}"),
-                host_pid: 1,
+                host_pid: ProcessId::new(1),
                 control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
             },
         ))
@@ -549,7 +553,7 @@ fn collect_pane_cwd_instructions(
     updates
 }
 
-fn set_active_terminal(pty: &mut Pty, terminal_id: TerminalId, child_pid: u32) {
+fn set_active_terminal(pty: &mut Pty, terminal_id: TerminalId, child_pid: ProcessId) {
     let flag = Arc::new(AtomicBool::new(true));
     pty.id_to_child_pid.insert(terminal_id, child_pid);
     pty.pane_activity_flags.insert(terminal_id, flag);
@@ -590,7 +594,7 @@ fn collect_command_changed_events(
 #[test]
 fn foreground_command_emitted_with_is_foreground_true() {
     let mock = MockOsApi::new();
-    let child_pid = 100;
+    let child_pid = ProcessId::new(100);
     mock.set_foreground_cmd(child_pid, vec!["vim".into(), "file.rs".into()]);
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
     set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
@@ -607,7 +611,7 @@ fn foreground_command_emitted_with_is_foreground_true() {
 #[test]
 fn empty_foreground_falls_back_to_shell_command() {
     let mock = MockOsApi::new();
-    let child_pid = 100;
+    let child_pid = ProcessId::new(100);
     mock.set_cmd(child_pid, vec!["/bin/bash".into()]);
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
     set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
@@ -624,7 +628,7 @@ fn empty_foreground_falls_back_to_shell_command() {
 #[test]
 fn foreground_clearing_emits_shell_fallback() {
     let mock = MockOsApi::new();
-    let child_pid = 100;
+    let child_pid = ProcessId::new(100);
     mock.set_cmd(child_pid, vec!["/bin/zsh".into()]);
     mock.set_foreground_cmd(child_pid, vec!["cargo".into(), "build".into()]);
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock.clone());
@@ -655,7 +659,7 @@ fn foreground_clearing_emits_shell_fallback() {
 #[test]
 fn no_event_when_foreground_unchanged() {
     let mock = MockOsApi::new();
-    let child_pid = 100;
+    let child_pid = ProcessId::new(100);
     mock.set_foreground_cmd(child_pid, vec!["htop".into()]);
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
     set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
@@ -678,7 +682,7 @@ fn no_event_when_foreground_unchanged() {
 #[test]
 fn no_event_for_inactive_terminal() {
     let mock = MockOsApi::new();
-    let child_pid = 100;
+    let child_pid = ProcessId::new(100);
     mock.set_foreground_cmd(child_pid, vec!["vim".into()]);
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
     set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
@@ -698,7 +702,7 @@ fn no_event_for_inactive_terminal() {
 #[test]
 fn foreground_change_between_two_commands() {
     let mock = MockOsApi::new();
-    let child_pid = 100;
+    let child_pid = ProcessId::new(100);
     mock.set_foreground_cmd(child_pid, vec!["vim".into()]);
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock.clone());
     set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
@@ -726,7 +730,7 @@ fn foreground_change_between_two_commands() {
 #[test]
 fn activity_flag_reset_after_poll() {
     let mock = MockOsApi::new();
-    let child_pid = 100;
+    let child_pid = ProcessId::new(100);
     let (mut pty, _rx) = make_pty_with_plugin_receiver(mock);
     set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
     assert!(pty
@@ -749,8 +753,8 @@ fn activity_flag_reset_after_poll() {
 #[test]
 fn multiple_terminals_only_active_ones_polled() {
     let mock = MockOsApi::new();
-    let pid_active = 100;
-    let pid_inactive = 200;
+    let pid_active = ProcessId::new(100);
+    let pid_inactive = ProcessId::new(200);
     mock.set_cwd(pid_active, PathBuf::from("/active"));
     mock.set_cwd(pid_inactive, PathBuf::from("/inactive"));
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
@@ -774,7 +778,7 @@ fn multiple_terminals_only_active_ones_polled() {
 #[test]
 fn cwd_changed_event_emitted_on_change() {
     let mock = MockOsApi::new();
-    let child_pid = 100;
+    let child_pid = ProcessId::new(100);
     mock.set_cwd(child_pid, PathBuf::from("/home/user"));
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
     set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
@@ -790,7 +794,7 @@ fn cwd_changed_event_emitted_on_change() {
 #[test]
 fn no_cwd_event_when_unchanged() {
     let mock = MockOsApi::new();
-    let child_pid = 100;
+    let child_pid = ProcessId::new(100);
     mock.set_cwd(child_pid, PathBuf::from("/home/user"));
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
     set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
@@ -812,7 +816,7 @@ fn no_cwd_event_when_unchanged() {
 #[test]
 fn a_pane_that_never_leaves_its_launch_folder_still_reports_it() {
     let mock = MockOsApi::new();
-    let child_pid = 100;
+    let child_pid = ProcessId::new(100);
     mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
 
@@ -833,7 +837,7 @@ fn an_initial_cwd_the_os_cannot_answer_falls_back_to_the_requested_one() {
 
     pty.capture_initial_cwd(
         crate::TerminalId::new(1),
-        100,
+        ProcessId::new(100),
         Some(PathBuf::from("/work/hocus")),
     );
 
@@ -850,7 +854,7 @@ fn an_initial_cwd_the_os_cannot_answer_falls_back_to_the_requested_one() {
 fn an_initial_cwd_with_nothing_to_go_on_reports_nothing() {
     let (mut pty, rx) = make_pty_with_plugin_receiver(MockOsApi::new());
 
-    pty.capture_initial_cwd(crate::TerminalId::new(1), 100, None);
+    pty.capture_initial_cwd(crate::TerminalId::new(1), ProcessId::new(100), None);
 
     assert!(collect_cwd_changed_events(&rx).is_empty());
     assert!(pty.terminal_cwds.is_empty());
@@ -861,7 +865,7 @@ fn an_initial_cwd_with_nothing_to_go_on_reports_nothing() {
 #[test]
 fn an_initial_cwd_reports_once_and_the_ticker_stays_quiet() {
     let mock = MockOsApi::new();
-    let child_pid = 100;
+    let child_pid = ProcessId::new(100);
     mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
     set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
@@ -877,7 +881,7 @@ fn an_initial_cwd_reports_once_and_the_ticker_stays_quiet() {
 #[test]
 fn an_initial_cwd_reaches_screen() {
     let mock = MockOsApi::new();
-    let child_pid = 100;
+    let child_pid = ProcessId::new(100);
     mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
 
@@ -894,7 +898,7 @@ fn an_initial_cwd_reaches_screen() {
 #[test]
 fn a_closed_pane_takes_its_folder_with_it() {
     let mock = MockOsApi::new();
-    let child_pid = 100;
+    let child_pid = ProcessId::new(100);
     mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
     pty.capture_initial_cwd(crate::TerminalId::new(1), child_pid, None);
@@ -915,7 +919,8 @@ fn a_closed_pane_takes_its_folder_with_it() {
 fn osc7_emits_cwd_changed() {
     let mock = MockOsApi::new();
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
-    pty.id_to_child_pid.insert(crate::TerminalId::new(1), 100);
+    pty.id_to_child_pid
+        .insert(crate::TerminalId::new(1), ProcessId::new(100));
 
     pty.notify_cwd_from_osc7(crate::TerminalId::new(1), PathBuf::from("/tmp/new"));
 
@@ -934,7 +939,8 @@ fn osc7_emits_cwd_changed() {
 fn osc7_no_event_when_unchanged() {
     let mock = MockOsApi::new();
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
-    pty.id_to_child_pid.insert(crate::TerminalId::new(1), 100);
+    pty.id_to_child_pid
+        .insert(crate::TerminalId::new(1), ProcessId::new(100));
     pty.terminal_cwds
         .insert(crate::TerminalId::new(1), PathBuf::from("/same"));
 
@@ -949,7 +955,8 @@ fn osc7_clears_activity_flag() {
     let mock = MockOsApi::new();
     let (mut pty, _rx) = make_pty_with_plugin_receiver(mock);
     let flag = Arc::new(AtomicBool::new(true));
-    pty.id_to_child_pid.insert(crate::TerminalId::new(1), 100);
+    pty.id_to_child_pid
+        .insert(crate::TerminalId::new(1), ProcessId::new(100));
     pty.pane_activity_flags
         .insert(crate::TerminalId::new(1), flag.clone());
 
@@ -964,7 +971,7 @@ fn osc7_clears_activity_flag() {
 #[test]
 fn osc7_then_poll_skips_terminal() {
     let mock = MockOsApi::new();
-    let child_pid = 100;
+    let child_pid = ProcessId::new(100);
     mock.set_cwd(child_pid, PathBuf::from("/from-proc"));
     mock.set_foreground_cmd(child_pid, vec!["vim".into()]);
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
@@ -992,7 +999,7 @@ fn osc7_then_poll_skips_terminal() {
 
 /// Build a pty holding a pane whose recorded pid is one that must never be
 /// signalled, and mark that pane remote.
-fn pty_with_remote_pane(terminal_id: TerminalId, bystander_pid: u32) -> (Pty, MockOsApi) {
+fn pty_with_remote_pane(terminal_id: TerminalId, bystander_pid: ProcessId) -> (Pty, MockOsApi) {
     let os_api = MockOsApi::new();
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
     // A stale pid in the map is exactly the hazard: something has to be there
@@ -1004,7 +1011,10 @@ fn pty_with_remote_pane(terminal_id: TerminalId, bystander_pid: u32) -> (Pty, Mo
 
 #[test]
 fn closing_a_remote_pane_does_not_signal_a_local_process() {
-    let (mut pty, os_api) = pty_with_remote_pane(crate::TerminalId::new(7), 4242);
+    let (mut pty, os_api) = pty_with_remote_pane(
+        crate::TerminalId::new(7),
+        zellij_types::internal_ids::ProcessId::new(4242),
+    );
     let _ = pty.close_pane(PaneId::Terminal(crate::TerminalId::new(7)));
 
     assert!(
@@ -1020,7 +1030,10 @@ fn closing_a_remote_pane_does_not_signal_a_local_process() {
 
 #[test]
 fn a_failed_remote_termination_does_not_fail_the_close() {
-    let (mut pty, os_api) = pty_with_remote_pane(crate::TerminalId::new(7), 4242);
+    let (mut pty, os_api) = pty_with_remote_pane(
+        crate::TerminalId::new(7),
+        zellij_types::internal_ids::ProcessId::new(4242),
+    );
     os_api.fail_clear_of(crate::TerminalId::new(7));
 
     assert!(pty
@@ -1759,7 +1772,7 @@ fn a_failing_layout_closes_the_panes_it_already_spawned() {
     );
     assert_eq!(
         os_api.local_signals(),
-        vec![(1000, "SIGHUP")],
+        vec![(ProcessId::new(1000), "SIGHUP")],
         "the local child that was already running is hung up"
     );
     assert!(pty.id_to_child_pid.is_empty());
@@ -1817,7 +1830,10 @@ fn a_failing_layout_override_closes_the_panes_it_already_spawned() {
     let mut cleared = os_api.cleared_terminal_ids.lock().unwrap().clone();
     cleared.sort_unstable();
     assert_eq!(cleared, vec![TerminalId::new(0), TerminalId::new(1)]);
-    assert_eq!(os_api.local_signals(), vec![(1000, "SIGHUP")]);
+    assert_eq!(
+        os_api.local_signals(),
+        vec![(ProcessId::new(1000), "SIGHUP")]
+    );
     assert!(pty.id_to_child_pid.is_empty());
     assert!(pty.task_handles.is_empty());
 }
@@ -1904,7 +1920,10 @@ fn pty_teardown_leaves_ssh_panes_adoptable() {
 /// timeout on every remote pane of a closing tab.
 #[test]
 fn closing_a_remote_pane_does_not_wait_for_its_reader() {
-    let (mut pty, os_api) = pty_with_remote_pane(crate::TerminalId::new(7), 4242);
+    let (mut pty, os_api) = pty_with_remote_pane(
+        crate::TerminalId::new(7),
+        zellij_types::internal_ids::ProcessId::new(4242),
+    );
     let (started_tx, started_rx) = channels::bounded(1);
     let (release_tx, release_rx) = channels::bounded::<()>(1);
     // A reader that never reaches an await point until released, so an abort
@@ -1936,7 +1955,10 @@ fn closing_a_remote_pane_does_not_wait_for_its_reader() {
 
 #[test]
 fn sigint_to_a_remote_pane_does_not_signal_a_local_process() {
-    let (pty, os_api) = pty_with_remote_pane(crate::TerminalId::new(7), 4242);
+    let (pty, os_api) = pty_with_remote_pane(
+        crate::TerminalId::new(7),
+        zellij_types::internal_ids::ProcessId::new(4242),
+    );
     pty.send_sigint_to_pane(PaneId::Terminal(crate::TerminalId::new(7)));
 
     assert!(
@@ -1952,7 +1974,10 @@ fn sigint_to_a_remote_pane_does_not_signal_a_local_process() {
 
 #[test]
 fn sigkill_to_a_remote_pane_does_not_signal_a_local_process() {
-    let (pty, os_api) = pty_with_remote_pane(crate::TerminalId::new(7), 4242);
+    let (pty, os_api) = pty_with_remote_pane(
+        crate::TerminalId::new(7),
+        zellij_types::internal_ids::ProcessId::new(4242),
+    );
     pty.send_sigkill_to_pane(PaneId::Terminal(crate::TerminalId::new(7)));
 
     assert!(
@@ -1972,7 +1997,8 @@ fn a_local_pane_is_still_signalled_by_pid() {
     let os_api = MockOsApi::new();
     let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
     let mut pty = pty;
-    pty.id_to_child_pid.insert(crate::TerminalId::new(3), 909);
+    pty.id_to_child_pid
+        .insert(crate::TerminalId::new(3), ProcessId::new(909));
 
     pty.send_sigint_to_pane(PaneId::Terminal(crate::TerminalId::new(3)));
     pty.send_sigkill_to_pane(PaneId::Terminal(crate::TerminalId::new(3)));
@@ -1980,7 +2006,11 @@ fn a_local_pane_is_still_signalled_by_pid() {
 
     assert_eq!(
         os_api.local_signals(),
-        vec![(909, "SIGINT"), (909, "SIGKILL"), (909, "SIGHUP")]
+        vec![
+            (ProcessId::new(909), "SIGINT"),
+            (ProcessId::new(909), "SIGKILL"),
+            (ProcessId::new(909), "SIGHUP")
+        ]
     );
     assert!(os_api.remote_signals().is_empty());
 }
@@ -1988,7 +2018,10 @@ fn a_local_pane_is_still_signalled_by_pid() {
 /// Handing a remote pid to a plugin invites the same mistake one layer out.
 #[test]
 fn a_remote_panes_pid_is_not_handed_to_plugins() {
-    let (pty, _os_api) = pty_with_remote_pane(crate::TerminalId::new(7), 4242);
+    let (pty, _os_api) = pty_with_remote_pane(
+        crate::TerminalId::new(7),
+        zellij_types::internal_ids::ProcessId::new(4242),
+    );
     match pty.get_pane_pid(PaneId::Terminal(crate::TerminalId::new(7))) {
         GetPanePidResponse::Err(msg) => {
             assert!(
@@ -2566,7 +2599,7 @@ fn set_warpable_terminal(pty: &mut Pty, terminal_id: TerminalId) {
     pty.terminal_cmds
         .insert(terminal_id, vec!["/bin/sh".to_owned()]);
     pty.id_to_child_pid
-        .insert(terminal_id, 100 + terminal_id.get());
+        .insert(terminal_id, ProcessId::new(100 + terminal_id.get()));
     pty.task_handles
         .insert(terminal_id, async_runtime().spawn(async {}));
 }

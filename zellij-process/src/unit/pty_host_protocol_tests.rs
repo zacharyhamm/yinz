@@ -1,4 +1,5 @@
 use super::*;
+use zellij_types::internal_ids::ProcessId;
 
 use crate::pty_host::protocol;
 use nix::pty::openpty;
@@ -246,8 +247,10 @@ fn host_statuses(tc: &hegel::TestCase) -> HostStatus {
         cwd: tc
             .draw(generators::optional(generators::text()))
             .map(PathBuf::from),
-        child_pid: tc.draw(generators::optional(generators::integers::<u32>())),
-        host_pid: tc.draw(generators::integers::<u32>()),
+        child_pid: tc
+            .draw(generators::optional(generators::integers::<u32>()))
+            .map(ProcessId::new),
+        host_pid: ProcessId::new(tc.draw(generators::integers::<u32>())),
         started_at_unix: tc.draw(generators::integers::<u64>()),
         attached: tc.draw(generators::booleans()),
         child_exit_status: tc.draw(generators::optional(generators::optional(
@@ -302,8 +305,8 @@ fn host_to_server_msgs(tc: &hegel::TestCase) -> HostToServerMsg {
             protocol_version: tc.draw(generators::integers::<u32>()),
             zellij_version: tc.draw(generators::text()),
             host_id: tc.draw(generators::text()),
-            host_pid: tc.draw(generators::integers::<u32>()),
-            child_pid: tc.draw(generators::integers::<u32>()),
+            host_pid: ProcessId::new(tc.draw(generators::integers::<u32>())),
+            child_pid: ProcessId::new(tc.draw(generators::integers::<u32>())),
             cmd: tc.draw(run_commands()),
             status: tc.draw(host_statuses()),
             buffered_base64: protocol::encode_buffered(&tc.draw(generators::binary().max_size(64))),
@@ -321,13 +324,13 @@ fn host_to_server_msgs(tc: &hegel::TestCase) -> HostToServerMsg {
             protocol_version: tc.draw(generators::integers::<u32>()),
             zellij_version: tc.draw(generators::text()),
             host_id: tc.draw(generators::text()),
-            host_pid: tc.draw(generators::integers::<u32>()),
+            host_pid: ProcessId::new(tc.draw(generators::integers::<u32>())),
             control_socket: tc
                 .draw(generators::optional(generators::text()))
                 .map(PathBuf::from),
         },
         1 => HostToServerMsg::Spawned {
-            child_pid: tc.draw(generators::integers::<u32>()),
+            child_pid: ProcessId::new(tc.draw(generators::integers::<u32>())),
         },
         2 => HostToServerMsg::SpawnFailed {
             kind: if tc.draw(generators::booleans()) {
@@ -664,8 +667,8 @@ fn a_full_ring_fits_in_one_frame() {
         protocol_version: PROTOCOL_VERSION,
         zellij_version: "0.0.0-a-generously-long-version-string".to_owned(),
         host_id: "a3f1c2d4e5b6".to_owned(),
-        host_pid: u32::MAX,
-        child_pid: u32::MAX,
+        host_pid: ProcessId::new(u32::MAX),
+        child_pid: ProcessId::new(u32::MAX),
         cmd: RunCommand {
             command: PathBuf::from("/usr/bin/some-fairly-long-command-name"),
             args: vec!["--with".to_owned(), "--several".to_owned()],
@@ -683,8 +686,8 @@ fn a_full_ring_fits_in_one_frame() {
             terminal_id: u32::MAX,
             command: "some-fairly-long-command-name --with --several".to_owned(),
             cwd: Some(PathBuf::from("/home/someone/a/reasonably/deep/directory")),
-            child_pid: Some(u32::MAX),
-            host_pid: u32::MAX,
+            child_pid: Some(ProcessId::new(u32::MAX)),
+            host_pid: ProcessId::new(u32::MAX),
             started_at_unix: u64::MAX,
             attached: true,
             child_exit_status: None,

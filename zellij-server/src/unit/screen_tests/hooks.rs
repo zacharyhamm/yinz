@@ -23,6 +23,7 @@ use zellij_types::data::HookPayload;
 use zellij_types::data::OriginatingPlugin;
 use zellij_types::data::HOCUS_AGENT_PANE_CONTEXT;
 use zellij_types::input::hooks::HookPoint;
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::keys::{BareKey, KeyWithModifier};
 
@@ -1108,7 +1109,7 @@ fn accepted_hook_reports_keep_events_and_state_in_arrival_order_across_creation(
                     json,
                 )),
                 trace: false,
-                process_id: 42,
+                process_id: ProcessId::new(42),
                 kind: "claude".into(),
             },
             std::time::Instant::now(),
@@ -1207,7 +1208,7 @@ fn report_router_acknowledges_with_screen_and_plugins_paused_and_no_active_clien
         state: AgentReportState::Clear,
         event: None,
         trace: false,
-        process_id: 42,
+        process_id: ProcessId::new(42),
         kind: "claude".into(),
     };
     sender

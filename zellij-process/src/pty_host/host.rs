@@ -40,6 +40,7 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TerminalId;
 
 use nix::{
@@ -155,7 +156,7 @@ struct Session {
     /// dropping the last slave is what makes an attached server's `read` on the
     /// master return `EIO`/`0`, which is how a pane learns to close.
     slave: Option<OwnedFd>,
-    child_pid: u32,
+    child_pid: ProcessId,
     exit_status: Option<Option<i32>>,
     /// Set once the master has nothing left to give. Without it the poll loop
     /// would keep watching a hung-up descriptor that is permanently "ready", and
@@ -264,7 +265,7 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
         label,
         handle_signals,
     } = config;
-    let host_pid = std::process::id();
+    let host_pid = ProcessId::new(std::process::id());
 
     // --- handshake ---
     let hello: ServerToHostMsg = read_msg(&mut control)
@@ -405,7 +406,7 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
 
 struct HostContext {
     host_id: String,
-    host_pid: u32,
+    host_pid: ProcessId,
     label: String,
     terminal_id: TerminalId,
     session_name: Option<String>,
@@ -954,7 +955,9 @@ fn kill_current_child(ctx: &mut HostContext, event_rx: &Receiver<HostEvent>) {
         ctx.session = None;
         return;
     }
-    let pid = Pid::from_raw(session.child_pid as i32);
+    let Some(pid) = super::process_pid(session.child_pid).to_log().ok() else {
+        return;
+    };
     // A stopped child does not act on SIGHUP until it runs again, so a pane
     // closed while suspended would sit out the whole grace period and then be
     // SIGKILLed — no hangup for its descendants. Wake it first; SIGCONT is
@@ -1277,14 +1280,15 @@ fn start_session(
     let child = command
         .spawn()
         .with_context(|| format!("failed to spawn '{}'", cmd.command.to_string_lossy()))?;
-    let child_pid = child.id();
+    let child_pid = ProcessId::new(child.id());
     if job_control {
         // Both sides do this, because either one alone is a race: the child may
         // not have run yet when we return, and it may already have exec'd and
         // read from the tty before we get here. Both are idempotent.
+        let kernel_pid = super::process_pid(child_pid)?.as_raw();
         unsafe {
-            libc::setpgid(child_pid as i32, child_pid as i32);
-            libc::tcsetpgrp(slave_raw, child_pid as i32);
+            libc::setpgid(kernel_pid, kernel_pid);
+            libc::tcsetpgrp(slave_raw, kernel_pid);
         }
     }
 

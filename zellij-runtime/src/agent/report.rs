@@ -7,6 +7,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use zellij_types::agent::report::{AgentReport, AgentReportState};
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::pane_id::PaneId;
 
 pub const REPORT_DEADLINE: Duration = Duration::from_secs(1);
@@ -49,7 +50,7 @@ pub fn report_diagnostics(report: &AgentReport) -> ReportTrace {
 #[derive(Clone, Debug)]
 pub struct ReportTrace {
     pub report_id: String,
-    pub process_id: u32,
+    pub process_id: ProcessId,
     pub enabled: bool,
     pub kind: String,
     pub event: String,
@@ -66,7 +67,7 @@ impl ReportTrace {
     pub fn new(started: Instant) -> Self {
         Self {
             report_id: uuid::Uuid::new_v4().to_string(),
-            process_id: std::process::id(),
+            process_id: ProcessId::new(std::process::id()),
             enabled: std::env::var("ZELLIJ_HOOK_TRACE").as_deref() == Ok("1"),
             kind: String::new(),
             event: String::new(),

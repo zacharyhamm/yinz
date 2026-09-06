@@ -22,6 +22,7 @@ use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TerminalId;
 
 use zellij_runtime::errors::prelude::*;
@@ -990,8 +991,10 @@ fn set_winsize(fd: std::os::unix::io::RawFd, cols: u16, rows: u16, xpixel: u16, 
 /// The pid never crosses the wire in either direction, which is the point: a pid
 /// from the server's machine would name an unrelated process here, and this
 /// child's pid would name an unrelated process there.
-fn signal_child(child_pid: u32, signal: ChildSignal) {
-    let pid = nix::unistd::Pid::from_raw(child_pid as i32);
+fn signal_child(child_pid: ProcessId, signal: ChildSignal) {
+    let Some(pid) = super::super::process_pid(child_pid).to_log().ok() else {
+        return;
+    };
     let sig = match signal {
         ChildSignal::Hup => nix::sys::signal::Signal::SIGHUP,
         ChildSignal::Int => nix::sys::signal::Signal::SIGINT,
@@ -1000,7 +1003,7 @@ fn signal_child(child_pid: u32, signal: ChildSignal) {
         // for why the leader alone is not enough. Unreachable today: no remote
         // pane ever reports a suspend, so nothing asks for this.
         ChildSignal::Cont => {
-            let group = nix::unistd::Pid::from_raw(-(child_pid as i32));
+            let group = nix::unistd::Pid::from_raw(-pid.as_raw());
             if nix::sys::signal::kill(group, Some(nix::sys::signal::Signal::SIGCONT)).is_err() {
                 let _ = nix::sys::signal::kill(pid, Some(nix::sys::signal::Signal::SIGCONT));
             }

@@ -10,6 +10,7 @@ use crate::internal_ids::ContextMenuItemId;
 use crate::internal_ids::ContextMenuRequestId;
 use crate::internal_ids::DataWatchId;
 use crate::internal_ids::NotificationId;
+use crate::internal_ids::ProcessId;
 use crate::internal_ids::QueueJobId;
 use crate::internal_ids::TabId;
 use crate::internal_ids::TabNumber;
@@ -1570,7 +1571,7 @@ pub enum PaneScrollbackResponse {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GetPanePidResponse {
-    Ok(i32),
+    Ok(#[serde(with = "crate::internal_ids::process_id_legacy_signed")] ProcessId),
     Err(String),
 }
 
@@ -1682,7 +1683,7 @@ pub struct OrphanedPane {
     pub session_name: Option<String>,
     pub command: String,
     pub cwd: Option<PathBuf>,
-    pub child_pid: Option<u32>,
+    pub child_pid: Option<ProcessId>,
     pub started_at_unix: u64,
     /// `None` while the child is still running; `Some(None)` once it has been
     /// killed by a signal; `Some(Some(code))` once it has exited.
@@ -1772,7 +1773,7 @@ impl SelectedText {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct PluginIds {
     pub plugin_id: crate::internal_ids::PluginId,
-    pub zellij_pid: u32,
+    pub zellij_pid: ProcessId,
     pub initial_cwd: PathBuf,
     pub client_id: ClientId,
     /// Short hostname of the machine running this session's server, empty if unavailable

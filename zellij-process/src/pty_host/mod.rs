@@ -22,6 +22,17 @@ pub mod protocol;
 pub mod remote;
 
 pub use host::{run_pty_host, serve, ServeConfig};
+use zellij_types::internal_ids::ProcessId;
+
+/// A process identity must not become a kernel process-group selector.
+pub fn process_pid(pid: ProcessId) -> zellij_runtime::errors::prelude::Result<nix::unistd::Pid> {
+    use zellij_runtime::errors::prelude::*;
+    let raw = i32::try_from(pid).context("process ID exceeds the kernel PID range")?;
+    if raw == 0 {
+        return Err(anyhow!("process ID zero does not identify a process"));
+    }
+    Ok(nix::unistd::Pid::from_raw(raw))
+}
 
 pub(crate) fn ensure_secure_dir(
     path: &std::path::Path,
@@ -97,6 +108,19 @@ mod tests {
 
     use hegel::generators;
     use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+
+    #[test]
+    fn process_ids_cannot_signal_a_process_group_by_wrapping() {
+        use zellij_types::internal_ids::ProcessId;
+        for raw in [0, 2147483648, u32::MAX] {
+            assert!(process_pid(ProcessId::new(raw)).is_err());
+        }
+        assert_eq!(process_pid(ProcessId::new(1)).unwrap().as_raw(), 1);
+        assert_eq!(
+            process_pid(ProcessId::new(2147483647)).unwrap().as_raw(),
+            i32::MAX
+        );
+    }
 
     fn argv(args: &[&str]) -> Vec<String> {
         args.iter().map(|a| (*a).to_string()).collect()

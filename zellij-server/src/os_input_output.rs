@@ -1,6 +1,7 @@
 #![allow(clippy::result_large_err)]
 #![allow(clippy::type_complexity)]
 use crate::{panes::PaneId, ClientId};
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::style::default_palette;
 
@@ -760,7 +761,7 @@ impl ServerOsInputOutput {
         &self,
         resolved: ResolvedSpawn,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         let terminal_id = resolved.terminal_id;
         let reader = self.open_remote(resolved, quit_cb)?;
         // Deliberately no pid. The child's pid is meaningful only on its own
@@ -823,7 +824,7 @@ impl ServerOsInputOutput {
         &self,
         resolved: ResolvedSpawn,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         // The pane being re-run is held, not closed, so the broker still holds
         // the session it was held from. Registering over it would drop this
         // side's only handle on it and leave it to the orphan timeout; and the
@@ -959,15 +960,15 @@ pub trait ServerOsApi: Send + Sync {
         height_in_pixels: Option<u16>,
     ) -> Result<()>;
     /// Spawn a new terminal, with a terminal action. The returned tuple contains:
-    /// - terminal_id (u32)
+    /// - the terminal identity
     /// - an async reader for the PTY output
-    /// - the child process PID, if available (Option<u32>)
+    /// - the child process identity, if available
     fn spawn_terminal(
         &self,
         terminal_action: TerminalAction,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         default_editor: Option<PathBuf>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)>;
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)>;
     fn resolve_spawn(
         &self,
         _terminal_id: TerminalId,
@@ -981,7 +982,7 @@ pub trait ServerOsApi: Send + Sync {
         &self,
         _resolved: ResolvedSpawn,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         Err(anyhow!("this backend does not support remote panes"))
     }
     // reserves a terminal id without actually opening a terminal
@@ -993,13 +994,13 @@ pub trait ServerOsApi: Send + Sync {
     /// Wait until all output written to the terminal has been transmitted.
     fn tcdrain(&self, terminal_id: TerminalId) -> Result<()>;
     /// Terminate the process with process ID `pid`. (SIGHUP)
-    fn kill(&self, pid: u32) -> Result<()>;
+    fn kill(&self, pid: ProcessId) -> Result<()>;
     /// Terminate the process with process ID `pid`. (SIGKILL)
-    fn force_kill(&self, pid: u32) -> Result<()>;
+    fn force_kill(&self, pid: ProcessId) -> Result<()>;
     /// Send SIGINT to the process with process ID `pid`
-    fn send_sigint(&self, pid: u32) -> Result<()>;
+    fn send_sigint(&self, pid: ProcessId) -> Result<()>;
     /// Continue a stopped process group, the way a shell's `fg` does.
-    fn send_sigcont(&self, pid: u32) -> Result<()>;
+    fn send_sigcont(&self, pid: ProcessId) -> Result<()>;
     /// Register the callback told whenever a pane's root process stops or
     /// resumes.
     ///
@@ -1021,9 +1022,12 @@ pub trait ServerOsApi: Send + Sync {
     fn remove_client(&mut self, client_id: ClientId) -> Result<()>;
     fn load_palette(&self) -> Palette;
     /// Returns the current working directory for a given pid
-    fn get_cwd(&self, pid: u32) -> Option<PathBuf>;
+    fn get_cwd(&self, pid: ProcessId) -> Option<PathBuf>;
     /// Returns the current working directory for multiple pids
-    fn get_cwds(&self, _pids: Vec<u32>) -> (HashMap<u32, PathBuf>, HashMap<u32, Vec<String>>) {
+    fn get_cwds(
+        &self,
+        _pids: Vec<ProcessId>,
+    ) -> (HashMap<ProcessId, PathBuf>, HashMap<ProcessId, Vec<String>>) {
         (HashMap::new(), HashMap::new())
     }
     /// Get a list of all running commands by their parent process id
@@ -1034,7 +1038,7 @@ pub trait ServerOsApi: Send + Sync {
     /// controlling terminal, keyed by `terminal_id`.
     fn get_foreground_cmds(
         &self,
-        _panes: &[(TerminalId, u32)],
+        _panes: &[(TerminalId, ProcessId)],
         _post_hook: &Option<String>,
     ) -> HashMap<TerminalId, Vec<String>> {
         HashMap::new()
@@ -1047,7 +1051,7 @@ pub trait ServerOsApi: Send + Sync {
         terminal_id: TerminalId,
         run_command: RunCommand,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<u32>)>;
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)>;
     fn resolve_rerun(
         &self,
         _terminal_id: TerminalId,
@@ -1060,7 +1064,7 @@ pub trait ServerOsApi: Send + Sync {
         &self,
         _resolved: ResolvedSpawn,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         Err(anyhow!("this backend does not support remote panes"))
     }
     fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()>;
@@ -1229,7 +1233,7 @@ impl ServerOsApi for ServerOsInputOutput {
         terminal_action: TerminalAction,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         default_editor: Option<PathBuf>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         let err_context = || "failed to spawn terminal".to_string();
 
         let terminal_id = self
@@ -1262,12 +1266,12 @@ impl ServerOsApi for ServerOsInputOutput {
             return Ok((terminal_id, async_reader, None));
         }
 
-        let (async_reader, child_fd) = self
+        let (async_reader, child_pid) = self
             .pty_backend
             .spawn_terminal(cmd, failover_cmd, quit_cb, terminal_id)
             .with_context(err_context)?;
 
-        Ok((terminal_id, async_reader, Some(child_fd as u32)))
+        Ok((terminal_id, async_reader, Some(child_pid)))
     }
     fn resolve_spawn(
         &self,
@@ -1288,7 +1292,7 @@ impl ServerOsApi for ServerOsInputOutput {
         &self,
         resolved: ResolvedSpawn,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         ServerOsInputOutput::spawn_resolved(self, resolved, quit_cb)
     }
     fn reserve_terminal_id(&self) -> Result<TerminalId> {
@@ -1332,16 +1336,16 @@ impl ServerOsApi for ServerOsInputOutput {
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
         Box::new((*self).clone())
     }
-    fn kill(&self, pid: u32) -> Result<()> {
+    fn kill(&self, pid: ProcessId) -> Result<()> {
         self.pty_backend.kill(pid)
     }
-    fn force_kill(&self, pid: u32) -> Result<()> {
+    fn force_kill(&self, pid: ProcessId) -> Result<()> {
         self.pty_backend.force_kill(pid)
     }
-    fn send_sigint(&self, pid: u32) -> Result<()> {
+    fn send_sigint(&self, pid: ProcessId) -> Result<()> {
         self.pty_backend.send_sigint(pid)
     }
-    fn send_sigcont(&self, pid: u32) -> Result<()> {
+    fn send_sigcont(&self, pid: ProcessId) -> Result<()> {
         self.pty_backend.send_sigcont(pid)
     }
     fn set_child_state_callback(&self, cb: ChildStateCb) {
@@ -1416,9 +1420,9 @@ impl ServerOsApi for ServerOsInputOutput {
         default_palette()
     }
 
-    fn get_cwd(&self, pid: u32) -> Option<PathBuf> {
+    fn get_cwd(&self, pid: ProcessId) -> Option<PathBuf> {
         let mut system_info = System::new();
-        let sysinfo_pid = sysinfo::Pid::from_u32(pid);
+        let sysinfo_pid = sysinfo::Pid::from_u32(pid.get());
         let refresh_kind = ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always);
         system_info.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[sysinfo_pid]),
@@ -1434,13 +1438,18 @@ impl ServerOsApi for ServerOsInputOutput {
         None
     }
 
-    fn get_cwds(&self, pids: Vec<u32>) -> (HashMap<u32, PathBuf>, HashMap<u32, Vec<String>>) {
+    fn get_cwds(
+        &self,
+        pids: Vec<ProcessId>,
+    ) -> (HashMap<ProcessId, PathBuf>, HashMap<ProcessId, Vec<String>>) {
         let mut system_info = System::new();
         let mut cwds = HashMap::new();
         let mut cmds = HashMap::new();
 
-        let sysinfo_pids: Vec<sysinfo::Pid> =
-            pids.iter().map(|&p| sysinfo::Pid::from_u32(p)).collect();
+        let sysinfo_pids: Vec<sysinfo::Pid> = pids
+            .iter()
+            .map(|&p| sysinfo::Pid::from_u32(p.get()))
+            .collect();
         let refresh_kind = ProcessRefreshKind::nothing()
             .with_cwd(UpdateKind::Always)
             .with_cmd(UpdateKind::Always);
@@ -1451,7 +1460,7 @@ impl ServerOsApi for ServerOsInputOutput {
         );
 
         for pid in pids {
-            let sysinfo_pid = sysinfo::Pid::from_u32(pid);
+            let sysinfo_pid = sysinfo::Pid::from_u32(pid.get());
             if let Some(process) = system_info.process(sysinfo_pid) {
                 if let Some(cwd) = process.cwd() {
                     cwds.insert(pid, cwd.to_path_buf());
@@ -1472,14 +1481,16 @@ impl ServerOsApi for ServerOsInputOutput {
     }
     fn get_foreground_cmds(
         &self,
-        panes: &[(TerminalId, u32)],
+        panes: &[(TerminalId, ProcessId)],
         post_hook: &Option<String>,
     ) -> HashMap<TerminalId, Vec<String>> {
-        let mut terminal_to_fg_pid: HashMap<TerminalId, u32> = HashMap::new();
+        let mut terminal_to_fg_pid: HashMap<TerminalId, ProcessId> = HashMap::new();
         for &(terminal_id, shell_pid) in panes {
             if let Some(fpgid) = self.pty_backend.tcgetpgrp(terminal_id) {
-                if fpgid > 0 && fpgid as u32 != shell_pid {
-                    terminal_to_fg_pid.insert(terminal_id, fpgid as u32);
+                if let Ok(fpgid) = ProcessId::try_from(fpgid) {
+                    if fpgid.get() > 0 && fpgid != shell_pid {
+                        terminal_to_fg_pid.insert(terminal_id, fpgid);
+                    }
                 }
             }
         }
@@ -1489,7 +1500,7 @@ impl ServerOsApi for ServerOsInputOutput {
 
         let sysinfo_pids: Vec<sysinfo::Pid> = terminal_to_fg_pid
             .values()
-            .map(|&p| sysinfo::Pid::from_u32(p))
+            .map(|&p| sysinfo::Pid::from_u32(p.get()))
             .collect();
         let mut system_info = System::new();
         let refresh_kind = ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always);
@@ -1501,7 +1512,7 @@ impl ServerOsApi for ServerOsInputOutput {
 
         let mut cmds = HashMap::new();
         for (terminal_id, fg_pid) in terminal_to_fg_pid {
-            let Some(process) = system_info.process(sysinfo::Pid::from_u32(fg_pid)) else {
+            let Some(process) = system_info.process(sysinfo::Pid::from_u32(fg_pid.get())) else {
                 continue;
             };
             let command: Vec<String> = process
@@ -1533,7 +1544,7 @@ impl ServerOsApi for ServerOsInputOutput {
         terminal_id: TerminalId,
         run_command: RunCommand,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         // A held remote pane re-runs on the machine it was held on. Without this
         // the command would quietly run *here* under the same pane, and the pane
         // still open on the far machine would be left to the orphan timeout.
@@ -1559,10 +1570,10 @@ impl ServerOsApi for ServerOsInputOutput {
         }
 
         self.clear_terminal_id(terminal_id).non_fatal();
-        let (async_reader, child_fd) =
+        let (async_reader, child_pid) =
             self.pty_backend
                 .spawn_terminal(run_command, None, quit_cb, terminal_id)?;
-        Ok((async_reader, Some(child_fd as u32)))
+        Ok((async_reader, Some(child_pid)))
     }
     fn resolve_rerun(
         &self,
@@ -1576,7 +1587,7 @@ impl ServerOsApi for ServerOsInputOutput {
         &self,
         resolved: ResolvedSpawn,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         ServerOsInputOutput::rerun_resolved(self, resolved, quit_cb)
     }
     fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()> {

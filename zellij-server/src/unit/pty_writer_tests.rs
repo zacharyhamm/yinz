@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use zellij_runtime::channels::SenderWithContext;
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::style::Palette;
 
 use zellij_types::input::command::RunCommand;
@@ -101,7 +102,7 @@ impl ServerOsApi for MockServerOsApi {
         _terminal_action: zellij_types::input::command::TerminalAction,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         unimplemented!()
     }
     fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize> {
@@ -140,16 +141,16 @@ impl ServerOsApi for MockServerOsApi {
     fn tcdrain(&self, _id: TerminalId) -> Result<()> {
         Ok(())
     }
-    fn kill(&self, _pid: u32) -> Result<()> {
+    fn kill(&self, _pid: ProcessId) -> Result<()> {
         Ok(())
     }
-    fn force_kill(&self, _pid: u32) -> Result<()> {
+    fn force_kill(&self, _pid: ProcessId) -> Result<()> {
         Ok(())
     }
-    fn send_sigint(&self, _pid: u32) -> Result<()> {
+    fn send_sigint(&self, _pid: ProcessId) -> Result<()> {
         Ok(())
     }
-    fn send_sigcont(&self, _pid: u32) -> Result<()> {
+    fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
         Ok(())
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
@@ -171,7 +172,7 @@ impl ServerOsApi for MockServerOsApi {
     fn load_palette(&self) -> Palette {
         Palette::default()
     }
-    fn get_cwd(&self, _pid: u32) -> Option<PathBuf> {
+    fn get_cwd(&self, _pid: ProcessId) -> Option<PathBuf> {
         None
     }
     fn write_to_file(&mut self, _buf: String, _file: Option<String>) -> Result<()> {
@@ -182,7 +183,7 @@ impl ServerOsApi for MockServerOsApi {
         _terminal_id: TerminalId,
         _run_command: RunCommand,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         unimplemented!()
     }
     fn clear_terminal_id(&self, _terminal_id: TerminalId) -> Result<()> {
@@ -555,7 +556,7 @@ fn pty_writer_records_successful_resize() {
                     + Send,
             >,
             _c: Option<std::path::PathBuf>,
-        ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+        ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
             unimplemented!()
         }
         fn write_to_tty_stdin(&self, _id: TerminalId, _buf: &[u8]) -> anyhow::Result<usize> {
@@ -564,16 +565,16 @@ fn pty_writer_records_successful_resize() {
         fn tcdrain(&self, _id: TerminalId) -> anyhow::Result<()> {
             Ok(())
         }
-        fn kill(&self, _pid: u32) -> anyhow::Result<()> {
+        fn kill(&self, _pid: ProcessId) -> anyhow::Result<()> {
             Ok(())
         }
-        fn force_kill(&self, _pid: u32) -> anyhow::Result<()> {
+        fn force_kill(&self, _pid: ProcessId) -> anyhow::Result<()> {
             Ok(())
         }
-        fn send_sigint(&self, _pid: u32) -> anyhow::Result<()> {
+        fn send_sigint(&self, _pid: ProcessId) -> anyhow::Result<()> {
             Ok(())
         }
-        fn send_sigcont(&self, _pid: u32) -> anyhow::Result<()> {
+        fn send_sigcont(&self, _pid: ProcessId) -> anyhow::Result<()> {
             Ok(())
         }
         fn box_clone(&self) -> Box<dyn crate::os_input_output::ServerOsApi> {
@@ -601,7 +602,7 @@ fn pty_writer_records_successful_resize() {
         fn load_palette(&self) -> zellij_types::style::Palette {
             zellij_types::style::Palette::default()
         }
-        fn get_cwd(&self, _pid: u32) -> Option<std::path::PathBuf> {
+        fn get_cwd(&self, _pid: ProcessId) -> Option<std::path::PathBuf> {
             None
         }
         fn write_to_file(&mut self, _buf: String, _file: Option<String>) -> anyhow::Result<()> {
@@ -615,7 +616,10 @@ fn pty_writer_records_successful_resize() {
                 dyn Fn(crate::panes::PaneId, Option<i32>, zellij_types::input::command::RunCommand)
                     + Send,
             >,
-        ) -> anyhow::Result<(Box<dyn crate::os_input_output::AsyncReader>, Option<u32>)> {
+        ) -> anyhow::Result<(
+            Box<dyn crate::os_input_output::AsyncReader>,
+            Option<ProcessId>,
+        )> {
             unimplemented!()
         }
         fn clear_terminal_id(&self, _id: TerminalId) -> anyhow::Result<()> {

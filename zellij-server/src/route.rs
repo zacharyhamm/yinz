@@ -3878,7 +3878,7 @@ mod tests {
             state: AgentReportState::Clear,
             event: None,
             trace: false,
-            process_id: 42,
+            process_id: zellij_types::internal_ids::ProcessId::new(42),
             kind: "claude".into(),
         };
         let (release, gate) = std::sync::mpsc::channel();

@@ -10,6 +10,7 @@
 //! argument precisely so the scan itself can be covered without that risk.
 
 use super::*;
+use zellij_types::internal_ids::ProcessId;
 
 use crate::pty_host::remote::protocol::RemotePaneEntry;
 use hegel::generators;
@@ -157,8 +158,10 @@ fn host_statuses(tc: &hegel::TestCase) -> HostStatus {
         cwd: tc
             .draw(generators::optional(generators::text()))
             .map(PathBuf::from),
-        child_pid: tc.draw(generators::optional(generators::integers::<u32>())),
-        host_pid: tc.draw(generators::integers::<u32>()),
+        child_pid: tc
+            .draw(generators::optional(generators::integers::<u32>()))
+            .map(ProcessId::new),
+        host_pid: ProcessId::new(tc.draw(generators::integers::<u32>())),
         // Recent enough that the age is a small number of seconds, which keeps
         // these tests about the classification rather than about the clock.
         started_at_unix: now_unix(),

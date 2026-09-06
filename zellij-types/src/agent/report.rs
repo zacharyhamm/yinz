@@ -1,4 +1,5 @@
 use super::{AgentEvent, AgentInfo};
+use crate::internal_ids::ProcessId;
 use crate::pane_id::PaneId;
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +17,6 @@ pub struct AgentReport {
     pub state: AgentReportState,
     pub event: Option<AgentEvent>,
     pub trace: bool,
-    pub process_id: u32,
+    pub process_id: ProcessId,
     pub kind: String,
 }

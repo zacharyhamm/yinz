@@ -190,6 +190,7 @@ pub use super::generated_api::api::{
 use zellij_types::internal_ids::ContextMenuRequestId;
 use zellij_types::internal_ids::DataWatchId;
 use zellij_types::internal_ids::NotificationId;
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::QueueJobId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
@@ -412,7 +413,9 @@ impl TryFrom<ProtobufGetPanePidResponse> for GetPanePidResponse {
     type Error = &'static str;
     fn try_from(protobuf_response: ProtobufGetPanePidResponse) -> Result<Self, &'static str> {
         match protobuf_response.result {
-            Some(get_pane_pid_response::Result::Pid(pid)) => Ok(GetPanePidResponse::Ok(pid)),
+            Some(get_pane_pid_response::Result::Pid(pid)) => Ok(GetPanePidResponse::Ok(
+                ProcessId::from_legacy_signed_bits(pid),
+            )),
             Some(get_pane_pid_response::Result::Error(error)) => Ok(GetPanePidResponse::Err(error)),
             None => Err("Empty GetPanePidResponse"),
         }
@@ -423,7 +426,7 @@ impl From<GetPanePidResponse> for ProtobufGetPanePidResponse {
     fn from(response: GetPanePidResponse) -> Self {
         match response {
             GetPanePidResponse::Ok(pid) => ProtobufGetPanePidResponse {
-                result: Some(get_pane_pid_response::Result::Pid(pid)),
+                result: Some(get_pane_pid_response::Result::Pid(pid.legacy_signed_bits())),
             },
             GetPanePidResponse::Err(error) => ProtobufGetPanePidResponse {
                 result: Some(get_pane_pid_response::Result::Error(error)),
@@ -5823,7 +5826,7 @@ impl From<OrphanedPane> for ProtobufOrphanedPane {
             session_name: pane.session_name,
             command: pane.command,
             cwd: pane.cwd.map(|cwd| cwd.display().to_string()),
-            child_pid: pane.child_pid,
+            child_pid: pane.child_pid.map(|id| id.get()),
             started_at_unix: pane.started_at_unix,
             exited,
             exit_code,
@@ -5839,7 +5842,7 @@ impl From<ProtobufOrphanedPane> for OrphanedPane {
             session_name: pane.session_name,
             command: pane.command,
             cwd: pane.cwd.map(PathBuf::from),
-            child_pid: pane.child_pid,
+            child_pid: pane.child_pid.map(ProcessId::new),
             started_at_unix: pane.started_at_unix,
             exit_status: if pane.exited {
                 Some(pane.exit_code)
@@ -7584,7 +7587,7 @@ mod tests {
                 session_name: Some("gone".to_owned()),
                 command: "top".to_owned(),
                 cwd: Some(PathBuf::from("/tmp")),
-                child_pid: Some(4242),
+                child_pid: Some(ProcessId::new(4242)),
                 started_at_unix: 1_700_000_000,
                 exit_status,
                 buffered_bytes: 4096,

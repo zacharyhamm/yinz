@@ -7,6 +7,7 @@ use crate::tab::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::path::PathBuf;
 use zellij_types::geometry::{Direction, Resize};
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::style::Palette;
 use {
@@ -34,7 +35,7 @@ impl ServerOsApi for FakeInputOutput {
         _file_to_open: TerminalAction,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         unimplemented!()
     }
     fn write_to_tty_stdin(&self, _id: TerminalId, _buf: &[u8]) -> Result<usize> {
@@ -43,10 +44,10 @@ impl ServerOsApi for FakeInputOutput {
     fn tcdrain(&self, _id: TerminalId) -> Result<()> {
         unimplemented!()
     }
-    fn kill(&self, _pid: u32) -> Result<()> {
+    fn kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
-    fn force_kill(&self, _pid: u32) -> Result<()> {
+    fn force_kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
@@ -68,7 +69,7 @@ impl ServerOsApi for FakeInputOutput {
     fn load_palette(&self) -> Palette {
         unimplemented!()
     }
-    fn get_cwd(&self, _pid: u32) -> Option<PathBuf> {
+    fn get_cwd(&self, _pid: ProcessId) -> Option<PathBuf> {
         unimplemented!()
     }
     fn write_to_file(&mut self, _buf: String, _name: Option<String>) -> Result<()> {
@@ -79,16 +80,16 @@ impl ServerOsApi for FakeInputOutput {
         _terminal_id: TerminalId,
         _run_command: RunCommand,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         unimplemented!()
     }
     fn clear_terminal_id(&self, _terminal_id: TerminalId) -> Result<()> {
         unimplemented!()
     }
-    fn send_sigint(&self, _pid: u32) -> Result<()> {
+    fn send_sigint(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
-    fn send_sigcont(&self, _pid: u32) -> Result<()> {
+    fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
 }

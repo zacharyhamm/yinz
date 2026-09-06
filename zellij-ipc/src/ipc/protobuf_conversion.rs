@@ -1,5 +1,6 @@
 #![allow(clippy::unnecessary_fallible_conversions)]
 use std::str::FromStr;
+use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 
@@ -91,7 +92,7 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                     agent,
                     event: report.event.map(agent_event_to_proto),
                     trace: report.trace,
-                    process_id: report.process_id,
+                    process_id: report.process_id.get(),
                     kind: report.kind,
                 })
             },
@@ -268,7 +269,7 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                     state,
                     event: msg.event.map(agent_event_from_proto).transpose()?,
                     trace: msg.trace,
-                    process_id: msg.process_id,
+                    process_id: ProcessId::new(msg.process_id),
                     kind: msg.kind,
                 };
                 zellij_runtime::agent::report::validate_report(&report)?;
