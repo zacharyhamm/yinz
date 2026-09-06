@@ -11,8 +11,8 @@
 //! the screen once its tab is left and back once its tab is focused again, and putting one on
 //! screen never reveals the floating panes the user had hidden.
 
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, PROMPT, TERMINAL_SIZE};
-use zellij_utils::cli::CliAction;
 
 /// Keep the session to just the shell pane: the default background plugins would
 /// otherwise be spawning work of their own while the test watches for pty spawns.

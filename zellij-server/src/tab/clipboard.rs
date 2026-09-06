@@ -1,7 +1,7 @@
 use anyhow::Result;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::engine::Engine as _;
-use zellij_utils::{data::CopyDestination, input::options::Clipboard};
+use {zellij_types::data::CopyDestination, zellij_types::input::options::Clipboard};
 
 use crate::ClientId;
 

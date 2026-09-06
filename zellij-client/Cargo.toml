@@ -13,6 +13,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+zellij-cli = { workspace = true }
+zellij-config = { workspace = true }
+zellij-ipc = { workspace = true }
 zellij-types = { workspace = true }
 zellij-runtime = { workspace = true }
 anyhow = { workspace = true }
@@ -25,7 +28,6 @@ regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
-zellij-utils = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 

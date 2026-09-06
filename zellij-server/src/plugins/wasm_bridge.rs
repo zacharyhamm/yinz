@@ -29,17 +29,23 @@ use std::{
 use tokio::sync::mpsc::Sender;
 use url::Url;
 use wasmi::{Engine, Module};
+use zellij_config::permission::PermissionCache;
 use zellij_runtime::downloader::Downloader;
 use zellij_storage::data_access::DataAccess;
 use zellij_types::geometry::FloatingPaneCoordinates;
+use zellij_types::input::keybinds::Keybinds;
 use zellij_types::style::HostTerminalThemeMode;
-use zellij_utils::consts::{ZELLIJ_CACHE_DIR, ZELLIJ_SESSION_CACHE_DIR, ZELLIJ_TMP_DIR};
-use zellij_utils::data::{
-    InputMode, KeybindsVec, LayoutInfo, LayoutWithError, PaneContents, PaneRenderReport,
-    PermissionStatus, PermissionType, PipeMessage, PipeSource, QueueJobOutcome,
+use {
+    zellij_runtime::consts::ZELLIJ_CACHE_DIR, zellij_runtime::consts::ZELLIJ_SESSION_CACHE_DIR,
+    zellij_runtime::consts::ZELLIJ_TMP_DIR,
 };
-use zellij_utils::input::keybinds::Keybinds;
-use zellij_utils::input::permission::PermissionCache;
+use {
+    zellij_types::data::InputMode, zellij_types::data::KeybindsVec, zellij_types::data::LayoutInfo,
+    zellij_types::data::LayoutWithError, zellij_types::data::PaneContents,
+    zellij_types::data::PaneRenderReport, zellij_types::data::PermissionStatus,
+    zellij_types::data::PermissionType, zellij_types::data::PipeMessage,
+    zellij_types::data::PipeSource, zellij_types::data::QueueJobOutcome,
+};
 
 use crate::panes::PaneId;
 use crate::{
@@ -49,13 +55,12 @@ use crate::{
 };
 use zellij_runtime::errors::prelude::*;
 use zellij_types::pane_size::Size;
-use zellij_utils::{
-    data::{Event, EventType},
-    input::{
-        command::TerminalAction,
-        layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation, RunPluginOrAlias},
-        plugins::{PluginAliases, PluginConfig},
-    },
+use {
+    zellij_config::plugins::PluginConfig, zellij_types::data::Event, zellij_types::data::EventType,
+    zellij_types::input::command::TerminalAction,
+    zellij_types::input::layout::PluginUserConfiguration, zellij_types::input::layout::RunPlugin,
+    zellij_types::input::layout::RunPluginLocation, zellij_types::input::layout::RunPluginOrAlias,
+    zellij_types::input::plugins::PluginAliases,
 };
 
 fn make_plugin_url_path_safe(url: String) -> String {
@@ -2004,20 +2009,20 @@ impl WasmBridge {
     fn get_changed_panes_per_client(
         &self,
         new_contents: &HashMap<
-            zellij_utils::data::ClientId,
-            HashMap<zellij_utils::data::PaneId, PaneContents>,
+            zellij_types::data::ClientId,
+            HashMap<zellij_types::data::PaneId, PaneContents>,
         >,
         previous_contents: Option<
             &HashMap<
-                zellij_utils::data::ClientId,
-                HashMap<zellij_utils::data::PaneId, PaneContents>,
+                zellij_types::data::ClientId,
+                HashMap<zellij_types::data::PaneId, PaneContents>,
             >,
         >,
-    ) -> HashMap<zellij_utils::data::ClientId, HashMap<zellij_utils::data::PaneId, PaneContents>>
+    ) -> HashMap<zellij_types::data::ClientId, HashMap<zellij_types::data::PaneId, PaneContents>>
     {
         let mut result: HashMap<
-            zellij_utils::data::ClientId,
-            HashMap<zellij_utils::data::PaneId, PaneContents>,
+            zellij_types::data::ClientId,
+            HashMap<zellij_types::data::PaneId, PaneContents>,
         > = HashMap::new();
 
         // First report - return everything grouped by client
@@ -2030,7 +2035,7 @@ impl WasmBridge {
 
         // Compare each client's panes
         for (client_id, new_panes) in new_contents {
-            let mut client_panes: HashMap<zellij_utils::data::PaneId, PaneContents> =
+            let mut client_panes: HashMap<zellij_types::data::PaneId, PaneContents> =
                 HashMap::new();
             for (pane_id, new_pane_contents) in new_panes {
                 let has_changed = prev_contents
@@ -2659,7 +2664,7 @@ impl WasmBridge {
         shutdown_sender: Sender<()>,
     ) -> Result<()> {
         let err_context = || format!("Failed to grant permissions to {plugin_url}");
-        let location = RunPluginLocation::parse(plugin_url, None)
+        let location = zellij_runtime::plugin_location::parse_plugin_location(plugin_url, None)
             .map_err(|e| anyhow!("{}", e))
             .with_context(err_context)?;
         let key = location.to_string();
@@ -3473,7 +3478,7 @@ fn instances_of<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zellij_utils::data::{BareKey, KeyWithModifier};
+    use {zellij_types::data::BareKey, zellij_types::data::KeyWithModifier};
 
     fn plugin_config(configuration: &[(&str, &str)]) -> PluginConfig {
         let configuration = configuration
@@ -3483,7 +3488,11 @@ mod tests {
         PluginConfig {
             path: PathBuf::from("test-plugin"),
             _allow_exec_host_cmd: false,
-            location: RunPluginLocation::parse("zellij:tab-bar", None).unwrap(),
+            location: zellij_runtime::plugin_location::parse_plugin_location(
+                "zellij:tab-bar",
+                None,
+            )
+            .unwrap(),
             initial_userspace_configuration: PluginUserConfiguration::new(configuration),
             initial_cwd: None,
             relative_path: None,

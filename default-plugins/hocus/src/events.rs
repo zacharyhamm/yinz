@@ -1995,7 +1995,7 @@ impl State {
     /// The path is re-resolved rather than carried:
     /// `resolve_plugin_file` is pure and was already given the same folder and name, so it
     /// cannot answer differently here, and a reload must be built from an absolute path -
-    /// `RunPluginLocation::parse` joins a relative `file:` path onto the cwd, which
+    /// `zellij_runtime::plugin_location::parse_plugin_location` joins a relative `file:` path onto the cwd, which
     /// `start_or_reload_plugin` always supplies.
     pub(crate) fn start_plugin_load(&mut self) -> bool {
         let Some(head) = self.pending.front() else {

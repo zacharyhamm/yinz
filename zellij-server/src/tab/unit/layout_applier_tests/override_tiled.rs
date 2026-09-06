@@ -570,7 +570,13 @@ fn test_override_tiled_exact_match_preservation_plugins() {
     let terminal_ids = vec![(TerminalId(1), None), (TerminalId(2), None)];
 
     let mut initial_plugin_ids = HashMap::new();
-    let tab_bar_plugin = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
+    let tab_bar_plugin = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "zellij:tab-bar",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
     initial_plugin_ids.insert(
         tab_bar_plugin.clone(),
         vec![zellij_types::internal_ids::PluginId(100)],

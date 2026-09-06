@@ -12,13 +12,14 @@ use zellij_server::os_input_output::{
 use zellij_server::panes::PaneId;
 use zellij_server::pty_host::client::{ReleasedPane, ReleasedPtyHost, ReleasedRemotePane};
 use zellij_server::{ClientId, TerminalId};
+use zellij_types::data::RemotePaneHandoff;
 use zellij_types::style::default_palette;
 use zellij_types::style::Palette;
-use zellij_utils::data::RemotePaneHandoff;
-use zellij_utils::input::command::{RunCommand, TerminalAction};
-use zellij_utils::ipc::{
-    ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg,
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcReceiverWithContext,
+    zellij_ipc::ipc::IpcSenderWithContext, zellij_ipc::ipc::ServerToClientMsg,
 };
+use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
 
 use crate::fake_pty::{SharedPtys, FAKE_PID_BASE};
 

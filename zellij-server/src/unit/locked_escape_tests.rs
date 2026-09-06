@@ -3,9 +3,9 @@ use crate::thread_bus::ThreadSenders;
 use crate::TerminalId;
 use std::collections::HashMap;
 use std::str::FromStr;
+use zellij_config::config::Config;
 use zellij_runtime::channels;
 use zellij_types::internal_ids::{ClientId, TerminalId};
-use zellij_utils::input::config::Config;
 
 /// The default window, as `SessionConfiguration` resolves it for an unconfigured session.
 const DEFAULT_TIMEOUT: Duration = Duration::from_millis(DEFAULT_LOCKED_ESCAPE_TIMEOUT_MS);

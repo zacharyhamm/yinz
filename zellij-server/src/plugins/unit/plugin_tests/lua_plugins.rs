@@ -9,9 +9,9 @@ use crate::plugins::HookFiring;
 use crate::plugins::PluginId;
 use crate::pty::ClientTabIndexOrPaneId;
 use zellij_test_support::Watched;
-use zellij_utils::data::HookPayload;
-use zellij_utils::input::command::TerminalAction;
-use zellij_utils::input::hooks::HookPoint;
+use zellij_types::data::HookPayload;
+use zellij_types::input::command::TerminalAction;
+use zellij_types::input::hooks::HookPoint;
 
 /// Load the Lua fixture and return everything the screen was told to draw for it.
 fn rendered_output(instructions: &[ScreenInstruction]) -> Vec<String> {
@@ -111,7 +111,7 @@ pub fn lua_plugin_loads_and_renders() {
 ///
 /// This is what makes `plugin location="file:probe.lua"` in a layout - and the same URL from a
 /// plugin asking for a reload - mean the obvious thing without anyone spelling out an absolute
-/// path. The resolution chain itself is unit-tested in `zellij-utils`; what this covers is that
+/// path. The resolution chain itself is unit-tested in `zellij-config`; what this covers is that
 /// the folder actually reaches the loader through the whole plugin thread.
 #[test]
 #[serial(plugin_tests)]
@@ -411,8 +411,8 @@ pub fn lua_plugin_is_not_sent_events_it_did_not_subscribe_to() {
 /// What `zellij.agent.spawn` hands the pty thread: the planned argv - `claude`, the prompt last,
 /// `--settings <hooks>` first unless hooks are off - the folder the plugin named, and the agent
 /// marker whose value `agent_from_run` turns into the pane's `Spawned` record.
-fn spawned_agent_command(key: char) -> zellij_utils::input::command::RunCommand {
-    use zellij_utils::input::command::RunCommand;
+fn spawned_agent_command(key: char) -> zellij_types::input::command::RunCommand {
+    use zellij_types::input::command::RunCommand;
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let cache_path = plugin_host_folder.join("permissions_test.kdl");
@@ -511,7 +511,7 @@ fn spawned_agent_command(key: char) -> zellij_utils::input::command::RunCommand 
 #[test]
 #[serial(plugin_tests)]
 pub fn a_lua_plugin_spawns_an_agent_pane_with_the_planned_argv_and_an_agent_marker() {
-    use zellij_utils::data::HOCUS_AGENT_PANE_CONTEXT;
+    use zellij_types::data::HOCUS_AGENT_PANE_CONTEXT;
     let run = spawned_agent_command('s');
     assert_eq!(run.command, PathBuf::from("claude"));
     assert_eq!(run.args, vec!["fix it".to_owned()]);
@@ -767,8 +767,13 @@ pub fn a_newly_reachable_command_works_end_to_end() {
 /// The shipped `agent_exit` hook, loaded the way the hook dispatcher loads it: by builtin tag,
 /// with the hook payload as its configuration.
 fn agent_exit_hook(payload: BTreeMap<String, String>) -> RunPluginOrAlias {
-    RunPluginOrAlias::from_url("zellij:agent-exit", &Some(payload), None, None)
-        .expect("the builtin agent-exit hook resolves")
+    zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "zellij:agent-exit",
+        &Some(payload),
+        None,
+        None,
+    )
+    .expect("the builtin agent-exit hook resolves")
 }
 
 fn agent_exit_payload() -> BTreeMap<String, String> {
@@ -1199,7 +1204,7 @@ fn suppressed_plugins_loaded(instructions: &[ScreenInstruction]) -> Vec<PluginId
 fn headless_hook_plugin(user_plugin_dir: &std::path::Path) -> RunPluginOrAlias {
     std::fs::write(user_plugin_dir.join("hook.lua"), HEADLESS_HOOK_LUA).unwrap();
     RunPluginOrAlias::RunPlugin(
-        RunPlugin::from_url(&format!(
+        zellij_runtime::plugin_location::run_plugin_from_url(&format!(
             "file:{}",
             user_plugin_dir.join("hook.lua").display()
         ))
@@ -1220,7 +1225,7 @@ fn bind_hook(
         layout_dir: None,
         user_plugin_dir: None,
         builtin_plugins_dir: None,
-        hooks: zellij_utils::input::hooks::Hooks::from_data(BTreeMap::from([(point, plugin)])),
+        hooks: zellij_types::input::hooks::Hooks::from_data(BTreeMap::from([(point, plugin)])),
         context_menu: Default::default(),
         was_written_to_disk: false,
     });
@@ -1400,7 +1405,7 @@ pub fn session_start_fires_for_the_initiating_client() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let cache_path = plugin_host_folder.join("permissions_test.kdl");
     let user_plugin_dir = tempdir().unwrap();
-    let hooks = zellij_utils::input::hooks::Hooks::from_data(BTreeMap::from([(
+    let hooks = zellij_types::input::hooks::Hooks::from_data(BTreeMap::from([(
         HookPoint::SessionStart,
         headless_hook_plugin(user_plugin_dir.path()),
     )]));

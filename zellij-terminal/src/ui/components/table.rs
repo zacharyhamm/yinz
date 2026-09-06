@@ -7,7 +7,7 @@ use crate::panes::{
     CharacterStyles,
 };
 use std::collections::BTreeMap;
-use zellij_utils::{data::Style, shared::ansi_len};
+use {zellij_types::data::Style, zellij_types::text::ansi_len};
 
 pub fn table(
     columns: usize,

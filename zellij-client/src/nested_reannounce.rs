@@ -11,7 +11,10 @@ use crate::terminal_escapes::announce_nested;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
-use zellij_utils::nested_session::{reannounce_check_interval_ms, ReannounceScheduler};
+use {
+    zellij_ipc::nested_session::reannounce_check_interval_ms,
+    zellij_ipc::nested_session::ReannounceScheduler,
+};
 
 #[derive(Clone)]
 pub struct NestedReannounce {

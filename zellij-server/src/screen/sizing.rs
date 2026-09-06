@@ -2,8 +2,8 @@ use zellij_runtime::errors::prelude::*;
 
 use super::Screen;
 use crate::ClientId;
+use zellij_ipc::ipc::PixelDimensions;
 use zellij_types::pane_size::Size;
-use zellij_utils::ipc::PixelDimensions;
 
 impl Screen {
     pub fn set_client_size(&mut self, client_id: ClientId, size: Size) {

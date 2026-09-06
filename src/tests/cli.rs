@@ -1,7 +1,7 @@
 use clap::{CommandFactory, Parser};
 use zellij_types::internal_ids::{RecordingId, TerminalId};
 use zellij_types::units::{ElapsedMicros, UnixMicros};
-use zellij_utils::cli::{CliArgs, Command};
+use {zellij_cli::args::CliArgs, zellij_cli::args::Command};
 
 const CLI_PARSE_STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -36,7 +36,7 @@ fn verify_cli() {
 fn cli_recordings_list_parses() {
     let args = try_parse_cli(["zellij", "recordings", "list"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_utils::cli::Recordings::List { json: false })) => {},
+        Some(Command::Recordings(zellij_cli::args::Recordings::List { json: false })) => {},
         _ => panic!("Expected Recordings::List"),
     }
 }
@@ -45,7 +45,7 @@ fn cli_recordings_list_parses() {
 fn cli_recordings_list_json_parses() {
     let args = try_parse_cli(["zellij", "recordings", "list", "--json"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_utils::cli::Recordings::List { json: true })) => {},
+        Some(Command::Recordings(zellij_cli::args::Recordings::List { json: true })) => {},
         _ => panic!("Expected Recordings::List with json"),
     }
 }
@@ -54,7 +54,7 @@ fn cli_recordings_list_json_parses() {
 fn cli_recordings_export_parses() {
     let args = try_parse_cli(["zellij", "recordings", "export", "42"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_utils::cli::Recordings::Export {
+        Some(Command::Recordings(zellij_cli::args::Recordings::Export {
             recording_id,
             output: None,
         })) if recording_id == RecordingId::new(42) => {},
@@ -92,7 +92,7 @@ fn cli_recordings_export_with_output_parses() {
     ])
     .unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_utils::cli::Recordings::Export {
+        Some(Command::Recordings(zellij_cli::args::Recordings::Export {
             recording_id,
             output: Some(path),
         })) if path == *"pane.cast" && recording_id == RecordingId::new(42) => {},
@@ -104,7 +104,7 @@ fn cli_recordings_export_with_output_parses() {
 fn cli_recordings_search_parses() {
     let args = try_parse_cli(["zellij", "recordings", "search", "needle"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_utils::cli::Recordings::Search { query, limit, json })) => {
+        Some(Command::Recordings(zellij_cli::args::Recordings::Search { query, limit, json })) => {
             assert_eq!(query, "needle");
             assert_eq!(limit, 50, "default limit");
             assert!(!json, "default is the human-readable table");
@@ -117,7 +117,7 @@ fn cli_recordings_search_parses() {
 fn cli_recordings_search_limit_parses() {
     let args = try_parse_cli(["zellij", "recordings", "search", "needle", "--limit", "5"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_utils::cli::Recordings::Search { limit: 5, .. })) => {},
+        Some(Command::Recordings(zellij_cli::args::Recordings::Search { limit: 5, .. })) => {},
         _ => panic!("Expected Recordings::Search with limit 5"),
     }
 }
@@ -281,7 +281,7 @@ fn recordings_state_strings() {
 
 #[test]
 fn cli_hocus_hooks_parses_its_three_subcommands() {
-    use zellij_utils::cli::{Hocus, HocusHooks};
+    use {zellij_cli::args::Hocus, zellij_cli::args::HocusHooks};
 
     let install = try_parse_cli(["zellij", "hocus", "hooks", "install"]).expect("parsed");
     assert!(matches!(
@@ -334,7 +334,7 @@ fn cli_hocus_hooks_parses_its_three_subcommands() {
     assert!(matches!(
         codex.command,
         Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
-            agent: Some(zellij_utils::cli::HocusHookAgent::Codex),
+            agent: Some(zellij_cli::args::HocusHookAgent::Codex),
             ..
         })))
     ));

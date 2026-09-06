@@ -40,13 +40,10 @@ use zellij_types::{
     geometry::{Direction, Resize, ResizeStrategy, SplitDirection},
     pane_size::{Offset, PaneGeom, Size, SizeInPixels, Viewport},
 };
-use zellij_utils::{
-    data::{ModeInfo, PaneInfo},
-    input::{
-        command::RunCommand,
-        layout::{Run, RunPluginOrAlias},
-        options::PaneFrameStyle,
-    },
+use {
+    zellij_types::data::ModeInfo, zellij_types::data::PaneInfo,
+    zellij_types::input::command::RunCommand, zellij_types::input::layout::Run,
+    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::options::PaneFrameStyle,
 };
 
 use std::{

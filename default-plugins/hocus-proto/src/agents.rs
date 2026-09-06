@@ -132,7 +132,7 @@ pub fn checkout_location(
 }
 
 // The command-line classifier - `KINDS`, `kind_of`, `kind_from_command` - lives in
-// `zellij_utils::agent` now, because the server reads it too: where a spawned agent pane
+// `zellij_types::agent` now, because the server reads it too: where a spawned agent pane
 // goes is decided before the process has said anything, from the same list `hocus-agentd`
 // latches "detected" from. Re-exported so every caller in the plugins keeps one name for it.
 pub use zellij_tile::agent::{kind_from_command, kind_of, program, KINDS};

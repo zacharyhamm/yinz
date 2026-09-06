@@ -9,6 +9,9 @@ description = "Host facilities for Zellij"
 workspace = true
 
 [dependencies]
+percent-encoding = { version = "2.1.0", default-features = false, features = ["std"] }
+serde_json = { workspace = true }
+libc = { workspace = true }
 shellexpand = { version = "3.0.0", default-features = false, features = ["base-0", "tilde"] }
 miette = { workspace = true }
 zellij-types = { workspace = true }

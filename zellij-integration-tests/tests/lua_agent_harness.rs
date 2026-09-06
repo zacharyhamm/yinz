@@ -9,8 +9,8 @@
 //! in force from `request_permission` on, so a gated call made from `load` is not refused.
 
 use std::fs;
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{default_timeout, LayoutInfo, TestRunner, TERMINAL_SIZE};
-use zellij_utils::cli::CliAction;
 
 const HARNESS: &str = r#"
 local zellij = require("zellij")

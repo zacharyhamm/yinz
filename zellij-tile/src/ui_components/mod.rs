@@ -6,7 +6,7 @@ mod table;
 mod text;
 
 pub use prost::{self, *};
-pub use zellij_utils::plugin_api;
+pub use zellij_plugin_api as plugin_api;
 
 pub use image::*;
 pub use nested_list::*;

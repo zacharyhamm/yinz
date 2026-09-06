@@ -32,8 +32,12 @@ use std::{
 use tokio::sync::oneshot;
 use url::Url;
 use wasmi::{Caller, Linker};
+use zellij_config::permission::PermissionCache;
+use zellij_ipc::consts::ipc_connect;
 use zellij_runtime::home::{absolute_lexical, default_layout_dir, default_user_plugin_dir};
 use zellij_storage::plugin_data_store;
+use zellij_types::agent::SpawnedAgent;
+use zellij_types::data::EnqueueQueueJobResponse;
 use zellij_types::internal_ids::{PluginId, TerminalId};
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::{
@@ -41,41 +45,68 @@ use zellij_types::{
     command::PaneTarget,
 };
 use zellij_types::{command::GitCheckout, geometry::FloatingPaneCoordinates};
-use zellij_utils::consts::ipc_connect;
-use zellij_utils::data::EnqueueQueueJobResponse;
-use zellij_utils::data::{
-    validate_namespace, DataApplyResponse, DataCatalogResponse, DataCountResponse,
-    DataDefineResponse, DataEntityInfo, DataError, DataFetchResponse, DataUnwatchResponse,
-    DataWatchResponse, EntityDef, FetchRequest, Mutation, WatchMode, SHARED_NAMESPACE_PREFIX,
+use {zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcSenderWithContext};
+use {
+    zellij_session::sessions::generate_random_name as generate_random_name_impl,
+    zellij_session::sessions::validate_session_name,
 };
-use zellij_utils::data::{
-    BreakPanesToNewTabResponse, BreakPanesToTabWithIdResponse, BreakPanesToTabWithIndexResponse,
-    CommandType, ConnectToSession, DeleteAllDeadSessionsResponse, DeleteDeadSessionResponse,
-    DeleteLayoutResponse, EditLayoutResponse, Event, FileMetadata, FocusOrCreateTabResponse,
-    GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPaneGitProbeResponse, GetPanePidResponse,
-    GetPaneRunningCommandResponse, HttpVerb, KillSessionsResponse, LayoutInfo, LayoutMetadata,
-    LayoutParsingError, ListOrphanedPanesResponse, MessageToPlugin, NewPanePlacement,
-    NewTabResponse, NewTabUnfocusedResponse, NewTiledPaneInTabResponse,
-    OpenCommandPaneBackgroundResponse, OpenCommandPaneFloatingNearPluginResponse,
-    OpenCommandPaneFloatingResponse, OpenCommandPaneInGitCheckoutResponse,
-    OpenCommandPaneInPlaceOfPaneIdResponse, OpenCommandPaneInPlaceOfPluginResponse,
-    OpenCommandPaneInPlaceResponse, OpenCommandPaneNearPluginResponse,
-    OpenCommandPaneOverlayResponse, OpenCommandPaneResponse, OpenEditPaneInPlaceOfPaneIdResponse,
-    OpenFileFloatingNearPluginResponse, OpenFileFloatingResponse, OpenFileInPlaceOfPluginResponse,
-    OpenFileInPlaceResponse, OpenFileNearPluginResponse, OpenFileResponse,
-    OpenPaneInNewTabResponse, OpenPluginPaneFloatingResponse,
-    OpenTerminalFloatingNearPluginResponse, OpenTerminalFloatingResponse,
-    OpenTerminalInPlaceOfPluginResponse, OpenTerminalInPlaceResponse,
-    OpenTerminalNearPluginResponse, OpenTerminalPaneInPlaceOfPaneIdResponse, OpenTerminalResponse,
-    OriginatingPlugin, OrphanedPane, OverlayPlacement, PaneFrameStyle, PaneScrollbackResponse,
-    PermissionStatus, PermissionType, PluginPermission, RegexHighlight, RenameLayoutResponse,
-    SaveLayoutResponse, SpawnAgentResponse, SpawnedAgent, TabMetadata, WarpPaneResponse,
-    WarpPlacement, HOCUS_AGENT_PANE_CONTEXT,
+use {
+    zellij_types::data::validate_namespace, zellij_types::data::DataApplyResponse,
+    zellij_types::data::DataCatalogResponse, zellij_types::data::DataCountResponse,
+    zellij_types::data::DataDefineResponse, zellij_types::data::DataEntityInfo,
+    zellij_types::data::DataError, zellij_types::data::DataFetchResponse,
+    zellij_types::data::DataUnwatchResponse, zellij_types::data::DataWatchResponse,
+    zellij_types::data::EntityDef, zellij_types::data::FetchRequest, zellij_types::data::Mutation,
+    zellij_types::data::WatchMode, zellij_types::data::SHARED_NAMESPACE_PREFIX,
 };
-use zellij_utils::input::permission::PermissionCache;
-use zellij_utils::ipc::{ClientToServerMsg, IpcSenderWithContext};
-use zellij_utils::sessions::{
-    generate_random_name as generate_random_name_impl, validate_session_name,
+use {
+    zellij_types::data::BreakPanesToNewTabResponse,
+    zellij_types::data::BreakPanesToTabWithIdResponse,
+    zellij_types::data::BreakPanesToTabWithIndexResponse, zellij_types::data::CommandType,
+    zellij_types::data::ConnectToSession, zellij_types::data::DeleteAllDeadSessionsResponse,
+    zellij_types::data::DeleteDeadSessionResponse, zellij_types::data::DeleteLayoutResponse,
+    zellij_types::data::EditLayoutResponse, zellij_types::data::Event,
+    zellij_types::data::FileMetadata, zellij_types::data::FocusOrCreateTabResponse,
+    zellij_types::data::GetFocusedPaneInfoResponse, zellij_types::data::GetPaneCwdResponse,
+    zellij_types::data::GetPaneGitProbeResponse, zellij_types::data::GetPanePidResponse,
+    zellij_types::data::GetPaneRunningCommandResponse, zellij_types::data::HttpVerb,
+    zellij_types::data::KillSessionsResponse, zellij_types::data::LayoutInfo,
+    zellij_types::data::LayoutMetadata, zellij_types::data::LayoutParsingError,
+    zellij_types::data::ListOrphanedPanesResponse, zellij_types::data::MessageToPlugin,
+    zellij_types::data::NewPanePlacement, zellij_types::data::NewTabResponse,
+    zellij_types::data::NewTabUnfocusedResponse, zellij_types::data::NewTiledPaneInTabResponse,
+    zellij_types::data::OpenCommandPaneBackgroundResponse,
+    zellij_types::data::OpenCommandPaneFloatingNearPluginResponse,
+    zellij_types::data::OpenCommandPaneFloatingResponse,
+    zellij_types::data::OpenCommandPaneInGitCheckoutResponse,
+    zellij_types::data::OpenCommandPaneInPlaceOfPaneIdResponse,
+    zellij_types::data::OpenCommandPaneInPlaceOfPluginResponse,
+    zellij_types::data::OpenCommandPaneInPlaceResponse,
+    zellij_types::data::OpenCommandPaneNearPluginResponse,
+    zellij_types::data::OpenCommandPaneOverlayResponse,
+    zellij_types::data::OpenCommandPaneResponse,
+    zellij_types::data::OpenEditPaneInPlaceOfPaneIdResponse,
+    zellij_types::data::OpenFileFloatingNearPluginResponse,
+    zellij_types::data::OpenFileFloatingResponse,
+    zellij_types::data::OpenFileInPlaceOfPluginResponse,
+    zellij_types::data::OpenFileInPlaceResponse, zellij_types::data::OpenFileNearPluginResponse,
+    zellij_types::data::OpenFileResponse, zellij_types::data::OpenPaneInNewTabResponse,
+    zellij_types::data::OpenPluginPaneFloatingResponse,
+    zellij_types::data::OpenTerminalFloatingNearPluginResponse,
+    zellij_types::data::OpenTerminalFloatingResponse,
+    zellij_types::data::OpenTerminalInPlaceOfPluginResponse,
+    zellij_types::data::OpenTerminalInPlaceResponse,
+    zellij_types::data::OpenTerminalNearPluginResponse,
+    zellij_types::data::OpenTerminalPaneInPlaceOfPaneIdResponse,
+    zellij_types::data::OpenTerminalResponse, zellij_types::data::OriginatingPlugin,
+    zellij_types::data::OrphanedPane, zellij_types::data::OverlayPlacement,
+    zellij_types::data::PaneFrameStyle, zellij_types::data::PaneScrollbackResponse,
+    zellij_types::data::PermissionStatus, zellij_types::data::PermissionType,
+    zellij_types::data::PluginPermission, zellij_types::data::RegexHighlight,
+    zellij_types::data::RenameLayoutResponse, zellij_types::data::SaveLayoutResponse,
+    zellij_types::data::SpawnAgentResponse, zellij_types::data::TabMetadata,
+    zellij_types::data::WarpPaneResponse, zellij_types::data::WarpPlacement,
+    zellij_types::data::HOCUS_AGENT_PANE_CONTEXT,
 };
 
 use crate::{panes::PaneId, screen::ScreenInstruction};
@@ -87,72 +118,118 @@ use zellij_types::{
     command::CommandToRun,
     geometry::{Direction, Resize, ResizeStrategy},
 };
-use zellij_utils::{
-    consts::{VERSION, ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR, ZELLIJ_TMP_DIR},
-    data::{
-        CommandOrPlugin, EventType, FileToOpen, InputMode, PluginCommand, PluginIds, PluginMessage,
-    },
-    input::{
-        actions::Action,
-        command::{OpenFilePayload, RunCommand, RunCommandAction, TerminalAction},
-        config::ConfigError,
-        keybinds::Keybinds,
-        layout::{Layout, Run, RunPluginOrAlias, TabLayoutInfo},
-        options::Options,
-    },
-    plugin_api::{
-        event::{
-            layout_parsing_error::ErrorType as ProtobufLayoutParsingErrorType,
-            ProtobufLayoutParsingError, ProtobufPaneScrollbackResponse, ProtobufSyntaxError,
-        },
-        plugin_command::{
-            dump_layout_response, dump_session_layout_response, fs_list_response,
-            fs_metadata_response, fs_mutate_response, fs_read_response,
-            hide_floating_panes_response, parse_layout_response, read_plugin_log_response,
-            save_session_response, show_floating_panes_response,
-            ProtobufBreakPanesToNewTabResponse, ProtobufBreakPanesToTabWithIdResponse,
-            ProtobufBreakPanesToTabWithIndexResponse, ProtobufCheckLuaPluginResponse,
-            ProtobufDataApplyResponse, ProtobufDataCatalogResponse, ProtobufDataCountResponse,
-            ProtobufDataDefineResponse, ProtobufDataFetchResponse, ProtobufDataUnwatchResponse,
-            ProtobufDataWatchResponse, ProtobufDeleteAllDeadSessionsResponse,
-            ProtobufDeleteDeadSessionResponse, ProtobufDeleteLayoutResponse,
-            ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
-            ProtobufEditLayoutResponse, ProtobufFocusOrCreateTabResponse, ProtobufFsEntry,
-            ProtobufFsEntryList, ProtobufFsListResponse, ProtobufFsMetadataResponse,
-            ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
-            ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse,
-            ProtobufGetLocalUtcOffsetResponse, ProtobufGetPaneCwdResponse,
-            ProtobufGetPaneGitProbeResponse, ProtobufGetPaneInfoResponse,
-            ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
-            ProtobufGetPluginAliasConfigurationResponse,
-            ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
-            ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
-            ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
-            ProtobufListNotificationsResponse, ProtobufListOrphanedPanesResponse,
-            ProtobufListRecordingsResponse, ProtobufNewTabResponse,
-            ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
-            ProtobufNewTiledPaneInTabResponse, ProtobufOpenCommandPaneBackgroundResponse,
-            ProtobufOpenCommandPaneFloatingNearPluginResponse,
-            ProtobufOpenCommandPaneFloatingResponse, ProtobufOpenCommandPaneInGitCheckoutResponse,
-            ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
-            ProtobufOpenCommandPaneInPlaceOfPluginResponse, ProtobufOpenCommandPaneInPlaceResponse,
-            ProtobufOpenCommandPaneNearPluginResponse, ProtobufOpenCommandPaneOverlayResponse,
-            ProtobufOpenCommandPaneResponse, ProtobufOpenEditPaneInPlaceOfPaneIdResponse,
-            ProtobufOpenFileFloatingNearPluginResponse, ProtobufOpenFileFloatingResponse,
-            ProtobufOpenFileInPlaceOfPluginResponse, ProtobufOpenFileInPlaceResponse,
-            ProtobufOpenFileNearPluginResponse, ProtobufOpenFileResponse,
-            ProtobufOpenPaneInNewTabResponse, ProtobufOpenPluginPaneFloatingResponse,
-            ProtobufOpenTerminalFloatingNearPluginResponse, ProtobufOpenTerminalFloatingResponse,
-            ProtobufOpenTerminalInPlaceOfPluginResponse, ProtobufOpenTerminalInPlaceResponse,
-            ProtobufOpenTerminalNearPluginResponse,
-            ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse, ProtobufOpenTerminalResponse,
-            ProtobufParseLayoutResponse, ProtobufPluginCommand, ProtobufReadPluginLogResponse,
-            ProtobufRenameLayoutResponse, ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse,
-            ProtobufSearchRecordingsResponse, ProtobufShowFloatingPanesResponse,
-            ProtobufSpawnAgentResponse, ProtobufWarpPaneResponse,
-        },
-        plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion},
-    },
+use {
+    zellij_config::config::ConfigError,
+    zellij_plugin_api::event::layout_parsing_error::ErrorType as ProtobufLayoutParsingErrorType,
+    zellij_plugin_api::event::ProtobufLayoutParsingError,
+    zellij_plugin_api::event::ProtobufPaneScrollbackResponse,
+    zellij_plugin_api::event::ProtobufSyntaxError,
+    zellij_plugin_api::plugin_command::dump_layout_response,
+    zellij_plugin_api::plugin_command::dump_session_layout_response,
+    zellij_plugin_api::plugin_command::fs_list_response,
+    zellij_plugin_api::plugin_command::fs_metadata_response,
+    zellij_plugin_api::plugin_command::fs_mutate_response,
+    zellij_plugin_api::plugin_command::fs_read_response,
+    zellij_plugin_api::plugin_command::hide_floating_panes_response,
+    zellij_plugin_api::plugin_command::parse_layout_response,
+    zellij_plugin_api::plugin_command::read_plugin_log_response,
+    zellij_plugin_api::plugin_command::save_session_response,
+    zellij_plugin_api::plugin_command::show_floating_panes_response,
+    zellij_plugin_api::plugin_command::ProtobufBreakPanesToNewTabResponse,
+    zellij_plugin_api::plugin_command::ProtobufBreakPanesToTabWithIdResponse,
+    zellij_plugin_api::plugin_command::ProtobufBreakPanesToTabWithIndexResponse,
+    zellij_plugin_api::plugin_command::ProtobufCheckLuaPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataApplyResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataCatalogResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataCountResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataDefineResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataFetchResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataUnwatchResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataWatchResponse,
+    zellij_plugin_api::plugin_command::ProtobufDeleteAllDeadSessionsResponse,
+    zellij_plugin_api::plugin_command::ProtobufDeleteDeadSessionResponse,
+    zellij_plugin_api::plugin_command::ProtobufDeleteLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufDumpLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufDumpSessionLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufEditLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufFocusOrCreateTabResponse,
+    zellij_plugin_api::plugin_command::ProtobufFsEntry,
+    zellij_plugin_api::plugin_command::ProtobufFsEntryList,
+    zellij_plugin_api::plugin_command::ProtobufFsListResponse,
+    zellij_plugin_api::plugin_command::ProtobufFsMetadataResponse,
+    zellij_plugin_api::plugin_command::ProtobufFsMutateResponse,
+    zellij_plugin_api::plugin_command::ProtobufFsReadResponse,
+    zellij_plugin_api::plugin_command::ProtobufGenerateRandomNameResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetFocusedPaneInfoResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetLayoutDirResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetLocalUtcOffsetResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPaneCwdResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPaneGitProbeResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPaneInfoResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPanePidResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPaneRunningCommandResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPluginAliasConfigurationResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetSessionEnvironmentVariablesResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetSessionListResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetTabInfoResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetUserPluginDirResponse,
+    zellij_plugin_api::plugin_command::ProtobufHideFloatingPanesResponse,
+    zellij_plugin_api::plugin_command::ProtobufKillSessionsResponse,
+    zellij_plugin_api::plugin_command::ProtobufListNotificationsResponse,
+    zellij_plugin_api::plugin_command::ProtobufListOrphanedPanesResponse,
+    zellij_plugin_api::plugin_command::ProtobufListRecordingsResponse,
+    zellij_plugin_api::plugin_command::ProtobufNewTabResponse,
+    zellij_plugin_api::plugin_command::ProtobufNewTabUnfocusedResponse,
+    zellij_plugin_api::plugin_command::ProtobufNewTabsResponse,
+    zellij_plugin_api::plugin_command::ProtobufNewTiledPaneInTabResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneBackgroundResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneFloatingNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneFloatingResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneInGitCheckoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneInPlaceOfPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneInPlaceResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneOverlayResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenEditPaneInPlaceOfPaneIdResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileFloatingNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileFloatingResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileInPlaceOfPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileInPlaceResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenPaneInNewTabResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenPluginPaneFloatingResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalFloatingNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalFloatingResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalInPlaceOfPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalInPlaceResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalResponse,
+    zellij_plugin_api::plugin_command::ProtobufParseLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufPluginCommand,
+    zellij_plugin_api::plugin_command::ProtobufReadPluginLogResponse,
+    zellij_plugin_api::plugin_command::ProtobufRenameLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufSaveLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufSaveSessionResponse,
+    zellij_plugin_api::plugin_command::ProtobufSearchRecordingsResponse,
+    zellij_plugin_api::plugin_command::ProtobufShowFloatingPanesResponse,
+    zellij_plugin_api::plugin_command::ProtobufSpawnAgentResponse,
+    zellij_plugin_api::plugin_command::ProtobufWarpPaneResponse,
+    zellij_plugin_api::plugin_ids::ProtobufPluginIds,
+    zellij_plugin_api::plugin_ids::ProtobufZellijVersion, zellij_runtime::consts::VERSION,
+    zellij_runtime::consts::ZELLIJ_SESSION_INFO_CACHE_DIR, zellij_runtime::consts::ZELLIJ_SOCK_DIR,
+    zellij_runtime::consts::ZELLIJ_TMP_DIR, zellij_types::data::CommandOrPlugin,
+    zellij_types::data::EventType, zellij_types::data::FileToOpen, zellij_types::data::InputMode,
+    zellij_types::data::PluginCommand, zellij_types::data::PluginIds,
+    zellij_types::data::PluginMessage, zellij_types::input::actions::Action,
+    zellij_types::input::command::OpenFilePayload, zellij_types::input::command::RunCommand,
+    zellij_types::input::command::RunCommandAction, zellij_types::input::command::TerminalAction,
+    zellij_types::input::keybinds::Keybinds, zellij_types::input::layout::Layout,
+    zellij_types::input::layout::Run, zellij_types::input::layout::TabLayoutInfo,
+    zellij_types::input::options::Options,
 };
 
 macro_rules! apply_action {
@@ -1249,7 +1326,7 @@ fn dump_layout(env: &mut PluginEnv, layout_name: String) {
     let result = validate_plugin_layout_path(&layout_name, layout_dir.as_ref())
         .map_err(|e| e.to_string())
         .and_then(|_| {
-            Layout::stringified_from_dir(&layout_path, layout_dir.as_ref())
+            zellij_config::layout::stringified_from_dir(&layout_path, layout_dir.as_ref())
                 .map_err(|e| e.to_string())
         });
     let response = match result {
@@ -1313,7 +1390,7 @@ fn get_user_plugin_dir(env: &mut PluginEnv) {
 }
 
 fn get_session_environment_variables(env: &mut PluginEnv) {
-    use zellij_utils::plugin_api::plugin_command::EnvVariable as ProtobufEnvVariable;
+    use zellij_plugin_api::plugin_command::EnvVariable as ProtobufEnvVariable;
 
     let env_vars: Vec<ProtobufEnvVariable> = env
         .session_env_vars
@@ -1405,7 +1482,7 @@ fn open_plugin_pane_in_new_tab(
     configuration: BTreeMap<String, String>,
     context: BTreeMap<String, String>,
 ) {
-    let run_plugin_or_alias = RunPluginOrAlias::from_url(
+    let run_plugin_or_alias = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
         &plugin_url,
         &Some(configuration),
         None,
@@ -1461,7 +1538,7 @@ fn open_plugin_pane_floating(
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
     context: BTreeMap<String, String>,
 ) {
-    let run_plugin_or_alias = RunPluginOrAlias::from_url(
+    let run_plugin_or_alias = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
         &plugin_url,
         &Some(configuration),
         None,
@@ -1661,11 +1738,11 @@ fn read_plugin_log(env: &mut PluginEnv, name: String, lines: usize) {
             anyhow!("no plugin folder is configured; set `user_plugin_dir` in the Zellij config")
         })
         .and_then(|dir| {
-            zellij_utils::plugin_authoring::resolve_plugin_file(&dir, &name).map_err(|e| anyhow!(e))
+            zellij_plugin_api::authoring::resolve_plugin_file(&dir, &name).map_err(|e| anyhow!(e))
         })
         .and_then(|path| {
             crate::plugin_authoring::log_tail(
-                &zellij_utils::consts::ZELLIJ_TMP_LOG_FILE,
+                &zellij_runtime::consts::ZELLIJ_TMP_LOG_FILE,
                 &path,
                 lines,
             )
@@ -1685,7 +1762,7 @@ fn parse_layout(env: &mut PluginEnv, layout_string: String) {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // Parse the KDL layout - same parameters as list_available_layouts in layout.rs:1260
-    let parse_result = Layout::from_kdl(
+    let parse_result = zellij_config::kdl::layout::from_kdl(
         &layout_string,
         Some("parse_layout_api".to_string()), // file_name for error reporting
         None,                                 // no swap layouts
@@ -1748,13 +1825,13 @@ fn parse_layout(env: &mut PluginEnv, layout_string: String) {
         },
         Err(config_error) => {
             // Build LayoutParsingError following list_available_layouts pattern
-            // See zellij-utils/src/input/layout.rs:1238-1245
+            // See zellij-types/src/input/layout.rs
             let file_name = "parse_layout_api".to_string();
             let source_code = layout_string;
 
             let error = match config_error {
                 ConfigError::KdlError(kdl_err) => LayoutParsingError::KdlError {
-                    kdl_error: Box::new(kdl_err),
+                    kdl_error: Box::new(kdl_err.into()),
                     file_name,
                     source_code,
                 },
@@ -1762,7 +1839,7 @@ fn parse_layout(env: &mut PluginEnv, layout_string: String) {
             };
 
             // Convert LayoutParsingError to protobuf
-            // TryFrom is implemented in zellij-utils/src/plugin_api/event.rs:1293-1314
+            // TryFrom is implemented in zellij-plugin-api/src/event.rs
             let protobuf_error = error.try_into().unwrap_or_else(|e| {
                 log::error!("Failed to convert error to protobuf: {}", e);
                 ProtobufLayoutParsingError {
@@ -1814,7 +1891,7 @@ fn open_file(env: &mut PluginEnv, file_to_open: FileToOpen, context: BTreeMap<St
     };
     let result = apply_action!(action, error_msg, env);
 
-    // Extract pane_id from result and convert to zellij_utils PaneId
+    // Extract pane_id from result and convert to zellij_types PaneId
     let pane_id: OpenFileResponse = result.and_then(|r| r.affected_pane_id).map(|p| p.into());
 
     // Write response to plugin
@@ -1865,7 +1942,7 @@ fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, Str
         };
 
         // After action completes, send ActionComplete event with context
-        // Convert server PaneId to zellij_utils PaneId
+        // Convert server PaneId to zellij_types PaneId
         let pane_id_for_event = pane_id.map(|p| p.into());
         let updates = vec![(
             Some(plugin_id),
@@ -1911,7 +1988,7 @@ fn open_file_floating(
     };
     let result = apply_action!(action, error_msg, env);
 
-    // Extract pane_id from result and convert to zellij_utils PaneId
+    // Extract pane_id from result and convert to zellij_types PaneId
     let pane_id: OpenFileFloatingResponse =
         result.and_then(|r| r.affected_pane_id).map(|p| p.into());
 
@@ -1953,7 +2030,7 @@ fn open_file_in_place(
     };
     let result = apply_action!(action, error_msg, env);
 
-    // Extract pane_id from result and convert to zellij_utils PaneId
+    // Extract pane_id from result and convert to zellij_types PaneId
     let pane_id: OpenFileInPlaceResponse =
         result.and_then(|r| r.affected_pane_id).map(|p| p.into());
 
@@ -2115,7 +2192,7 @@ fn open_terminal(env: &mut PluginEnv, cwd: PathBuf) {
     };
     let result = apply_action!(action, error_msg, env);
 
-    // Extract pane_id from result and convert to zellij_utils PaneId
+    // Extract pane_id from result and convert to zellij_types PaneId
     let pane_id: OpenTerminalResponse = result.and_then(|r| r.affected_pane_id).map(|p| p.into());
 
     // Write response to plugin
@@ -2192,7 +2269,7 @@ fn open_terminal_floating(
     };
     let result = apply_action!(action, error_msg, env);
 
-    // Extract pane_id from result and convert to zellij_utils PaneId
+    // Extract pane_id from result and convert to zellij_types PaneId
     let pane_id: OpenTerminalFloatingResponse =
         result.and_then(|r| r.affected_pane_id).map(|p| p.into());
 
@@ -2269,7 +2346,7 @@ fn open_terminal_in_place(env: &mut PluginEnv, cwd: PathBuf) {
     };
     let result = apply_action!(action, error_msg, env);
 
-    // Extract pane_id from result and convert to zellij_utils PaneId
+    // Extract pane_id from result and convert to zellij_types PaneId
     let pane_id: OpenTerminalInPlaceResponse =
         result.and_then(|r| r.affected_pane_id).map(|p| p.into());
 
@@ -2358,7 +2435,7 @@ fn open_command_pane_in_place_of_plugin(
 
 fn open_terminal_pane_in_place_of_pane_id(
     env: &mut PluginEnv,
-    pane_id_to_replace: zellij_utils::data::PaneId,
+    pane_id_to_replace: zellij_types::data::PaneId,
     cwd: FileToOpen,
     close_replaced_pane: bool,
 ) {
@@ -2402,7 +2479,7 @@ fn open_terminal_pane_in_place_of_pane_id(
 
 fn open_command_pane_in_place_of_pane_id(
     env: &mut PluginEnv,
-    pane_id_to_replace: zellij_utils::data::PaneId,
+    pane_id_to_replace: zellij_types::data::PaneId,
     command_to_run: CommandToRun,
     close_replaced_pane: bool,
     context: BTreeMap<String, String>,
@@ -2439,7 +2516,7 @@ fn open_command_pane_in_place_of_pane_id(
 
 fn open_edit_pane_in_place_of_pane_id(
     env: &mut PluginEnv,
-    pane_id_to_replace: zellij_utils::data::PaneId,
+    pane_id_to_replace: zellij_types::data::PaneId,
     file_to_open: FileToOpen,
     close_replaced_pane: bool,
     context: BTreeMap<String, String>,
@@ -2496,7 +2573,7 @@ fn open_command_pane(
     };
     let result = apply_action!(action, error_msg, env);
 
-    // Extract pane_id from result and convert to zellij_utils PaneId
+    // Extract pane_id from result and convert to zellij_types PaneId
     let pane_id: OpenCommandPaneResponse =
         result.and_then(|r| r.affected_pane_id).map(|p| p.into());
 
@@ -2568,7 +2645,7 @@ fn open_command_pane_in_git_checkout_near_plugin(
             // The marker's value is the agent's kind - the program - which is what the pane's
             // agent record starts from. See `agent_from_run` in `panes::terminal_pane`.
             let kind =
-                zellij_utils::agent::agent_kind_of(&command_to_run.path, &command_to_run.args)
+                zellij_types::agent::agent_kind_of(&command_to_run.path, &command_to_run.args)
                     .unwrap_or_else(|| "true".to_owned());
             spawn_command_pane_near_plugin(
                 env,
@@ -2614,10 +2691,10 @@ fn spawn_agent(
             }
             context.insert("agent_workflow_owner".into(), env.plugin_id.to_string());
         }
-        let (mut command, checkout) = zellij_utils::agent::launch::plan(&spec)?;
+        let (mut command, checkout) = zellij_runtime::agent::launch::plan(&spec)?;
         // The marker's value is the agent's kind - the program - which is what the pane's
         // agent record starts from. See `agent_from_run` in `panes::terminal_pane`.
-        let kind = zellij_utils::agent::agent_kind_of(&command.path, &command.args)
+        let kind = zellij_types::agent::agent_kind_of(&command.path, &command.args)
             .unwrap_or_else(|| "true".to_owned());
         let host_workflow = context.contains_key("agent_workflow_role");
         let source = source_directory
@@ -3194,7 +3271,7 @@ fn open_command_pane_floating(
     };
     let result = apply_action!(action, error_msg, env);
 
-    // Extract pane_id from result and convert to zellij_utils PaneId
+    // Extract pane_id from result and convert to zellij_types PaneId
     let pane_id: OpenCommandPaneFloatingResponse =
         result.and_then(|r| r.affected_pane_id).map(|p| p.into());
 
@@ -3295,7 +3372,7 @@ fn open_command_pane_in_place(
     };
     let result = apply_action!(action, error_msg, env);
 
-    // Extract pane_id from result and convert to zellij_utils PaneId
+    // Extract pane_id from result and convert to zellij_types PaneId
     let pane_id: OpenCommandPaneInPlaceResponse =
         result.and_then(|r| r.affected_pane_id).map(|p| p.into());
 
@@ -3632,7 +3709,7 @@ fn enqueue_queue_job(
     mut config: BTreeMap<String, String>,
     context: BTreeMap<String, String>,
 ) {
-    use zellij_utils::plugin_api::plugin_command::ProtobufEnqueueQueueJobResponse;
+    use zellij_plugin_api::plugin_command::ProtobufEnqueueQueueJobResponse;
 
     let plugin_url = if plugin_url == "zellij:OWN_URL" {
         env.plugin.location.display()
@@ -3649,7 +3726,7 @@ fn enqueue_queue_job(
     } else {
         let resolved = {
             let plugin_aliases = env.plugin_aliases.lock().unwrap();
-            RunPluginOrAlias::from_url(
+            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
                 &plugin_url,
                 &Some(config),
                 Some(&plugin_aliases),
@@ -3701,7 +3778,7 @@ fn cancel_queue_job(env: &PluginEnv, job_id: u64) {
 }
 
 fn queue_status(env: &mut PluginEnv, queue: Option<String>) {
-    use zellij_utils::plugin_api::plugin_command::ProtobufQueueStatusResponse;
+    use zellij_plugin_api::plugin_command::ProtobufQueueStatusResponse;
 
     let queues = env.queues.lock().unwrap().snapshot(queue.as_deref());
     let response: ProtobufQueueStatusResponse = queues.into();
@@ -3755,8 +3832,12 @@ fn rebind_keys(
 }
 
 fn register_default_keybindings(env: &PluginEnv, keybindings: String) -> Result<()> {
-    let parsed = Keybinds::from_string(keybindings, Keybinds::default(), &Options::default())
-        .map_err(|error| anyhow!("{error}"))?;
+    let parsed = zellij_config::kdl::keybinds::from_string(
+        keybindings,
+        Keybinds::default(),
+        &Options::default(),
+    )
+    .map_err(|error| anyhow!("{error}"))?;
     let mut keys_to_rebind = vec![];
     for (mode, bindings) in parsed.0 {
         for (key, mut actions) in bindings {
@@ -3817,8 +3898,8 @@ fn ensure_plugin_permissions(
 fn layout_run_permissions(layout: &Layout) -> BTreeSet<PermissionType> {
     let mut permissions = BTreeSet::new();
     let mut inspect =
-        |tiled_layout: &zellij_utils::input::layout::TiledPaneLayout,
-         floating_layouts: &[zellij_utils::input::layout::FloatingPaneLayout]| {
+        |tiled_layout: &zellij_types::input::layout::TiledPaneLayout,
+         floating_layouts: &[zellij_types::input::layout::FloatingPaneLayout]| {
             let runs = tiled_layout
                 .extract_run_instructions()
                 .into_iter()
@@ -3929,8 +4010,9 @@ fn ensure_layout_info_permissions(env: &PluginEnv, layout_info: &LayoutInfo) -> 
             ],
         ),
         LayoutInfo::BuiltIn(_) | LayoutInfo::Stringified(_) => {
-            let layout = Layout::from_layout_info(&env.layout_dir, layout_info.clone())
-                .map_err(|e| anyhow!("Failed to parse layout: {:?}", e))?;
+            let layout =
+                zellij_config::layout::from_layout_info(&env.layout_dir, layout_info.clone())
+                    .map_err(|e| anyhow!("Failed to parse layout: {:?}", e))?;
             ensure_plugin_permissions(env, layout_run_permissions(&layout))
         },
     }
@@ -3938,13 +4020,13 @@ fn ensure_layout_info_permissions(env: &PluginEnv, layout_info: &LayoutInfo) -> 
 
 fn layout_from_plugin_info(env: &PluginEnv, layout_info: LayoutInfo) -> Result<Layout> {
     ensure_layout_info_permissions(env, &layout_info)?;
-    Layout::from_layout_info(&env.layout_dir, layout_info)
+    zellij_config::layout::from_layout_info(&env.layout_dir, layout_info)
         .map_err(|e| anyhow!("Failed to parse layout: {:?}", e))
 }
 
 fn new_tabs_with_layout(env: &mut PluginEnv, raw_layout: &str) -> Result<()> {
     // TODO: cwd
-    let layout = Layout::from_str(
+    let layout = zellij_config::layout::from_str(
         raw_layout,
         format!("Layout from plugin: {}", env.name()),
         None,
@@ -4235,7 +4317,7 @@ fn delete_dead_session_in(session_info_cache_dir: &Path, session_name: &str) -> 
 }
 
 fn delete_all_dead_sessions() -> Result<()> {
-    use zellij_utils::consts::is_ipc_socket;
+    use zellij_ipc::consts::is_ipc_socket;
     let mut live_sessions = vec![];
     if let Ok(files) = std::fs::read_dir(&*ZELLIJ_SOCK_DIR) {
         files.for_each(|file| {
@@ -4517,8 +4599,9 @@ fn go_to_tab(env: &PluginEnv, tab_index: u32) {
 fn start_or_reload_plugin(env: &PluginEnv, url: &str) -> Result<()> {
     let error_msg = || format!("failed to start or reload plugin in plugin {}", env.name());
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let run_plugin_or_alias = RunPluginOrAlias::from_url(url, &None, None, Some(cwd))
-        .map_err(|e| anyhow!("Failed to parse plugin location: {}", e))?;
+    let run_plugin_or_alias =
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(url, &None, None, Some(cwd))
+            .map_err(|e| anyhow!("Failed to parse plugin location: {}", e))?;
     let action = Action::StartOrReloadPlugin {
         plugin: run_plugin_or_alias,
     };
@@ -4528,8 +4611,9 @@ fn start_or_reload_plugin(env: &PluginEnv, url: &str) -> Result<()> {
 
 fn reload_plugin_by_url(env: &PluginEnv, url: String) -> Result<()> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let run_plugin_or_alias = RunPluginOrAlias::from_url(&url, &None, None, Some(cwd))
-        .map_err(|e| anyhow!("Failed to parse plugin location: {}", e))?;
+    let run_plugin_or_alias =
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(&url, &None, None, Some(cwd))
+            .map_err(|e| anyhow!("Failed to parse plugin location: {}", e))?;
     env.senders
         .send_to_plugin(PluginInstruction::ReloadPluginByUrl(run_plugin_or_alias))
         .with_context(|| format!("failed to reload plugin at {url}"))
@@ -4683,7 +4767,7 @@ fn kill_sessions_and_reply(env: &mut PluginEnv, session_names: Vec<String>) {
         for name in session_names {
             let path = ZELLIJ_SOCK_DIR.join(&name);
             set.spawn(async move {
-                let res = zellij_utils::ipc::async_send_kill_and_await(&path).await;
+                let res = zellij_ipc::ipc::async_send_kill_and_await(&path).await;
                 (name, res)
             });
         }
@@ -5444,7 +5528,7 @@ fn hide_floating_panes(env: &mut PluginEnv, tab_id: Option<usize>) {
 
 fn set_pane_regex_highlights(
     env: &PluginEnv,
-    pane_id: zellij_utils::data::PaneId,
+    pane_id: zellij_types::data::PaneId,
     highlights: Vec<RegexHighlight>,
 ) {
     let err_context = || "failed to set pane regex highlights".to_string();
@@ -5459,7 +5543,7 @@ fn set_pane_regex_highlights(
         .non_fatal();
 }
 
-fn clear_pane_highlights(env: &PluginEnv, pane_id: zellij_utils::data::PaneId) {
+fn clear_pane_highlights(env: &PluginEnv, pane_id: zellij_types::data::PaneId) {
     let err_context = || "failed to clear pane highlights".to_string();
     let pane_id: PaneId = pane_id.into();
     env.senders
@@ -5472,7 +5556,7 @@ fn clear_pane_highlights(env: &PluginEnv, pane_id: zellij_utils::data::PaneId) {
 }
 
 fn current_session_last_saved_time(env: &mut PluginEnv) {
-    use zellij_utils::plugin_api::plugin_command::ProtobufCurrentSessionLastSavedTimeResponse;
+    use zellij_plugin_api::plugin_command::ProtobufCurrentSessionLastSavedTimeResponse;
 
     let (response_tx, response_rx) = crossbeam::channel::bounded(1);
     let send_result = env
@@ -5502,7 +5586,7 @@ fn current_session_last_saved_time(env: &mut PluginEnv) {
     let _ = wasi_write_object(env, &response.encode_to_vec());
 }
 
-fn get_pane_info(env: &mut PluginEnv, pane_id: zellij_utils::data::PaneId) {
+fn get_pane_info(env: &mut PluginEnv, pane_id: zellij_types::data::PaneId) {
     use crossbeam::channel::RecvTimeoutError;
     use std::time::Duration;
 
@@ -5775,7 +5859,7 @@ fn set_pane_borderless(env: &PluginEnv, pane_id: PaneId, borderless: bool) {
         ));
 }
 
-fn set_pane_agent(env: &PluginEnv, pane_id: zellij_utils::data::PaneId, agent: Option<AgentInfo>) {
+fn set_pane_agent(env: &PluginEnv, pane_id: zellij_types::data::PaneId, agent: Option<AgentInfo>) {
     let _ =
         env.senders
             .send_to_screen(ScreenInstruction::SetPaneAgent(pane_id.into(), agent, None));
@@ -5783,7 +5867,7 @@ fn set_pane_agent(env: &PluginEnv, pane_id: zellij_utils::data::PaneId, agent: O
 
 fn set_pane_agent_run(
     env: &PluginEnv,
-    pane_id: zellij_utils::data::PaneId,
+    pane_id: zellij_types::data::PaneId,
     run_id: Option<String>,
 ) {
     let _ = env
@@ -6026,7 +6110,7 @@ fn project_config(
         } else {
             env.plugin_cwd.join(directory)
         };
-        let root = zellij_utils::project_config::root(&directory).map_err(|e| anyhow!(e))?;
+        let root = zellij_config::project_config::root(&directory).map_err(|e| anyhow!(e))?;
         let own = env
             .plugin_cwd
             .canonicalize()
@@ -6037,10 +6121,10 @@ fn project_config(
             ));
         }
         let snapshot = if let Some((source, expected)) = write {
-            zellij_utils::project_config::access_root(&root, Some((&source, expected.as_deref())))
+            zellij_config::project_config::access_root(&root, Some((&source, expected.as_deref())))
                 .map_err(|e| anyhow!(e))?
         } else {
-            zellij_utils::project_config::access_root(&root, None).map_err(|e| anyhow!(e))?
+            zellij_config::project_config::access_root(&root, None).map_err(|e| anyhow!(e))?
         };
         serde_json::to_vec(&snapshot).context("could not serialize project configuration")
     })();
@@ -6494,7 +6578,7 @@ fn get_pane_running_command(env: &mut PluginEnv, pane_id: PaneId) {
 
 fn get_session_list(env: &mut PluginEnv) {
     use crate::background_jobs::{scan_session_list_default_dirs, session_scan_state};
-    use zellij_utils::data::{GetSessionListResponse, SessionListSnapshot};
+    use {zellij_types::data::GetSessionListResponse, zellij_types::data::SessionListSnapshot};
 
     let response = match session_scan_state() {
         Some(state) => {
@@ -6755,7 +6839,7 @@ fn try_save_layout(
     let safe_name = sanitize_layout_name(layout_name)?;
 
     // Step 2: Validate the layout by parsing it
-    Layout::from_kdl(
+    zellij_config::kdl::layout::from_kdl(
         layout_kdl,
         Some(format!("{}.kdl", safe_name)),
         None, // No swap layouts
@@ -7273,7 +7357,12 @@ fn load_new_plugin(
         url
     };
     if load_in_background {
-        match RunPluginOrAlias::from_url(&url, &Some(config), None, Some(env.plugin_cwd.clone())) {
+        match zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            &url,
+            &Some(config),
+            None,
+            Some(env.plugin_cwd.clone()),
+        ) {
             Ok(run_plugin_or_alias) => {
                 let _ = env
                     .senders
@@ -7296,7 +7385,12 @@ fn load_new_plugin(
         let size = Default::default();
         let cwd = Some(env.plugin_cwd.clone());
         let skip_cache = skip_plugin_cache;
-        match RunPluginOrAlias::from_url(&url, &Some(config), None, Some(env.plugin_cwd.clone())) {
+        match zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            &url,
+            &Some(config),
+            None,
+            Some(env.plugin_cwd.clone()),
+        ) {
             Ok(run_plugin_or_alias) => {
                 let _ = env.senders.send_to_plugin(PluginInstruction::Load(
                     should_float,
@@ -7899,6 +7993,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
 #[cfg(test)]
 mod permission_tests {
     use super::*;
+    use zellij_types::input::layout::RunPluginOrAlias;
 
     /// `prepare_git_checkout_in` asking for reuse, which is what every test written before
     /// reuse became a request meant by it: an existing branch or worktree is the work being
@@ -8040,17 +8135,17 @@ mod permission_tests {
 
     #[test]
     fn layout_permissions_cover_every_active_startup_pane_kind() {
-        let tiled_layout = zellij_utils::input::layout::TiledPaneLayout {
+        let tiled_layout = zellij_types::input::layout::TiledPaneLayout {
             children: vec![
-                zellij_utils::input::layout::TiledPaneLayout {
+                zellij_types::input::layout::TiledPaneLayout {
                     run: Some(Run::Command(RunCommand::default())),
                     ..Default::default()
                 },
-                zellij_utils::input::layout::TiledPaneLayout {
+                zellij_types::input::layout::TiledPaneLayout {
                     run: Some(Run::EditFile(PathBuf::from("active"), None, None)),
                     ..Default::default()
                 },
-                zellij_utils::input::layout::TiledPaneLayout {
+                zellij_types::input::layout::TiledPaneLayout {
                     run: Some(Run::Plugin(RunPluginOrAlias::default())),
                     ..Default::default()
                 },
@@ -8074,17 +8169,17 @@ mod permission_tests {
     #[test]
     fn layout_permissions_ignore_non_startup_work() {
         let ignored = Some(Run::Command(RunCommand::default()));
-        let tiled_layout = zellij_utils::input::layout::TiledPaneLayout {
+        let tiled_layout = zellij_types::input::layout::TiledPaneLayout {
             run: ignored.clone(),
             run_instructions_to_ignore: vec![ignored],
             ..Default::default()
         };
-        let already_running = zellij_utils::input::layout::FloatingPaneLayout {
+        let already_running = zellij_types::input::layout::FloatingPaneLayout {
             run: Some(Run::Plugin(RunPluginOrAlias::default())),
             already_running: true,
             ..Default::default()
         };
-        let swap_layout = zellij_utils::input::layout::TiledPaneLayout {
+        let swap_layout = zellij_types::input::layout::TiledPaneLayout {
             run: Some(Run::EditFile(PathBuf::from("swap"), None, None)),
             ..Default::default()
         };

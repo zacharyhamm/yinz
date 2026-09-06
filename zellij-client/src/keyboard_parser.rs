@@ -398,7 +398,7 @@ mod props {
     use super::*;
     use hegel::generators::{self, Generator};
     use std::collections::BTreeSet;
-    use zellij_utils::data::{BareKey, KeyModifier};
+    use {zellij_types::data::BareKey, zellij_types::data::KeyModifier};
 
     #[hegel::composite]
     fn keys_with_modifiers(tc: &hegel::TestCase) -> KeyWithModifier {

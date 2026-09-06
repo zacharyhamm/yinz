@@ -22,39 +22,48 @@ use crate::{ClientId, ServerInstruction};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use zellij_config::config::Config;
+use zellij_ipc::get_mode_info;
+use zellij_ipc::nested_session;
+use zellij_ipc::nested_session::NestedSessionMessage;
 use zellij_runtime::envs::set_session_name;
 use zellij_types::diagnostics::ContextType;
 use zellij_types::pane_size::Size;
 use zellij_types::style::HostTerminalThemeMode;
 use zellij_types::{agent::AgentInfo, geometry::Direction};
-use zellij_utils::consts::{session_info_folder_for_session, ZELLIJ_SOCK_DIR};
-use zellij_utils::data::{
-    Event, GetFocusedPaneInfoResponse, InputMode, NewPanePlacement, NotificationInfo,
-    OverlayPlacement, PaneScrollbackResponse, PluginCapabilities, SessionInfo,
+use {zellij_ipc::ipc::ClientAttributes, zellij_ipc::ipc::ServerToClientMsg};
+use {
+    zellij_runtime::consts::session_info_folder_for_session,
+    zellij_runtime::consts::ZELLIJ_SOCK_DIR,
 };
-use zellij_utils::input::command::{RunCommand, TerminalAction};
-use zellij_utils::input::config::Config;
-use zellij_utils::input::get_mode_info;
-use zellij_utils::input::layout::{Layout, Run};
-use zellij_utils::input::options::{
-    PaneFrameStyle, DEFAULT_AGENT_PANE_MIN_COLUMNS, DEFAULT_AGENT_PANE_MIN_ROWS,
-    DEFAULT_NOTIFICATION_TIMEOUT_SECS, DEFAULT_WORD_SEPARATORS,
+use {
+    zellij_types::data::Event, zellij_types::data::GetFocusedPaneInfoResponse,
+    zellij_types::data::InputMode, zellij_types::data::NewPanePlacement,
+    zellij_types::data::NotificationInfo, zellij_types::data::OverlayPlacement,
+    zellij_types::data::PaneScrollbackResponse, zellij_types::data::PluginCapabilities,
+    zellij_types::data::SessionInfo,
 };
-use zellij_utils::ipc::{ClientAttributes, ServerToClientMsg};
-use zellij_utils::nested_session;
-use zellij_utils::nested_session::NestedSessionMessage;
+use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
+use {zellij_types::input::layout::Layout, zellij_types::input::layout::Run};
+use {
+    zellij_types::input::options::PaneFrameStyle,
+    zellij_types::input::options::DEFAULT_AGENT_PANE_MIN_COLUMNS,
+    zellij_types::input::options::DEFAULT_AGENT_PANE_MIN_ROWS,
+    zellij_types::input::options::DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+    zellij_types::input::options::DEFAULT_WORD_SEPARATORS,
+};
 
 fn apply_queued_agent_report(
     screen: &mut Screen,
-    report: &zellij_utils::agent::report::AgentReport,
+    report: &zellij_types::agent::report::AgentReport,
     accepted_at: std::time::Instant,
 ) -> Result<bool> {
-    use zellij_utils::agent::report::AgentReportState;
+    use zellij_types::agent::report::AgentReportState;
     let pane_id = report.pane_id.into();
     if screen.tab_containing_pane(pane_id).is_none() {
         return Ok(false);
     }
-    let mut trace = report.diagnostics();
+    let mut trace = zellij_runtime::agent::report::report_diagnostics(&report);
     trace.session = screen.session_name.clone();
     trace.record("screen_queue", accepted_at.elapsed(), "ok");
     let started = std::time::Instant::now();
@@ -81,7 +90,7 @@ fn apply_queued_agent_report(
             .send_to_plugin(PluginInstruction::Update(vec![(
                 None,
                 None,
-                zellij_utils::data::Event::AgentEvent(event.clone()),
+                zellij_types::data::Event::AgentEvent(event.clone()),
             )]))
     } else {
         Ok(())
@@ -4059,10 +4068,11 @@ pub(crate) fn screen_thread_main(
                 let tab_infos = screen.generate_and_report_tab_state()?;
 
                 #[cfg(not(test))]
-                let (available_layouts, _layout_errors) = Layout::list_available_layouts(
-                    screen.layout_dir.clone(),
-                    &screen.default_layout_name,
-                );
+                let (available_layouts, _layout_errors) =
+                    zellij_config::layout::list_available_layouts(
+                        screen.layout_dir.clone(),
+                        &screen.default_layout_name,
+                    );
                 #[cfg(test)]
                 let available_layouts = vec![];
 

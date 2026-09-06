@@ -15,15 +15,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use zellij_runtime::common_path::common_path_all;
 use zellij_types::internal_ids::{PluginId, TerminalId};
 use zellij_types::pane_size::PaneGeom;
-use zellij_utils::{
-    data::{LayoutMetadata, PaneMetadata, TabMetadata},
-    input::command::RunCommand,
-    input::layout::{Layout, Run, RunPlugin, RunPluginOrAlias},
-    input::plugins::PluginAliases,
-    session_serialization::{
-        extract_command_and_args, extract_edit_and_line_number, extract_plugin_and_config,
-        GlobalLayoutManifest, PaneLayoutManifest, TabLayoutManifest,
-    },
+use {
+    zellij_session::session_serialization::extract_command_and_args,
+    zellij_session::session_serialization::extract_edit_and_line_number,
+    zellij_session::session_serialization::extract_plugin_and_config,
+    zellij_types::data::LayoutMetadata, zellij_types::data::PaneMetadata,
+    zellij_types::data::TabMetadata, zellij_types::input::command::RunCommand,
+    zellij_types::input::layout::Layout, zellij_types::input::layout::Run,
+    zellij_types::input::layout::RunPlugin, zellij_types::input::layout::RunPluginOrAlias,
+    zellij_types::input::plugins::PluginAliases,
+    zellij_types::session_manifest::GlobalLayoutManifest,
+    zellij_types::session_manifest::PaneLayoutManifest,
+    zellij_types::session_manifest::TabLayoutManifest,
 };
 
 #[derive(Default, Debug, Clone)]

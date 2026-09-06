@@ -19,7 +19,7 @@ use zellij_runtime::errors::prelude::*;
 use zellij_types::pane_size::{Offset, PaneGeom, Viewport};
 use zellij_types::position::Position;
 use zellij_types::style::Style;
-use zellij_utils::data::{client_id_to_colors, PaletteColor};
+use {zellij_types::data::client_id_to_colors, zellij_types::data::PaletteColor};
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 

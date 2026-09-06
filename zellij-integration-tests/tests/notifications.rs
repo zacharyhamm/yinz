@@ -1,10 +1,10 @@
 #![cfg(unix)]
 
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{
     claim_first_terminal_and_wait_for_prompt, col, keys, start_zellij, TestRunner, TestSession,
     TERMINAL_SIZE,
 };
-use zellij_utils::cli::CliAction;
 
 const TOAST_TOP_LEFT_CORNER: &str = "╭";
 const TOAST_BOTTOM_LEFT_CORNER: &str = "╰";

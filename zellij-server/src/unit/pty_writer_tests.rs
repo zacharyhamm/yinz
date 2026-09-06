@@ -9,8 +9,11 @@ use std::sync::{Arc, Mutex};
 use zellij_runtime::channels::SenderWithContext;
 use zellij_types::style::Palette;
 
-use zellij_utils::input::command::RunCommand;
-use zellij_utils::ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg};
+use zellij_types::input::command::RunCommand;
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcReceiverWithContext,
+    zellij_ipc::ipc::ServerToClientMsg,
+};
 
 use crate::ClientId;
 
@@ -95,7 +98,7 @@ impl ServerOsApi for MockServerOsApi {
     }
     fn spawn_terminal(
         &self,
-        _terminal_action: zellij_utils::input::command::TerminalAction,
+        _terminal_action: zellij_types::input::command::TerminalAction,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
     ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
@@ -546,9 +549,9 @@ fn pty_writer_records_successful_resize() {
         }
         fn spawn_terminal(
             &self,
-            _a: zellij_utils::input::command::TerminalAction,
+            _a: zellij_types::input::command::TerminalAction,
             _b: Box<
-                dyn Fn(crate::panes::PaneId, Option<i32>, zellij_utils::input::command::RunCommand)
+                dyn Fn(crate::panes::PaneId, Option<i32>, zellij_types::input::command::RunCommand)
                     + Send,
             >,
             _c: Option<std::path::PathBuf>,
@@ -579,7 +582,7 @@ fn pty_writer_records_successful_resize() {
         fn send_to_client(
             &self,
             _id: crate::ClientId,
-            _msg: zellij_utils::ipc::ServerToClientMsg,
+            _msg: zellij_ipc::ipc::ServerToClientMsg,
         ) -> anyhow::Result<()> {
             Ok(())
         }
@@ -588,7 +591,7 @@ fn pty_writer_records_successful_resize() {
             _id: crate::ClientId,
             _s: interprocess::local_socket::Stream,
         ) -> anyhow::Result<
-            zellij_utils::ipc::IpcReceiverWithContext<zellij_utils::ipc::ClientToServerMsg>,
+            zellij_ipc::ipc::IpcReceiverWithContext<zellij_ipc::ipc::ClientToServerMsg>,
         > {
             unimplemented!()
         }
@@ -607,9 +610,9 @@ fn pty_writer_records_successful_resize() {
         fn re_run_command_in_terminal(
             &self,
             _id: TerminalId,
-            _c: zellij_utils::input::command::RunCommand,
+            _c: zellij_types::input::command::RunCommand,
             _q: Box<
-                dyn Fn(crate::panes::PaneId, Option<i32>, zellij_utils::input::command::RunCommand)
+                dyn Fn(crate::panes::PaneId, Option<i32>, zellij_types::input::command::RunCommand)
                     + Send,
             >,
         ) -> anyhow::Result<(Box<dyn crate::os_input_output::AsyncReader>, Option<u32>)> {

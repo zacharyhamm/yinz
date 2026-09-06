@@ -20,16 +20,16 @@ use serde_json::{json, Map, Value};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use zellij_utils::cli::{Hocus, HocusHookAgent, HocusHooks};
+use {zellij_cli::args::Hocus, zellij_cli::args::HocusHookAgent, zellij_cli::args::HocusHooks};
 
-/// The events, the timeout and the handler shape live in `zellij_utils::agent`, so that this
+/// The events, the timeout and the handler shape live in `zellij_types::agent`, so that this
 /// installer and a spawned Claude Code pane's inline `--settings` cannot wire different events.
 ///
 /// `pub(crate)` on the Claude table because the CLI tests count against it rather than against
 /// a literal: it has grown once already, and a number here goes stale silently the next time
 /// it does.
-pub(crate) const CLAUDE_EVENTS: &[&str] = zellij_utils::agent::CLAUDE_HOOK_EVENTS;
-const CODEX_EVENTS: &[&str] = zellij_utils::agent::CODEX_HOOK_EVENTS;
+pub(crate) const CLAUDE_EVENTS: &[&str] = zellij_types::agent::CLAUDE_HOOK_EVENTS;
+const CODEX_EVENTS: &[&str] = zellij_types::agent::CODEX_HOOK_EVENTS;
 
 /// Bumped whenever [`script`] changes, or whenever the set of events wired around it does, so
 /// `status` can say the installed copy is old. v4 was the seventeen-event table; v5 is the one
@@ -230,7 +230,7 @@ exit 0
 
 /// One handler entry, as both agents' settings spell it.
 fn handler(command: &str, timeout: u64) -> Value {
-    zellij_utils::agent::hook_handler(command, timeout)
+    zellij_types::agent::hook_handler(command, timeout)
 }
 
 /// Whether one handler entry is one we wrote.
@@ -253,7 +253,7 @@ pub(crate) fn install_into(settings: Value, command: &str) -> Result<Value> {
         settings,
         command,
         CLAUDE_EVENTS,
-        zellij_utils::agent::CLAUDE_HOOK_TIMEOUT_SECONDS,
+        zellij_types::agent::CLAUDE_HOOK_TIMEOUT_SECONDS,
     )
 }
 
@@ -472,8 +472,8 @@ impl Files {
 
     fn timeout(&self) -> u64 {
         match self.agent {
-            HocusHookAgent::Claude => zellij_utils::agent::CLAUDE_HOOK_TIMEOUT_SECONDS,
-            HocusHookAgent::Codex => zellij_utils::agent::CODEX_HOOK_TIMEOUT_SECONDS,
+            HocusHookAgent::Claude => zellij_types::agent::CLAUDE_HOOK_TIMEOUT_SECONDS,
+            HocusHookAgent::Codex => zellij_types::agent::CODEX_HOOK_TIMEOUT_SECONDS,
             HocusHookAgent::All => unreachable!("all is expanded before resolving files"),
         }
     }

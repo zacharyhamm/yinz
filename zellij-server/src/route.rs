@@ -28,16 +28,16 @@ use uuid::Uuid;
 use zellij_runtime::{channels::SenderWithContext, envs, errors::prelude::*};
 use zellij_types::geometry::{Direction, ResizeStrategy};
 use zellij_types::keys::{BareKey, KeyModifier};
-use zellij_utils::{
-    data::{
-        ConnectToSession, Event, InputMode, ListPanesResponse, ListTabsResponse, NewPanePlacement,
-        PaneListEntry, TabInfo, UnblockCondition,
-    },
-    input::{
-        actions::{Action, SearchDirection, SearchOption},
-        command::TerminalAction,
-    },
-    ipc::{ClientToServerMsg, ExitReason, IpcReceiverWithContext, IpcRecv, ServerToClientMsg},
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ExitReason,
+    zellij_ipc::ipc::IpcReceiverWithContext, zellij_ipc::ipc::IpcRecv,
+    zellij_ipc::ipc::ServerToClientMsg, zellij_types::data::ConnectToSession,
+    zellij_types::data::Event, zellij_types::data::InputMode,
+    zellij_types::data::ListPanesResponse, zellij_types::data::ListTabsResponse,
+    zellij_types::data::NewPanePlacement, zellij_types::data::PaneListEntry,
+    zellij_types::data::TabInfo, zellij_types::data::UnblockCondition,
+    zellij_types::input::actions::Action, zellij_types::input::actions::SearchDirection,
+    zellij_types::input::actions::SearchOption, zellij_types::input::command::TerminalAction,
 };
 
 use crate::ClientId;
@@ -2526,10 +2526,10 @@ macro_rules! send_to_screen_or_retry_queue {
 
 fn enqueue_agent_report(
     senders: Option<&ThreadSenders>,
-    report: zellij_utils::agent::report::AgentReport,
+    report: zellij_types::agent::report::AgentReport,
     accepted_at: std::time::Instant,
 ) -> Result<()> {
-    report.validate()?;
+    zellij_runtime::agent::report::validate_report(&report)?;
     // Use the actual unbounded sender: even test senders must not turn a closed queue into
     // a successful acceptance via `should_silently_fail`.
     senders
@@ -2543,11 +2543,11 @@ fn enqueue_agent_report(
 
 fn accept_agent_report(
     senders: Option<&ThreadSenders>,
-    report: zellij_utils::agent::report::AgentReport,
+    report: zellij_types::agent::report::AgentReport,
     reply: impl FnOnce(ServerToClientMsg) -> Result<()>,
 ) -> Result<()> {
     let accepted_at = std::time::Instant::now();
-    let trace = report.diagnostics();
+    let trace = zellij_runtime::agent::report::report_diagnostics(&report);
     if trace.enabled {
         trace.record("acceptance", Duration::ZERO, "enter");
     }
@@ -3205,8 +3205,8 @@ pub(crate) fn route_thread_main(
                             }
                         },
                         ClientToServerMsg::NestedSessionFrameFromHost { ref payload_bytes } => {
-                            match zellij_utils::nested_session::decode_payload(payload_bytes) {
-                                Some(message @ zellij_utils::nested_session::NestedSessionMessage::AnnounceAck { .. }) => {
+                            match zellij_ipc::nested_session::decode_payload(payload_bytes) {
+                                Some(message @ zellij_ipc::nested_session::NestedSessionMessage::AnnounceAck { .. }) => {
                                     let _ = send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
@@ -3214,7 +3214,7 @@ pub(crate) fn route_thread_main(
                                         retry_queue
                                     );
                                 },
-                                Some(message @ zellij_utils::nested_session::NestedSessionMessage::FocusGained { .. }) => {
+                                Some(message @ zellij_ipc::nested_session::NestedSessionMessage::FocusGained { .. }) => {
                                     let _ = send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
@@ -3222,7 +3222,7 @@ pub(crate) fn route_thread_main(
                                         retry_queue
                                     );
                                 },
-                                Some(message @ zellij_utils::nested_session::NestedSessionMessage::FocusLost) => {
+                                Some(message @ zellij_ipc::nested_session::NestedSessionMessage::FocusLost) => {
                                     let _ = send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
@@ -3230,7 +3230,7 @@ pub(crate) fn route_thread_main(
                                         retry_queue
                                     );
                                 },
-                                Some(message @ zellij_utils::nested_session::NestedSessionMessage::ShortcutUpdate { .. }) => {
+                                Some(message @ zellij_ipc::nested_session::NestedSessionMessage::ShortcutUpdate { .. }) => {
                                     let _ = send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
@@ -3238,7 +3238,7 @@ pub(crate) fn route_thread_main(
                                         retry_queue
                                     );
                                 },
-                                Some(message @ zellij_utils::nested_session::NestedSessionMessage::FullscreenState { .. }) => {
+                                Some(message @ zellij_ipc::nested_session::NestedSessionMessage::FullscreenState { .. }) => {
                                     let _ = send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
@@ -3246,7 +3246,7 @@ pub(crate) fn route_thread_main(
                                         retry_queue
                                     );
                                 },
-                                Some(message @ zellij_utils::nested_session::NestedSessionMessage::AncestryUpdate { .. }) => {
+                                Some(message @ zellij_ipc::nested_session::NestedSessionMessage::AncestryUpdate { .. }) => {
                                     let _ = send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
@@ -3514,7 +3514,7 @@ fn enrich_pane_with_running_command(
 ) -> Result<()> {
     use crossbeam::channel::unbounded;
     use std::time::Duration;
-    use zellij_utils::data::GetPaneRunningCommandResponse;
+    use zellij_types::data::GetPaneRunningCommandResponse;
 
     let (cmd_sender, cmd_receiver) = unbounded();
     senders.send_to_pty(PtyInstruction::GetPaneRunningCommand {
@@ -3538,7 +3538,7 @@ fn enrich_pane_with_cwd(
 ) -> Result<()> {
     use crossbeam::channel::unbounded;
     use std::time::Duration;
-    use zellij_utils::data::GetPaneCwdResponse;
+    use zellij_types::data::GetPaneCwdResponse;
 
     let (cwd_sender, cwd_receiver) = unbounded();
     senders.send_to_pty(PtyInstruction::GetPaneCwd {
@@ -3664,7 +3664,7 @@ fn build_table_row(
     row.join("  ")
 }
 
-fn format_pane_id(pane_info: &zellij_utils::data::PaneInfo) -> String {
+fn format_pane_id(pane_info: &zellij_types::data::PaneInfo) -> String {
     if pane_info.is_plugin {
         format!("plugin_{}", pane_info.id)
     } else {
@@ -3672,7 +3672,7 @@ fn format_pane_id(pane_info: &zellij_utils::data::PaneInfo) -> String {
     }
 }
 
-fn format_pane_type(pane_info: &zellij_utils::data::PaneInfo) -> String {
+fn format_pane_type(pane_info: &zellij_types::data::PaneInfo) -> String {
     if pane_info.is_plugin {
         "plugin".to_string()
     } else {
@@ -3868,7 +3868,9 @@ mod tests {
 
     #[test]
     fn reports_are_accepted_while_consumers_are_paused_and_rejected_for_closed_queues() {
-        use zellij_utils::agent::report::{AgentReport, AgentReportState};
+        use {
+            zellij_types::agent::report::AgentReport, zellij_types::agent::report::AgentReportState,
+        };
         let (tx, rx) = zellij_runtime::channels::unbounded();
         let senders = ThreadSenders {
             to_screen: Some(SenderWithContext::new(tx)),
@@ -3876,7 +3878,7 @@ mod tests {
         };
         let report = AgentReport {
             report_id: "00000000-0000-4000-8000-000000000001".into(),
-            pane_id: zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(
+            pane_id: zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(
                 1,
             )),
             state: AgentReportState::Clear,
@@ -3972,7 +3974,7 @@ mod tests {
     #[test]
     fn a_suppressed_action_tells_the_plugins_nothing_about_the_input() {
         let route = |leaves_clipboard_message| {
-            let (tx, rx) = zellij_utils::channels::unbounded();
+            let (tx, rx) = zellij_runtime::channels::unbounded();
             let senders = ThreadSenders {
                 to_plugin: Some(SenderWithContext::new(tx)),
                 should_silently_fail: true,

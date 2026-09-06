@@ -18,14 +18,17 @@
 //! what an unload reports, and `plugin_to_queue` is the reverse index that makes the unload hook
 //! a single lookup rather than a scan of every queue.
 //!
-//! [`Event::QueueJobStarted`]: zellij_utils::data::Event::QueueJobStarted
-//! [`Event::QueueJobFinished`]: zellij_utils::data::Event::QueueJobFinished
+//! [`Event::QueueJobStarted`]: zellij_types::data::Event::QueueJobStarted
+//! [`Event::QueueJobFinished`]: zellij_types::data::Event::QueueJobFinished
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 
-use zellij_utils::data::{QueueJobInfo, QueueJobOutcome, QueueJobState, QueueSnapshot};
-use zellij_utils::input::layout::RunPluginOrAlias;
+use zellij_types::input::layout::RunPluginOrAlias;
+use {
+    zellij_types::data::QueueJobInfo, zellij_types::data::QueueJobOutcome,
+    zellij_types::data::QueueJobState, zellij_types::data::QueueSnapshot,
+};
 
 use super::PluginId;
 use crate::ClientId;

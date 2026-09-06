@@ -1,12 +1,12 @@
 #![cfg(unix)]
 
 use insta::assert_snapshot;
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{
     assert_same_rendered_grid, claim_first_terminal_and_wait_for_prompt, col, keys, normalized,
     split_right_and_wait_for_prompt, start_zellij, Size, PROMPT, TERMINAL_SIZE,
 };
-use zellij_utils::cli::CliAction;
-use zellij_utils::input::options::PaneFrameStyle;
+use zellij_types::input::options::PaneFrameStyle;
 
 const FULL_FRAME_CORNER: &str = "┌";
 

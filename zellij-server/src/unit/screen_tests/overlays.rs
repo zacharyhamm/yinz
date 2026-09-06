@@ -3,17 +3,20 @@ use crate::panes::OverlayCarry;
 use std::collections::BTreeMap;
 use zellij_types::geometry::{Resize, ResizeStrategy};
 use zellij_types::internal_ids::PluginId;
-use zellij_utils::data::{OverlayKind, OverlayPlacement};
+use {zellij_types::data::OverlayKind, zellij_types::data::OverlayPlacement};
 
 #[test]
 fn modal_plugin_configuration_requests_overlay() {
-    let mut modal = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
+    let mut modal =
+        zellij_runtime::plugin_location::run_plugin_from_url("zellij:quit-confirmation")
+            .expect("test plugin");
     modal.configuration.insert("modal", "true");
     let modal = RunPluginOrAlias::RunPlugin(modal);
     assert!(modal.requests_overlay());
     assert!(modal.requests_modal());
 
-    let plain = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
+    let plain = zellij_runtime::plugin_location::run_plugin_from_url("zellij:quit-confirmation")
+        .expect("test plugin");
     let plain = RunPluginOrAlias::RunPlugin(plain);
     assert!(!plain.requests_overlay());
     assert!(!plain.requests_modal());
@@ -21,7 +24,9 @@ fn modal_plugin_configuration_requests_overlay() {
 
 #[test]
 fn resolved_modal_plugin_alias_requests_overlay() {
-    let mut modal = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
+    let mut modal =
+        zellij_runtime::plugin_location::run_plugin_from_url("zellij:quit-confirmation")
+            .expect("test plugin");
     modal.configuration.insert("modal", "true");
     let alias = PluginAlias {
         name: "quit".to_owned(),
@@ -154,9 +159,13 @@ fn an_overlay_that_awaits_placement_is_not_painted_until_it_is_placed() {
     ]
     .into_iter()
     .collect();
-    let run_plugin =
-        RunPluginOrAlias::from_url("file:/path/to/fake/popup", &Some(configuration), None, None)
-            .unwrap();
+    let run_plugin = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "file:/path/to/fake/popup",
+        &Some(configuration),
+        None,
+        None,
+    )
+    .unwrap();
     let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
         let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
         SenderWithContext::new(plugin_tx)
@@ -229,7 +238,7 @@ fn open_overlay_plugin(
     tab_id: usize,
     coordinates: FloatingPaneCoordinates,
 ) -> (RunPluginOrAlias, PaneId) {
-    let run_plugin = RunPluginOrAlias::from_url(
+    let run_plugin = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
         &format!("file:/path/to/fake/popup-{plugin_id}"),
         &None,
         None,
@@ -503,9 +512,13 @@ fn a_new_pane_opened_over_a_modal_is_tiled() {
 fn add_modal_plugin_overlay(screen: &mut Screen, plugin_id: u32) -> PaneId {
     let mut configuration = BTreeMap::new();
     configuration.insert("modal".to_owned(), "true".to_owned());
-    let run_plugin =
-        RunPluginOrAlias::from_url("file:/path/to/fake/modal", &Some(configuration), None, None)
-            .unwrap();
+    let run_plugin = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "file:/path/to/fake/modal",
+        &Some(configuration),
+        None,
+        None,
+    )
+    .unwrap();
     let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
         let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
         SenderWithContext::new(plugin_tx)
@@ -858,8 +871,13 @@ fn modal_plugin_run() -> Run {
     let mut configuration = BTreeMap::new();
     configuration.insert("modal".to_owned(), "true".to_owned());
     Run::Plugin(
-        RunPluginOrAlias::from_url("file:/path/to/fake/modal", &Some(configuration), None, None)
-            .unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "file:/path/to/fake/modal",
+            &Some(configuration),
+            None,
+            None,
+        )
+        .unwrap(),
     )
 }
 
@@ -1503,7 +1521,7 @@ fn an_overlay_placement_without_coordinates_is_still_an_overlay() {
 /// overlay placement rather than as a coordinates flag a caller could drop.
 #[test]
 fn the_cli_modal_and_overlay_flags_both_produce_an_overlay_placement() {
-    use zellij_utils::data::{NewPanePlacement, OverlayKind};
+    use {zellij_types::data::NewPanePlacement, zellij_types::data::OverlayKind};
 
     let modal =
         NewPanePlacement::floating_or_overlay(None, None, None, None, None, None, None, Some(true));
@@ -1545,9 +1563,11 @@ fn the_cli_modal_and_overlay_flags_both_produce_an_overlay_placement() {
 /// placement. This is the only place that spelling is understood.
 #[test]
 fn plugin_configuration_keys_resolve_to_an_overlay_placement() {
-    use zellij_utils::data::OverlayKind;
+    use zellij_types::data::OverlayKind;
 
-    let mut modal = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
+    let mut modal =
+        zellij_runtime::plugin_location::run_plugin_from_url("zellij:quit-confirmation")
+            .expect("test plugin");
     modal.configuration.insert("modal", "true");
     let modal = RunPluginOrAlias::RunPlugin(modal);
     assert_eq!(
@@ -1555,7 +1575,9 @@ fn plugin_configuration_keys_resolve_to_an_overlay_placement() {
         Some(OverlayKind::Modal)
     );
 
-    let mut dismissible = RunPlugin::from_url("zellij:file-finder").expect("test plugin");
+    let mut dismissible =
+        zellij_runtime::plugin_location::run_plugin_from_url("zellij:file-finder")
+            .expect("test plugin");
     dismissible.configuration.insert("overlay", "true");
     let dismissible = RunPluginOrAlias::RunPlugin(dismissible);
     assert_eq!(
@@ -1565,7 +1587,8 @@ fn plugin_configuration_keys_resolve_to_an_overlay_placement() {
         Some(OverlayKind::Dismissible)
     );
 
-    let plain = RunPlugin::from_url("zellij:file-finder").expect("test plugin");
+    let plain = zellij_runtime::plugin_location::run_plugin_from_url("zellij:file-finder")
+        .expect("test plugin");
     assert_eq!(
         RunPluginOrAlias::RunPlugin(plain).overlay_placement(),
         None,
@@ -3950,7 +3973,7 @@ fn focus_last_pane_with_no_previous_pane_leaves_a_dismissible_overlay_holding_th
 /// refuses the hand-off too - this is the first coverage of the FocusHost direction path at all.
 #[test]
 fn a_guest_hand_back_under_a_modal_does_not_bubble_to_the_host() {
-    use zellij_utils::nested_session::NestedSessionMessage;
+    use zellij_ipc::nested_session::NestedSessionMessage;
 
     let size = Size { cols: 80, rows: 20 };
     let mut screen = create_non_mirrored_screen(size);
@@ -4810,8 +4833,13 @@ fn a_newly_created_overlay_plugin_takes_the_keyboard() {
     new_tab(&mut screen, 1, 0);
 
     let popup_id = PaneId::Plugin(crate::PluginId(2));
-    let run_plugin =
-        RunPluginOrAlias::from_url("file:/path/to/fake/popup", &None, None, None).unwrap();
+    let run_plugin = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "file:/path/to/fake/popup",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
     screen
         .get_active_tab_mut(crate::ClientId(1))
         .unwrap()
@@ -5029,7 +5057,7 @@ fn panes_torn_down_by_pty(
 /// Collect every pane the plugins were told had closed.
 fn panes_reported_closed_to_plugins(
     receiver: &channels::Receiver<(PluginInstruction, ErrorContext)>,
-) -> Vec<zellij_utils::data::PaneId> {
+) -> Vec<zellij_types::data::PaneId> {
     std::iter::from_fn(|| receiver.try_recv().ok())
         .flat_map(|(instruction, _)| match instruction {
             PluginInstruction::Update(updates) => updates

@@ -6,7 +6,7 @@
 
 use super::*;
 use std::collections::BTreeMap;
-use zellij_utils::data::OriginatingPlugin;
+use zellij_types::data::OriginatingPlugin;
 
 fn step_command(cmd: &str, step: &str) -> RunCommand {
     RunCommand {

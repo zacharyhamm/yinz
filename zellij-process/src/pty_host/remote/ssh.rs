@@ -31,7 +31,7 @@ use zellij_types::internal_ids::TerminalId;
 
 use serde::Deserialize;
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::{consts::ZELLIJ_SOCK_DIR, input::command::RunCommand};
+use {zellij_runtime::consts::ZELLIJ_SOCK_DIR, zellij_types::input::command::RunCommand};
 
 use super::conn::{Reconnected, Reconnector, RemoteConn};
 use super::env;
@@ -760,7 +760,7 @@ fn bootstrap_with_options(host: &str, options: &SshOptions) -> Result<BrokerEndp
              versions on both machines.",
             endpoint.protocol_version,
             endpoint.zellij_version,
-            zellij_utils::consts::VERSION,
+            zellij_runtime::consts::VERSION,
         ));
     }
     Ok(endpoint)
@@ -932,7 +932,7 @@ fn say_hello(write_half: &mut UnixStream, read_half: &mut UnixStream, host: &str
         write_half,
         &ServerToBrokerMsg::Hello {
             protocol_version: REMOTE_PROTOCOL_VERSION,
-            zellij_version: zellij_utils::consts::VERSION.to_owned(),
+            zellij_version: zellij_runtime::consts::VERSION.to_owned(),
         },
     )?;
     match read_broker_msg(read_half)? {

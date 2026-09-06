@@ -15,10 +15,12 @@ const PLUGIN_INPUT_DIRS: &[&str] = &[
     "zellij-tile/src",
     "zellij-tile-markdown/src",
     "zellij-tile-utils/src",
-    "zellij-utils/src",
+    "zellij-config/src",
+    "zellij-config/assets",
+    "zellij-plugin-api/src",
+    "zellij-plugin-api/assets",
     "zellij-types/src",
     "zellij-runtime/src",
-    "zellij-utils/assets",
 ];
 
 const PLUGIN_INPUT_FILES: &[&str] = &[
@@ -30,7 +32,8 @@ const PLUGIN_INPUT_FILES: &[&str] = &[
     "zellij-tile/Cargo.toml",
     "zellij-tile-markdown/Cargo.toml",
     "zellij-tile-utils/Cargo.toml",
-    "zellij-utils/Cargo.toml",
+    "zellij-config/Cargo.toml",
+    "zellij-plugin-api/Cargo.toml",
     "zellij-types/Cargo.toml",
     "zellij-runtime/Cargo.toml",
 ];
@@ -53,7 +56,7 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
     }
     let profile = profile_of(&flags);
 
-    // zellij-utils requires protobuf definition files to be present. Usually these are
+    // zellij-plugin-api requires protobuf definition files to be present. Usually these are
     // auto-generated with `build.rs`-files, but this is currently broken for us.
     // See [this PR][1] for details.
     //
@@ -289,7 +292,7 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
         } else {
             let name = path.file_name().and_then(|name| name.to_str());
             // `.wasm` is build output, never an input: a stale, gitignored plugin left in
-            // `zellij-utils/assets/plugins` by an older checkout must not perturb the hash.
+            // `zellij-config/assets/plugins` by an older checkout must not perturb the hash.
             if !matches!(
                 path.extension().and_then(|extension| extension.to_str()),
                 Some("md" | "snap" | "wasm")
@@ -342,7 +345,7 @@ pub fn ensure_plugins(sh: &Shell, profile: &str) -> anyhow::Result<()> {
 }
 
 /// Build all plugins in a single invocation so Cargo can unify transitive dependency features
-/// across all of them and compile shared crates (e.g. zellij-utils) only once.
+/// across all of them and compile shared crates (e.g. zellij-plugin-api) only once.
 fn build_plugins(
     sh: &Shell,
     profile: &str,
@@ -414,19 +417,22 @@ pub fn proto(sh: &Shell) -> anyhow::Result<()> {
 }
 
 fn run_proto_codegen(sh: &Shell, force: bool) {
-    let zellij_utils_basedir = crate::project_root().join("zellij-utils");
-    let _pd = sh.push_dir(&zellij_utils_basedir);
+    let _pd = sh.push_dir(crate::project_root());
 
     let specs: &[(&str, &str, &str)] = &[
-        ("assets/prost", "src/plugin_api", "generated_plugin_api.rs"),
         (
-            "assets/prost_ipc",
-            "src/client_server_contract",
+            "zellij-plugin-api/assets",
+            "zellij-plugin-api/src",
+            "generated_plugin_api.rs",
+        ),
+        (
+            "zellij-ipc/assets/prost_ipc",
+            "zellij-ipc/src/client_server_contract",
             "generated_client_server_api.rs",
         ),
         (
-            "assets/prost_nested_session",
-            "src/nested_session_contract",
+            "zellij-ipc/assets/prost_nested_session",
+            "zellij-ipc/src/nested_session_contract",
             "generated_nested_session_api.rs",
         ),
     ];
@@ -526,7 +532,7 @@ mod tests {
         assert_ne!(original, changed);
 
         // A stale plugin binary lying around is output, not input.
-        let stray_wasm = root.join("zellij-utils/assets/plugins/tab-bar.wasm");
+        let stray_wasm = root.join("zellij-config/assets/plugins/tab-bar.wasm");
         fs::create_dir_all(stray_wasm.parent().unwrap()).unwrap();
         fs::write(&stray_wasm, "wasm").unwrap();
         assert_eq!(changed, hash_plugin_files(&root).unwrap().finalize());

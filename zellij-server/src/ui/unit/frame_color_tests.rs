@@ -6,7 +6,7 @@
 //! precedence somebody else already has - is wrong in a way no compiler would catch.
 
 use super::*;
-use zellij_utils::data::{Palette, Styling};
+use zellij_types::data::{Palette, Styling};
 
 const CLIENT: ClientId = ClientId(1);
 

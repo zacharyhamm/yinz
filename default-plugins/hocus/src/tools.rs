@@ -354,7 +354,7 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
 /// approving the write can grant them and the plugin never prompts in its own pane - where the
 /// model, driving the write-reload-fix loop, cannot see or answer it.
 ///
-/// Read lexically by `zellij_utils::plugin_authoring`, which `zellij plugins write` reads them
+/// Read lexically by `zellij_plugin_api::authoring`, which `zellij plugins write` reads them
 /// with too: one parser, so a permission granted here and one granted from a shell cannot come
 /// out differently. A name zellij does not know is dropped rather than refused - the plugin's
 /// own call reports it - but [`lint`] says so before the write, since a dropped name is a

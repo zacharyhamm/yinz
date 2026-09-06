@@ -754,9 +754,20 @@ fn test_apply_layout_with_plugin_panes() {
     let mut new_plugin_ids = HashMap::new();
 
     // Create plugin aliases that match the layout
-    let tab_bar_plugin = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
-    let status_bar_plugin =
-        RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap();
+    let tab_bar_plugin = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "zellij:tab-bar",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
+    let status_bar_plugin = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "zellij:status-bar",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
 
     new_plugin_ids.insert(
         tab_bar_plugin,
@@ -868,10 +879,20 @@ fn test_apply_layout_with_mixed_plugin_and_terminal_panes() {
 
     let mut new_plugin_ids = HashMap::new();
 
-    let filebrowser_plugin =
-        RunPluginOrAlias::from_url("file:///path/to/filebrowser.wasm", &None, None, None).unwrap();
-    let compact_bar_plugin =
-        RunPluginOrAlias::from_url("zellij:compact-bar", &None, None, None).unwrap();
+    let filebrowser_plugin = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "file:///path/to/filebrowser.wasm",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
+    let compact_bar_plugin = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "zellij:compact-bar",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
 
     new_plugin_ids.insert(
         filebrowser_plugin,

@@ -25,7 +25,7 @@ use std::thread;
 use zellij_types::internal_ids::TerminalId;
 
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::consts::{VERSION, ZELLIJ_SOCK_DIR};
+use {zellij_runtime::consts::VERSION, zellij_runtime::consts::ZELLIJ_SOCK_DIR};
 
 use super::protocol::{
     self, BrokerToServerMsg, ChildSignal, Frame, ResumeRefusal, ServerToBrokerMsg,
@@ -347,7 +347,7 @@ impl ShellSource {
 /// crossed the wire at all. This is the order sshd effectively lands on, for
 /// the same reasons.
 pub(crate) fn resolve_default_shell(
-    cmd: &mut zellij_utils::input::command::RunCommand,
+    cmd: &mut zellij_types::input::command::RunCommand,
     source: &ShellSource,
 ) -> Option<String> {
     if !cmd.is_remote_default_shell() {
@@ -391,8 +391,8 @@ fn start_pane(
     host_bin: &std::path::Path,
     registry: &Arc<PaneRegistry>,
     wire: &Wire,
-    cmd: zellij_utils::input::command::RunCommand,
-    failover_cmd: Option<zellij_utils::input::command::RunCommand>,
+    cmd: zellij_types::input::command::RunCommand,
+    failover_cmd: Option<zellij_types::input::command::RunCommand>,
     initial_size: Option<WireWinsize>,
     carried_env: Vec<(String, String)>,
     terminal_id: TerminalId,
@@ -1037,10 +1037,10 @@ fn relay_agent_report(
     kind: String,
     json: String,
 ) -> bool {
-    let mut trace = zellij_utils::agent::report::ReportTrace::new(std::time::Instant::now());
+    let mut trace = zellij_runtime::agent::report::ReportTrace::new(std::time::Instant::now());
     trace.kind = kind.clone();
     trace.payload_bytes = json.len();
-    if let Ok(event) = serde_json::from_str::<zellij_utils::agent::HookEvent>(&json) {
+    if let Ok(event) = serde_json::from_str::<zellij_types::agent::HookEvent>(&json) {
         trace.event = event.hook_event_name;
     }
     trace.enter("relay_resolve");
@@ -1072,7 +1072,7 @@ fn valid_agent_kind(kind: &str) -> bool {
 /// channel, where it is trusted because it came over the transport rather
 /// than out of the pane's bytes.
 pub fn report_agent_hook(started: std::time::Instant) -> Result<()> {
-    let mut trace = zellij_utils::agent::report::ReportTrace::new(started);
+    let mut trace = zellij_runtime::agent::report::ReportTrace::new(started);
     let result = (|| {
         use std::io::Read;
 
@@ -1089,12 +1089,12 @@ pub fn report_agent_hook(started: std::time::Instant) -> Result<()> {
         })?;
         let mut json = Vec::new();
         std::io::stdin()
-            .take(zellij_utils::agent::HOOK_BROADCAST_MAX_BYTES as u64 + 1)
+            .take(zellij_types::agent::HOOK_BROADCAST_MAX_BYTES as u64 + 1)
             .read_to_end(&mut json)?;
-        if json.len() > zellij_utils::agent::HOOK_BROADCAST_MAX_BYTES {
+        if json.len() > zellij_types::agent::HOOK_BROADCAST_MAX_BYTES {
             return Err(anyhow!("agent hook event exceeds the 64 KiB limit"));
         }
-        let event = serde_json::from_slice::<zellij_utils::agent::HookEvent>(&json)
+        let event = serde_json::from_slice::<zellij_types::agent::HookEvent>(&json)
             .context("invalid agent hook JSON")?;
         trace.event = event.hook_event_name.clone();
         trace.payload_bytes = json.len();
@@ -1117,7 +1117,7 @@ pub fn report_agent_hook_to(
     kind: &str,
     json: &str,
 ) -> Result<()> {
-    let mut trace = zellij_utils::agent::report::ReportTrace::new(std::time::Instant::now());
+    let mut trace = zellij_runtime::agent::report::ReportTrace::new(std::time::Instant::now());
     trace.kind = kind.to_owned();
     trace.payload_bytes = json.len();
     let result = report_agent_hook_to_traced(socket, pane_token, kind, json, &mut trace);
@@ -1130,7 +1130,7 @@ fn report_agent_hook_to_traced(
     pane_token: &str,
     kind: &str,
     json: &str,
-    trace: &mut zellij_utils::agent::report::ReportTrace,
+    trace: &mut zellij_runtime::agent::report::ReportTrace,
 ) -> Result<()> {
     trace.enter("connect");
     let mut stream = UnixStream::connect(socket)

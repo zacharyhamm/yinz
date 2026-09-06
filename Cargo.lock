@@ -548,8 +548,9 @@ dependencies = [
 name = "configuration"
 version = "0.1.0"
 dependencies = [
+ "zellij-config",
  "zellij-tile",
- "zellij-utils",
+ "zellij-types",
 ]
 
 [[package]]
@@ -1434,6 +1435,8 @@ dependencies = [
  "serde",
  "serde_json",
  "unicode-width 0.2.2",
+ "zellij-plugin-api",
+ "zellij-runtime",
  "zellij-tile",
  "zellij-types",
 ]
@@ -1475,6 +1478,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "unicode-width 0.2.2",
+ "zellij-runtime",
  "zellij-storage",
  "zellij-tile",
  "zellij-tile-markdown",
@@ -1883,6 +1887,7 @@ dependencies = [
  "miette 7.6.0",
  "strip-ansi-escapes",
  "unicode-width 0.2.2",
+ "zellij-config",
  "zellij-tile",
 ]
 
@@ -3306,9 +3311,10 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "unicode-width 0.2.2",
+ "zellij-config",
  "zellij-tile",
  "zellij-tile-utils",
- "zellij-utils",
+ "zellij-types",
 ]
 
 [[package]]
@@ -4730,14 +4736,47 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "vte 0.15.0",
+ "zellij-cli",
  "zellij-client",
+ "zellij-config",
+ "zellij-ipc",
+ "zellij-plugin-api",
  "zellij-process",
  "zellij-runtime",
  "zellij-server",
+ "zellij-session",
  "zellij-storage",
  "zellij-test-support",
  "zellij-types",
- "zellij-utils",
+]
+
+[[package]]
+name = "zellij-cli"
+version = "0.45.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "clap_complete",
+ "hegeltest",
+ "humantime",
+ "insta",
+ "kdl",
+ "log",
+ "miette 7.6.0",
+ "serde",
+ "serde_json",
+ "strum",
+ "strum_macros",
+ "suggest",
+ "tempfile",
+ "url",
+ "uuid",
+ "zellij-config",
+ "zellij-ipc",
+ "zellij-plugin-api",
+ "zellij-runtime",
+ "zellij-session",
+ "zellij-types",
 ]
 
 [[package]]
@@ -4762,9 +4801,40 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+ "zellij-cli",
+ "zellij-config",
+ "zellij-ipc",
  "zellij-runtime",
  "zellij-types",
- "zellij-utils",
+]
+
+[[package]]
+name = "zellij-config"
+version = "0.45.0"
+dependencies = [
+ "anyhow",
+ "directories",
+ "expect-test",
+ "hegeltest",
+ "include_dir",
+ "insta",
+ "kdl",
+ "libc",
+ "log",
+ "miette 7.6.0",
+ "mlua",
+ "notify",
+ "serde",
+ "serde_json",
+ "shellexpand",
+ "strum",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "url",
+ "uuid",
+ "zellij-runtime",
+ "zellij-types",
 ]
 
 [[package]]
@@ -4783,11 +4853,51 @@ dependencies = [
  "tempfile",
  "tokio",
  "vte 0.15.0",
+ "zellij-cli",
  "zellij-client",
+ "zellij-config",
+ "zellij-ipc",
  "zellij-runtime",
  "zellij-server",
+ "zellij-session",
  "zellij-types",
- "zellij-utils",
+]
+
+[[package]]
+name = "zellij-ipc"
+version = "0.45.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "hegeltest",
+ "interprocess",
+ "libc",
+ "log",
+ "prost",
+ "serde",
+ "serde_json",
+ "strum",
+ "strum_macros",
+ "tempfile",
+ "tokio",
+ "zellij-plugin-api",
+ "zellij-runtime",
+ "zellij-types",
+]
+
+[[package]]
+name = "zellij-plugin-api"
+version = "0.45.0"
+dependencies = [
+ "hegeltest",
+ "log",
+ "prost",
+ "serde",
+ "serde_json",
+ "strum",
+ "strum_macros",
+ "zellij-runtime",
+ "zellij-types",
 ]
 
 [[package]]
@@ -4810,10 +4920,11 @@ dependencies = [
  "tempfile",
  "tokio",
  "uuid",
+ "zellij-config",
+ "zellij-ipc",
  "zellij-runtime",
  "zellij-test-support",
  "zellij-types",
- "zellij-utils",
 ]
 
 [[package]]
@@ -4830,12 +4941,15 @@ dependencies = [
  "hegeltest",
  "isahc",
  "lazy_static",
+ "libc",
  "log",
  "log4rs",
  "miette 7.6.0",
  "nix",
  "openssl-sys",
+ "percent-encoding",
  "serde",
+ "serde_json",
  "shellexpand",
  "tempfile",
  "thiserror 2.0.19",
@@ -4897,8 +5011,13 @@ dependencies = [
  "wasmi",
  "wasmi_core",
  "wasmi_wasi",
+ "zellij-cli",
+ "zellij-config",
+ "zellij-ipc",
+ "zellij-plugin-api",
  "zellij-process",
  "zellij-runtime",
+ "zellij-session",
  "zellij-storage",
  "zellij-terminal",
  "zellij-test-support",
@@ -4906,7 +5025,27 @@ dependencies = [
  "zellij-tile-markdown",
  "zellij-tile-utils",
  "zellij-types",
- "zellij-utils",
+]
+
+[[package]]
+name = "zellij-session"
+version = "0.45.0"
+dependencies = [
+ "anyhow",
+ "expect-test",
+ "hegeltest",
+ "insta",
+ "interprocess",
+ "kdl",
+ "log",
+ "names",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zellij-config",
+ "zellij-ipc",
+ "zellij-runtime",
+ "zellij-types",
 ]
 
 [[package]]
@@ -4949,9 +5088,9 @@ dependencies = [
  "tempfile",
  "unicode-width 0.2.2",
  "vte 0.15.0",
+ "zellij-ipc",
  "zellij-runtime",
  "zellij-types",
- "zellij-utils",
 ]
 
 [[package]]
@@ -4971,9 +5110,10 @@ dependencies = [
  "strum",
  "strum_macros",
  "unicode-width 0.2.2",
+ "zellij-config",
+ "zellij-plugin-api",
  "zellij-runtime",
  "zellij-types",
- "zellij-utils",
 ]
 
 [[package]]
@@ -4997,6 +5137,7 @@ dependencies = [
 name = "zellij-types"
 version = "0.45.0"
 dependencies = [
+ "base64",
  "colorsys",
  "hegeltest",
  "serde",
@@ -5006,49 +5147,7 @@ dependencies = [
  "strum_macros",
  "thiserror 2.0.19",
  "unicode-width 0.2.2",
-]
-
-[[package]]
-name = "zellij-utils"
-version = "0.45.0"
-dependencies = [
- "anyhow",
- "base64",
- "clap",
- "clap_complete",
- "colored",
- "directories",
- "expect-test",
- "hegeltest",
- "humantime",
- "include_dir",
- "insta",
- "interprocess",
- "kdl",
- "lazy_static",
- "libc",
- "log",
- "miette 7.6.0",
- "mlua",
- "names",
- "notify",
- "percent-encoding",
- "prost",
- "serde",
- "serde_json",
- "shellexpand",
- "strip-ansi-escapes",
- "strum",
- "strum_macros",
- "suggest",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "unicode-width 0.2.2",
  "url",
- "uuid",
- "zellij-runtime",
- "zellij-types",
 ]
 
 [[package]]

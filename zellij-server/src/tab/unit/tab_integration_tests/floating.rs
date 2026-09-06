@@ -1,5 +1,5 @@
 use super::*;
-use zellij_utils::input::layout::{Run, RunPlugin};
+use zellij_types::input::layout::Run;
 
 #[test]
 fn new_floating_pane() {
@@ -436,7 +436,9 @@ fn a_suppressed_modal_coming_back_out_leaves_no_phantom_in_the_floating_collecti
         .replace_to_plugin(SenderWithContext::new(plugin_sender));
     let modal_pane_id = PaneId::Plugin(crate::PluginId(2));
 
-    let mut modal = RunPlugin::from_url("zellij:quit-confirmation").expect("test plugin");
+    let mut modal =
+        zellij_runtime::plugin_location::run_plugin_from_url("zellij:quit-confirmation")
+            .expect("test plugin");
     modal.configuration.insert("modal", "true");
     let modal = Run::Plugin(RunPluginOrAlias::RunPlugin(modal));
 

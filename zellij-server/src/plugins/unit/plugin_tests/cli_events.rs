@@ -5,7 +5,10 @@ use crate::plugins::CLI_EVENTS_ONLY_TARGET;
 use crate::ClientId;
 use std::path::PathBuf;
 use zellij_test_support::{default_timeout, Watched};
-use zellij_utils::data::{InputMode, ModeInfo, PaneId, PaneManifest};
+use {
+    zellij_types::data::InputMode, zellij_types::data::ModeInfo, zellij_types::data::PaneId,
+    zellij_types::data::PaneManifest,
+};
 
 fn forwarded(log: &[ServerInstruction]) -> Vec<(ClientId, String, String)> {
     log.iter()

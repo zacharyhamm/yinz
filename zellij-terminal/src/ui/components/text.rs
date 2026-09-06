@@ -8,7 +8,7 @@ use super::{
 use crate::panes::terminal_character::RESET_STYLES;
 use crate::panes::{terminal_character::CharacterStyles, AnsiCode};
 use zellij_types::style::{Style, StyleDeclaration};
-use zellij_utils::{data::PaletteColor, shared::ansi_len};
+use {zellij_types::data::PaletteColor, zellij_types::text::ansi_len};
 
 use unicode_width::UnicodeWidthChar;
 use zellij_runtime::errors::prelude::*;

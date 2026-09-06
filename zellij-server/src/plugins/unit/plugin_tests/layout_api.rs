@@ -190,7 +190,7 @@ pub fn dump_layout_success_plugin_command() {
 /// The data store round trip across the wasm boundary: declare an entity, write to it, read it
 /// back, full-text search it, count it and watch it.
 ///
-/// The engine itself is covered by unit tests in `zellij-utils`; what this covers is the hop those
+/// The engine itself is covered by unit tests in `zellij-config`; what this covers is the hop those
 /// cannot reach — protobuf encode, the JSON-wrapped pipe, dispatch, and decode back in the guest.
 #[test]
 #[serial(plugin_tests)]

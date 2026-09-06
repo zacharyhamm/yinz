@@ -6,7 +6,7 @@ use crate::tab::Pane;
 use ansi_term::Colour::{Fixed, RGB};
 use std::collections::HashMap;
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::{data::PaletteColor, shared::colors};
+use {zellij_types::colors::default_colors as colors, zellij_types::data::PaletteColor};
 
 use std::fmt::{Display, Error, Formatter};
 pub mod boundary_type {

@@ -4,8 +4,8 @@ use wasmi::{Instance, Store};
 
 use prost::Message;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use zellij_plugin_api::message::ProtobufMessage;
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::plugin_api::message::ProtobufMessage;
 
 pub struct RunningWorker {
     pub instance: Instance,

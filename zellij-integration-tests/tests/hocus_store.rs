@@ -16,8 +16,8 @@
 //! this file used to guard was a reloaded store silently losing its
 //! subscribers, and a reload is still the moment most likely to break the tie.
 
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE};
-use zellij_utils::cli::CliAction;
 
 /// The store loaded in the background, as the real config has it.
 ///

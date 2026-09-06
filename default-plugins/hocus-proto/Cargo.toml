@@ -8,6 +8,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+zellij-runtime = { workspace = true }
 zellij-types = { workspace = true }
 zellij-tile = { path = "../../zellij-tile" }
 zellij-tile-markdown = { path = "../../zellij-tile-markdown" }

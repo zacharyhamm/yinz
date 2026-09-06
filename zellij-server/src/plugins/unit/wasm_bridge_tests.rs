@@ -7,7 +7,6 @@ use super::*;
 use std::collections::BTreeMap;
 use tempfile::tempdir;
 use zellij_runtime::channels::{self, SenderWithContext};
-use zellij_utils::input::layout::RunPluginOrAlias;
 
 /// Senders nothing listens to. The receivers are returned so the channels stay connected for as
 /// long as the bridge does.
@@ -71,7 +70,8 @@ impl TestBridge {
 }
 
 fn run_plugin() -> RunPlugin {
-    RunPlugin::from_url("file:/plugins/job.lua").expect("a valid plugin url")
+    zellij_runtime::plugin_location::run_plugin_from_url("file:/plugins/job.lua")
+        .expect("a valid plugin url")
 }
 
 /// Put `plugin_id` on `queue` as a running job, the way `pump_queue` would have.
@@ -80,7 +80,13 @@ fn launch_job(bridge: &mut WasmBridge, queue: &str, plugin_id: PluginId) {
     queues.enqueue(
         queue,
         (crate::PluginId(1), crate::ClientId(1)),
-        RunPluginOrAlias::from_url("file:/plugins/job.lua", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "file:/plugins/job.lua",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
         BTreeMap::new(),
         None,
     );

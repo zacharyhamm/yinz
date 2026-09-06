@@ -492,7 +492,13 @@ fn focus_follows_mouse_skips_stacked_one_liner_pane() {
             }
         }
     "#;
-    let layout = Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let layout = zellij_config::kdl::layout::from_kdl(
+        swap_layouts,
+        Some("file_name.kdl".into()),
+        None,
+        None,
+    )
+    .unwrap();
     let swap_tiled_layouts = layout.swap_tiled_layouts.clone();
     let swap_floating_layouts = layout.swap_floating_layouts.clone();
     let stacked_resize = true;

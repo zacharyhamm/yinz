@@ -29,9 +29,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use zellij_types::pane_size::{PaneGeom, Size, SizeInPixels, Viewport};
 use zellij_types::style::{Palette, Style};
-use zellij_utils::input::{
-    layout::{FloatingPaneLayout, Run, RunPluginOrAlias, TiledPaneLayout},
-    options::PaneFrameStyle,
+use {
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Run,
+    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::layout::TiledPaneLayout,
+    zellij_types::input::options::PaneFrameStyle,
 };
 
 pub struct LayoutApplier<'a> {

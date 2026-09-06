@@ -144,7 +144,7 @@ No feature flags are involved: the binary never carries plugins, so the plugins 
 installed into one of the lookup locations above. A plain `cargo install --path .` yields a
 binary with no builtins; use `cargo x install`.
 
-`protoc` is required to regenerate the protobuf definitions in `zellij-utils/assets/prost*`
+`protoc` is required to regenerate the protobuf definitions in `zellij-plugin-api/assets/ and zellij-ipc/assets/`
 via `cargo x proto`. The `vendored_curl` feature is optional and may be dropped with
 `--no-default-features`.
 

@@ -1,14 +1,18 @@
-use zellij_utils::consts::{
-    session_info_folder_for_session, ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR,
+use {
+    zellij_runtime::consts::session_info_folder_for_session,
+    zellij_runtime::consts::ZELLIJ_SESSION_INFO_CACHE_DIR, zellij_runtime::consts::ZELLIJ_SOCK_DIR,
 };
 
 use std::str::FromStr;
+use zellij_ipc::ipc::MAX_IPC_FRAME_LEN;
 use zellij_runtime::errors::prelude::*;
 use zellij_types::diagnostics::BackgroundJobContext;
 use zellij_types::diagnostics::ContextType;
-use zellij_utils::data::{Event, HttpVerb, LayoutInfo, SessionInfo};
-use zellij_utils::input::layout::RunPlugin;
-use zellij_utils::ipc::MAX_IPC_FRAME_LEN;
+use zellij_types::input::layout::RunPlugin;
+use {
+    zellij_types::data::Event, zellij_types::data::HttpVerb, zellij_types::data::LayoutInfo,
+    zellij_types::data::SessionInfo,
+};
 
 use futures_lite::io::AsyncReadExt;
 use isahc::prelude::*;
@@ -1329,7 +1333,7 @@ pub fn write_session_state_to_disk(
 ) -> Result<()> {
     zellij_runtime::session_checkpoint::write_checkpoint(
         &session_info_folder_for_session(&current_session_name),
-        &current_session_info.to_string(),
+        &zellij_session::metadata::session_info::to_string(&current_session_info),
         &current_session_layout,
     )
 }
@@ -1341,7 +1345,7 @@ pub fn scan_session_list(
     sock_dir: &Path,
     session_info_cache_dir: &Path,
 ) -> (BTreeMap<String, SessionInfo>, BTreeMap<String, Duration>) {
-    let mut session_infos_on_machine = zellij_utils::sessions::read_live_session_states(
+    let mut session_infos_on_machine = zellij_session::sessions::read_live_session_states(
         current_session_name,
         sock_dir,
         session_info_cache_dir,
@@ -1435,7 +1439,7 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
     use tempfile::tempdir;
-    use zellij_utils::data::SessionInfo;
+    use zellij_types::data::SessionInfo;
 
     fn make_socket(dir: &std::path::Path, name: &str) -> UnixListener {
         UnixListener::bind(dir.join(name)).expect("bind unix socket")
@@ -1444,7 +1448,11 @@ mod tests {
     fn write_metadata(info_dir: &std::path::Path, session: &str, info: &SessionInfo) {
         let folder = info_dir.join(session);
         std::fs::create_dir_all(&folder).unwrap();
-        std::fs::write(folder.join("session-metadata.kdl"), info.to_string()).unwrap();
+        std::fs::write(
+            folder.join("session-metadata.kdl"),
+            zellij_session::metadata::session_info::to_string(info),
+        )
+        .unwrap();
     }
 
     fn write_layout(info_dir: &std::path::Path, session: &str) {
@@ -1461,7 +1469,9 @@ mod tests {
         for name in ["live", "dead"] {
             zellij_runtime::session_checkpoint::write_checkpoint(
                 &info_dir.path().join(name),
-                &SessionInfo::new(name.to_owned()).to_string(),
+                &zellij_session::metadata::session_info::to_string(&SessionInfo::new(
+                    name.to_owned(),
+                )),
                 &("layout {}".to_owned(), BTreeMap::new()),
             )
             .unwrap();

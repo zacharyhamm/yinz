@@ -14,33 +14,45 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
+use zellij_ipc::ipc::PixelDimensions;
+use zellij_ipc::nested_session::NestedSessionMessage;
 use zellij_types::agent::AgentInfo;
 use zellij_types::diagnostics::ScreenContext;
 use zellij_types::geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy};
+use zellij_types::input::actions::Action;
+use zellij_types::input::context_menu::ContextMenu;
+use zellij_types::input::keybinds::Keybinds;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::mouse::MouseEvent;
 use zellij_types::pane_size::Size;
 use zellij_types::position::Position;
 use zellij_types::style::{HostTerminalThemeMode, Styling, ThemeHue};
-use zellij_utils::data::{
-    CommandOrPlugin, ContextMenuItem, EventType, GetFocusedPaneInfoResponse, InputMode, LayoutInfo,
-    LayoutWithError, ListPanesResponse, ListTabsResponse, ModeInfo, NewPanePlacement,
-    NotificationInfo, OverlayPlacement, PaneInfo, PaneScrollbackResponse, PluginPermission,
-    RegexHighlight, SessionInfo, TabInfo, WarpPlacement, WarpedPane, WarpedTab,
+use {
+    zellij_types::data::CommandOrPlugin, zellij_types::data::ContextMenuItem,
+    zellij_types::data::EventType, zellij_types::data::GetFocusedPaneInfoResponse,
+    zellij_types::data::InputMode, zellij_types::data::LayoutInfo,
+    zellij_types::data::LayoutWithError, zellij_types::data::ListPanesResponse,
+    zellij_types::data::ListTabsResponse, zellij_types::data::ModeInfo,
+    zellij_types::data::NewPanePlacement, zellij_types::data::NotificationInfo,
+    zellij_types::data::OverlayPlacement, zellij_types::data::PaneInfo,
+    zellij_types::data::PaneScrollbackResponse, zellij_types::data::PluginPermission,
+    zellij_types::data::RegexHighlight, zellij_types::data::SessionInfo,
+    zellij_types::data::TabInfo, zellij_types::data::WarpPlacement, zellij_types::data::WarpedPane,
+    zellij_types::data::WarpedTab,
 };
-use zellij_utils::input::actions::Action;
-use zellij_utils::input::command::{RunCommand, TerminalAction};
-use zellij_utils::input::context_menu::ContextMenu;
-use zellij_utils::input::keybinds::Keybinds;
-use zellij_utils::input::layout::{
-    FloatingPaneLayout, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout, TabLayoutInfo,
-    TiledPaneLayout,
+use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
+use {
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Run,
+    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::layout::SwapFloatingLayout,
+    zellij_types::input::layout::SwapTiledLayout, zellij_types::input::layout::TabLayoutInfo,
+    zellij_types::input::layout::TiledPaneLayout,
 };
-use zellij_utils::input::options::{
-    Clipboard, HostNotificationProtocol, NestedSessionHandling, PaneFrameStyle,
+use {
+    zellij_types::input::options::Clipboard,
+    zellij_types::input::options::HostNotificationProtocol,
+    zellij_types::input::options::NestedSessionHandling,
+    zellij_types::input::options::PaneFrameStyle,
 };
-use zellij_utils::ipc::PixelDimensions;
-use zellij_utils::nested_session::NestedSessionMessage;
 
 /// Instructions that can be sent to the [`Screen`].
 ///
@@ -801,15 +813,15 @@ pub enum ScreenInstruction {
     ClearAllPluginHighlights(PluginId), // plugin_id — clears across all panes
     SubscribeToPaneRenders {
         client_id: ClientId,
-        pane_ids: Vec<zellij_utils::data::PaneId>,
+        pane_ids: Vec<zellij_types::data::PaneId>,
         scrollback: Option<usize>,
         ansi: bool,
     },
     NotifyPaneClosedToSubscribers {
-        pane_id: zellij_utils::data::PaneId,
+        pane_id: zellij_types::data::PaneId,
     },
     SetCliEventSubscribersPresent(bool),
-    AgentReport(zellij_utils::agent::report::AgentReport, std::time::Instant),
+    AgentReport(zellij_types::agent::report::AgentReport, std::time::Instant),
     SetPaneAgent(PaneId, Option<AgentInfo>, Option<NotificationEnd>),
     /// Set (or clear) the run id on a pane's existing agent record, leaving every field the
     /// agent itself reports alone. See `AgentInfo::run_id`.

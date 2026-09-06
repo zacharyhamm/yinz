@@ -29,7 +29,7 @@ pub fn write(
     overwrite: bool,
     check: bool,
 ) -> anyhow::Result<Written> {
-    let path = zellij_utils::plugin_authoring::resolve_plugin_file(dir, name)
+    let path = zellij_plugin_api::authoring::resolve_plugin_file(dir, name)
         .map_err(|e| anyhow::anyhow!(e))?;
     if source.trim().is_empty() {
         anyhow::bail!("the plugin source is empty");
@@ -89,8 +89,8 @@ fn keep_backup(
     if std::fs::read_to_string(path).is_ok_and(|previous| previous == contents) {
         return Ok(None);
     }
-    let backup = zellij_utils::plugin_authoring::backup_name(name);
-    let backup = zellij_utils::plugin_authoring::resolve_plugin_file(dir, &backup)
+    let backup = zellij_plugin_api::authoring::backup_name(name);
+    let backup = zellij_plugin_api::authoring::resolve_plugin_file(dir, &backup)
         .map_err(|e| anyhow::anyhow!("failed to name a backup of {}: {e}", path.display()))?;
     if backup.is_symlink() {
         anyhow::bail!(

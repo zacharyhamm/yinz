@@ -11,6 +11,8 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+zellij-config = { workspace = true }
+zellij-plugin-api = { workspace = true }
 zellij-types = { workspace = true }
 zellij-runtime = { workspace = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
@@ -21,7 +23,6 @@ serde_json = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 unicode-width = { workspace = true }
-zellij-utils = { workspace = true }
 
 [dev-dependencies]
 hegeltest = "0.29.3"

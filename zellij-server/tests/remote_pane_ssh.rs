@@ -47,7 +47,7 @@ use zellij_server::pty_host::remote::protocol::{
 use zellij_server::pty_host::remote::ssh::{self, RemoteHosts};
 use zellij_server::pty_host::remote::{RemoteConn, RemoteReader};
 use zellij_types::command::PaneTarget;
-use zellij_utils::input::command::RunCommand;
+use zellij_types::input::command::RunCommand;
 
 // ---------------------------------------------------------------------------
 // Where the far machine is
@@ -1963,7 +1963,7 @@ fn a_resume_for_an_unknown_token_is_refused() {
         &mut write,
         &ServerToBrokerMsg::Hello {
             protocol_version: REMOTE_PROTOCOL_VERSION,
-            zellij_version: zellij_utils::consts::VERSION.to_owned(),
+            zellij_version: zellij_runtime::consts::VERSION.to_owned(),
         },
     )
     .expect("failed to say hello");

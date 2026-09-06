@@ -2,7 +2,8 @@ use super::*;
 use std::collections::BTreeMap;
 
 fn run_plugin(url: &str) -> RunPluginOrAlias {
-    RunPluginOrAlias::from_url(url, &None, None, None).expect("a valid plugin url")
+    zellij_runtime::plugin_location::run_plugin_or_alias_from_url(url, &None, None, None)
+        .expect("a valid plugin url")
 }
 
 fn enqueue(queues: &mut Queues, queue: &str, job: &str) -> JobId {

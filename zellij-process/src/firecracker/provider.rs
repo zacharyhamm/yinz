@@ -35,11 +35,11 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use zellij_config::config::Config as ZellijConfig;
 use zellij_runtime::errors::prelude::*;
 use zellij_runtime::home::{xdg_config_dir, xdg_data_dir};
 use zellij_types::command::validate_firecracker_vm_name;
-use zellij_utils::consts::{ZELLIJ_CACHE_DIR, ZELLIJ_PROJ_DIR};
-use zellij_utils::input::config::Config as ZellijConfig;
+use {zellij_runtime::consts::ZELLIJ_CACHE_DIR, zellij_runtime::consts::ZELLIJ_PROJ_DIR};
 
 const CONFIG_ENV: &str = "ZELLIJ_FIRECRACKER_CONFIG";
 const TEST_NETWORK_ENV: &str = "ZELLIJ_FIRECRACKER_NETWORK_CONFIG";
@@ -3521,7 +3521,7 @@ impl SetupRuntime for RealSetup {
         set_default_image(image)?;
         configure_credentials()?;
         let overlay_dir = zellij_runtime::home::get_config_overlay_dir(Some(
-            env::var_os(zellij_utils::consts::ZELLIJ_CONFIG_DIR_ENV)
+            env::var_os(zellij_runtime::consts::ZELLIJ_CONFIG_DIR_ENV)
                 .map(PathBuf::from)
                 .unwrap_or_else(zellij_runtime::home::xdg_config_dir),
         ))

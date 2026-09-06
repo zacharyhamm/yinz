@@ -4,29 +4,49 @@ use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 fn gate_runs_integration_and_aggregates_failures() {
     let root = tempfile::tempdir().unwrap();
     for (out, src, generated) in [
-        ("prost", "plugin_api", "generated_plugin_api.rs"),
         (
-            "prost_ipc",
-            "client_server_contract",
+            "zellij-plugin-api/assets",
+            "zellij-plugin-api/src",
+            "generated_plugin_api.rs",
+        ),
+        (
+            "zellij-ipc/assets/prost_ipc",
+            "zellij-ipc/src/client_server_contract",
             "generated_client_server_api.rs",
         ),
         (
-            "prost_nested_session",
-            "nested_session_contract",
+            "zellij-ipc/assets/prost_nested_session",
+            "zellij-ipc/src/nested_session_contract",
             "generated_nested_session_api.rs",
         ),
     ] {
-        let assets = root.path().join("zellij-utils/assets").join(out);
+        let assets = root.path().join(out);
         fs::create_dir_all(&assets).unwrap();
         fs::write(assets.join(generated), "").unwrap();
-        fs::create_dir_all(root.path().join("zellij-utils/src").join(src)).unwrap();
+        fs::create_dir_all(root.path().join(src)).unwrap();
     }
+    let libraries = [
+        "zellij-types",
+        "zellij-runtime",
+        "zellij-storage",
+        "zellij-config",
+        "zellij-plugin-api",
+        "zellij-ipc",
+        "zellij-session",
+        "zellij-cli",
+    ];
+    let metadata = root.path().join("metadata.json");
+    fs::write(&metadata, serde_json::json!({
+        "packages": libraries.iter().map(|name| serde_json::json!({"id": name, "name": name, "dependencies": []})).collect::<Vec<_>>(),
+        "workspace_members": libraries
+    }).to_string()).unwrap();
     let cargo = root.path().join("cargo-stub");
     fs::write(
         &cargo,
         r#"#!/bin/sh
 printf '%s|%s\n' "$NEXTEST_TEST_THREADS" "$*" >> "$GATE_LOG"
 case "$*" in
+  'metadata '*) cat "$GATE_METADATA" ;;
   'fmt '*|'clippy '*|'nextest run '*) exit "$GATE_FAILURE" ;;
   'nextest --version') exit "$GATE_NO_NEXTEST" ;;
 esac
@@ -44,6 +64,7 @@ exit 0
             .env("CARGO_MANIFEST_DIR", root.path().join("xtask"))
             .env("NEXTEST_TEST_THREADS", "3")
             .env("GATE_LOG", &log)
+            .env("GATE_METADATA", &metadata)
             .env("GATE_FAILURE", failure)
             .env("GATE_NO_NEXTEST", no_nextest)
             .output()

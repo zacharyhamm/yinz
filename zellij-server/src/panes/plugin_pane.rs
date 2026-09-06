@@ -24,17 +24,20 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use vte;
 use zellij_runtime::{channels::SenderWithContext, errors::prelude::*};
+use zellij_types::data::PaneContents;
 use zellij_types::geometry::Direction;
 use zellij_types::keys::{BareKey, KeyWithModifier};
 use zellij_types::pane_size::PaneGeom;
 use zellij_types::pane_size::{Offset, SizeInPixels};
 use zellij_types::position::Position;
 use zellij_types::style::{Palette, Style, Styling};
-use zellij_utils::data::PaneContents;
-use zellij_utils::data::{PermissionStatus, PermissionType, PluginPermission};
-use zellij_utils::{
-    data::{Event, InputMode, Mouse, PaletteColor},
-    input::layout::Run,
+use {
+    zellij_types::data::Event, zellij_types::data::InputMode, zellij_types::data::Mouse,
+    zellij_types::data::PaletteColor, zellij_types::input::layout::Run,
+};
+use {
+    zellij_types::data::PermissionStatus, zellij_types::data::PermissionType,
+    zellij_types::data::PluginPermission,
 };
 
 macro_rules! style {
@@ -1377,7 +1380,7 @@ mod tests {
     }
 
     /// The frame a plugin drawing an image emits, built with the very helpers a plugin calls -
-    /// `zellij-tile` is a dev-dependency for exactly this. A second, hand-written copy of the
+    /// A second, hand-written copy of the
     /// escape sequences here would pass while the two halves disagreed.
     fn image_frame(id: u32, cols: usize, png: &[u8]) -> Vec<u8> {
         let mut frame = png_transmit_sequence(id, png);

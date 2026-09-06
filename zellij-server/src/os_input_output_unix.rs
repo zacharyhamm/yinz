@@ -37,7 +37,7 @@ use std::{
 };
 
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::input::command::RunCommand;
+use zellij_types::input::command::RunCommand;
 
 use crate::pty_host::remote::{
     conn::RemoteGitProbe, protocol::ChildSignal, RemoteConn, RemoteStatus,

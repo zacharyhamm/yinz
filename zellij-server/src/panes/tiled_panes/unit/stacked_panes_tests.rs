@@ -4,9 +4,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use zellij_runtime::errors::prelude::*;
+use zellij_types::input::layout::Run;
 use zellij_types::pane_size::Offset;
 use zellij_types::pane_size::{Dimension, PaneGeom};
-use zellij_utils::input::layout::Run;
 
 use crate::ui::pane_boundaries_frame::FrameParams;
 use crate::{
@@ -15,7 +15,10 @@ use crate::{
     ClientId,
 };
 use std::time::Instant;
-use zellij_utils::data::{InputMode, PaletteColor, PaneContents};
+use {
+    zellij_types::data::InputMode, zellij_types::data::PaletteColor,
+    zellij_types::data::PaneContents,
+};
 
 macro_rules! mock_pane {
     ($pane_id:expr, $dimension:expr, $inner:expr, $x:expr, $y:expr, $logical_position:expr, $mock_panes:expr) => {

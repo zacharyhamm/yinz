@@ -8,15 +8,20 @@ use crate::TerminalId;
 use crate::{ClientId, ServerInstruction};
 use std::collections::HashMap;
 use std::time::Instant;
+use zellij_ipc::nested_session;
 use zellij_types::geometry::Direction;
+use zellij_types::input::actions::Action;
+use zellij_types::input::keybinds::shortcut_for_action;
+use zellij_types::input::options::NestedSessionHandling;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::style::HostTerminalThemeMode;
-use zellij_utils::data::{InputMode, ModeInfo, PaletteColor};
-use zellij_utils::input::actions::Action;
-use zellij_utils::input::keybinds::shortcut_for_action;
-use zellij_utils::input::options::NestedSessionHandling;
-use zellij_utils::nested_session;
-use zellij_utils::nested_session::{NestedSessionCapability, NestedSessionMessage};
+use {
+    zellij_ipc::nested_session::NestedSessionCapability,
+    zellij_ipc::nested_session::NestedSessionMessage,
+};
+use {
+    zellij_types::data::InputMode, zellij_types::data::ModeInfo, zellij_types::data::PaletteColor,
+};
 
 impl Screen {
     pub fn handle_nested_session_message_from_pane(

@@ -10,14 +10,15 @@ use crate::tab::Tab;
 use crate::ClientId;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
+use zellij_runtime::consts::ZELLIJ_SOCK_DIR;
 use zellij_types::command::PaneTarget;
-use zellij_utils::consts::ZELLIJ_SOCK_DIR;
-use zellij_utils::data::{
-    Event, EventType, LayoutInfo, LayoutWithError, ListPanesResponse, ListTabsResponse, PaneInfo,
-    PaneListEntry, PaneManifest, SessionInfo, TabInfo,
+use {
+    zellij_types::data::Event, zellij_types::data::EventType, zellij_types::data::LayoutInfo,
+    zellij_types::data::LayoutWithError, zellij_types::data::ListPanesResponse,
+    zellij_types::data::ListTabsResponse, zellij_types::data::PaneInfo,
+    zellij_types::data::PaneListEntry, zellij_types::data::PaneManifest,
+    zellij_types::data::SessionInfo, zellij_types::data::TabInfo,
 };
-#[cfg(not(test))]
-use zellij_utils::input::layout::Layout;
 
 impl Screen {
     pub fn generate_and_report_tab_state(&mut self) -> Result<Vec<TabInfo>> {
@@ -434,7 +435,7 @@ impl Screen {
         if self.cached_layouts.is_empty() {
             #[cfg(not(test))]
             {
-                let (layouts, errors) = Layout::list_available_layouts(
+                let (layouts, errors) = zellij_config::layout::list_available_layouts(
                     self.layout_dir.clone(),
                     &self.default_layout_name,
                 );

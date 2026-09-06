@@ -18,17 +18,16 @@ use zellij_runtime::{
     channels::{self, ChannelWithContext, Receiver, SenderWithContext},
     errors::prelude::*,
 };
+use zellij_types::input::options::PaneFrameStyle;
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::pane_size::{Size, SizeInPixels, Viewport};
 use zellij_types::style::{Palette, Style};
-use zellij_utils::input::options::PaneFrameStyle;
-use zellij_utils::{
-    data::ModeInfo,
-    input::{
-        command::{RunCommand, TerminalAction},
-        layout::{FloatingPaneLayout, Layout, Run, RunPluginOrAlias, TiledPaneLayout},
-    },
-    ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg},
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcReceiverWithContext,
+    zellij_ipc::ipc::ServerToClientMsg, zellij_types::data::ModeInfo,
+    zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction,
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Run,
+    zellij_types::input::layout::TiledPaneLayout,
 };
 
 #[derive(Clone)]
@@ -125,8 +124,9 @@ impl ServerOsApi for FakeInputOutput {
 
 /// Parse KDL layout string and extract tiled and floating layouts
 fn parse_kdl_layout(kdl_str: &str) -> (TiledPaneLayout, Vec<FloatingPaneLayout>) {
-    let layout = Layout::from_kdl(kdl_str, Some("test_layout".into()), None, None)
-        .expect("Failed to parse KDL layout");
+    let layout =
+        zellij_config::kdl::layout::from_kdl(kdl_str, Some("test_layout".into()), None, None)
+            .expect("Failed to parse KDL layout");
     layout.new_tab()
 }
 

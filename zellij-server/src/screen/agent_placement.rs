@@ -25,9 +25,9 @@ use zellij_runtime::errors::prelude::*;
 use super::Screen;
 use crate::pty::ClientTabIndexOrPaneId;
 use crate::ClientId;
+use zellij_types::input::layout::Run;
 use zellij_types::pane_size::{Size, Viewport};
-use zellij_utils::data::{NewPanePlacement, HOCUS_AGENT_PANE_CONTEXT};
-use zellij_utils::input::layout::Run;
+use {zellij_types::data::NewPanePlacement, zellij_types::data::HOCUS_AGENT_PANE_CONTEXT};
 
 /// What `Screen::agent_pane_target` decided: where the pane goes, and whether a client has to
 /// be brought to it afterwards.
@@ -65,7 +65,7 @@ pub(super) fn is_agent_spawn(invoked_with: Option<&Run>) -> bool {
         .as_ref()
         .is_some_and(|plugin| plugin.context.contains_key(HOCUS_AGENT_PANE_CONTEXT));
     marked
-        || zellij_utils::agent::kind_from_program_and_args(&run_command.command, &run_command.args)
+        || zellij_types::agent::kind_from_program_and_args(&run_command.command, &run_command.args)
             .is_some()
 }
 

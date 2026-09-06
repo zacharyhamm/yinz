@@ -1,9 +1,9 @@
 //! Agent records and launch inputs shared by host and plugin callers.
 
 use crate::pane_id::PaneId;
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use strum_macros::{Display, EnumString};
 
 /// What the agent in a pane is doing.
@@ -201,3 +201,6 @@ pub struct SpawnedAgent {
     pub cwd: Option<PathBuf>,
 }
 
+mod hooks;
+pub use hooks::*;
+pub mod report;

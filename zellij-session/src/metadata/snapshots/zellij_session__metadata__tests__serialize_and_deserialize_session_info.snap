@@ -1,0 +1,18 @@
+---
+source: zellij-config/src/kdl/./unit/session_info.rs
+assertion_line: 9
+expression: serialized
+---
+name ""
+tabs {
+}
+panes {
+}
+connected_clients 0
+available_layouts {
+}
+tab_history {
+}
+pane_history {
+}
+creation_time 0

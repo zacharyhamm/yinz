@@ -11,7 +11,7 @@ use notify_debouncer_full::{
     DebounceEventResult, DebouncedEvent, Debouncer, RecommendedCache,
 };
 use zellij_runtime::errors::prelude::Result;
-use zellij_utils::data::Event;
+use zellij_types::data::Event;
 
 const DEBOUNCE_DURATION_MS: u64 = 400;
 

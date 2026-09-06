@@ -10,8 +10,8 @@ use crate::tab::{AcceptedPane, ExtractedPanePlacement, Pane, SuppressedPanes, Ta
 use crate::{ClientId, ServerInstruction};
 use std::collections::{HashMap, HashSet};
 use zellij_types::geometry::Direction;
-use zellij_utils::data::{Event, ModeInfo};
-use zellij_utils::input::command::RunCommand;
+use zellij_types::input::command::RunCommand;
+use {zellij_types::data::Event, zellij_types::data::ModeInfo};
 
 impl Screen {
     pub(super) fn get_new_tab_id(&self) -> usize {

@@ -2,8 +2,8 @@
 #![allow(clippy::unwrap_or_default)]
 use super::{text::stringify_text, Coordinates, Text};
 use crate::panes::terminal_character::{AnsiCode, CharacterStyles, RESET_STYLES};
+use zellij_types::data::PaletteColor;
 use zellij_types::style::Style;
-use zellij_utils::data::PaletteColor;
 
 static ARROW_SEPARATOR: &str = "";
 

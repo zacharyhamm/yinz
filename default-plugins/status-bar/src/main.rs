@@ -993,7 +993,9 @@ pub mod tests {
     }
 
     fn launches(alias: &str) -> Action {
-        use zellij_utils::input::layout::{PluginAlias, RunPluginOrAlias};
+        use {
+            zellij_types::input::layout::PluginAlias, zellij_types::input::layout::RunPluginOrAlias,
+        };
         Action::LaunchOrFocusPlugin {
             plugin: RunPluginOrAlias::Alias(PluginAlias {
                 name: alias.to_string(),

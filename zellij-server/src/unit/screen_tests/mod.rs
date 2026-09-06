@@ -14,28 +14,38 @@ use zellij_types::internal_ids::TerminalId;
 
 use insta::assert_snapshot;
 use std::path::PathBuf;
+use zellij_cli::args::CliAction;
+use zellij_config::config::Config;
 use zellij_runtime::errors::prelude::*;
+use zellij_types::data::WarpedPane;
 use zellij_types::diagnostics::ErrorContext;
 use zellij_types::geometry::Resize;
 use zellij_types::geometry::{PercentOrFixed, SplitDirection};
+use zellij_types::input::actions::Action;
+use zellij_types::input::context_menu::ContextMenu;
+use zellij_types::input::keybinds::Keybinds;
 use zellij_types::style::{Style, Styling};
-use zellij_utils::cli::CliAction;
-use zellij_utils::data::WarpedPane;
-use zellij_utils::data::{Event, EventType, Mouse, OverlayPlacement};
-use zellij_utils::input::actions::Action;
-use zellij_utils::input::command::{RunCommand, TerminalAction};
-use zellij_utils::input::config::Config;
-use zellij_utils::input::context_menu::ContextMenu;
-use zellij_utils::input::keybinds::Keybinds;
-use zellij_utils::input::layout::{
-    FloatingPaneLayout, Layout, PluginAlias, PluginUserConfiguration, Run, RunPlugin,
-    RunPluginLocation, RunPluginOrAlias, TiledPaneLayout,
+use {
+    zellij_types::data::Event, zellij_types::data::EventType, zellij_types::data::Mouse,
+    zellij_types::data::OverlayPlacement,
+};
+use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
+use {
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Layout,
+    zellij_types::input::layout::PluginAlias, zellij_types::input::layout::PluginUserConfiguration,
+    zellij_types::input::layout::Run, zellij_types::input::layout::RunPlugin,
+    zellij_types::input::layout::RunPluginLocation, zellij_types::input::layout::RunPluginOrAlias,
+    zellij_types::input::layout::TiledPaneLayout,
 };
 
 use zellij_types::mouse::MouseEvent;
-use zellij_utils::input::options::{
-    HostNotificationProtocol, NestedSessionHandling, NotificationPosition, Options, PaneFrameStyle,
-    DEFAULT_NOTIFICATION_TIMEOUT_SECS, DEFAULT_WORD_SEPARATORS,
+use {
+    zellij_types::input::options::HostNotificationProtocol,
+    zellij_types::input::options::NestedSessionHandling,
+    zellij_types::input::options::NotificationPosition, zellij_types::input::options::Options,
+    zellij_types::input::options::PaneFrameStyle,
+    zellij_types::input::options::DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+    zellij_types::input::options::DEFAULT_WORD_SEPARATORS,
 };
 
 use crate::background_jobs::BackgroundJob;
@@ -48,18 +58,19 @@ use crate::{
 use std::collections::{BTreeMap, HashSet};
 use std::env::set_var;
 use std::sync::{Arc, Mutex};
+use zellij_ipc::ipc::IpcReceiverWithContext;
 use zellij_types::pane_size::{Size, SizeInPixels};
 use zellij_types::position::Position;
-use zellij_utils::ipc::IpcReceiverWithContext;
 
 use interprocess::local_socket::Stream as LocalSocketStream;
+use zellij_ipc::ipc::PixelDimensions;
 use zellij_runtime::channels::{self, ChannelWithContext, Receiver};
 use zellij_types::geometry::{Direction, FloatingPaneCoordinates};
 use zellij_types::style::Palette;
-use zellij_utils::ipc::PixelDimensions;
-use zellij_utils::{
-    data::{InputMode, ModeInfo, NewPanePlacement},
-    ipc::{ClientAttributes, ClientToServerMsg, ServerToClientMsg},
+use {
+    zellij_ipc::ipc::ClientAttributes, zellij_ipc::ipc::ClientToServerMsg,
+    zellij_ipc::ipc::ServerToClientMsg, zellij_types::data::InputMode,
+    zellij_types::data::ModeInfo, zellij_types::data::NewPanePlacement,
 };
 
 use crate::panes::grid::Grid;
@@ -68,8 +79,8 @@ use crate::panes::sixel::SixelImageStore;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use zellij_utils::data::{PaneContents, PaneRenderReport};
-use zellij_utils::ipc::ExitReason;
+use zellij_ipc::ipc::ExitReason;
+use {zellij_types::data::PaneContents, zellij_types::data::PaneRenderReport};
 
 fn take_snapshot_and_cursor_coordinates(
     ansi_instructions: &str,
@@ -201,7 +212,8 @@ fn send_cli_action_to_server(
     client_id: ClientId,
 ) {
     let get_current_dir = || PathBuf::from(".");
-    let actions = Action::actions_from_cli(cli_action, Box::new(get_current_dir), None).unwrap();
+    let actions =
+        zellij_cli::actions::actions_from_cli(cli_action, Box::new(get_current_dir), None).unwrap();
     let senders = session_metadata.senders.clone();
     let default_shell = None;
     let default_mode = session_metadata
@@ -561,7 +573,13 @@ impl MockScreen {
         let mut floating_pane_ids = vec![];
         let mut plugin_ids = HashMap::new();
         plugin_ids.insert(
-            RunPluginOrAlias::from_url("file:/path/to/fake/plugin", &None, None, None).unwrap(),
+            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+                "file:/path/to/fake/plugin",
+                &None,
+                None,
+                None,
+            )
+            .unwrap(),
             vec![zellij_types::internal_ids::PluginId(1)],
         );
         for i in 0..pane_count {
@@ -656,7 +674,11 @@ impl MockScreen {
                 name: "fixture_plugin_for_tests".to_owned(),
                 configuration: Some(Default::default()),
                 run_plugin: Some(RunPlugin {
-                    location: RunPluginLocation::parse("file:/path/to/fake/plugin", None).unwrap(),
+                    location: zellij_runtime::plugin_location::parse_plugin_location(
+                        "file:/path/to/fake/plugin",
+                        None,
+                    )
+                    .unwrap(),
                     configuration: PluginUserConfiguration::default(),
                     ..Default::default()
                 }),
@@ -748,7 +770,13 @@ impl MockScreen {
     ) {
         // Build a layout where each child is a plugin pane
         let fake_plugin_url = "file:/path/to/fake/plugin";
-        let run_plugin = RunPluginOrAlias::from_url(fake_plugin_url, &None, None, None).unwrap();
+        let run_plugin = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            fake_plugin_url,
+            &None,
+            None,
+            None,
+        )
+        .unwrap();
         let tab_layout = TiledPaneLayout {
             children_split_direction: SplitDirection::Vertical,
             children: plugin_pane_ids
@@ -1549,9 +1577,11 @@ fn create_non_mirrored_screen(size: Size) -> Screen {
     seed_first_client_size(screen, size)
 }
 
-fn decode_nested_frame(bytes: &[u8]) -> Option<zellij_utils::nested_session::NestedSessionMessage> {
-    use zellij_utils::nested_session::{
-        decode_base64, decode_payload, NESTED_FRAME_HEADER, NESTED_FRAME_TERMINATOR,
+fn decode_nested_frame(bytes: &[u8]) -> Option<zellij_ipc::nested_session::NestedSessionMessage> {
+    use {
+        zellij_ipc::nested_session::decode_base64, zellij_ipc::nested_session::decode_payload,
+        zellij_ipc::nested_session::NESTED_FRAME_HEADER,
+        zellij_ipc::nested_session::NESTED_FRAME_TERMINATOR,
     };
     let encoded_payload = bytes
         .strip_prefix(NESTED_FRAME_HEADER)?
@@ -1559,10 +1589,10 @@ fn decode_nested_frame(bytes: &[u8]) -> Option<zellij_utils::nested_session::Nes
     decode_payload(&decode_base64(encoded_payload)?)
 }
 
-fn guest_announce_message() -> zellij_utils::nested_session::NestedSessionMessage {
-    zellij_utils::nested_session::NestedSessionMessage::Announce {
+fn guest_announce_message() -> zellij_ipc::nested_session::NestedSessionMessage {
+    zellij_ipc::nested_session::NestedSessionMessage::Announce {
         session_name: "guest-session".to_owned(),
-        capabilities: vec![zellij_utils::nested_session::NestedSessionCapability::NestedControl],
+        capabilities: vec![zellij_ipc::nested_session::NestedSessionCapability::NestedControl],
     }
 }
 
@@ -1820,7 +1850,7 @@ fn assert_focus_change_syncs_scroll_mode(default_mode: InputMode) {
 /// Adopt a pane with the given placement and return the `NewPane` it asks for.
 fn adopted_pane_placement_target(
     screen: &mut Screen,
-    placement: zellij_utils::data::WarpPlacement,
+    placement: zellij_types::data::WarpPlacement,
     client_id: ClientId,
 ) -> ClientTabIndexOrPaneId {
     let (_, _, target) = adopted_pane_new_pane(screen, placement, client_id, RunCommand::default());
@@ -1831,11 +1861,11 @@ fn adopted_pane_placement_target(
 /// asks for says: the run it was invoked with, its placement, and its target.
 fn adopted_pane_new_pane(
     screen: &mut Screen,
-    placement: zellij_utils::data::WarpPlacement,
+    placement: zellij_types::data::WarpPlacement,
     client_id: ClientId,
     cmd: RunCommand,
 ) -> (Option<Run>, NewPanePlacement, ClientTabIndexOrPaneId) {
-    use zellij_utils::data::WarpedPane;
+    use zellij_types::data::WarpedPane;
 
     let (to_screen, screen_receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
     screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));

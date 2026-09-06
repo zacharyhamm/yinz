@@ -21,7 +21,7 @@ fn server_messages() -> Vec<ServerToBrokerMsg> {
     vec![
         ServerToBrokerMsg::Hello {
             protocol_version: REMOTE_PROTOCOL_VERSION,
-            zellij_version: zellij_utils::consts::VERSION.to_owned(),
+            zellij_version: zellij_runtime::consts::VERSION.to_owned(),
         },
         ServerToBrokerMsg::Spawn {
             cmd: sample_run_command(),
@@ -63,7 +63,7 @@ fn broker_messages() -> Vec<BrokerToServerMsg> {
     vec![
         BrokerToServerMsg::HelloAck {
             protocol_version: REMOTE_PROTOCOL_VERSION,
-            zellij_version: zellij_utils::consts::VERSION.to_owned(),
+            zellij_version: zellij_runtime::consts::VERSION.to_owned(),
         },
         BrokerToServerMsg::Spawned {
             pane_token: "abc123".to_owned(),

@@ -533,11 +533,11 @@ mod tests {
             Ok(Box::new(MemoryRecordingSession(self.0.clone())))
         }
 
-        fn list(&self) -> anyhow::Result<Vec<zellij_utils::data::RecordingSummary>> {
+        fn list(&self) -> anyhow::Result<Vec<zellij_types::data::RecordingSummary>> {
             Ok(Vec::new())
         }
 
-        fn search(&self, _: &str, _: usize) -> anyhow::Result<Vec<zellij_utils::data::SearchHit>> {
+        fn search(&self, _: &str, _: usize) -> anyhow::Result<Vec<zellij_types::data::SearchHit>> {
             Ok(Vec::new())
         }
 

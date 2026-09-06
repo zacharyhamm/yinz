@@ -4,7 +4,7 @@ use zellij_integration_tests::{
     guest_ascended_bar_settled, keys, FakePtyHandle, GridSnapshot, NestedHarness, Size, PROMPT,
     TERMINAL_SIZE,
 };
-use zellij_utils::nested_session::NestedSessionMessage;
+use zellij_ipc::nested_session::NestedSessionMessage;
 
 const ASCEND_KEY: &[u8] = b"]";
 const DESCEND_KEY: &[u8] = b"[";

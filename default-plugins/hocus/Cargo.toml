@@ -16,6 +16,8 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+zellij-plugin-api = { workspace = true }
+zellij-runtime = { workspace = true }
 zellij-types = { workspace = true }
 zellij-tile = { path = "../../zellij-tile" }
 hocus-proto = { path = "../hocus-proto" }

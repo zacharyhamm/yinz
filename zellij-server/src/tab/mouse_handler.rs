@@ -2,13 +2,13 @@
 use std::time::Instant;
 use zellij_runtime::errors::prelude::*;
 use zellij_types::geometry::{Direction, Resize, ResizeStrategy};
+use zellij_types::input::layout::Run;
 #[cfg(test)]
 use zellij_types::internal_ids::{PluginId, TerminalId};
 use zellij_types::mouse::{MouseEvent, MouseEventType};
 use zellij_types::pane_size::PaneGeom;
 use zellij_types::position::Position;
-use zellij_utils::data::{ContextMenuContext, ContextMenuLink};
-use zellij_utils::input::layout::Run;
+use {zellij_types::data::ContextMenuContext, zellij_types::data::ContextMenuLink};
 
 use crate::background_jobs::BackgroundJob;
 use crate::panes::PaneId;

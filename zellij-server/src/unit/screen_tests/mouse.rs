@@ -566,7 +566,13 @@ fn a_plugin_pane_with_mouse_selection_hears_the_whole_click() {
     new_tab(&mut screen, 1, 0);
 
     let dialog = Run::Plugin(
-        RunPluginOrAlias::from_url("file:/path/to/fake/dialog", &None, None, None).unwrap(),
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "file:/path/to/fake/dialog",
+            &None,
+            None,
+            None,
+        )
+        .unwrap(),
     );
     screen
         .get_active_tab_mut(client_id)

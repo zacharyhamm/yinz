@@ -4,7 +4,7 @@ use serde::Deserialize;
 use zellij_tile::text;
 use zellij_tile::ui_components::{forms::*, serialize_text_with_coordinates, Text};
 use zellij_tile_markdown as markdown;
-use zellij_utils::data::{KeyWithModifier, Mouse};
+use zellij_types::data::{KeyWithModifier, Mouse};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -363,7 +363,7 @@ pub(super) fn install(lua: &Lua, zellij: &Table) -> mlua::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zellij_utils::data::BareKey;
+    use zellij_types::data::BareKey;
 
     fn interpreter() -> Lua {
         let lua = Lua::new();

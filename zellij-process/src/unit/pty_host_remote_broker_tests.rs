@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use crate::pty_host::remote::session::PaneRegistry;
 use zellij_types::command::PaneTarget;
-use zellij_utils::input::command::RunCommand;
+use zellij_types::input::command::RunCommand;
 
 use crate::pty_host::remote::protocol::{try_decode_frame, write_control, Frame};
 
