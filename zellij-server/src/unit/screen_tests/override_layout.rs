@@ -1,5 +1,6 @@
 use super::*;
 use zellij_types::input::layout::TabLayoutInfo;
+use zellij_types::internal_ids::TabNumber;
 
 fn layout_at(position: usize, panes: usize) -> TabLayoutInfo {
     TabLayoutInfo {
@@ -156,4 +157,139 @@ fn override_layout_focused_only_targets_active_id_and_keeps_other_tabs() {
         layouts[0].1.tiled_layout.run_instructions_to_ignore,
         vec![None]
     );
+}
+
+#[test]
+fn override_completion_applies_a_queued_tab_switch() {
+    queued_switch_during_override(false);
+}
+
+#[test]
+fn override_completion_preserves_a_queued_switch_while_another_tab_is_pending() {
+    queued_switch_during_override(true);
+}
+
+fn queued_switch_during_override(another_tab_pending: bool) {
+    let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 24 });
+    let screen_thread = mock_screen.run(None, vec![]);
+    let client_id = mock_screen.main_client_id;
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::OverrideLayout(
+            None,
+            None,
+            vec![layout_at(0, 1), layout_at(1, 1)],
+            true,
+            true,
+            false,
+            client_id,
+            None,
+        ))
+        .unwrap();
+    // Stand in for the plugin/PTY threads, using the layouts the screen dispatched.
+    let deadline = std::time::Instant::now() + zellij_test_support::default_timeout();
+    let layouts = loop {
+        let (instruction, _) = mock_screen
+            .plugin_receiver
+            .as_ref()
+            .unwrap()
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .expect("the screen dispatched the override");
+        if let PluginInstruction::OverrideLayout(_, _, layouts, _, _, _, _) = instruction {
+            break layouts;
+        }
+    };
+    if another_tab_pending {
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::NewTab(
+                None,
+                None,
+                Some(TiledPaneLayout::default()),
+                vec![],
+                None,
+                (Some(vec![]), Some(vec![])),
+                None,
+                false,
+                false,
+                client_id,
+                None,
+            ))
+            .unwrap();
+    }
+    // Switch, completion and queries share a FIFO; no render timing is involved.
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::GoToTab(
+            TabNumber::new(2),
+            Some(client_id),
+            None,
+        ))
+        .unwrap();
+    let focused_tab = || {
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::GetCurrentTabInfo {
+                client_id,
+                response_channel: tx,
+            })
+            .unwrap();
+        rx.recv_timeout(zellij_test_support::default_timeout())
+            .expect("the screen processed the query")
+            .expect("a focused tab")
+            .tab_id
+    };
+    let before_completion = focused_tab();
+    let results = layouts
+        .into_iter()
+        .map(|(tab_index, layout)| crate::screen::TabOverrideResult {
+            tab_index,
+            tab_name: layout.tab_name,
+            tiled_layout: layout.tiled_layout,
+            floating_layouts: layout.floating_layouts,
+            swap_tiled_layouts: layout.swap_tiled_layouts,
+            swap_floating_layouts: layout.swap_floating_layouts,
+            new_terminal_pids: if tab_index == TabId::new(0) {
+                vec![] // The first tab retains its existing terminal.
+            } else {
+                vec![(TerminalId::new(1), None)]
+            },
+            new_floating_pane_pids: vec![],
+            plugin_ids: HashMap::new(),
+        })
+        .collect();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::OverrideLayoutComplete(
+            results, true, true, client_id, None,
+        ))
+        .unwrap();
+    let after_override = focused_tab();
+    if another_tab_pending {
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::ApplyLayout(
+                TiledPaneLayout::default(),
+                vec![],
+                vec![(TerminalId::new(2), None)],
+                vec![],
+                vec![],
+                HashMap::new(),
+                TabId::new(2),
+                false,
+                client_id,
+                None,
+                None,
+            ))
+            .unwrap();
+    }
+    let after_all_layouts = focused_tab();
+    mock_screen.teardown(vec![screen_thread]);
+    assert_eq!(before_completion, TabId::new(0));
+    assert_eq!(
+        after_override,
+        TabId::new(if another_tab_pending { 0 } else { 1 })
+    );
+    assert_eq!(after_all_layouts, TabId::new(1));
 }
