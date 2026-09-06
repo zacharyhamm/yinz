@@ -3431,16 +3431,21 @@ fn an_expanded_overlay_reports_the_rectangle_underneath_it() {
     let info = panes.pane_info(&group).into_iter().next().unwrap();
     assert!(info.is_fullscreen, "it says that it is expanded");
     assert_eq!(
-        (info.pane_x, info.pane_y, info.pane_columns, info.pane_rows),
+        (
+            info.pane_x.get(),
+            info.pane_y.get(),
+            info.pane_columns.get(),
+            info.pane_rows.get()
+        ),
         (2, 2, 30, 10),
         "and reports the rectangle it will come back to, not the one it is drawn with"
     );
     assert_eq!(
         (
-            info.pane_content_x,
-            info.pane_content_y,
-            info.pane_content_columns,
-            info.pane_content_rows
+            info.pane_content_x.get(),
+            info.pane_content_y.get(),
+            info.pane_content_columns.get(),
+            info.pane_content_rows.get()
         ),
         (3, 3, 28, 8),
         "content area included - the frame it would wear there, not the one it wears now"

@@ -732,7 +732,7 @@ impl Pane for PluginPane {
             .send(PluginInstruction::Update(vec![(
                 Some(self.pid),
                 Some(client_id),
-                Event::Mouse(Mouse::LeftClick(start.line.0, start.column.0)),
+                Event::Mouse(Mouse::LeftClick(start.line.get(), start.column.get())),
             )]))
             .unwrap();
     }
@@ -747,7 +747,7 @@ impl Pane for PluginPane {
             .send(PluginInstruction::Update(vec![(
                 Some(self.pid),
                 Some(client_id),
-                Event::Mouse(Mouse::Hold(position.line.0, position.column.0)),
+                Event::Mouse(Mouse::Hold(position.line.get(), position.column.get())),
             )]))
             .unwrap();
     }
@@ -880,7 +880,7 @@ impl Pane for PluginPane {
             .send(PluginInstruction::Update(vec![(
                 Some(self.pid),
                 Some(client_id),
-                Event::Mouse(Mouse::RightClick(to.line.0, to.column.0)),
+                Event::Mouse(Mouse::RightClick(to.line.get(), to.column.get())),
             )]))
             .unwrap();
     }

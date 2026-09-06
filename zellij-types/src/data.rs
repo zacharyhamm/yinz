@@ -18,6 +18,7 @@ use crate::internal_ids::SupervisorId;
 use crate::internal_ids::TabId;
 use crate::internal_ids::TabNumber;
 use crate::internal_ids::TabPosition;
+use crate::position::{CellCoordinates, Column, ColumnCount, Row, RowCount};
 use crate::units::{ElapsedMillis, FractionalSeconds, SignedUnixMillis, UnixMillis, UnixSeconds};
 // The data store's types are part of the plugin API, so they belong in the prelude alongside
 // everything else here. They live in their own module because the engine behind them cannot build
@@ -1198,15 +1199,15 @@ pub struct TabInfo {
     /// Whether the user manually changed the layout, moving out of the swap layout scheme
     pub is_swap_layout_dirty: bool,
     /// Row count in the viewport (including all non-ui panes, eg. will exclude the status bar)
-    pub viewport_rows: usize,
+    pub viewport_rows: RowCount,
     /// Column count in the viewport (including all non-ui panes, eg. will exclude the status bar)
-    pub viewport_columns: usize,
+    pub viewport_columns: ColumnCount,
     /// Row count in the display area (including all panes, will typically be larger than the
     /// viewport)
-    pub display_area_rows: usize,
+    pub display_area_rows: RowCount,
     /// Column count in the display area (including all panes, will typically be larger than the
     /// viewport)
-    pub display_area_columns: usize,
+    pub display_area_columns: ColumnCount,
     /// The number of selectable (eg. not the UI bars) tiled panes currently in this tab
     pub selectable_tiled_panes_count: usize,
     /// The number of selectable (eg. not the UI bars) floating panes currently in this tab
@@ -1260,17 +1261,17 @@ pub struct PaneInfo {
     /// A "held" pane is a paused pane that is waiting for user input (eg. a command pane that
     /// exited and is waiting to be re-run or closed)
     pub is_held: bool,
-    pub pane_x: usize,
-    pub pane_content_x: usize,
-    pub pane_y: usize,
-    pub pane_content_y: usize,
-    pub pane_rows: usize,
-    pub pane_content_rows: usize,
-    pub pane_columns: usize,
-    pub pane_content_columns: usize,
+    pub pane_x: Column,
+    pub pane_content_x: Column,
+    pub pane_y: Row,
+    pub pane_content_y: Row,
+    pub pane_rows: RowCount,
+    pub pane_content_rows: RowCount,
+    pub pane_columns: ColumnCount,
+    pub pane_content_columns: ColumnCount,
     /// The coordinates of the cursor - if this pane is focused - relative to the pane's
     /// coordinates
-    pub cursor_coordinates_in_pane: Option<(usize, usize)>, // x, y if cursor is visible
+    pub cursor_coordinates_in_pane: Option<CellCoordinates>, // x, y if cursor is visible
     /// If this is a command pane, this will show the stringified version of the command and its
     /// arguments
     pub terminal_command: Option<String>,
@@ -1412,7 +1413,7 @@ pub struct PaneContents {
     pub lines_below_viewport: Vec<String>,
     pub viewport: Vec<String>,
     pub selected_text: Option<SelectedText>,
-    pub cursor: Option<(usize, usize)>,
+    pub cursor: Option<CellCoordinates>,
     /// Milliseconds since this pane's process last wrote to its pty, if it ever did.
     ///
     /// The only signal that separates "the program produced something" from "the

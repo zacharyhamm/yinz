@@ -315,8 +315,8 @@ impl SearchResult {
                     column += width;
                 }
                 character_index = position.column();
-                position.line.0 += line_offset;
-                position.column.0 = column;
+                position.change_line(position.line.get() + line_offset);
+                position.change_column(column);
             }
         }
         res

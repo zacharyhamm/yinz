@@ -25,3 +25,5 @@ pub use zellij_types::internal_ids::SupervisorId;
 pub use zellij_types::units::{
     ElapsedMillis, ElapsedSeconds, FractionalSeconds, SignedUnixMillis, UnixMillis, UnixSeconds,
 };
+
+pub use zellij_types::position::{CellCoordinates, Column, ColumnCount, Row, RowCount};

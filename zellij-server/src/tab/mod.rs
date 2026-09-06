@@ -40,7 +40,6 @@ use zellij_types::internal_ids::TerminalId;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::mouse::MouseEvent;
 use zellij_types::position::Position;
-use zellij_types::position::{Column, Line};
 use zellij_types::style::Style;
 use zellij_types::text::clean_string_from_control_and_linebreak;
 use {
@@ -7765,10 +7764,8 @@ impl Tab {
     }
 
     pub fn is_position_inside_viewport(&self, point: &Position) -> Result<bool> {
-        let Position {
-            line: Line(line),
-            column: Column(column),
-        } = *point;
+        let line = point.line();
+        let column = point.column();
         let line: usize = line.try_into().with_context(|| {
             format!("failed to determine if position {point:?} is inside viewport")
         })?;
@@ -9582,17 +9579,19 @@ pub fn pane_info_for_pane(
     current_pane_group: &HashMap<ClientId, Vec<PaneId>>,
 ) -> PaneInfo {
     let mut pane_info = PaneInfo::default();
-    pane_info.pane_x = pane.x();
-    pane_info.pane_content_x = pane.get_content_x();
-    pane_info.pane_y = pane.y();
-    pane_info.pane_content_y = pane.get_content_y();
-    pane_info.pane_rows = pane.rows();
-    pane_info.pane_content_rows = pane.get_content_rows();
-    pane_info.pane_columns = pane.cols();
-    pane_info.pane_content_columns = pane.get_content_columns();
+    pane_info.pane_x = zellij_types::position::Column::new(pane.x());
+    pane_info.pane_content_x = zellij_types::position::Column::new(pane.get_content_x());
+    pane_info.pane_y = zellij_types::position::Row::new(pane.y());
+    pane_info.pane_content_y = zellij_types::position::Row::new(pane.get_content_y());
+    pane_info.pane_rows = zellij_types::position::RowCount::new(pane.rows());
+    pane_info.pane_content_rows = zellij_types::position::RowCount::new(pane.get_content_rows());
+    pane_info.pane_columns = zellij_types::position::ColumnCount::new(pane.cols());
+    pane_info.pane_content_columns =
+        zellij_types::position::ColumnCount::new(pane.get_content_columns());
     pane_info.cursor_coordinates_in_pane = pane
         .cursor_coordinates(None)
-        .and_then(|(x, y, is_visible)| if is_visible { Some((x, y)) } else { None });
+        .and_then(|(x, y, is_visible)| if is_visible { Some((x, y)) } else { None })
+        .map(Into::into);
     pane_info.is_selectable = pane.selectable();
     pane_info.title = pane.current_title();
     pane_info.exited = pane.exited();

@@ -22,7 +22,7 @@ pub fn encode_to_kdl(value: &PaneManifest) -> anyhow::Result<KdlDocument> {
     for (tab_position, panes) in &value.panes {
         for pane in panes {
             let mut pane_node = KdlNode::new("pane");
-            let mut pane = pane_info::encode_to_kdl(pane);
+            let mut pane = pane_info::encode_to_kdl(pane)?;
 
             let mut position_node = KdlNode::new("tab_position");
             position_node.push(i64::try_from(tab_position.get())?);

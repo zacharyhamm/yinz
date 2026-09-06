@@ -2392,11 +2392,11 @@ impl Grid {
             return None;
         }
         let end = self.selection.end;
-        if end.line.0 < 0 || end.line.0 >= self.height as isize || self.width == 0 {
+        if end.line.get() < 0 || end.line.get() >= self.height as isize || self.width == 0 {
             return None;
         }
-        let column = end.column.0.min(self.width.saturating_sub(1));
-        Some((column, end.line.0 as usize))
+        let column = end.column.get().min(self.width.saturating_sub(1));
+        Some((column, end.line.get() as usize))
     }
     pub fn selection_cursor_coordinates(&self) -> Option<(usize, usize)> {
         if self.cursor.x > self.width || self.cursor.y >= self.height {
@@ -3268,8 +3268,8 @@ impl Grid {
         &self,
         position: &Position,
     ) -> Option<(PluginId, String, String, BTreeMap<String, String>)> {
-        let click_row = position.line.0 as usize;
-        let click_col = position.column.0;
+        let click_row = position.line.get() as usize;
+        let click_col = position.column.get();
 
         let (_canonical, _group_len, logical_text, boundaries) =
             collect_and_build_logical_line(&self.viewport, click_row)?;
@@ -3331,11 +3331,11 @@ impl Grid {
 
         // Mark the canonical group containing the old hover row dirty.
         if let Some(old_pos) = self.hover_position {
-            self.mark_logical_line_dirty(old_pos.line.0 as usize);
+            self.mark_logical_line_dirty(old_pos.line.get() as usize);
         }
         // Mark the canonical group containing the new hover row dirty.
         if let Some(new_pos_inner) = new_pos {
-            self.mark_logical_line_dirty(new_pos_inner.line.0 as usize);
+            self.mark_logical_line_dirty(new_pos_inner.line.get() as usize);
         }
 
         self.hover_position = new_pos;
@@ -3370,8 +3370,8 @@ impl Grid {
         if self.plugin_highlights.is_empty() {
             return;
         }
-        let hover_row = hover_pos.line.0 as usize;
-        let hover_col = hover_pos.column.0;
+        let hover_row = hover_pos.line.get() as usize;
+        let hover_col = hover_pos.column.get();
         let (_canonical, _group_len, logical_text, boundaries) =
             match collect_and_build_logical_line(&self.viewport, hover_row) {
                 Some(v) => v,
@@ -3434,10 +3434,10 @@ impl Grid {
             // and on unfocused panes (hover_position is not set for those).
             if self.mouse_tracking == MouseTracking::Off {
                 if let Some(hover_pos) = self.hover_position {
-                    let hover_row = hover_pos.line.0 as usize;
+                    let hover_row = hover_pos.line.get() as usize;
                     let group_end_row = ridx + group_len - 1;
                     if hover_row >= ridx && hover_row <= group_end_row {
-                        let hover_col = hover_pos.column.0;
+                        let hover_col = hover_pos.column.get();
                         for pattern_map in self.plugin_highlights.values() {
                             for (_pattern, compiled) in pattern_map {
                                 if !compiled.on_hover || !compiled.has_visual_effect() {
@@ -3526,8 +3526,8 @@ impl Grid {
             };
             self.selection
                 .set_start_and_end_positions(start_position, end_position);
-            for i in std::cmp::min(start_position.line.0, end_position.line.0)
-                ..=std::cmp::max(start_position.line.0, end_position.line.0)
+            for i in std::cmp::min(start_position.line.get(), end_position.line.get())
+                ..=std::cmp::max(start_position.line.get(), end_position.line.get())
             {
                 self.output_buffer.update_line(i as usize);
             }
@@ -3569,11 +3569,11 @@ impl Grid {
         }
         let mut end = self.selection.end;
         match direction {
-            Direction::Left => end.column.0 = end.column.0.saturating_sub(1),
-            Direction::Right => end.column.0 = (end.column.0 + 1).min(self.width),
-            Direction::Up if end.line.0 > 0 => end.line.0 -= 1,
-            Direction::Down if end.line.0 < self.height.saturating_sub(1) as isize => {
-                end.line.0 += 1;
+            Direction::Left => end.change_column(end.column.get().saturating_sub(1)),
+            Direction::Right => end.change_column((end.column.get() + 1).min(self.width)),
+            Direction::Up if end.line.get() > 0 => end.change_line(end.line.get() - 1),
+            Direction::Down if end.line.get() < self.height.saturating_sub(1) as isize => {
+                end.change_line(end.line.get() + 1);
             },
             Direction::Up => {
                 self.scroll_up_one_line();
@@ -3632,7 +3632,7 @@ impl Grid {
                     return;
                 };
                 self.selection
-                    .add_line_to_position(to.line.0, last_index_in_line);
+                    .add_line_to_position(to.line.get(), last_index_in_line);
                 let current_selection = self.selection;
                 self.update_selected_lines(&old_selection, &current_selection);
                 self.mark_for_rerender();
@@ -3701,11 +3701,15 @@ impl Grid {
 
             // on the first line of the selection, use the selection start column
             // otherwise, start at the beginning of the line
-            let start_column = if l == start.line.0 { start.column.0 } else { 0 };
+            let start_column = if l == start.line.get() {
+                start.column.get()
+            } else {
+                0
+            };
 
             // same thing on the last line, but with the selection end column
-            let end_column = if l == end.line.0 {
-                end.column.0
+            let end_column = if l == end.line.get() {
+                end.column.get()
             } else {
                 self.width
             };
@@ -3772,27 +3776,27 @@ impl Grid {
         self.lines_above.len() + self.cursor.y
     }
     pub fn last_index_in_line(&self, position: &Position) -> Option<usize> {
-        let position_row = self.viewport.get(position.line.0 as usize)?;
+        let position_row = self.viewport.get(position.line.get() as usize)?;
         Some(position_row.last_index_in_line())
     }
     pub fn word_around_position(&self, position: &Position) -> Option<(Position, Position)> {
-        let position_row = self.viewport.get(position.line.0 as usize)?;
+        let position_row = self.viewport.get(position.line.get() as usize)?;
         let (index_start, index_end) = position_row
-            .word_indices_around_character_index(position.column.0, &self.word_separators)?;
+            .word_indices_around_character_index(position.column.get(), &self.word_separators)?;
 
-        let mut position_start = Position::new(position.line.0 as i32, index_start as u16);
-        let mut position_end = Position::new(position.line.0 as i32, index_end as u16);
+        let mut position_start = Position::new(position.line.get() as i32, index_start as u16);
+        let mut position_end = Position::new(position.line.get() as i32, index_end as u16);
         let mut position_row_is_canonical = position_row.is_canonical;
 
-        while !position_row_is_canonical && position_start.column.0 == 0 {
+        while !position_row_is_canonical && position_start.column.get() == 0 {
             if let Some(position_row_above) = self
                 .viewport
-                .get(position_start.line.0.saturating_sub(1) as usize)
+                .get(position_start.line.get().saturating_sub(1) as usize)
             {
                 let new_start_index =
                     position_row_above.word_start_index_of_last_character(&self.word_separators);
                 position_start = Position::new(
-                    position_start.line.0.saturating_sub(1) as i32,
+                    position_start.line.get().saturating_sub(1) as i32,
                     new_start_index as u16,
                 );
                 position_row_is_canonical = position_row_above.is_canonical;
@@ -3802,14 +3806,17 @@ impl Grid {
         }
 
         let mut column_count_in_row = position_row.columns.len();
-        while position_end.column.0 == column_count_in_row {
-            if let Some(position_row_below) = self.viewport.get(position_end.line.0 as usize + 1) {
+        while position_end.column.get() == column_count_in_row {
+            if let Some(position_row_below) =
+                self.viewport.get(position_end.line.get() as usize + 1)
+            {
                 if position_row_below.is_canonical {
                     break;
                 }
                 let new_end_index =
                     position_row_below.word_end_index_of_first_character(&self.word_separators);
-                position_end = Position::new(position_end.line.0 as i32 + 1, new_end_index as u16);
+                position_end =
+                    Position::new(position_end.line.get() as i32 + 1, new_end_index as u16);
                 column_count_in_row = position_row_below.columns.len();
             } else {
                 break;
@@ -3822,11 +3829,11 @@ impl Grid {
         &self,
         position: &Position,
     ) -> Option<(Position, Position)> {
-        let position_row = self.viewport.get(position.line.0 as usize)?;
+        let position_row = self.viewport.get(position.line.get() as usize)?;
 
-        let mut position_start = Position::new(position.line.0 as i32, 0);
+        let mut position_start = Position::new(position.line.get() as i32, 0);
         let mut position_end = Position::new(
-            position.line.0 as i32,
+            position.line.get() as i32,
             (position_row.columns.len() + position_row.excess_width()) as u16,
         );
 
@@ -3834,9 +3841,9 @@ impl Grid {
         while !found_canonical_row_start {
             if let Some(row_above) = self
                 .viewport
-                .get(position_start.line.0.saturating_sub(1) as usize)
+                .get(position_start.line.get().saturating_sub(1) as usize)
             {
-                position_start.line.0 = position_start.line.0.saturating_sub(1);
+                position_start.change_line(position_start.line.get().saturating_sub(1));
                 found_canonical_row_start = row_above.is_canonical;
             } else {
                 break;
@@ -3845,12 +3852,12 @@ impl Grid {
 
         let mut found_canonical_row_end = false;
         while !found_canonical_row_end {
-            if let Some(row_below) = self.viewport.get(position_end.line.0 as usize + 1) {
+            if let Some(row_below) = self.viewport.get(position_end.line.get() as usize + 1) {
                 if row_below.is_canonical {
                     found_canonical_row_end = true;
                 } else {
                     position_end = Position::new(
-                        position_end.line.0 as i32 + 1,
+                        position_end.line.get() as i32 + 1,
                         row_below.columns.len() as u16,
                     );
                 }
@@ -3887,8 +3894,8 @@ impl Grid {
         }
         let first_line = -(self.lines_above.len() as isize);
         let last_line = (self.viewport.len() + self.lines_below.len()) as isize - 1;
-        let clicked_line = position.line.0;
-        let clicked_column = position.column.0;
+        let clicked_line = position.line.get();
+        let clicked_column = position.column.get();
         let marker_position = Self::osc133_marker_position;
 
         let mut latest_output = None;
@@ -4816,7 +4823,7 @@ impl Grid {
         } else {
             PaneContents::new(viewport, self.selection.start, self.selection.end)
         };
-        contents.cursor = self.visible_cursor_in_viewport();
+        contents.cursor = self.visible_cursor_in_viewport().map(Into::into);
         // `lines_below` is the scroll offset: it is only non-empty once the viewport has been
         // moved up off the live tail.
         contents.is_scrolled = !self.lines_below.is_empty();
@@ -4887,7 +4894,7 @@ impl Grid {
         } else {
             PaneContents::new(viewport, self.selection.start, self.selection.end)
         };
-        contents.cursor = self.visible_cursor_in_viewport();
+        contents.cursor = self.visible_cursor_in_viewport().map(Into::into);
         // `lines_below` is the scroll offset: it is only non-empty once the viewport has been
         // moved up off the live tail.
         contents.is_scrolled = !self.lines_below.is_empty();

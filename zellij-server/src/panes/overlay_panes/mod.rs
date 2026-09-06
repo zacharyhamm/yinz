@@ -862,20 +862,22 @@ impl OverlayPanes {
         } else {
             Offset::frame(1)
         };
-        pane_info.pane_x = geom.x;
-        pane_info.pane_y = geom.y;
-        pane_info.pane_columns = geom.cols.as_usize();
-        pane_info.pane_rows = geom.rows.as_usize();
-        pane_info.pane_content_x = geom.x + offset.left;
-        pane_info.pane_content_y = geom.y + offset.top;
-        pane_info.pane_content_columns = geom
-            .cols
-            .as_usize()
-            .saturating_sub(offset.left + offset.right);
-        pane_info.pane_content_rows = geom
-            .rows
-            .as_usize()
-            .saturating_sub(offset.top + offset.bottom);
+        pane_info.pane_x = zellij_types::position::Column::new(geom.x);
+        pane_info.pane_y = zellij_types::position::Row::new(geom.y);
+        pane_info.pane_columns = zellij_types::position::ColumnCount::new(geom.cols.as_usize());
+        pane_info.pane_rows = zellij_types::position::RowCount::new(geom.rows.as_usize());
+        pane_info.pane_content_x = zellij_types::position::Column::new(geom.x + offset.left);
+        pane_info.pane_content_y = zellij_types::position::Row::new(geom.y + offset.top);
+        pane_info.pane_content_columns = zellij_types::position::ColumnCount::new(
+            geom.cols
+                .as_usize()
+                .saturating_sub(offset.left + offset.right),
+        );
+        pane_info.pane_content_rows = zellij_types::position::RowCount::new(
+            geom.rows
+                .as_usize()
+                .saturating_sub(offset.top + offset.bottom),
+        );
     }
 
     // ---- z-order and occlusion ------------------------------------------------------------

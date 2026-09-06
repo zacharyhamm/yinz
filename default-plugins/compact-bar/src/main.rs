@@ -361,8 +361,8 @@ impl State {
     fn update_display_area(&mut self, tabs: &[TabInfo]) {
         for tab in tabs {
             if tab.active {
-                self.display_area_rows = tab.display_area_rows;
-                self.display_area_cols = tab.display_area_columns;
+                self.display_area_rows = (tab.display_area_rows).get();
+                self.display_area_cols = (tab.display_area_columns).get();
                 break;
             }
         }

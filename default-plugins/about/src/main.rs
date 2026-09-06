@@ -418,8 +418,8 @@ impl App {
         if let Some(first_tab) = tab_info.first() {
             let prev_tab_columns = self.tab_columns;
             let prev_tab_rows = self.tab_rows;
-            self.tab_columns = first_tab.display_area_columns;
-            self.tab_rows = first_tab.display_area_rows;
+            self.tab_columns = (first_tab.display_area_columns).get();
+            self.tab_rows = (first_tab.display_area_rows).get();
             if self.tab_columns != prev_tab_columns || self.tab_rows != prev_tab_rows {
                 let desired_x_coords = self.tab_columns.saturating_sub(UI_COLUMNS) / 2;
                 let desired_y_coords = self.tab_rows.saturating_sub(UI_ROWS) / 2;

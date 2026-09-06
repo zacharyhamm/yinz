@@ -1553,7 +1553,7 @@ impl TryFrom<zellij_types::input::actions::Action>
             },
             zellij_types::input::actions::Action::ScrollUpAt { position } => {
                 ActionType::ScrollUpAt(ScrollUpAtAction {
-                    position: Some(position.into()),
+                    position: Some(position.try_into()?),
                 })
             },
             zellij_types::input::actions::Action::ScrollDown => {
@@ -1561,7 +1561,7 @@ impl TryFrom<zellij_types::input::actions::Action>
             },
             zellij_types::input::actions::Action::ScrollDownAt { position } => {
                 ActionType::ScrollDownAt(ScrollDownAtAction {
-                    position: Some(position.into()),
+                    position: Some(position.try_into()?),
                 })
             },
             zellij_types::input::actions::Action::ScrollToBottom => {
@@ -1996,7 +1996,7 @@ impl TryFrom<zellij_types::input::actions::Action>
             }),
             zellij_types::input::actions::Action::MouseEvent { event } => {
                 ActionType::MouseEvent(MouseEventAction {
-                    event: Some(event.into()),
+                    event: Some(event.try_into()?),
                 })
             },
             zellij_types::input::actions::Action::Copy => ActionType::Copy(CopyAction {}),
@@ -4260,14 +4260,15 @@ fn proto_i32_to_unblock_condition(condition: i32) -> Result<zellij_types::data::
 }
 
 // Position conversion
-impl From<zellij_types::position::Position>
+impl TryFrom<zellij_types::position::Position>
     for crate::client_server_contract::client_server_contract::Position
 {
-    fn from(pos: zellij_types::position::Position) -> Self {
-        Self {
-            line: pos.line.0 as i32,
-            column: pos.column.0 as u64,
-        }
+    type Error = anyhow::Error;
+    fn try_from(pos: zellij_types::position::Position) -> Result<Self> {
+        Ok(Self {
+            line: i32::try_from(pos.line).context("position line exceeds i32")?,
+            column: u64::try_from(pos.column.get()).context("position column exceeds u64")?,
+        })
     }
 }
 
@@ -4280,8 +4281,11 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Position>
         pos: crate::client_server_contract::client_server_contract::Position,
     ) -> Result<Self> {
         Ok(Self {
-            line: zellij_types::position::Line(pos.line as isize),
-            column: zellij_types::position::Column(pos.column as usize),
+            line: zellij_types::position::Line::new(
+                isize::try_from(pos.line).context("position line out of range")?,
+            ),
+            column: zellij_types::position::Column::try_from(pos.column)
+                .context("position column out of range")?,
         })
     }
 }
@@ -4637,18 +4641,16 @@ impl TryFrom<crate::client_server_contract::client_server_contract::NewPanePlace
 }
 
 // MouseEvent conversion
-impl From<zellij_types::mouse::MouseEvent>
+impl TryFrom<zellij_types::mouse::MouseEvent>
     for crate::client_server_contract::client_server_contract::MouseEvent
 {
-    fn from(event: zellij_types::mouse::MouseEvent) -> Self {
+    type Error = anyhow::Error;
+    fn try_from(event: zellij_types::mouse::MouseEvent) -> Result<Self> {
         use crate::client_server_contract::client_server_contract::{
             MouseEventType as ProtoMouseEventType, Position,
         };
 
-        let position = Position {
-            line: event.position.line.0 as i32,
-            column: event.position.column.0 as u64,
-        };
+        let position = Position::try_from(event.position)?;
 
         let event_type = match event.event_type {
             zellij_types::mouse::MouseEventType::Press => ProtoMouseEventType::Press as i32,
@@ -4656,7 +4658,7 @@ impl From<zellij_types::mouse::MouseEvent>
             zellij_types::mouse::MouseEventType::Motion => ProtoMouseEventType::Motion as i32,
         };
 
-        Self {
+        Ok(Self {
             event_type,
             left: event.left,
             right: event.right,
@@ -4669,7 +4671,7 @@ impl From<zellij_types::mouse::MouseEvent>
             alt: event.alt,
             ctrl: event.ctrl,
             position: Some(position),
-        }
+        })
     }
 }
 

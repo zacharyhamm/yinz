@@ -263,7 +263,7 @@ impl ZellijPlugin for State {
         match event {
             Event::TabUpdate(tabs) => {
                 if let Some(tab) = tabs.first() {
-                    self.resize(Some(tab.display_area_columns));
+                    self.resize(Some((tab.display_area_columns).get()));
                 }
                 false
             },

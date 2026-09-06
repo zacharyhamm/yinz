@@ -1,5 +1,6 @@
 use super::*;
 use zellij_types::internal_ids::TabPosition;
+use zellij_types::position::{CellCoordinates, Column, ColumnCount, Row, RowCount};
 
 pub fn decode_from_kdl(
     kdl_document: &KdlDocument,
@@ -66,14 +67,21 @@ pub fn decode_from_kdl(
     let exited = bool_node!("exited");
     let exit_status = optional_int_node!("exit_status", i32);
     let is_held = bool_node!("is_held");
-    let pane_x = int_node!("pane_x", usize);
-    let pane_content_x = int_node!("pane_content_x", usize);
-    let pane_y = int_node!("pane_y", usize);
-    let pane_content_y = int_node!("pane_content_y", usize);
-    let pane_rows = int_node!("pane_rows", usize);
-    let pane_content_rows = int_node!("pane_content_rows", usize);
-    let pane_columns = int_node!("pane_columns", usize);
-    let pane_content_columns = int_node!("pane_content_columns", usize);
+    let pane_x =
+        Column::try_from(int_node!("pane_x", i64)).map_err(|_| "pane_x is out of range")?;
+    let pane_content_x = Column::try_from(int_node!("pane_content_x", i64))
+        .map_err(|_| "pane_content_x is out of range")?;
+    let pane_y = Row::try_from(int_node!("pane_y", i64)).map_err(|_| "pane_y is out of range")?;
+    let pane_content_y = Row::try_from(int_node!("pane_content_y", i64))
+        .map_err(|_| "pane_content_y is out of range")?;
+    let pane_rows =
+        RowCount::try_from(int_node!("pane_rows", i64)).map_err(|_| "pane_rows is out of range")?;
+    let pane_content_rows = RowCount::try_from(int_node!("pane_content_rows", i64))
+        .map_err(|_| "pane_content_rows is out of range")?;
+    let pane_columns = ColumnCount::try_from(int_node!("pane_columns", i64))
+        .map_err(|_| "pane_columns is out of range")?;
+    let pane_content_columns = ColumnCount::try_from(int_node!("pane_content_columns", i64))
+        .map_err(|_| "pane_content_columns is out of range")?;
     let cursor_coordinates_in_pane = kdl_document
         .get("cursor_coordinates_in_pane")
         .map(|n| {
@@ -81,13 +89,20 @@ pub fn decode_from_kdl(
             (entries.next(), entries.next())
         })
         .and_then(|(x, y)| {
-            let x = x.and_then(|x| x.value().as_i64()).map(|x| x as usize);
-            let y = y.and_then(|y| y.value().as_i64()).map(|y| y as usize);
+            let x = x.and_then(|x| x.value().as_i64());
+            let y = y.and_then(|y| y.value().as_i64());
             match (x, y) {
                 (Some(x), Some(y)) => Some((x, y)),
                 _ => None,
             }
-        });
+        })
+        .map(|(x, y)| {
+            Ok::<_, String>(CellCoordinates::new(
+                Column::try_from(x).map_err(|_| "Cursor column is out of range")?,
+                Row::try_from(y).map_err(|_| "Cursor row is out of range")?,
+            ))
+        })
+        .transpose()?;
     let terminal_command = optional_string_node!("terminal_command");
     let cwd = optional_string_node!("cwd");
     let plugin_url = optional_string_node!("plugin_url");
@@ -124,12 +139,12 @@ pub fn decode_from_kdl(
     };
     Ok((tab_position, pane_info))
 }
-pub fn encode_to_kdl(value: &PaneInfo) -> KdlDocument {
+pub fn encode_to_kdl(value: &PaneInfo) -> anyhow::Result<KdlDocument> {
     let mut kdl_doucment = KdlDocument::new();
     macro_rules! int_node {
         ($name:expr, $val:expr) => {{
             let mut att = KdlNode::new($name);
-            att.push($val as i64);
+            att.push(i64::try_from($val)?);
             kdl_doucment.nodes_mut().push(att);
         }};
     }
@@ -168,10 +183,10 @@ pub fn encode_to_kdl(value: &PaneInfo) -> KdlDocument {
     int_node!("pane_content_rows", value.pane_content_rows);
     int_node!("pane_columns", value.pane_columns);
     int_node!("pane_content_columns", value.pane_content_columns);
-    if let Some((cursor_x, cursor_y)) = value.cursor_coordinates_in_pane {
+    if let Some(cursor) = value.cursor_coordinates_in_pane {
         let mut cursor_coordinates_in_pane = KdlNode::new("cursor_coordinates_in_pane");
-        cursor_coordinates_in_pane.push(cursor_x as i64);
-        cursor_coordinates_in_pane.push(cursor_y as i64);
+        cursor_coordinates_in_pane.push(i64::try_from(cursor.x)?);
+        cursor_coordinates_in_pane.push(i64::try_from(cursor.y)?);
         kdl_doucment.nodes_mut().push(cursor_coordinates_in_pane);
     }
     if let Some(terminal_command) = &value.terminal_command {
@@ -184,5 +199,5 @@ pub fn encode_to_kdl(value: &PaneInfo) -> KdlDocument {
         string_node!("plugin_url", plugin_url.to_string());
     }
     bool_node!("is_selectable", value.is_selectable);
-    kdl_doucment
+    Ok(kdl_doucment)
 }

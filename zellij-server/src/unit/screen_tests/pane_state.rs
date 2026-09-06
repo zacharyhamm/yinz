@@ -130,15 +130,15 @@ fn recorder_pane_metadata() {
     let terminal_pane = PaneInfo {
         id: zellij_types::pane_id::PaneId::from_legacy(5, false),
         title: "my terminal".to_string(),
-        pane_content_rows: 24,
-        pane_content_columns: 80,
+        pane_content_rows: zellij_types::position::RowCount::new(24),
+        pane_content_columns: zellij_types::position::ColumnCount::new(80),
         ..Default::default()
     };
     let plugin_pane = PaneInfo {
         id: zellij_types::pane_id::PaneId::from_legacy(6, true),
         title: "plugin".to_string(),
-        pane_content_rows: 24,
-        pane_content_columns: 80,
+        pane_content_rows: zellij_types::position::RowCount::new(24),
+        pane_content_columns: zellij_types::position::ColumnCount::new(80),
         ..Default::default()
     };
     pane_manifest.panes.insert(

@@ -1009,9 +1009,10 @@ impl Pane for TerminalPane {
     fn update_selection(&mut self, to: &Position, _client_id: ClientId) {
         let should_scroll = self.selection_scrolled_at.elapsed()
             >= time::Duration::from_millis(SELECTION_SCROLL_INTERVAL_MS);
-        let cursor_at_the_bottom = to.line.0 < 0 && should_scroll;
-        let cursor_at_the_top = to.line.0 as usize >= self.grid.height && should_scroll;
-        let cursor_in_the_middle = to.line.0 >= 0 && (to.line.0 as usize) < self.grid.height;
+        let cursor_at_the_bottom = to.line.get() < 0 && should_scroll;
+        let cursor_at_the_top = to.line.get() as usize >= self.grid.height && should_scroll;
+        let cursor_in_the_middle =
+            to.line.get() >= 0 && (to.line.get() as usize) < self.grid.height;
 
         // TODO: check how far up/down mouse is relative to pane, to increase scroll lines?
         if cursor_at_the_bottom {

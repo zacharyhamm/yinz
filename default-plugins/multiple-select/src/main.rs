@@ -205,8 +205,8 @@ impl App {
     fn handle_tab_update(&mut self, tab_infos: Vec<TabInfo>) -> bool {
         for tab in tab_infos {
             if tab.active {
-                self.display_area_rows = tab.display_area_rows;
-                self.display_area_cols = tab.display_area_columns;
+                self.display_area_rows = (tab.display_area_rows).get();
+                self.display_area_cols = (tab.display_area_columns).get();
                 break;
             }
         }

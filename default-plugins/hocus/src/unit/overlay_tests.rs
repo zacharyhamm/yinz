@@ -673,8 +673,8 @@ fn placed_state() -> State {
         position: TabPosition::new(0),
         tab_id: TabId::new(0),
         active: true,
-        display_area_rows: 50,
-        display_area_columns: 200,
+        display_area_rows: zellij_tile::prelude::RowCount::new(50),
+        display_area_columns: zellij_tile::prelude::ColumnCount::new(200),
         ..TabInfo::default()
     }]);
     state.on_panes(manifest(0, vec![pane(7, false)]));
@@ -767,8 +767,8 @@ fn a_tab_update_retries_the_lists_placement() {
         position: TabPosition::new(0),
         tab_id: TabId::new(0),
         active: true,
-        display_area_rows: 50,
-        display_area_columns: 200,
+        display_area_rows: zellij_tile::prelude::RowCount::new(50),
+        display_area_columns: zellij_tile::prelude::ColumnCount::new(200),
         ..TabInfo::default()
     }]);
     assert!(
@@ -797,8 +797,8 @@ fn a_resize_while_both_halves_are_hidden_is_still_placed() {
         position: TabPosition::new(0),
         tab_id: TabId::new(0),
         active: true,
-        display_area_rows: 25,
-        display_area_columns: 100,
+        display_area_rows: zellij_tile::prelude::RowCount::new(25),
+        display_area_columns: zellij_tile::prelude::ColumnCount::new(100),
         ..TabInfo::default()
     }]);
     assert_eq!(
@@ -1057,8 +1057,8 @@ fn two_clients_on_different_tabs_leave_the_panes_alone() {
                 position: TabPosition::new(position),
                 tab_id: TabId::new(position),
                 active: position == active,
-                display_area_rows: 50,
-                display_area_columns: 200,
+                display_area_rows: zellij_tile::prelude::RowCount::new(50),
+                display_area_columns: zellij_tile::prelude::ColumnCount::new(200),
                 ..TabInfo::default()
             })
             .collect::<Vec<_>>()
@@ -1125,8 +1125,8 @@ fn a_placement_that_could_not_land_is_made_again_when_the_pane_appears() {
         position: TabPosition::new(0),
         tab_id: TabId::new(0),
         active: true,
-        display_area_rows: 50,
-        display_area_columns: 200,
+        display_area_rows: zellij_tile::prelude::RowCount::new(50),
+        display_area_columns: zellij_tile::prelude::ColumnCount::new(200),
         ..TabInfo::default()
     }];
 
@@ -1392,8 +1392,8 @@ fn a_tab() -> TabInfo {
         position: TabPosition::new(0),
         tab_id: TabId::new(0),
         active: true,
-        display_area_rows: 50,
-        display_area_columns: 200,
+        display_area_rows: zellij_tile::prelude::RowCount::new(50),
+        display_area_columns: zellij_tile::prelude::ColumnCount::new(200),
         ..TabInfo::default()
     }
 }
@@ -1485,10 +1485,10 @@ fn tiled(id: u32, x: usize, y: usize, cols: usize, rows: usize, focused: bool) -
         id: zellij_tile::prelude::PaneId::from_legacy(id, false),
         is_focused: focused,
         is_selectable: true,
-        pane_x: x,
-        pane_y: y,
-        pane_columns: cols,
-        pane_rows: rows,
+        pane_x: zellij_tile::prelude::Column::new(x),
+        pane_y: zellij_tile::prelude::Row::new(y),
+        pane_columns: zellij_tile::prelude::ColumnCount::new(cols),
+        pane_rows: zellij_tile::prelude::RowCount::new(rows),
         ..Default::default()
     }
 }
@@ -2139,8 +2139,8 @@ fn ctrl_o_does_nothing_when_every_corner_is_the_same_rectangle() {
         position: TabPosition::new(0),
         tab_id: TabId::new(0),
         active: true,
-        display_area_rows: 8,
-        display_area_columns: 1,
+        display_area_rows: zellij_tile::prelude::RowCount::new(8),
+        display_area_columns: zellij_tile::prelude::ColumnCount::new(1),
         ..TabInfo::default()
     }]);
     state.on_panes(manifest(0, vec![overlay_pane(7, 0, 0, 1, 8)]));
@@ -2290,8 +2290,8 @@ fn a_resize_keeps_the_corner_the_last_press_chose() {
     ));
     state.last_placement = None;
     state.on_tabs(vec![TabInfo {
-        display_area_rows: 40,
-        display_area_columns: 160,
+        display_area_rows: zellij_tile::prelude::RowCount::new(40),
+        display_area_columns: zellij_tile::prelude::ColumnCount::new(160),
         ..a_tab()
     }]);
 
@@ -3139,8 +3139,8 @@ fn tiled_own(id: u32) -> PaneInfo {
     PaneInfo {
         id: zellij_tile::prelude::PaneId::from_legacy(id, true),
         is_selectable: true,
-        pane_columns: 80,
-        pane_rows: 40,
+        pane_columns: zellij_tile::prelude::ColumnCount::new(80),
+        pane_rows: zellij_tile::prelude::RowCount::new(40),
         ..Default::default()
     }
 }
@@ -3161,8 +3161,8 @@ fn a_hocus_in_the_layout_grows_no_agent_list() {
     state.on_tabs(vec![TabInfo {
         position: TabPosition::new(0),
         active: true,
-        display_area_rows: 50,
-        display_area_columns: 200,
+        display_area_rows: zellij_tile::prelude::RowCount::new(50),
+        display_area_columns: zellij_tile::prelude::ColumnCount::new(200),
         ..Default::default()
     }]);
 
@@ -3245,16 +3245,16 @@ fn a_dismissed_panel_does_not_follow_a_tab_switch() {
             position: TabPosition::new(0),
             tab_id: TabId::new(0),
             active: false,
-            display_area_rows: 50,
-            display_area_columns: 200,
+            display_area_rows: zellij_tile::prelude::RowCount::new(50),
+            display_area_columns: zellij_tile::prelude::ColumnCount::new(200),
             ..TabInfo::default()
         },
         TabInfo {
             position: TabPosition::new(1),
             tab_id: TabId::new(1),
             active: true,
-            display_area_rows: 50,
-            display_area_columns: 200,
+            display_area_rows: zellij_tile::prelude::RowCount::new(50),
+            display_area_columns: zellij_tile::prelude::ColumnCount::new(200),
             ..TabInfo::default()
         },
     ]);

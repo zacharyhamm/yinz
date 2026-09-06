@@ -50,7 +50,7 @@ impl Selection {
         self.start = start;
         self.end = end;
         self.last_added_word_position = Some((start, end));
-        self.last_added_line_index = Some(start.line.0);
+        self.last_added_line_index = Some(start.line.get());
     }
     pub fn add_word_to_position(&mut self, word_start: Position, word_end: Position) {
         // here we assume word_start is smaller or equal to word_end
@@ -144,16 +144,21 @@ impl Selection {
             .map(|last| line_index > last)
             .unwrap_or(false);
 
-        if line_index_is_smaller_than_last_added_line_index && self.start.line.0 > line_index {
+        if line_index_is_smaller_than_last_added_line_index && self.start.line.get() > line_index {
             // extend selection one line upwards
             self.start = Position::new(line_index as i32, 0);
-        } else if line_index_is_larger_than_last_added_line_index && self.end.line.0 < line_index {
+        } else if line_index_is_larger_than_last_added_line_index
+            && self.end.line.get() < line_index
+        {
             // extend selection one line downwards
             self.end = Position::new(line_index as i32, last_index_in_line as u16);
-        } else if line_index_is_smaller_than_last_added_line_index && self.end.line.0 > line_index {
+        } else if line_index_is_smaller_than_last_added_line_index
+            && self.end.line.get() > line_index
+        {
             // reduce selection one line from below
             self.end = Position::new(line_index as i32, last_index_in_line as u16);
-        } else if line_index_is_larger_than_last_added_line_index && self.start.line.0 < line_index
+        } else if line_index_is_larger_than_last_added_line_index
+            && self.start.line.get() < line_index
         {
             // reduce selection one line from above
             self.start = Position::new(line_index as i32, 0);
@@ -170,16 +175,16 @@ impl Selection {
             (self.end, self.start)
         };
 
-        if (start.line.0) < row && row < end.line.0 {
+        if (start.line.get()) < row && row < end.line.get() {
             return true;
         }
         if start.line == end.line {
-            return row == start.line.0 && start.column.0 <= col && col < end.column.0;
+            return row == start.line.get() && start.column.get() <= col && col < end.column.get();
         }
-        if start.line.0 == row && col >= start.column.0 {
+        if start.line.get() == row && col >= start.column.get() {
             return true;
         }
-        end.line.0 == row && col < end.column.0
+        end.line.get() == row && col < end.column.get()
     }
 
     pub fn contains_row(&self, row: usize) -> bool {
@@ -189,7 +194,7 @@ impl Selection {
         } else {
             (self.end, self.start)
         };
-        start.line.0 <= row && end.line.0 >= row
+        start.line.get() <= row && end.line.get() >= row
     }
 
     pub fn is_empty(&self) -> bool {
@@ -229,27 +234,31 @@ impl Selection {
 
     pub fn line_indices(&self) -> std::ops::RangeInclusive<isize> {
         let sorted = self.sorted();
-        sorted.start.line.0..=sorted.end.line.0
+        sorted.start.line.get()..=sorted.end.line.get()
     }
 
     pub fn move_up(&mut self, lines: usize) {
-        self.start.line.0 -= lines as isize;
+        self.start
+            .change_line(self.start.line.get() - lines as isize);
         if !self.active {
-            self.end.line.0 -= lines as isize;
+            self.end.change_line(self.end.line.get() - lines as isize);
         }
     }
 
     pub fn move_down(&mut self, lines: usize) {
-        self.start.line.0 += lines as isize;
+        self.start
+            .change_line(self.start.line.get() + lines as isize);
         if !self.active {
-            self.end.line.0 += lines as isize;
+            self.end.change_line(self.end.line.get() + lines as isize);
         }
     }
     pub fn offset(mut self, offset_x: usize, offset_y: usize) -> Self {
-        self.start.line.0 += offset_y as isize;
-        self.end.line.0 += offset_y as isize;
-        self.start.column.0 += offset_x;
-        self.end.column.0 += offset_x;
+        self.start
+            .change_line(self.start.line.get() + offset_y as isize);
+        self.end
+            .change_line(self.end.line.get() + offset_y as isize);
+        self.start.change_column(self.start.column.get() + offset_x);
+        self.end.change_column(self.end.column.get() + offset_x);
         self
     }
 
@@ -258,10 +267,10 @@ impl Selection {
     pub fn diff(&self, other: &Self, max: usize) -> impl Iterator<Item = isize> {
         let mut lines_to_update = HashSet::new();
 
-        lines_to_update.insert(self.start.line.0);
-        lines_to_update.insert(self.end.line.0);
-        lines_to_update.insert(other.start.line.0);
-        lines_to_update.insert(other.end.line.0);
+        lines_to_update.insert(self.start.line.get());
+        lines_to_update.insert(self.end.line.get());
+        lines_to_update.insert(other.start.line.get());
+        lines_to_update.insert(other.end.line.get());
 
         let old_lines: HashSet<isize> = self.get_visible_indices(max).collect();
         let new_lines: HashSet<isize> = other.get_visible_indices(max).collect();
@@ -277,8 +286,8 @@ impl Selection {
 
     fn get_visible_indices(&self, max: usize) -> Range<isize> {
         let Selection { start, end, .. } = self.sorted();
-        let start = start.line.0.max(0);
-        let end = end.line.0.min(max as isize);
+        let start = start.line.get().max(0);
+        let end = end.line.get().min(max as isize);
         start..end
     }
 }

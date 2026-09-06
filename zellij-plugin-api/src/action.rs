@@ -2353,8 +2353,10 @@ impl TryFrom<ProtobufPosition> for Position {
     type Error = &'static str;
     fn try_from(protobuf_position: ProtobufPosition) -> Result<Self, &'static str> {
         Ok(Position {
-            line: Line(protobuf_position.line as isize),
-            column: Column(protobuf_position.column as usize),
+            line: Line::try_from(protobuf_position.line)
+                .map_err(|_| "position line out of range")?,
+            column: Column::try_from(protobuf_position.column)
+                .map_err(|_| "position column out of range")?,
         })
     }
 }
@@ -2363,8 +2365,8 @@ impl TryFrom<Position> for ProtobufPosition {
     type Error = &'static str;
     fn try_from(position: Position) -> Result<Self, &'static str> {
         Ok(ProtobufPosition {
-            line: position.line.0 as i64,
-            column: position.column.0 as i64,
+            line: i64::try_from(position.line).map_err(|_| "position line exceeds i64")?,
+            column: i64::try_from(position.column).map_err(|_| "position column exceeds i64")?,
         })
     }
 }
@@ -2389,8 +2391,10 @@ impl TryFrom<ProtobufMouseEventPayload> for MouseEvent {
             alt: protobuf_event.alt,
             ctrl: protobuf_event.ctrl,
             position: Position {
-                line: Line(protobuf_event.line as isize),
-                column: Column(protobuf_event.column as usize),
+                line: Line::try_from(protobuf_event.line)
+                    .map_err(|_| "position line out of range")?,
+                column: Column::try_from(protobuf_event.column)
+                    .map_err(|_| "position column out of range")?,
             },
         })
     }
@@ -2415,8 +2419,9 @@ impl TryFrom<MouseEvent> for ProtobufMouseEventPayload {
             shift: event.shift,
             alt: event.alt,
             ctrl: event.ctrl,
-            line: event.position.line.0 as i64,
-            column: event.position.column.0 as i64,
+            line: i64::try_from(event.position.line).map_err(|_| "position line exceeds i64")?,
+            column: i64::try_from(event.position.column)
+                .map_err(|_| "position column exceeds i64")?,
         })
     }
 }

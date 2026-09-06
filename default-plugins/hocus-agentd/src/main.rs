@@ -5287,8 +5287,8 @@ mod tests {
             vec![PaneInfo {
                 id: zellij_tile::prelude::PaneId::from_legacy(pane_id, false),
                 title: "claude".to_owned(),
-                pane_content_rows: rows,
-                pane_content_columns: columns,
+                pane_content_rows: zellij_tile::prelude::RowCount::new(rows),
+                pane_content_columns: zellij_tile::prelude::ColumnCount::new(columns),
                 ..PaneInfo::default()
             }],
         );
