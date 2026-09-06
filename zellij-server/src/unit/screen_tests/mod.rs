@@ -10,6 +10,7 @@ use crate::{
     ClientId, ServerInstruction, SessionMetaData, ThreadSenders,
 };
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::NotificationId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
@@ -2161,7 +2162,9 @@ fn notification_history_keeps_dismissed_toasts() {
         .unwrap();
     mock_screen
         .to_screen
-        .send(ScreenInstruction::DismissNotification(0))
+        .send(ScreenInstruction::DismissNotification(NotificationId::new(
+            0,
+        )))
         .unwrap();
 
     let (response_tx, response_rx) = crossbeam::channel::bounded(1);
@@ -2179,7 +2182,10 @@ fn notification_history_keeps_dismissed_toasts() {
             .iter()
             .map(|notification| (notification.id, notification.message.as_str()))
             .collect::<Vec<_>>(),
-        vec![(0, "first"), (1, "second")]
+        vec![
+            (NotificationId::new(0), "first"),
+            (NotificationId::new(1), "second")
+        ]
     );
     assert!(history
         .iter()

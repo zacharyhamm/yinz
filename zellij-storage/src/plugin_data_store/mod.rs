@@ -67,6 +67,7 @@ pub(crate) mod tests;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use zellij_types::internal_ids::DataWatchId;
 
 use crate::data_access::PluginDataBackend;
 use zellij_types::internal_ids::{ClientId, PluginId};
@@ -229,7 +230,11 @@ impl PluginDataStore {
     }
 
     /// Cancel a watch. A plugin may only cancel its own.
-    pub fn unregister_watch(&self, plugin_id: PluginId, watch_id: u64) -> Result<(), DataError> {
+    pub fn unregister_watch(
+        &self,
+        plugin_id: PluginId,
+        watch_id: DataWatchId,
+    ) -> Result<(), DataError> {
         self.watches.unregister(plugin_id, watch_id)
     }
 

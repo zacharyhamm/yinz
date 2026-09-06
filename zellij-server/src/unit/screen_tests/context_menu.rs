@@ -9,6 +9,8 @@
 use super::*;
 use zellij_types::input::actions::Action;
 use zellij_types::input::context_menu::ContextMenu;
+use zellij_types::internal_ids::ContextMenuItemId;
+use zellij_types::internal_ids::ContextMenuRequestId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::keys::{BareKey, KeyWithModifier};
 use zellij_types::pane_size::Viewport;
@@ -52,7 +54,7 @@ fn click_context(pane_id: PaneId, click: (usize, usize)) -> ContextMenuContext {
 }
 
 /// A screen with one tab and a menu already open and resolved, anchored at `click`.
-fn screen_with_open_menu(click: (usize, usize)) -> (Screen, ClientId, u64) {
+fn screen_with_open_menu(click: (usize, usize)) -> (Screen, ClientId, ContextMenuRequestId) {
     let client_id = ClientId::new(1);
     let mut screen = screen_with_menu_configured();
     let request_id = screen.open_context_menu(
@@ -189,7 +191,7 @@ fn an_item_the_plugin_returns_by_id_gets_its_actions_back() {
     // What a plugin actually returns: ids and labels, no actions - and one it invented.
     let from_plugin = vec![
         ContextMenuItem {
-            id: Some(2),
+            id: Some(ContextMenuItemId::new(2)),
             label: "Close this pane".to_owned(),
             ..Default::default()
         },

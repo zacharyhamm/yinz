@@ -54,6 +54,10 @@ pub use super::generated_api::api::{
     style::Style as ProtobufStyle,
 };
 use crate::plugin_data::ProtobufRows as ProtobufDataRows;
+use zellij_types::internal_ids::ContextMenuItemId;
+use zellij_types::internal_ids::ContextMenuRequestId;
+use zellij_types::internal_ids::DataWatchId;
+use zellij_types::internal_ids::QueueJobId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::keys::{KeyModifier, KeyWithModifier};
@@ -685,7 +689,7 @@ impl TryFrom<ProtobufEvent> for Event {
             Ok(ProtobufEventType::PluginDataChanged) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::PluginDataChangedPayload(p)) => {
                     Ok(Event::PluginDataChanged {
-                        watch_id: p.watch_id,
+                        watch_id: DataWatchId::new(p.watch_id),
                         // An absent `rows` is an empty result set, which is a legitimate thing for a
                         // watch to be told about — its last matching row having been deleted.
                         rows: p.rows.map(DataRows::from).unwrap_or_default(),
@@ -698,7 +702,7 @@ impl TryFrom<ProtobufEvent> for Event {
                 Some(ProtobufEventPayload::QueueJobStartedPayload(p)) => {
                     Ok(Event::QueueJobStarted {
                         queue: p.queue,
-                        job_id: p.job_id,
+                        job_id: QueueJobId::new(p.job_id),
                         plugin_id: zellij_types::internal_ids::PluginId::new(p.plugin_id),
                         context: context_from_items(p.context),
                     })
@@ -802,7 +806,7 @@ impl TryFrom<ProtobufEvent> for Event {
                         .into();
                     Ok(Event::QueueJobFinished {
                         queue: p.queue,
-                        job_id: p.job_id,
+                        job_id: QueueJobId::new(p.job_id),
                         outcome,
                         payload: p.payload,
                         context: context_from_items(p.context),
@@ -1434,7 +1438,7 @@ impl TryFrom<Event> for ProtobufEvent {
                 name: ProtobufEventType::PluginDataChanged as i32,
                 payload: Some(event::Payload::PluginDataChangedPayload(
                     ProtobufPluginDataChangedPayload {
-                        watch_id,
+                        watch_id: watch_id.get(),
                         rows: Some(ProtobufDataRows::from(rows)),
                         truncated,
                     },
@@ -1450,7 +1454,7 @@ impl TryFrom<Event> for ProtobufEvent {
                 payload: Some(event::Payload::QueueJobStartedPayload(
                     ProtobufQueueJobStartedPayload {
                         queue,
-                        job_id,
+                        job_id: job_id.get(),
                         plugin_id: plugin_id.get(),
                         context: context_to_items(context),
                     },
@@ -1542,7 +1546,7 @@ impl TryFrom<Event> for ProtobufEvent {
                 payload: Some(event::Payload::QueueJobFinishedPayload(
                     ProtobufQueueJobFinishedPayload {
                         queue,
-                        job_id,
+                        job_id: job_id.get(),
                         outcome: ProtobufQueueJobOutcome::from(outcome) as i32,
                         payload,
                         context: context_to_items(context),
@@ -3713,7 +3717,7 @@ impl TryFrom<ProtobufQueueJobInfo> for QueueJobInfo {
             Err(_) => return Err("Malformed state for QueueJobInfo"),
         };
         Ok(QueueJobInfo {
-            job_id: info.job_id,
+            job_id: QueueJobId::new(info.job_id),
             queue: info.queue,
             plugin_url: info.plugin_url,
             plugin_id: info
@@ -3733,7 +3737,7 @@ impl From<QueueJobInfo> for ProtobufQueueJobInfo {
             QueueJobState::Running => ProtobufQueueJobState::Running,
         };
         ProtobufQueueJobInfo {
-            job_id: info.job_id,
+            job_id: info.job_id.get(),
             queue: info.queue,
             plugin_url: info.plugin_url,
             plugin_id: info.plugin_id.map(|id| id.get()),
@@ -3787,7 +3791,7 @@ impl From<QueueSnapshot> for ProtobufQueueSnapshot {
 impl From<ProtobufContextMenuItem> for ContextMenuItem {
     fn from(item: ProtobufContextMenuItem) -> Self {
         ContextMenuItem {
-            id: item.id,
+            id: item.id.map(ContextMenuItemId::new),
             label: item.label,
             shortcut: item.shortcut,
             // Empty by construction: the wire carries no actions, and the server re-attaches them
@@ -3807,7 +3811,7 @@ impl From<ProtobufContextMenuItem> for ContextMenuItem {
 impl From<ContextMenuItem> for ProtobufContextMenuItem {
     fn from(item: ContextMenuItem) -> Self {
         ProtobufContextMenuItem {
-            id: item.id,
+            id: item.id.map(|id| id.get()),
             label: item.label,
             shortcut: item.shortcut,
             context: item
@@ -3860,7 +3864,7 @@ impl TryFrom<ProtobufContextMenuContext> for ContextMenuContext {
             .try_into()?;
         let items = context.items.into_iter().map(Into::into).collect();
         Ok(ContextMenuContext {
-            request_id: context.request_id,
+            request_id: ContextMenuRequestId::new(context.request_id),
             client_id: ClientId::try_from(context.client_id)
                 .map_err(|_| "client_id is outside u16 range")?,
             pane_id,
@@ -3897,7 +3901,7 @@ impl TryFrom<ContextMenuContext> for ProtobufContextMenuContext {
             .map(|item| item.without_actions().into())
             .collect();
         Ok(ProtobufContextMenuContext {
-            request_id: context.request_id,
+            request_id: context.request_id.get(),
             client_id: u32::from(context.client_id.get()),
             pane_id: Some(context.pane_id.try_into()?),
             tab_position: u32::try_from(context.tab_position.get())
@@ -4040,7 +4044,7 @@ mod tests {
         /// encoding did wrong.
         fn any_queue_job_info(tc: &hegel::TestCase) -> QueueJobInfo {
             QueueJobInfo {
-                job_id: tc.draw(generators::integers::<u64>()),
+                job_id: QueueJobId::new(tc.draw(generators::integers::<u64>())),
                 queue: strings(tc),
                 plugin_url: strings(tc),
                 plugin_id: tc
@@ -4075,7 +4079,7 @@ mod tests {
         fn any_context_menu_context(tc: &hegel::TestCase) -> ContextMenuContext {
             let item_count = tc.draw(generators::integers::<usize>().max_value(3));
             ContextMenuContext {
-                request_id: tc.draw(generators::integers::<u64>()),
+                request_id: ContextMenuRequestId::new(tc.draw(generators::integers::<u64>())),
                 client_id: ClientId::new(tc.draw(generators::integers::<u16>())),
                 pane_id: pane_id(tc),
                 tab_position: TabPosition::new(tc.draw(generators::integers::<u16>()) as usize),
@@ -4175,7 +4179,7 @@ mod tests {
                 },
                 30 => Event::QueueJobStarted {
                     queue: strings(tc),
-                    job_id: tc.draw(generators::integers::<u64>()),
+                    job_id: QueueJobId::new(tc.draw(generators::integers::<u64>())),
                     plugin_id: zellij_types::internal_ids::PluginId::new(
                         tc.draw(generators::integers::<u32>()),
                     ),
@@ -4183,7 +4187,7 @@ mod tests {
                 },
                 31 => Event::QueueJobFinished {
                     queue: strings(tc),
-                    job_id: tc.draw(generators::integers::<u64>()),
+                    job_id: QueueJobId::new(tc.draw(generators::integers::<u64>())),
                     outcome: tc.draw(generators::sampled_from(vec![
                         QueueJobOutcome::Succeeded,
                         QueueJobOutcome::Failed,

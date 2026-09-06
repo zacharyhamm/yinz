@@ -5,6 +5,7 @@
 #![allow(clippy::manual_inspect)]
 #![allow(clippy::useless_format)]
 #![allow(clippy::redundant_pattern_matching)]
+use zellij_types::internal_ids::QueueJobId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TerminalId;
 mod lua;
@@ -298,7 +299,7 @@ pub enum PluginInstruction {
         concurrency: usize,
     },
     QueueCancelJob {
-        job_id: u64,
+        job_id: QueueJobId,
     },
     /// A job (`plugin_id`) reported its outcome and wants to be unloaded.
     QueueFinishJob {

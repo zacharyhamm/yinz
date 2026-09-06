@@ -9,6 +9,7 @@
 //! Name validation lives here rather than in the engine so that a plugin can reject a bad entity
 //! or attribute name locally, and get the same message it would have got from the host.
 
+use crate::internal_ids::DataWatchId;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -1231,7 +1232,7 @@ pub enum WatchMode {
 /// separately, and can't miss a change in the gap between the two.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct DataWatchHandle {
-    pub watch_id: u64,
+    pub watch_id: DataWatchId,
     pub rows: DataRows,
 }
 

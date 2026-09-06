@@ -6,6 +6,11 @@ use crate::input::layout::{
     FloatingPaneLayout, Run, RunPlugin, RunPluginLocation, RunPluginOrAlias, TiledPaneLayout,
 };
 pub use crate::input::options::PaneFrameStyle;
+use crate::internal_ids::ContextMenuItemId;
+use crate::internal_ids::ContextMenuRequestId;
+use crate::internal_ids::DataWatchId;
+use crate::internal_ids::NotificationId;
+use crate::internal_ids::QueueJobId;
 use crate::internal_ids::TabId;
 use crate::internal_ids::TabNumber;
 use crate::internal_ids::TabPosition;
@@ -286,7 +291,7 @@ pub enum Event {
     /// Sent only when the result set actually differs, so an idempotent write is silent. The rows
     /// are subject to the same limits as a fetch, and `truncated` says when they hit one.
     PluginDataChanged {
-        watch_id: u64,
+        watch_id: DataWatchId,
         rows: DataRows,
         truncated: bool,
     },
@@ -296,7 +301,7 @@ pub enum Event {
     /// verbatim. `plugin_id` is the job's own plugin instance.
     QueueJobStarted {
         queue: String,
-        job_id: u64,
+        job_id: QueueJobId,
         plugin_id: crate::internal_ids::PluginId,
         context: BTreeMap<String, String>,
     },
@@ -306,7 +311,7 @@ pub enum Event {
     /// to load or crashed; a job that was cancelled or simply unloaded itself has none.
     QueueJobFinished {
         queue: String,
-        job_id: u64,
+        job_id: QueueJobId,
         outcome: QueueJobOutcome,
         payload: Option<String>,
         context: BTreeMap<String, String>,
@@ -434,7 +439,7 @@ pub enum QueueJobState {
 /// One job on a work queue, as reported by `QueueStatus` and `Event::QueueChanged`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueJobInfo {
-    pub job_id: u64,
+    pub job_id: QueueJobId,
     pub queue: String,
     pub plugin_url: String,
     /// The job's plugin instance, once it is running.
@@ -710,7 +715,7 @@ pub struct ContextMenuItem {
     /// up, and for one a plugin returned without the `id` it was given - which is how a plugin
     /// deliberately strips a configured item's behaviour, if it ever wants to.
     #[serde(default)]
-    pub id: Option<u64>,
+    pub id: Option<ContextMenuItemId>,
     /// Defaulted rather than required: a separator genuinely has no label, and making every
     /// plugin write `label = ""` for one would be a papercut with nothing behind it.
     #[serde(default)]
@@ -753,7 +758,7 @@ impl ContextMenuItem {
         self.shortcut = Some(shortcut.into());
         self
     }
-    pub fn with_id(mut self, id: u64) -> Self {
+    pub fn with_id(mut self, id: ContextMenuItemId) -> Self {
         self.id = Some(id);
         self
     }
@@ -796,7 +801,7 @@ pub struct ContextMenuLink {
 pub struct ContextMenuContext {
     /// Correlates the plugin's answer with the menu that asked. An answer naming a menu that has
     /// since closed is dropped.
-    pub request_id: u64,
+    pub request_id: ContextMenuRequestId,
     pub client_id: ClientId,
     pub pane_id: PaneId,
     pub tab_position: TabPosition,
@@ -1328,7 +1333,7 @@ pub type ListTabsResponse = Vec<TabInfo>;
 /// A toast notification received by the current live session.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct NotificationInfo {
-    pub id: u64,
+    pub id: NotificationId,
     pub message: String,
     pub received_at_unix_ms: u64,
 }
@@ -2908,7 +2913,7 @@ pub enum PluginCommand {
     /// replaced is harmless - the server drops it - so a plugin never has to track whether its
     /// answer is still wanted.
     SetContextMenu {
-        request_id: u64,
+        request_id: ContextMenuRequestId,
         items: Vec<ContextMenuItem>,
     },
     ClearPaneHighlights(PaneId),
@@ -2990,7 +2995,7 @@ pub enum PluginCommand {
     },
     /// Stop a watch registered with `DataWatch`. Sends a response back.
     DataUnwatch {
-        watch_id: u64,
+        watch_id: DataWatchId,
     },
     /// What entities exist, and what their columns are. Sends a response back.
     ///
@@ -3035,7 +3040,7 @@ pub enum PluginCommand {
     },
     /// Drop a pending job, or unload a running one. Its enqueuer is told `Cancelled`.
     CancelQueueJob {
-        job_id: u64,
+        job_id: QueueJobId,
     },
     /// Sends back every queue, or just the named one, with its pending and running jobs.
     QueueStatus {
@@ -3168,7 +3173,7 @@ pub enum PluginCommand {
 /// The job id handed back by `EnqueueQueueJob`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EnqueueQueueJobResponse {
-    Ok(u64),
+    Ok(QueueJobId),
     Err(String),
 }
 

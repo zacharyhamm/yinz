@@ -26,6 +26,7 @@
 
 use std::collections::HashMap;
 use std::thread;
+use zellij_types::internal_ids::ContextMenuRequestId;
 use zellij_types::internal_ids::PluginId;
 
 use zellij_runtime::errors::prelude::*;
@@ -97,9 +98,10 @@ impl Screen {
         &mut self,
         mut context: ContextMenuContext,
         client_id: ClientId,
-    ) -> u64 {
+    ) -> ContextMenuRequestId {
         let request_id = self.next_context_menu_request_id;
-        self.next_context_menu_request_id += 1;
+        self.next_context_menu_request_id =
+            ContextMenuRequestId::new(self.next_context_menu_request_id.get() + 1);
         context.request_id = request_id;
         context.client_id = client_id;
 
@@ -171,7 +173,7 @@ impl Screen {
     /// already dismissed or replaced, and acting on it would put a stale list on screen.
     pub(crate) fn set_context_menu_items(
         &mut self,
-        request_id: u64,
+        request_id: ContextMenuRequestId,
         items: Vec<ContextMenuItem>,
         plugin_id: Option<PluginId>,
         client_id: ClientId,
@@ -208,7 +210,11 @@ impl Screen {
     }
 
     /// The plugin did not answer in time. Show what the configuration declared.
-    pub(crate) fn context_menu_timed_out(&mut self, request_id: u64, client_id: ClientId) {
+    pub(crate) fn context_menu_timed_out(
+        &mut self,
+        request_id: ContextMenuRequestId,
+        client_id: ClientId,
+    ) {
         let Some(menu) = self.context_menus.get_mut(&client_id) else {
             return;
         };

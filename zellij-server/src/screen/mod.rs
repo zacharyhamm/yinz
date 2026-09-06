@@ -65,6 +65,8 @@ use std::rc::Rc;
 use std::str;
 use std::time::{Duration, Instant};
 use zellij_types::animation::{Tween, BLINK_TICK, FRAME_PERIOD};
+use zellij_types::internal_ids::ContextMenuRequestId;
+use zellij_types::internal_ids::NotificationId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
@@ -768,7 +770,7 @@ pub(crate) struct Screen {
     /// in `remove_client` alongside `notification_mouse_captures`. See `screen::context_menu`.
     context_menus: HashMap<ClientId, ContextMenuState>,
     /// Correlates a plugin's answer with the menu that asked for it. Monotonic per session.
-    next_context_menu_request_id: u64,
+    next_context_menu_request_id: ContextMenuRequestId,
     /// The items a right-click menu offers before its hook plugin has had its say.
     ///
     /// Held here, rather than only in the plugin thread, because the screen needs them for two
@@ -779,7 +781,7 @@ pub(crate) struct Screen {
     /// ponytail: intentionally unbounded because the feature promises "all" notifications;
     /// add a configurable cap only if long-lived sessions show meaningful memory pressure.
     notification_history: Vec<NotificationInfo>,
-    next_notification_id: u64,
+    next_notification_id: NotificationId,
     notification_position: NotificationPosition,
     notification_timeout_secs: u64,
     /// The floor a spawned agent pane's equal share of a tab must clear, columns by rows;
@@ -1097,7 +1099,7 @@ impl Screen {
 
 #[derive(Debug, Clone)]
 struct Notification {
-    id: u64,
+    id: NotificationId,
     text: String,
     pane_id: Option<PaneId>,
     /// `0.0` = hidden at the anchored edge, `1.0` = fully slid into place. Re-aimed at `0.0` on
@@ -1114,7 +1116,7 @@ struct Notification {
 }
 
 impl Notification {
-    fn new(id: u64, text: String, pane_id: Option<PaneId>, now: Instant) -> Self {
+    fn new(id: NotificationId, text: String, pane_id: Option<PaneId>, now: Instant) -> Self {
         Notification {
             id,
             text,
@@ -1148,7 +1150,7 @@ impl Notification {
 pub(crate) struct ContextMenuState {
     /// Matched against the `request_id` in a plugin's answer. An answer for a menu that has since
     /// closed - or been replaced by a newer one - names a stale id and is dropped.
-    request_id: u64,
+    request_id: ContextMenuRequestId,
     /// The clicked cell in surface coordinates. The menu is anchored here every frame rather than
     /// storing a resolved box, because a client's viewport can change under an open menu.
     anchor: Position,
@@ -1339,10 +1341,10 @@ impl Screen {
             notifications: vec![],
             notification_mouse_captures: HashSet::new(),
             context_menus: HashMap::new(),
-            next_context_menu_request_id: 0,
+            next_context_menu_request_id: ContextMenuRequestId::new(0),
             context_menu,
             notification_history: vec![],
-            next_notification_id: 0,
+            next_notification_id: NotificationId::new(0),
             notification_position,
             notification_timeout_secs,
             agent_pane_min_size,

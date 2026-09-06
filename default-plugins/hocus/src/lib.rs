@@ -24,6 +24,7 @@ mod tool_loop;
 mod tools;
 mod transitions;
 pub use transitions::{Confirmation, PromptKind};
+use zellij_tile::prelude::DataWatchId;
 use zellij_tile::prelude::TabId;
 use zellij_tile::prelude::TabPosition;
 pub mod ui;
@@ -626,7 +627,7 @@ pub struct State {
     projects: projects::Registry,
     /// The watch feeding `projects`, so a change event can be told from another
     /// plugin's.
-    project_watch: u64,
+    project_watch: DataWatchId,
     /// The data store, on builds that have no host to ask for one.
     ///
     /// A real engine over a temporary directory, so the tests exercise the same
@@ -1007,7 +1008,7 @@ impl Default for State {
             log_seq: 0,
             granted: false,
             projects: BTreeMap::new(),
-            project_watch: 0,
+            project_watch: DataWatchId::new(0),
             #[cfg(not(target_family = "wasm"))]
             store: {
                 // Declared here rather than in `open_store`, which the tests do

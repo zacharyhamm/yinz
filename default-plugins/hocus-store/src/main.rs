@@ -35,6 +35,7 @@ use hocus_proto::store::{Backend, Host};
 use hocus_proto::wire::{self, Mutation, PollReply, Query};
 use hocus_proto::{agents, notes, projects, store, todos};
 use std::collections::BTreeMap;
+use zellij_tile::prelude::DataWatchId;
 use zellij_tile::prelude::TabId;
 use zellij_tile::prelude::*;
 
@@ -42,7 +43,7 @@ const RETRY_SECONDS: f64 = 5.0;
 
 #[derive(Default)]
 struct State {
-    project_watch_id: Option<u64>,
+    project_watch_id: Option<DataWatchId>,
     latest_snapshot: Option<PollReply>,
     retry_snapshot: bool,
     /// The tab names last handed to the host, so an unchanged map costs no host
@@ -725,7 +726,10 @@ mod tests {
         let rows = backend
             .fetch(&FetchRequest::entity("project"))
             .expect("rows");
-        state.update(changed(rows.clone(), watch.watch_id + 1));
+        state.update(changed(
+            rows.clone(),
+            DataWatchId::new(watch.watch_id.get() + 1),
+        ));
         assert_eq!(state.published_tab_names[&TabId::new(1)], "hocus");
         state.update(changed(rows.clone(), watch.watch_id));
         assert_eq!(state.published_tab_names[&TabId::new(1)], "renamed");

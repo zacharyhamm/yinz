@@ -5,6 +5,7 @@ use crate::*;
 use hocus_proto::jobs;
 use hocus_proto::llm::{api_error_message, retry_delay, streamed_retry_delay};
 use std::collections::BTreeMap;
+use zellij_tile::prelude::DataWatchId;
 use zellij_tile::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -614,7 +615,7 @@ impl State {
     /// Nothing here compares versions. The store re-runs a watch on every write
     /// and reports only when the rows actually differ, so an idempotent write is
     /// silent — which is what the snapshot watermark was approximating.
-    pub(crate) fn on_projects_changed(&mut self, watch_id: u64, rows: &DataRows) -> bool {
+    pub(crate) fn on_projects_changed(&mut self, watch_id: DataWatchId, rows: &DataRows) -> bool {
         if watch_id != self.project_watch {
             return false;
         }

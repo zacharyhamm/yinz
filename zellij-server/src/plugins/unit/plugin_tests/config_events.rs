@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::ContextMenuRequestId;
 use zellij_types::internal_ids::TabId;
 
 #[test]
@@ -571,7 +572,7 @@ pub fn a_reload_replaces_the_hooks_and_the_configured_context_menu() {
     });
     let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
         context: Box::new(ContextMenuContext {
-            request_id: 7,
+            request_id: ContextMenuRequestId::new(7),
             client_id,
             ..Default::default()
         }),
@@ -591,7 +592,7 @@ pub fn a_reload_replaces_the_hooks_and_the_configured_context_menu() {
             plugin_id,
             ..
         } => {
-            assert_eq!(request_id, 7);
+            assert_eq!(request_id, ContextMenuRequestId::new(7));
             assert_eq!(plugin_id, None, "nobody answered but the configuration");
             assert_eq!(
                 items.iter().map(|item| &item.label).collect::<Vec<_>>(),
@@ -643,7 +644,7 @@ pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
 
     let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
         context: Box::new(ContextMenuContext {
-            request_id: 1,
+            request_id: ContextMenuRequestId::new(1),
             client_id: ClientId::new(1),
             ..Default::default()
         }),
@@ -676,7 +677,7 @@ pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
 
     let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
         context: Box::new(ContextMenuContext {
-            request_id: 2,
+            request_id: ContextMenuRequestId::new(2),
             client_id: ClientId::new(2),
             ..Default::default()
         }),
@@ -730,7 +731,7 @@ pub fn a_shared_context_menu_hook_is_loaded_on_the_first_request() {
 
     let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
         context: Box::new(ContextMenuContext {
-            request_id: 1,
+            request_id: ContextMenuRequestId::new(1),
             client_id: ClientId::new(1),
             ..Default::default()
         }),

@@ -8,6 +8,7 @@ use crate::ui::notification::{notification_height, notification_width};
 use std::time::Instant;
 use zellij_test_support::Watched;
 use zellij_types::animation::Tween;
+use zellij_types::internal_ids::NotificationId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
@@ -15,7 +16,12 @@ use zellij_types::internal_ids::TabPosition;
 /// A toast that has finished arriving and is sitting still, which is what every hit-test below
 /// wants: the animation is not under test here, the geometry is.
 fn settled_notification(id: u64, text: &str, pane_id: PaneId) -> Notification {
-    let mut notification = Notification::new(id, text.to_owned(), Some(pane_id), Instant::now());
+    let mut notification = Notification::new(
+        NotificationId::new(id),
+        text.to_owned(),
+        Some(pane_id),
+        Instant::now(),
+    );
     notification.reveal = Tween::settled(1.0);
     notification.y_offset = Tween::settled(0.0);
     notification

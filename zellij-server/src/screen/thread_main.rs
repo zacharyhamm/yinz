@@ -1,4 +1,5 @@
 use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::NotificationId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
 
@@ -4142,7 +4143,8 @@ pub(crate) fn screen_thread_main(
             ) => {
                 let now = Instant::now();
                 let id = screen.next_notification_id;
-                screen.next_notification_id += 1;
+                screen.next_notification_id =
+                    NotificationId::new(screen.next_notification_id.get() + 1);
                 let received_at_unix_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()

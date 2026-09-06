@@ -23,6 +23,7 @@ pub use super::generated_api::api::plugin_data::{
     Sort as ProtobufSort, SortDir as ProtobufSortDir, Update as ProtobufUpdate,
     Value as ProtobufValue, WatchHandle as ProtobufWatchHandle, WatchMode as ProtobufWatchMode,
 };
+use zellij_types::internal_ids::DataWatchId;
 
 use {
     zellij_types::data::ApplyReport, zellij_types::data::AttrDef, zellij_types::data::AttrKind,
@@ -574,7 +575,7 @@ impl From<ProtobufApplyReport> for ApplyReport {
 impl From<DataWatchHandle> for ProtobufWatchHandle {
     fn from(handle: DataWatchHandle) -> Self {
         ProtobufWatchHandle {
-            watch_id: handle.watch_id,
+            watch_id: handle.watch_id.get(),
             rows: Some(ProtobufRows::from(handle.rows)),
         }
     }
@@ -583,7 +584,7 @@ impl From<DataWatchHandle> for ProtobufWatchHandle {
 impl From<ProtobufWatchHandle> for DataWatchHandle {
     fn from(handle: ProtobufWatchHandle) -> Self {
         DataWatchHandle {
-            watch_id: handle.watch_id,
+            watch_id: DataWatchId::new(handle.watch_id),
             // An absent `rows` is an empty result set, which is what a watch over nothing returns
             // anyway — there is no useful way to fail here.
             rows: handle.rows.map(DataRows::from).unwrap_or_default(),
@@ -1106,7 +1107,7 @@ pub(crate) mod tests {
     #[test]
     fn a_watch_handle_round_trips() {
         let handle = DataWatchHandle {
-            watch_id: 9,
+            watch_id: DataWatchId::new(9),
             rows: DataRows {
                 columns: vec!["id".to_owned()],
                 rows: vec![vec![DataValue::Int(1)]],

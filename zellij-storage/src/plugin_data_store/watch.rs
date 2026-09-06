@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::{Mutex, MutexGuard};
+use zellij_types::internal_ids::DataWatchId;
 
 use zellij_types::internal_ids::{ClientId, PluginId};
 use zellij_types::plugin_data::{
@@ -11,7 +12,7 @@ use zellij_types::plugin_data::{
 /// A standing fetch, and what its results looked like the last time anyone checked.
 #[derive(Debug, Clone)]
 struct Watch {
-    watch_id: u64,
+    watch_id: DataWatchId,
     /// The server's `PluginId`, kept as its underlying type so that this module needs nothing from
     /// `zellij-server`.
     plugin_id: PluginId,
@@ -31,17 +32,17 @@ struct Watch {
 /// initial fetch and writes cannot slip through that gap.
 #[derive(Debug, Default)]
 pub(super) struct WatchRegistry {
-    watches: Mutex<(Vec<Watch>, u64)>,
+    watches: Mutex<(Vec<Watch>, DataWatchId)>,
 }
 
 impl WatchRegistry {
     pub(super) fn new() -> Self {
         WatchRegistry {
-            watches: Mutex::new((Vec::new(), 1)),
+            watches: Mutex::new((Vec::new(), DataWatchId::new(1))),
         }
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, (Vec<Watch>, u64)>, DataError> {
+    fn lock(&self) -> Result<MutexGuard<'_, (Vec<Watch>, DataWatchId)>, DataError> {
         self.watches.lock().map_err(|_| {
             DataError::Storage("the plugin data store watch lock is poisoned".to_owned())
         })
@@ -59,7 +60,9 @@ impl WatchRegistry {
         let mut guard = self.lock()?;
         let (watches, next_id) = &mut *guard;
         let watch_id = *next_id;
-        *next_id += 1;
+        *next_id = DataWatchId::new(next_id.get().checked_add(1).ok_or_else(|| {
+            DataError::Storage("plugin data watch identities exhausted".to_owned())
+        })?);
         watches.push(Watch {
             watch_id,
             plugin_id,
@@ -73,7 +76,11 @@ impl WatchRegistry {
     }
 
     /// Cancel a watch. A plugin may only cancel its own.
-    pub(super) fn unregister(&self, plugin_id: PluginId, watch_id: u64) -> Result<(), DataError> {
+    pub(super) fn unregister(
+        &self,
+        plugin_id: PluginId,
+        watch_id: DataWatchId,
+    ) -> Result<(), DataError> {
         let mut guard = self.lock()?;
         let (watches, _) = &mut *guard;
         let before = watches.len();
@@ -158,7 +165,7 @@ impl WatchRegistry {
 /// A watch whose results have changed, and the rows to send it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WatchChange {
-    pub watch_id: u64,
+    pub watch_id: DataWatchId,
     pub plugin_id: PluginId,
     pub client_id: ClientId,
     pub rows: DataRows,
@@ -216,4 +223,25 @@ pub(super) fn digest_rows(rows: &DataRows) -> u64 {
     // change worth reporting.
     hasher.write_u8(rows.truncated as u8);
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exhausted_watch_ids_do_not_reuse_an_identity_or_add_a_watch() {
+        let watches = WatchRegistry::new();
+        watches.lock().unwrap().1 = DataWatchId::new(u64::MAX);
+        let result = watches.register(
+            "test",
+            PluginId::new(1),
+            ClientId::new(1),
+            FetchRequest::entity("row"),
+            DataRows::default(),
+        );
+        assert!(matches!(result, Err(DataError::Storage(_))));
+        assert_eq!(watches.count(), 0);
+        assert_eq!(watches.lock().unwrap().1, DataWatchId::new(u64::MAX));
+    }
 }

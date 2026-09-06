@@ -10,6 +10,7 @@ use crate::plugins::pipes::{
 };
 use crate::plugins::plugin_loader::PluginLoader;
 use crate::plugins::plugin_map::{AtomicEvent, PluginEnv, PluginMap, RunningPlugin, Subscriptions};
+use zellij_types::internal_ids::QueueJobId;
 use zellij_types::internal_ids::TabId;
 
 use crate::plugins::plugin_worker::MessageToWorker;
@@ -829,7 +830,7 @@ impl WasmBridge {
         self.pump_queue(queue);
     }
 
-    pub fn queue_cancel(&mut self, job_id: u64) -> Result<()> {
+    pub fn queue_cancel(&mut self, job_id: QueueJobId) -> Result<()> {
         let result = self.queues.lock().unwrap().cancel(job_id);
         match result {
             CancelResult::DroppedPending(finished) => {
