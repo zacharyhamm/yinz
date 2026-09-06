@@ -1,6 +1,7 @@
 pub mod components;
 pub mod welcome_screen;
 use std::time::Duration;
+use zellij_tile::prelude::SessionName;
 use zellij_tile::prelude::TabPosition;
 use zellij_tile::prelude::*;
 
@@ -225,7 +226,7 @@ impl SessionList {
 
 #[derive(Debug, Clone)]
 pub struct SessionUiInfo {
-    pub name: String,
+    pub name: SessionName,
     pub tabs: Vec<TabUiInfo>,
     pub connected_users: usize,
     pub is_current_session: bool,

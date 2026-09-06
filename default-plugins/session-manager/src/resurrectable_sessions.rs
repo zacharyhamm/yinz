@@ -1,6 +1,7 @@
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use humantime::format_duration;
+use zellij_tile::prelude::SessionName;
 
 use std::time::Duration;
 
@@ -8,7 +9,7 @@ use zellij_tile::shim::*;
 
 #[derive(Debug, Default)]
 pub struct ResurrectableSessions {
-    pub all_resurrectable_sessions: Vec<(String, Duration)>,
+    pub all_resurrectable_sessions: Vec<(SessionName, Duration)>,
     pub selected_index: Option<usize>,
     pub selected_search_index: Option<usize>,
     pub search_results: Vec<SearchResult>,
@@ -18,7 +19,7 @@ pub struct ResurrectableSessions {
 }
 
 impl ResurrectableSessions {
-    pub fn update(&mut self, mut list: Vec<(String, Duration)>) {
+    pub fn update(&mut self, mut list: Vec<(SessionName, Duration)>) {
         list.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         self.all_resurrectable_sessions = list;
         if self.is_searching {
@@ -54,7 +55,7 @@ impl ResurrectableSessions {
                 let is_selected = Some(i) == self.selected_search_index;
                 let mut table_cells = vec![
                     self.render_session_name(
-                        &search_result.session_name,
+                        search_result.session_name.as_str(),
                         Some(search_result.indices.clone()),
                     ),
                     self.render_ctime(&search_result.ctime),
@@ -85,7 +86,7 @@ impl ResurrectableSessions {
             if let Some(session) = self.all_resurrectable_sessions.get(i) {
                 let is_selected = Some(i) == self.selected_index;
                 let mut table_cells = vec![
-                    self.render_session_name(&session.0, None),
+                    self.render_session_name(session.0.as_str(), None),
                     self.render_ctime(&session.1),
                     self.render_more_indication_or_enter_as_needed(
                         i,
@@ -247,7 +248,7 @@ impl ResurrectableSessions {
             }
         }
     }
-    pub fn get_selected_session_name(&self) -> Option<String> {
+    pub fn get_selected_session_name(&self) -> Option<SessionName> {
         if self.is_searching {
             self.selected_search_index
                 .and_then(|i| self.search_results.get(i))
@@ -308,13 +309,15 @@ impl ResurrectableSessions {
     pub fn has_session(&self, session_name: &str) -> bool {
         self.all_resurrectable_sessions
             .iter()
-            .any(|s| s.0 == session_name)
+            .any(|s| s.0 == session_name.into())
     }
     fn update_search_term(&mut self) {
         let mut matches = vec![];
         let matcher = SkimMatcherV2::default().use_cache(true);
         for (session_name, ctime) in &self.all_resurrectable_sessions {
-            if let Some((score, indices)) = matcher.fuzzy_indices(session_name, &self.search_term) {
+            if let Some((score, indices)) =
+                matcher.fuzzy_indices(session_name.as_str(), &self.search_term)
+            {
                 matches.push(SearchResult {
                     session_name: session_name.to_owned(),
                     ctime: *ctime,
@@ -345,6 +348,6 @@ impl ResurrectableSessions {
 pub struct SearchResult {
     score: i64,
     indices: Vec<usize>,
-    session_name: String,
+    session_name: SessionName,
     ctime: Duration,
 }

@@ -3306,7 +3306,7 @@ pub fn vm_argv(
 
 /// Local terminal panes for this VM lease, in id order. Pane ids are session-local.
 pub fn firecracker_panes(vm: &str, session: &str, current: &SessionInfo) -> Vec<u32> {
-    if session != current.name {
+    if session != current.name.as_str() {
         return vec![];
     }
     let mut ids: Vec<u32> = current
@@ -4398,7 +4398,7 @@ mod host {
             .live_sessions
             .into_iter()
             .find(|session| session.is_current_session)
-            .filter(|session| !session.name.trim().is_empty())
+            .filter(|session| !session.name.as_str().trim().is_empty())
             .ok_or_else(|| "the current session is not in the session list".to_owned())
     }
 
@@ -4488,7 +4488,7 @@ mod host {
         Ok(snapshot
             .live_sessions
             .iter()
-            .any(|session| !session.is_current_session && session.name == name))
+            .any(|session| !session.is_current_session && session.name.as_str() == name))
     }
 
     fn warp_pane_here(args: &Args) -> String {
@@ -4514,7 +4514,7 @@ mod host {
         }
         match warp_pane_from_session(
             PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
-            from_session,
+            &SessionName::new(from_session),
             placement,
         ) {
             Ok(message) | Err(message) => message,
@@ -4539,7 +4539,7 @@ mod host {
             Err(error) => return error,
             Ok(true) => {},
         }
-        match warp_tab_from_session(tab_id, from_session) {
+        match warp_tab_from_session(tab_id, &SessionName::new(from_session)) {
             Ok(message) | Err(message) => message,
         }
     }

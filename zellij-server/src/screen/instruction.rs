@@ -1,6 +1,7 @@
 use zellij_runtime::errors::prelude::*;
 use zellij_types::internal_ids::ContextMenuRequestId;
 use zellij_types::internal_ids::NotificationId;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
@@ -534,7 +535,7 @@ pub enum ScreenInstruction {
     /// warp is going to fail should never leave its tab.
     WarpPane {
         pane_id: Option<PaneId>,
-        to_session: String,
+        to_session: SessionName,
         placement: WarpPlacement,
         client_id: ClientId,
         response_channel: crossbeam::channel::Sender<Result<Box<WarpedPane>, String>>,
@@ -548,7 +549,7 @@ pub enum ScreenInstruction {
     /// already been applied.
     PaneReleasedForWarp {
         terminal_id: TerminalId,
-        to_session: String,
+        to_session: SessionName,
         placement: WarpPlacement,
         client_id: ClientId,
         released: Result<ReleasedPane, String>,
@@ -594,8 +595,8 @@ pub enum ScreenInstruction {
         client_id: ClientId,
     },
     UpdateSessionInfos(
-        BTreeMap<String, SessionInfo>, // String is the session name
-        BTreeMap<String, Duration>,    // resurrectable sessions - <name, created>
+        BTreeMap<SessionName, SessionInfo>, // String is the session name
+        BTreeMap<SessionName, Duration>,    // resurrectable sessions - <name, created>
     ),
     ReplacePane(
         PaneId,
@@ -607,9 +608,9 @@ pub enum ScreenInstruction {
         Option<NotificationEnd>, // completion signal
     ),
     SerializeLayoutForResurrection,
-    RenameSession(String, ClientId, Option<NotificationEnd>), // String -> new name
-    Notify(String, Option<PaneId>, Option<NotificationEnd>),  // message, click target, completion
-    DismissNotification(NotificationId),                      // u64 -> the notification's id
+    RenameSession(SessionName, ClientId, Option<NotificationEnd>), // String -> new name
+    Notify(String, Option<PaneId>, Option<NotificationEnd>), // message, click target, completion
+    DismissNotification(NotificationId),                     // u64 -> the notification's id
     AnimationTick,
     /// A context menu's hook plugin did not answer in time; show the configured items.
     ContextMenuTimedOut(ContextMenuRequestId, ClientId), // u64 -> the menu's request id

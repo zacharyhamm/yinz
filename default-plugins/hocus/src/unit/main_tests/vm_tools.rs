@@ -6,14 +6,14 @@ use super::*;
 fn vm_ready_state() -> State {
     tools::test_seams::CURRENT_SESSION.with_borrow_mut(|session| {
         *session = Some(zellij_tile::prelude::SessionInfo {
-            name: "test-session".to_owned(),
+            name: "test-session".to_owned().into(),
             is_current_session: true,
             ..Default::default()
         });
     });
     let mut state = ready_state();
     // VM tools must not rely on the daemon's state, including its session name.
-    state.zellij_session_name.clear();
+    state.zellij_session_name = Default::default();
     state
 }
 
@@ -229,7 +229,7 @@ fn a_missing_zellij_binary_is_named_in_the_tool_result() {
 #[test]
 fn closing_refuses_a_missing_host_snapshot_even_with_an_explicit_session() {
     let mut state = vm_ready_state();
-    state.zellij_session_name = "stale-daemon-session".to_owned();
+    state.zellij_session_name = "stale-daemon-session".to_owned().into();
     tools::test_seams::CURRENT_SESSION.with_borrow_mut(|session| *session = None);
     assert!(run_file_tool(
         &mut state,

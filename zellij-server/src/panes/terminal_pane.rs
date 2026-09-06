@@ -31,6 +31,7 @@ use zellij_types::data::PaneContents;
 use zellij_types::data::HOCUS_AGENT_PANE_CONTEXT;
 use zellij_types::input::command::RunCommand;
 use zellij_types::internal_ids::PluginId;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::keys::{BareKey, KeyWithModifier};
 use zellij_types::mouse::{MouseEvent, MouseEventType};
@@ -184,7 +185,7 @@ pub struct TerminalPane {
     nested_guest: bool,
     guest_modal: HashMap<ClientId, usize>,
     guest_choice_indicators: HashMap<ClientId, GuestChoiceIndicator>,
-    guest_session_name: Option<String>,
+    guest_session_name: Option<SessionName>,
     guest_modal_shortcuts: GuestModalShortcuts,
     /// PTY bytes that have not yet been fed to vte. Single source of
     /// truth: `handle_pty_bytes` always appends here, and processing
@@ -945,11 +946,11 @@ impl Pane for TerminalPane {
         }
     }
 
-    fn set_guest_session_name(&mut self, session_name: Option<String>) {
+    fn set_guest_session_name(&mut self, session_name: Option<SessionName>) {
         self.guest_session_name = session_name;
     }
 
-    fn guest_session_name(&self) -> Option<String> {
+    fn guest_session_name(&self) -> Option<SessionName> {
         self.guest_session_name.clone()
     }
 

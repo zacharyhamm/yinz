@@ -67,7 +67,7 @@ fn apply_queued_agent_report(
         return Ok(false);
     }
     let mut trace = zellij_runtime::agent::report::report_diagnostics(&report);
-    trace.session = screen.session_name.clone();
+    trace.session = screen.session_name.to_string();
     trace.record("screen_queue", accepted_at.elapsed(), "ok");
     let started = std::time::Instant::now();
     trace.record("state", Duration::ZERO, "enter");
@@ -4181,7 +4181,7 @@ pub(crate) fn screen_thread_main(
                     // set the env variable
                     set_session_name(name.clone());
                     if let Some(os_input) = &screen.bus.os_input {
-                        os_input.rename_firecracker_session(name.clone());
+                        os_input.rename_firecracker_session(name.to_string());
                     }
                     let connected_client_ids: Vec<ClientId> =
                         screen.active_tab_ids.keys().copied().collect();

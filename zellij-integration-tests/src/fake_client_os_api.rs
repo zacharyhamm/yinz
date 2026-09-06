@@ -197,8 +197,8 @@ impl StdioAccess for FakeClientOsApi {
 }
 
 impl ServerConnection for FakeClientOsApi {
-    fn update_session_name(&mut self, new_session_name: String) {
-        *self.session_name.lock().unwrap() = Some(new_session_name);
+    fn update_session_name(&mut self, new_session_name: zellij_types::internal_ids::SessionName) {
+        *self.session_name.lock().unwrap() = Some(new_session_name.to_string());
     }
     fn send_to_server(&self, msg: ClientToServerMsg) {
         match self.send_instructions_to_server.lock().unwrap().as_mut() {

@@ -952,7 +952,7 @@ fn a_pane_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
         .to_screen
         .send(ScreenInstruction::WarpPane {
             pane_id: Some(PaneId::Terminal(crate::TerminalId::new(1))),
-            to_session: "elsewhere".to_owned(),
+            to_session: "elsewhere".to_owned().into(),
             placement: zellij_types::data::WarpPlacement::NewTab,
             client_id,
             response_channel: response_tx,

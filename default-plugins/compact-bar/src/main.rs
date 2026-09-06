@@ -575,7 +575,10 @@ impl State {
         let session_name = if self.mode_info.style.hide_session_name {
             None
         } else {
-            self.mode_info.session_name.as_deref()
+            self.mode_info
+                .session_name
+                .as_ref()
+                .map(|name| name.as_str())
         };
         let prefix_width = tab_line_prefix_width(
             &self.hostname,
@@ -600,7 +603,11 @@ impl State {
         let dimmed = self.mode_info.session_ascended == Some(true)
             || self.mode_info.session_dimmed == Some(true);
         let breadcrumb_ancestry: Vec<String> = if self.mode_info.host_fullscreen == Some(true) {
-            self.mode_info.session_ancestry.clone()
+            self.mode_info
+                .session_ancestry
+                .iter()
+                .map(ToString::to_string)
+                .collect()
         } else {
             Vec::new()
         };

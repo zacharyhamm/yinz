@@ -113,7 +113,7 @@ fn summaries_are_mirrored_and_restored_without_their_hash() {
     // Named, because a summary belongs to a session as well as a pane - see
     // `store::agent_summary_def`.
     let mut restarted = State {
-        zellij_session_name: "test-session".to_owned(),
+        zellij_session_name: "test-session".to_owned().into(),
         host_id: HostId::new("test-host"),
         ..State::default()
     };

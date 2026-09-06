@@ -225,7 +225,7 @@ impl<'a> PaneContentsAndUi<'a> {
         let session_name = self
             .pane
             .guest_session_name()
-            .unwrap_or_else(|| String::from("unknown"));
+            .unwrap_or_else(|| String::from("unknown").into());
         let columns = self.pane.get_content_columns();
         let rows = self.pane.get_content_rows();
         let content_x = self.pane.get_content_x();
@@ -237,7 +237,7 @@ impl<'a> PaneContentsAndUi<'a> {
             content_x,
             content_y,
             &self.style,
-            &session_name,
+            session_name.as_str(),
             selection,
             &shortcuts,
         );

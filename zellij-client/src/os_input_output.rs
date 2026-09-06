@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::pane_size::Size;
 use zellij_types::style::default_palette;
 
@@ -88,7 +89,7 @@ pub struct ClientOsInputOutput {
     send_instructions_to_server: Arc<Mutex<Option<IpcSenderWithContext<ClientToServerMsg>>>>,
     receive_instructions_from_server: Arc<Mutex<Option<IpcReceiverWithContext<ServerToClientMsg>>>>,
     reading_from_stdin: Arc<Mutex<Option<Vec<u8>>>>,
-    session_name: Arc<Mutex<Option<String>>>,
+    session_name: Arc<Mutex<Option<SessionName>>>,
     orig_termios: Option<zellij_runtime::termios::WireTermios>,
 }
 
@@ -247,7 +248,7 @@ pub trait ServerConnection {
     /// a client that spins on that gives the user a hang with nothing on screen
     /// to explain it.
     fn connect_to_server(&self, path: &Path) -> Result<(), ConnectToServerError>;
-    fn update_session_name(&mut self, new_session_name: String);
+    fn update_session_name(&mut self, new_session_name: SessionName);
     fn spawn_server(&self, socket_path: &Path, debug: bool) -> Result<(), std::io::Error> {
         crate::spawn_server(socket_path, debug)
     }
@@ -395,7 +396,7 @@ impl ServerConnection for ClientOsInputOutput {
         crate::spawn_server_with_termios(socket_path, debug, Some(&self.orig_termios))
     }
 
-    fn update_session_name(&mut self, new_session_name: String) {
+    fn update_session_name(&mut self, new_session_name: SessionName) {
         *self.session_name.lock().unwrap() = Some(new_session_name);
     }
 

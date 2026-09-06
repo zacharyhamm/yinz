@@ -411,7 +411,7 @@ fn main() {
             .session
             .as_ref()
             .cloned()
-            .or_else(|| envs::get_session_name().ok())
+            .or_else(|| envs::get_session_name().ok().map(|name| name.into_string()))
         {
             let config = zellij_cli::setup::load_config(&opts).ok();
             let options = Setup::from_cli_args(&opts).ok().map(|r| r.2);

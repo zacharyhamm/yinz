@@ -28,6 +28,7 @@ use std::{
     path::PathBuf,
 };
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TerminalId;
@@ -855,7 +856,7 @@ pub enum PtyInstruction {
     /// Screen serializes next is exactly what the user was looking at.
     ReleaseTerminalForWarp {
         terminal_id: TerminalId,
-        to_session: String,
+        to_session: SessionName,
         placement: WarpPlacement,
         client_id: ClientId,
         /// When the caller stops waiting. See
@@ -939,7 +940,7 @@ pub enum PtyInstruction {
     },
     LogLayoutToHd(SessionLayoutMetadata),
     SaveSessionToDisk {
-        session_name: String,
+        session_name: SessionName,
         session_info: SessionInfo,
         session_layout_metadata: SessionLayoutMetadata,
         completion_tx: Option<NotificationEnd>,
@@ -4416,7 +4417,7 @@ fn pane_start_failure(err: &anyhow::Error) -> Option<(TerminalId, String)> {
 fn release_pane_for_warp(
     pty: &mut Pty,
     terminal_id: TerminalId,
-    to_session: &str,
+    to_session: &SessionName,
     deadline: Instant,
 ) -> std::result::Result<ReleasedPane, String> {
     if let Err(e) = pty.check_terminal_can_be_warped(terminal_id) {

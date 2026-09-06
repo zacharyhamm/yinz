@@ -32,7 +32,7 @@ fn framed_messages_round_trip() {
         ServerToHostMsg::Spawn {
             job_control: true,
             terminal_id: 7,
-            session_name: Some("warp-test".to_owned()),
+            session_name: Some("warp-test".to_owned().into()),
             cmd: sample_run_command(),
             failover_cmd: None,
             termios: None,
@@ -242,7 +242,9 @@ fn wire_winsizes(tc: &hegel::TestCase) -> WireWinsize {
 fn host_statuses(tc: &hegel::TestCase) -> HostStatus {
     HostStatus {
         host_id: SupervisorId::new(tc.draw(generators::text())),
-        session_name: tc.draw(generators::optional(generators::text())),
+        session_name: tc
+            .draw(generators::optional(generators::text()))
+            .map(Into::into),
         terminal_id: tc.draw(generators::integers::<u32>()),
         command: tc.draw(generators::text()),
         cwd: tc
@@ -274,7 +276,9 @@ fn server_to_host_msgs(tc: &hegel::TestCase) -> ServerToHostMsg {
         1 => ServerToHostMsg::Spawn {
             job_control: tc.draw(generators::booleans()),
             terminal_id: tc.draw(generators::integers::<u32>()),
-            session_name: tc.draw(generators::optional(generators::text())),
+            session_name: tc
+                .draw(generators::optional(generators::text()))
+                .map(Into::into),
             cmd: tc.draw(run_commands()),
             failover_cmd: tc.draw(generators::optional(run_commands())),
             termios: tc.draw(generators::optional(wire_termioses())),
@@ -289,7 +293,9 @@ fn server_to_host_msgs(tc: &hegel::TestCase) -> ServerToHostMsg {
             protocol_version: tc.draw(generators::integers::<u32>()),
             zellij_version: tc.draw(generators::text()),
             terminal_id: tc.draw(generators::integers::<u32>()),
-            session_name: tc.draw(generators::optional(generators::text())),
+            session_name: tc
+                .draw(generators::optional(generators::text()))
+                .map(Into::into),
         },
         _ => ServerToHostMsg::Query,
     }
@@ -683,7 +689,7 @@ fn a_full_ring_fits_in_one_frame() {
         },
         status: HostStatus {
             host_id: SupervisorId::new("a3f1c2d4e5b6".to_owned()),
-            session_name: Some("a-session-with-a-name".to_owned()),
+            session_name: Some("a-session-with-a-name".to_owned().into()),
             terminal_id: u32::MAX,
             command: "some-fairly-long-command-name --with --several".to_owned(),
             cwd: Some(PathBuf::from("/home/someone/a/reasonably/deep/directory")),

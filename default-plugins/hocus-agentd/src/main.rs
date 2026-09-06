@@ -18,6 +18,7 @@ use hocus_proto::{agents, projects};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use zellij_tile::prelude::HostId;
+use zellij_tile::prelude::SessionName;
 use zellij_tile::prelude::TabId;
 use zellij_tile::prelude::*;
 
@@ -223,7 +224,7 @@ struct State {
     summaries: agents::Summaries,
     /// Hook-backed runs currently attached to a pane. Completed runs live in the shared store;
     /// dirty completed rows ride the snapshot that announces their end.
-    zellij_session_name: Option<String>,
+    zellij_session_name: Option<SessionName>,
     /// The machine this daemon runs on, read once at load. The other half of a row's owner —
     /// see `agents::rows::Owner`.
     host_id: HostId,
@@ -700,7 +701,7 @@ impl State {
         )
     }
 
-    fn set_zellij_session_name(&mut self, name: String) {
+    fn set_zellij_session_name(&mut self, name: SessionName) {
         if self.zellij_session_name.as_ref() == Some(&name) {
             return;
         }
@@ -3694,14 +3695,14 @@ mod tests {
     #[test]
     fn an_adopted_run_becomes_this_sessions_and_brings_its_summary() {
         let mut state = State {
-            zellij_session_name: Some("there".to_owned()),
+            zellij_session_name: Some("there".to_owned().into()),
             panes: Some(vec![pane(2, "claude", "/work")]),
             ..State::default()
         };
         let mut run = agents::AgentRun {
             id: "claude:cc-session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "here".to_owned(),
+            zellij_session_name: "here".to_owned().into(),
             host_id: HostId::new("host-a"),
             session_id: "cc-session-1".to_owned(),
             kind: CLAUDE.to_owned(),
@@ -3728,14 +3729,17 @@ mod tests {
                 created_at_ms: Some(10),
             }],
         };
-        run = run.adopted_by(2, &agents::rows::Owner::new(HostId::new("host-a"), "there"));
+        run = run.adopted_by(
+            2,
+            &agents::rows::Owner::new(HostId::new("host-a"), "there".into()),
+        );
         state.adopt_run(2, run.clone());
 
         let live = state.runs.get(&2).expect("the run is this pane's now");
         assert_eq!(live.entries.len(), 1, "with the history it arrived with");
         assert_eq!(live.started_at_ms, 10);
         assert_eq!(live.outcome, agents::RunOutcome::Active);
-        assert_eq!(live.zellij_session_name, "there");
+        assert_eq!(live.zellij_session_name, "there".into());
         assert!(
             state.dirty_runs.contains_key(&run.id),
             "and queued for the write that claims the row"
@@ -3757,7 +3761,7 @@ mod tests {
     #[test]
     fn a_pane_that_leaves_releases_its_run_rather_than_closing_it_outright() {
         let mut state = State {
-            zellij_session_name: Some("here".to_owned()),
+            zellij_session_name: Some("here".to_owned().into()),
             panes: Some(vec![pane(7, "claude", "/work")]),
             latched: BTreeMap::from([(7, CLAUDE.to_owned())]),
             ..State::default()
@@ -5492,7 +5496,7 @@ mod tests {
         let mut run = agents::AgentRun {
             id: "claude:s".to_owned(),
             pane_id: 7,
-            zellij_session_name: "here".to_owned(),
+            zellij_session_name: "here".to_owned().into(),
             host_id: HostId::new("host-a"),
             session_id: "s".to_owned(),
             kind: CLAUDE.to_owned(),
@@ -6452,7 +6456,7 @@ mod tests {
     fn a_persist_writes_only_the_entries_the_store_does_not_have() {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
-            zellij_session_name: Some("zellij".to_owned()),
+            zellij_session_name: Some("zellij".to_owned().into()),
             ..State::default()
         };
         feed(
@@ -6466,8 +6470,10 @@ mod tests {
         );
         let run_id = state.runs[&7].id.clone();
         // One run row, one entry row.
-        let (first, written) =
-            state.dirty_run_mutations(&agents::rows::Owner::new(HostId::new("host-a"), "zellij"));
+        let (first, written) = state.dirty_run_mutations(&agents::rows::Owner::new(
+            HostId::new("host-a"),
+            "zellij".into(),
+        ));
         assert_eq!(first.len(), 2);
         assert_eq!(written, vec![(run_id.clone(), 1)]);
 
@@ -6482,8 +6488,10 @@ mod tests {
             },
             None,
         );
-        let (second, written) =
-            state.dirty_run_mutations(&agents::rows::Owner::new(HostId::new("host-a"), "zellij"));
+        let (second, written) = state.dirty_run_mutations(&agents::rows::Owner::new(
+            HostId::new("host-a"),
+            "zellij".into(),
+        ));
         assert_eq!(second.len(), 2, "the run row and the one new entry");
         assert_eq!(written, vec![(run_id.clone(), 2)]);
 
@@ -6501,8 +6509,10 @@ mod tests {
             },
             None,
         );
-        let (released, written) =
-            state.dirty_run_mutations(&agents::rows::Owner::new(HostId::new("host-a"), "zellij"));
+        let (released, written) = state.dirty_run_mutations(&agents::rows::Owner::new(
+            HostId::new("host-a"),
+            "zellij".into(),
+        ));
         assert_eq!(
             released.len(),
             2,
@@ -6517,13 +6527,13 @@ mod tests {
     #[test]
     fn a_released_run_whose_entries_were_never_rows_still_writes_them() {
         let mut state = State {
-            zellij_session_name: Some("zellij".to_owned()),
+            zellij_session_name: Some("zellij".to_owned().into()),
             ..State::default()
         };
         let mut run = agents::AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "zellij".to_owned(),
+            zellij_session_name: "zellij".to_owned().into(),
             host_id: HostId::new("host-a"),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
@@ -6545,8 +6555,10 @@ mod tests {
         state.released_runs.insert(run.id.clone());
         state.dirty_runs.insert(run.id.clone(), run.clone());
 
-        let (mutations, written) =
-            state.dirty_run_mutations(&agents::rows::Owner::new(HostId::new("host-a"), "zellij"));
+        let (mutations, written) = state.dirty_run_mutations(&agents::rows::Owner::new(
+            HostId::new("host-a"),
+            "zellij".into(),
+        ));
         assert_eq!(
             mutations.len(),
             3,
@@ -6847,13 +6859,13 @@ mod tests {
         let mut state = State::default();
         feed(&mut state, 7, &hook("UserPromptSubmit"), None);
 
-        state.set_zellij_session_name("first".to_owned());
-        assert_eq!(state.runs[&7].zellij_session_name, "first");
-        state.set_zellij_session_name("renamed".to_owned());
-        assert_eq!(state.runs[&7].zellij_session_name, "renamed");
+        state.set_zellij_session_name("first".to_owned().into());
+        assert_eq!(state.runs[&7].zellij_session_name, "first".into());
+        state.set_zellij_session_name("renamed".to_owned().into());
+        assert_eq!(state.runs[&7].zellij_session_name, "renamed".into());
         assert_eq!(
             state.dirty_runs[&state.runs[&7].id].zellij_session_name,
-            "renamed"
+            "renamed".into()
         );
     }
 
@@ -7882,7 +7894,7 @@ mod tests {
         let mut run = agents::AgentRun {
             id: "claude:cc-session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "here".to_owned(),
+            zellij_session_name: "here".to_owned().into(),
             host_id: HostId::new("host-a"),
             session_id: "cc-session-1".to_owned(),
             kind: CLAUDE.to_owned(),
@@ -7922,7 +7934,7 @@ mod tests {
         agents::AgentRun {
             id: id.to_owned(),
             pane_id: 7,
-            zellij_session_name: "here".to_owned(),
+            zellij_session_name: "here".to_owned().into(),
             host_id: HostId::new("host-a"),
             session_id: "cc-session-1".to_owned(),
             kind: CLAUDE.to_owned(),

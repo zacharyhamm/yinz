@@ -1,3 +1,4 @@
+use crate::internal_ids::SessionName;
 use crate::internal_ids::TabId;
 use crate::internal_ids::TabPosition;
 use crate::internal_ids::{RecordingId, TerminalId};
@@ -8,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RecordingSummary {
     pub id: RecordingId,
-    pub session_name: String,
+    pub session_name: SessionName,
     pub tab_name: String,
     pub terminal_id: TerminalId,
     pub pane_title: String,
@@ -24,7 +25,7 @@ pub struct RecordingSummary {
 pub struct SearchHit {
     /// Same id `list_recordings` and `export_recording` use (a `recording_panes` row).
     pub recording_id: RecordingId,
-    pub session_name: String,
+    pub session_name: SessionName,
     pub tab_name: String,
     pub pane_title: String,
     /// Offset into the recording, for seeking within the exported asciicast.

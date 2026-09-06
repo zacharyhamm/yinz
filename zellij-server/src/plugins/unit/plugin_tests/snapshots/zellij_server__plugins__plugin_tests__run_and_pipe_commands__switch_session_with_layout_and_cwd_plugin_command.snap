@@ -7,7 +7,9 @@ Some(
     SwitchSession(
         SessionConnection {
             name: Some(
-                "my_other_new_session_with_cwd",
+                SessionName(
+                    "my_other_new_session_with_cwd",
+                ),
             ),
             tab_position: None,
             pane_id: None,

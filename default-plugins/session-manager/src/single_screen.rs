@@ -2,6 +2,7 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use std::path::PathBuf;
 use std::time::Duration;
+use zellij_tile::prelude::SessionName;
 
 use crate::new_session_info::LayoutList;
 use crate::ui::components::UnifiedResultsRenderCache;
@@ -19,7 +20,7 @@ pub enum UnifiedSearchResult {
     ActiveSession {
         score: i64,
         indices: Vec<usize>,
-        session_name: String,
+        session_name: SessionName,
         connected_users: usize,
         tab_count: usize,
         pane_count: usize,
@@ -29,7 +30,7 @@ pub enum UnifiedSearchResult {
     ResurrectableSession {
         score: i64,
         indices: Vec<usize>,
-        session_name: String,
+        session_name: SessionName,
         ctime: Duration,
     },
 }
@@ -40,8 +41,8 @@ pub enum UnifiedSearchResult {
 /// underlying `UnifiedSearchResult`.
 #[derive(Debug, Clone)]
 pub enum DeleteTarget {
-    Active(String),
-    Resurrectable(String),
+    Active(SessionName),
+    Resurrectable(SessionName),
 }
 
 impl UnifiedSearchResult {
@@ -125,7 +126,7 @@ impl SingleScreenState {
     pub fn update_search_term(
         &mut self,
         active_sessions: &[SessionUiInfo],
-        resurrectable_sessions: &[(String, Duration)],
+        resurrectable_sessions: &[(SessionName, Duration)],
     ) {
         let previously_selected_name = self.previously_selected_name();
         self.selected_index = None;
@@ -183,7 +184,7 @@ impl SingleScreenState {
 
     fn collect_all_sessions(
         active_sessions: &[SessionUiInfo],
-        resurrectable_sessions: &[(String, Duration)],
+        resurrectable_sessions: &[(SessionName, Duration)],
     ) -> Vec<UnifiedSearchResult> {
         let mut results = Vec::new();
         for session in active_sessions {
@@ -203,7 +204,7 @@ impl SingleScreenState {
     fn collect_fuzzy_matched_sessions(
         &mut self,
         active_sessions: &[SessionUiInfo],
-        resurrectable_sessions: &[(String, Duration)],
+        resurrectable_sessions: &[(SessionName, Duration)],
     ) -> Vec<UnifiedSearchResult> {
         let matcher = self
             .fuzzy_matcher
@@ -211,13 +212,15 @@ impl SingleScreenState {
         let mut results = Vec::new();
 
         for session in active_sessions {
-            if let Some((score, indices)) = matcher.fuzzy_indices(&session.name, &self.search_term)
+            if let Some((score, indices)) =
+                matcher.fuzzy_indices(session.name.as_str(), &self.search_term)
             {
                 results.push(Self::active_session_to_result(session, score, indices));
             }
         }
         for (name, ctime) in resurrectable_sessions {
-            if let Some((score, indices)) = matcher.fuzzy_indices(name, &self.search_term) {
+            if let Some((score, indices)) = matcher.fuzzy_indices(name.as_str(), &self.search_term)
+            {
                 results.push(UnifiedSearchResult::ResurrectableSession {
                     score,
                     indices,
@@ -310,7 +313,7 @@ impl SingleScreenState {
     pub fn tab_complete(
         &mut self,
         active_sessions: &[SessionUiInfo],
-        resurrectable_sessions: &[(String, Duration)],
+        resurrectable_sessions: &[(SessionName, Duration)],
     ) {
         let first_non_current = self.unified_results.iter().find(|r| {
             !matches!(
@@ -358,7 +361,7 @@ mod tests {
         creation_secs: u64,
     ) -> SessionUiInfo {
         SessionUiInfo {
-            name: name.to_string(),
+            name: name.to_string().into(),
             tabs: (0..tabs)
                 .map(|i| crate::ui::TabUiInfo {
                     name: format!("tab-{}", i),
@@ -378,8 +381,8 @@ mod tests {
         }
     }
 
-    fn make_resurrectable(name: &str, ctime_secs: u64) -> (String, Duration) {
-        (name.to_string(), Duration::from_secs(ctime_secs))
+    fn make_resurrectable(name: &str, ctime_secs: u64) -> (SessionName, Duration) {
+        (SessionName::new(name), Duration::from_secs(ctime_secs))
     }
 
     // ---------------------------------------------------------------
@@ -539,7 +542,7 @@ mod tests {
             make_active_session("alpha", 1, 1, 1, false, 200),
             make_active_session("beta", 1, 1, 1, false, 300),
         ];
-        let resurrectable: Vec<(String, Duration)> = vec![];
+        let resurrectable: Vec<(SessionName, Duration)> = vec![];
         state.search_term = "be".to_string();
         state.update_search_term(&active, &resurrectable);
         state.tab_complete(&active, &resurrectable);
@@ -624,7 +627,7 @@ mod tests {
                 .map(|(i, is_current)| UnifiedSearchResult::ActiveSession {
                     score: 0,
                     indices: vec![],
-                    session_name: format!("sess-{}", i),
+                    session_name: SessionName::new(format!("sess-{}", i)),
                     connected_users: 1,
                     tab_count: 1,
                     pane_count: 1,
@@ -774,7 +777,7 @@ mod tests {
         struct SingleScreenModel {
             real: SingleScreenState,
             active: Vec<SessionUiInfo>,
-            resurrectable: Vec<(String, Duration)>,
+            resurrectable: Vec<(SessionName, Duration)>,
         }
 
         /// A tiny name pool, so that added sessions collide with existing ones and the
@@ -799,8 +802,12 @@ mod tests {
                 resurrectable.sort_by_key(|(_, ctime)| *ctime);
                 actives
                     .into_iter()
-                    .map(|s| s.name.clone())
-                    .chain(resurrectable.into_iter().map(|(name, _)| name))
+                    .map(|s| s.name.to_string())
+                    .chain(
+                        resurrectable
+                            .into_iter()
+                            .map(|(name, _)| name.into_string()),
+                    )
                     .collect()
             }
 
@@ -816,7 +823,7 @@ mod tests {
             #[rule]
             fn add_active_session(&mut self, tc: hegel::TestCase) {
                 let name = any_session_name(&tc);
-                if self.active.iter().any(|s| s.name == name) {
+                if self.active.iter().any(|s| s.name.as_str() == name) {
                     return;
                 }
                 let creation_secs = tc.draw(generators::integers::<u64>().max_value(3));
@@ -840,7 +847,7 @@ mod tests {
                 // deliberately allowed to share a name with an active session: that is
                 // the tie the active-before-resurrectable rule exists to break
                 let name = any_session_name(&tc);
-                if self.resurrectable.iter().any(|(n, _)| n == &name) {
+                if self.resurrectable.iter().any(|(n, _)| n.as_str() == name) {
                     return;
                 }
                 let ctime_secs = tc.draw(generators::integers::<u64>().max_value(3));
@@ -903,8 +910,8 @@ mod tests {
                     return;
                 };
                 let previous_index = self.real.selected_index;
-                self.active.retain(|s| s.name != name);
-                self.resurrectable.retain(|(n, _)| n != &name);
+                self.active.retain(|s| s.name.as_str() != name);
+                self.resurrectable.retain(|(n, _)| n.as_str() != name);
                 self.real
                     .update_search_term(&self.active, &self.resurrectable);
                 self.real.restore_selection_after_delete(previous_index);

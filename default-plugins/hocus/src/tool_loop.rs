@@ -2517,7 +2517,7 @@ impl State {
                 // Empty until the daemon's first poll reply names it. Matching on
                 // `""` would silently select every run that never had a session
                 // name written, which is the opposite of what was asked for.
-                let name = self.zellij_session_name.trim();
+                let name = self.zellij_session_name.as_str().trim();
                 if name.is_empty() {
                     return Err(
                         "this session is not named yet; retry in a moment, or drop this_session \
@@ -2576,7 +2576,7 @@ impl State {
         }
         Ok((
             run_history::Filter {
-                zellij_session_name,
+                zellij_session_name: zellij_session_name.map(Into::into),
                 host_id,
                 root,
                 kind: kind.map(str::to_owned),

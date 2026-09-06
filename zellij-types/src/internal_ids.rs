@@ -692,3 +692,20 @@ mod tests {
         assert!(serde_json::from_str::<PluginId>("-1").is_err());
     }
 }
+
+string_identity!(
+    /// A Zellij session identity, distinct from host and agent-provider identities.
+    /// Validation remains at the session creation and rename boundary.
+    ///
+    /// ```compile_fail
+    /// use zellij_types::internal_ids::{SessionName, HostId};
+    /// let _: SessionName = HostId::new("main");
+    /// ```
+    SessionName
+);
+
+impl AsRef<std::path::Path> for SessionName {
+    fn as_ref(&self) -> &std::path::Path {
+        std::path::Path::new(self.as_str())
+    }
+}

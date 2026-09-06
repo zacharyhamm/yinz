@@ -681,7 +681,7 @@ fn test_client_messages() {
                 copy_on_select: Some(true),
                 osc8_hyperlinks: Some(true),
                 scrollback_editor: Some(PathBuf::from("scrollback_editor")),
-                session_name: Some("session_name".to_owned()),
+                session_name: Some("session_name".to_owned().into()),
                 attach_to_session: Some(true),
                 auto_layout: Some(true),
                 session_serialization: Some(true),
@@ -1047,7 +1047,7 @@ fn test_client_messages() {
         test_client_roundtrip!(ClientToServerMsg::Action {
             action: Action::WarpPane {
                 pane_id: None,
-                to_session: "other".to_owned(),
+                to_session: "other".to_owned().into(),
                 placement,
             },
             terminal_id: None,
@@ -1059,7 +1059,7 @@ fn test_client_messages() {
                 pane_id: Some(PaneId::Terminal(
                     zellij_types::internal_ids::TerminalId::new(3)
                 )),
-                to_session: "other".to_owned(),
+                to_session: "other".to_owned().into(),
                 placement,
             },
             terminal_id: None,
@@ -1157,7 +1157,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::WarpTab {
             tab_index: None,
-            to_session: "other".to_owned(),
+            to_session: "other".to_owned().into(),
         },
         terminal_id: None,
         client_id: None,
@@ -1166,7 +1166,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::WarpTab {
             tab_index: Some(TabId::new(2)),
-            to_session: "other".to_owned(),
+            to_session: "other".to_owned().into(),
         },
         terminal_id: None,
         client_id: None,
@@ -1174,7 +1174,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::WarpTabFrom {
-            from_session: "other".to_owned(),
+            from_session: "other".to_owned().into(),
             tab_index: TabId::new(2),
         },
         terminal_id: None,
@@ -3512,7 +3512,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::RenameSession {
-            name: "new_session_name".to_owned(),
+            name: "new_session_name".to_owned().into(),
         },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
@@ -4408,7 +4408,7 @@ fn test_server_messages() {
     test_server_roundtrip!(ServerToClientMsg::QueryTerminalSize);
     test_server_roundtrip!(ServerToClientMsg::ConfigFileUpdated);
     test_server_roundtrip!(ServerToClientMsg::RenamedSession {
-        name: "my-session".to_string(),
+        name: "my-session".to_string().into(),
     });
     test_server_roundtrip!(ServerToClientMsg::UnblockCliPipeInput {
         pipe_name: "stdout".to_string(),
@@ -4466,7 +4466,7 @@ fn test_server_messages() {
     });
     test_server_roundtrip!(ServerToClientMsg::SwitchSession {
         connect_to_session: SessionConnection {
-            name: Some("new_session_name".to_owned()),
+            name: Some("new_session_name".to_owned().into()),
             tab_position: Some(TabNumber::new(5)),
             pane_id: Some(PaneId::from_legacy(5, true)),
             layout: Some(LayoutInfo::BuiltIn("compact".to_owned())),
@@ -4475,7 +4475,7 @@ fn test_server_messages() {
     });
     test_server_roundtrip!(ServerToClientMsg::SwitchSession {
         connect_to_session: SessionConnection {
-            name: Some("new_session_name".to_owned()),
+            name: Some("new_session_name".to_owned().into()),
             tab_position: Some(TabNumber::new(5)),
             pane_id: Some(PaneId::from_legacy(5, true)),
             layout: Some(LayoutInfo::File(
@@ -4491,7 +4491,7 @@ fn test_server_messages() {
     });
     test_server_roundtrip!(ServerToClientMsg::SwitchSession {
         connect_to_session: SessionConnection {
-            name: Some("new_session_name".to_owned()),
+            name: Some("new_session_name".to_owned().into()),
             tab_position: Some(TabNumber::new(5)),
             pane_id: Some(PaneId::from_legacy(5, true)),
             layout: Some(LayoutInfo::Url("https://example.com/layout.kdl".to_owned())),
@@ -4500,7 +4500,7 @@ fn test_server_messages() {
     });
     test_server_roundtrip!(ServerToClientMsg::SwitchSession {
         connect_to_session: SessionConnection {
-            name: Some("new_session_name".to_owned()),
+            name: Some("new_session_name".to_owned().into()),
             tab_position: Some(TabNumber::new(5)),
             pane_id: Some(PaneId::from_legacy(5, true)),
             layout: Some(LayoutInfo::Stringified(

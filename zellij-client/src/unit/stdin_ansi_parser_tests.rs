@@ -1744,7 +1744,7 @@ fn announce_frame_and_payload() -> (Vec<u8>, Vec<u8>) {
         zellij_ipc::nested_session::NestedSessionMessage,
     };
     let message = NestedSessionMessage::Announce {
-        session_name: "guest-session".to_owned(),
+        session_name: "guest-session".to_owned().into(),
         capabilities: vec![NestedSessionCapability::NestedControl],
     };
     (encode_frame(&message), encode_payload(&message))

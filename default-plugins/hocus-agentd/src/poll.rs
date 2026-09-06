@@ -9,6 +9,7 @@ use hocus_proto::agents;
 use hocus_proto::panes::{focused_pane, focused_plugin_pane, terminal_panes};
 use hocus_proto::projects::{Repository, WorktreeStatus};
 use std::collections::BTreeMap;
+use zellij_tile::prelude::SessionName;
 use zellij_tile::prelude::*;
 
 fn current_session() -> Option<SessionInfo> {
@@ -129,7 +130,7 @@ pub fn read_pane(pane_id: u32) -> PaneSample {
 /// there because a session nobody touches sends no `PaneUpdate` at all, and until
 /// one arrives the focus would be nothing.
 pub struct StartupSnapshot {
-    pub session_name: String,
+    pub session_name: SessionName,
     pub panes: Vec<agents::AgentPane>,
     pub focused: Option<u32>,
     pub focused_plugin: Option<u32>,

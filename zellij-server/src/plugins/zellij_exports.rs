@@ -41,6 +41,7 @@ use zellij_types::data::EnqueueQueueJobResponse;
 use zellij_types::internal_ids::DataWatchId;
 use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::QueueJobId;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
@@ -4274,7 +4275,7 @@ fn detach(env: &PluginEnv) {
 
 fn switch_session(
     env: &PluginEnv,
-    session_name: Option<String>,
+    session_name: Option<SessionName>,
     tab_position: Option<TabPosition>,
     pane_id: Option<zellij_types::pane_id::PaneId>,
     layout: Option<LayoutInfo>,
@@ -4289,7 +4290,7 @@ fn switch_session(
 
     if session_name
         .as_ref()
-        .map(|s| s.contains('/'))
+        .map(|s| s.as_str().contains('/'))
         .unwrap_or(false)
     {
         log::error!("Session names cannot contain \'/\'");
@@ -4322,12 +4323,12 @@ fn switch_session(
     Ok(())
 }
 
-fn delete_dead_session(session_name: &str) -> Result<()> {
+fn delete_dead_session(session_name: &SessionName) -> Result<()> {
     delete_dead_session_in(&ZELLIJ_SESSION_INFO_CACHE_DIR, session_name)
 }
 
-fn delete_dead_session_in(session_info_cache_dir: &Path, session_name: &str) -> Result<()> {
-    validate_session_name(session_name).map_err(|e| anyhow!(e))?;
+fn delete_dead_session_in(session_info_cache_dir: &Path, session_name: &SessionName) -> Result<()> {
+    validate_session_name(session_name.as_str()).map_err(|e| anyhow!(e))?;
     std::fs::remove_dir_all(session_info_cache_dir.join(session_name))
         .with_context(|| format!("Failed to delete dead session: {:?}", session_name))
 }
@@ -4340,20 +4341,20 @@ fn delete_all_dead_sessions() -> Result<()> {
             if let Ok(file) = file {
                 if let Ok(file_name) = file.file_name().into_string() {
                     if is_ipc_socket(&file.file_type().unwrap()) {
-                        live_sessions.push(file_name);
+                        live_sessions.push(SessionName::new(file_name));
                     }
                 }
             }
         });
     }
-    let dead_sessions: Vec<String> = match std::fs::read_dir(&*ZELLIJ_SESSION_INFO_CACHE_DIR) {
+    let dead_sessions: Vec<SessionName> = match std::fs::read_dir(&*ZELLIJ_SESSION_INFO_CACHE_DIR) {
         Ok(files_in_session_info_folder) => {
             let files_that_are_folders = files_in_session_info_folder
                 .filter_map(|f| f.ok().map(|f| f.path()))
                 .filter(|f| f.is_dir());
             files_that_are_folders
                 .filter_map(|folder_name| {
-                    let session_name = folder_name.file_name()?.to_str()?.to_owned();
+                    let session_name = SessionName::new(folder_name.file_name()?.to_str()?);
                     if live_sessions.contains(&session_name) {
                         // this is not a dead session...
                         return None;
@@ -4716,9 +4717,9 @@ fn rename_tab(env: &PluginEnv, tab_position: TabNumber, new_name: &str) {
     apply_action!(rename_tab_action, error_msg, env);
 }
 
-fn rename_session(env: &PluginEnv, new_session_name: String) {
+fn rename_session(env: &PluginEnv, new_session_name: SessionName) {
     let error_msg = || format!("failed to rename session in plugin {}", env.name());
-    if new_session_name.contains('/') {
+    if new_session_name.as_str().contains('/') {
         log::error!("Session names cannot contain \'/\'");
     } else {
         let action = Action::RenameSession {
@@ -4748,7 +4749,7 @@ fn disconnect_other_clients(env: &PluginEnv) {
         .context("failed to send disconnect other clients instruction");
 }
 
-fn kill_sessions(session_names: Vec<String>) {
+fn kill_sessions(session_names: Vec<SessionName>) {
     for session_name in session_names {
         let path = &*ZELLIJ_SOCK_DIR.join(&session_name);
         match ipc_connect(path) {
@@ -4771,11 +4772,11 @@ fn kill_sessions(session_names: Vec<String>) {
 // concurrently so killing many sessions does not multiply the wait.
 const KILL_WEDGE_TIMEOUT: Duration = Duration::from_millis(500);
 
-fn kill_sessions_and_reply(env: &mut PluginEnv, session_names: Vec<String>) {
+fn kill_sessions_and_reply(env: &mut PluginEnv, session_names: Vec<SessionName>) {
     use tokio::task::JoinSet;
     let runtime = get_tokio_runtime();
     let result: Result<(), String> = runtime.block_on(async {
-        let mut set: JoinSet<(String, std::io::Result<()>)> = JoinSet::new();
+        let mut set: JoinSet<(SessionName, std::io::Result<()>)> = JoinSet::new();
         for name in session_names {
             let path = ZELLIJ_SOCK_DIR.join(&name);
             set.spawn(async move {
@@ -4840,7 +4841,7 @@ fn kill_sessions_and_reply(env: &mut PluginEnv, session_names: Vec<String>) {
 fn warp_pane_to_session(
     env: &mut PluginEnv,
     pane_id: PaneId,
-    to_session: String,
+    to_session: SessionName,
     placement: WarpPlacement,
 ) {
     let result = crate::warp::warp_pane_to_session(
@@ -4861,7 +4862,7 @@ fn warp_pane_to_session(
 fn warp_pane_from_session(
     env: &mut PluginEnv,
     pane_id: PaneId,
-    from_session: String,
+    from_session: SessionName,
     placement: WarpPlacement,
 ) {
     let result = crate::warp::warp_pane_from_session(
@@ -4874,7 +4875,7 @@ fn warp_pane_from_session(
     write_warp_response(env, result);
 }
 
-fn warp_tab_to_session(env: &mut PluginEnv, tab_index: TabId, to_session: String) {
+fn warp_tab_to_session(env: &mut PluginEnv, tab_index: TabId, to_session: SessionName) {
     let result = crate::warp::warp_tab_to_session(
         &env.senders,
         env.client_id,
@@ -4888,7 +4889,7 @@ fn warp_tab_to_session(env: &mut PluginEnv, tab_index: TabId, to_session: String
     write_warp_response(env, result);
 }
 
-fn warp_tab_from_session(env: &mut PluginEnv, tab_index: TabId, from_session: String) {
+fn warp_tab_from_session(env: &mut PluginEnv, tab_index: TabId, from_session: SessionName) {
     let result = crate::warp::warp_tab_from_session(
         &crate::warp::current_session_name(),
         &from_session,
@@ -5243,7 +5244,7 @@ fn write_data_response(env: &mut PluginEnv, encoded: Vec<u8>, what: &str) {
         .non_fatal();
 }
 
-fn delete_dead_session_and_reply(env: &mut PluginEnv, session_name: String) {
+fn delete_dead_session_and_reply(env: &mut PluginEnv, session_name: SessionName) {
     let response = match delete_dead_session(&session_name) {
         Ok(()) => DeleteDeadSessionResponse::Ok,
         Err(e) => DeleteDeadSessionResponse::Err(format!("{e:#}")),
@@ -5267,12 +5268,20 @@ mod validation_tests {
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("sentinel"), "keep").unwrap();
 
-        delete_dead_session_in(&cache, "valid").unwrap();
+        delete_dead_session_in(
+            &cache,
+            &zellij_types::internal_ids::SessionName::new("valid"),
+        )
+        .unwrap();
         assert!(!cache.join("valid").exists());
 
         for invalid in ["", ".", "..", "../outside", outside.to_str().unwrap()] {
             assert!(
-                delete_dead_session_in(&cache, invalid).is_err(),
+                delete_dead_session_in(
+                    &cache,
+                    &zellij_types::internal_ids::SessionName::new(invalid)
+                )
+                .is_err(),
                 "{invalid:?}"
             );
         }

@@ -3931,7 +3931,7 @@ mod tests {
         agents::AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 3,
-            zellij_session_name: "zellij".to_owned(),
+            zellij_session_name: "zellij".to_owned().into(),
             host_id: zellij_tile::prelude::HostId::default(),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),

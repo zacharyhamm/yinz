@@ -12,7 +12,7 @@
 use crate::internal_ids::DataRevision;
 use crate::internal_ids::DataRowId;
 use crate::internal_ids::DataWatchId;
-use crate::internal_ids::HostId;
+use crate::internal_ids::{HostId, SessionName};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -171,6 +171,17 @@ impl From<HostId> for DataValue {
 }
 impl From<&HostId> for DataValue {
     fn from(value: &HostId) -> Self {
+        Self::Text(value.as_str().to_owned())
+    }
+}
+
+impl From<SessionName> for DataValue {
+    fn from(value: SessionName) -> Self {
+        Self::Text(value.into_string())
+    }
+}
+impl From<&SessionName> for DataValue {
+    fn from(value: &SessionName) -> Self {
         Self::Text(value.as_str().to_owned())
     }
 }

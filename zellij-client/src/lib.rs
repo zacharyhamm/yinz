@@ -29,6 +29,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use zellij_runtime::errors::FatalError;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::TabNumber;
 
 use crate::terminal_escapes::{
@@ -75,7 +76,7 @@ pub(crate) enum ClientInstruction {
     CliPipeOutput((), ()),   // String -> pipe name, String -> output
     QueryTerminalSize,
     #[allow(dead_code)] // we need the session name here even though we're not currently using it
-    RenamedSession(String), // String -> new session name
+    RenamedSession(SessionName), // String -> new session name
     ConfigFileUpdated,
     /// Server asked us to forward `query_bytes` to the host terminal and
     /// collect the reply bytes into the window identified by `token`.
@@ -313,14 +314,14 @@ fn server_command(
 
 #[derive(Debug, Clone)]
 pub enum ClientInfo {
-    Attach(String, Options),
-    New(String, Option<LayoutInfo>, Option<PathBuf>), // PathBuf -> explicit cwd
-    Resurrect(String, PathBuf, bool, Option<PathBuf>), // (name, path_to_layout, force_run_commands, cwd)
-    Watch(String, Options),                            // Watch mode (read-only)
+    Attach(SessionName, Options),
+    New(SessionName, Option<LayoutInfo>, Option<PathBuf>), // PathBuf -> explicit cwd
+    Resurrect(SessionName, PathBuf, bool, Option<PathBuf>), // (name, path_to_layout, force_run_commands, cwd)
+    Watch(SessionName, Options),                            // Watch mode (read-only)
 }
 
 impl ClientInfo {
-    pub fn get_session_name(&self) -> &str {
+    pub fn get_session_name(&self) -> &SessionName {
         match self {
             Self::Attach(ref name, _) => name,
             Self::New(ref name, _layout_info, _layout_cwd) => name,

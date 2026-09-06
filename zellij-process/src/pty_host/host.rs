@@ -41,6 +41,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TerminalId;
 
@@ -410,7 +411,7 @@ struct HostContext {
     host_pid: ProcessId,
     label: String,
     terminal_id: TerminalId,
-    session_name: Option<String>,
+    session_name: Option<SessionName>,
     cmd: RunCommand,
     started_at_unix: u64,
     state: State,
@@ -830,7 +831,7 @@ fn attach(
     mut stream: UnixStream,
     protocol_version: u32,
     terminal_id: TerminalId,
-    session_name: Option<String>,
+    session_name: Option<SessionName>,
 ) -> CliOutcome {
     if protocol_version != PROTOCOL_VERSION {
         return refuse_attach(

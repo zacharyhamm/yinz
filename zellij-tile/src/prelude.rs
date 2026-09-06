@@ -18,6 +18,6 @@ pub use zellij_types::internal_ids::{
 };
 pub use zellij_types::units::{ElapsedMicros, UnixMicros};
 
-pub use zellij_types::internal_ids::HostId;
+pub use zellij_types::internal_ids::{HostId, SessionName};
 
 pub use zellij_types::internal_ids::SupervisorId;

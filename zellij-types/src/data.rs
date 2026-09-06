@@ -13,6 +13,7 @@ use crate::internal_ids::HostId;
 use crate::internal_ids::NotificationId;
 use crate::internal_ids::ProcessId;
 use crate::internal_ids::QueueJobId;
+use crate::internal_ids::SessionName;
 use crate::internal_ids::SupervisorId;
 use crate::internal_ids::TabId;
 use crate::internal_ids::TabNumber;
@@ -208,7 +209,7 @@ pub enum Event {
     PermissionRequestResult(PermissionStatus),
     SessionUpdate(
         Vec<SessionInfo>,
-        Vec<(String, Duration)>, // resurrectable sessions
+        Vec<(SessionName, Duration)>, // resurrectable sessions
     ),
     RunCommandResult(Option<i32>, Vec<u8>, Vec<u8>, BTreeMap<String, String>), // exit_code, STDOUT, STDERR,
     // context
@@ -872,13 +873,13 @@ pub struct ModeInfo {
     pub keybinds: KeybindsVec,
     pub style: Style,
     pub capabilities: PluginCapabilities,
-    pub session_name: Option<String>,
+    pub session_name: Option<SessionName>,
     pub editor: Option<PathBuf>,
     pub shell: Option<PathBuf>,
     pub currently_marking_pane_group: Option<bool>,
     pub pane_frame_style: Option<PaneFrameStyle>,
     pub session_dimmed: Option<bool>,
-    pub session_ancestry: Vec<String>,
+    pub session_ancestry: Vec<SessionName>,
     pub host_fullscreen: Option<bool>,
     pub nested_ascend_keys: Vec<KeyWithModifier>,
     pub session_ascended: Option<bool>,
@@ -927,7 +928,7 @@ impl ModeInfo {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SessionInfo {
-    pub name: String,
+    pub name: SessionName,
     pub tabs: Vec<TabInfo>,
     pub panes: PaneManifest,
     pub connected_clients: usize,
@@ -1145,7 +1146,7 @@ impl Hash for SessionInfo {
 }
 
 impl SessionInfo {
-    pub fn new(name: String) -> Self {
+    pub fn new(name: SessionName) -> Self {
         SessionInfo {
             name,
             ..Default::default()
@@ -1586,7 +1587,7 @@ pub enum GetPaneRunningCommandResponse {
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionListSnapshot {
     pub live_sessions: Vec<SessionInfo>,
-    pub resurrectable_sessions: Vec<(String, Duration)>,
+    pub resurrectable_sessions: Vec<(SessionName, Duration)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1682,7 +1683,7 @@ pub struct OrphanedPane {
     /// the command line takes too.
     pub host_id: SupervisorId,
     /// The session it belonged to, if the supervisor was ever told one.
-    pub session_name: Option<String>,
+    pub session_name: Option<SessionName>,
     pub command: String,
     pub cwd: Option<PathBuf>,
     pub child_pid: Option<ProcessId>,
@@ -1904,7 +1905,7 @@ pub enum HookPayload {
     },
     /// `session_start`: the session's first client connected.
     SessionStart {
-        session_name: String,
+        session_name: SessionName,
         client_id: ClientId,
     },
 }
@@ -2030,7 +2031,7 @@ impl MessageToPlugin {
 /// A plugin session-switch request. The requested tab position is zero-based.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ConnectToSession {
-    pub name: Option<String>,
+    pub name: Option<SessionName>,
     pub tab_position: Option<TabPosition>,
     #[serde(default, with = "crate::pane_id::legacy_tuple")]
     pub pane_id: Option<PaneId>,
@@ -2041,7 +2042,7 @@ pub struct ConnectToSession {
 /// A client reconnect target. Tab numbers are one-based on the client/server protocol.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionConnection {
-    pub name: Option<String>,
+    pub name: Option<SessionName>,
     pub tab_position: Option<TabNumber>,
     #[serde(default, with = "crate::pane_id::legacy_tuple")]
     pub pane_id: Option<PaneId>,
@@ -2613,7 +2614,7 @@ pub enum PluginCommand {
     ReportPanic(String),                                        // stringified panic
     RequestPluginPermissions(Vec<PermissionType>),
     SwitchSession(ConnectToSession),
-    DeleteDeadSession(String),       // String -> session name
+    DeleteDeadSession(SessionName),  // String -> session name
     DeleteAllDeadSessions,           // String -> session name
     OpenTerminalInPlace(FileToOpen), // only used for the path as cwd
     OpenFileInPlace(FileToOpen, Context),
@@ -2637,15 +2638,15 @@ pub enum PluginCommand {
                         // proxy URL (e.g. "socks5://host:port") instead of direct
     ),
     CancelWebRequest(String),       // String -> stream_id
-    RenameSession(String),          // String -> new session name
+    RenameSession(SessionName),     // String -> new session name
     Notify(String, Option<PaneId>), // String -> message, Option<PaneId> -> pane to focus on click
     UnblockCliPipeInput(String),    // String => pipe name
     BlockCliPipeInput(String),      // String => pipe name
     CliPipeOutput(String, String),  // String => pipe name, String => output
     MessageToPlugin(MessageToPlugin),
     DisconnectOtherClients,
-    KillSessions(Vec<String>), // one or more session names
-    ScanHostFolder(PathBuf),   // TODO: rename to ScanHostFolder
+    KillSessions(Vec<SessionName>), // one or more session names
+    ScanHostFolder(PathBuf),        // TODO: rename to ScanHostFolder
     WatchFilesystem,
     /// Read a file, answering with its bytes.
     ///
@@ -2927,9 +2928,9 @@ pub enum PluginCommand {
         context: BTreeMap<String, String>,
     },
     GetSessionList,
-    KillSessionsAndReply(Vec<String>), // one or more session names; sends a response back
-    DeleteDeadSessionAndReply(String), // session name; sends a response back
-    DeleteAllDeadSessionsAndReply,     // no payload; sends a response back
+    KillSessionsAndReply(Vec<SessionName>), // one or more session names; sends a response back
+    DeleteDeadSessionAndReply(SessionName), // session name; sends a response back
+    DeleteAllDeadSessionsAndReply,          // no payload; sends a response back
     FocusHostSession,
     ListRecordings,
     ListNotifications,
@@ -2941,13 +2942,13 @@ pub enum PluginCommand {
     /// back, and blocks until the pane has landed or the move has been undone.
     WarpPaneToSession {
         pane_id: PaneId,
-        to_session: String,
+        to_session: SessionName,
         placement: WarpPlacement,
     },
     /// Ask another session for one of its panes. Sends a response back.
     WarpPaneFromSession {
         pane_id: PaneId,
-        from_session: String,
+        from_session: SessionName,
         placement: WarpPlacement,
     },
     /// Move a whole tab out of this session and into another one. Sends a
@@ -2955,12 +2956,12 @@ pub enum PluginCommand {
     /// undone.
     WarpTabToSession {
         tab_index: TabId,
-        to_session: String,
+        to_session: SessionName,
     },
     /// Ask another session for one of its tabs. Sends a response back.
     WarpTabFromSession {
         tab_index: TabId,
-        from_session: String,
+        from_session: SessionName,
     },
     /// Panes whose session died but whose process is still running. Sends a
     /// response back.

@@ -1,9 +1,10 @@
 use super::*;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::TabId;
 
 pub fn from_string(
     raw_session_info: &str,
-    current_session_name: &str,
+    current_session_name: &SessionName,
 ) -> Result<SessionInfo, String> {
     let kdl_document: KdlDocument = raw_session_info
         .parse()
@@ -65,7 +66,7 @@ pub fn from_string(
                 .collect()
         })
         .ok_or("Failed to parse available_layouts")?;
-    let is_current_session = name == current_session_name;
+    let is_current_session = name == current_session_name.as_str();
     let mut tab_history = BTreeMap::new();
     if let Some(kdl_tab_history) = kdl_document.get("tab_history").and_then(|p| p.children()) {
         for client_node in kdl_tab_history.nodes() {
@@ -150,7 +151,7 @@ pub fn from_string(
         .map(|c| Duration::from_secs(c as u64))
         .unwrap_or_default();
     Ok(SessionInfo {
-        name,
+        name: name.into(),
         tabs,
         panes,
         connected_clients,
@@ -167,7 +168,7 @@ pub fn to_string(value: &SessionInfo) -> anyhow::Result<String> {
     let mut kdl_document = KdlDocument::new();
 
     let mut name = KdlNode::new("name");
-    name.push(value.name.clone());
+    name.push(value.name.as_str());
 
     let mut connected_clients = KdlNode::new("connected_clients");
     connected_clients.push(value.connected_clients as i64);

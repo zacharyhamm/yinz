@@ -67,6 +67,7 @@ use std::time::{Duration, Instant};
 use zellij_types::animation::{Tween, BLINK_TICK, FRAME_PERIOD};
 use zellij_types::internal_ids::ContextMenuRequestId;
 use zellij_types::internal_ids::NotificationId;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
@@ -833,12 +834,12 @@ pub(crate) struct Screen {
     session_is_mirrored: bool,
     copy_options: CopyOptions,
     debug: bool,
-    session_name: String,
+    session_name: SessionName,
     config_file_path: Option<PathBuf>,
     config_dir: Option<PathBuf>,
-    peer_sessions_cache: BTreeMap<String, SessionInfo>, // String is the session name, can
+    peer_sessions_cache: BTreeMap<SessionName, SessionInfo>, // String is the session name, can
     // also be this session
-    resurrectable_sessions_cache: BTreeMap<String, Duration>, // String is the session name,
+    resurrectable_sessions_cache: BTreeMap<SessionName, Duration>, // String is the session name,
     // duration is its creation time
     default_layout: Box<Layout>,
     default_shell: PathBuf,
@@ -898,7 +899,7 @@ pub(crate) struct Screen {
     clipboard_forward_in_flight_token: Option<u32>,
     paste_buffer_read_enabled: bool,
     nested_guest_tracker: NestedGuestTracker,
-    nested_ancestry: Vec<String>,
+    nested_ancestry: Vec<SessionName>,
     nested_via_client_id: Option<ClientId>,
     nested_fullscreen_panes: HashSet<PaneId>,
     own_fullscreen_requested: bool,
@@ -3087,7 +3088,7 @@ impl Screen {
                 "agent_firecracker_worktree".to_owned(),
                 worktree.display().to_string(),
             );
-            payload.insert("agent_session".to_owned(), self.session_name.clone());
+            payload.insert("agent_session".to_owned(), self.session_name.to_string());
             if let Ok(executable) = std::env::current_exe() {
                 payload.insert(
                     "agent_zellij_executable".to_owned(),

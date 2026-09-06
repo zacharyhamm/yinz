@@ -1287,7 +1287,7 @@ mod config_test {
         );
         assert_eq!(
             config.options.session_name,
-            Some(String::from("my awesome session")),
+            Some(Into::into(String::from("my awesome session"))),
             "Option set in config"
         );
         assert_eq!(

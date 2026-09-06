@@ -20,6 +20,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use zellij_tile::prelude::HostId;
+use zellij_types::internal_ids::SessionName;
 
 use crate::agents::{self, rows, AgentRunHeader, RunEntry, RunEntryKind};
 use crate::store::{self, Backend};
@@ -95,7 +96,7 @@ pub struct Filter {
     ///
     /// A session name is only unique within a machine, so this is worth pairing with
     /// [`Filter::host_id`] on a shared store — two machines can each have a `main`.
-    pub zellij_session_name: Option<String>,
+    pub zellij_session_name: Option<SessionName>,
     /// One machine's runs, by its host id. See `agents::rows::Owner`.
     ///
     /// Left `None` by default, and deliberately: "have I had an agent look at this before" is a
@@ -153,7 +154,10 @@ impl Filter {
     }
 
     fn session(&self) -> Option<&str> {
-        trimmed(&self.zellij_session_name)
+        self.zellij_session_name
+            .as_ref()
+            .map(|name| name.as_str().trim())
+            .filter(|name| !name.is_empty())
     }
 
     /// Whether this filter needs a guest-side pass, and so an over-fetch.
@@ -815,7 +819,7 @@ mod tests {
         AgentRun {
             id: id.to_owned(),
             pane_id: 7,
-            zellij_session_name: session.to_owned(),
+            zellij_session_name: session.to_owned().into(),
             host_id: HostId::new(HOST),
             session_id: id.to_owned(),
             kind: kind.to_owned(),
@@ -895,7 +899,7 @@ mod tests {
     fn a_search_is_narrowed_to_one_session() {
         let backend = seeded();
         let filter = Filter {
-            zellij_session_name: Some("other".to_owned()),
+            zellij_session_name: Some("other".to_owned().into()),
             ..Filter::default()
         };
         let found = search(&backend, &filter, None, "parser", 10).unwrap();
@@ -1024,7 +1028,7 @@ mod tests {
         write(&backend, &elsewhere);
 
         let this_session = Filter {
-            zellij_session_name: Some("main".to_owned()),
+            zellij_session_name: Some("main".to_owned().into()),
             host_id: Some(HostId::new(HOST)),
             ..Filter::default()
         };
@@ -1192,7 +1196,7 @@ mod tests {
         assert_eq!(by_kind[0].kind, "codex");
 
         let by_session = Filter {
-            zellij_session_name: Some("main".to_owned()),
+            zellij_session_name: Some("main".to_owned().into()),
             ..Filter::default()
         };
         let by_session = list_runs(&backend, &by_session, 10, 0).unwrap().headers;

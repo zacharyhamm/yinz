@@ -28,7 +28,11 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
             }
             t.session = session
                 .clone()
-                .or_else(|| zellij_runtime::envs::get_session_name().ok())
+                .or_else(|| {
+                    zellij_runtime::envs::get_session_name()
+                        .ok()
+                        .map(|name| name.into_string())
+                })
                 .unwrap_or_default();
             t.enter("pane_owner");
         }
@@ -54,7 +58,7 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
                 t.pane = pane_id.clone();
             }
             if let Some(session) = &session {
-                t.session = session.clone();
+                t.session = session.to_string();
             }
             t.enter("stdin_parse");
         }
@@ -86,7 +90,9 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
                 kind: t.kind.clone(),
             }
         };
-        let session = session.or_else(|| zellij_runtime::envs::get_session_name().ok());
+        let session = session
+            .map(zellij_types::internal_ids::SessionName::new)
+            .or_else(|| zellij_runtime::envs::get_session_name().ok());
         let session = match session {
             Some(session) => session,
             None => {
@@ -98,12 +104,13 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
                 sessions[0].0.clone()
             },
         };
-        zellij_session::sessions::validate_session_name(&session).map_err(|e| anyhow!(e))?;
+        zellij_session::sessions::validate_session_name(session.as_str())
+            .map_err(|e| anyhow!(e))?;
         zellij_runtime::agent::report::validate_report(&report)?;
         trace
             .lock()
             .map_err(|_| anyhow!("report trace poisoned"))?
-            .session = session.clone();
+            .session = session.to_string();
         trace
             .lock()
             .map_err(|_| anyhow!("report trace poisoned"))?

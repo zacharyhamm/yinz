@@ -77,7 +77,7 @@ fn stored_run(
     AgentRun {
         id: id.to_owned(),
         pane_id: 7,
-        zellij_session_name: session.to_owned(),
+        zellij_session_name: session.to_owned().into(),
         host_id: HostId::new("test-host"),
         session_id: id.to_owned(),
         kind: kind.to_owned(),
@@ -97,7 +97,7 @@ fn stored_run(
 /// A state with a project and two runs in it: one here, one in another session.
 fn state_with_runs() -> State {
     let mut state = state_with_project();
-    state.zellij_session_name = "main".to_owned();
+    state.zellij_session_name = "main".to_owned().into();
     seed(
         &state,
         "claude:one",
@@ -245,7 +245,7 @@ fn a_listing_names_an_unknown_project_rather_than_answering_emptily() {
 #[test]
 fn this_session_before_the_session_is_named_says_so() {
     let mut state = state_with_runs();
-    state.zellij_session_name = String::new();
+    state.zellij_session_name = String::new().into();
     let refused = error(&mut state, "agent_runs", r#"{"this_session":true}"#);
     assert!(refused.contains("not named yet"), "{refused}");
 }

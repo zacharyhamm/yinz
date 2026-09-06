@@ -502,7 +502,7 @@ mod tests {
             panes: Some(panes),
             activity: agents::Activity::new(),
             manual_kinds: BTreeMap::new(),
-            zellij_session_name: String::new(),
+            zellij_session_name: String::new().into(),
             repositories,
             tab_projects: assigned,
             focused: None,
@@ -843,7 +843,7 @@ mod tests {
             manual_kinds,
             // Nor which session the panes are in: a project is a folder on a machine, and
             // discovery is the same answer whoever asks.
-            zellij_session_name: String::new(),
+            zellij_session_name: String::new().into(),
             repositories: BTreeMap::from([(location, repository)]),
             // Only hocus makes these, and only when the user assigns a tab by
             // hand. Discovery does not read them at all.

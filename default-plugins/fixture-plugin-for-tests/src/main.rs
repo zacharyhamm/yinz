@@ -388,14 +388,14 @@ impl ZellijPlugin for State {
                     );
                 },
                 BareKey::Char('5') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
-                    switch_session(Some("my_new_session"));
+                    switch_session(Some(&SessionName::new("my_new_session")));
                 },
                 BareKey::Char('6') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                     disconnect_other_clients()
                 },
                 BareKey::Char('7') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                     switch_session_with_layout(
-                        Some("my_other_new_session"),
+                        Some(&SessionName::new("my_other_new_session")),
                         LayoutInfo::BuiltIn("compact".to_owned()),
                         None,
                     );
@@ -406,7 +406,7 @@ impl ZellijPlugin for State {
                 },
                 BareKey::Char('9') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                     switch_session_with_layout(
-                        Some("my_other_new_session_with_cwd"),
+                        Some(&SessionName::new("my_other_new_session_with_cwd")),
                         LayoutInfo::BuiltIn("compact".to_owned()),
                         Some(std::path::PathBuf::from("/foo/bar")),
                     );

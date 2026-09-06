@@ -550,7 +550,7 @@ impl MouseHandler {
                         columns,
                         row as usize,
                         &style,
-                        &session_name,
+                        session_name.as_str(),
                         selection,
                         &shortcuts,
                     )

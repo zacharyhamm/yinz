@@ -20,14 +20,18 @@ pub fn tab_line(
 ) -> TabLineOutput {
     let dimmed = mode_info.session_ascended == Some(true) || mode_info.session_dimmed == Some(true);
     let breadcrumb_ancestry = if mode_info.host_fullscreen == Some(true) {
-        mode_info.session_ancestry.clone()
+        mode_info
+            .session_ancestry
+            .iter()
+            .map(ToString::to_string)
+            .collect()
     } else {
         Vec::new()
     };
     let nested_hint = NestedSessionHint::from_mode_info(mode_info);
     let config = TabLineConfig {
         hostname: hostname.to_owned(),
-        session_name: mode_info.session_name.to_owned(),
+        session_name: mode_info.session_name.as_ref().map(ToString::to_string),
         hide_session_name: mode_info.style.hide_session_name,
         mode: mode_info.mode,
         active_swap_layout_name: tab_data.active_swap_layout_name,

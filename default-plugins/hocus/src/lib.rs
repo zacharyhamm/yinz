@@ -28,6 +28,7 @@ use zellij_tile::prelude::DataWatchId;
 use zellij_tile::prelude::HostId;
 use zellij_tile::prelude::TabId;
 use zellij_tile::prelude::TabPosition;
+use zellij_types::internal_ids::SessionName;
 pub mod ui;
 mod wand;
 mod worker;
@@ -576,7 +577,7 @@ pub struct State {
     /// machine rather than per session, so a row about "pane 5" is meaningless without it —
     /// see `store::agent_latch_def`. Empty until the first snapshot, and nothing per-pane is
     /// written while it is.
-    zellij_session_name: String,
+    zellij_session_name: SessionName,
     /// The machine this hocus runs on, read once at load. With `zellij_session_name` it is what
     /// owns this session's rows in the shared store — see `agents::rows::Owner`.
     host_id: HostId,
@@ -990,7 +991,7 @@ impl Default for State {
             panes: Vec::new(),
             repositories: BTreeMap::new(),
             manual_kinds: BTreeMap::new(),
-            zellij_session_name: String::new(),
+            zellij_session_name: SessionName::default(),
             host_id: HostId::default(),
             restored_pane_rows: false,
             pending_agent_panes: BTreeSet::new(),

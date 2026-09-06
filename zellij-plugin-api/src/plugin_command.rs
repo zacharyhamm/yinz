@@ -493,7 +493,7 @@ impl TryFrom<ProtobufGetSessionListResponse> for GetSessionListResponse {
                 let resurrectable_sessions = snapshot
                     .resurrectable_sessions
                     .into_iter()
-                    .map(<(String, std::time::Duration)>::from)
+                    .map(<(zellij_types::internal_ids::SessionName, std::time::Duration)>::from)
                     .collect();
                 Ok(GetSessionListResponse::Ok(SessionListSnapshot {
                     live_sessions,
@@ -1545,7 +1545,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         }
                     };
                     Ok(PluginCommand::SwitchSession(ConnectToSession {
-                        name: payload.name,
+                        name: payload.name.map(Into::into),
                         tab_position: payload.tab_position.map(|p| TabPosition::new(p as usize)),
                         pane_id,
                         layout: payload.layout.and_then(|l| l.try_into().ok()),
@@ -1667,14 +1667,14 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::DeleteDeadSession) => match protobuf_plugin_command.payload {
                 Some(Payload::DeleteDeadSessionPayload(dead_session_name)) => {
-                    Ok(PluginCommand::DeleteDeadSession(dead_session_name))
+                    Ok(PluginCommand::DeleteDeadSession(dead_session_name.into()))
                 },
                 _ => Err("Mismatched payload for DeleteDeadSession"),
             },
             Some(CommandName::DeleteAllDeadSessions) => Ok(PluginCommand::DeleteAllDeadSessions),
             Some(CommandName::RenameSession) => match protobuf_plugin_command.payload {
                 Some(Payload::RenameSessionPayload(new_session_name)) => {
-                    Ok(PluginCommand::RenameSession(new_session_name))
+                    Ok(PluginCommand::RenameSession(new_session_name.into()))
                 },
                 _ => Err("Mismatched payload for RenameSession"),
             },
@@ -1760,7 +1760,9 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::KillSessions) => match protobuf_plugin_command.payload {
                 Some(Payload::KillSessionsPayload(KillSessionsPayload { session_names })) => {
-                    Ok(PluginCommand::KillSessions(session_names))
+                    Ok(PluginCommand::KillSessions(
+                        session_names.into_iter().map(Into::into).collect(),
+                    ))
                 },
                 _ => Err("Mismatched payload for KillSessions"),
             },
@@ -1845,13 +1847,15 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::KillSessionsAndReply) => match protobuf_plugin_command.payload {
                 Some(Payload::KillSessionsAndReplyPayload(KillSessionsPayload {
                     session_names,
-                })) => Ok(PluginCommand::KillSessionsAndReply(session_names)),
+                })) => Ok(PluginCommand::KillSessionsAndReply(
+                    session_names.into_iter().map(Into::into).collect(),
+                )),
                 _ => Err("Mismatched payload for KillSessionsAndReply"),
             },
             Some(CommandName::DeleteDeadSessionAndReply) => match protobuf_plugin_command.payload {
-                Some(Payload::DeleteDeadSessionAndReplyPayload(dead_session_name)) => {
-                    Ok(PluginCommand::DeleteDeadSessionAndReply(dead_session_name))
-                },
+                Some(Payload::DeleteDeadSessionAndReplyPayload(dead_session_name)) => Ok(
+                    PluginCommand::DeleteDeadSessionAndReply(dead_session_name.into()),
+                ),
                 _ => Err("Mismatched payload for DeleteDeadSessionAndReply"),
             },
             Some(CommandName::DeleteAllDeadSessionsAndReply) => {
@@ -3283,7 +3287,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                             .pane_id
                             .ok_or("Missing pane_id for WarpPaneToSession")?
                             .try_into()?,
-                        to_session: payload.to_session,
+                        to_session: payload.to_session.into(),
                         placement: warp_placement_from_i32(payload.placement)?,
                     })
                 },
@@ -3296,7 +3300,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                             .pane_id
                             .ok_or("Missing pane_id for WarpPaneFromSession")?
                             .try_into()?,
-                        from_session: payload.from_session,
+                        from_session: payload.from_session.into(),
                         placement: warp_placement_from_i32(payload.placement)?,
                     })
                 },
@@ -3306,7 +3310,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 Some(Payload::WarpTabToSessionPayload(payload)) => {
                     Ok(PluginCommand::WarpTabToSession {
                         tab_index: TabId::new(payload.tab_index as usize),
-                        to_session: payload.to_session,
+                        to_session: payload.to_session.into(),
                     })
                 },
                 _ => Err("Mismatched payload for WarpTabToSession"),
@@ -3315,7 +3319,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 Some(Payload::WarpTabFromSessionPayload(payload)) => {
                     Ok(PluginCommand::WarpTabFromSession {
                         tab_index: TabId::new(payload.tab_index as usize),
-                        from_session: payload.from_session,
+                        from_session: payload.from_session.into(),
                     })
                 },
                 _ => Err("Mismatched payload for WarpTabFromSession"),
@@ -4016,7 +4020,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::SwitchSession(switch_to_session) => Ok(ProtobufPluginCommand {
                 name: CommandName::SwitchSession as i32,
                 payload: Some(Payload::SwitchSessionPayload(SwitchSessionPayload {
-                    name: switch_to_session.name,
+                    name: switch_to_session.name.map(|name| name.into_string()),
                     tab_position: switch_to_session
                         .tab_position
                         .map(|t| u32::try_from(t.get()))
@@ -4121,7 +4125,9 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             }),
             PluginCommand::DeleteDeadSession(dead_session_name) => Ok(ProtobufPluginCommand {
                 name: CommandName::DeleteDeadSession as i32,
-                payload: Some(Payload::DeleteDeadSessionPayload(dead_session_name)),
+                payload: Some(Payload::DeleteDeadSessionPayload(
+                    dead_session_name.to_string(),
+                )),
             }),
             PluginCommand::DeleteAllDeadSessions => Ok(ProtobufPluginCommand {
                 name: CommandName::DeleteAllDeadSessions as i32,
@@ -4129,7 +4135,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             }),
             PluginCommand::RenameSession(new_session_name) => Ok(ProtobufPluginCommand {
                 name: CommandName::RenameSession as i32,
-                payload: Some(Payload::RenameSessionPayload(new_session_name)),
+                payload: Some(Payload::RenameSessionPayload(new_session_name.to_string())),
             }),
             PluginCommand::Notify(text, pane_id) => Ok(ProtobufPluginCommand {
                 name: CommandName::Notify as i32,
@@ -4203,7 +4209,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::KillSessions(session_names) => Ok(ProtobufPluginCommand {
                 name: CommandName::KillSessions as i32,
                 payload: Some(Payload::KillSessionsPayload(KillSessionsPayload {
-                    session_names,
+                    session_names: session_names
+                        .into_iter()
+                        .map(|name| name.into_string())
+                        .collect(),
                 })),
             }),
             PluginCommand::ScanHostFolder(folder_to_scan) => Ok(ProtobufPluginCommand {
@@ -4295,13 +4304,18 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::KillSessionsAndReply(session_names) => Ok(ProtobufPluginCommand {
                 name: CommandName::KillSessionsAndReply as i32,
                 payload: Some(Payload::KillSessionsAndReplyPayload(KillSessionsPayload {
-                    session_names,
+                    session_names: session_names
+                        .into_iter()
+                        .map(|name| name.into_string())
+                        .collect(),
                 })),
             }),
             PluginCommand::DeleteDeadSessionAndReply(dead_session_name) => {
                 Ok(ProtobufPluginCommand {
                     name: CommandName::DeleteDeadSessionAndReply as i32,
-                    payload: Some(Payload::DeleteDeadSessionAndReplyPayload(dead_session_name)),
+                    payload: Some(Payload::DeleteDeadSessionAndReplyPayload(
+                        dead_session_name.to_string(),
+                    )),
                 })
             },
             PluginCommand::DeleteAllDeadSessionsAndReply => Ok(ProtobufPluginCommand {
@@ -5575,7 +5589,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 payload: Some(Payload::WarpPaneToSessionPayload(
                     WarpPaneToSessionPayload {
                         pane_id: Some(pane_id.try_into()?),
-                        to_session,
+                        to_session: to_session.to_string(),
                         placement: ProtobufWarpPlacement::from(placement) as i32,
                     },
                 )),
@@ -5589,7 +5603,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 payload: Some(Payload::WarpPaneFromSessionPayload(
                     WarpPaneFromSessionPayload {
                         pane_id: Some(pane_id.try_into()?),
-                        from_session,
+                        from_session: from_session.to_string(),
                         placement: ProtobufWarpPlacement::from(placement) as i32,
                     },
                 )),
@@ -5602,7 +5616,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 payload: Some(Payload::WarpTabToSessionPayload(WarpTabToSessionPayload {
                     tab_index: u32::try_from(tab_index.get())
                         .map_err(|_| "tab_id is outside u32 range")?,
-                    to_session,
+                    to_session: to_session.to_string(),
                 })),
             }),
             PluginCommand::WarpTabFromSession {
@@ -5614,7 +5628,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     WarpTabFromSessionPayload {
                         tab_index: u32::try_from(tab_index.get())
                             .map_err(|_| "tab_id is outside u32 range")?,
-                        from_session,
+                        from_session: from_session.to_string(),
                     },
                 )),
             }),
@@ -5824,7 +5838,7 @@ impl From<OrphanedPane> for ProtobufOrphanedPane {
         };
         ProtobufOrphanedPane {
             host_id: pane.host_id.into_string(),
-            session_name: pane.session_name,
+            session_name: pane.session_name.map(|name| name.into_string()),
             command: pane.command,
             cwd: pane.cwd.map(|cwd| cwd.display().to_string()),
             child_pid: pane.child_pid.map(|id| id.get()),
@@ -5840,7 +5854,7 @@ impl From<ProtobufOrphanedPane> for OrphanedPane {
     fn from(pane: ProtobufOrphanedPane) -> Self {
         OrphanedPane {
             host_id: SupervisorId::new(pane.host_id),
-            session_name: pane.session_name,
+            session_name: pane.session_name.map(Into::into),
             command: pane.command,
             cwd: pane.cwd.map(PathBuf::from),
             child_pid: pane.child_pid.map(ProcessId::new),
@@ -6925,7 +6939,7 @@ impl From<ProtobufRecordingSummary> for RecordingSummary {
     fn from(protobuf: ProtobufRecordingSummary) -> Self {
         RecordingSummary {
             id: RecordingId::new(protobuf.id),
-            session_name: protobuf.session_name,
+            session_name: protobuf.session_name.into(),
             tab_name: protobuf.tab_name,
             terminal_id: TerminalId::new(protobuf.terminal_id),
             pane_title: protobuf.pane_title,
@@ -6962,7 +6976,7 @@ impl From<RecordingSummary> for ProtobufRecordingSummary {
     fn from(summary: RecordingSummary) -> Self {
         ProtobufRecordingSummary {
             id: summary.id.get(),
-            session_name: summary.session_name,
+            session_name: summary.session_name.to_string(),
             tab_name: summary.tab_name,
             terminal_id: summary.terminal_id.get(),
             pane_title: summary.pane_title,
@@ -6979,7 +6993,7 @@ impl From<ProtobufSearchHit> for SearchHit {
     fn from(protobuf: ProtobufSearchHit) -> Self {
         SearchHit {
             recording_id: RecordingId::new(protobuf.recording_id),
-            session_name: protobuf.session_name,
+            session_name: protobuf.session_name.into(),
             tab_name: protobuf.tab_name,
             pane_title: protobuf.pane_title,
             elapsed_us: ElapsedMicros::new(protobuf.elapsed_us),
@@ -6993,7 +7007,7 @@ impl From<SearchHit> for ProtobufSearchHit {
     fn from(hit: SearchHit) -> Self {
         ProtobufSearchHit {
             recording_id: hit.recording_id.get(),
-            session_name: hit.session_name,
+            session_name: hit.session_name.to_string(),
             tab_name: hit.tab_name,
             pane_title: hit.pane_title,
             elapsed_us: hit.elapsed_us.get(),
@@ -7383,7 +7397,7 @@ mod tests {
     fn recording_results_protobuf_round_trip() {
         let summary = RecordingSummary {
             id: RecordingId::new(3),
-            session_name: "session".to_owned(),
+            session_name: "session".to_owned().into(),
             tab_name: "tab".to_owned(),
             terminal_id: TerminalId::new(5),
             pane_title: "title".to_owned(),
@@ -7399,7 +7413,7 @@ mod tests {
 
         let hit = SearchHit {
             recording_id: RecordingId::new(3),
-            session_name: "session".to_owned(),
+            session_name: "session".to_owned().into(),
             tab_name: "tab".to_owned(),
             pane_title: "title".to_owned(),
             elapsed_us: ElapsedMicros::new(42),
@@ -7472,7 +7486,7 @@ mod tests {
         for placement in EVERY_PLACEMENT {
             let original = PluginCommand::WarpPaneToSession {
                 pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7)),
-                to_session: "other".to_owned(),
+                to_session: "other".to_owned().into(),
                 placement,
             };
             let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
@@ -7487,7 +7501,7 @@ mod tests {
                         pane_id,
                         PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7))
                     );
-                    assert_eq!(to_session, "other");
+                    assert_eq!(to_session, "other".into());
                     assert_eq!(decoded_placement, placement);
                 },
                 other => panic!("expected WarpPaneToSession, got {:?}", other),
@@ -7500,7 +7514,7 @@ mod tests {
         for placement in EVERY_PLACEMENT {
             let original = PluginCommand::WarpPaneFromSession {
                 pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(11)),
-                from_session: "other".to_owned(),
+                from_session: "other".to_owned().into(),
                 placement,
             };
             let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
@@ -7515,7 +7529,7 @@ mod tests {
                         pane_id,
                         PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(11))
                     );
-                    assert_eq!(from_session, "other");
+                    assert_eq!(from_session, "other".into());
                     assert_eq!(decoded_placement, placement);
                 },
                 other => panic!("expected WarpPaneFromSession, got {:?}", other),
@@ -7585,7 +7599,7 @@ mod tests {
         for exit_status in [None, Some(None), Some(Some(1))] {
             let pane = OrphanedPane {
                 host_id: SupervisorId::new("abc123".to_owned()),
-                session_name: Some("gone".to_owned()),
+                session_name: Some("gone".to_owned().into()),
                 command: "top".to_owned(),
                 cwd: Some(PathBuf::from("/tmp")),
                 child_pid: Some(ProcessId::new(4242)),

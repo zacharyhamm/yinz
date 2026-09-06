@@ -22,6 +22,7 @@
 //! worse.
 
 use std::time::{Duration, Instant};
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::TabId;
 
 use zellij_runtime::{envs, errors::prelude::*};
@@ -93,7 +94,7 @@ const SLOW_WARP: Duration = Duration::from_secs(1);
 /// Returns the live connection, so the warp itself can reuse it. Reconnecting
 /// afterwards would reopen exactly the window this is checking for.
 fn connect_to_session(
-    session_name: &str,
+    session_name: &SessionName,
     reply_timeout: Duration,
 ) -> Result<IpcSenderWithContext<ClientToServerMsg>> {
     use {zellij_ipc::consts::ipc_connect, zellij_runtime::consts::ZELLIJ_SOCK_DIR};
@@ -207,7 +208,7 @@ fn send_pane_to_session(
 /// Read here rather than inside the warp functions so those stay free of
 /// process-global state and can be tested without racing every other test that
 /// touches `ZELLIJ_SESSION_NAME`.
-pub fn current_session_name() -> String {
+pub fn current_session_name() -> SessionName {
     envs::get_session_name().unwrap_or_default()
 }
 
@@ -221,8 +222,8 @@ pub fn warp_pane_to_session(
     senders: &ThreadSenders,
     client_id: ClientId,
     pane_id: Option<PaneId>,
-    current_session: &str,
-    to_session: &str,
+    current_session: &SessionName,
+    to_session: &SessionName,
     placement: WarpPlacement,
     timeout: Duration,
 ) -> std::result::Result<String, String> {
@@ -326,8 +327,8 @@ pub fn adopt_pane_here(
 /// decide any of them. The source then connects back into this server to deliver
 /// the pane, which our route and pty threads handle, not the caller's.
 pub fn warp_pane_from_session(
-    current_session: &str,
-    from_session: &str,
+    current_session: &SessionName,
+    from_session: &SessionName,
     pane_id: PaneId,
     placement: WarpPlacement,
     timeout: Duration,
@@ -369,8 +370,8 @@ pub fn warp_tab_to_session(
     senders: &ThreadSenders,
     client_id: ClientId,
     tab_index: Option<TabId>,
-    current_session: &str,
-    to_session: &str,
+    current_session: &SessionName,
+    to_session: &SessionName,
     timeout: Duration,
 ) -> std::result::Result<String, String> {
     let started_at = std::time::Instant::now();
@@ -468,8 +469,8 @@ pub fn adopt_tab_here(
 /// the source session a `WarpTab` naming *us*, so every check, the release, the
 /// rollback and the recovery wording happen on the side that owns the tab.
 pub fn warp_tab_from_session(
-    current_session: &str,
-    from_session: &str,
+    current_session: &SessionName,
+    from_session: &SessionName,
     tab_index: TabId,
     timeout: Duration,
 ) -> std::result::Result<String, String> {

@@ -100,8 +100,8 @@ fn warping_to_the_current_session_is_refused_before_anything_is_asked_of_screen(
         &harness.senders,
         crate::ClientId::new(1),
         Some(PaneId::Terminal(crate::TerminalId::new(3))),
-        "here",
-        "here",
+        &zellij_types::internal_ids::SessionName::new("here"),
+        &zellij_types::internal_ids::SessionName::new("here"),
         WarpPlacement::NewTab,
         TEST_TIMEOUT,
     );
@@ -126,8 +126,8 @@ fn an_unreachable_target_releases_nothing() {
         &harness.senders,
         crate::ClientId::new(1),
         Some(PaneId::Terminal(crate::TerminalId::new(3))),
-        "here",
-        &unreachable_session("unreachable"),
+        &zellij_types::internal_ids::SessionName::new("here"),
+        &zellij_types::internal_ids::SessionName::new(unreachable_session("unreachable")),
         WarpPlacement::NewTab,
         TEST_TIMEOUT,
     );
@@ -146,8 +146,8 @@ fn an_unreachable_target_releases_nothing() {
 #[test]
 fn bringing_a_pane_from_the_current_session_is_refused() {
     let result = warp_pane_from_session(
-        "here",
-        "here",
+        &zellij_types::internal_ids::SessionName::new("here"),
+        &zellij_types::internal_ids::SessionName::new("here"),
         PaneId::Terminal(crate::TerminalId::new(3)),
         WarpPlacement::NewTab,
         TEST_TIMEOUT,
@@ -162,8 +162,8 @@ fn bringing_a_pane_into_a_nameless_session_is_refused() {
     // no name has nothing to put in that field and must say so rather than
     // asking the far side to warp to "".
     let result = warp_pane_from_session(
-        "",
-        &unreachable_session("nameless"),
+        &zellij_types::internal_ids::SessionName::new(""),
+        &zellij_types::internal_ids::SessionName::new(unreachable_session("nameless")),
         PaneId::Terminal(crate::TerminalId::new(3)),
         WarpPlacement::NewTab,
         TEST_TIMEOUT,
@@ -180,8 +180,8 @@ fn bringing_a_pane_from_an_unreachable_session_reports_which_one() {
     let missing = unreachable_session("source");
 
     let result = warp_pane_from_session(
-        "here",
-        &missing,
+        &zellij_types::internal_ids::SessionName::new("here"),
+        &zellij_types::internal_ids::SessionName::new(&missing),
         PaneId::Terminal(crate::TerminalId::new(3)),
         WarpPlacement::NewTab,
         TEST_TIMEOUT,
@@ -278,8 +278,8 @@ fn warping_a_tab_to_the_current_session_is_refused_before_anything_is_asked_of_s
         &harness.senders,
         crate::ClientId::new(1),
         Some(TabId::new(0)),
-        "here",
-        "here",
+        &zellij_types::internal_ids::SessionName::new("here"),
+        &zellij_types::internal_ids::SessionName::new("here"),
         TEST_TIMEOUT,
     );
 
@@ -304,8 +304,8 @@ fn an_unreachable_target_releases_no_part_of_a_tab() {
         &harness.senders,
         crate::ClientId::new(1),
         Some(TabId::new(0)),
-        "here",
-        &unreachable_session("tab-unreachable"),
+        &zellij_types::internal_ids::SessionName::new("here"),
+        &zellij_types::internal_ids::SessionName::new(unreachable_session("tab-unreachable")),
         TEST_TIMEOUT,
     );
 
@@ -322,7 +322,12 @@ fn an_unreachable_target_releases_no_part_of_a_tab() {
 
 #[test]
 fn bringing_a_tab_from_the_current_session_is_refused() {
-    let result = warp_tab_from_session("here", "here", TabId::new(0), TEST_TIMEOUT);
+    let result = warp_tab_from_session(
+        &zellij_types::internal_ids::SessionName::new("here"),
+        &zellij_types::internal_ids::SessionName::new("here"),
+        TabId::new(0),
+        TEST_TIMEOUT,
+    );
 
     assert_eq!(result, Err("'here' is this session".to_owned()));
 }
@@ -332,8 +337,8 @@ fn bringing_a_tab_into_a_nameless_session_is_refused() {
     // A session with no name has no address to give the source, so asking would
     // send a tab to nowhere.
     let result = warp_tab_from_session(
-        "",
-        &unreachable_session("nameless-tab"),
+        &zellij_types::internal_ids::SessionName::new(""),
+        &zellij_types::internal_ids::SessionName::new(unreachable_session("nameless-tab")),
         TabId::new(0),
         TEST_TIMEOUT,
     );
@@ -348,7 +353,12 @@ fn bringing_a_tab_into_a_nameless_session_is_refused() {
 fn bringing_a_tab_from_an_unreachable_session_reports_which_one() {
     let missing = unreachable_session("tab-source");
 
-    let result = warp_tab_from_session("here", &missing, TabId::new(0), TEST_TIMEOUT);
+    let result = warp_tab_from_session(
+        &zellij_types::internal_ids::SessionName::new("here"),
+        &zellij_types::internal_ids::SessionName::new(&missing),
+        TabId::new(0),
+        TEST_TIMEOUT,
+    );
 
     let error = result.expect_err("a session that is not running has no tab to give");
     assert!(

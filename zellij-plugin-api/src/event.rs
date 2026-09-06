@@ -58,6 +58,7 @@ use zellij_types::internal_ids::ContextMenuItemId;
 use zellij_types::internal_ids::ContextMenuRequestId;
 use zellij_types::internal_ids::DataWatchId;
 use zellij_types::internal_ids::QueueJobId;
+use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::keys::{KeyModifier, KeyWithModifier};
@@ -250,7 +251,7 @@ impl TryFrom<ProtobufEvent> for Event {
                     protobuf_session_update_payload,
                 )) => {
                     let mut session_infos: Vec<SessionInfo> = vec![];
-                    let mut resurrectable_sessions: Vec<(String, Duration)> = vec![];
+                    let mut resurrectable_sessions: Vec<(SessionName, Duration)> = vec![];
                     for protobuf_session_info in protobuf_session_update_payload.session_manifests {
                         session_infos.push(SessionInfo::try_from(protobuf_session_info)?);
                     }
@@ -744,7 +745,7 @@ impl TryFrom<ProtobufEvent> for Event {
                         },
                         Some(hook_payload::Payload::SessionStart(start)) => {
                             zellij_types::data::HookPayload::SessionStart {
-                                session_name: start.session_name,
+                                session_name: start.session_name.into(),
                                 client_id: ClientId::try_from(start.client_id)
                                     .map_err(|_| "client_id is outside u16 range")?,
                             }
@@ -1490,7 +1491,7 @@ impl TryFrom<Event> for ProtobufEvent {
                         session_name,
                         client_id,
                     } => hook_payload::Payload::SessionStart(ProtobufSessionStartHookPayload {
-                        session_name,
+                        session_name: session_name.to_string(),
                         client_id: u32::from(client_id.get()),
                     }),
                 };
@@ -1622,7 +1623,7 @@ impl TryFrom<SessionInfo> for ProtobufSessionManifest {
             });
         }
         Ok(ProtobufSessionManifest {
-            name: session_info.name,
+            name: session_info.name.to_string(),
             panes: protobuf_pane_manifests,
             tabs: session_info
                 .tabs
@@ -1756,7 +1757,7 @@ impl TryFrom<ProtobufSessionManifest> for SessionInfo {
             );
         }
         Ok(SessionInfo {
-            name: protobuf_session_manifest.name,
+            name: protobuf_session_manifest.name.into(),
             tabs: protobuf_session_manifest
                 .tabs
                 .iter()
@@ -2492,14 +2493,14 @@ impl TryFrom<ProtobufModeUpdatePayload> for ModeInfo {
             keybinds,
             style,
             capabilities,
-            session_name,
+            session_name: session_name.map(Into::into),
             base_mode,
             editor,
             shell,
             currently_marking_pane_group,
             pane_frame_style,
             session_dimmed,
-            session_ancestry,
+            session_ancestry: session_ancestry.into_iter().map(Into::into).collect(),
             host_fullscreen,
             nested_ascend_keys,
             session_ascended,
@@ -2571,14 +2572,17 @@ impl TryFrom<ModeInfo> for ProtobufModeUpdatePayload {
             keybinds: protobuf_input_mode_keybinds,
             arrow_fonts_support,
             kitty_graphics_support,
-            session_name,
+            session_name: session_name.map(|name| name.into_string()),
             base_mode: base_mode.map(|b_m| b_m as i32),
             editor,
             shell,
             currently_marking_pane_group,
             pane_frame_style,
             session_dimmed,
-            ancestry: session_ancestry,
+            ancestry: session_ancestry
+                .into_iter()
+                .map(|name| name.into_string())
+                .collect(),
             host_fullscreen,
             nested_ascend_keys,
             session_ascended,
@@ -2789,19 +2793,23 @@ impl From<ProtobufHostTerminalThemeIndication> for HostTerminalThemeMode {
     }
 }
 
-impl From<ProtobufResurrectableSession> for (String, Duration) {
-    fn from(protobuf_resurrectable_session: ProtobufResurrectableSession) -> (String, Duration) {
+impl From<ProtobufResurrectableSession> for (SessionName, Duration) {
+    fn from(
+        protobuf_resurrectable_session: ProtobufResurrectableSession,
+    ) -> (SessionName, Duration) {
         (
-            protobuf_resurrectable_session.name,
+            protobuf_resurrectable_session.name.into(),
             Duration::from_secs(protobuf_resurrectable_session.creation_time),
         )
     }
 }
 
-impl From<(String, Duration)> for ProtobufResurrectableSession {
-    fn from(session_name_and_creation_time: (String, Duration)) -> ProtobufResurrectableSession {
+impl From<(SessionName, Duration)> for ProtobufResurrectableSession {
+    fn from(
+        session_name_and_creation_time: (SessionName, Duration),
+    ) -> ProtobufResurrectableSession {
         ProtobufResurrectableSession {
-            name: session_name_and_creation_time.0,
+            name: session_name_and_creation_time.0.to_string(),
             creation_time: session_name_and_creation_time.1.as_secs(),
         }
     }
@@ -2883,7 +2891,7 @@ fn serialize_hook_event() {
             held: true,
         },
         zellij_types::data::HookPayload::SessionStart {
-            session_name: "s".to_owned(),
+            session_name: "s".to_owned().into(),
             client_id: ClientId::new(1),
         },
     ];
@@ -2985,14 +2993,14 @@ fn serialize_mode_update_event_with_non_default_values() {
             arrow_fonts: false,
             kitty_graphics: true,
         },
-        session_name: Some("my awesome test session".to_owned()),
+        session_name: Some("my awesome test session".to_owned().into()),
         base_mode: Some(InputMode::Locked),
         editor: Some(PathBuf::from("my_awesome_editor")),
         shell: Some(PathBuf::from("my_awesome_shell")),
         currently_marking_pane_group: Some(false),
         pane_frame_style: Some(zellij_types::input::options::PaneFrameStyle::Titles),
         session_dimmed: Some(true),
-        session_ancestry: vec!["work".to_owned(), "prod".to_owned()],
+        session_ancestry: vec!["work".to_owned().into(), "prod".to_owned().into()],
         host_fullscreen: Some(true),
         nested_ascend_keys: vec![
             KeyWithModifier::new(BareKey::Char('o')).with_ctrl_modifier(),
@@ -3388,7 +3396,7 @@ fn serialize_session_update_event_with_non_default_values() {
         [1, 2, 3].into_iter().map(TabId::new).collect(),
     );
     let session_info_1 = SessionInfo {
-        name: "session 1".to_owned(),
+        name: "session 1".to_owned().into(),
         tabs: tab_infos,
         panes: PaneManifest { panes },
         connected_clients: 2,
@@ -3418,7 +3426,7 @@ fn serialize_session_update_event_with_non_default_values() {
         creation_time: Duration::from_secs(100),
     };
     let session_info_2 = SessionInfo {
-        name: "session 2".to_owned(),
+        name: "session 2".to_owned().into(),
         tabs: vec![],
         panes: PaneManifest {
             panes: HashMap::new(),
@@ -4166,7 +4174,7 @@ mod tests {
                             held: tc.draw(generators::booleans()),
                         },
                         _ => zellij_types::data::HookPayload::SessionStart {
-                            session_name: strings(tc),
+                            session_name: strings(tc).into(),
                             client_id: ClientId::new(tc.draw(generators::integers::<u16>())),
                         },
                     },

@@ -1,5 +1,6 @@
 use zellij_tile::prelude::ElapsedMicros;
 use zellij_tile::prelude::RecordingId;
+use zellij_tile::prelude::SessionName;
 #[cfg(test)]
 use zellij_tile::prelude::TerminalId;
 #[cfg(test)]
@@ -10,7 +11,7 @@ use zellij_tile::shim::*;
 #[derive(Debug, Default)]
 pub struct RecordingRow {
     pub id: RecordingId,
-    pub session_name: String,
+    pub session_name: SessionName,
     pub tab_name: String,
     pub pane_title: String,
     pub duration_us: ElapsedMicros,
@@ -245,7 +246,7 @@ mod tests {
     fn row(id: i64) -> RecordingRow {
         RecordingRow {
             id: RecordingId::new(id),
-            session_name: "s".to_string(),
+            session_name: "s".to_string().into(),
             tab_name: "t".to_string(),
             pane_title: "zsh".to_string(),
             duration_us: ElapsedMicros::new(65_000_000),
@@ -257,7 +258,7 @@ mod tests {
     fn converts_typed_rows_and_labels_them() {
         let list_row = RecordingRow::from(RecordingSummary {
             id: RecordingId::new(7),
-            session_name: "s".to_string(),
+            session_name: "s".to_string().into(),
             tab_name: "t".to_string(),
             terminal_id: TerminalId::new(1),
             pane_title: "zsh".to_string(),
@@ -272,7 +273,7 @@ mod tests {
 
         let search_row = RecordingRow::from(SearchHit {
             recording_id: RecordingId::new(9),
-            session_name: "s".to_string(),
+            session_name: "s".to_string().into(),
             tab_name: "t".to_string(),
             pane_title: "zsh".to_string(),
             elapsed_us: ElapsedMicros::new(3_661_000_000),

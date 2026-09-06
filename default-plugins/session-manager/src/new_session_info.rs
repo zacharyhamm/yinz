@@ -1,6 +1,7 @@
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use std::path::PathBuf;
+use zellij_tile::prelude::SessionName;
 use zellij_tile::prelude::*;
 
 #[derive(Default)]
@@ -89,7 +90,7 @@ impl NewSessionInfo {
             _ => {},
         }
     }
-    pub fn handle_selection(&mut self, current_session_name: &Option<String>) {
+    pub fn handle_selection(&mut self, current_session_name: &Option<SessionName>) {
         match self.entering_new_session_info {
             EnteringState::EnteringLayoutSearch => {
                 let new_session_layout: Option<LayoutInfo> = self.selected_layout_info();
@@ -104,10 +105,14 @@ impl NewSessionInfo {
                     match new_session_layout {
                         Some(new_session_layout) => {
                             let cwd = self.new_session_folder.as_ref().map(PathBuf::from);
-                            switch_session_with_layout(new_session_name, new_session_layout, cwd);
+                            switch_session_with_layout(
+                                new_session_name.map(SessionName::new).as_ref(),
+                                new_session_layout,
+                                cwd,
+                            );
                         },
                         None => {
-                            switch_session(new_session_name);
+                            switch_session(new_session_name.map(SessionName::new).as_ref());
                         },
                     }
                 }

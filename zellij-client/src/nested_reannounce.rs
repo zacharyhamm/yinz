@@ -11,6 +11,7 @@ use crate::terminal_escapes::announce_nested;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
+use zellij_types::internal_ids::SessionName;
 use {
     zellij_ipc::nested_session::reannounce_check_interval_ms,
     zellij_ipc::nested_session::ReannounceScheduler,
@@ -24,7 +25,7 @@ pub struct NestedReannounce {
 }
 
 impl NestedReannounce {
-    pub fn spawn(os_input: Box<dyn StdioAccess + Send>, session_name: String) -> Self {
+    pub fn spawn(os_input: Box<dyn StdioAccess + Send>, session_name: SessionName) -> Self {
         let handle = NestedReannounce {
             scheduler: Arc::new(Mutex::new(ReannounceScheduler::new(Instant::now()))),
             wakeup: Arc::new(Condvar::new()),
