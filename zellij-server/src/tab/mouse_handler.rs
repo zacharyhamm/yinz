@@ -1210,7 +1210,7 @@ impl MouseHandler {
         let context = ContextMenuContext {
             // Filled in by `Screen::open_context_menu`, which owns the counter.
             request_id: 0,
-            client_id: client_id.0,
+            client_id,
             pane_id,
             tab_position,
             click: (position.column(), position.line().max(0) as usize),

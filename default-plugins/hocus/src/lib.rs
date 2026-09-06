@@ -962,7 +962,7 @@ impl Default for State {
             view: View::default(),
             // Overwritten by the host on the first event or render; nothing
             // reads it before then.
-            client: 0,
+            client: ClientId::new(0),
             transcript_rows: 0,
             transcript_cache: None,
             plan_cache: None,

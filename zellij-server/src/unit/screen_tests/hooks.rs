@@ -68,7 +68,7 @@ fn agent_command(cwd: &str) -> RunCommand {
         hold_on_close: true,
         originating_plugin: Some(OriginatingPlugin::new(
             2,
-            1,
+            crate::ClientId::new(1),
             BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
         )),
         ..Default::default()
@@ -621,7 +621,11 @@ fn a_command_pane_from_a_plugin_that_is_not_an_agent_fires_no_agent_hook() {
     let from_a_plugin = RunCommand {
         command: PathBuf::from("echo"),
         hold_on_close: true,
-        originating_plugin: Some(OriginatingPlugin::new(2, 1, BTreeMap::new())),
+        originating_plugin: Some(OriginatingPlugin::new(
+            2,
+            crate::ClientId::new(1),
+            BTreeMap::new(),
+        )),
         ..Default::default()
     };
     let fired = hooks_fired_by_holding(2, from_a_plugin);

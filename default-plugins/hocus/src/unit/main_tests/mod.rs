@@ -334,16 +334,16 @@ fn mode_updates_keep_kitty_graphics_support_per_client() {
         Event::ModeUpdate(mode_info)
     };
 
-    state.client = 1;
+    state.client = ClientId::new(1);
     assert!(state.handle(mode_update(true)));
-    state.client = 2;
+    state.client = ClientId::new(2);
     assert!(!state.handle(mode_update(false)));
-    assert_eq!(state.kitty_graphics, BTreeSet::from([1]));
+    assert_eq!(state.kitty_graphics, BTreeSet::from([ClientId::new(1)]));
 
     assert!(state.handle(mode_update(true)));
-    state.client = 1;
+    state.client = ClientId::new(1);
     assert!(state.handle(mode_update(false)));
-    assert_eq!(state.kitty_graphics, BTreeSet::from([2]));
+    assert_eq!(state.kitty_graphics, BTreeSet::from([ClientId::new(2)]));
 }
 
 fn schedule_call(arguments: &str) -> ToolCall {

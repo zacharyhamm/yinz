@@ -237,7 +237,7 @@ fn clicking_an_overflow_arrow_reveals_tabs_without_switching() {
 fn overflow_tab_reveal_is_per_client() {
     let mut state = three_tabs();
     state.chat_tab_width = 12;
-    state.client = 1;
+    state.client = ClientId::new(1);
     let right = ui::chat_tabs(&state, state.chat_tab_width)
         .into_iter()
         .find(|cell| cell.target == ui::TabTarget::Reveal(2))
@@ -248,12 +248,12 @@ fn overflow_tab_reveal_is_per_client() {
         .iter()
         .any(|cell| cell.target == ui::TabTarget::Tab(2)));
 
-    state.client = 2;
+    state.client = ClientId::new(2);
     assert!(ui::chat_tabs(&state, state.chat_tab_width)
         .iter()
         .any(|cell| cell.target == ui::TabTarget::Tab(1)));
 
-    state.client = 1;
+    state.client = ClientId::new(1);
     assert!(ui::chat_tabs(&state, state.chat_tab_width)
         .iter()
         .any(|cell| cell.target == ui::TabTarget::Tab(2)));

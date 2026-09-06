@@ -44,7 +44,7 @@ impl Screen {
                 is_fullscreen_active: tab.is_fullscreen_active(),
                 is_sync_panes_active: tab.is_sync_panes_active(),
                 are_floating_panes_visible: tab.are_floating_panes_visible(),
-                other_focused_clients: all_focused_clients.into_iter().map(|id| id.0).collect(),
+                other_focused_clients: all_focused_clients.into_iter().collect(),
                 active_swap_layout_name,
                 is_swap_layout_dirty,
                 viewport_rows: tab_viewport.rows,
@@ -93,10 +93,7 @@ impl Screen {
                     is_fullscreen_active: tab.is_fullscreen_active(),
                     is_sync_panes_active: tab.is_sync_panes_active(),
                     are_floating_panes_visible: tab.are_floating_panes_visible(),
-                    other_focused_clients: other_focused_clients
-                        .into_iter()
-                        .map(|id| id.0)
-                        .collect(),
+                    other_focused_clients: other_focused_clients.into_iter().collect(),
                     active_swap_layout_name,
                     is_swap_layout_dirty,
                     viewport_rows: tab_viewport.rows,
@@ -471,12 +468,12 @@ impl Screen {
             tab_history: self
                 .tab_history
                 .iter()
-                .map(|(id, history)| (id.0, history.clone()))
+                .map(|(id, history)| (*id, history.clone()))
                 .collect(),
             pane_history: self
                 .pane_history
                 .iter()
-                .map(|(k, v)| (k.0, v.iter().map(|v| (*v).into()).collect()))
+                .map(|(k, v)| (*k, v.clone()))
                 .collect(),
             creation_time,
         };

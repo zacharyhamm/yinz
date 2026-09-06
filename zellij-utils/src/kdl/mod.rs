@@ -1,5 +1,5 @@
 mod kdl_layout_parser;
-use crate::data::ContextMenuItem;
+use crate::data::{ClientId, ContextMenuItem};
 use crate::data::{
     InputMode, LayoutInfo, LayoutMetadata, NewPanePlacement, PaletteColor, PaneId, PaneInfo,
     PaneManifest, PermissionType, SessionInfo, TabInfo,
@@ -6719,7 +6719,11 @@ impl SessionInfo {
                             }
                         }
                     }
-                    tab_history.insert(client_id as u16, history);
+                    tab_history.insert(
+                        ClientId::try_from(client_id)
+                            .map_err(|_| "client_id is outside u16 range")?,
+                        history,
+                    );
                 }
             }
         }
@@ -6767,7 +6771,11 @@ impl SessionInfo {
                             }
                         }
                     }
-                    pane_history.insert(client_id as u16, history);
+                    pane_history.insert(
+                        ClientId::try_from(client_id)
+                            .map_err(|_| "client_id is outside u16 range")?,
+                        history,
+                    );
                 }
             }
         }
@@ -6835,7 +6843,7 @@ impl SessionInfo {
             let mut client_document = KdlDocument::new();
             let mut client_node = KdlNode::new("client");
             let mut id = KdlNode::new("id");
-            id.push(*client_id as i64);
+            id.push(i64::from(client_id.get()));
             client_document.nodes_mut().push(id);
             let mut history = KdlNode::new("history");
             for entry in client_tab_history {
@@ -6853,7 +6861,7 @@ impl SessionInfo {
             let mut client_document = KdlDocument::new();
             let mut client_node = KdlNode::new("client");
             let mut id = KdlNode::new("id");
-            id.push(*client_id as i64);
+            id.push(i64::from(client_id.get()));
             client_document.nodes_mut().push(id);
             let mut history = KdlNode::new("history");
             for pane_id in client_pane_history {
@@ -6957,7 +6965,10 @@ impl TabInfo {
         {
             for entry in tab_other_focused_clients {
                 if let Some(entry_parsed) = entry.value().as_i64() {
-                    other_focused_clients.push(entry_parsed as u16);
+                    other_focused_clients.push(
+                        ClientId::try_from(entry_parsed)
+                            .map_err(|_| "client_id is outside u16 range")?,
+                    );
                 }
             }
         }
@@ -7028,7 +7039,7 @@ impl TabInfo {
         if !self.other_focused_clients.is_empty() {
             let mut other_focused_clients = KdlNode::new("other_focused_clients");
             for client_id in &self.other_focused_clients {
-                other_focused_clients.push(*client_id as i64);
+                other_focused_clients.push(i64::from(client_id.get()));
             }
             kdl_doucment.nodes_mut().push(other_focused_clients);
         }

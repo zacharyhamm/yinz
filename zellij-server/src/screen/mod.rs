@@ -2960,7 +2960,7 @@ impl Screen {
     fn hook_client_id(&self, run_command: Option<&RunCommand>) -> Option<ClientId> {
         run_command
             .and_then(|run_command| run_command.originating_plugin.as_ref())
-            .map(|plugin| ClientId(plugin.client_id))
+            .map(|plugin| plugin.client_id)
             .or_else(|| self.get_first_client_id())
     }
     /// Hand an exited agent pane to the `agent_exit` hook.
@@ -4553,7 +4553,7 @@ impl Screen {
                 is_fullscreen_active: tab.is_fullscreen_active(),
                 is_sync_panes_active: tab.is_sync_panes_active(),
                 are_floating_panes_visible: tab.are_floating_panes_visible(),
-                other_focused_clients: all_focused_clients.into_iter().map(|id| id.0).collect(),
+                other_focused_clients: all_focused_clients.into_iter().collect(),
                 active_swap_layout_name,
                 is_swap_layout_dirty,
                 viewport_rows: tab_viewport.rows,

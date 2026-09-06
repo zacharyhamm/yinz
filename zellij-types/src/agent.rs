@@ -1,5 +1,7 @@
 //! Agent records and launch inputs shared by host and plugin callers.
 
+use crate::pane_id::PaneId;
+use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use strum_macros::{Display, EnumString};

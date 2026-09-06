@@ -473,7 +473,7 @@ impl ClientSender {
                     self.client_id
                 );
                 Err(ZellijError::ClientTooSlow {
-                    client_id: self.client_id.0,
+                    client_id: self.client_id,
                 })
                 .with_context(err_context)
             },

@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn client_history_preserves_boundaries_and_rejects_narrowing() {
+    for value in [0, u16::MAX] {
+        let session = SessionInfo {
+            tab_history: BTreeMap::from([(ClientId::new(value), vec![0, 1])]),
+            pane_history: BTreeMap::from([(ClientId::new(value), vec![PaneId::default()])]),
+            ..Default::default()
+        };
+        let encoded = session.to_string();
+        let decoded = SessionInfo::from_string(&encoded, "another session").unwrap();
+        assert_eq!(decoded.tab_history, session.tab_history);
+        assert_eq!(decoded.pane_history, session.pane_history);
+        for invalid in [-1_i64, 65536, i64::MAX] {
+            let invalid = encoded.replace(&format!("id {value}"), &format!("id {invalid}"));
+            assert!(SessionInfo::from_string(&invalid, "another session").is_err());
+        }
+    }
+}
+
+#[test]
 fn serialize_and_deserialize_session_info() {
     let session_info = SessionInfo::default();
     let serialized = session_info.to_string();
@@ -88,7 +107,10 @@ fn serialize_and_deserialize_session_info_with_data() {
                 is_fullscreen_active: true,
                 is_sync_panes_active: false,
                 are_floating_panes_visible: true,
-                other_focused_clients: vec![2, 3],
+                other_focused_clients: vec![
+                    crate::data::ClientId::new(2),
+                    crate::data::ClientId::new(3),
+                ],
                 active_swap_layout_name: Some("BASE".to_owned()),
                 is_swap_layout_dirty: true,
                 viewport_rows: 10,
@@ -109,7 +131,10 @@ fn serialize_and_deserialize_session_info_with_data() {
                 is_fullscreen_active: false,
                 is_sync_panes_active: true,
                 are_floating_panes_visible: true,
-                other_focused_clients: vec![2, 3],
+                other_focused_clients: vec![
+                    crate::data::ClientId::new(2),
+                    crate::data::ClientId::new(3),
+                ],
                 active_swap_layout_name: None,
                 is_swap_layout_dirty: false,
                 viewport_rows: 10,

@@ -3775,7 +3775,7 @@ fn a_hook_handler_registered_with_on_runs() {
             point: HookPoint::SessionStart,
             payload: zellij_utils::data::HookPayload::SessionStart {
                 session_name: "main".to_owned(),
-                client_id: 1,
+                client_id: crate::ClientId::new(1),
             },
         })
         .unwrap();

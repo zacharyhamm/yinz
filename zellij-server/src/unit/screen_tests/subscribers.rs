@@ -460,7 +460,7 @@ fn delivery_path_a_and_b_produce_same_content() {
         contents.clone(),
     );
     let mut all_pane_contents = HashMap::new();
-    all_pane_contents.insert(1, pane_map);
+    all_pane_contents.insert(crate::ClientId::new(1), pane_map);
     let report = PaneRenderReport {
         all_pane_contents,
         all_pane_contents_with_ansi: HashMap::new(),

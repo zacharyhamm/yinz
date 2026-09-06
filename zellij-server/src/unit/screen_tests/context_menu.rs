@@ -746,7 +746,7 @@ fn a_right_press_asks_the_plugin_thread_what_the_menu_should_say() {
         (6, 3),
         "the absolute click, which is what anchors the menu - not the pane-relative one"
     );
-    assert_eq!(context.client_id, client_id.0);
+    assert_eq!(context.client_id, client_id);
     assert!(screen.context_menu_is_open(client_id));
 }
 

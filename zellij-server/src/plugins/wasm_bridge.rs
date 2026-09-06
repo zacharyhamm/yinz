@@ -1997,7 +1997,7 @@ impl WasmBridge {
 
         // Remove client from cached pane render report
         if let Some(ref mut prev_report) = self.previous_pane_render_report {
-            prev_report.all_pane_contents.remove(&client_id.0);
+            prev_report.all_pane_contents.remove(&client_id);
         }
     }
 
@@ -2065,11 +2065,7 @@ impl WasmBridge {
                 .map(|r| &r.all_pane_contents),
         );
         for (client_id, client_panes) in changed_panes_per_client {
-            let updates = vec![(
-                None,
-                Some(ClientId(client_id)),
-                Event::PaneRenderReport(client_panes),
-            )];
+            let updates = vec![(None, Some(client_id), Event::PaneRenderReport(client_panes))];
             self.update_plugins(updates, shutdown_sender.clone())?;
         }
 

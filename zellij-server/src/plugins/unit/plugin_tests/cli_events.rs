@@ -22,7 +22,7 @@ fn cwd_changed(pane: u32) -> Event {
     Event::CwdChanged(
         PaneId::Terminal(zellij_types::internal_ids::TerminalId(pane)),
         PathBuf::from("/tmp"),
-        vec![1],
+        vec![ClientId::new(1)],
     )
 }
 

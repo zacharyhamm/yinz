@@ -12,4 +12,4 @@ pub use zellij_utils::consts::VERSION;
 pub use zellij_utils::data::*;
 pub use zellij_utils::input::actions;
 
-pub use zellij_types::internal_ids::{PluginId, TerminalId};
+pub use zellij_types::internal_ids::{ClientId, PluginId, TerminalId};

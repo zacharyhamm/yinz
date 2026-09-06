@@ -1,4 +1,5 @@
 use super::test_framework::*;
+use crate::data::ClientId;
 use crate::data::{
     CommandOrPlugin, ConnectToSession, InputMode, LayoutInfo, LayoutMetadata, NewPanePlacement,
     OriginatingPlugin, PaneId, PluginTag, RemotePaneHandoff, UnblockCondition, WarpPlacement,
@@ -34,6 +35,41 @@ use zellij_types::{
 };
 
 const ROUNDTRIP_TEST_STACK_SIZE: usize = 32 * 1024 * 1024;
+
+#[test]
+fn client_ids_preserve_detach_bytes_and_reject_narrowing() {
+    use crate::client_server_contract::client_server_contract::{
+        client_to_server_msg, ClientToServerMsg as ProtoClientToServerMsg, DetachSessionMsg,
+    };
+    use prost::Message;
+
+    let bytes = [0x0a, 0x06, 0x0a, 0x04, 0x00, 0xff, 0xff, 0x03];
+    let proto = ProtoClientToServerMsg::decode(bytes.as_slice()).unwrap();
+    let message = ClientToServerMsg::try_from(proto).unwrap();
+    assert_eq!(
+        message,
+        ClientToServerMsg::DetachSession {
+            client_ids: vec![ClientId::new(0), ClientId::new(u16::MAX)],
+        }
+    );
+    assert_eq!(
+        ProtoClientToServerMsg::try_from(message)
+            .unwrap()
+            .encode_to_vec(),
+        bytes
+    );
+
+    for id in [65536, u32::MAX] {
+        let proto = ProtoClientToServerMsg {
+            message: Some(client_to_server_msg::Message::DetachSession(
+                DetachSessionMsg {
+                    client_ids: vec![id],
+                },
+            )),
+        };
+        assert!(ClientToServerMsg::try_from(proto).is_err());
+    }
+}
 
 #[test]
 fn server_client_contract() {
@@ -473,10 +509,10 @@ fn test_client_messages() {
 
     test_client_roundtrip!(ClientToServerMsg::DetachSession { client_ids: vec![] });
     test_client_roundtrip!(ClientToServerMsg::DetachSession {
-        client_ids: vec![1],
+        client_ids: vec![ClientId::new(1)],
     });
     test_client_roundtrip!(ClientToServerMsg::DetachSession {
-        client_ids: vec![1, 2, 999],
+        client_ids: vec![ClientId::new(1), ClientId::new(2), ClientId::new(999)],
     });
     test_client_roundtrip!(ClientToServerMsg::TerminalPixelDimensions {
         pixel_dimensions: PixelDimensions {
@@ -983,7 +1019,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::Quit,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     // Moving a pane between sessions. The placement enum and the optional pane id
@@ -1234,7 +1270,7 @@ fn test_client_messages() {
             is_kitty_keyboard_protocol: false,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1244,7 +1280,7 @@ fn test_client_messages() {
             is_kitty_keyboard_protocol: true,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1252,7 +1288,7 @@ fn test_client_messages() {
             chars: "my chars".to_owned(),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1260,7 +1296,7 @@ fn test_client_messages() {
             input_mode: InputMode::Locked,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1268,7 +1304,7 @@ fn test_client_messages() {
             input_mode: InputMode::Locked,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1277,7 +1313,7 @@ fn test_client_messages() {
             direction: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1286,7 +1322,7 @@ fn test_client_messages() {
             direction: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1295,7 +1331,7 @@ fn test_client_messages() {
             direction: Some(Direction::Left),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1304,7 +1340,7 @@ fn test_client_messages() {
             direction: Some(Direction::Right),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1313,7 +1349,7 @@ fn test_client_messages() {
             direction: Some(Direction::Up),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1322,25 +1358,25 @@ fn test_client_messages() {
             direction: Some(Direction::Down),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::FocusNextPane,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::FocusPreviousPane,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::SwitchFocus,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1348,7 +1384,7 @@ fn test_client_messages() {
             direction: Direction::Up,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1356,13 +1392,13 @@ fn test_client_messages() {
             direction: Direction::Up,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::MovePane { direction: None },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1370,19 +1406,19 @@ fn test_client_messages() {
             direction: Some(Direction::Up),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::MovePaneBackwards,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ClearScreen,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1393,7 +1429,7 @@ fn test_client_messages() {
             ansi: false,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1404,7 +1440,7 @@ fn test_client_messages() {
             ansi: false,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1415,7 +1451,7 @@ fn test_client_messages() {
             ansi: false,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1426,25 +1462,25 @@ fn test_client_messages() {
             ansi: false,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::DumpLayout,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::EditScrollback { ansi: false },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ScrollUp,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1452,7 +1488,7 @@ fn test_client_messages() {
             position: Position::new(0, 0),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1460,13 +1496,13 @@ fn test_client_messages() {
             position: Position::new(-10, 0),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ScrollDown,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1474,91 +1510,91 @@ fn test_client_messages() {
             position: Position::new(0, 0),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ScrollToBottom,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ScrollToTop,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ScrollToPreviousPrompt,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ScrollToNextPrompt,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::SelectCommandAtScrollPosition,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::CopyLastCommandOutput,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::PageScrollUp,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::PageScrollDown,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::HalfPageScrollUp,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::HalfPageScrollDown,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ToggleFocusFullscreen,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ToggleFocusNoUiFullscreen,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::TogglePaneFrames,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ToggleActiveSyncTab,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1568,7 +1604,7 @@ fn test_client_messages() {
             start_suppressed: false,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1578,7 +1614,7 @@ fn test_client_messages() {
             start_suppressed: true,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1600,7 +1636,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1611,7 +1647,7 @@ fn test_client_messages() {
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
                     plugin_id: 11,
-                    client_id: 22,
+                    client_id: ClientId::new(22),
                     context: empty_context.clone(),
                 })
             },
@@ -1626,7 +1662,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1637,7 +1673,7 @@ fn test_client_messages() {
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
                     plugin_id: 11,
-                    client_id: 22,
+                    client_id: ClientId::new(22),
                     context: demo_context.clone(),
                 })
             },
@@ -1652,7 +1688,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1663,7 +1699,7 @@ fn test_client_messages() {
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
                     plugin_id: 11,
-                    client_id: 22,
+                    client_id: ClientId::new(22),
                     context: demo_context.clone(),
                 })
             },
@@ -1685,7 +1721,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1696,7 +1732,7 @@ fn test_client_messages() {
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
                     plugin_id: 11,
-                    client_id: 22,
+                    client_id: ClientId::new(22),
                     context: demo_context.clone(),
                 })
             },
@@ -1718,7 +1754,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1729,7 +1765,7 @@ fn test_client_messages() {
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
                     plugin_id: 11,
-                    client_id: 22,
+                    client_id: ClientId::new(22),
                     context: demo_context.clone(),
                 })
             },
@@ -1751,7 +1787,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1762,7 +1798,7 @@ fn test_client_messages() {
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
                     plugin_id: 11,
-                    client_id: 22,
+                    client_id: ClientId::new(22),
                     context: demo_context.clone(),
                 })
             },
@@ -1784,7 +1820,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1795,7 +1831,7 @@ fn test_client_messages() {
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
                     plugin_id: 11,
-                    client_id: 22,
+                    client_id: ClientId::new(22),
                     context: demo_context.clone(),
                 })
             },
@@ -1817,7 +1853,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1830,7 +1866,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1861,7 +1897,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1875,7 +1911,7 @@ fn test_client_messages() {
                 hold_on_start: true,
                 originating_plugin: Some(OriginatingPlugin {
                     plugin_id: 1,
-                    client_id: 2,
+                    client_id: ClientId::new(2),
                     context: demo_context.clone(),
                 }),
                 use_terminal_title: false,
@@ -1896,7 +1932,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1910,7 +1946,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1924,7 +1960,7 @@ fn test_client_messages() {
                 hold_on_start: true,
                 originating_plugin: Some(OriginatingPlugin {
                     plugin_id: 1,
-                    client_id: 2,
+                    client_id: ClientId::new(2),
                     context: demo_context.clone(),
                 }),
                 use_terminal_title: false,
@@ -1939,7 +1975,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1953,7 +1989,7 @@ fn test_client_messages() {
                 hold_on_start: true,
                 originating_plugin: Some(OriginatingPlugin {
                     plugin_id: 1,
-                    client_id: 2,
+                    client_id: ClientId::new(2),
                     context: demo_context.clone(),
                 }),
                 use_terminal_title: false,
@@ -1968,7 +2004,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1982,7 +2018,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -1996,7 +2032,7 @@ fn test_client_messages() {
                 hold_on_start: true,
                 originating_plugin: Some(OriginatingPlugin {
                     plugin_id: 1,
-                    client_id: 2,
+                    client_id: ClientId::new(2),
                     context: demo_context.clone(),
                 }),
                 use_terminal_title: false,
@@ -2009,7 +2045,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2021,25 +2057,25 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::TogglePaneEmbedOrFloating,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ToggleFloatingPanes,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::CloseFocus,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2047,13 +2083,13 @@ fn test_client_messages() {
             input: "name input".as_bytes().to_vec(),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::UndoRenamePane,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2062,7 +2098,7 @@ fn test_client_messages() {
             name: "spark".as_bytes().to_vec(),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2071,7 +2107,7 @@ fn test_client_messages() {
             name: "x".as_bytes().to_vec(),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2088,7 +2124,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2105,7 +2141,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2125,7 +2161,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2145,7 +2181,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2166,7 +2202,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2199,7 +2235,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2219,7 +2255,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2239,7 +2275,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2261,7 +2297,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2284,7 +2320,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2307,7 +2343,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2330,7 +2366,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2353,7 +2389,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2376,7 +2412,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2399,7 +2435,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2422,7 +2458,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2445,7 +2481,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2465,7 +2501,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2490,7 +2526,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2520,7 +2556,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2535,7 +2571,7 @@ fn test_client_messages() {
                     hold_on_start: true,
                     originating_plugin: Some(OriginatingPlugin {
                         plugin_id: 11,
-                        client_id: 22,
+                        client_id: ClientId::new(22),
                         context: empty_context.clone(),
                     }),
                     use_terminal_title: true,
@@ -2554,7 +2590,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2574,7 +2610,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2598,7 +2634,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2618,7 +2654,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2661,7 +2697,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2686,7 +2722,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2703,7 +2739,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2720,7 +2756,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2751,7 +2787,7 @@ fn test_client_messages() {
             first_pane_unblock_condition: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2762,37 +2798,37 @@ fn test_client_messages() {
             apply_only_to_active_tab: false,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NoOp,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::GoToNextTab,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::GoToPreviousTab,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::CloseTab,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::GoToTab { index: 0 },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2801,7 +2837,7 @@ fn test_client_messages() {
             create: false,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2810,13 +2846,13 @@ fn test_client_messages() {
             create: true,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ToggleTab,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2824,13 +2860,13 @@ fn test_client_messages() {
             input: "my cool tab_name".as_bytes().to_vec(),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::UndoRenameTab,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2838,7 +2874,7 @@ fn test_client_messages() {
             direction: Direction::Right,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2859,31 +2895,31 @@ fn test_client_messages() {
             no_focus: false,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::Detach,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::SetDarkTheme,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::SetLightTheme,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ToggleTheme,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2897,7 +2933,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2911,7 +2947,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2926,7 +2962,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2941,7 +2977,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2962,7 +2998,7 @@ fn test_client_messages() {
             }
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -2983,7 +3019,7 @@ fn test_client_messages() {
             }
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3004,25 +3040,25 @@ fn test_client_messages() {
             }
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::Copy,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::Confirm,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::Deny,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3030,7 +3066,7 @@ fn test_client_messages() {
             action: Box::new(Action::Quit)
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3038,7 +3074,7 @@ fn test_client_messages() {
             input: "my_search_input".as_bytes().to_vec(),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3046,7 +3082,7 @@ fn test_client_messages() {
             direction: SearchDirection::Up,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3054,7 +3090,7 @@ fn test_client_messages() {
             direction: SearchDirection::Down,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3062,7 +3098,7 @@ fn test_client_messages() {
             option: SearchOption::CaseSensitivity,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3070,7 +3106,7 @@ fn test_client_messages() {
             option: SearchOption::WholeWord,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3078,31 +3114,31 @@ fn test_client_messages() {
             option: SearchOption::Wrap,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ToggleMouseMode,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::PreviousSwapLayout,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NextSwapLayout,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::QueryTabNames,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3115,7 +3151,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3129,7 +3165,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3150,7 +3186,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3163,7 +3199,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3177,7 +3213,7 @@ fn test_client_messages() {
             tab_id: Some(3),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3190,7 +3226,7 @@ fn test_client_messages() {
             tab_id: Some(5),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3202,7 +3238,7 @@ fn test_client_messages() {
             tab_id: Some(2),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3219,7 +3255,7 @@ fn test_client_messages() {
             tab_id: Some(1),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3236,7 +3272,7 @@ fn test_client_messages() {
             tab_id: None,
         },
         terminal_id: None,
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3258,7 +3294,7 @@ fn test_client_messages() {
             tab_id: Some(4),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3272,7 +3308,7 @@ fn test_client_messages() {
             tab_id: Some(7),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3286,7 +3322,7 @@ fn test_client_messages() {
             tab_id: Some(2),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3301,7 +3337,7 @@ fn test_client_messages() {
             tab_id: Some(6),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3314,7 +3350,7 @@ fn test_client_messages() {
             tab_id: Some(1),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3328,7 +3364,7 @@ fn test_client_messages() {
             tab_id: Some(3),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3341,7 +3377,7 @@ fn test_client_messages() {
             tab_id: Some(2),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3349,19 +3385,19 @@ fn test_client_messages() {
             plugin: RunPluginOrAlias::Alias(PluginAlias::default()),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::CloseTerminalPane { pane_id: 11 },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ClosePluginPane { pane_id: 12 },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3371,7 +3407,7 @@ fn test_client_messages() {
             should_be_in_place_if_hidden: false,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3381,7 +3417,7 @@ fn test_client_messages() {
             should_be_in_place_if_hidden: false,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3391,7 +3427,7 @@ fn test_client_messages() {
             should_be_in_place_if_hidden: true,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3401,7 +3437,7 @@ fn test_client_messages() {
             should_be_in_place_if_hidden: false,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3410,7 +3446,7 @@ fn test_client_messages() {
             name: "terminal_pane_new_name".as_bytes().to_vec(),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3419,7 +3455,7 @@ fn test_client_messages() {
             name: "plugin_pane_new_name".as_bytes().to_vec(),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3428,25 +3464,25 @@ fn test_client_messages() {
             name: "tab_new_name".as_bytes().to_vec(),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::BreakPane,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::BreakPaneRight,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::BreakPaneLeft,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3454,7 +3490,7 @@ fn test_client_messages() {
             name: "new_session_name".to_owned(),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3473,7 +3509,7 @@ fn test_client_messages() {
             pane_title: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3492,7 +3528,7 @@ fn test_client_messages() {
             pane_title: Some("pane_title".to_owned()),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3511,7 +3547,7 @@ fn test_client_messages() {
             pane_title: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3530,25 +3566,25 @@ fn test_client_messages() {
             pane_title: Some("pane_title".to_owned()),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ListClients,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::TogglePanePinned,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::StackPanes { pane_ids: vec![] },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3561,7 +3597,7 @@ fn test_client_messages() {
             ],
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3578,7 +3614,7 @@ fn test_client_messages() {
             .unwrap(),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3595,19 +3631,19 @@ fn test_client_messages() {
             .unwrap(),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::TogglePaneInGroup,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ToggleGroupMarking,
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3626,7 +3662,7 @@ fn test_client_messages() {
             }),
         },
         terminal_id: None,
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3635,7 +3671,7 @@ fn test_client_messages() {
             write_to_disk: true,
         },
         terminal_id: None,
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3644,7 +3680,7 @@ fn test_client_messages() {
             agent: None,
         },
         terminal_id: None,
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3654,7 +3690,7 @@ fn test_client_messages() {
             bg: Some("#001a3a".to_owned()),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -3664,7 +3700,7 @@ fn test_client_messages() {
             bg: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Key {
@@ -3996,7 +4032,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4004,7 +4040,7 @@ fn test_client_messages() {
             pane_id: PaneId::Plugin(zellij_types::internal_ids::PluginId(5)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4012,7 +4048,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(2)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4020,7 +4056,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4028,7 +4064,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4036,7 +4072,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4044,7 +4080,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4052,7 +4088,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4060,7 +4096,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4070,7 +4106,7 @@ fn test_client_messages() {
             direction: Some(Direction::Left),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4080,7 +4116,7 @@ fn test_client_messages() {
             direction: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4089,7 +4125,7 @@ fn test_client_messages() {
             direction: Some(Direction::Up),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4098,7 +4134,7 @@ fn test_client_messages() {
             direction: None,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4106,7 +4142,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4114,7 +4150,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4123,7 +4159,7 @@ fn test_client_messages() {
             ansi: false,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4134,13 +4170,13 @@ fn test_client_messages() {
             ansi: true,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::EditScrollback { ansi: true },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4149,7 +4185,7 @@ fn test_client_messages() {
             ansi: true,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4157,7 +4193,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4165,7 +4201,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4173,7 +4209,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4181,7 +4217,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4190,7 +4226,7 @@ fn test_client_messages() {
             name: "test-name".as_bytes().to_vec(),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4198,7 +4234,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4206,7 +4242,7 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4214,37 +4250,37 @@ fn test_client_messages() {
             pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::UndoRenameTabByTabId { id: 5 },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ToggleActiveSyncTabByTabId { id: 2 },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ToggleFloatingPanesByTabId { id: 0 },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::PreviousSwapLayoutByTabId { id: 1 },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::NextSwapLayoutByTabId { id: 3 },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
@@ -4253,25 +4289,25 @@ fn test_client_messages() {
             direction: Direction::Left,
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::SetPaneFrameStyle(PaneFrameStyle::Full),
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::SetPaneFrameStyle(PaneFrameStyle::Titles),
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::SetPaneFrameStyle(PaneFrameStyle::None),
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::AttachWatcherClient {
@@ -4513,7 +4549,7 @@ fn set_pane_color_wire_roundtrip() {
             bg: Some("#001a3a".to_owned()),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     };
 
@@ -4555,7 +4591,7 @@ fn rename_active_pane_wire_roundtrip() {
             name: "x".as_bytes().to_vec(),
         },
         terminal_id: Some(1),
-        client_id: Some(100),
+        client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     };
 
