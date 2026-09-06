@@ -654,7 +654,7 @@ fn released_remote_pane(screen: &mut Screen, terminal_id: u32) -> Box<WarpedPane
                 cmd: RunCommand {
                     command: PathBuf::from("/usr/bin/cargo"),
                     args: vec!["watch".to_owned()],
-                    target: zellij_utils::data::PaneTarget::Ssh {
+                    target: zellij_types::command::PaneTarget::Ssh {
                         host: "build-box".to_owned(),
                     },
                     ..Default::default()

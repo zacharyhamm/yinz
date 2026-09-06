@@ -1,9 +1,6 @@
 //! Local hook reports and privacy-safe, monotonic diagnostics shared with the remote reporter.
 use super::AgentEvent;
-use crate::{
-    data::{AgentInfo, PaneId},
-    errors::prelude::*,
-};
+use crate::{data::PaneId, errors::prelude::*};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 #[cfg(unix)]
@@ -11,6 +8,7 @@ use std::{
     io::Write,
     sync::{Arc, Mutex},
 };
+use zellij_types::agent::AgentInfo;
 
 pub const REPORT_DEADLINE: Duration = Duration::from_secs(1);
 pub const SLOW_REPORT: Duration = Duration::from_millis(100);

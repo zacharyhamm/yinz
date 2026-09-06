@@ -104,8 +104,8 @@ mod claiming_the_terminal {
     use crate::terminal_escapes::{claim_terminal, QUERY_HOST_THEME};
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
+    use zellij_types::pane_size::Size;
     use zellij_types::style::Palette;
-    use zellij_utils::pane_size::Size;
 
     /// What the client did to the terminal, in the order it did it.
     #[derive(Debug, PartialEq, Eq)]

@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zellij_runtime::common_path::common_path_all;
 use zellij_types::internal_ids::{PluginId, TerminalId};
-use zellij_utils::pane_size::PaneGeom;
+use zellij_types::pane_size::PaneGeom;
 use zellij_utils::{
     data::{LayoutMetadata, PaneMetadata, TabMetadata},
     input::command::RunCommand,
@@ -695,7 +695,7 @@ impl ClientMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zellij_utils::pane_size::PaneGeom;
+    use zellij_types::pane_size::PaneGeom;
 
     fn make_command_pane(
         terminal_id: TerminalId,

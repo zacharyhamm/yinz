@@ -13,12 +13,12 @@ use crate::{create_ipc_pipe, spawn_server_error_message, ClientInfo};
 use std::path::{Path, PathBuf};
 use zellij_runtime::envs;
 use zellij_runtime::host_terminal_env::host_terminal_env;
+use zellij_types::pane_size::Size;
 use zellij_utils::cli::CliArgs;
 use zellij_utils::{
     data::{LayoutInfo, LayoutMetadata},
     input::{cli_assets::CliAssets, config::Config, options::Options},
     ipc::ClientToServerMsg,
-    pane_size::Size,
 };
 
 /// The window size reported to a server that no client is attached to yet.

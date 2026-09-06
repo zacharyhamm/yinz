@@ -11,11 +11,11 @@
 pub mod launch;
 pub mod report;
 
-use crate::data::{AgentInfo, AgentSource, AgentState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::path::Path;
+use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
 
 /// The Claude Code hook events a record is read from, in the order Claude Code fires them.
 ///

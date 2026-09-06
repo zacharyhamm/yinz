@@ -34,7 +34,7 @@ fn a_pane_manifest_carries_the_pane_cwd() {
 /// somebody else provisioned asked for a VM by name and nothing else.
 #[test]
 fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
-    use zellij_utils::data::PaneTarget;
+    use zellij_types::command::PaneTarget;
     use zellij_utils::input::command::RunCommand;
     use zellij_utils::input::layout::Run;
 

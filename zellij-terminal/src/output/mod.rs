@@ -22,9 +22,9 @@ use std::{
 };
 use zellij_runtime::errors::prelude::*;
 use zellij_types::kitty_placeholders::PLACEHOLDER;
+use zellij_types::pane_size::SizeInPixels;
+use zellij_types::pane_size::{PaneGeom, Size};
 use zellij_utils::data::{HighlightLayer, PaneContents, PaneRenderReport};
-use zellij_utils::pane_size::SizeInPixels;
-use zellij_utils::pane_size::{PaneGeom, Size};
 
 fn vte_goto_instruction(x_coords: usize, y_coords: usize, vte_output: &mut String) -> Result<()> {
     write!(

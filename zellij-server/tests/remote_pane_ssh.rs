@@ -46,7 +46,8 @@ use zellij_server::pty_host::remote::protocol::{
 };
 use zellij_server::pty_host::remote::ssh::{self, RemoteHosts};
 use zellij_server::pty_host::remote::{RemoteConn, RemoteReader};
-use zellij_utils::input::command::{PaneTarget, RunCommand};
+use zellij_types::command::PaneTarget;
+use zellij_utils::input::command::RunCommand;
 
 // ---------------------------------------------------------------------------
 // Where the far machine is

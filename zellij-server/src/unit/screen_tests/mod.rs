@@ -16,18 +16,20 @@ use insta::assert_snapshot;
 use std::path::PathBuf;
 use zellij_runtime::errors::prelude::*;
 use zellij_types::diagnostics::ErrorContext;
+use zellij_types::geometry::Resize;
+use zellij_types::geometry::{PercentOrFixed, SplitDirection};
 use zellij_types::style::{Style, Styling};
 use zellij_utils::cli::CliAction;
 use zellij_utils::data::WarpedPane;
-use zellij_utils::data::{Event, EventType, Mouse, OverlayPlacement, Resize};
+use zellij_utils::data::{Event, EventType, Mouse, OverlayPlacement};
 use zellij_utils::input::actions::Action;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::input::config::Config;
 use zellij_utils::input::context_menu::ContextMenu;
 use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::layout::{
-    FloatingPaneLayout, Layout, PercentOrFixed, PluginAlias, PluginUserConfiguration, Run,
-    RunPlugin, RunPluginLocation, RunPluginOrAlias, SplitDirection, TiledPaneLayout,
+    FloatingPaneLayout, Layout, PluginAlias, PluginUserConfiguration, Run, RunPlugin,
+    RunPluginLocation, RunPluginOrAlias, TiledPaneLayout,
 };
 
 use zellij_types::mouse::MouseEvent;
@@ -46,16 +48,17 @@ use crate::{
 use std::collections::{BTreeMap, HashSet};
 use std::env::set_var;
 use std::sync::{Arc, Mutex};
+use zellij_types::pane_size::{Size, SizeInPixels};
 use zellij_types::position::Position;
 use zellij_utils::ipc::IpcReceiverWithContext;
-use zellij_utils::pane_size::{Size, SizeInPixels};
 
 use interprocess::local_socket::Stream as LocalSocketStream;
 use zellij_runtime::channels::{self, ChannelWithContext, Receiver};
+use zellij_types::geometry::{Direction, FloatingPaneCoordinates};
 use zellij_types::style::Palette;
 use zellij_utils::ipc::PixelDimensions;
 use zellij_utils::{
-    data::{Direction, FloatingPaneCoordinates, InputMode, ModeInfo, NewPanePlacement},
+    data::{InputMode, ModeInfo, NewPanePlacement},
     ipc::{ClientAttributes, ClientToServerMsg, ServerToClientMsg},
 };
 
@@ -1443,7 +1446,7 @@ fn create_new_screen_with_theme_capture(size: Size) -> (Screen, ThemeCapture) {
 
 use crate::panes::TerminalPane;
 use crate::tab::Pane;
-use zellij_utils::pane_size::PaneGeom;
+use zellij_types::pane_size::PaneGeom;
 
 fn new_terminal_pane_for_pause_test(pid: u32) -> TerminalPane {
     let mut geom = PaneGeom::default();
@@ -1931,7 +1934,7 @@ fn released_remote_pane_for_warp(screen: &mut Screen, terminal_id: u32) -> Box<W
                 cmd: RunCommand {
                     command: PathBuf::from("/usr/bin/tail"),
                     args: vec!["-f".to_owned(), "/var/log/build".to_owned()],
-                    target: zellij_utils::data::PaneTarget::Ssh {
+                    target: zellij_types::command::PaneTarget::Ssh {
                         host: "build-box".to_owned(),
                     },
                     ..Default::default()

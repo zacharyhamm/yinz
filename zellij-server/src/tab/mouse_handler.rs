@@ -1,13 +1,14 @@
 #![allow(clippy::collapsible_if)]
 use std::time::Instant;
 use zellij_runtime::errors::prelude::*;
+use zellij_types::geometry::{Direction, Resize, ResizeStrategy};
 #[cfg(test)]
 use zellij_types::internal_ids::{PluginId, TerminalId};
 use zellij_types::mouse::{MouseEvent, MouseEventType};
+use zellij_types::pane_size::PaneGeom;
 use zellij_types::position::Position;
-use zellij_utils::data::{ContextMenuContext, ContextMenuLink, Direction, Resize, ResizeStrategy};
+use zellij_utils::data::{ContextMenuContext, ContextMenuLink};
 use zellij_utils::input::layout::Run;
-use zellij_utils::pane_size::PaneGeom;
 
 use crate::background_jobs::BackgroundJob;
 use crate::panes::PaneId;

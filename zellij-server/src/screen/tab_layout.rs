@@ -1,7 +1,7 @@
 use zellij_runtime::errors::prelude::*;
 
 use super::Screen;
-use zellij_utils::pane_size::{Size, Viewport};
+use zellij_types::pane_size::{Size, Viewport};
 
 impl Screen {
     /// Every tab shares the smallest interactive client bounds, regardless of which tab each

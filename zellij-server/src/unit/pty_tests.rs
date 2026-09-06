@@ -10,10 +10,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use zellij_runtime::channels::{self, SenderWithContext};
+use zellij_types::command::PaneTarget;
 use zellij_types::diagnostics::ErrorContext;
 use zellij_types::style::Palette;
 use zellij_utils::data::Event;
-use zellij_utils::input::command::{PaneTarget, RunCommand};
+use zellij_utils::input::command::RunCommand;
 use zellij_utils::ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg};
 
 #[derive(Clone)]

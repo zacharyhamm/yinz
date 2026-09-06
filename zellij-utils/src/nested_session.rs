@@ -1,4 +1,3 @@
-use crate::data::Direction;
 use crate::nested_session_contract::nested_session_contract as proto;
 use base64::alphabet::STANDARD as BASE64_STANDARD_ALPHABET;
 use base64::engine::general_purpose::{
@@ -8,6 +7,7 @@ use base64::engine::{DecodePaddingMode, Engine as _};
 use prost::Message;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
+use zellij_types::geometry::Direction;
 use zellij_types::keys::KeyWithModifier;
 
 const BASE64_DECODER: GeneralPurpose = GeneralPurpose::new(

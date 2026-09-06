@@ -1,6 +1,6 @@
 use super::*;
+use zellij_types::pane_size::Offset;
 use zellij_utils::input::layout::Run;
-use zellij_utils::pane_size::Offset;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Placement {

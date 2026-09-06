@@ -27,8 +27,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::data::{ContextMenuItem, Direction};
+use crate::data::ContextMenuItem;
 use crate::input::actions::Action;
+use zellij_types::geometry::Direction;
 
 fn new_pane(direction: Direction) -> Action {
     Action::NewPane {

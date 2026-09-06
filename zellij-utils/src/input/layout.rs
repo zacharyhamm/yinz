@@ -11,18 +11,15 @@
 #[cfg(not(target_family = "wasm"))]
 use crate::downloader::Downloader;
 use crate::{
-    data::{
-        Direction, LayoutInfo, LayoutMetadata, LayoutParsingError, LayoutWithError,
-        OverlayPlacement,
-    },
+    data::{LayoutInfo, LayoutMetadata, LayoutParsingError, LayoutWithError, OverlayPlacement},
     home::{default_layout_dir, find_default_config_dir},
     input::{
         command::RunCommand,
         config::{Config, ConfigError},
     },
-    pane_size::{Constraint, Dimension, PaneGeom},
-    setup::{self},
+    setup,
 };
+use zellij_types::pane_size::{Dimension, PaneGeom};
 
 use std::cmp::Ordering;
 use std::fmt::{Display, Formatter};
@@ -35,75 +32,12 @@ use std::collections::BTreeMap;
 use std::vec::Vec;
 use std::{
     fmt,
-    ops::Not,
     path::{Path, PathBuf},
 };
 use std::{fs::File, io::prelude::*};
 use url::Url;
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Clone, Copy, Default)]
-pub enum SplitDirection {
-    #[default]
-    Horizontal,
-    Vertical,
-}
-
-impl Not for SplitDirection {
-    type Output = Self;
-
-    fn not(self) -> Self::Output {
-        match self {
-            SplitDirection::Horizontal => SplitDirection::Vertical,
-            SplitDirection::Vertical => SplitDirection::Horizontal,
-        }
-    }
-}
-
-impl From<Direction> for SplitDirection {
-    fn from(direction: Direction) -> Self {
-        match direction {
-            Direction::Left | Direction::Right => SplitDirection::Horizontal,
-            Direction::Down | Direction::Up => SplitDirection::Vertical,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
-pub enum SplitSize {
-    #[serde(alias = "percent")]
-    Percent(usize), // 1 to 100
-    #[serde(alias = "fixed")]
-    Fixed(usize), // An absolute number of columns or rows
-}
-
-impl From<PercentOrFixed> for SplitSize {
-    fn from(pof: PercentOrFixed) -> Self {
-        match pof {
-            PercentOrFixed::Percent(p) => SplitSize::Percent(p),
-            PercentOrFixed::Fixed(f) => SplitSize::Fixed(f),
-        }
-    }
-}
-
-impl From<SplitSize> for PercentOrFixed {
-    fn from(ss: SplitSize) -> Self {
-        match ss {
-            SplitSize::Percent(p) => PercentOrFixed::Percent(p),
-            SplitSize::Fixed(f) => PercentOrFixed::Fixed(f),
-        }
-    }
-}
-
-impl SplitSize {
-    pub fn to_fixed(&self, full_size: usize) -> usize {
-        match self {
-            SplitSize::Percent(percent) => {
-                ((*percent as f64 / 100.0) * full_size as f64).floor() as usize
-            },
-            SplitSize::Fixed(fixed) => *fixed,
-        }
-    }
-}
+use zellij_types::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RunPluginOrAlias {
@@ -886,73 +820,6 @@ pub struct TabLayoutInfo {
     pub floating_layouts: Vec<FloatingPaneLayout>,
     pub swap_tiled_layouts: Option<Vec<SwapTiledLayout>>,
     pub swap_floating_layouts: Option<Vec<SwapFloatingLayout>>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PercentOrFixed {
-    Percent(usize), // 1 to 100
-    Fixed(usize),   // An absolute number of columns or rows
-}
-
-impl From<Dimension> for PercentOrFixed {
-    fn from(dimension: Dimension) -> Self {
-        match dimension.constraint {
-            Constraint::Percent(percent) => PercentOrFixed::Percent(percent as usize),
-            Constraint::Fixed(fixed_size) => PercentOrFixed::Fixed(fixed_size),
-        }
-    }
-}
-
-impl PercentOrFixed {
-    pub fn to_position(&self, whole: usize) -> usize {
-        match self {
-            PercentOrFixed::Percent(percent) => {
-                (whole as f64 / 100.0 * *percent as f64).ceil() as usize
-            },
-            PercentOrFixed::Fixed(fixed) => {
-                if *fixed > whole {
-                    whole
-                } else {
-                    *fixed
-                }
-            },
-        }
-    }
-    pub fn to_fixed(&self, whole: usize) -> usize {
-        match self {
-            PercentOrFixed::Percent(percent) => {
-                ((*percent as f64 / 100.0) * whole as f64).floor() as usize
-            },
-            PercentOrFixed::Fixed(fixed) => *fixed,
-        }
-    }
-}
-
-impl PercentOrFixed {
-    pub fn is_zero(&self) -> bool {
-        match self {
-            PercentOrFixed::Percent(percent) => *percent == 0,
-            PercentOrFixed::Fixed(fixed) => *fixed == 0,
-        }
-    }
-}
-
-impl FromStr for PercentOrFixed {
-    type Err = Box<dyn std::error::Error>;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.ends_with('%') {
-            let char_count = s.chars().count();
-            let percent_size = s[..char_count.saturating_sub(1)].parse::<usize>()?;
-            if percent_size <= 100 {
-                Ok(PercentOrFixed::Percent(percent_size))
-            } else {
-                Err("Percent must be between 0 and 100".into())
-            }
-        } else {
-            let fixed_size = s.parse::<usize>()?;
-            Ok(PercentOrFixed::Fixed(fixed_size))
-        }
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
@@ -2252,35 +2119,6 @@ fn adjust_geoms_for_rounding_errors(
                     },
                 }
             }
-        }
-    }
-}
-
-impl FromStr for SplitDirection {
-    type Err = Box<dyn std::error::Error>;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "vertical" | "Vertical" => Ok(SplitDirection::Vertical),
-            "horizontal" | "Horizontal" => Ok(SplitDirection::Horizontal),
-            _ => Err("split direction must be either vertical or horizontal".into()),
-        }
-    }
-}
-
-impl FromStr for SplitSize {
-    type Err = Box<dyn std::error::Error>;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.ends_with('%') {
-            let char_count = s.chars().count();
-            let percent_size = s[..char_count.saturating_sub(1)].parse::<usize>()?;
-            if percent_size > 0 && percent_size <= 100 {
-                Ok(SplitSize::Percent(percent_size))
-            } else {
-                Err("Percent must be between 0 and 100".into())
-            }
-        } else {
-            let fixed_size = s.parse::<usize>()?;
-            Ok(SplitSize::Fixed(fixed_size))
         }
     }
 }

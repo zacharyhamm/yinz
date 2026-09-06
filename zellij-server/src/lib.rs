@@ -126,7 +126,7 @@ impl Drop for ConnectionSlot {
 }
 use zellij_runtime::envs;
 use zellij_storage::data_access::DataAccess;
-use zellij_utils::pane_size::Size;
+use zellij_types::pane_size::Size;
 
 use zellij_utils::input::cli_assets::CliAssets;
 use zellij_utils::input::options::{
@@ -156,13 +156,14 @@ use zellij_runtime::home::get_default_data_dir;
 use zellij_runtime::home::user_plugin_dir_or_default;
 use zellij_types::diagnostics::ContextType;
 use zellij_types::diagnostics::ServerContext;
+use zellij_types::geometry::Direction;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::style::Style;
 use zellij_utils::{
     consts::{
         DEFAULT_SCROLL_BUFFER_SIZE, SCROLL_BUFFER_SIZE, ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE,
     },
-    data::{ConnectToSession, Direction, InputMode, LayoutInfo, LayoutWithError},
+    data::{ConnectToSession, InputMode, LayoutInfo, LayoutWithError},
     input::{
         actions::Action,
         command::{RunCommand, TerminalAction},

@@ -17,7 +17,7 @@ use super::super::store::KittyImageStore;
 use super::super::test_support::*;
 use std::cell::RefCell;
 use std::rc::Rc;
-use zellij_utils::pane_size::SizeInPixels;
+use zellij_types::pane_size::SizeInPixels;
 
 const CELL: SizeInPixels = SizeInPixels {
     width: 10,

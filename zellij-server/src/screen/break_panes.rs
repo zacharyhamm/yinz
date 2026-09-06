@@ -7,10 +7,11 @@ use crate::plugins::PluginInstruction;
 use crate::pty::PtyInstruction;
 use crate::tab::{AcceptedPane, ExtractedPanePlacement, Pane};
 use crate::ClientId;
-use zellij_utils::data::{Direction, Event};
+use zellij_types::geometry::Direction;
+use zellij_types::pane_size::PaneGeom;
+use zellij_utils::data::Event;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::input::layout::Layout;
-use zellij_utils::pane_size::PaneGeom;
 
 impl Screen {
     pub fn break_pane(

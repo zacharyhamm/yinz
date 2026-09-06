@@ -36,6 +36,11 @@ use zellij_runtime::home::{absolute_lexical, default_layout_dir, default_user_pl
 use zellij_storage::plugin_data_store;
 use zellij_types::internal_ids::{PluginId, TerminalId};
 use zellij_types::keys::KeyWithModifier;
+use zellij_types::{
+    agent::{AgentInfo, AgentSpawnSpec},
+    command::PaneTarget,
+};
+use zellij_types::{command::GitCheckout, geometry::FloatingPaneCoordinates};
 use zellij_utils::consts::ipc_connect;
 use zellij_utils::data::EnqueueQueueJobResponse;
 use zellij_utils::data::{
@@ -43,25 +48,24 @@ use zellij_utils::data::{
     DataDefineResponse, DataEntityInfo, DataError, DataFetchResponse, DataUnwatchResponse,
     DataWatchResponse, EntityDef, FetchRequest, Mutation, WatchMode, SHARED_NAMESPACE_PREFIX,
 };
-use zellij_utils::data::{AgentInfo, AgentSpawnSpec, PaneTarget};
 use zellij_utils::data::{
     BreakPanesToNewTabResponse, BreakPanesToTabWithIdResponse, BreakPanesToTabWithIndexResponse,
     CommandType, ConnectToSession, DeleteAllDeadSessionsResponse, DeleteDeadSessionResponse,
-    DeleteLayoutResponse, EditLayoutResponse, Event, FileMetadata, FloatingPaneCoordinates,
-    FocusOrCreateTabResponse, GetFocusedPaneInfoResponse, GetPaneCwdResponse,
-    GetPaneGitProbeResponse, GetPanePidResponse, GetPaneRunningCommandResponse, GitCheckout,
-    HttpVerb, KillSessionsResponse, LayoutInfo, LayoutMetadata, LayoutParsingError,
-    ListOrphanedPanesResponse, MessageToPlugin, NewPanePlacement, NewTabResponse,
-    NewTabUnfocusedResponse, NewTiledPaneInTabResponse, OpenCommandPaneBackgroundResponse,
-    OpenCommandPaneFloatingNearPluginResponse, OpenCommandPaneFloatingResponse,
-    OpenCommandPaneInGitCheckoutResponse, OpenCommandPaneInPlaceOfPaneIdResponse,
-    OpenCommandPaneInPlaceOfPluginResponse, OpenCommandPaneInPlaceResponse,
-    OpenCommandPaneNearPluginResponse, OpenCommandPaneOverlayResponse, OpenCommandPaneResponse,
-    OpenEditPaneInPlaceOfPaneIdResponse, OpenFileFloatingNearPluginResponse,
-    OpenFileFloatingResponse, OpenFileInPlaceOfPluginResponse, OpenFileInPlaceResponse,
-    OpenFileNearPluginResponse, OpenFileResponse, OpenPaneInNewTabResponse,
-    OpenPluginPaneFloatingResponse, OpenTerminalFloatingNearPluginResponse,
-    OpenTerminalFloatingResponse, OpenTerminalInPlaceOfPluginResponse, OpenTerminalInPlaceResponse,
+    DeleteLayoutResponse, EditLayoutResponse, Event, FileMetadata, FocusOrCreateTabResponse,
+    GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPaneGitProbeResponse, GetPanePidResponse,
+    GetPaneRunningCommandResponse, HttpVerb, KillSessionsResponse, LayoutInfo, LayoutMetadata,
+    LayoutParsingError, ListOrphanedPanesResponse, MessageToPlugin, NewPanePlacement,
+    NewTabResponse, NewTabUnfocusedResponse, NewTiledPaneInTabResponse,
+    OpenCommandPaneBackgroundResponse, OpenCommandPaneFloatingNearPluginResponse,
+    OpenCommandPaneFloatingResponse, OpenCommandPaneInGitCheckoutResponse,
+    OpenCommandPaneInPlaceOfPaneIdResponse, OpenCommandPaneInPlaceOfPluginResponse,
+    OpenCommandPaneInPlaceResponse, OpenCommandPaneNearPluginResponse,
+    OpenCommandPaneOverlayResponse, OpenCommandPaneResponse, OpenEditPaneInPlaceOfPaneIdResponse,
+    OpenFileFloatingNearPluginResponse, OpenFileFloatingResponse, OpenFileInPlaceOfPluginResponse,
+    OpenFileInPlaceResponse, OpenFileNearPluginResponse, OpenFileResponse,
+    OpenPaneInNewTabResponse, OpenPluginPaneFloatingResponse,
+    OpenTerminalFloatingNearPluginResponse, OpenTerminalFloatingResponse,
+    OpenTerminalInPlaceOfPluginResponse, OpenTerminalInPlaceResponse,
     OpenTerminalNearPluginResponse, OpenTerminalPaneInPlaceOfPaneIdResponse, OpenTerminalResponse,
     OriginatingPlugin, OrphanedPane, OverlayPlacement, PaneFrameStyle, PaneScrollbackResponse,
     PermissionStatus, PermissionType, PluginPermission, RegexHighlight, RenameLayoutResponse,
@@ -79,11 +83,14 @@ use kdl::KdlDocument;
 
 use prost::Message;
 use zellij_runtime::errors::prelude::*;
+use zellij_types::{
+    command::CommandToRun,
+    geometry::{Direction, Resize, ResizeStrategy},
+};
 use zellij_utils::{
     consts::{VERSION, ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR, ZELLIJ_TMP_DIR},
     data::{
-        CommandOrPlugin, CommandToRun, Direction, EventType, FileToOpen, InputMode, PluginCommand,
-        PluginIds, PluginMessage, Resize, ResizeStrategy,
+        CommandOrPlugin, EventType, FileToOpen, InputMode, PluginCommand, PluginIds, PluginMessage,
     },
     input::{
         actions::Action,

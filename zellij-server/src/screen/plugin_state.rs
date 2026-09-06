@@ -10,10 +10,11 @@ use crate::tab::Tab;
 use crate::ClientId;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
+use zellij_types::command::PaneTarget;
 use zellij_utils::consts::ZELLIJ_SOCK_DIR;
 use zellij_utils::data::{
     Event, EventType, LayoutInfo, LayoutWithError, ListPanesResponse, ListTabsResponse, PaneInfo,
-    PaneListEntry, PaneManifest, PaneTarget, SessionInfo, TabInfo,
+    PaneListEntry, PaneManifest, SessionInfo, TabInfo,
 };
 #[cfg(not(test))]
 use zellij_utils::input::layout::Layout;

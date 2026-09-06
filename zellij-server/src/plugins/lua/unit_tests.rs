@@ -730,7 +730,7 @@ fn an_agent_event_arrives_flat_and_typed() {
         pane_id: 7,
         kind: "claude".to_owned(),
         hook: "Stop".to_owned(),
-        state: Some(zellij_utils::data::AgentState::Idle),
+        state: Some(zellij_types::agent::AgentState::Idle),
         last_message: Some("done".to_owned()),
         raw: "{}".to_owned(),
         ..Default::default()
@@ -747,7 +747,8 @@ fn an_agent_event_arrives_flat_and_typed() {
 /// And a pane that closed is gone from the records, not left at the state it last showed.
 #[test]
 fn agent_records_are_current_on_the_first_ask_and_forget_a_closed_pane() {
-    use zellij_utils::data::{AgentInfo, AgentSource, AgentState, PaneInfo, PaneManifest};
+    use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
+    use zellij_utils::data::{PaneInfo, PaneManifest};
     let mut plugin = load(
         r#"
         local zellij = require("zellij")
@@ -1980,14 +1981,14 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
                 .collect::<Vec<_>>()
         };
 
-    use zellij_utils::data::AgentState;
+    use zellij_types::agent::AgentState;
     let payload =
         |state: AgentState, detail: Option<&str>| zellij_utils::data::HookPayload::Agent {
             pane_id: 7,
-            agent: zellij_utils::data::AgentInfo {
+            agent: zellij_types::agent::AgentInfo {
                 kind: "claude".to_owned(),
                 state,
-                source: zellij_utils::data::AgentSource::Reported,
+                source: zellij_types::agent::AgentSource::Reported,
                 detail: detail.map(str::to_owned),
                 waiting_on: None,
                 wait_needs_a_person: state == AgentState::Waiting,
@@ -2606,7 +2607,8 @@ fn command_from_lua(expression: &str) -> Result<zellij_utils::data::PluginComman
 /// on the way through, never a payload. These are the tables `docs/LUA_PLUGINS.md` shows.
 #[test]
 fn a_nested_enum_is_read_as_the_variant_it_names() {
-    use zellij_utils::data::{GitCheckout, PluginCommand};
+    use zellij_types::command::GitCheckout;
+    use zellij_utils::data::PluginCommand;
 
     let checkout = |expression: &str| match command_from_lua(expression) {
         Ok(PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(_, source, checkout, false)) => {
@@ -2688,7 +2690,8 @@ fn a_git_checkout_command_takes_named_arguments() {
 /// straight through serde - and every spec field is optional, so an empty spec is a spec.
 #[test]
 fn spawn_agent_is_built_from_a_nested_spec_table() {
-    use zellij_utils::data::{AgentSpawnSpec, PluginCommand};
+    use zellij_types::agent::AgentSpawnSpec;
+    use zellij_utils::data::PluginCommand;
 
     let build = |expression: &str| {
         let lua = mlua::Lua::new();
@@ -3040,8 +3043,8 @@ fn check_lua_plugin_answers_nil_or_the_compile_error() {
 fn a_plugin_can_set_a_panes_agent_record() {
     use crate::screen::ScreenInstruction;
     use zellij_runtime::channels::SenderWithContext;
+    use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
     use zellij_types::diagnostics::ErrorContext;
-    use zellij_utils::data::{AgentInfo, AgentSource, AgentState};
 
     let (to_screen, screen_receiver) =
         zellij_runtime::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
@@ -3721,7 +3724,8 @@ fn describe_event(event: Event, body: &str) -> String {
 /// a hook reads `payload.pane_id` and `payload.agent.state` rather than a variant name.
 #[test]
 fn a_hook_event_has_its_point_and_payload() {
-    use zellij_utils::data::{AgentInfo, AgentSource, AgentState, HookPayload};
+    use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
+    use zellij_utils::data::HookPayload;
     use zellij_utils::input::hooks::HookPoint;
     let event = Event::Hook {
         point: HookPoint::AgentWaiting,
@@ -5716,7 +5720,7 @@ fn a_remote_command_pane_keeps_its_guest_cwd() {
         .unwrap();
     pump.join().unwrap();
 
-    let ssh = zellij_utils::data::PaneTarget::Ssh {
+    let ssh = zellij_types::command::PaneTarget::Ssh {
         host: "build-box".to_owned(),
     };
     let spawned = spawned.lock().unwrap();
@@ -5732,7 +5736,7 @@ fn a_remote_command_pane_keeps_its_guest_cwd() {
             (
                 PathBuf::from("local"),
                 Some(PathBuf::from("/plugin/cwd/src")),
-                zellij_utils::data::PaneTarget::Local
+                zellij_types::command::PaneTarget::Local
             ),
         ]
     );
@@ -6181,8 +6185,9 @@ fn race_detaches_its_listeners_without_unregistering_the_losers() {
     assert_eq!(logged(&mut plugin), "done");
 }
 
-fn manifest_with_agent(pane_id: u32, state: zellij_utils::data::AgentState) -> Event {
-    use zellij_utils::data::{AgentInfo, AgentSource, PaneInfo, PaneManifest};
+fn manifest_with_agent(pane_id: u32, state: zellij_types::agent::AgentState) -> Event {
+    use zellij_types::agent::{AgentInfo, AgentSource};
+    use zellij_utils::data::{PaneInfo, PaneManifest};
     let mut manifest = PaneManifest::default();
     manifest.panes.insert(
         0,
@@ -6207,7 +6212,7 @@ fn manifest_with_agent(pane_id: u32, state: zellij_utils::data::AgentState) -> E
 
 #[test]
 fn agent_state_resolves_on_the_state_asked_for_and_after_the_edge_when_told_to() {
-    use zellij_utils::data::AgentState;
+    use zellij_types::agent::AgentState;
     let mut plugin = task_plugin(
         r#"
         local pane = zellij.await(zellij.async.agent_state(7, "waiting"))
@@ -6670,7 +6675,7 @@ fn agent_send_writes_a_bracketed_paste_then_enter() {
     );
 }
 
-fn agent_event(pane_id: u32, hook: &str, state: Option<zellij_utils::data::AgentState>) -> Event {
+fn agent_event(pane_id: u32, hook: &str, state: Option<zellij_types::agent::AgentState>) -> Event {
     Event::AgentEvent(zellij_utils::agent::AgentEvent {
         pane_id,
         kind: "claude".to_owned(),
@@ -6712,7 +6717,7 @@ fn a_failing_agent_listener_does_not_strand_later_listeners() {
 
 #[test]
 fn a_prompt_sends_and_resolves_when_the_agents_turn_ends() {
-    use zellij_utils::data::AgentState;
+    use zellij_types::agent::AgentState;
     let mut plugin = load_permitted(
         r#"
         local zellij = require("zellij")
@@ -6752,7 +6757,7 @@ fn a_prompt_sends_and_resolves_when_the_agents_turn_ends() {
 
 #[test]
 fn a_turn_ends_on_a_stop_and_not_on_a_session_start() {
-    use zellij_utils::data::AgentState;
+    use zellij_types::agent::AgentState;
     let mut plugin = task_plugin(
         r#"
         for _ = 1, 2 do
@@ -6786,7 +6791,7 @@ fn a_turn_ends_on_a_stop_and_not_on_a_session_start() {
 
 #[test]
 fn a_turn_with_an_idle_fallback_resolves_on_the_records_edge_into_idle() {
-    use zellij_utils::data::AgentState;
+    use zellij_types::agent::AgentState;
     let mut plugin = task_plugin(
         r#"
         local reply = zellij.await(zellij.async.turn(7, { fallback = "idle" }))

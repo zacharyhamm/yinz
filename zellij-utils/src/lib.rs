@@ -15,7 +15,6 @@ pub use zellij_types::internal_ids;
 pub mod kdl;
 pub use zellij_types::kitty_placeholders;
 pub mod nested_session_contract;
-pub mod pane_size;
 pub mod plugin_api;
 pub mod plugin_authoring;
 pub use zellij_types::plugin_data;

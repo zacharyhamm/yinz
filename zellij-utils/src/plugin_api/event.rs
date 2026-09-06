@@ -53,18 +53,24 @@ pub use super::generated_api::api::{
     key::{key::KeyModifier as ProtobufKeyModifier, Key as ProtobufKey},
     style::Style as ProtobufStyle,
 };
-#[allow(hidden_glob_reexports)]
-use crate::data::{
-    AgentInfo, AgentSource, AgentState, ClientId, ClientInfo, ContextMenuContext, ContextMenuItem,
-    ContextMenuLink, CopyDestination, DataRows, Event, EventType, FileMetadata, InputMode,
-    LayoutInfo, LayoutMetadata, ModeInfo, Mouse, PaneContents, PaneId, PaneInfo, PaneManifest,
-    PaneMetadata, PaneScrollbackResponse, PaneTarget, PermissionStatus, PluginCapabilities,
-    PluginInfo, QueueJobInfo, QueueJobOutcome, QueueJobState, QueueSnapshot, SelectedText,
-    SessionInfo, StyledText, TabInfo, TabMetadata,
-};
 use crate::plugin_api::plugin_data::ProtobufRows as ProtobufDataRows;
 use zellij_types::keys::{KeyModifier, KeyWithModifier};
 use zellij_types::style::{HostTerminalThemeMode, Style};
+#[allow(hidden_glob_reexports)]
+use {
+    crate::data::{
+        ClientId, ClientInfo, ContextMenuContext, ContextMenuItem, ContextMenuLink,
+        CopyDestination, DataRows, Event, EventType, FileMetadata, InputMode, LayoutInfo,
+        LayoutMetadata, ModeInfo, Mouse, PaneContents, PaneId, PaneInfo, PaneManifest,
+        PaneMetadata, PaneScrollbackResponse, PermissionStatus, PluginCapabilities, PluginInfo,
+        QueueJobInfo, QueueJobOutcome, QueueJobState, QueueSnapshot, SelectedText, SessionInfo,
+        StyledText, TabInfo, TabMetadata,
+    },
+    zellij_types::{
+        agent::{AgentInfo, AgentSource, AgentState},
+        command::PaneTarget,
+    },
+};
 
 use crate::errors::prelude::*;
 use crate::input::actions::Action;

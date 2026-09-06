@@ -14,18 +14,19 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
+use zellij_types::agent::AgentInfo;
 use zellij_types::diagnostics::ScreenContext;
+use zellij_types::geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy};
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::mouse::MouseEvent;
+use zellij_types::pane_size::Size;
 use zellij_types::position::Position;
 use zellij_types::style::{HostTerminalThemeMode, Styling, ThemeHue};
-use zellij_utils::data::AgentInfo;
 use zellij_utils::data::{
-    CommandOrPlugin, ContextMenuItem, Direction, EventType, FloatingPaneCoordinates,
-    GetFocusedPaneInfoResponse, InputMode, LayoutInfo, LayoutWithError, ListPanesResponse,
-    ListTabsResponse, ModeInfo, NewPanePlacement, NotificationInfo, OverlayPlacement, PaneInfo,
-    PaneScrollbackResponse, PluginPermission, RegexHighlight, Resize, ResizeStrategy, SessionInfo,
-    TabInfo, WarpPlacement, WarpedPane, WarpedTab,
+    CommandOrPlugin, ContextMenuItem, EventType, GetFocusedPaneInfoResponse, InputMode, LayoutInfo,
+    LayoutWithError, ListPanesResponse, ListTabsResponse, ModeInfo, NewPanePlacement,
+    NotificationInfo, OverlayPlacement, PaneInfo, PaneScrollbackResponse, PluginPermission,
+    RegexHighlight, SessionInfo, TabInfo, WarpPlacement, WarpedPane, WarpedTab,
 };
 use zellij_utils::input::actions::Action;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
@@ -40,7 +41,6 @@ use zellij_utils::input::options::{
 };
 use zellij_utils::ipc::PixelDimensions;
 use zellij_utils::nested_session::NestedSessionMessage;
-use zellij_utils::pane_size::Size;
 
 /// Instructions that can be sent to the [`Screen`].
 ///

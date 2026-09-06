@@ -18,9 +18,10 @@ use hegel::generators::{self};
 
 use super::*;
 use crate::input::command::RunCommand;
-use crate::input::layout::{Run, RunPlugin, RunPluginLocation, RunPluginOrAlias, SplitDirection};
-use crate::pane_size::PaneGeom;
+use crate::input::layout::{Run, RunPlugin, RunPluginLocation, RunPluginOrAlias};
 use crate::session_serialization::get_tiled_panes_layout_from_panegeoms;
+use zellij_types::geometry::SplitDirection;
+use zellij_types::pane_size::PaneGeom;
 
 /// The whole viewport, as `position_panes_in_space` wants it.
 ///

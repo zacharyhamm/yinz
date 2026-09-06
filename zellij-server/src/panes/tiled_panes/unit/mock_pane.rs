@@ -14,11 +14,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
 use zellij_runtime::errors::prelude::*;
+use zellij_types::geometry::SplitDirection;
+use zellij_types::pane_size::Offset;
+use zellij_types::pane_size::{Dimension, PaneGeom};
 use zellij_utils::data::{InputMode, PaletteColor, PaneContents};
 use zellij_utils::input::layout::Run as LayoutRun;
-use zellij_utils::input::layout::SplitDirection;
-use zellij_utils::pane_size::Offset;
-use zellij_utils::pane_size::{Dimension, PaneGeom};
 
 #[derive(Clone, Copy, Debug)]
 pub struct PaneSpec {

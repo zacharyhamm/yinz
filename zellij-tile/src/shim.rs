@@ -5,9 +5,12 @@ use std::{
     path::{Path, PathBuf},
 };
 use zellij_runtime::errors::prelude::*;
+use zellij_types::agent::{AgentInfo, AgentSpawnSpec};
+use zellij_types::command::{CommandToRun, GitCheckout};
+pub use zellij_types::geometry::PercentOrFixed;
+use zellij_types::geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy};
 use zellij_utils::data::*;
 use zellij_utils::input::actions::Action;
-pub use zellij_utils::input::layout::PercentOrFixed;
 pub use zellij_utils::plugin_api;
 use zellij_utils::plugin_api::event::ProtobufPaneScrollbackResponse;
 use zellij_utils::plugin_api::generated_api::api::plugin_command::{

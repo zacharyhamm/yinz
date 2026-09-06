@@ -5,8 +5,6 @@ use crate::data::PaneId;
 use crate::errors::prelude::*;
 use crate::input::actions::Action;
 use crate::input::cli_assets::CliAssets;
-use crate::pane_size::Size;
-use crate::pane_size::SizeInPixels;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use log::warn;
 use serde::{Deserialize, Serialize};
@@ -19,6 +17,8 @@ use std::{
 use zellij_types::diagnostics::ErrorContext;
 use zellij_types::keys::KeyModifier;
 use zellij_types::keys::KeyWithModifier;
+use zellij_types::pane_size::Size;
+use zellij_types::pane_size::SizeInPixels;
 use zellij_types::style::HostTerminalThemeMode;
 use zellij_types::style::Style;
 

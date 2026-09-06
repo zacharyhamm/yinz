@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct ProjectConfig {
     pub ci: Option<Vec<String>>,
     pub default_branch: Option<String>,
-    pub agent: Option<crate::data::AgentSpawnSpec>,
+    pub agent: Option<zellij_types::agent::AgentSpawnSpec>,
 }
 
 pub fn parse(source: &str) -> Result<ProjectConfig, String> {
@@ -53,7 +53,7 @@ pub fn parse(source: &str) -> Result<ProjectConfig, String> {
                 if properties.values().any(|v| v.trim().is_empty()) {
                     return Err("agent: settings must not be blank".into());
                 }
-                let spec = crate::data::AgentSpawnSpec {
+                let spec = zellij_types::agent::AgentSpawnSpec {
                     kind: properties.get("kind").map(|v| v.to_string()),
                     model: properties.get("model").map(|v| v.to_string()),
                     effort: properties.get("effort").map(|v| v.to_string()),

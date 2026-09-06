@@ -194,13 +194,13 @@ use std::rc::Rc;
 use zellij_runtime::errors::prelude::*;
 use zellij_types::position::Position;
 use zellij_types::style::{Style, Styling};
-use zellij_utils::{
-    data::{
-        FloatingPaneCoordinates, ModeInfo, OverlayKind, OverlayPlacement, PaneInfo, ResizeStrategy,
-    },
-    input::layout::{PercentOrFixed, RunPluginOrAlias},
-    input::options::PaneFrameStyle,
+use zellij_types::{
+    geometry::{FloatingPaneCoordinates, PercentOrFixed, ResizeStrategy},
     pane_size::{Offset, PaneGeom, Size, SizeInPixels, Viewport},
+};
+use zellij_utils::{
+    data::{ModeInfo, OverlayKind, OverlayPlacement, PaneInfo},
+    input::{layout::RunPluginOrAlias, options::PaneFrameStyle},
 };
 
 use crate::panes::kitty_graphics::KittyHostSupport;

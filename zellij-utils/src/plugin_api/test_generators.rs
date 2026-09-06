@@ -7,21 +7,19 @@
 //! specification, not a way past a failing case.
 
 use crate::data::{
-    AgentInfo, AgentSource, AgentSpawnSpec, AgentState, CommandOrPlugin, CommandToRun, CommandType,
-    ConnectToSession, ContextMenuItem, Direction, EntityDef, EventType, FetchRequest, FileMetadata,
-    FileToOpen, FloatingPaneCoordinates, GitCheckout, HighlightLayer, HighlightStyle, HttpVerb,
-    InputMode, LayoutInfo, LayoutMetadata, MessageToPlugin, Mutation, NewPanePlacement,
-    NewPluginArgs, OriginatingPlugin, OverlayKind, OverlayPlacement, PaneId, PaneMetadata,
-    PaneTarget, PermissionType, PluginCommand, PluginMessage, PluginTag, RegexHighlight,
-    RemotePaneHandoff, Resize, ResizeStrategy, TabMetadata, UnblockCondition, WarpPlacement,
-    WarpedPane, WarpedTab, WatchMode,
+    CommandOrPlugin, CommandType, ConnectToSession, ContextMenuItem, EntityDef, EventType,
+    FetchRequest, FileMetadata, FileToOpen, HighlightLayer, HighlightStyle, HttpVerb, InputMode,
+    LayoutInfo, LayoutMetadata, MessageToPlugin, Mutation, NewPanePlacement, NewPluginArgs,
+    OriginatingPlugin, OverlayKind, OverlayPlacement, PaneId, PaneMetadata, PermissionType,
+    PluginCommand, PluginMessage, PluginTag, RegexHighlight, RemotePaneHandoff, TabMetadata,
+    UnblockCondition, WarpPlacement, WarpedPane, WarpedTab, WatchMode,
 };
 use crate::input::actions::{Action, ActionKind, SearchDirection, SearchOption};
 use crate::input::command::{OpenFilePayload, RunCommand, RunCommandAction};
 use crate::input::layout::{
-    FloatingPaneLayout, LayoutConstraint, PercentOrFixed, PluginAlias, PluginUserConfiguration,
-    Run, RunPlugin, RunPluginLocation, RunPluginOrAlias, SplitDirection, SplitSize,
-    SwapFloatingLayout, SwapTiledLayout, TabLayoutInfo, TiledPaneLayout,
+    FloatingPaneLayout, LayoutConstraint, PluginAlias, PluginUserConfiguration, Run, RunPlugin,
+    RunPluginLocation, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout, TabLayoutInfo,
+    TiledPaneLayout,
 };
 use crate::input::options::PaneFrameStyle;
 use crate::position::{Column, Line, Position};
@@ -29,8 +27,14 @@ use hegel::generators;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use strum::IntoEnumIterator;
+use zellij_types::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use zellij_types::keys::{BareKey, KeyModifier, KeyWithModifier};
 use zellij_types::mouse::{MouseEvent, MouseEventType};
+use zellij_types::{
+    agent::{AgentInfo, AgentSource, AgentSpawnSpec, AgentState},
+    command::{CommandToRun, GitCheckout, PaneTarget},
+    geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy},
+};
 
 pub(crate) fn strings(tc: &hegel::TestCase) -> String {
     tc.draw(generators::text().max_size(8))

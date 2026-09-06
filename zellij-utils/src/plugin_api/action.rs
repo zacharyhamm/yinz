@@ -83,20 +83,22 @@ pub use super::generated_api::api::{
     resize::{Resize as ProtobufResize, ResizeDirection as ProtobufResizeDirection},
 };
 use crate::data::{
-    CommandOrPlugin, Direction, FloatingPaneCoordinates, InputMode, NewPanePlacement, OverlayKind,
-    OverlayPlacement, PaneId, PluginTag, ResizeStrategy, UnblockCondition,
+    CommandOrPlugin, InputMode, NewPanePlacement, OverlayKind, OverlayPlacement, PaneId, PluginTag,
+    UnblockCondition,
 };
 use crate::errors::prelude::*;
 use crate::input::actions::Action;
 use crate::input::actions::{SearchDirection, SearchOption};
 use crate::input::command::{OpenFilePayload, RunCommandAction};
-use crate::input::layout::SplitSize;
 use crate::input::layout::{
-    FloatingPaneLayout, LayoutConstraint, PercentOrFixed, PluginAlias, PluginUserConfiguration,
-    Run, RunPlugin, RunPluginLocation, RunPluginOrAlias, SplitDirection, SwapFloatingLayout,
-    SwapTiledLayout, TabLayoutInfo, TiledPaneLayout,
+    FloatingPaneLayout, LayoutConstraint, PluginAlias, PluginUserConfiguration, Run, RunPlugin,
+    RunPluginLocation, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout, TabLayoutInfo,
+    TiledPaneLayout,
 };
 use crate::position::{Column, Line, Position};
+use zellij_types::geometry::SplitSize;
+use zellij_types::geometry::{Direction, FloatingPaneCoordinates, ResizeStrategy};
+use zellij_types::geometry::{PercentOrFixed, SplitDirection};
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::mouse::{MouseEvent, MouseEventType};
 

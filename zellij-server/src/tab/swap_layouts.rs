@@ -2,11 +2,9 @@ use crate::panes::{FloatingPanes, TiledPanes};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use zellij_utils::{
-    input::layout::{
-        FloatingPaneLayout, LayoutConstraint, SwapFloatingLayout, SwapTiledLayout, TiledPaneLayout,
-    },
-    pane_size::{PaneGeom, Size},
+use zellij_types::pane_size::{PaneGeom, Size};
+use zellij_utils::input::layout::{
+    FloatingPaneLayout, LayoutConstraint, SwapFloatingLayout, SwapTiledLayout, TiledPaneLayout,
 };
 
 #[derive(Clone, Debug, Default)]

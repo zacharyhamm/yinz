@@ -334,7 +334,7 @@ fn a_default_shell_pane_ships_no_command_of_its_own() {
     let cmd = RunCommand {
         command: std::path::PathBuf::new(),
         remote_default_shell: true,
-        target: zellij_utils::data::PaneTarget::Ssh {
+        target: zellij_types::command::PaneTarget::Ssh {
             host: "build-box".to_owned(),
         },
         ..Default::default()
@@ -408,7 +408,7 @@ fn a_pane_whose_forward_has_gone_stale_is_retried_through_a_fresh_one() {
 
     let cmd = RunCommand {
         command: std::path::PathBuf::from("/bin/sh"),
-        target: zellij_utils::data::PaneTarget::Ssh {
+        target: zellij_types::command::PaneTarget::Ssh {
             host: host.to_owned(),
         },
         ..Default::default()
@@ -554,7 +554,7 @@ fn a_pane_carries_this_sides_terminal_and_its_own_id() {
     let cmd = RunCommand {
         command: std::path::PathBuf::new(),
         remote_default_shell: true,
-        target: zellij_utils::data::PaneTarget::Ssh {
+        target: zellij_types::command::PaneTarget::Ssh {
             host: "build-box".to_owned(),
         },
         ..Default::default()

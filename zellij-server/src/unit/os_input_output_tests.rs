@@ -1,7 +1,8 @@
 const AMPLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 use super::*;
-use zellij_utils::input::command::{PaneTarget, RunCommand};
+use zellij_types::command::PaneTarget;
+use zellij_utils::input::command::RunCommand;
 
 fn make_server() -> ServerOsInputOutput {
     get_server_os_input().expect("failed to create server os input")

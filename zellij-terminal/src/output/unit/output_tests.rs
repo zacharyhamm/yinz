@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::kitty_placeholders::PLACEHOLDER;
-use zellij_utils::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
+use zellij_types::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
 
 /// Helper to create a simple Output instance for testing
 fn create_test_output() -> Output {

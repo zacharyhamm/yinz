@@ -25,23 +25,24 @@ use std::time::{self, Instant};
 use vte;
 use zellij_runtime::errors::prelude::*;
 use zellij_runtime::shared::make_terminal_title;
+use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
 use zellij_types::animation::blink_is_lit;
 use zellij_types::internal_ids::PluginId;
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::keys::{BareKey, KeyWithModifier};
 use zellij_types::mouse::{MouseEvent, MouseEventType};
+use zellij_types::pane_size::Offset;
+use zellij_types::pane_size::PaneGeom;
 use zellij_types::position::Position;
 use zellij_types::style::{Palette, Style, Styling};
+use zellij_types::{geometry::Direction, pane_size::SizeInPixels};
 use zellij_utils::data::PaneContents;
-use zellij_utils::data::{AgentInfo, AgentSource, AgentState, HOCUS_AGENT_PANE_CONTEXT};
+use zellij_utils::data::HOCUS_AGENT_PANE_CONTEXT;
 use zellij_utils::input::command::RunCommand;
-use zellij_utils::pane_size::Offset;
 use zellij_utils::{
-    data::{Direction, InputMode, PaletteColor, RegexHighlight},
+    data::{InputMode, PaletteColor, RegexHighlight},
     input::layout::Run,
     nested_session::NestedSessionMessage,
-    pane_size::PaneGeom,
-    pane_size::SizeInPixels,
 };
 
 use crate::ui::pane_boundaries_frame::{FrameParams, PaneFrame};

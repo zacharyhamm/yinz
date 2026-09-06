@@ -6,7 +6,7 @@ The extraction from `zellij-utils` is in progress. These crates now own independ
 
 | Crate | Current ownership |
 |---|---|
-| `zellij-types` | Canonical pane IDs, terminal, plugin, and client ID wrappers, positions, mouse input, environment models, plugin-data contracts, recording summaries, Kitty placeholders, keys, palettes and styles, animation, text helpers, and diagnostic context payloads |
+| `zellij-types` | Canonical pane IDs, terminal, plugin, and client ID wrappers, positions, mouse input, environment models, plugin-data contracts, recording summaries, Kitty placeholders, keys, palettes and styles, animation, text helpers, diagnostic context payloads, pane geometry, direction and resizing models, agent records and launch inputs, and command targets |
 | `zellij-runtime` | Error presentation, thread-local context, channels, logging, paths, environment access and host-terminal capture, host identity, downloads, checkpoint publication, terminal key interpretation and encoding, and vendored terminal input parsing |
 | `zellij-storage` | Plugin-data engine, SQLite and Postgres backends, recording storage, and `DataAccess` interfaces |
 
@@ -14,6 +14,13 @@ The extraction from `zellij-utils` is in progress. These crates now own independ
 Consumers import moved modules from their owning crates. Temporary re-exports in `zellij-utils` support the remaining migration.
 Configuration, plugin API, IPC, session, and CLI extraction remain unfinished. Most shared models still reside in `zellij-utils`.
 Public domain scalars also need further migration to semantic newtypes.
+
+`zellij-types::pane_size` owns pane dimensions, sizes, offsets, insets, and viewports.
+`zellij-types::geometry` owns directions, resize strategies, split sizes, percentages, and floating-pane coordinates.
+`zellij-types::agent` owns agent records and launch inputs. Hook interpretation remains in utils.
+`zellij-types::command` owns command payloads, process targets, and Git checkout requests. Process execution remains in the host crates.
+Consumers and the SDK import these models from types. Utils no longer re-exports them.
+Fixed JSON and protobuf fixtures cover their existing representations.
 
 `zellij-types::diagnostics::ErrorContext` holds the serializable six-entry instruction stack.
 Its `add_call` method changes only that value. Runtime's `errors::add_call` also publishes the result to the current task or thread.

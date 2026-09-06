@@ -15,8 +15,8 @@ use crate::ui::notification::{
 use crate::ClientId;
 use zellij_types::animation::scaled_duration;
 use zellij_types::mouse::{MouseEvent, MouseEventType};
+use zellij_types::pane_size::{Size, Viewport};
 use zellij_types::position::Position;
-use zellij_utils::pane_size::{Size, Viewport};
 
 impl Screen {
     /// Lay out live notifications once for both rendering and mouse hit-testing.

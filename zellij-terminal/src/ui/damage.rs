@@ -9,7 +9,7 @@
 //! Nothing here knows about toasts specifically: it is rectangle arithmetic over what an overlay
 //! painted last frame and what it is painting now.
 
-use zellij_utils::pane_size::PaneGeom;
+use zellij_types::pane_size::PaneGeom;
 
 /// A block of cells in absolute session coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,7 +157,7 @@ fn subtract_spans(was: &[(usize, usize)], is: &[(usize, usize)]) -> Vec<(usize, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zellij_utils::pane_size::Dimension;
+    use zellij_types::pane_size::Dimension;
 
     fn rect(x: usize, y: usize, cols: usize, rows: usize) -> CellRect {
         CellRect { x, y, cols, rows }

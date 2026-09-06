@@ -1,8 +1,8 @@
 mod kdl_layout_parser;
 use crate::data::ContextMenuItem;
 use crate::data::{
-    Direction, FloatingPaneCoordinates, InputMode, LayoutInfo, LayoutMetadata, NewPanePlacement,
-    PaletteColor, PaneId, PaneInfo, PaneManifest, PermissionType, Resize, SessionInfo, TabInfo,
+    InputMode, LayoutInfo, LayoutMetadata, NewPanePlacement, PaletteColor, PaneId, PaneInfo,
+    PaneManifest, PermissionType, SessionInfo, TabInfo,
 };
 use crate::home::{find_default_config_dir, get_layout_dir};
 use crate::input::config::{Config, ConfigError, KdlError};
@@ -10,7 +10,7 @@ use crate::input::context_menu::ContextMenu;
 use crate::input::hooks::{HookPoint, Hooks};
 use crate::input::keybinds::Keybinds;
 use crate::input::layout::{
-    Layout, PercentOrFixed, PluginUserConfiguration, RunPlugin, RunPluginOrAlias, TabLayoutInfo,
+    Layout, PluginUserConfiguration, RunPlugin, RunPluginOrAlias, TabLayoutInfo,
 };
 use crate::input::options::{
     Clipboard, NotificationPosition, OnForceClose, Options, PaneFrameStyle,
@@ -25,6 +25,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use strum::IntoEnumIterator;
 use uuid::Uuid;
 use zellij_types::envs::EnvironmentVariables;
+use zellij_types::geometry::PercentOrFixed;
+use zellij_types::geometry::{Direction, FloatingPaneCoordinates, Resize};
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::style::{
     MultiplayerColors, Palette, StyleDeclaration, Styling, ThemeHue, DEFAULT_STYLES,
@@ -39,7 +41,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use crate::input::actions::{Action, SearchDirection, SearchOption};
-use crate::input::command::{PaneTarget, RunCommandAction};
+use crate::input::command::RunCommandAction;
+use zellij_types::command::PaneTarget;
 
 /// The `firecracker_*` children of a `Run` action, the counterpart of the
 /// `firecracker_vm`/`firecracker_image`/`firecracker_worktree` pane properties.

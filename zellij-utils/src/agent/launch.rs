@@ -16,7 +16,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::data::{AgentSpawnSpec, CommandToRun, GitCheckout, PaneTarget};
+use zellij_types::{
+    agent::AgentSpawnSpec,
+    command::{CommandToRun, GitCheckout, PaneTarget},
+};
 
 /// The request, as every caller spells it. See [`AgentSpawnSpec`] for the fields.
 pub type Spec = AgentSpawnSpec;

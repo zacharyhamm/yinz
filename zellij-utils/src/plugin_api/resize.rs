@@ -2,7 +2,7 @@ pub use super::generated_api::api::resize::{
     MoveDirection as ProtobufMoveDirection, Resize as ProtobufResize, ResizeAction,
     ResizeDirection, ResizeDirection as ProtobufResizeDirection,
 };
-use crate::data::{Direction, Resize, ResizeStrategy};
+use zellij_types::geometry::{Direction, Resize, ResizeStrategy};
 
 use std::convert::TryFrom;
 

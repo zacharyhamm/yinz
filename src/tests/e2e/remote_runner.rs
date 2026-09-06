@@ -7,8 +7,8 @@ use zellij_server::panes::kitty_graphics::KittyImageStore;
 use zellij_server::panes::sixel::SixelImageStore;
 use zellij_server::panes::{LinkHandler, TerminalPane};
 
+use zellij_types::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
 use zellij_types::style::{Palette, Style};
-use zellij_utils::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
 
 use ssh2::Session;
 use std::io::prelude::*;

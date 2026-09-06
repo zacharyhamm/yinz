@@ -24,11 +24,13 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use zellij_runtime::envs::set_session_name;
 use zellij_types::diagnostics::ContextType;
+use zellij_types::pane_size::Size;
 use zellij_types::style::HostTerminalThemeMode;
+use zellij_types::{agent::AgentInfo, geometry::Direction};
 use zellij_utils::consts::{session_info_folder_for_session, ZELLIJ_SOCK_DIR};
 use zellij_utils::data::{
-    AgentInfo, Direction, Event, GetFocusedPaneInfoResponse, InputMode, NewPanePlacement,
-    NotificationInfo, OverlayPlacement, PaneScrollbackResponse, PluginCapabilities, SessionInfo,
+    Event, GetFocusedPaneInfoResponse, InputMode, NewPanePlacement, NotificationInfo,
+    OverlayPlacement, PaneScrollbackResponse, PluginCapabilities, SessionInfo,
 };
 use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::input::config::Config;
@@ -41,7 +43,6 @@ use zellij_utils::input::options::{
 use zellij_utils::ipc::{ClientAttributes, ServerToClientMsg};
 use zellij_utils::nested_session;
 use zellij_utils::nested_session::NestedSessionMessage;
-use zellij_utils::pane_size::Size;
 
 fn apply_queued_agent_report(
     screen: &mut Screen,

@@ -1,18 +1,15 @@
 use super::test_framework::*;
-use crate::data::PaneTarget;
 use crate::data::{
-    AgentInfo, AgentSource, AgentState, CommandOrPlugin, ConnectToSession, Direction,
-    FloatingPaneCoordinates, InputMode, LayoutInfo, LayoutMetadata, NewPanePlacement,
-    OriginatingPlugin, PaneId, PluginTag, RemotePaneHandoff, Resize, UnblockCondition,
-    WarpPlacement, WarpedPane, WarpedTab,
+    CommandOrPlugin, ConnectToSession, InputMode, LayoutInfo, LayoutMetadata, NewPanePlacement,
+    OriginatingPlugin, PaneId, PluginTag, RemotePaneHandoff, UnblockCondition, WarpPlacement,
+    WarpedPane, WarpedTab,
 };
 use crate::input::actions::{Action, SearchDirection, SearchOption};
 use crate::input::cli_assets::CliAssets;
 use crate::input::command::{OpenFilePayload, RunCommand, RunCommandAction};
 use crate::input::layout::{
-    FloatingPaneLayout, LayoutConstraint, PercentOrFixed, PluginAlias, PluginUserConfiguration,
-    Run, RunPlugin, RunPluginLocation, RunPluginOrAlias, SplitDirection, SplitSize,
-    TiledPaneLayout,
+    FloatingPaneLayout, LayoutConstraint, PluginAlias, PluginUserConfiguration, Run, RunPlugin,
+    RunPluginLocation, RunPluginOrAlias, TiledPaneLayout,
 };
 use crate::input::options::{
     Clipboard, HostNotificationProtocol, NestedSessionHandling, NotificationPosition, OnForceClose,
@@ -21,14 +18,20 @@ use crate::input::options::{
 use crate::ipc::{
     ClientToServerMsg, ColorRegister, ExitReason, PaneReference, PixelDimensions, ServerToClientMsg,
 };
-use crate::pane_size::{Size, SizeInPixels};
 use crate::position::Position;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use strum::VariantNames;
+use zellij_types::command::PaneTarget;
+use zellij_types::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use zellij_types::keys::{BareKey, KeyModifier, KeyWithModifier};
 use zellij_types::mouse::{MouseEvent, MouseEventType};
+use zellij_types::pane_size::{Size, SizeInPixels};
 use zellij_types::style::HostTerminalThemeMode;
+use zellij_types::{
+    agent::{AgentInfo, AgentSource, AgentState},
+    geometry::{Direction, FloatingPaneCoordinates, Resize},
+};
 
 const ROUNDTRIP_TEST_STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -4639,5 +4642,29 @@ fn every_action_survives_the_client_server_round_trip(tc: hegel::TestCase) {
             round_tripped, action,
             "the client-server wire changed the action"
         );
+    }
+}
+
+#[test]
+fn extracted_size_preserves_fixed_protobuf_bytes() {
+    use crate::client_server_contract::client_server_contract::Size as ProtoSize;
+    use prost::Message;
+
+    for (size, bytes) in [
+        (Size { rows: 0, cols: 0 }, vec![]),
+        (Size { rows: 24, cols: 80 }, vec![0x08, 80, 0x10, 24]),
+        (
+            Size {
+                rows: u32::MAX as usize,
+                cols: u32::MAX as usize,
+            },
+            vec![
+                0x08, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x10, 0xff, 0xff, 0xff, 0xff, 0x0f,
+            ],
+        ),
+    ] {
+        assert_eq!(ProtoSize::from(size).encode_to_vec(), bytes);
+        let decoded = ProtoSize::decode(bytes.as_slice()).unwrap();
+        assert_eq!(Size::try_from(decoded).unwrap(), size);
     }
 }
