@@ -224,3 +224,27 @@ fn pane_manifest_identity_keeps_flat_numeric_fields() {
         }
     }
 }
+
+#[test]
+fn plugin_data_ids_and_revisions_preserve_signed_values_and_absent_guards() {
+    use crate::internal_ids::{DataRevision, DataRowId};
+    use crate::plugin_data::{ApplyReport, DataValue, Mutation, REV_ABSENT};
+    let json = r#"{"rows_written":4,"rows_deleted":0,"ids":[-9223372036854775808,-1,0,9223372036854775807],"per_mutation":[1,1,1,1]}"#;
+    let report: ApplyReport = serde_json::from_str(json).unwrap();
+    assert_eq!(report.ids, [i64::MIN, -1, 0, i64::MAX].map(DataRowId::new));
+    assert_eq!(serde_json::to_string(&report).unwrap(), json);
+    let guard = Mutation::put("item")
+        .uid("a")
+        .set("text", "x")
+        .expect_absent()
+        .build();
+    let json =
+        r#"{"Put":{"entity":"item","uid":"a","values":[["text",{"Text":"x"}]],"expect_rev":0}}"#;
+    assert_eq!(serde_json::to_string(&guard).unwrap(), json);
+    assert_eq!(serde_json::from_str::<Mutation>(json).unwrap(), guard);
+    assert_eq!(REV_ABSENT, DataRevision::new(0));
+    assert_eq!(DataValue::from(DataRevision::new(7)), DataValue::Int(7));
+    assert_eq!(DataValue::from(DataRowId::new(7)), DataValue::Int(7));
+    assert!(DataRowId::try_from(u64::MAX).is_err());
+    assert!(DataRevision::try_from(u64::MAX).is_err());
+}

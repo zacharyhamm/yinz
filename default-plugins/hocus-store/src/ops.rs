@@ -23,6 +23,7 @@
 use hocus_proto::store::Backend;
 use hocus_proto::{notes, projects, store, todos};
 use serde_json::{json, Value};
+use zellij_tile::prelude::DataRevision;
 use zellij_tile::prelude::{ApplyReport, FetchRequest, Mutation};
 
 /// What a mutation did, or why it did nothing. The `Err` text goes straight
@@ -208,7 +209,10 @@ pub fn plan_mutate(
             // `expect_rev` is the revision the caller composed this text from, where it says.
             // Absent means "guard on what the view read", which is this call's own fetch — see
             // `hocus_proto::store::guarded_rev`.
-            let expect_rev = args.get("expect_rev").and_then(Value::as_i64);
+            let expect_rev = args
+                .get("expect_rev")
+                .and_then(Value::as_i64)
+                .map(DataRevision::new);
             let (mutations, text) = todos::plan_edit(&view.list(), id, text, expect_rev)?;
             Ok((
                 mutations,
@@ -918,7 +922,7 @@ mod tests {
         let report = ApplyReport {
             rows_written: 1,
             rows_deleted: 0,
-            ids: vec![42],
+            ids: vec![zellij_tile::prelude::DataRowId::new(42)],
             per_mutation: vec![1],
         };
         assert_eq!(field(&reply.finish(&report), "id"), 42);

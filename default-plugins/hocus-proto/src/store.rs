@@ -26,6 +26,7 @@
 //! truncation rules under test are the same code that runs in a session. There
 //! is no second implementation to keep honest.
 
+use zellij_tile::prelude::DataRevision;
 use zellij_tile::prelude::DataWatchId;
 use zellij_tile::prelude::*;
 
@@ -500,10 +501,13 @@ pub fn private_defs() -> Vec<EntityDef> {
 /// A row `rev` of zero means there is no row to guard: a note or an item that came from the
 /// legacy file rather than the store. It must never come to mean "a fetch projected the column
 /// away" — see `notes::LIST_COLUMNS`, which names `rev` for that reason.
-pub fn guarded_rev(expect_rev: Option<i64>, row_rev: i64) -> Option<i64> {
+pub fn guarded_rev(
+    expect_rev: Option<DataRevision>,
+    row_rev: DataRevision,
+) -> Option<DataRevision> {
     expect_rev
-        .filter(|rev| *rev > 0)
-        .or(Some(row_rev).filter(|rev| *rev > 0))
+        .filter(|rev| *rev > DataRevision::new(0))
+        .or(Some(row_rev).filter(|rev| *rev > DataRevision::new(0)))
 }
 
 // ---------------------------------------------------------------------------

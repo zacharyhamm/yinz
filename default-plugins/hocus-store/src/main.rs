@@ -35,6 +35,7 @@ use hocus_proto::store::{Backend, Host};
 use hocus_proto::wire::{self, Mutation, PollReply, Query};
 use hocus_proto::{agents, notes, projects, store, todos};
 use std::collections::BTreeMap;
+use zellij_tile::prelude::DataRowId;
 use zellij_tile::prelude::DataWatchId;
 use zellij_tile::prelude::TabId;
 use zellij_tile::prelude::*;
@@ -345,7 +346,7 @@ fn import_legacy(backend: &impl Backend, host_id: &str) {
         // One apply per level per list, because a child's parent_id is the id
         // the store gave its parent, which is only known once that row exists.
         for (root, list) in &lists {
-            let mut new_ids: BTreeMap<u64, i64> = BTreeMap::new();
+            let mut new_ids: BTreeMap<u64, DataRowId> = BTreeMap::new();
             for level in todos::levels_for_import(list) {
                 let Ok(report) = backend.apply(todos::import_mutations(root, &level, &new_ids))
                 else {

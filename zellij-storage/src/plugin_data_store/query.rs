@@ -1,6 +1,7 @@
 //! Building and running fetches: the `SELECT` half of the store.
 
 use crate::session_recording::fts_phrase;
+use zellij_types::internal_ids::DataRowId;
 use zellij_types::plugin_data::{
     AttrKind, DataError, DataRows, DataValue, FetchRequest, SortDir, MAX_FETCH_BYTES,
 };
@@ -157,7 +158,7 @@ pub(super) fn build_where<'d>(
                     .to_owned(),
             ));
         }
-        let placeholder = params.bind(DataValue::Int(after_id));
+        let placeholder = params.bind(DataValue::from(after_id));
         conditions.push(format!("{} > {}", qualify(&table, "id"), placeholder));
     }
 
@@ -281,7 +282,7 @@ pub(super) fn run_fetch(
 
     let mut rows: Vec<Vec<DataValue>> = Vec::new();
     let mut truncated = false;
-    let mut last_id: Option<i64> = None;
+    let mut last_id: Option<DataRowId> = None;
     let mut bytes = 0usize;
     exec.query_rows(&sql, &params, &kinds, &mut |mut values| {
         if rows.len() as u32 >= limit {
@@ -289,7 +290,7 @@ pub(super) fn run_fetch(
             return Ok(false);
         }
         let id = match values.first() {
-            Some(DataValue::Int(id)) => *id,
+            Some(DataValue::Int(id)) => DataRowId::new(*id),
             other => {
                 return Err(DataError::Storage(format!(
                     "failed to read a row id: got {:?}",

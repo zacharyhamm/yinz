@@ -1,5 +1,6 @@
 use super::*;
 use hegel::generators::{self, Generator};
+use zellij_types::internal_ids::DataRevision;
 
 /// A row of the two-column entity the oracle property runs against.
 type OracleRow = (Option<String>, Option<i64>);
@@ -407,7 +408,7 @@ fn a_guarded_write_never_loses_an_update(tc: hegel::TestCase) {
             &[Mutation::put("agent")
                 .uid("contested")
                 .set("project", value.clone())
-                .expect_rev(seen_rev)
+                .expect_rev(DataRevision::new(seen_rev))
                 .build()],
         );
 

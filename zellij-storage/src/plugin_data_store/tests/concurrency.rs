@@ -6,6 +6,7 @@
 //! servers sharing one database — only arises on the engine the tests would have skipped.
 
 use super::*;
+use zellij_types::internal_ids::DataRevision;
 
 /// The `rev` of the single row an `agent` fetch returns.
 fn only_rev(store: &PluginDataStore) -> i64 {
@@ -249,7 +250,7 @@ fn a_guarded_write_at_the_current_revision_applies() {
             &[Mutation::put("agent")
                 .uid("a1")
                 .set("project", "mine")
-                .expect_rev(seen)
+                .expect_rev(DataRevision::new(seen))
                 .build()],
         )
         .unwrap();
@@ -288,7 +289,7 @@ fn a_guarded_write_at_a_stale_revision_conflicts_and_changes_nothing() {
             &[Mutation::put("agent")
                 .uid("a1")
                 .set("project", "mine")
-                .expect_rev(seen)
+                .expect_rev(DataRevision::new(seen))
                 .build()],
         )
         .unwrap_err();
@@ -328,7 +329,7 @@ fn a_guarded_write_against_a_deleted_row_conflicts_rather_than_resurrecting_it()
             &[Mutation::put("agent")
                 .uid("a1")
                 .set("project", "back-from-the-dead")
-                .expect_rev(seen)
+                .expect_rev(DataRevision::new(seen))
                 .build()],
         )
         .unwrap_err();
@@ -367,7 +368,7 @@ fn a_guarded_update_conflicts_when_the_revision_has_moved() {
     let guarded = |rev: i64| {
         Mutation::update("agent", Pred::eq("project", "zellij"))
             .set("summary", "mine")
-            .expect_rev(rev)
+            .expect_rev(DataRevision::new(rev))
             .build()
     };
     store.apply(NS, &[guarded(seen)]).unwrap();
@@ -388,7 +389,7 @@ fn a_guarded_update_still_honours_its_filter() {
             NS,
             &[Mutation::update("agent", Pred::eq("project", "change"))
                 .set("summary", "mine")
-                .expect_rev(1)
+                .expect_rev(DataRevision::new(1))
                 .build()],
         )
         .unwrap();
@@ -426,7 +427,7 @@ fn a_conflict_rolls_back_the_whole_batch() {
                 Mutation::put("agent")
                     .uid("a1")
                     .set("project", "conflicting")
-                    .expect_rev(99)
+                    .expect_rev(DataRevision::new(99))
                     .build(),
             ],
         )
@@ -532,7 +533,7 @@ fn guards_that_could_never_hold_are_rejected() {
     refused(
         Mutation::put("agent")
             .set("project", "zellij")
-            .expect_rev(1)
+            .expect_rev(DataRevision::new(1))
             .build(),
     );
     // `REV_ABSENT` on an update means "the row is not there", which an update cannot honour.
@@ -547,7 +548,7 @@ fn guards_that_could_never_hold_are_rejected() {
         Mutation::put("agent")
             .uid("a1")
             .set("project", "zellij")
-            .expect_rev(-1)
+            .expect_rev(DataRevision::new(-1))
             .build(),
     );
 }

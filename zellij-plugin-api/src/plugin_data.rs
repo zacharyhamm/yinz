@@ -23,6 +23,8 @@ pub use super::generated_api::api::plugin_data::{
     Sort as ProtobufSort, SortDir as ProtobufSortDir, Update as ProtobufUpdate,
     Value as ProtobufValue, WatchHandle as ProtobufWatchHandle, WatchMode as ProtobufWatchMode,
 };
+use zellij_types::internal_ids::DataRevision;
+use zellij_types::internal_ids::DataRowId;
 use zellij_types::internal_ids::DataWatchId;
 
 use {
@@ -380,7 +382,7 @@ impl TryFrom<FetchRequest> for ProtobufFetchRequest {
             select: request.select,
             limit: request.limit,
             offset: request.offset,
-            after_id: request.after_id,
+            after_id: request.after_id.map(|id| id.get()),
         })
     }
 }
@@ -401,7 +403,7 @@ impl TryFrom<ProtobufFetchRequest> for FetchRequest {
             select: request.select,
             limit: request.limit,
             offset: request.offset,
-            after_id: request.after_id,
+            after_id: request.after_id.map(DataRowId::new),
         })
     }
 }
@@ -420,7 +422,7 @@ impl TryFrom<Mutation> for ProtobufMutation {
             } => ProtobufMutationOneof::Put(ProtobufPut {
                 entity,
                 uid,
-                expect_rev,
+                expect_rev: expect_rev.map(|id| id.get()),
                 values: values
                     .into_iter()
                     .map(|(attr, value)| attr_value(attr, value))
@@ -434,7 +436,7 @@ impl TryFrom<Mutation> for ProtobufMutation {
             } => ProtobufMutationOneof::Update(ProtobufUpdate {
                 entity,
                 filter: Some(ProtobufPred::try_from(filter)?),
-                expect_rev,
+                expect_rev: expect_rev.map(|id| id.get()),
                 values: values
                     .into_iter()
                     .map(|(attr, value)| attr_value(attr, value))
@@ -462,7 +464,7 @@ impl TryFrom<ProtobufMutation> for Mutation {
                 entity: put.entity,
                 uid: put.uid,
                 values: put.values.into_iter().map(split_attr_value).collect(),
-                expect_rev: put.expect_rev,
+                expect_rev: put.expect_rev.map(DataRevision::new),
             },
             ProtobufMutationOneof::Update(update) => Mutation::Update {
                 entity: update.entity,
@@ -472,7 +474,7 @@ impl TryFrom<ProtobufMutation> for Mutation {
                     .transpose()?
                     .ok_or("Update has no filter")?,
                 values: update.values.into_iter().map(split_attr_value).collect(),
-                expect_rev: update.expect_rev,
+                expect_rev: update.expect_rev.map(DataRevision::new),
             },
             ProtobufMutationOneof::Delete(delete) => Mutation::Delete {
                 entity: delete.entity,
@@ -500,7 +502,7 @@ impl From<DataRows> for ProtobufRows {
                 })
                 .collect(),
             truncated: rows.truncated,
-            next_cursor: rows.next_cursor,
+            next_cursor: rows.next_cursor.map(|id| id.get()),
         }
     }
 }
@@ -515,7 +517,7 @@ impl From<ProtobufRows> for DataRows {
                 .map(|row| row.values.into_iter().map(DataValue::from).collect())
                 .collect(),
             truncated: rows.truncated,
-            next_cursor: rows.next_cursor,
+            next_cursor: rows.next_cursor.map(DataRowId::new),
         }
     }
 }
@@ -555,7 +557,7 @@ impl From<ApplyReport> for ProtobufApplyReport {
         ProtobufApplyReport {
             rows_written: report.rows_written,
             rows_deleted: report.rows_deleted,
-            ids: report.ids,
+            ids: report.ids.into_iter().map(|id| id.get()).collect(),
             per_mutation: report.per_mutation,
         }
     }
@@ -566,7 +568,7 @@ impl From<ProtobufApplyReport> for ApplyReport {
         ApplyReport {
             rows_written: report.rows_written,
             rows_deleted: report.rows_deleted,
-            ids: report.ids,
+            ids: report.ids.into_iter().map(DataRowId::new).collect(),
             per_mutation: report.per_mutation,
         }
     }
@@ -709,7 +711,9 @@ pub(crate) mod tests {
             select: tc.draw(generators::vecs(generators::text()).max_size(4)),
             limit: tc.draw(generators::integers::<u32>()),
             offset: tc.draw(generators::integers::<u32>()),
-            after_id: tc.draw(generators::optional(generators::integers::<i64>())),
+            after_id: tc
+                .draw(generators::optional(generators::integers::<i64>()))
+                .map(DataRowId::new),
         }
     }
 
@@ -722,13 +726,17 @@ pub(crate) mod tests {
                 entity: tc.draw(generators::text()),
                 uid: tc.draw(generators::optional(generators::text())),
                 values: tc.draw(values),
-                expect_rev: tc.draw(generators::optional(generators::integers::<i64>())),
+                expect_rev: tc
+                    .draw(generators::optional(generators::integers::<i64>()))
+                    .map(DataRevision::new),
             },
             1 => Mutation::Update {
                 entity: tc.draw(generators::text()),
                 filter: tc.draw(any_pred(2)),
                 values: tc.draw(values),
-                expect_rev: tc.draw(generators::optional(generators::integers::<i64>())),
+                expect_rev: tc
+                    .draw(generators::optional(generators::integers::<i64>()))
+                    .map(DataRevision::new),
             },
             _ => Mutation::Delete {
                 entity: tc.draw(generators::text()),
@@ -753,7 +761,9 @@ pub(crate) mod tests {
             columns: (0..width).map(|i| format!("c{}", i)).collect(),
             rows,
             truncated: tc.draw(generators::booleans()),
-            next_cursor: tc.draw(generators::optional(generators::integers::<i64>())),
+            next_cursor: tc
+                .draw(generators::optional(generators::integers::<i64>()))
+                .map(DataRowId::new),
         }
     }
 
@@ -1064,7 +1074,7 @@ pub(crate) mod tests {
                 vec![DataValue::Int(2), DataValue::Null],
             ],
             truncated: true,
-            next_cursor: Some(2),
+            next_cursor: Some(DataRowId::new(2)),
         };
         let protobuf = ProtobufRows::from(rows.clone());
         assert_eq!(DataRows::from(protobuf), rows);
@@ -1097,7 +1107,7 @@ pub(crate) mod tests {
         let report = ApplyReport {
             rows_written: 3,
             rows_deleted: 1,
-            ids: vec![1, 2, 3],
+            ids: vec![1, 2, 3].into_iter().map(DataRowId::new).collect(),
             per_mutation: vec![2, 1, 1],
         };
         let protobuf = ProtobufApplyReport::from(report.clone());
