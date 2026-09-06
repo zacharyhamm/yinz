@@ -271,7 +271,11 @@ fn codex_message_tail_and_payload_limits_are_marked_and_keep_newest_in_order() {
         .all(|pair| { pair[0].source_id < pair[1].source_id }));
     let (_file, hook) = fixture(&format!(
         "{META}{AUTO}{}",
-        assistant(Some("huge"), "final_answer", &"雪".repeat(40000))
+        assistant(
+            Some("huge"),
+            "final_answer",
+            &"雪".repeat(zellij_types::agent::HOOK_BROADCAST_MAX_BYTES),
+        )
     ));
     let (event, raw) = parse_hook_event("codex", hook.to_string()).unwrap();
     assert!(raw.len() <= zellij_types::agent::HOOK_BROADCAST_MAX_BYTES);
@@ -321,7 +325,7 @@ fn display_message_bursts_only_broadcast_events_and_preserve_pruned_batch_metada
             delta: Some(if index == 99 {
                 String::new()
             } else {
-                "雪".repeat(40000)
+                "雪".repeat(zellij_types::agent::HOOK_BROADCAST_MAX_BYTES)
             }),
             ..Default::default()
         };
