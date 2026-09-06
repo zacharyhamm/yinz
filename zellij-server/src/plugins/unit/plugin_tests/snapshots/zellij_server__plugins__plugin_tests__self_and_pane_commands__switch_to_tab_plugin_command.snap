@@ -1,11 +1,13 @@
 ---
 source: zellij-server/src/plugins/./unit/plugin_tests/self_and_pane_commands.rs
-assertion_line: 77
+assertion_line: 78
 expression: "format!(\"{:#?}\", new_tab_event)"
 ---
 Some(
     GoToTab(
-        1,
+        TabNumber(
+            1,
+        ),
         Some(
             ClientId(
                 1,

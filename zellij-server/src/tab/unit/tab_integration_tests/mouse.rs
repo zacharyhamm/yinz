@@ -6,9 +6,9 @@ fn hidden_surface_overlay_owns_mouse_events() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let overlay_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let overlay_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.new_pane(
         overlay_pane_id,
@@ -46,17 +46,20 @@ fn test_left_click_on_inactive_tiled_pane_changes_focus() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Left pane".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left pane".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Right pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Right pane".as_bytes()),
+    )
+    .unwrap();
 
     assert_eq!(tab.get_active_pane_id(client_id), Some(new_pane_id));
 
@@ -70,7 +73,7 @@ fn test_left_click_on_inactive_tiled_pane_changes_focus() {
     assert!(effect.state_changed);
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
 }
 
@@ -80,13 +83,13 @@ fn test_left_release_after_selection_copies_to_clipboard() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let _output = Output::default();
 
     // Fill the pane with some text content
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("Selectable text content here".as_bytes()),
     )
     .unwrap();
@@ -123,12 +126,12 @@ fn triple_click_without_motion_requests_render() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let position = Position::new(1, 5);
 
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("Selectable text content here".as_bytes()),
     )
     .unwrap();
@@ -153,13 +156,16 @@ fn configured_word_separators_reach_the_pane_on_double_click() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let position = Position::new(1, 6);
 
     tab.update_selection_options(true, ":".to_owned());
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("foo:bar baz".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(1),
+        Vec::from("foo:bar baz".as_bytes()),
+    )
+    .unwrap();
 
     tab.handle_mouse_event(&MouseEvent::new_left_press_event(position), client_id)
         .unwrap();
@@ -183,18 +189,18 @@ fn test_ctrl_click_on_tiled_pane_edge_starts_resize() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let _output = Output::default();
 
     // Create a vertical split
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Left".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Right".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(2), Vec::from("Right".as_bytes()))
         .unwrap();
 
     // Click on the edge between panes with Ctrl
@@ -217,21 +223,21 @@ fn test_ctrl_drag_resizes_tiled_pane_horizontally() {
         cols: 120,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("Left pane content".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("Right pane content".as_bytes()),
     )
     .unwrap();
@@ -286,18 +292,21 @@ fn test_ctrl_drag_resizes_tiled_pane_vertically() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     tab.horizontal_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Top pane".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Top pane".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Bottom pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Bottom pane".as_bytes()),
+    )
+    .unwrap();
 
     tab.render(&mut output, None).unwrap();
     let snapshot_before = take_snapshot(
@@ -349,18 +358,21 @@ fn test_ctrl_drag_resizes_unfocused_tiled_pane_vertically() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     tab.horizontal_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Top pane".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Top pane".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Bottom pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Bottom pane".as_bytes()),
+    )
+    .unwrap();
 
     tab.render(&mut output, None).unwrap();
     let snapshot_before = take_snapshot(
@@ -372,7 +384,7 @@ fn test_ctrl_drag_resizes_unfocused_tiled_pane_vertically() {
 
     let edge_position = Position::new(10, 60);
     let _ = tab.focus_pane_with_id(
-        PaneId::Terminal(crate::TerminalId(1)),
+        PaneId::Terminal(crate::TerminalId::new(1)),
         false,
         false,
         client_id,
@@ -420,18 +432,18 @@ fn test_ctrl_click_on_pane_body_does_nothing() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let _output = Output::default();
 
     // Create a vertical split
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Left".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Right".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(2), Vec::from("Right".as_bytes()))
         .unwrap();
 
     // Click in the center of a pane (not on an edge)
@@ -453,9 +465,9 @@ fn test_ctrl_drag_resizes_floating_pane_from_edge() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let floating_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let floating_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     let coordinates = FloatingPaneCoordinates {
@@ -481,8 +493,11 @@ fn test_ctrl_drag_resizes_floating_pane_from_edge() {
     )
     .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Floating pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Floating pane".as_bytes()),
+    )
+    .unwrap();
 
     tab.render(&mut output, None).unwrap();
     let snapshot_before = take_snapshot(
@@ -534,9 +549,9 @@ fn test_ctrl_drag_resizes_floating_pane_from_corner() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let floating_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let floating_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     let coordinates = FloatingPaneCoordinates {
@@ -563,7 +578,7 @@ fn test_ctrl_drag_resizes_floating_pane_from_corner() {
     .unwrap();
 
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("Corner resize test".as_bytes()),
     )
     .unwrap();
@@ -618,9 +633,9 @@ fn test_ctrl_drag_resizes_pinned_floating_pane_when_floating_panes_not_shown() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let floating_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let floating_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     let coordinates = FloatingPaneCoordinates {
@@ -645,7 +660,7 @@ fn test_ctrl_drag_resizes_pinned_floating_pane_when_floating_panes_not_shown() {
     .unwrap();
 
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("Corner resize test".as_bytes()),
     )
     .unwrap();
@@ -702,9 +717,9 @@ fn test_ctrl_click_on_floating_pin_button_toggles_pin() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let floating_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let floating_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     // Toggle floating panes mode and create a floating pane
@@ -723,7 +738,7 @@ fn test_ctrl_click_on_floating_pin_button_toggles_pin() {
     .unwrap();
 
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("Pin toggle test".as_bytes()),
     )
     .unwrap();
@@ -766,9 +781,9 @@ fn test_ctrl_click_on_floating_frame_not_on_pin_starts_resize() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let floating_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let floating_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let _output = Output::default();
 
     // Toggle floating panes mode and create a floating pane
@@ -787,7 +802,7 @@ fn test_ctrl_click_on_floating_frame_not_on_pin_starts_resize() {
     .unwrap();
 
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("Frame click test".as_bytes()),
     )
     .unwrap();
@@ -813,9 +828,9 @@ fn test_left_drag_moves_floating_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let floating_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let floating_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     // Toggle floating panes mode and create a floating pane
@@ -833,8 +848,11 @@ fn test_left_drag_moves_floating_pane() {
     )
     .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Moving pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Moving pane".as_bytes()),
+    )
+    .unwrap();
 
     // Render before move
     tab.render(&mut output, None).unwrap();
@@ -890,10 +908,10 @@ fn test_left_click_on_floating_pane_changes_focus() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let floating_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let floating_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
+    let floating_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let floating_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
 
     let coordinates_1 = FloatingPaneCoordinates {
         x: Some(PercentOrFixed::Fixed(5)),
@@ -938,9 +956,9 @@ fn test_left_click_on_floating_pane_changes_focus() {
     )
     .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Pane 1".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(2), Vec::from("Pane 1".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("Pane 2".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("Pane 2".as_bytes()))
         .unwrap();
 
     assert_eq!(tab.get_active_pane_id(client_id), Some(floating_pane_id_2));
@@ -960,10 +978,10 @@ fn test_left_click_on_pinned_floating_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let floating_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let floating_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
+    let floating_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let floating_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
     let mut output = Output::default();
 
     let coordinates_1 = FloatingPaneCoordinates {
@@ -1013,8 +1031,11 @@ fn test_left_click_on_pinned_floating_pane() {
     )
     .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Pinned pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Pinned pane".as_bytes()),
+    )
+    .unwrap();
 
     // render once so that the client's frame will be registered
     tab.render(&mut output, None).unwrap();
@@ -1049,18 +1070,18 @@ fn test_alt_left_click_toggles_pane_group() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let _output = Output::default();
 
     // Create a vertical split
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Left".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Right".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(2), Vec::from("Right".as_bytes()))
         .unwrap();
 
     // Alt+click on a pane to toggle group
@@ -1075,7 +1096,7 @@ fn test_alt_left_click_toggles_pane_group() {
     assert!(effect.group_toggle.is_some());
     assert_eq!(
         effect.group_toggle,
-        Some(PaneId::Terminal(crate::TerminalId(1)))
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
     );
 }
 
@@ -1085,10 +1106,10 @@ fn test_alt_left_drag_adds_panes_to_group() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId(3));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(3));
     let _output = Output::default();
 
     // Create two vertical splits (3 panes)
@@ -1097,11 +1118,11 @@ fn test_alt_left_drag_adds_panes_to_group() {
     tab.vertical_split(new_pane_id_3, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Pane 1".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Pane 1".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Pane 2".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(2), Vec::from("Pane 2".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("Pane 3".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("Pane 3".as_bytes()))
         .unwrap();
 
     // Alt+press on first pane
@@ -1142,18 +1163,18 @@ fn test_right_alt_click_ungroups_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let _output = Output::default();
 
     // Create a vertical split
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Left".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Right".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(2), Vec::from("Right".as_bytes()))
         .unwrap();
 
     // First, create a group with Alt+click
@@ -1181,7 +1202,7 @@ fn alt_click_is_forwarded_to_a_pane_the_client_is_descended_into() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -1192,7 +1213,7 @@ fn alt_click_is_forwarded_to_a_pane_the_client_is_descended_into() {
     pty_instruction_bus.start();
 
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("\u{1b}[?1002h\u{1b}[?1006h".as_bytes()),
     )
     .unwrap();
@@ -1201,7 +1222,7 @@ fn alt_click_is_forwarded_to_a_pane_the_client_is_descended_into() {
         .handle_mouse_event_with_passthrough(
             &MouseEvent::new_left_press_with_alt_event(Position::new(5, 71)),
             client_id,
-            Some(PaneId::Terminal(crate::TerminalId(1))),
+            Some(PaneId::Terminal(crate::TerminalId::new(1))),
         )
         .unwrap();
 
@@ -1232,7 +1253,7 @@ fn alt_click_still_groups_a_mouse_tracking_pane_the_client_is_not_descended_into
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -1243,7 +1264,7 @@ fn alt_click_still_groups_a_mouse_tracking_pane_the_client_is_not_descended_into
     pty_instruction_bus.start();
 
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("\u{1b}[?1002h\u{1b}[?1006h".as_bytes()),
     )
     .unwrap();
@@ -1260,7 +1281,7 @@ fn alt_click_still_groups_a_mouse_tracking_pane_the_client_is_not_descended_into
 
     assert_eq!(
         effect.group_toggle,
-        Some(PaneId::Terminal(crate::TerminalId(1))),
+        Some(PaneId::Terminal(crate::TerminalId::new(1))),
         "without a descend, alt click keeps grouping panes even when the pane tracks the mouse"
     );
     assert!(
@@ -1275,7 +1296,7 @@ fn alt_wheel_up_is_forwarded_to_a_pane_the_client_is_descended_into() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -1286,7 +1307,7 @@ fn alt_wheel_up_is_forwarded_to_a_pane_the_client_is_descended_into() {
     pty_instruction_bus.start();
 
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("\u{1b}[?1002h\u{1b}[?1006h".as_bytes()),
     )
     .unwrap();
@@ -1294,7 +1315,7 @@ fn alt_wheel_up_is_forwarded_to_a_pane_the_client_is_descended_into() {
     tab.handle_mouse_event_with_passthrough(
         &MouseEvent::new_alt_scroll_up_event(Position::new(5, 71)),
         client_id,
-        Some(PaneId::Terminal(crate::TerminalId(1))),
+        Some(PaneId::Terminal(crate::TerminalId::new(1))),
     )
     .unwrap();
 
@@ -1328,7 +1349,7 @@ fn alt_wheel_over_a_mouse_tracking_pane_is_forwarded_instead_of_jumping_prompts(
             cols: 121,
             rows: 20,
         };
-        let client_id = ClientId(1);
+        let client_id = ClientId::new(1);
 
         let mut pty_instruction_bus = MockPtyInstructionBus::new();
         let mut tab = create_new_tab_with_mock_pty_writer(
@@ -1339,11 +1360,11 @@ fn alt_wheel_over_a_mouse_tracking_pane_is_forwarded_instead_of_jumping_prompts(
         pty_instruction_bus.start();
 
         tab.handle_pty_bytes(
-            crate::TerminalId(1),
+            crate::TerminalId::new(1),
             format!("\u{1b}[?1002h{encoding}").into_bytes(),
         )
         .unwrap();
-        tab.handle_pty_bytes(crate::TerminalId(1), twenty_marked_commands())
+        tab.handle_pty_bytes(crate::TerminalId::new(1), twenty_marked_commands())
             .unwrap();
 
         tab.handle_mouse_event_with_passthrough(
@@ -1361,7 +1382,7 @@ fn alt_wheel_over_a_mouse_tracking_pane_is_forwarded_instead_of_jumping_prompts(
             "a pane that tracks the mouse receives alt wheel just like a plain wheel"
         );
         assert!(
-            !tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId(1)))
+            !tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
                 .map(|pane| pane.is_scrolled())
                 .unwrap_or(false),
             "a forwarded alt wheel must not also scroll the host pane"
@@ -1375,13 +1396,13 @@ fn alt_wheel_jumps_between_prompts_of_the_pane_below_the_cursor() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    tab.handle_pty_bytes(crate::TerminalId(1), twenty_marked_commands())
+    tab.handle_pty_bytes(crate::TerminalId::new(1), twenty_marked_commands())
         .unwrap();
 
     let pane_is_scrolled = |tab: &Tab| {
-        tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId(1)))
+        tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
             .map(|pane| pane.is_scrolled())
             .unwrap_or(false)
     };
@@ -1414,10 +1435,10 @@ fn alt_wheel_is_swallowed_when_advanced_mouse_actions_are_disabled() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     tab.update_advanced_mouse_actions(false);
-    tab.handle_pty_bytes(crate::TerminalId(1), twenty_marked_commands())
+    tab.handle_pty_bytes(crate::TerminalId::new(1), twenty_marked_commands())
         .unwrap();
 
     tab.handle_mouse_event(
@@ -1427,7 +1448,7 @@ fn alt_wheel_is_swallowed_when_advanced_mouse_actions_are_disabled() {
     .unwrap();
 
     assert!(
-        !tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId(1)))
+        !tab.get_pane_with_id(PaneId::Terminal(crate::TerminalId::new(1)))
             .map(|pane| pane.is_scrolled())
             .unwrap_or(false),
         "alt wheel must be swallowed when advanced mouse actions are disabled"
@@ -1440,7 +1461,7 @@ fn test_scroll_wheel_up_scrolls_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
 
@@ -1449,7 +1470,7 @@ fn test_scroll_wheel_up_scrolls_pane() {
     for i in 0..50 {
         content.push_str(&format!("Line {}\r\n", i));
     }
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from(content.as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from(content.as_bytes()))
         .unwrap();
 
     // Render before scroll
@@ -1490,7 +1511,7 @@ fn test_scroll_wheel_down_scrolls_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let _output = Output::default();
 
@@ -1499,7 +1520,7 @@ fn test_scroll_wheel_down_scrolls_pane() {
     for i in 0..50 {
         content.push_str(&format!("Line {}\r\n", i));
     }
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from(content.as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from(content.as_bytes()))
         .unwrap();
 
     // First scroll up to have content above viewport
@@ -1558,9 +1579,9 @@ fn test_scroll_on_inactive_pane_scrolls_that_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     // Create a vertical split
@@ -1572,20 +1593,20 @@ fn test_scroll_on_inactive_pane_scrolls_that_pane() {
     for i in 0..50 {
         content.push_str(&format!("Left Line {}\r\n", i));
     }
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from(content.as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from(content.as_bytes()))
         .unwrap();
 
     let mut content = String::new();
     for i in 0..50 {
         content.push_str(&format!("Right Line {}\r\n", i));
     }
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from(content.as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(2), Vec::from(content.as_bytes()))
         .unwrap();
 
     // Active pane is pane 2 (right), scroll on pane 1 (left)
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 
     // Render before scroll
@@ -1626,12 +1647,15 @@ fn test_right_click_forwards_to_active_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let _output = Output::default();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Active pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(1),
+        Vec::from("Active pane".as_bytes()),
+    )
+    .unwrap();
 
     // Right click on the active pane
     let effect = tab
@@ -1652,12 +1676,15 @@ fn test_middle_click_forwards_to_active_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let _output = Output::default();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Active pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(1),
+        Vec::from("Active pane".as_bytes()),
+    )
+    .unwrap();
 
     // Middle click on the active pane
     let effect = tab
@@ -1677,24 +1704,24 @@ fn test_hover_over_inactive_pane_sets_hover_state() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let _output = Output::default();
 
     // Create a vertical split
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Left".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Right".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(2), Vec::from("Right".as_bytes()))
         .unwrap();
 
     // Active pane is pane 2 (right)
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 
     // Hover over inactive pane (left) with buttonless motion
@@ -1716,24 +1743,24 @@ fn test_hover_over_active_pane_unsets_hover() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let _output = Output::default();
 
     // Create a vertical split
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Left".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Right".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(2), Vec::from("Right".as_bytes()))
         .unwrap();
 
     // Active pane is pane 2 (right)
     assert_eq!(
         tab.get_active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 
     // Hover over inactive pane (left) with buttonless motion
@@ -1762,20 +1789,26 @@ fn test_resize_tiled_then_move_floating_sequence() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let tiled_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    let floating_pane_id = PaneId::Terminal(crate::TerminalId(3));
+    let tiled_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    let floating_pane_id = PaneId::Terminal(crate::TerminalId::new(3));
     let _output = Output::default();
 
     // Create tiled split
     tab.vertical_split(tiled_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Tiled Left".as_bytes()))
-        .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Tiled Right".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(1),
+        Vec::from("Tiled Left".as_bytes()),
+    )
+    .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Tiled Right".as_bytes()),
+    )
+    .unwrap();
 
     // Resize tiled pane with Ctrl+drag
     let edge_position = Position::new(5, 60);
@@ -1814,7 +1847,7 @@ fn test_resize_tiled_then_move_floating_sequence() {
     )
     .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(3), Vec::from("Floating".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(3), Vec::from("Floating".as_bytes()))
         .unwrap();
 
     // Move floating pane
@@ -1856,9 +1889,9 @@ fn test_alt_click_works_on_floating_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let floating_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let floating_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let _output = Output::default();
 
     // Toggle floating panes mode and create a floating pane
@@ -1876,8 +1909,11 @@ fn test_alt_click_works_on_floating_panes() {
     )
     .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Floating pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Floating pane".as_bytes()),
+    )
+    .unwrap();
 
     // Alt+click on floating pane to toggle group
     let effect = tab
@@ -1891,7 +1927,7 @@ fn test_alt_click_works_on_floating_panes() {
     assert!(effect.group_toggle.is_some());
     assert_eq!(
         effect.group_toggle,
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 }
 
@@ -1901,18 +1937,18 @@ fn test_left_click_on_tiled_frame_edge_starts_resize() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let _output = Output::default();
 
     // Create a vertical split
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Left".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Right".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(2), Vec::from("Right".as_bytes()))
         .unwrap();
 
     // Click on the edge between panes (without Ctrl)
@@ -1931,9 +1967,9 @@ fn test_left_click_on_floating_frame_not_on_pin_moves_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let floating_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let floating_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -1950,8 +1986,11 @@ fn test_left_click_on_floating_frame_not_on_pin_moves_pane() {
     )
     .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Movable pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Movable pane".as_bytes()),
+    )
+    .unwrap();
 
     tab.render(&mut output, None).unwrap();
     let snapshot_before = take_snapshot(
@@ -2000,18 +2039,21 @@ fn test_ctrl_scroll_up_on_active_tiled_pane_increases_pane_size() {
         cols: 120,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Left pane".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left pane".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Right pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Right pane".as_bytes()),
+    )
+    .unwrap();
 
     tab.render(&mut output, None).unwrap();
     let snapshot_before = take_snapshot(
@@ -2050,18 +2092,21 @@ fn test_ctrl_scroll_down_on_active_tiled_pane_decreases_pane_size() {
         cols: 120,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Left pane".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left pane".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Right pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Right pane".as_bytes()),
+    )
+    .unwrap();
 
     tab.render(&mut output, None).unwrap();
     let snapshot_before = take_snapshot(
@@ -2100,18 +2145,21 @@ fn test_ctrl_scroll_up_on_inactive_tiled_pane_increases_active_tiled_pane_size()
         cols: 120,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Left pane".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left pane".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Right pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Right pane".as_bytes()),
+    )
+    .unwrap();
 
     tab.render(&mut output, None).unwrap();
     let snapshot_before = take_snapshot(
@@ -2150,18 +2198,21 @@ fn test_ctrl_scroll_down_on_inactive_tiled_pane_decreases_active_tiled_pane_size
         cols: 120,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Left pane".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left pane".as_bytes()))
         .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Right pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Right pane".as_bytes()),
+    )
+    .unwrap();
 
     tab.render(&mut output, None).unwrap();
     let snapshot_before = take_snapshot(
@@ -2200,9 +2251,9 @@ fn test_ctrl_scroll_up_increases_floating_pane_size() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -2219,10 +2270,16 @@ fn test_ctrl_scroll_up_increases_floating_pane_size() {
     )
     .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Tiled pane".as_bytes()))
-        .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Floating pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(1),
+        Vec::from("Tiled pane".as_bytes()),
+    )
+    .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Floating pane".as_bytes()),
+    )
+    .unwrap();
 
     tab.render(&mut output, None).unwrap();
     let snapshot_before = take_snapshot(
@@ -2261,9 +2318,9 @@ fn test_ctrl_scroll_down_decreases_floating_pane_size() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     tab.toggle_floating_panes(Some(client_id), None, None)
@@ -2280,10 +2337,16 @@ fn test_ctrl_scroll_down_decreases_floating_pane_size() {
     )
     .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Tiled pane".as_bytes()))
-        .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Floating pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(1),
+        Vec::from("Tiled pane".as_bytes()),
+    )
+    .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Floating pane".as_bytes()),
+    )
+    .unwrap();
 
     tab.render(&mut output, None).unwrap();
     let snapshot_before = take_snapshot(
@@ -2322,9 +2385,9 @@ fn test_ctrl_scroll_up_increases_pinned_floating_pane_size_when_floating_panes_h
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     let coordinates = FloatingPaneCoordinates {
@@ -2348,10 +2411,16 @@ fn test_ctrl_scroll_up_increases_pinned_floating_pane_size_when_floating_panes_h
     )
     .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Tiled pane".as_bytes()))
-        .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Floating pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(1),
+        Vec::from("Tiled pane".as_bytes()),
+    )
+    .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Floating pane".as_bytes()),
+    )
+    .unwrap();
 
     tab.render(&mut output, None).unwrap();
     let snapshot_before = take_snapshot(
@@ -2390,9 +2459,9 @@ fn test_ctrl_scroll_down_decreases_pinned_floating_pane_size_when_floating_panes
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     let coordinates = FloatingPaneCoordinates {
@@ -2416,10 +2485,16 @@ fn test_ctrl_scroll_down_decreases_pinned_floating_pane_size_when_floating_panes
     )
     .unwrap();
 
-    tab.handle_pty_bytes(crate::TerminalId(1), Vec::from("Tiled pane".as_bytes()))
-        .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("Floating pane".as_bytes()))
-        .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(1),
+        Vec::from("Tiled pane".as_bytes()),
+    )
+    .unwrap();
+    tab.handle_pty_bytes(
+        crate::TerminalId::new(2),
+        Vec::from("Floating pane".as_bytes()),
+    )
+    .unwrap();
 
     tab.render(&mut output, None).unwrap();
     let snapshot_before = take_snapshot(
@@ -2460,9 +2535,9 @@ fn test_ctrl_scroll_up_does_not_resize_pane_when_mouse_scroll_resize_disabled() 
         cols: 120,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
@@ -2490,9 +2565,9 @@ fn test_ctrl_scroll_down_does_not_resize_pane_when_mouse_scroll_resize_disabled(
         cols: 120,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     tab.vertical_split(new_pane_id, None, client_id, None, None)
         .unwrap();
@@ -2520,7 +2595,7 @@ fn test_ctrl_scroll_up_merging_stacks_preserves_all_panes() {
         cols: 150,
         rows: 40,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let mut tab = create_new_tab_with_stacked_pane_list(
         size,
@@ -2601,11 +2676,11 @@ fn adding_stacked_pane_in_stack_list_mode_moves_existing_pane_to_suppressed_imme
         cols: 121,
         rows: 40,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab_with_stacked_pane_list(size, ModeInfo::default(), true, None);
 
     // Add a second tiled pane so we have a real stack candidate.
-    let existing_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let existing_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     tab.new_pane(
         existing_pane_id,
         None,
@@ -2624,7 +2699,7 @@ fn adding_stacked_pane_in_stack_list_mode_moves_existing_pane_to_suppressed_imme
     assert!(!tab.suppressed_panes.contains_key(&existing_pane_id));
 
     // Now add a stacked pane on top of the active pane (pane 2).
-    let stacked_pane_id = PaneId::Terminal(crate::TerminalId(3));
+    let stacked_pane_id = PaneId::Terminal(crate::TerminalId::new(3));
     tab.new_pane(
         stacked_pane_id,
         None,
@@ -2676,7 +2751,7 @@ fn test_ctrl_scroll_down_in_stack_dissolves_stack_lists_before_mutation() {
         cols: 150,
         rows: 40,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut output = Output::default();
     let mut tab = create_new_tab_with_stacked_pane_list(
         size,
@@ -2722,11 +2797,11 @@ fn resize_hint_text_tracks_mouse_scroll_resize_updates() {
         cols: 120,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
 
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         client_id,
         None,
@@ -2759,10 +2834,10 @@ fn a_focused_modal_is_not_told_how_to_resize_itself() {
         cols: 120,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         client_id,
         None,
@@ -2775,7 +2850,7 @@ fn a_focused_modal_is_not_told_how_to_resize_itself() {
         "pre-condition: an ordinary focused pane does get the resize hint"
     );
 
-    let modal = PaneId::Terminal(crate::TerminalId(3));
+    let modal = PaneId::Terminal(crate::TerminalId::new(3));
     tab.new_pane(
         modal,
         None,
@@ -2814,10 +2889,10 @@ fn a_suspended_pane_says_how_to_resume_itself() {
         cols: 120,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         client_id,
         None,
@@ -2853,13 +2928,13 @@ fn in_place_pane_with_close_replaced_pane_false_restores_original() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
 
     // Create a second tiled pane so closing the in-place pane doesn't leave an empty tab
     tab.new_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
@@ -2875,22 +2950,22 @@ fn in_place_pane_with_close_replaced_pane_false_restores_original() {
 
     // Write distinguishing content to each pane
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("\n\n\nI am pane one".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\nI am pane two".as_bytes()),
     )
     .unwrap();
 
     // Open pane 3 in-place of pane 2 without closing the replaced pane (suppress it)
     tab.new_in_place_pane(
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
         None,
-        Some(PaneId::Terminal(crate::TerminalId(2))),
+        Some(PaneId::Terminal(crate::TerminalId::new(2))),
         false, // close_replaced_pane
         Some(client_id),
         None,
@@ -2898,13 +2973,13 @@ fn in_place_pane_with_close_replaced_pane_false_restores_original() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         Vec::from("\n\n\nI am the in-place pane".as_bytes()),
     )
     .unwrap();
 
     // Close the in-place pane — pane 2 should be restored
-    tab.close_pane(PaneId::Terminal(crate::TerminalId(3)), false, None);
+    tab.close_pane(PaneId::Terminal(crate::TerminalId::new(3)), false, None);
 
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(
@@ -2925,13 +3000,13 @@ fn in_place_pane_with_close_replaced_pane_true_closes_original() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
 
     // Create a second tiled pane
     tab.new_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
@@ -2946,22 +3021,22 @@ fn in_place_pane_with_close_replaced_pane_true_closes_original() {
     .unwrap();
 
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("\n\n\nI am pane one".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\nI am pane two".as_bytes()),
     )
     .unwrap();
 
     // Open pane 3 in-place of pane 2, closing the replaced pane permanently
     tab.new_in_place_pane(
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
         None,
-        Some(PaneId::Terminal(crate::TerminalId(2))),
+        Some(PaneId::Terminal(crate::TerminalId::new(2))),
         true, // close_replaced_pane
         Some(client_id),
         None,
@@ -2969,13 +3044,13 @@ fn in_place_pane_with_close_replaced_pane_true_closes_original() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         Vec::from("\n\n\nI am the in-place pane".as_bytes()),
     )
     .unwrap();
 
     // Close the in-place pane — pane 2 should NOT be restored (it was closed)
-    tab.close_pane(PaneId::Terminal(crate::TerminalId(3)), false, None);
+    tab.close_pane(PaneId::Terminal(crate::TerminalId::new(3)), false, None);
 
     tab.render(&mut output, None).unwrap();
     let snapshot = take_snapshot(

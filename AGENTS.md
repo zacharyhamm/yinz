@@ -29,7 +29,7 @@ the target dir leaves them with no builtins. Symlink `target/` instead. See CONT
 
 Builtin plugin wasm is not checked in: it is built under `target/wasm32-wasip1/` and
 installed by `cargo x install` to `<data dir>/builtins/<version>` (`--builtins-dir`,
-`--no-builtins` to override). `zellij-utils/assets/plugins/` holds only the Lua builtins.
+`--no-builtins` to override). `zellij-config/assets/plugins/` holds only the Lua builtins.
 
 **There is no CI in this fork.** `.github/workflows` was deleted deliberately (`c456d1cdf`), so
 nothing checks a branch unless a person runs it. The gate is:
@@ -94,12 +94,12 @@ the default finishing move.
 Escalate to the full `cargo x test` (and `cargo x integration-test`) when the change reaches
 past one crate:
 
-- `zellij-utils/` — IPC contracts, config/KDL parsing, errors, plugin API; nearly everything
-  depends on it
-- `zellij-utils/src/plugin_data_store/` — also run `cargo x postgres-test`: the same test files
+- The shared libraries (`zellij-types`, `zellij-runtime`, `zellij-config`, `zellij-plugin-api`,
+  `zellij-ipc`, `zellij-session`, `zellij-cli`, `zellij-storage`) — changes can reach every consumer
+- `zellij-storage/src/plugin_data_store/` — also run `cargo x postgres-test`: the same test files
   run against SQLite and Postgres, and only the Postgres half needs a server
-- `zellij-tile/`, `zellij-tile-utils/`, or anything under `zellij-utils/assets/` (protobufs,
-  embedded plugins — also regenerate with `cargo x proto`)
+- `zellij-tile/`, `zellij-tile-utils/`, or assets under `zellij-config/`, `zellij-plugin-api/`,
+  or `zellij-ipc/` (regenerate changed protobufs with `cargo x proto`)
 - the render path in `zellij-server/` (grid, panes, output), which the `insta` snapshots and
   integration tests cover broadly
 - screen/tab/pty plumbing that both plugins and the client sit on
@@ -218,7 +218,9 @@ Benchmarks: see `.claude/skills/bench/SKILL.md` (`cargo x bench`).
 | `zellij-process/` | pane supervisors, local/remote protocols, SSH broker, Firecracker provider |
 | `zellij-terminal/` | terminal emulation, graphics, output serialization, host queries, component parsing |
 | `zellij-client/` | input handling and terminal I/O |
-| `zellij-utils/` | shared: IPC contracts, config/KDL parsing, errors, plugin API |
+| `zellij-types/`, `zellij-runtime/`, `zellij-storage/` | shared models, host services, persistence |
+| `zellij-config/`, `zellij-plugin-api/`, `zellij-ipc/` | config parsing, plugin wire API, client/server transport |
+| `zellij-session/`, `zellij-cli/` | session lifecycle and serialization, command-line interpretation |
 | `zellij-tile/`, `zellij-tile-utils/` | plugin-facing API |
 | `default-plugins/*` | builtin plugins, each a wasm crate |
 | `zellij-integration-tests/` | whole-app tests |
@@ -236,7 +238,7 @@ and which have not. Read it before touching plugin event delivery or the plugin 
 
 ## Conventions
 
-- **Errors**: return `Result`, don't `unwrap`. `use zellij_utils::errors::prelude::*;`,
+- **Errors**: return `Result`, don't `unwrap`. `use zellij_runtime::errors::prelude::*;`,
   `.context(...)` every `Result`, `anyhow!()` for ad-hoc. Log with `.non_fatal()`
   rather than `log::error!`. Full rules: `docs/ERROR_HANDLING.md`.
 - **Tests** live next to the code in `unit/` dirs (e.g. `zellij-server/src/unit/`), not
@@ -245,7 +247,8 @@ and which have not. Read it before touching plugin event delivery or the plugin 
 - **Logs** while debugging: `$TMPDIR/zellij-<UID>/zellij-log/zellij.log` (truncated at
   100KB). `--debug` also dumps raw pty bytes per pane.
 - Toolchain is `stable` per `rust-toolchain.toml`; no MSRV policy.
-- Changing protobufs under `zellij-utils/assets/`: regenerate with `cargo x proto`.
+- Changing protobufs under `zellij-plugin-api/assets/` or `zellij-ipc/assets/`: regenerate with
+  `cargo x proto`.
 
 ## Self-programming
 
@@ -262,7 +265,7 @@ at Postgres, one database serves every machine. Two rules follow, and both bite 
 - **A row about a running server names it.** `host_id` *and* `zellij_session_name` — the pair
   `hocus_proto::agents::rows::Owner` carries. Never scope by session alone: two machines can each
   run a session called `main`, and a pane id means nothing outside the server that allocated it.
-  The id comes from `zellij_utils::host_identity`, resolved once at server startup and read by
+  The id comes from `zellij_runtime::host_identity`, resolved once at server startup and read by
   plugins off `PluginIds.host_id`. Carry it; do not call `get_plugin_ids()` from library code,
   which reads real stdin in a native test binary. An **empty** `host_id` is a row from before the
   column, backfilled by the migration, and what to do with one differs per entity: a run or an
@@ -294,7 +297,7 @@ A `claude` or a `codex` running in a pane can report its own busy/waiting/idle s
 being guessed at from its screen — `zellij hocus hooks install` wires both agents' hooks to
 `zellij action agent-report`, which sets the pane's agent record (`PaneInfo.agent`) for every
 reader of the manifest and broadcasts the event itself to the plugins. See `docs/AGENT_HOOKS.md`. Unrelated to the `hooks { … }` config block
-(`zellij-utils/src/input/hooks.rs`), which binds a plugin to a moment in the session.
+(`zellij-types/src/input/hooks.rs`), which binds a plugin to a moment in the session.
 
 ## Lua plugins
 

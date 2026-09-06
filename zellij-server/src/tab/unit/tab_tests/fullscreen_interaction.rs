@@ -3,7 +3,7 @@ use super::*;
 #[test]
 pub fn opening_new_pane_while_fullscreen_unsets_fullscreen() {
     let mut tab = create_tab_with_four_panes();
-    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
+    tab.toggle_active_pane_fullscreen(crate::ClientId::new(1));
     assert!(tab.is_fullscreen_active(), "Fullscreen active before split");
     open_pane_five(&mut tab);
 
@@ -28,7 +28,7 @@ pub fn opening_new_pane_while_fullscreen_unsets_fullscreen() {
 #[test]
 pub fn opening_new_pane_while_no_ui_fullscreen_unsets_fullscreen() {
     let mut tab = create_tab_with_four_panes();
-    tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId(1));
+    tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId::new(1));
     assert!(
         tab.fullscreen_covers_ui(),
         "NoUi fullscreen active before split"
@@ -60,12 +60,12 @@ pub fn opening_new_pane_while_no_ui_fullscreen_unsets_fullscreen() {
 #[test]
 pub fn closing_the_fullscreen_pane_restores_remaining_layout() {
     let mut tab_without_fullscreen = create_tab_with_four_panes();
-    tab_without_fullscreen.close_pane(PaneId::Terminal(crate::TerminalId(4)), false, None);
+    tab_without_fullscreen.close_pane(PaneId::Terminal(crate::TerminalId::new(4)), false, None);
 
     let mut tab = create_tab_with_four_panes();
-    tab.toggle_active_pane_fullscreen(crate::ClientId(1));
+    tab.toggle_active_pane_fullscreen(crate::ClientId::new(1));
     assert!(tab.is_fullscreen_active(), "Fullscreen active before close");
-    tab.close_pane(PaneId::Terminal(crate::TerminalId(4)), false, None);
+    tab.close_pane(PaneId::Terminal(crate::TerminalId::new(4)), false, None);
 
     assert!(
         !tab.is_fullscreen_active(),
@@ -81,15 +81,15 @@ pub fn closing_the_fullscreen_pane_restores_remaining_layout() {
 #[test]
 pub fn closing_the_no_ui_fullscreen_pane_restores_remaining_layout() {
     let mut tab_without_fullscreen = create_tab_with_four_panes();
-    tab_without_fullscreen.close_pane(PaneId::Terminal(crate::TerminalId(4)), false, None);
+    tab_without_fullscreen.close_pane(PaneId::Terminal(crate::TerminalId::new(4)), false, None);
 
     let mut tab = create_tab_with_four_panes();
-    tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId(1));
+    tab.toggle_active_pane_no_ui_fullscreen(crate::ClientId::new(1));
     assert!(
         tab.fullscreen_covers_ui(),
         "NoUi fullscreen active before close"
     );
-    tab.close_pane(PaneId::Terminal(crate::TerminalId(4)), false, None);
+    tab.close_pane(PaneId::Terminal(crate::TerminalId::new(4)), false, None);
 
     assert!(
         !tab.is_fullscreen_active(),
@@ -120,11 +120,11 @@ pub fn closing_fullscreen_scrollback_editor_restores_consistent_layout() {
         rows: 20,
     };
     let stacked_resize = false;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, stacked_resize);
     for i in 2..5 {
         tab.new_pane(
-            PaneId::Terminal(crate::TerminalId(i)),
+            PaneId::Terminal(crate::TerminalId::new(i)),
             None,
             None,
             false,
@@ -139,7 +139,7 @@ pub fn closing_fullscreen_scrollback_editor_restores_consistent_layout() {
         .get_active_pane_id(client_id)
         .expect("active pane exists before opening editor");
 
-    let editor_pane_id = PaneId::Terminal(crate::TerminalId(99));
+    let editor_pane_id = PaneId::Terminal(crate::TerminalId::new(99));
     tab.replace_active_pane_with_editor_pane(editor_pane_id, client_id)
         .unwrap();
     assert_eq!(
@@ -225,11 +225,11 @@ pub fn opening_scrollback_editor_on_fullscreen_pane_retargets_fullscreen() {
         rows: 20,
     };
     let stacked_resize = false;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, stacked_resize);
     for i in 2..5 {
         tab.new_pane(
-            PaneId::Terminal(crate::TerminalId(i)),
+            PaneId::Terminal(crate::TerminalId::new(i)),
             None,
             None,
             false,
@@ -251,7 +251,7 @@ pub fn opening_scrollback_editor_on_fullscreen_pane_retargets_fullscreen() {
         "fullscreen tracks the original pane",
     );
 
-    let editor_pane_id = PaneId::Terminal(crate::TerminalId(99));
+    let editor_pane_id = PaneId::Terminal(crate::TerminalId::new(99));
     tab.replace_active_pane_with_editor_pane(editor_pane_id, client_id)
         .unwrap();
     assert!(
@@ -312,66 +312,68 @@ fn switch_to_next_pane_fullscreen() {
 
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(1)),
+            PaneId::Terminal(crate::TerminalId::new(1)),
             None,
             None,
             false,
             true,
             NewPanePlacement::default(),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             None,
             None,
             false,
             true,
             NewPanePlacement::default(),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(3)),
+            PaneId::Terminal(crate::TerminalId::new(3)),
             None,
             None,
             false,
             true,
             NewPanePlacement::default(),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(4)),
+            PaneId::Terminal(crate::TerminalId::new(4)),
             None,
             None,
             false,
             true,
             NewPanePlacement::default(),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
-    active_tab.toggle_active_pane_fullscreen(crate::ClientId(1));
+    active_tab.toggle_active_pane_fullscreen(crate::ClientId::new(1));
 
     // order is now 1 ->2 -> 3 -> 4 due to how new panes are inserted
 
-    active_tab.switch_next_pane_fullscreen(crate::ClientId(1));
-    active_tab.switch_next_pane_fullscreen(crate::ClientId(1));
-    active_tab.switch_next_pane_fullscreen(crate::ClientId(1));
-    active_tab.switch_next_pane_fullscreen(crate::ClientId(1));
+    active_tab.switch_next_pane_fullscreen(crate::ClientId::new(1));
+    active_tab.switch_next_pane_fullscreen(crate::ClientId::new(1));
+    active_tab.switch_next_pane_fullscreen(crate::ClientId::new(1));
+    active_tab.switch_next_pane_fullscreen(crate::ClientId::new(1));
 
     // position should now be back in terminal 4.
 
     assert_eq!(
-        active_tab.get_active_pane_id(crate::ClientId(1)).unwrap(),
-        PaneId::Terminal(crate::TerminalId(4)),
+        active_tab
+            .get_active_pane_id(crate::ClientId::new(1))
+            .unwrap(),
+        PaneId::Terminal(crate::TerminalId::new(4)),
         "Active pane did not switch in fullscreen mode"
     );
 }
@@ -389,65 +391,67 @@ fn switch_to_prev_pane_fullscreen() {
 
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(1)),
+            PaneId::Terminal(crate::TerminalId::new(1)),
             None,
             None,
             false,
             true,
             NewPanePlacement::default(),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             None,
             None,
             false,
             true,
             NewPanePlacement::default(),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(3)),
+            PaneId::Terminal(crate::TerminalId::new(3)),
             None,
             None,
             false,
             true,
             NewPanePlacement::default(),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(4)),
+            PaneId::Terminal(crate::TerminalId::new(4)),
             None,
             None,
             false,
             true,
             NewPanePlacement::default(),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
-    active_tab.toggle_active_pane_fullscreen(crate::ClientId(1));
+    active_tab.toggle_active_pane_fullscreen(crate::ClientId::new(1));
     // order is now 1 2 3 4
 
-    active_tab.switch_prev_pane_fullscreen(crate::ClientId(1));
-    active_tab.switch_prev_pane_fullscreen(crate::ClientId(1));
-    active_tab.switch_prev_pane_fullscreen(crate::ClientId(1));
-    active_tab.switch_prev_pane_fullscreen(crate::ClientId(1));
+    active_tab.switch_prev_pane_fullscreen(crate::ClientId::new(1));
+    active_tab.switch_prev_pane_fullscreen(crate::ClientId::new(1));
+    active_tab.switch_prev_pane_fullscreen(crate::ClientId::new(1));
+    active_tab.switch_prev_pane_fullscreen(crate::ClientId::new(1));
 
     // the position should now be in Terminal 4.
 
     assert_eq!(
-        active_tab.get_active_pane_id(crate::ClientId(1)).unwrap(),
-        PaneId::Terminal(crate::TerminalId(4)),
+        active_tab
+            .get_active_pane_id(crate::ClientId::new(1))
+            .unwrap(),
+        PaneId::Terminal(crate::TerminalId::new(4)),
         "Active pane did not switch in fullscreen mode"
     );
 }
@@ -465,73 +469,77 @@ fn switch_to_last_pane_fullscreen() {
 
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(1)),
+            PaneId::Terminal(crate::TerminalId::new(1)),
             None,
             None,
             false,
             true,
             NewPanePlacement::default(),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             None,
             None,
             false,
             true,
             NewPanePlacement::default(),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(3)),
+            PaneId::Terminal(crate::TerminalId::new(3)),
             None,
             None,
             false,
             true,
             NewPanePlacement::default(),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(4)),
+            PaneId::Terminal(crate::TerminalId::new(4)),
             None,
             None,
             false,
             true,
             NewPanePlacement::default(),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
-    active_tab.toggle_active_pane_fullscreen(crate::ClientId(1));
+    active_tab.toggle_active_pane_fullscreen(crate::ClientId::new(1));
 
     // order is now 1 2 3 4, current active is Terminal 4
 
-    active_tab.switch_last_pane_fullscreen(crate::ClientId(1));
+    active_tab.switch_last_pane_fullscreen(crate::ClientId::new(1));
 
     // the position should now be in Terminal 3
 
     assert_eq!(
-        active_tab.get_active_pane_id(crate::ClientId(1)).unwrap(),
-        PaneId::Terminal(crate::TerminalId(3)),
+        active_tab
+            .get_active_pane_id(crate::ClientId::new(1))
+            .unwrap(),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         "Active pane did not switch to the last pane in fullscreen mode"
     );
 
-    active_tab.switch_last_pane_fullscreen(crate::ClientId(1));
+    active_tab.switch_last_pane_fullscreen(crate::ClientId::new(1));
 
     // the position should now be back in Terminal 4
 
     assert_eq!(
-        active_tab.get_active_pane_id(crate::ClientId(1)).unwrap(),
-        PaneId::Terminal(crate::TerminalId(4)),
+        active_tab
+            .get_active_pane_id(crate::ClientId::new(1))
+            .unwrap(),
+        PaneId::Terminal(crate::TerminalId::new(4)),
         "Active pane did not switch to the last pane in fullscreen mode"
     );
 }

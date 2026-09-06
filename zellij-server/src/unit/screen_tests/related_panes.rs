@@ -10,8 +10,8 @@ use super::*;
 /// the other.
 fn screen_with_two_tabs() -> Screen {
     let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
     screen
 }
 
@@ -33,9 +33,18 @@ fn set_related(screen: &mut Screen, pane_ids: &[PaneId]) -> bool {
 #[test]
 fn a_pane_in_the_set_is_marked_and_one_outside_it_is_not() {
     let mut screen = screen_with_two_tabs();
-    assert!(set_related(&mut screen, &[PaneId::Terminal(TerminalId(1))]));
-    assert!(is_related(&mut screen, PaneId::Terminal(TerminalId(1))));
-    assert!(!is_related(&mut screen, PaneId::Terminal(TerminalId(2))));
+    assert!(set_related(
+        &mut screen,
+        &[PaneId::Terminal(TerminalId::new(1))]
+    ));
+    assert!(is_related(
+        &mut screen,
+        PaneId::Terminal(TerminalId::new(1))
+    ));
+    assert!(!is_related(
+        &mut screen,
+        PaneId::Terminal(TerminalId::new(2))
+    ));
 }
 
 /// The whole point of replace-the-whole-set: the sender says what is related *now* and is
@@ -47,14 +56,20 @@ fn a_new_set_takes_the_mark_off_everything_not_in_it() {
     set_related(
         &mut screen,
         &[
-            PaneId::Terminal(TerminalId(1)),
-            PaneId::Terminal(TerminalId(2)),
+            PaneId::Terminal(TerminalId::new(1)),
+            PaneId::Terminal(TerminalId::new(2)),
         ],
     );
 
-    set_related(&mut screen, &[PaneId::Terminal(TerminalId(2))]);
-    assert!(!is_related(&mut screen, PaneId::Terminal(TerminalId(1))));
-    assert!(is_related(&mut screen, PaneId::Terminal(TerminalId(2))));
+    set_related(&mut screen, &[PaneId::Terminal(TerminalId::new(2))]);
+    assert!(!is_related(
+        &mut screen,
+        PaneId::Terminal(TerminalId::new(1))
+    ));
+    assert!(is_related(
+        &mut screen,
+        PaneId::Terminal(TerminalId::new(2))
+    ));
 }
 
 /// The empty set is how a highlight is taken down - the daemon sends it whenever focus
@@ -65,14 +80,20 @@ fn the_empty_set_clears_every_mark() {
     set_related(
         &mut screen,
         &[
-            PaneId::Terminal(TerminalId(1)),
-            PaneId::Terminal(TerminalId(2)),
+            PaneId::Terminal(TerminalId::new(1)),
+            PaneId::Terminal(TerminalId::new(2)),
         ],
     );
 
     assert!(set_related(&mut screen, &[]));
-    assert!(!is_related(&mut screen, PaneId::Terminal(TerminalId(1))));
-    assert!(!is_related(&mut screen, PaneId::Terminal(TerminalId(2))));
+    assert!(!is_related(
+        &mut screen,
+        PaneId::Terminal(TerminalId::new(1))
+    ));
+    assert!(!is_related(
+        &mut screen,
+        PaneId::Terminal(TerminalId::new(2))
+    ));
 }
 
 /// The daemon republishes on every pane update, so most of these say exactly what the last
@@ -80,10 +101,13 @@ fn the_empty_set_clears_every_mark() {
 #[test]
 fn re_sending_the_same_set_reports_no_change() {
     let mut screen = screen_with_two_tabs();
-    assert!(set_related(&mut screen, &[PaneId::Terminal(TerminalId(1))]));
+    assert!(set_related(
+        &mut screen,
+        &[PaneId::Terminal(TerminalId::new(1))]
+    ));
     assert!(!set_related(
         &mut screen,
-        &[PaneId::Terminal(TerminalId(1))]
+        &[PaneId::Terminal(TerminalId::new(1))]
     ));
     assert!(
         set_related(&mut screen, &[]),
@@ -97,21 +121,24 @@ fn re_sending_the_same_set_reports_no_change() {
 #[test]
 fn a_pane_that_has_closed_takes_its_mark_with_it() {
     let mut screen = screen_with_two_tabs();
-    set_related(&mut screen, &[PaneId::Terminal(TerminalId(1))]);
+    set_related(&mut screen, &[PaneId::Terminal(TerminalId::new(1))]);
 
     let tab_id = *screen.tabs.keys().next().expect("a tab to close it in");
     screen.tabs.get_mut(&tab_id).expect("TEST").close_pane(
-        PaneId::Terminal(TerminalId(1)),
+        PaneId::Terminal(TerminalId::new(1)),
         false,
         None,
     );
     // The id is now free. A later set that does not name it must leave whatever takes it
     // next unmarked, which it does because the flag went away with the pane.
-    set_related(&mut screen, &[PaneId::Terminal(TerminalId(2))]);
-    assert!(is_related(&mut screen, PaneId::Terminal(TerminalId(2))));
+    set_related(&mut screen, &[PaneId::Terminal(TerminalId::new(2))]);
+    assert!(is_related(
+        &mut screen,
+        PaneId::Terminal(TerminalId::new(2))
+    ));
     assert!(
         screen
-            .with_pane(PaneId::Terminal(TerminalId(1)), |pane| pane
+            .with_pane(PaneId::Terminal(TerminalId::new(1)), |pane| pane
                 .has_related_highlight())
             .is_none(),
         "the closed pane is gone, mark and all"

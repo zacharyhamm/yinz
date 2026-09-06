@@ -1,6 +1,6 @@
 use std::{collections::HashSet, ops::Range};
 
-use zellij_utils::position::Position;
+use zellij_types::position::Position;
 
 // The selection is empty when start == end
 // it includes the character at start, and everything before end.

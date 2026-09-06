@@ -1175,14 +1175,10 @@ impl State {
                     let selected_pane = self.sessions.get_selected_pane_id();
                     let is_current_session = self.sessions.selected_is_current_session();
                     if is_current_session {
-                        if let Some((pane_id, is_plugin)) = selected_pane {
-                            if is_plugin {
-                                focus_plugin_pane(pane_id, true, false);
-                            } else {
-                                focus_terminal_pane(pane_id, true, false);
-                            }
+                        if let Some(pane_id) = selected_pane {
+                            focus_pane_with_id(pane_id, true, false);
                         } else if let Some(tab_position) = selected_tab {
-                            go_to_tab(tab_position as u32);
+                            go_to_tab(tab_position);
                         } else {
                             self.show_error("Already attached...");
                         }

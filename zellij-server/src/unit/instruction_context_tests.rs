@@ -15,9 +15,12 @@ use crate::pty_writer::PtyWriteInstruction;
 use crate::screen::ScreenInstruction;
 use crate::ServerInstruction;
 use std::str::FromStr;
-use zellij_utils::errors::{
-    BackgroundJobContext, PluginContext, PtyContext, PtyWriteContext, ScreenContext, ServerContext,
-};
+use zellij_types::diagnostics::BackgroundJobContext;
+use zellij_types::diagnostics::PluginContext;
+use zellij_types::diagnostics::PtyContext;
+use zellij_types::diagnostics::PtyWriteContext;
+use zellij_types::diagnostics::ScreenContext;
+use zellij_types::diagnostics::ServerContext;
 
 /// Generates the three guards for one instruction/context pair.
 ///

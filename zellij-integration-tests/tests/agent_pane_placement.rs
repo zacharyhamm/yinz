@@ -7,10 +7,10 @@
 //! one pane's share of it (1260 cells) already sits under the default 80x24 floor, so the first
 //! agent spawned is enough.
 
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{
     claim_first_terminal_and_wait_for_prompt, start_zellij, TestRunner, PROMPT, TERMINAL_SIZE,
 };
-use zellij_utils::cli::CliAction;
 
 fn new_pane_action(command: &[&str]) -> CliAction {
     CliAction::NewPane {

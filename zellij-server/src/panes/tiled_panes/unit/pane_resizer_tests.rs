@@ -5,8 +5,8 @@ use super::pane_resizer_test_mock::{
     PaneSpec, Run,
 };
 use crate::panes::PaneId;
-use zellij_utils::input::layout::SplitDirection;
-use zellij_utils::pane_size::{Constraint, PaneGeom};
+use zellij_types::geometry::SplitDirection;
+use zellij_types::pane_size::{Constraint, PaneGeom};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Class {
@@ -46,7 +46,7 @@ impl Fixture {
 }
 
 fn tid(id: u32) -> PaneId {
-    PaneId::Terminal(crate::TerminalId(id))
+    PaneId::Terminal(crate::TerminalId::new(id))
 }
 
 fn fixtures() -> Vec<Fixture> {
@@ -337,7 +337,7 @@ fn fixture(name: &str) -> Fixture {
 fn pane(run: &Run, id: u32) -> PaneSnapshot {
     *run.panes
         .iter()
-        .find(|p| p.id == PaneId::Terminal(crate::TerminalId(id)))
+        .find(|p| p.id == PaneId::Terminal(crate::TerminalId::new(id)))
         .unwrap_or_else(|| panic!("no snapshot for pane {}", id))
 }
 
@@ -933,14 +933,14 @@ fn any_pane_spec(tc: &hegel::TestCase, id: u32) -> PaneSpec {
     let percents = vec![0.0, 0.1, 1.0, 25.0, 33.3, 50.0, 60.0, 100.0, 150.0];
     let dimension = |tc: &hegel::TestCase| {
         if tc.draw(generators::booleans()) {
-            let mut d = zellij_utils::pane_size::Dimension::percent(
+            let mut d = zellij_types::pane_size::Dimension::percent(
                 tc.draw(generators::sampled_from(percents.clone())),
             );
             // a pane of size 0 is not a legal layout - the resizer rejects it outright
             d.set_inner(tc.draw(generators::integers::<usize>().min_value(1).max_value(200)));
             d
         } else {
-            zellij_utils::pane_size::Dimension::fixed(
+            zellij_types::pane_size::Dimension::fixed(
                 tc.draw(generators::integers::<usize>().min_value(1).max_value(200)),
             )
         }
@@ -948,7 +948,7 @@ fn any_pane_spec(tc: &hegel::TestCase, id: u32) -> PaneSpec {
     let cols = dimension(tc);
     let rows = dimension(tc);
     PaneSpec {
-        id: PaneId::Terminal(crate::TerminalId(id)),
+        id: PaneId::Terminal(crate::TerminalId::new(id)),
         x: tc.draw(generators::integers::<usize>().max_value(200)),
         y: tc.draw(generators::integers::<usize>().max_value(200)),
         cols,

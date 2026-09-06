@@ -4,23 +4,25 @@ use crate::{
     stdin_ansi_parser::AnsiStdinInstruction, ClientId, ClientInstruction, CommandIsExecuting,
     InputInstruction,
 };
-use zellij_utils::{
-    channels::{Receiver, SenderWithContext, OPENCALLS},
-    data::{InputMode, KeyWithModifier},
-    errors::{ContextType, ErrorContext, FatalError},
-    input::{
-        actions::Action,
-        cast_termwiz_key,
-        config::Config,
-        mouse::{MouseEvent, MouseEventType},
-        options::Options,
-    },
-    ipc::{ClientToServerMsg, ExitReason},
-    nested_session::{self, NestedSessionMessage},
-    position::Position,
-    vendored::termwiz::input::{
-        InputEvent, Modifiers, MouseButtons, MouseEvent as TermwizMouseEvent,
-    },
+use zellij_runtime::channels::Receiver;
+use zellij_runtime::channels::SenderWithContext;
+use zellij_runtime::channels::OPENCALLS;
+use zellij_runtime::errors::FatalError;
+use zellij_runtime::keys::cast_termwiz_key;
+use zellij_runtime::vendored::termwiz::input::InputEvent;
+use zellij_runtime::vendored::termwiz::input::Modifiers;
+use zellij_runtime::vendored::termwiz::input::MouseButtons;
+use zellij_runtime::vendored::termwiz::input::MouseEvent as TermwizMouseEvent;
+use zellij_types::diagnostics::ContextType;
+use zellij_types::diagnostics::ErrorContext;
+use zellij_types::keys::KeyWithModifier;
+use zellij_types::mouse::{MouseEvent, MouseEventType};
+use zellij_types::position::Position;
+use {
+    zellij_config::config::Config, zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ExitReason,
+    zellij_ipc::nested_session, zellij_ipc::nested_session::NestedSessionMessage,
+    zellij_types::data::InputMode, zellij_types::input::actions::Action,
+    zellij_types::input::options::Options,
 };
 
 /// Handles the dispatching of [`Action`]s according to the current
@@ -161,7 +163,7 @@ impl InputHandler {
     /// as [`Action`]s according to the current [`InputMode`], and dispatches those actions.
     fn handle_input(&mut self) {
         let mut err_ctx = OPENCALLS.with(|ctx| *ctx.borrow());
-        err_ctx.add_call(ContextType::StdinHandler);
+        zellij_runtime::errors::add_call(&mut err_ctx, ContextType::StdinHandler);
         let bracketed_paste_start = vec![27, 91, 50, 48, 48, 126]; // \u{1b}[200~
         let bracketed_paste_end = vec![27, 91, 50, 48, 49, 126]; // \u{1b}[201~
         if self.options.mouse_mode.unwrap_or(true) {
@@ -176,11 +178,12 @@ impl InputHandler {
                 Ok((InputInstruction::KeyEvent(input_event, raw_bytes), _error_context)) => {
                     match input_event {
                         InputEvent::Key(key_event) => {
-                            let key = cast_termwiz_key(
-                                key_event,
-                                &raw_bytes,
-                                Some((&self.config.keybinds, &self.mode)),
-                            );
+                            let key = cast_termwiz_key(key_event, &raw_bytes, |key| {
+                                self.config
+                                    .keybinds
+                                    .get_actions_for_key_in_mode(&self.mode, key)
+                                    .is_some_and(|actions| !actions.is_empty())
+                            });
                             self.handle_key(&key, raw_bytes, false);
                         },
                         InputEvent::Mouse(mouse_event) => {
@@ -340,7 +343,7 @@ impl InputHandler {
             AnsiStdinInstruction::ColorRegisters(color_registers) => {
                 let color_registers: Vec<_> = color_registers
                     .into_iter()
-                    .map(|(index, color)| zellij_utils::ipc::ColorRegister { index, color })
+                    .map(|(index, color)| zellij_ipc::ipc::ColorRegister { index, color })
                     .collect();
                 self.os_input
                     .send_to_server(ClientToServerMsg::ColorRegisters { color_registers });

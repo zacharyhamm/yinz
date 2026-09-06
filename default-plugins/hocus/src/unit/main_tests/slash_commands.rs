@@ -1,4 +1,5 @@
 use super::*;
+use zellij_tile::prelude::TabId;
 
 // -- manual `/tool` invocation ------------------------------------------
 
@@ -141,7 +142,7 @@ fn a_submitted_mention_carries_the_agent_context_with_it() {
     settle(&mut state);
     state.set_panes(terminal_panes(
         &manifest(vec![pane_info(3, "codex", Some("codex"))]),
-        &[tab_info(0, 9, "work")],
+        &[tab_info(0, TabId::new(9), "work")],
     ));
     state
         .input
@@ -369,7 +370,7 @@ fn a_bare_skill_and_a_mentioning_one() {
     settle(&mut state);
     state.set_panes(terminal_panes(
         &manifest(vec![pane_info(3, "codex", Some("codex"))]),
-        &[tab_info(0, 9, "work")],
+        &[tab_info(0, TabId::new(9), "work")],
     ));
     load_skill(
         &mut state,

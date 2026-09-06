@@ -11,6 +11,9 @@
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
 use std::collections::{BTreeMap, BTreeSet};
+use zellij_tile::prelude::DataRevision;
+use zellij_tile::prelude::SupervisorId;
+use zellij_tile::prelude::TabId;
 
 use hocus_proto::launch;
 use hocus_proto::location::Location;
@@ -354,7 +357,7 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
 /// approving the write can grant them and the plugin never prompts in its own pane - where the
 /// model, driving the write-reload-fix loop, cannot see or answer it.
 ///
-/// Read lexically by `zellij_utils::plugin_authoring`, which `zellij plugins write` reads them
+/// Read lexically by `zellij_plugin_api::authoring`, which `zellij plugins write` reads them
 /// with too: one parser, so a permission granted here and one granted from a shell cannot come
 /// out differently. A name zellij does not know is dropped rather than refused - the plugin's
 /// own call reports it - but [`lint`] says so before the write, since a dropped name is a
@@ -589,10 +592,14 @@ pub fn confirmation_target(call: &ToolCall) -> Option<PaneId> {
     match call.name.as_str() {
         // The agent tools address a terminal and say so: `agent_host_call`
         // rewrites them into pane-addressed primitives with `is_plugin: false`.
-        "agent_send" | "agent_control" => Some(PaneId::Terminal(pane_id)),
+        "agent_send" | "agent_control" => Some(PaneId::Terminal(
+            zellij_tile::prelude::TerminalId::new(pane_id),
+        )),
         "send_input" | "rerun_pane" | "clear_pane" => match args.is_plugin? {
-            true => Some(PaneId::Plugin(pane_id)),
-            false => Some(PaneId::Terminal(pane_id)),
+            true => Some(PaneId::Plugin(zellij_tile::prelude::PluginId::new(pane_id))),
+            false => Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(
+                pane_id,
+            ))),
         },
         _ => None,
     }
@@ -2483,16 +2490,16 @@ pub struct PaneRef {
 impl PaneRef {
     fn id(&self) -> PaneId {
         if self.is_plugin {
-            PaneId::Plugin(self.pane_id)
+            PaneId::Plugin(zellij_tile::prelude::PluginId::new(self.pane_id))
         } else {
-            PaneId::Terminal(self.pane_id)
+            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(self.pane_id))
         }
     }
 }
 
 #[derive(Debug, PartialEq)]
 pub enum MoveDestination {
-    ExistingId(usize),
+    ExistingId(TabId),
     New(Option<String>),
 }
 
@@ -2532,7 +2539,7 @@ struct PanePosition {
     id: PaneId,
     /// An option rather than a sentinel: panes with no tab would otherwise compare as
     /// "the same tab" in `plan_swap`.
-    tab_position: Option<usize>,
+    tab_position: Option<zellij_tile::prelude::TabPosition>,
     x: usize,
     y: usize,
     columns: usize,
@@ -2659,7 +2666,7 @@ fn adjacent_direction(first: &PanePosition, second: &PanePosition) -> Option<Pan
 pub struct Args {
     pub pane_id: Option<u32>,
     pub is_plugin: Option<bool>,
-    pub tab_id: Option<usize>,
+    pub tab_id: Option<TabId>,
     pub new_tab: bool,
     pub new_tab_name: Option<String>,
     pub panes: Vec<PaneRef>,
@@ -2730,7 +2737,7 @@ pub struct Args {
     /// The `rev` an edited item or note was read at, so a write composed from that reading is
     /// refused rather than landing on somebody else's. Spelled out rather than reusing
     /// `revision`, which is the `agent_run` timeline's position and means something else.
-    pub expect_rev: Option<i64>,
+    pub expect_rev: Option<DataRevision>,
     pub parent_id: Option<u64>,
     pub include_done: bool,
     pub all_projects: bool,
@@ -2761,7 +2768,7 @@ pub struct Args {
     // the Slack tools already own.
     pub from_session: Option<String>,
     pub placement: Option<String>,
-    pub host_id: Option<String>,
+    pub host_id: Option<SupervisorId>,
     // The file tools. `query` above is `search_files`'s pattern.
     pub path: Option<String>,
     pub pattern: Option<String>,
@@ -3088,14 +3095,14 @@ impl Args {
         }
     }
 
-    pub fn tab_target(&self) -> Result<usize, String> {
+    pub fn tab_target(&self) -> Result<TabId, String> {
         self.tab_id
             .ok_or_else(|| "tab_id is required; call list_session to get them".to_owned())
     }
 
     /// `focus` and `rename` take either a tab or a pane pair. `None` means the
     /// call named no tab at all, so the caller falls through to the pane path.
-    pub fn tab_or_pane_target(&self) -> Option<Result<usize, String>> {
+    pub fn tab_or_pane_target(&self) -> Option<Result<TabId, String>> {
         let tab_id = self.tab_id?;
         Some(if self.pane_id.is_some() || self.is_plugin.is_some() {
             Err("give exactly one of pane pair or tab_id".to_owned())
@@ -3307,8 +3314,8 @@ pub fn firecracker_panes(vm: &str, session: &str, current: &SessionInfo) -> Vec<
         .panes
         .values()
         .flatten()
-        .filter(|pane| !pane.is_plugin && pane.target.firecracker_vm() == Some(vm))
-        .map(|pane| pane.id)
+        .filter(|pane| !pane.is_plugin() && pane.target.firecracker_vm() == Some(vm))
+        .map(|pane| pane.id.legacy_parts().0)
         .collect();
     ids.sort_unstable();
     ids
@@ -4081,7 +4088,7 @@ fn glob_for(pattern: &str) -> String {
 
 /// Zellij hands back the stable id of the tab the panes landed in, which is
 /// exactly what every Hocus tab tool takes, so it goes straight to the model.
-fn moved_panes_result(tab_id: Option<usize>) -> String {
+fn moved_panes_result(tab_id: Option<TabId>) -> String {
     match tab_id {
         Some(id) => format!("moved to tab_id {id}"),
         None => "zellij did not move the panes; call list_session and check the pane ids and the \
@@ -4094,7 +4101,7 @@ fn moved_panes_result(tab_id: Option<usize>) -> String {
 #[derive(Debug, Default, PartialEq)]
 pub struct SessionTabs {
     /// The stable `tab_id` of every tab, in display order.
-    pub tabs: Vec<usize>,
+    pub tabs: Vec<TabId>,
     /// Every pane in the session's tabs, tabs flattened.
     pub panes: Vec<PaneId>,
 }
@@ -4191,8 +4198,8 @@ pub fn session_listing(session: &SessionInfo) -> Value {
                 .filter(|pane| !pane.is_suppressed)
                 .map(|pane| {
                     json!({
-                        "pane_id": pane.id,
-                        "is_plugin": pane.is_plugin,
+                        "pane_id": pane.id.legacy_parts().0,
+                        "is_plugin": pane.is_plugin(),
                         "title": pane.title,
                         "focused": pane.is_focused,
                         "floating": pane.is_floating,
@@ -4205,7 +4212,7 @@ pub fn session_listing(session: &SessionInfo) -> Value {
                 // A label, not an address: this is the number the tab bar
                 // shows the user, and it shifts whenever a tab closes.
                 // Every tool takes tab_id.
-                "tab_number": tab.position + 1,
+                "tab_number": tab.position.get() + 1,
                 "tab_id": tab.tab_id,
                 "name": tab.name,
                 "active": tab.active,
@@ -4229,7 +4236,10 @@ mod host {
 
     /// Write a pane's agent record to the session, for every reader of the manifest.
     pub fn report_pane_agent(pane_id: u32, agent: AgentInfo) {
-        set_pane_agent(PaneId::Terminal(pane_id), Some(agent));
+        set_pane_agent(
+            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+            Some(agent),
+        );
     }
 
     /// Write a plugin's source at `path` under `/plugins`, making its folder first. `Ok(false)`
@@ -4342,7 +4352,7 @@ mod host {
             },
             "rerun_pane" => match args.terminal_pane_id() {
                 Ok(id) => {
-                    rerun_command_pane(id);
+                    rerun_command_pane(TerminalId::new(id));
                     "rerun".to_owned()
                 },
                 Err(error) => error,
@@ -4358,7 +4368,7 @@ mod host {
             }),
             "close_tab" => match args.tab_target() {
                 Ok(id) => {
-                    close_tab_with_id(id as u64);
+                    close_tab_with_id(id);
                     "closed".to_owned()
                 },
                 Err(error) => error,
@@ -4371,8 +4381,10 @@ mod host {
     /// model to half-supply, so the check lives in one place.
     fn with_pane(args: &Args, body: impl FnOnce(PaneId) -> String) -> String {
         match (args.pane_id, args.is_plugin) {
-            (Some(id), Some(true)) => body(PaneId::Plugin(id)),
-            (Some(id), Some(false)) => body(PaneId::Terminal(id)),
+            (Some(id), Some(true)) => body(PaneId::Plugin(zellij_tile::prelude::PluginId::new(id))),
+            (Some(id), Some(false)) => {
+                body(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(id)))
+            },
             _ => {
                 "pane_id and is_plugin are both required; call list_session to get them".to_owned()
             },
@@ -4434,10 +4446,10 @@ mod host {
                             .map(Vec::as_slice)
                             .unwrap_or_default()
                             .iter()
-                            .filter(|pane| !pane.is_suppressed && !pane.is_plugin)
+                            .filter(|pane| !pane.is_suppressed && !pane.is_plugin())
                             .map(|pane| {
                                 json!({
-                                    "pane_id": pane.id,
+                                    "pane_id": pane.id.legacy_parts().0,
                                     "title": pane.title,
                                     "command": pane.terminal_command,
                                     "exit_status": pane.exit_status,
@@ -4447,7 +4459,7 @@ mod host {
                         // tab_id is what warp_tab_here takes; tab_number is only
                         // the label that session's tab bar shows.
                         json!({
-                            "tab_number": tab.position + 1,
+                            "tab_number": tab.position.get() + 1,
                             "tab_id": tab.tab_id,
                             "name": tab.name,
                             "panes": panes,
@@ -4500,7 +4512,11 @@ mod host {
             Err(error) => return error,
             Ok(true) => {},
         }
-        match warp_pane_from_session(PaneId::Terminal(pane_id), from_session, placement) {
+        match warp_pane_from_session(
+            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+            from_session,
+            placement,
+        ) {
             Ok(message) | Err(message) => message,
         }
     }
@@ -4561,7 +4577,7 @@ mod host {
     }
 
     fn adopt_orphaned_pane_tool(args: &Args) -> String {
-        let Some(host_id) = args.host_id.as_deref() else {
+        let Some(host_id) = args.host_id.as_ref() else {
             return "host_id is required; call list_orphaned_panes to get one".to_owned();
         };
         let placement = match args.placement() {
@@ -4750,7 +4766,7 @@ mod host {
     /// Load the plugin at `path` without a pane, as one shared instance for the session - or,
     /// when an instance is already running (`running` is its id, from the session's plugin
     /// list), reload that one in place, so a second call never starts a second copy.
-    pub fn reload_plugin_headless(path: &str, running: Option<u32>) {
+    pub fn reload_plugin_headless(path: &str, running: Option<zellij_tile::prelude::PluginId>) {
         match running {
             Some(id) => reload_plugin_with_id(id),
             None => load_new_plugin(
@@ -4780,15 +4796,15 @@ mod host {
             .iter()
             .find(|session| session.is_current_session)?;
         let pane = session.panes.panes.values().flatten().find(|pane| {
-            pane.is_plugin
+            pane.is_plugin()
                 && pane
                     .plugin_url
                     .as_deref()
                     .is_some_and(|url| url.ends_with(path))
         })?;
         Some(PluginObservation {
-            pane_id: pane.id,
-            contents: read_pane(PaneId::Plugin(pane.id), false),
+            pane_id: pane.id.legacy_parts().0,
+            contents: read_pane(pane.id, false),
         })
     }
 
@@ -4864,7 +4880,7 @@ mod host {
     fn focus(args: &Args) -> String {
         match args.tab_or_pane_target() {
             Some(Ok(id)) => {
-                go_to_tab_with_id(id as u64);
+                go_to_tab_with_id(id);
                 format!("focused tab {id}")
             },
             Some(Err(error)) => error,
@@ -4883,7 +4899,7 @@ mod host {
         };
         match args.tab_or_pane_target() {
             Some(Ok(id)) => {
-                rename_tab_with_id(id as u64, name);
+                rename_tab_with_id(id, name);
                 format!("renamed tab {id}")
             },
             Some(Err(error)) => error,
@@ -4934,11 +4950,7 @@ mod host {
     /// The `PaneId` a manifest entry names. Ids overlap by kind, so the flag is
     /// half of the address rather than a detail.
     fn pane_id_of(pane: &PaneInfo) -> PaneId {
-        if pane.is_plugin {
-            PaneId::Plugin(pane.id)
-        } else {
-            PaneId::Terminal(pane.id)
-        }
+        pane.id
     }
 
     fn current_pane_positions() -> Result<Vec<PanePosition>, String> {
@@ -5079,8 +5091,8 @@ mod host {
 
     fn split_pane_id(pane: PaneId) -> (u32, bool) {
         match pane {
-            PaneId::Terminal(id) => (id, false),
-            PaneId::Plugin(id) => (id, true),
+            PaneId::Terminal(id) => (id.get(), false),
+            PaneId::Plugin(id) => (id.get(), true),
         }
     }
 
@@ -5254,7 +5266,7 @@ pub mod test_seams {
         pub static PLUGIN_ENTRIES: RefCell<Option<Vec<zellij_tile::prelude::FsEntry>>> = const { RefCell::new(None) };
         pub static PLUGIN_READS: RefCell<super::BTreeMap<String, Result<String, String>>> = const { RefCell::new(super::BTreeMap::new()) };
         /// The `running` each `reload_plugin_headless` was given, in order.
-        pub static HEADLESS_RELOADS: RefCell<Vec<Option<u32>>> = const { RefCell::new(Vec::new()) };
+        pub static HEADLESS_RELOADS: RefCell<Vec<Option<zellij_tile::prelude::PluginId>>> = const { RefCell::new(Vec::new()) };
         /// What each `spawn_agent` asked the host for, in order.
         pub static SPAWN_AGENT_CALLS: RefCell<Vec<SpawnAgentCall>> = const { RefCell::new(Vec::new()) };
         pub static PLUGIN_SOURCE: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -5290,7 +5302,7 @@ pub mod test_seams {
 
 /// Off wasm the ask is recorded - which instance, if any, was named - for the tests to read.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn reload_plugin_headless(path: &str, running: Option<u32>) {
+pub fn reload_plugin_headless(path: &str, running: Option<zellij_tile::prelude::PluginId>) {
     test_seams::HEADLESS_RELOADS.with_borrow_mut(|asked| asked.push(running));
     reload_plugin(path);
 }

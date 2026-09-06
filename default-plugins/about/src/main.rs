@@ -28,7 +28,7 @@ struct App {
     keybinding_state: Rc<RefCell<KeybindingState>>,
     tab_rows: usize,
     tab_columns: usize,
-    own_plugin_id: Option<u32>,
+    own_plugin_id: Option<zellij_tile::prelude::PluginId>,
     is_release_notes: bool,
     is_startup_tip: bool,
     tip_index: usize,

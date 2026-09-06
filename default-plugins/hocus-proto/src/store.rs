@@ -21,11 +21,13 @@
 //! temporary file.
 //!
 //! That `Local` is the genuine `PluginDataStore` and not a hand-written fake is
-//! what makes this affordable. `zellij_utils::plugin_data_store` is compiled for
+//! what makes this affordable. `zellij_storage::plugin_data_store` is compiled for
 //! everything except wasm, so the predicates, the upserts, FTS5 and the
 //! truncation rules under test are the same code that runs in a session. There
 //! is no second implementation to keep honest.
 
+use zellij_tile::prelude::DataRevision;
+use zellij_tile::prelude::HostId;
 use zellij_tile::prelude::*;
 
 /// The namespace hocus and hocus-store share.
@@ -161,7 +163,7 @@ pub fn import_marker_def() -> EntityDef {
 /// The files an import reads are on one machine's disk. Without the host in the key, the first
 /// machine to import would mark the job done for everyone sharing the database, and the rest
 /// would never read their own.
-pub fn import_marker_mutation(host_id: &str, what: &str) -> Mutation {
+pub fn import_marker_mutation(host_id: &HostId, what: &str) -> Mutation {
     Mutation::put("import_marker")
         .uid(format!("{host_id}:{what}"))
         .set("what", what)
@@ -180,7 +182,7 @@ const LEGACY_HOST: &str = "";
 /// written before it came out of the migration naming nobody. A reader that wants those rows
 /// counted as its own asks with this; one that does not — `agents::rows::owned_by`, `jobs` —
 /// spells the strict equality itself, and says why.
-pub fn host_or_legacy(host_id: &str) -> Pred {
+pub fn host_or_legacy(host_id: &HostId) -> Pred {
     Pred::eq("host_id", host_id).or(Pred::eq("host_id", LEGACY_HOST))
 }
 
@@ -193,7 +195,7 @@ pub fn host_or_legacy(host_id: &str) -> Pred {
 /// legacy JSON is never unlinked, nor is `legacy_id` a dedupe key, so it would read the whole
 /// archive in a second time. Use [`import_recorded`] rather than this directly; it claims a
 /// marker of its own on the way past, without disturbing the one it found.
-pub fn import_marker_request(host_id: &str, what: &str) -> FetchRequest {
+pub fn import_marker_request(host_id: &HostId, what: &str) -> FetchRequest {
     FetchRequest::entity("import_marker")
         .filter(host_or_legacy(host_id).and(Pred::eq("what", what)))
 }
@@ -222,7 +224,7 @@ pub fn import_marker_request(host_id: &str, what: &str) -> FetchRequest {
 /// The claim itself still earns its keep. Once this machine's own row exists the fetch answers
 /// from it, so the reasoning above is a single launch's worth of work rather than every
 /// launch's.
-pub fn import_recorded(backend: &impl Backend, host_id: &str, what: &str) -> bool {
+pub fn import_recorded(backend: &impl Backend, host_id: &HostId, what: &str) -> bool {
     let Ok(rows) = backend.fetch(&import_marker_request(host_id, what)) else {
         // The store is unreachable, and the import would fail too. Claiming it is done is the
         // safe direction: a retry next launch is fine, a double import is not.
@@ -232,12 +234,12 @@ pub fn import_recorded(backend: &impl Backend, host_id: &str, what: &str) -> boo
         return false;
     }
     let claimed = rows.rows.iter().any(
-        |row| matches!(rows.get(row, "host_id"), Some(DataValue::Text(host)) if host == host_id),
+        |row| matches!(rows.get(row, "host_id"), Some(DataValue::Text(host)) if host == host_id.as_str()),
     );
     // Nothing to claim it *with* when this machine has no id of its own — which should not
     // happen, since the host is resolved before a plugin loads, but writing the legacy uid back
     // over the legacy row is not an improvement.
-    if !claimed && host_id != LEGACY_HOST {
+    if !claimed && !host_id.is_empty() {
         let _ = backend.apply(vec![import_marker_mutation(host_id, what)]);
     }
     true
@@ -499,10 +501,13 @@ pub fn private_defs() -> Vec<EntityDef> {
 /// A row `rev` of zero means there is no row to guard: a note or an item that came from the
 /// legacy file rather than the store. It must never come to mean "a fetch projected the column
 /// away" — see `notes::LIST_COLUMNS`, which names `rev` for that reason.
-pub fn guarded_rev(expect_rev: Option<i64>, row_rev: i64) -> Option<i64> {
+pub fn guarded_rev(
+    expect_rev: Option<DataRevision>,
+    row_rev: DataRevision,
+) -> Option<DataRevision> {
     expect_rev
-        .filter(|rev| *rev > 0)
-        .or(Some(row_rev).filter(|rev| *rev > 0))
+        .filter(|rev| *rev > DataRevision::new(0))
+        .or(Some(row_rev).filter(|rev| *rev > DataRevision::new(0)))
 }
 
 // ---------------------------------------------------------------------------
@@ -703,11 +708,11 @@ pub use host_stub::Host;
 #[cfg(not(target_family = "wasm"))]
 mod local {
     use super::*;
-    use zellij_utils::plugin_data_store::PluginDataStore;
+    use zellij_storage::plugin_data_store::PluginDataStore;
 
     /// The id [`Local`] hands back from `watch`. Non-zero so that a plugin
     /// storing "no watch" as zero can still tell the two apart.
-    pub const LOCAL_WATCH_ID: u64 = 1;
+    pub const LOCAL_WATCH_ID: DataWatchId = DataWatchId::new(1);
 
     /// The real store over a temporary file, for tests and for anything that
     /// wants to exercise this crate without a running zellij.
@@ -903,7 +908,7 @@ mod tests {
             .expect("the new definition migrates rather than being refused");
 
         assert!(
-            import_recorded(&backend, HOST, "chats"),
+            import_recorded(&backend, &HostId::new(HOST), "chats"),
             "the import would have been done a second time"
         );
 
@@ -913,7 +918,7 @@ mod tests {
         assert_eq!(hosts, vec![String::new(), HOST.to_owned()]);
 
         // And asking again is a read, not another claim.
-        assert!(import_recorded(&backend, HOST, "chats"));
+        assert!(import_recorded(&backend, &HostId::new(HOST), "chats"));
         assert_eq!(marker_hosts(&backend), hosts);
     }
 
@@ -940,7 +945,7 @@ mod tests {
         backend.define_all(&private_defs()).expect("migrated");
 
         assert!(
-            import_recorded(&backend, "host-b", "chats"),
+            import_recorded(&backend, &HostId::new("host-b"), "chats"),
             "a marker naming no machine answers for every machine"
         );
         assert_eq!(
@@ -950,7 +955,7 @@ mod tests {
         );
 
         assert!(
-            import_recorded(&backend, "host-a", "chats"),
+            import_recorded(&backend, &HostId::new("host-a"), "chats"),
             "host A, which actually did the import, must still be told so"
         );
     }
@@ -978,17 +983,20 @@ mod tests {
     fn a_machine_that_has_not_imported_is_told_so() {
         let backend = Local::private("hocus");
         backend.define_all(&private_defs()).expect("declared");
-        assert!(!import_recorded(&backend, HOST, "chats"));
+        assert!(!import_recorded(&backend, &HostId::new(HOST), "chats"));
 
         backend
-            .apply(vec![import_marker_mutation("another-host", "chats")])
+            .apply(vec![import_marker_mutation(
+                &HostId::new("another-host"),
+                "chats",
+            )])
             .expect("another machine imported");
         assert!(
-            !import_recorded(&backend, HOST, "chats"),
+            !import_recorded(&backend, &HostId::new(HOST), "chats"),
             "another machine's files are not ours"
         );
         assert!(
-            import_recorded(&backend, "another-host", "chats"),
+            import_recorded(&backend, &HostId::new("another-host"), "chats"),
             "and theirs still are"
         );
     }
@@ -1014,13 +1022,13 @@ mod tests {
             .expect("two markers from before the host key");
         backend.define_all(&private_defs()).expect("migrated");
 
-        assert!(import_recorded(&backend, HOST, "chats"));
+        assert!(import_recorded(&backend, &HostId::new(HOST), "chats"));
         assert_eq!(
             marker_hosts(&backend),
             vec![String::new(), String::new(), HOST.to_owned()],
             "only `chats` should have been claimed, and neither legacy row touched"
         );
-        assert!(import_recorded(&backend, HOST, "prompts"));
+        assert!(import_recorded(&backend, &HostId::new(HOST), "prompts"));
         assert_eq!(
             marker_hosts(&backend),
             vec![

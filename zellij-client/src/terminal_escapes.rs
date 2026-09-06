@@ -11,8 +11,8 @@ use crate::os_input_output::{StdioAccess, TtyControl};
 use crate::stdin_ansi_parser::SyncOutput;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use zellij_utils::errors::FatalError;
-use zellij_utils::nested_session;
+use zellij_ipc::nested_session;
+use zellij_runtime::errors::FatalError;
 
 pub const ENTER_ALTERNATE_SCREEN: &str = "\u{1b}[?1049h";
 pub const EXIT_ALTERNATE_SCREEN: &str = "\u{1b}[?1049l";
@@ -275,7 +275,7 @@ impl ClientTeardown {
 
     /// Hand the terminal back and print `message`, without exiting.
     ///
-    /// Used on the path that returns a `ConnectToSession` to the caller, which
+    /// Used on the path that returns a `SessionConnection` to the caller, which
     /// needs the process to stay alive to reconnect.
     pub fn restore<O: TtyControl + StdioAccess + ?Sized>(&self, os_input: &O, message: &str) {
         os_input.disable_mouse().non_fatal();

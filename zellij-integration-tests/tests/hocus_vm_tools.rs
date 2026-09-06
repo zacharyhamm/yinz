@@ -117,7 +117,7 @@ load_plugins clear-defaults=true {{
 
     let panes: Vec<_> = (0..3).map(|_| zellij.expect_pty_spawn()).collect();
     let review = panes.iter().find(|pane| {
-        matches!(pane.terminal_action(), Some(zellij_utils::input::command::TerminalAction::RunCommand(command))
+        matches!(pane.terminal_action(), Some(zellij_types::input::command::TerminalAction::RunCommand(command))
             if command.target.firecracker_vm() == Some("review"))
     }).expect("the review VM pane");
     review.output(b"review-pane-live");

@@ -10,6 +10,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+zellij-config = { workspace = true }
 zellij-tile = { path = "../../zellij-tile" }
 miette = { workspace = true }
 strip-ansi-escapes = { workspace = true }

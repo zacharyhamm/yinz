@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 #[serial(plugin_tests)]
@@ -19,7 +20,7 @@ pub fn switch_to_mode_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -50,7 +51,7 @@ pub fn switch_to_mode_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -97,7 +98,7 @@ pub fn switch_to_mode_plugin_command_permission_denied() {
 
     let received_screen_instructions = Watched::new(vec![]);
     let received_server_instructions = Watched::new(vec![]);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     // The permission is denied, so the fixture's SwitchToMode(Tab) may not be routed: a mode
     // change is a ServerInstruction, so that is the channel the assertion reads.
@@ -131,7 +132,7 @@ pub fn switch_to_mode_plugin_command_permission_denied() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -196,7 +197,7 @@ pub fn new_tabs_with_layout_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -220,7 +221,7 @@ pub fn new_tabs_with_layout_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -286,7 +287,7 @@ pub fn new_tab_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -310,7 +311,7 @@ pub fn new_tab_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -363,7 +364,7 @@ pub fn go_to_next_tab_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -387,7 +388,7 @@ pub fn go_to_next_tab_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -439,7 +440,7 @@ pub fn go_to_previous_tab_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -463,7 +464,7 @@ pub fn go_to_previous_tab_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,

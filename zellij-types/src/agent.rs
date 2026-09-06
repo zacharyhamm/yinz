@@ -1,0 +1,206 @@
+//! Agent records and launch inputs shared by host and plugin callers.
+
+use crate::pane_id::PaneId;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use strum_macros::{Display, EnumString};
+
+/// What the agent in a pane is doing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumString)]
+pub enum AgentState {
+    /// Working.
+    Busy,
+    /// Stopped and blocked on the user: a permission prompt, a question, a form.
+    Waiting,
+    /// Finished its turn and at its prompt.
+    Idle,
+    /// The agent's process exited; the pane holds what it left.
+    Exited,
+}
+
+impl AgentState {
+    /// `busy` as well as `Busy`.
+    pub fn parse_lenient(name: &str) -> Option<AgentState> {
+        let mut chars = name.trim().chars();
+        let first = chars.next()?.to_uppercase().collect::<String>();
+        let rest = chars.as_str().to_lowercase();
+        format!("{first}{rest}").parse().ok()
+    }
+}
+
+/// Who wrote a pane's agent record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumString)]
+pub enum AgentSource {
+    /// The pane was opened as an agent pane, and nothing has been heard from the agent since:
+    /// the state is what the session can see (running, exited), not what the agent says.
+    Spawned,
+    /// A person named the pane's agent by hand (hocus's `agent_register`), and nothing has been
+    /// heard from the agent itself: the kind is theirs, the state is a placeholder.
+    Registered,
+    /// The agent itself said so — its hooks through `zellij action agent-report`, or a plugin
+    /// speaking for it.
+    Reported,
+}
+
+/// The agent running in a pane: what it is, what it is doing, and who said so.
+///
+/// Carried on `PaneInfo::agent`, so every reader of the pane manifest — plugins, `zellij
+/// events`, `list-panes --json` — sees the same answer to "is this an agent, and is it waiting
+/// on me". Written by the spawn path, by `PluginCommand::SetPaneAgent`, and by `zellij action
+/// agent-report`, which is what coding-agent hooks call. A record is complete every time it is
+/// set; nothing merges — with one stated exception, [`AgentInfo::run_id`], which the agent
+/// never reports and the session therefore carries forward for it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AgentInfo {
+    /// `claude`, `codex`, … — the program, not a version of it.
+    pub kind: String,
+    pub state: AgentState,
+    #[serde(default = "AgentSource::spawned")]
+    pub source: AgentSource,
+    /// A few words on what it is doing: the tool it is running, mostly.
+    #[serde(default)]
+    pub detail: Option<String>,
+    /// What it is blocked on, in one line, when the state is `Waiting`: the tool a permission
+    /// prompt is about, the question it asked, the sentence an MCP server wrote.
+    ///
+    /// A field of its own rather than a reuse of `detail`, because the two are cleared by
+    /// different events and read in different places: `detail` names a tool in a status row,
+    /// this names a question to somebody who has to answer it.
+    #[serde(default)]
+    pub waiting_on: Option<String>,
+    /// Whether this wait is one a person has to answer, when the state is `Waiting`.
+    ///
+    /// `false` where the permission mode is about to answer the prompt itself — see
+    /// `agent::waiting_needs_a_person`, which is where this is decided, and which is the
+    /// only place it is worked out. Read by whatever would interrupt somebody over the
+    /// wait; the state, the record and the agent strip all take the agent at its word
+    /// regardless, so a suppressed wait is still a wait everywhere it is drawn.
+    #[serde(default)]
+    pub wait_needs_a_person: bool,
+    /// The folder the agent is working in, which is not always the pane's: an agent told to
+    /// work in a worktree moved without the shell under it hearing.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// The agent's own session id, where it has one, so a restart in the same pane can be
+    /// told from a pane that merely went quiet.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// The id of the run record a plugin is keeping for this pane's agent, where one is
+    /// keeping one.
+    ///
+    /// Opaque to the session: written by whoever holds the agent's history, read back by
+    /// whoever picks the pane up. That is what lets a warped pane's run continue in the
+    /// session that adopted it — an agent that supplies no session id has nothing else
+    /// stable to be found by.
+    ///
+    /// The one field of a record the agent itself never says, and so the one field that is
+    /// carried forward rather than re-supplied: a report that leaves it `None` inherits the
+    /// pane's, and only clearing the whole record clears it. See `apply_pane_agent_report`.
+    #[serde(default)]
+    pub run_id: Option<String>,
+}
+
+impl AgentInfo {
+    /// Whether this record is a wait that a person has to answer.
+    ///
+    /// The two halves have to be read together: `wait_needs_a_person` is only meaningful while
+    /// the state is `Waiting`, and a record that has moved on carries whatever the last report
+    /// happened to set.
+    pub fn is_waiting_on_a_person(&self) -> bool {
+        self.state == AgentState::Waiting && self.wait_needs_a_person
+    }
+}
+
+impl AgentSource {
+    fn spawned() -> AgentSource {
+        AgentSource::Spawned
+    }
+}
+
+/// Everything it takes to start a coding agent, in terms every caller has: hocus's
+/// `agent_spawn` tool, the `hocus-new-agent` modal, and a Lua plugin's `zellij.agent.spawn`.
+///
+/// Every field is optional because every caller has partial inputs - a form with blank
+/// fields, a tool call with omitted keys, a Lua table naming two of them - and the defaults
+/// belong in `agent::launch::plan`, where all of them get the same ones.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSpawnSpec {
+    /// The agent to run, by kind: `claude`, `codex`, `cursor`, or any other name the agent
+    /// detection would recognise. Resolved to a program by `agent::launch::binary_for`.
+    pub kind: Option<String>,
+    /// A program to run instead, for whatever no kind names. Ignored when `kind` is set; one
+    /// of the two is required.
+    pub command: Option<String>,
+    /// Arguments before the ones the planner adds.
+    pub args: Vec<String>,
+    /// Passed as `--model <model>`, the one flag every agent spells the same.
+    pub model: Option<String>,
+    /// Optional reasoning effort, translated by the shared launch planner.
+    pub effort: Option<String>,
+    /// An opening prompt, passed as the last positional argument - which is how `claude`,
+    /// `codex` and `cursor-agent` all take one.
+    pub prompt: Option<String>,
+    /// The branch to create. Absent means no Git work at all: run where we are.
+    pub branch: Option<String>,
+    /// What `branch` is cut from. Defaults to `agent::launch::DEFAULT_BASE`.
+    pub base: Option<String>,
+    /// Whether `branch` lives in a new worktree rather than in this checkout. Defaults to
+    /// *true* once a branch is named, which is the safer of the two: a worktree leaves the
+    /// checkout the caller is looking at alone.
+    pub worktree: Option<bool>,
+    /// The *directory the worktree is placed in*, relative to the repository's primary
+    /// checkout (an absolute path is taken as it stands). Defaults to
+    /// `agent::launch::WORKTREE_PREFIX`. Never the worktree itself: a worktree is always
+    /// named after the branch it holds, so `<worktree_dir>/<branch>` is the whole of it and
+    /// a caller has no way to ask for a worktree whose name and branch disagree.
+    pub worktree_dir: Option<String>,
+    /// Environment the agent starts with, on top of the pane's own. Carried by an `env(1)`
+    /// wrapper in the command - `env K=V claude ...` - because a command pane has no
+    /// environment of its own to set; `env` execs the agent, so the pane still runs it.
+    pub env: BTreeMap<String, String>,
+    /// How much the agent may do without asking, in the agent's own terms - see
+    /// `agent::launch::shape_args` for what each kind accepts. `skip` is understood by every
+    /// kind that has a way to turn permissions off.
+    pub permission_mode: Option<String>,
+    /// A session to resume: an id, or `last` for the most recent.
+    pub resume: Option<String>,
+    /// Whether a `claude` pane reports its state through its hooks. Defaults to true; the
+    /// hooks are handed to it inline, so nothing needs installing.
+    pub hooks: Option<bool>,
+    /// Named session-scoped Firecracker VM to run in.
+    pub firecracker: Option<String>,
+    /// Immutable project image selected for the Firecracker VM.
+    pub firecracker_image: Option<String>,
+    /// Whether an existing branch, or an existing worktree at the name this spec asks for, is
+    /// the work the caller means. Defaults to *false*: a taken name is a collision, and the
+    /// host cuts the next free one (`<branch>-2`, `<branch>-3`, …) for the branch and its
+    /// worktree together, so an agent never silently joins somebody else's work.
+    pub reuse: Option<bool>,
+    /// Whether this agent may start somewhere that is not a linked worktree - the repository's
+    /// primary checkout, or a folder that is no repository at all. Defaults to *false*: an
+    /// agent left loose in the checkout the user is working in is a thing to ask for
+    /// deliberately, not the shape a spec falls into by leaving `branch` out.
+    pub allow_outside_worktree: Option<bool>,
+}
+
+/// A started agent, as the host answers for it.
+///
+/// The pane is what the caller asked for; `branch` and `cwd` are what it *got*, which is not
+/// always what it asked for - a name already taken is cut afresh with a suffix, and a branch
+/// held by another worktree sends the agent there. Both travel back rather than being
+/// re-derived from the request, because the request no longer knows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnedAgent {
+    pub pane_id: PaneId,
+    /// The branch the agent is on, when git work was done. `None` for a spawn that made no
+    /// checkout.
+    pub branch: Option<String>,
+    /// The folder the pane runs in, when git work was done.
+    pub cwd: Option<PathBuf>,
+}
+
+mod hooks;
+pub use hooks::*;
+pub mod report;

@@ -7,9 +7,9 @@ fn discovered() -> BTreeMap<String, String> {
     )])
 }
 
-fn instances() -> BTreeMap<u32, (String, String)> {
+fn instances() -> BTreeMap<zellij_tile::prelude::PluginId, (String, String)> {
     BTreeMap::from([(
-        7,
+        zellij_tile::prelude::PluginId::new(7),
         (
             "weather".to_owned(),
             "/plugins/hocus/weather.lua".to_owned(),
@@ -55,7 +55,7 @@ fn registration_namespaces_the_tool_and_builds_its_api_spec() {
     let mut registry = Registry::default();
     let names = registry
         .register(
-            7,
+            zellij_tile::prelude::PluginId::new(7),
             &registration("read_only", None),
             &discovered(),
             &instances(),
@@ -64,10 +64,13 @@ fn registration_namespaces_the_tool_and_builds_its_api_spec() {
         .unwrap();
     assert_eq!(names, vec!["weather_forecast"]);
     let tool = registry.tool("weather_forecast").unwrap();
-    assert_eq!(tool.owner, 7);
+    assert_eq!(tool.owner, zellij_tile::prelude::PluginId::new(7));
     assert_eq!(tool.safety, Safety::ReadOnly);
     assert_eq!(tool.spec()["function"]["parameters"]["type"], "object");
-    assert_eq!(registry.owner_for_path(&tool.path), Some(7));
+    assert_eq!(
+        registry.owner_for_path(&tool.path),
+        Some(zellij_tile::prelude::PluginId::new(7))
+    );
 }
 
 #[test]
@@ -75,13 +78,19 @@ fn safety_is_explicit_and_confirming_tools_explain_their_effect() {
     let mut registry = Registry::default();
     let missing = registration("confirm", None);
     assert!(registry
-        .register(7, &missing, &discovered(), &instances(), &BTreeSet::new())
+        .register(
+            zellij_tile::prelude::PluginId::new(7),
+            &missing,
+            &discovered(),
+            &instances(),
+            &BTreeSet::new()
+        )
         .unwrap_err()
         .contains("needs a consequence"));
 
     registry
         .register(
-            7,
+            zellij_tile::prelude::PluginId::new(7),
             &registration("confirm", Some("posts to the shared channel")),
             &discovered(),
             &instances(),
@@ -104,7 +113,7 @@ fn a_registration_cannot_shadow_hocus_or_another_extension() {
     let reserved = BTreeSet::from(["weather_forecast".to_owned()]);
     assert!(registry
         .register(
-            7,
+            zellij_tile::prelude::PluginId::new(7),
             &registration("automatic", None),
             &discovered(),
             &instances(),
@@ -115,7 +124,7 @@ fn a_registration_cannot_shadow_hocus_or_another_extension() {
 
     registry
         .register(
-            7,
+            zellij_tile::prelude::PluginId::new(7),
             &registration("automatic", None),
             &discovered(),
             &instances(),
@@ -124,7 +133,7 @@ fn a_registration_cannot_shadow_hocus_or_another_extension() {
         .unwrap();
     assert!(registry
         .register(
-            8,
+            zellij_tile::prelude::PluginId::new(8),
             &registration("automatic", None),
             &discovered(),
             &instances(),
@@ -139,7 +148,7 @@ fn reregistering_replaces_an_owners_complete_tool_set() {
     let mut registry = Registry::default();
     registry
         .register(
-            7,
+            zellij_tile::prelude::PluginId::new(7),
             &registration("automatic", None),
             &discovered(),
             &instances(),
@@ -154,11 +163,17 @@ fn reregistering_replaces_an_owners_complete_tool_set() {
     })
     .to_string();
     registry
-        .register(7, &empty, &discovered(), &instances(), &BTreeSet::new())
+        .register(
+            zellij_tile::prelude::PluginId::new(7),
+            &empty,
+            &discovered(),
+            &instances(),
+            &BTreeSet::new(),
+        )
         .unwrap();
     assert!(registry.names().is_empty());
     assert_eq!(
         registry.owner_for_path("/plugins/hocus/weather.lua"),
-        Some(7)
+        Some(zellij_tile::prelude::PluginId::new(7))
     );
 }

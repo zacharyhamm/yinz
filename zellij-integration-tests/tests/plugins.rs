@@ -1,8 +1,8 @@
 #![cfg(unix)]
 
 use insta::assert_snapshot;
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{normalized, TestRunner, TERMINAL_SIZE};
-use zellij_utils::cli::CliAction;
 
 fn load_background_plugin_config() -> String {
     let plugin_path = zellij_integration_tests::test_env::fixture_plugin_path();

@@ -5,9 +5,9 @@ use zellij_tile::prelude::*;
 
 #[derive(Debug, Default)]
 pub struct App {
-    own_plugin_id: Option<u32>,
+    own_plugin_id: Option<zellij_tile::prelude::PluginId>,
     own_client_id: Option<ClientId>,
-    own_tab_index: Option<usize>,
+    own_tab_index: Option<TabPosition>,
     total_tabs_in_session: Option<usize>,
     grouped_panes: Vec<PaneId>,
     grouped_panes_count: usize,
@@ -220,11 +220,7 @@ impl App {
         for pane_infos in pane_manifest.panes.values() {
             for pane_info in pane_infos {
                 for client_id in pane_info.index_in_pane_group.keys() {
-                    let pane_id = if pane_info.is_plugin {
-                        PaneId::Plugin(pane_info.id)
-                    } else {
-                        PaneId::Terminal(pane_info.id)
-                    };
+                    let pane_id = pane_info.id;
 
                     self.all_client_grouped_panes
                         .entry(*client_id)
@@ -244,11 +240,7 @@ impl App {
             for pane_info in pane_infos {
                 if let Some(index_in_pane_group) = pane_info.index_in_pane_group.get(&own_client_id)
                 {
-                    let pane_id = if pane_info.is_plugin {
-                        PaneId::Plugin(pane_info.id)
-                    } else {
-                        PaneId::Terminal(pane_info.id)
-                    };
+                    let pane_id = pane_info.id;
                     panes_with_index.push((*index_in_pane_group, pane_id));
                     count += 1;
                 }
@@ -298,7 +290,7 @@ impl App {
     fn update_tab_info(&mut self, pane_manifest: &PaneManifest) {
         for (tab_index, pane_infos) in &pane_manifest.panes {
             for pane_info in pane_infos {
-                if pane_info.is_plugin && Some(pane_info.id) == self.own_plugin_id {
+                if Some(pane_info.id) == self.own_plugin_id.map(PaneId::Plugin) {
                     self.own_tab_index = Some(*tab_index);
                     return;
                 }
@@ -423,8 +415,12 @@ impl App {
 
         let pane_ids = self.grouped_panes.clone();
 
-        if Some(own_tab_index + 1) < self.total_tabs_in_session {
-            break_panes_to_tab_with_index(&pane_ids, own_tab_index + 1, true);
+        if let Some(next) = own_tab_index
+            .get()
+            .checked_add(1)
+            .filter(|next| Some(*next) < self.total_tabs_in_session)
+        {
+            break_panes_to_tab_with_index(&pane_ids, TabPosition::new(next), true);
         } else {
             break_panes_to_new_tab(&pane_ids, None, true);
         }
@@ -439,8 +435,12 @@ impl App {
 
         let pane_ids = self.grouped_panes.clone();
 
-        if own_tab_index > 0 {
-            break_panes_to_tab_with_index(&pane_ids, own_tab_index.saturating_sub(1), true);
+        if own_tab_index.get() > 0 {
+            break_panes_to_tab_with_index(
+                &pane_ids,
+                TabPosition::new(own_tab_index.get() - 1),
+                true,
+            );
         } else {
             break_panes_to_new_tab(&pane_ids, None, true);
         }

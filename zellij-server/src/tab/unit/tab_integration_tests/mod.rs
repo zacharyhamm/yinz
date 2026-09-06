@@ -7,20 +7,26 @@ use crate::{
     os_input_output::ServerOsApi, pane_groups::PaneGroups, panes::PaneId,
     plugins::PluginInstruction, thread_bus::ThreadSenders, ClientId,
 };
-use zellij_utils::input::options::PaneFrameStyle;
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::input::options::PaneFrameStyle;
+use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
+use zellij_types::internal_ids::TerminalId;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use zellij_utils::channels::Receiver;
-use zellij_utils::data::Direction;
-use zellij_utils::data::Resize;
-use zellij_utils::data::ResizeStrategy;
-use zellij_utils::envs::set_session_name;
-use zellij_utils::errors::{prelude::*, ErrorContext};
-use zellij_utils::input::layout::{
-    FloatingPaneLayout, Layout, PercentOrFixed, RunPluginOrAlias, SwapFloatingLayout,
-    SwapTiledLayout, TiledPaneLayout,
+use zellij_runtime::channels::Receiver;
+use zellij_runtime::envs::set_session_name;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::diagnostics::ErrorContext;
+use zellij_types::geometry::Direction;
+use zellij_types::geometry::PercentOrFixed;
+use zellij_types::geometry::Resize;
+use zellij_types::geometry::ResizeStrategy;
+use {
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::RunPluginOrAlias,
+    zellij_types::input::layout::SwapFloatingLayout, zellij_types::input::layout::SwapTiledLayout,
+    zellij_types::input::layout::TiledPaneLayout,
 };
 
 use crate::os_input_output::AsyncReader;
@@ -29,18 +35,18 @@ use interprocess::local_socket::Stream as LocalSocketStream;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
-use zellij_utils::channels::{self, ChannelWithContext, SenderWithContext};
-use zellij_utils::input::mouse::MouseEvent;
-use zellij_utils::ipc::IpcReceiverWithContext;
-use zellij_utils::pane_size::{Size, SizeInPixels};
-use zellij_utils::position::Position;
-use zellij_utils::{
-    data::{
-        FloatingPaneCoordinates, InputMode, ModeInfo, NewPanePlacement, OverlayPlacement, Palette,
-        Style,
-    },
-    input::command::{RunCommand, TerminalAction},
-    ipc::{ClientToServerMsg, ServerToClientMsg},
+use zellij_ipc::ipc::IpcReceiverWithContext;
+use zellij_runtime::channels::{self, ChannelWithContext, SenderWithContext};
+use zellij_types::geometry::FloatingPaneCoordinates;
+use zellij_types::mouse::MouseEvent;
+use zellij_types::pane_size::{Size, SizeInPixels};
+use zellij_types::position::Position;
+use zellij_types::style::{Palette, Style};
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ServerToClientMsg,
+    zellij_types::data::InputMode, zellij_types::data::ModeInfo,
+    zellij_types::data::NewPanePlacement, zellij_types::data::OverlayPlacement,
+    zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction,
 };
 
 #[derive(Clone, Default)]
@@ -67,7 +73,7 @@ impl ServerOsApi for FakeInputOutput {
         _file_to_open: TerminalAction,
         _quit_db: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
         _default_editor: Option<PathBuf>,
-    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         unimplemented!()
     }
     fn write_to_tty_stdin(&self, id: TerminalId, buf: &[u8]) -> Result<usize> {
@@ -85,10 +91,10 @@ impl ServerOsApi for FakeInputOutput {
     fn is_remote_pane(&self, terminal_id: TerminalId) -> bool {
         self.remote_panes.lock().unwrap().contains(&terminal_id)
     }
-    fn kill(&self, _pid: u32) -> Result<()> {
+    fn kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
-    fn force_kill(&self, _pid: u32) -> Result<()> {
+    fn force_kill(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
@@ -110,7 +116,7 @@ impl ServerOsApi for FakeInputOutput {
     fn load_palette(&self) -> Palette {
         unimplemented!()
     }
-    fn get_cwd(&self, _pid: u32) -> Option<PathBuf> {
+    fn get_cwd(&self, _pid: ProcessId) -> Option<PathBuf> {
         unimplemented!()
     }
     fn write_to_file(&mut self, buf: String, name: Option<String>) -> Result<()> {
@@ -126,16 +132,16 @@ impl ServerOsApi for FakeInputOutput {
         _terminal_id: TerminalId,
         _run_command: RunCommand,
         _quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
-    ) -> Result<(Box<dyn AsyncReader>, Option<u32>)> {
+    ) -> Result<(Box<dyn AsyncReader>, Option<ProcessId>)> {
         unimplemented!()
     }
     fn clear_terminal_id(&self, _terminal_id: TerminalId) -> Result<()> {
         unimplemented!()
     }
-    fn send_sigint(&self, _pid: u32) -> Result<()> {
+    fn send_sigint(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
-    fn send_sigcont(&self, _pid: u32) -> Result<()> {
+    fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
 }
@@ -216,7 +222,7 @@ fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -237,8 +243,8 @@ fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
-        index,
-        position,
+        TabId::new(index),
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -279,7 +285,7 @@ fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(crate::TerminalId(1), None)],
+        vec![(crate::TerminalId::new(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -306,7 +312,7 @@ fn create_new_tab_with_stacked_pane_list(
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -328,8 +334,8 @@ fn create_new_tab_with_stacked_pane_list(
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
-        index,
-        position,
+        TabId::new(index),
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -370,7 +376,7 @@ fn create_new_tab_with_stacked_pane_list(
     let (base_layout, new_terminal_ids) = base_layout_and_ids.unwrap_or_else(|| {
         (
             TiledPaneLayout::default(),
-            vec![(crate::TerminalId(1), None)],
+            vec![(crate::TerminalId::new(1), None)],
         )
     });
     tab.apply_layout(
@@ -398,7 +404,7 @@ fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::None;
     let auto_layout = true;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -419,8 +425,8 @@ fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
-        index,
-        position,
+        TabId::new(index),
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -461,7 +467,7 @@ fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(crate::TerminalId(1), None)],
+        vec![(crate::TerminalId::new(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -480,7 +486,7 @@ fn create_new_tab_with_swap_layouts(
         Vec<FloatingPaneLayout>,
         Vec<(TerminalId, Option<RunCommand>)>,
         Vec<(TerminalId, Option<RunCommand>)>,
-        HashMap<RunPluginOrAlias, Vec<zellij_utils::internal_ids::PluginId>>,
+        HashMap<RunPluginOrAlias, Vec<zellij_types::internal_ids::PluginId>>,
     )>,
     draw_pane_frames: bool,
     stacked_resize: bool,
@@ -498,7 +504,7 @@ fn create_new_tab_with_swap_layouts(
     let mode_info = default_mode;
     let style = Style::default();
     let auto_layout = true;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -519,8 +525,8 @@ fn create_new_tab_with_swap_layouts(
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
-        index,
-        position,
+        TabId::new(index),
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -570,7 +576,7 @@ fn create_new_tab_with_swap_layouts(
         new_plugin_ids,
     ) = base_layout_and_ids.unwrap_or_default();
     let new_terminal_ids = if new_terminal_ids.is_empty() {
-        vec![(TerminalId(1), None)]
+        vec![(TerminalId::new(1), None)]
     } else {
         new_terminal_ids
     };
@@ -603,7 +609,7 @@ fn create_new_tab_with_os_api(
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -624,8 +630,8 @@ fn create_new_tab_with_os_api(
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
-        index,
-        position,
+        TabId::new(index),
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -666,7 +672,7 @@ fn create_new_tab_with_os_api(
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(crate::TerminalId(1), None)],
+        vec![(crate::TerminalId::new(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -688,7 +694,7 @@ fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) 
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -699,7 +705,8 @@ fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) 
     let copy_options = CopyOptions::default();
     let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
     let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));
-    let layout = Layout::from_str(layout, "layout_file_name".into(), None, None).unwrap();
+    let layout =
+        zellij_config::layout::from_str(layout, "layout_file_name".into(), None, None).unwrap();
     let (tab_layout, floating_panes_layout) = layout.new_tab();
     let current_group = Rc::new(RefCell::new(PaneGroups::new(ThreadSenders::default())));
     let currently_marking_pane_group = Rc::new(RefCell::new(HashMap::new()));
@@ -711,8 +718,8 @@ fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) 
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
-        index,
-        position,
+        TabId::new(index),
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -754,12 +761,12 @@ fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) 
         .extract_run_instructions()
         .iter()
         .enumerate()
-        .map(|(i, _)| (TerminalId(i as u32), None))
+        .map(|(i, _)| (TerminalId::new(i as u32), None))
         .collect();
     let floating_pane_ids = floating_panes_layout
         .iter()
         .enumerate()
-        .map(|(i, _)| (TerminalId(i as u32), None))
+        .map(|(i, _)| (TerminalId::new(i as u32), None))
         .collect();
     tab.apply_layout(
         tab_layout,
@@ -791,7 +798,7 @@ fn create_new_tab_with_mock_pty_writer(
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -812,8 +819,8 @@ fn create_new_tab_with_mock_pty_writer(
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
-        index,
-        position,
+        TabId::new(index),
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -854,7 +861,7 @@ fn create_new_tab_with_mock_pty_writer(
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(crate::TerminalId(1), None)],
+        vec![(crate::TerminalId::new(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -881,7 +888,7 @@ fn create_new_tab_with_sixel_support(
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -904,8 +911,8 @@ fn create_new_tab_with_sixel_support(
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
-        index,
-        position,
+        TabId::new(index),
+        TabPosition::new(position),
         name,
         size,
         character_cell_size,
@@ -946,7 +953,7 @@ fn create_new_tab_with_sixel_support(
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(crate::TerminalId(1), None)],
+        vec![(crate::TerminalId::new(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -1090,7 +1097,7 @@ fn setup_tab_with_focused_floating_pane(
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
     tab.new_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
@@ -1101,7 +1108,7 @@ fn setup_tab_with_focused_floating_pane(
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am a floating pane".as_bytes()),
     )
     .unwrap();
@@ -1126,17 +1133,17 @@ fn two_adjacent_stacks_layout() -> (TiledPaneLayout, Vec<(TerminalId, Option<Run
         }
     "#;
     let (base_layout, _base_floating_layout) =
-        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+        zellij_config::kdl::layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
             .unwrap()
             .template
             .unwrap();
     let new_terminal_ids = vec![
-        (TerminalId(1), None),
-        (TerminalId(2), None),
-        (TerminalId(3), None),
-        (TerminalId(4), None),
-        (TerminalId(5), None),
-        (TerminalId(6), None),
+        (TerminalId::new(1), None),
+        (TerminalId::new(2), None),
+        (TerminalId::new(3), None),
+        (TerminalId::new(4), None),
+        (TerminalId::new(5), None),
+        (TerminalId::new(6), None),
     ];
     (base_layout, new_terminal_ids)
 }
@@ -1152,7 +1159,10 @@ fn stack_member_pane_count(tab: &Tab) -> usize {
 // Plugin Highlight Mouse Integration Tests
 // =====================================================================
 
-use zellij_utils::data::{HighlightLayer, HighlightStyle, RegexHighlight};
+use {
+    zellij_types::data::HighlightLayer, zellij_types::data::HighlightStyle,
+    zellij_types::data::RegexHighlight,
+};
 
 fn create_new_tab_with_plugin_receiver(
     size: Size,
@@ -1179,7 +1189,7 @@ fn create_new_tab_with_plugin_receiver_and_os(
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -1200,8 +1210,8 @@ fn create_new_tab_with_plugin_receiver_and_os(
     let advanced_mouse_actions = true;
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
-        index,
-        position,
+        TabId::new(index),
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -1242,7 +1252,7 @@ fn create_new_tab_with_plugin_receiver_and_os(
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(crate::TerminalId(1), None)],
+        vec![(crate::TerminalId::new(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -1276,7 +1286,7 @@ fn create_new_tab_with_screen_receiver(
     senders.to_screen = Some(screen_sender);
 
     let max_panes = None;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
@@ -1289,8 +1299,8 @@ fn create_new_tab_with_screen_receiver(
     let current_group = Rc::new(RefCell::new(PaneGroups::new(ThreadSenders::default())));
     let currently_marking_pane_group = Rc::new(RefCell::new(HashMap::new()));
     let mut tab = Tab::new(
-        index,
-        position,
+        TabId::new(index),
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -1331,7 +1341,7 @@ fn create_new_tab_with_screen_receiver(
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(crate::TerminalId(1), None)],
+        vec![(crate::TerminalId::new(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -1409,7 +1419,7 @@ struct SuppressedPaneModel {
 }
 
 impl SuppressedPaneModel {
-    const CLIENT_ID: ClientId = crate::ClientId(1);
+    const CLIENT_ID: ClientId = crate::ClientId::new(1);
 
     fn new() -> Self {
         let mut tab = create_new_tab_with_stacked_pane_list(
@@ -1430,7 +1440,7 @@ impl SuppressedPaneModel {
             .replace_to_plugin(SenderWithContext::new(plugin_sender));
         SuppressedPaneModel {
             tab,
-            alive: std::collections::HashSet::from([PaneId::Terminal(crate::TerminalId(1))]),
+            alive: std::collections::HashSet::from([PaneId::Terminal(crate::TerminalId::new(1))]),
             next_id: 2,
             _plugin_receiver: plugin_receiver,
         }
@@ -1501,9 +1511,9 @@ impl SuppressedPaneModel {
     #[rule]
     fn open_a_pane(&mut self, tc: hegel::TestCase) {
         let pane_id = if tc.draw(hegel::generators::booleans()) {
-            PaneId::Terminal(crate::TerminalId(self.fresh_id()))
+            PaneId::Terminal(crate::TerminalId::new(self.fresh_id()))
         } else {
-            PaneId::Plugin(crate::PluginId(self.fresh_id()))
+            PaneId::Plugin(crate::PluginId::new(self.fresh_id()))
         };
         let placement = match tc.draw(
             hegel::generators::integers::<usize>()
@@ -1518,7 +1528,7 @@ impl SuppressedPaneModel {
             // both cases rather than refusing it, which is worth knowing but is
             // not what this is asking about.
             _ => NewPanePlacement::Stacked {
-                pane_id_to_stack_under: Some(Self::pick(&tc, &self.tiled()).into()),
+                pane_id_to_stack_under: Some(Self::pick(&tc, &self.tiled())),
                 borderless: None,
             },
         };
@@ -1544,7 +1554,7 @@ impl SuppressedPaneModel {
     #[rule]
     fn replace_a_pane_in_place(&mut self, tc: hegel::TestCase) {
         let replaced = Self::pick(&tc, &self.on_screen());
-        let pane_id = PaneId::Terminal(crate::TerminalId(self.fresh_id()));
+        let pane_id = PaneId::Terminal(crate::TerminalId::new(self.fresh_id()));
         self.tab
             .new_pane(
                 pane_id,
@@ -1553,7 +1563,7 @@ impl SuppressedPaneModel {
                 false,
                 true,
                 NewPanePlacement::InPlace {
-                    pane_id_to_replace: Some(replaced.into()),
+                    pane_id_to_replace: Some(replaced),
                     close_replaced_pane: false,
                     borderless: None,
                 },
@@ -1575,7 +1585,7 @@ impl SuppressedPaneModel {
             .filter(|pane_id| matches!(pane_id, PaneId::Terminal(_)))
             .collect();
         let edited = Self::pick(&tc, &on_screen);
-        let editor = PaneId::Terminal(crate::TerminalId(self.fresh_id()));
+        let editor = PaneId::Terminal(crate::TerminalId::new(self.fresh_id()));
         self.tab
             .replace_pane_with_editor_pane(editor, edited)
             .unwrap();

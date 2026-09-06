@@ -1,5 +1,6 @@
 use super::*;
-use zellij_utils::data::{PaletteColor, Style};
+use zellij_types::data::PaletteColor;
+use zellij_types::style::Style;
 
 fn style_with_distinct_selected_background() -> Style {
     let mut style = Style::default();

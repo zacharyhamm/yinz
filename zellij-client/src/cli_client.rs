@@ -8,12 +8,12 @@ use std::{fs, path::PathBuf};
 
 use crate::os_input_output::CliClientOs;
 use uuid::Uuid;
-use zellij_utils::{
-    cli::{EventsCli, SubscribeCli, SubscribeFormat},
-    data::{EventType, PaneId},
-    errors::prelude::*,
-    input::actions::Action,
-    ipc::{ClientToServerMsg, ExitReason, ServerToClientMsg},
+use zellij_runtime::errors::prelude::*;
+use {
+    zellij_cli::args::EventsCli, zellij_cli::args::SubscribeCli, zellij_cli::args::SubscribeFormat,
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ExitReason,
+    zellij_ipc::ipc::ServerToClientMsg, zellij_types::data::EventType, zellij_types::data::PaneId,
+    zellij_types::input::actions::Action,
 };
 
 pub fn start_cli_client(
@@ -22,9 +22,9 @@ pub fn start_cli_client(
     actions: Vec<Action>,
 ) -> i32 {
     let zellij_ipc_pipe: PathBuf = {
-        let mut sock_dir = zellij_utils::consts::ZELLIJ_SOCK_DIR.clone();
+        let mut sock_dir = zellij_runtime::consts::ZELLIJ_SOCK_DIR.clone();
         fs::create_dir_all(&sock_dir).unwrap();
-        zellij_utils::shared::set_permissions(&sock_dir, 0o700).unwrap();
+        zellij_runtime::shared::set_permissions(&sock_dir, 0o700).unwrap();
         sock_dir.push(session_name);
         sock_dir
     };
@@ -96,7 +96,7 @@ fn pipe_client(
     skip_cache: bool,
     floating: Option<bool>,
     in_place: Option<bool>,
-    pane_id: Option<u32>,
+    pane_id: Option<zellij_types::internal_ids::TerminalId>,
     cwd: Option<PathBuf>,
     pane_title: Option<String>,
 ) {
@@ -219,7 +219,7 @@ fn pipe_client(
 fn individual_messages_client(
     os_input: &mut Box<dyn CliClientOs>,
     action: Action,
-    pane_id: Option<u32>,
+    pane_id: Option<zellij_types::internal_ids::TerminalId>,
 ) -> Option<i32> {
     // Every blocking pane waits for its own `Exit`, condition or no condition. The server
     // broadcasts `UnblockInputThread` to every client whenever any pane closes anywhere in the
@@ -273,9 +273,9 @@ pub fn start_subscribe_client(
     subscribe_cli: SubscribeCli,
 ) {
     let zellij_ipc_pipe: PathBuf = {
-        let mut sock_dir = zellij_utils::consts::ZELLIJ_SOCK_DIR.clone();
+        let mut sock_dir = zellij_runtime::consts::ZELLIJ_SOCK_DIR.clone();
         fs::create_dir_all(&sock_dir).unwrap();
-        zellij_utils::shared::set_permissions(&sock_dir, 0o700).unwrap();
+        zellij_runtime::shared::set_permissions(&sock_dir, 0o700).unwrap();
         sock_dir.push(session_name);
         sock_dir
     };
@@ -385,9 +385,9 @@ pub fn start_events_client(
     events_cli: EventsCli,
 ) {
     let zellij_ipc_pipe: PathBuf = {
-        let mut sock_dir = zellij_utils::consts::ZELLIJ_SOCK_DIR.clone();
+        let mut sock_dir = zellij_runtime::consts::ZELLIJ_SOCK_DIR.clone();
         fs::create_dir_all(&sock_dir).unwrap();
-        zellij_utils::shared::set_permissions(&sock_dir, 0o700).unwrap();
+        zellij_runtime::shared::set_permissions(&sock_dir, 0o700).unwrap();
         sock_dir.push(session_name);
         sock_dir
     };

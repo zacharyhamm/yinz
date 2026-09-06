@@ -17,6 +17,8 @@ use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use unicode_width::UnicodeWidthStr;
+use zellij_tile::prelude::HostId;
+use zellij_tile::prelude::TabId;
 
 use crate::location::Location;
 use crate::markdown::{MdLine, MdStyle};
@@ -75,7 +77,7 @@ pub struct AgentPane {
     pub status: AgentStatus,
     /// The stable tab id and tab name this pane sits in. `None` for a session-global
     /// pane, which is in no tab.
-    pub tab: Option<(usize, String)>,
+    pub tab: Option<(TabId, String)>,
     /// The kind this pane was last seen *running*, kept while the pane lives.
     ///
     /// `command` is the foreground command, so it stops naming the agent the moment
@@ -132,7 +134,7 @@ pub fn checkout_location(
 }
 
 // The command-line classifier - `KINDS`, `kind_of`, `kind_from_command` - lives in
-// `zellij_utils::agent` now, because the server reads it too: where a spawned agent pane
+// `zellij_types::agent` now, because the server reads it too: where a spawned agent pane
 // goes is decided before the process has said anything, from the same list `hocus-agentd`
 // latches "detected" from. Re-exported so every caller in the plugins keeps one name for it.
 pub use zellij_tile::agent::{kind_from_command, kind_of, program, KINDS};
@@ -873,7 +875,7 @@ pub struct AgentRun {
     /// that reading is implemented, and `rows::claim_unowned_runs` is what stops a restored run
     /// staying that way.
     #[serde(default)]
-    pub host_id: String,
+    pub host_id: HostId,
     #[serde(default)]
     pub session_id: String,
     pub kind: String,
@@ -1015,9 +1017,9 @@ pub fn run_id(
     pane_id: u32,
     session_id: &str,
     started_at_ms: i64,
-    host_id: &str,
+    host_id: &HostId,
 ) -> String {
-    match (session_id.trim(), host_id.trim()) {
+    match (session_id.trim(), host_id.as_str().trim()) {
         ("", "") => format!("{kind}:pane:{pane_id}:{started_at_ms}"),
         ("", host_id) => format!("{kind}:pane:{pane_id}:{started_at_ms}:{host_id}"),
         (session_id, _) => session_run_id(kind, session_id),
@@ -1304,7 +1306,8 @@ pub fn push_summary_entry(run: &mut AgentRun, text: &str, now_ms: i64) -> bool {
 /// hocus is the only writer; see `store::agent_latch_def` and `store::agent_summary_def`.
 pub mod rows {
     use super::{
-        summary_says_same, AgentRun, AgentRunHeader, RunEntry, RunEntryKind, Summaries, Summary,
+        summary_says_same, AgentRun, AgentRunHeader, HostId, RunEntry, RunEntryKind, Summaries,
+        Summary,
     };
     use crate::store::Backend;
     use std::collections::{BTreeMap, BTreeSet};
@@ -1325,14 +1328,14 @@ pub mod rows {
     /// session can be renamed — the host half is what a row keeps across that.
     #[derive(Debug, Clone, Default, PartialEq, Eq)]
     pub struct Owner {
-        pub host_id: String,
+        pub host_id: HostId,
         pub zellij_session_name: String,
     }
 
     impl Owner {
-        pub fn new(host_id: impl Into<String>, zellij_session_name: impl Into<String>) -> Self {
+        pub fn new(host_id: HostId, zellij_session_name: impl Into<String>) -> Self {
             Owner {
-                host_id: host_id.into(),
+                host_id,
                 zellij_session_name: zellij_session_name.into(),
             }
         }
@@ -1413,7 +1416,7 @@ pub mod rows {
     /// id does not collide between machines: the ordinary shape carries the agent's own session
     /// uuid, and the fallback for a hook that supplies none carries the machine. It is here
     /// so that a search across a shared history can say where a hit happened.
-    pub fn entry_mutation(run_id: &str, host_id: &str, entry: &RunEntry) -> Mutation {
+    pub fn entry_mutation(run_id: &str, host_id: &HostId, entry: &RunEntry) -> Mutation {
         let mut put = Mutation::put(ENTRY_ENTITY)
             .uid(entry_uid(run_id, entry.revision))
             .set("run_id", run_id)
@@ -1921,11 +1924,12 @@ pub mod rows {
     /// stored before the column existed could not have one. The column is on every row and was
     /// backfilled, so it is the only honest answer to "where did this happen", and a reader
     /// narrowing to a project on this machine needs it. See `run_history::matches_root`.
-    pub fn run_headers_with_hosts(rows: &DataRows) -> Vec<(AgentRunHeader, String)> {
+    pub fn run_headers_with_hosts(rows: &DataRows) -> Vec<(AgentRunHeader, HostId)> {
         rows.rows
             .iter()
             .filter_map(|row| {
-                header_at(rows, row).map(|header| (header, text_at(rows, row, "host_id")))
+                header_at(rows, row)
+                    .map(|header| (header, HostId::new(text_at(rows, row, "host_id"))))
             })
             .collect()
     }
@@ -2908,10 +2912,10 @@ pub fn tab_projects(
     panes: &[AgentPane],
     manual: &BTreeMap<u32, String>,
     owners: &BTreeMap<u32, String>,
-) -> BTreeMap<usize, String> {
+) -> BTreeMap<TabId, String> {
     // `None` is a tab that two projects disagree over. It stays in the map, so a
     // later agent of one project cannot make the tab agree again.
-    let mut found: BTreeMap<usize, Option<String>> = BTreeMap::new();
+    let mut found: BTreeMap<TabId, Option<String>> = BTreeMap::new();
     for pane in panes {
         if classify(pane, manual).is_none() {
             continue;
@@ -2954,8 +2958,8 @@ pub fn tab_projects(
 pub fn tab_project_labels(
     panes: &[AgentPane],
     owners: &BTreeMap<u32, String>,
-) -> BTreeMap<usize, Vec<String>> {
-    let mut found: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
+) -> BTreeMap<TabId, Vec<String>> {
+    let mut found: BTreeMap<TabId, BTreeSet<String>> = BTreeMap::new();
     for pane in panes {
         let (Some((tab_id, _)), Some(owner)) = (&pane.tab, owners.get(&pane.pane_id)) else {
             continue;
@@ -3232,7 +3236,7 @@ mod tests {
 
     /// An owner on [`HOST`]. The cross-machine cases spell `Owner::new` out.
     fn owner(zellij_session_name: &str) -> rows::Owner {
-        rows::Owner::new(HOST, zellij_session_name)
+        rows::Owner::new(HostId::new(HOST), zellij_session_name)
     }
 
     #[test]
@@ -4317,7 +4321,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "zellij".to_owned(),
-            host_id: HOST.to_owned(),
+            host_id: HostId::new(HOST),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -4390,26 +4394,26 @@ mod tests {
     /// under one uid and say nothing.
     #[test]
     fn two_machines_minting_a_fallback_run_at_once_do_not_collide() {
-        let here = run_id("claude", 5, "", 1_764_618_000_000, "host-a");
-        let there = run_id("claude", 5, "", 1_764_618_000_000, "host-b");
+        let here = run_id("claude", 5, "", 1_764_618_000_000, &HostId::new("host-a"));
+        let there = run_id("claude", 5, "", 1_764_618_000_000, &HostId::new("host-b"));
         assert_ne!(here, there);
         assert_eq!(here, "claude:pane:5:1764618000000:host-a");
 
         // An agent with a session id of its own is host-free, and stays that way: the
         // derivation has to reach the same answer on the far side of a warp.
         assert_eq!(
-            run_id("claude", 5, "s1", 1_764_618_000_000, "host-a"),
-            run_id("claude", 99, "s1", 0, "host-b"),
+            run_id("claude", 5, "s1", 1_764_618_000_000, &HostId::new("host-a")),
+            run_id("claude", 99, "s1", 0, &HostId::new("host-b")),
         );
         assert_eq!(
-            run_id("claude", 5, "s1", 0, "host-a"),
+            run_id("claude", 5, "s1", 0, &HostId::new("host-a")),
             session_run_id("claude", "s1"),
         );
 
         // A caller that does not know its machine yet keeps the old shape, which is no worse
         // than what it replaced — and it is the shape every run recorded before this has.
         assert_eq!(
-            run_id("claude", 5, "", 1_764_618_000_000, ""),
+            run_id("claude", 5, "", 1_764_618_000_000, &HostId::new("")),
             "claude:pane:5:1764618000000",
         );
     }
@@ -4420,7 +4424,7 @@ mod tests {
     fn a_run_with_no_session_id_of_its_own_is_headed_by_its_run_id() {
         let mut run = a_pane_run();
         run.session_id = String::new();
-        run.id = run_id("claude", 3, "", 10, "host-a");
+        run.id = run_id("claude", 3, "", 10, &HostId::new("host-a"));
 
         let header = run_history(&run, 60, 100, 0).header;
         assert_eq!(header[1].text, "run     claude:pane:3:10:host-a");
@@ -4477,7 +4481,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "zellij".to_owned(),
-            host_id: HOST.to_owned(),
+            host_id: HostId::new(HOST),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -4560,7 +4564,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "zellij".to_owned(),
-            host_id: HOST.to_owned(),
+            host_id: HostId::new(HOST),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -4615,7 +4619,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "zellij".to_owned(),
-            host_id: HOST.to_owned(),
+            host_id: HostId::new(HOST),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,
@@ -4704,7 +4708,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
             zellij_session_name: "zellij".to_owned(),
-            host_id: HOST.to_owned(),
+            host_id: HostId::new(HOST),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),
@@ -4899,7 +4903,7 @@ mod tests {
             id: id.to_owned(),
             pane_id,
             zellij_session_name: session.to_owned(),
-            host_id: HOST.to_owned(),
+            host_id: HostId::new(HOST),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),
@@ -5155,8 +5159,8 @@ mod tests {
 
         // Both sessions are called `main`, which is what makes this a collision rather than a
         // coincidence.
-        let on_laptop = rows::Owner::new("host-laptop", "main");
-        let on_build_box = rows::Owner::new("host-build-box", "main");
+        let on_laptop = rows::Owner::new(HostId::new("host-laptop"), "main");
+        let on_build_box = rows::Owner::new(HostId::new("host-build-box"), "main");
 
         laptop
             .apply(vec![rows::latch_mutation(&on_laptop, 5, "reviewer")])
@@ -5205,8 +5209,8 @@ mod tests {
         laptop.define_all(&store::shared_defs()).unwrap();
         let build_box = laptop.joined(store::SHARED, "hocus-agentd");
 
-        let on_laptop = rows::Owner::new("host-laptop", "main");
-        let on_build_box = rows::Owner::new("host-build-box", "main");
+        let on_laptop = rows::Owner::new(HostId::new("host-laptop"), "main");
+        let on_build_box = rows::Owner::new(HostId::new("host-build-box"), "main");
 
         // The build box owns the run, and has said something recent about it.
         let mut run = a_run_with_entries("claude:session-1", "main", 7, &["answered"]);
@@ -5324,7 +5328,7 @@ mod tests {
             )
             .expect("the old definition still declares");
         let mut before = a_run_with_entries("claude:session-1", "zellij", 7, &[]);
-        before.host_id = String::new();
+        before.host_id = HostId::default();
         local
             .apply(vec![Mutation::put(rows::RUN_ENTITY)
                 .uid(before.id.clone())
@@ -5353,12 +5357,12 @@ mod tests {
 
         // Claiming costs no write of its own: the stamp rides out with the next persist.
         rows::claim_unowned_runs(&mut restored, &owner("zellij"));
-        assert_eq!(restored[0].host_id, HOST);
+        assert_eq!(restored[0].host_id, HostId::new(HOST));
         local.apply(rows::run_mutations(&restored[0])).unwrap();
 
         // Which narrows the row. Another machine running a session of the same name could reach
         // it while it named no host, and cannot once it does.
-        let elsewhere = rows::Owner::new("host-b", "zellij");
+        let elsewhere = rows::Owner::new(HostId::new("host-b"), "zellij");
         assert!(
             rows::runs_from_rows(&local.fetch(&rows::active_runs_request(&elsewhere)).unwrap())
                 .is_empty(),
@@ -5385,11 +5389,11 @@ mod tests {
         let local = store::Local::shared("hocus-agentd");
         local.define_all(&store::shared_defs()).unwrap();
         let mut run = a_run_with_entries("claude:session-1", "zellij", 7, &["asked"]);
-        run.host_id = String::new();
+        run.host_id = HostId::default();
         local.apply(rows::run_mutations(&run)).unwrap();
 
         // The daemon restores it, claims it in memory, and closes it when the pane goes.
-        run.host_id = HOST.to_owned();
+        run.host_id = HostId::new(HOST);
         run.ended_at_ms = Some(99);
         run.outcome = RunOutcome::Closed;
         local
@@ -5408,7 +5412,8 @@ mod tests {
         let closed = rows::runs_from_rows(&local.fetch(&rows::run_by_id_request(&run.id)).unwrap());
         assert_eq!(closed[0].outcome, RunOutcome::Closed);
         assert_eq!(
-            closed[0].host_id, HOST,
+            closed[0].host_id,
+            HostId::new(HOST),
             "the close is also what claimed the row"
         );
     }
@@ -6260,7 +6265,7 @@ mod tests {
     #[test]
     fn mention_context_resolves_ids_and_kinds_and_skips_what_it_cannot() {
         let tabbed = AgentPane {
-            tab: Some((9, "work".to_owned())),
+            tab: Some((TabId::new(9), "work".to_owned())),
             ..pane(3, "codex", Some("codex"))
         };
         let panes = [tabbed, pane(5, "zsh", Some("zsh"))];
@@ -6313,7 +6318,7 @@ mod tests {
     #[test]
     fn strip_rows_name_the_pane_and_end_with_its_tab_when_it_has_one() {
         let tabbed = AgentPane {
-            tab: Some((9, "work".to_owned())),
+            tab: Some((TabId::new(9), "work".to_owned())),
             ..pane(3, "codex", Some("codex"))
         };
         let rows = strip_rows(
@@ -6342,7 +6347,7 @@ mod tests {
     #[test]
     fn list_json_carries_the_tab_when_the_pane_has_one() {
         let tabbed = AgentPane {
-            tab: Some((9, "work".to_owned())),
+            tab: Some((TabId::new(9), "work".to_owned())),
             ..pane(3, "codex", Some("codex"))
         };
         let json = list_json(
@@ -6394,7 +6399,7 @@ mod tests {
         );
     }
 
-    fn in_folder(pane_id: u32, kind: &str, cwd: &str, tab_id: usize) -> AgentPane {
+    fn in_folder(pane_id: u32, kind: &str, cwd: &str, tab_id: TabId) -> AgentPane {
         AgentPane {
             cwd: Some(cwd.to_owned()),
             tab: Some((tab_id, format!("tab {tab_id}"))),
@@ -6404,7 +6409,7 @@ mod tests {
 
     #[test]
     fn list_json_carries_the_folder_the_project_and_the_branch() {
-        let pane = in_folder(3, "codex", "/work/hocus/src", 9);
+        let pane = in_folder(3, "codex", "/work/hocus/src", TabId::new(9));
         let json = list_json(
             &[pane],
             &manual(&[]),
@@ -6425,9 +6430,9 @@ mod tests {
     #[test]
     fn strip_rows_group_agents_under_their_project() {
         let panes = vec![
-            in_folder(3, "codex", "/work/pocus", 1),
-            in_folder(4, "aider", "/elsewhere", 1),
-            in_folder(5, "codex", "/work/hocus", 2),
+            in_folder(3, "codex", "/work/pocus", TabId::new(1)),
+            in_folder(4, "aider", "/elsewhere", TabId::new(1)),
+            in_folder(5, "codex", "/work/hocus", TabId::new(2)),
         ];
         let rows = strip_rows(
             &panes,
@@ -6462,9 +6467,9 @@ mod tests {
     #[test]
     fn strip_rows_group_the_worktrees_of_one_project_by_branch() {
         let panes = vec![
-            in_folder(3, "codex", "/work/hocus", 1),
-            in_folder(4, "claude", "/work/trees/topic", 2),
-            in_folder(5, "aider", "/work/hocus", 1),
+            in_folder(3, "codex", "/work/hocus", TabId::new(1)),
+            in_folder(4, "claude", "/work/trees/topic", TabId::new(2)),
+            in_folder(5, "aider", "/work/hocus", TabId::new(1)),
         ];
         let rows = strip_rows(
             &panes,
@@ -6524,8 +6529,8 @@ mod tests {
     #[test]
     fn strip_rows_group_by_branch_without_a_project() {
         let panes = vec![
-            in_folder(3, "codex", "/work/one", 1),
-            in_folder(4, "codex", "/work/two", 2),
+            in_folder(3, "codex", "/work/one", TabId::new(1)),
+            in_folder(4, "codex", "/work/two", TabId::new(2)),
         ];
         let rows = strip_rows(
             &panes,
@@ -6557,8 +6562,13 @@ mod tests {
     #[test]
     fn an_agent_whose_branch_is_not_known_yet_waits_under_its_own_header() {
         let panes = vec![
-            in_folder(3, "codex", "/work/hocus", 1),
-            in_folder(4, "claude", "/work/hocus/.claude/worktrees/topic", 2),
+            in_folder(3, "codex", "/work/hocus", TabId::new(1)),
+            in_folder(
+                4,
+                "claude",
+                "/work/hocus/.claude/worktrees/topic",
+                TabId::new(2),
+            ),
         ];
         let rows = strip_rows(
             &panes,
@@ -6592,13 +6602,13 @@ mod tests {
         };
         let panes = vec![
             // Tab 1 agrees, even though pane 4 has no known project.
-            in_folder(3, "codex", "/work/hocus", 1),
-            in_folder(4, "aider", "/elsewhere", 1),
+            in_folder(3, "codex", "/work/hocus", TabId::new(1)),
+            in_folder(4, "aider", "/elsewhere", TabId::new(1)),
             // Tab 2 has two projects, so it agrees on nothing.
-            in_folder(5, "codex", "/work/hocus", 2),
-            in_folder(6, "aider", "/work/pocus", 2),
+            in_folder(5, "codex", "/work/hocus", TabId::new(2)),
+            in_folder(6, "aider", "/work/pocus", TabId::new(2)),
             // Tab 3 has a shell, not an agent, and pane 9 is in no tab at all.
-            in_folder(7, "zsh", "/work/hocus", 3),
+            in_folder(7, "zsh", "/work/hocus", TabId::new(3)),
             untabbed,
         ];
         let owners = owners(&[
@@ -6611,7 +6621,7 @@ mod tests {
 
         assert_eq!(
             tab_projects(&panes, &manual(&[]), &owners),
-            BTreeMap::from([(1, "hocus".to_owned())]),
+            BTreeMap::from([(TabId::new(1), "hocus".to_owned())]),
         );
     }
 
@@ -6623,15 +6633,15 @@ mod tests {
         };
         let panes = vec![
             // One project, named once however many agents are on it.
-            in_folder(3, "codex", "/work/hocus", 1),
-            in_folder(4, "aider", "/work/hocus", 1),
+            in_folder(3, "codex", "/work/hocus", TabId::new(1)),
+            in_folder(4, "aider", "/work/hocus", TabId::new(1)),
             // Two projects, sorted rather than left in pane order.
-            in_folder(5, "codex", "/work/pocus", 2),
-            in_folder(6, "aider", "/work/hocus", 2),
+            in_folder(5, "codex", "/work/pocus", TabId::new(2)),
+            in_folder(6, "aider", "/work/hocus", TabId::new(2)),
             // A shell names its tab as readily as an agent does — which is the
             // whole point, since the ordinary session has no agent in it. Pane 9
             // is in no tab at all, and still names nothing.
-            in_folder(7, "zsh", "/work/hocus", 3),
+            in_folder(7, "zsh", "/work/hocus", TabId::new(3)),
             untabbed,
         ];
         let owners = owners(&[
@@ -6646,9 +6656,9 @@ mod tests {
         assert_eq!(
             tab_project_labels(&panes, &owners),
             BTreeMap::from([
-                (1, vec!["hocus".to_owned()]),
-                (2, vec!["hocus".to_owned(), "pocus".to_owned()]),
-                (3, vec!["hocus".to_owned()]),
+                (TabId::new(1), vec!["hocus".to_owned()]),
+                (TabId::new(2), vec!["hocus".to_owned(), "pocus".to_owned()]),
+                (TabId::new(3), vec!["hocus".to_owned()]),
             ]),
         );
     }
@@ -6658,12 +6668,12 @@ mod tests {
     /// the tab is, and a shell answers that.
     #[test]
     fn only_the_label_counts_a_shell_the_assignment_does_not() {
-        let panes = vec![in_folder(7, "zsh", "/work/hocus", 3)];
+        let panes = vec![in_folder(7, "zsh", "/work/hocus", TabId::new(3))];
         let owners = owners(&[(7, "hocus")]);
 
         assert_eq!(
             tab_project_labels(&panes, &owners),
-            BTreeMap::from([(3, vec!["hocus".to_owned()])]),
+            BTreeMap::from([(TabId::new(3), vec!["hocus".to_owned()])]),
         );
         assert!(tab_projects(&panes, &manual(&[]), &owners).is_empty());
     }
@@ -6688,7 +6698,7 @@ mod tests {
 
     #[test]
     fn a_tab_whose_agents_have_no_project_is_left_out() {
-        let panes = vec![in_folder(3, "codex", "/elsewhere", 1)];
+        let panes = vec![in_folder(3, "codex", "/elsewhere", TabId::new(1))];
 
         assert!(tab_project_labels(&panes, &owners(&[])).is_empty());
     }
@@ -6698,9 +6708,9 @@ mod tests {
         // Pane 7 agrees with pane 5, but pane 6 already broke the tab. Order
         // must not be able to heal it.
         let panes = vec![
-            in_folder(5, "codex", "/work/hocus", 1),
-            in_folder(6, "aider", "/work/pocus", 1),
-            in_folder(7, "codex", "/work/hocus", 1),
+            in_folder(5, "codex", "/work/hocus", TabId::new(1)),
+            in_folder(6, "aider", "/work/pocus", TabId::new(1)),
+            in_folder(7, "codex", "/work/hocus", TabId::new(1)),
         ];
         let owners = owners(&[(5, "hocus"), (6, "pocus"), (7, "hocus")]);
 
@@ -7282,7 +7292,7 @@ mod tests {
             id: "claude:session-1".to_owned(),
             pane_id: 3,
             zellij_session_name: "zellij".to_owned(),
-            host_id: HOST.to_owned(),
+            host_id: HostId::new(HOST),
             session_id: "session-1".to_owned(),
             kind: "claude".to_owned(),
             cwd: None,

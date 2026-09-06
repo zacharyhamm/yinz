@@ -18,10 +18,10 @@
 //! owner while it is in flight — that the pane leaves one session, arrives in the
 //! other keeping everything it had, and is never told to exit.
 
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{
     keys, FakePtyHandle, LayoutInfo, TestRunner, TestSession, WarpFailure, PROMPT, TERMINAL_SIZE,
 };
-use zellij_utils::cli::CliAction;
 
 /// Keep each session to its shell pane: the default background plugins would
 /// otherwise be spawning panes of their own while the test watches for one.
@@ -124,7 +124,7 @@ fn warp_focused_pane_to(
 fn warp_pane_by_id(
     sender: &TestSession,
     receiver: &TestSession,
-    terminal_id: u32,
+    terminal_id: zellij_types::internal_ids::TerminalId,
 ) -> (i32, String) {
     sender.run_cli_action_reporting(CliAction::WarpPane {
         to_session: receiver.session_name().to_owned(),
@@ -151,11 +151,15 @@ fn warp_focused_pane_expecting_success(
 /// has nothing but this field to be found by after a warp.
 const AGENT_RUN_ID: &str = "codex:warped-run";
 
-fn report_waiting_agent(zellij: &TestSession, terminal_id: u32) {
+fn report_waiting_agent(zellij: &TestSession, terminal_id: zellij_types::internal_ids::TerminalId) {
     report_waiting_agent_with_run_id(zellij, terminal_id, Some(AGENT_RUN_ID));
 }
 
-fn report_waiting_agent_with_run_id(zellij: &TestSession, terminal_id: u32, run_id: Option<&str>) {
+fn report_waiting_agent_with_run_id(
+    zellij: &TestSession,
+    terminal_id: zellij_types::internal_ids::TerminalId,
+    run_id: Option<&str>,
+) {
     let (exit_code, reported) = zellij.run_cli_action_reporting(CliAction::AgentReport {
         pane_id: Some(format!("terminal_{terminal_id}")),
         kind: Some("codex".to_owned()),
@@ -169,7 +173,10 @@ fn report_waiting_agent_with_run_id(zellij: &TestSession, terminal_id: u32, run_
     assert_eq!(exit_code, 0, "the agent report was refused: {reported}");
 }
 
-fn assert_waiting_agent(zellij: &TestSession, terminal_id: Option<u32>) {
+fn assert_waiting_agent(
+    zellij: &TestSession,
+    terminal_id: Option<zellij_types::internal_ids::TerminalId>,
+) {
     let (exit_code, listed) = zellij.run_cli_action_reporting(CliAction::ListPanes {
         tab: false,
         command: false,
@@ -187,7 +194,7 @@ fn assert_waiting_agent(zellij: &TestSession, terminal_id: Option<u32>) {
         .iter()
         .filter(|pane| {
             pane["agent"]["kind"] == "codex"
-                && terminal_id.is_none_or(|terminal_id| pane["id"] == terminal_id)
+                && terminal_id.is_none_or(|terminal_id| pane["id"] == terminal_id.get())
         })
         .collect();
     assert_eq!(
@@ -349,7 +356,7 @@ fn a_remote_pane_keeps_its_process_when_it_moves_between_sessions() {
     // The adopted pane is still a remote pane: it knows which machine it is on,
     // which is what a later re-run and the pane's own title read.
     let arrived_command = match arrived.terminal_action() {
-        Some(zellij_utils::input::command::TerminalAction::RunCommand(run_command)) => run_command,
+        Some(zellij_types::input::command::TerminalAction::RunCommand(run_command)) => run_command,
         other => panic!("an adopted remote pane should carry a command, got {other:?}"),
     };
     assert_eq!(

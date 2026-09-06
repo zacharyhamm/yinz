@@ -16,6 +16,7 @@ use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
+use zellij_types::internal_ids::ProcessId;
 
 use crate::pty_host::client::PtyHostHandle;
 use crate::pty_host::remote::protocol::{RemotePaneEntry, ResumeRefusal};
@@ -146,7 +147,7 @@ pub struct PaneSession {
     /// might still be using — and by then it could belong to another pane.
     _master: OwnedFd,
     master_fd: RawFd,
-    pub child_pid: u32,
+    pub child_pid: ProcessId,
     ring: Mutex<OutputRing>,
     /// Who the pane is talking to, and which connection that is.
     wire: Mutex<WireState>,
@@ -182,7 +183,7 @@ impl PaneSession {
         command: String,
         handle: PtyHostHandle,
         master: OwnedFd,
-        child_pid: u32,
+        child_pid: ProcessId,
     ) -> Self {
         let master_fd = master.as_raw_fd();
         Self {

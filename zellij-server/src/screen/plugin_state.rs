@@ -1,7 +1,9 @@
-use crate::TerminalId;
 use unicode_width::UnicodeWidthStr;
+use zellij_runtime::errors::prelude::*;
 use zellij_tile_utils::ellipsize;
-use zellij_utils::errors::prelude::*;
+use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
+use zellij_types::pane_id::PaneId;
 
 use super::Screen;
 use crate::background_jobs::BackgroundJob;
@@ -10,13 +12,15 @@ use crate::tab::Tab;
 use crate::ClientId;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
-use zellij_utils::consts::ZELLIJ_SOCK_DIR;
-use zellij_utils::data::{
-    Event, EventType, LayoutInfo, LayoutWithError, ListPanesResponse, ListTabsResponse, PaneInfo,
-    PaneListEntry, PaneManifest, PaneTarget, SessionInfo, TabInfo,
+use zellij_runtime::consts::ZELLIJ_SOCK_DIR;
+use zellij_types::command::PaneTarget;
+use {
+    zellij_types::data::Event, zellij_types::data::EventType, zellij_types::data::LayoutInfo,
+    zellij_types::data::LayoutWithError, zellij_types::data::ListPanesResponse,
+    zellij_types::data::ListTabsResponse, zellij_types::data::PaneInfo,
+    zellij_types::data::PaneListEntry, zellij_types::data::PaneManifest,
+    zellij_types::data::SessionInfo, zellij_types::data::TabInfo,
 };
-#[cfg(not(test))]
-use zellij_utils::input::layout::Layout;
 
 impl Screen {
     pub fn generate_and_report_tab_state(&mut self) -> Result<Vec<TabInfo>> {
@@ -43,7 +47,7 @@ impl Screen {
                 is_fullscreen_active: tab.is_fullscreen_active(),
                 is_sync_panes_active: tab.is_sync_panes_active(),
                 are_floating_panes_visible: tab.are_floating_panes_visible(),
-                other_focused_clients: all_focused_clients.into_iter().map(|id| id.0).collect(),
+                other_focused_clients: all_focused_clients.into_iter().collect(),
                 active_swap_layout_name,
                 is_swap_layout_dirty,
                 viewport_rows: tab_viewport.rows,
@@ -92,10 +96,7 @@ impl Screen {
                     is_fullscreen_active: tab.is_fullscreen_active(),
                     is_sync_panes_active: tab.is_sync_panes_active(),
                     are_floating_panes_visible: tab.are_floating_panes_visible(),
-                    other_focused_clients: other_focused_clients
-                        .into_iter()
-                        .map(|id| id.0)
-                        .collect(),
+                    other_focused_clients: other_focused_clients.into_iter().collect(),
                     active_swap_layout_name,
                     is_swap_layout_dirty,
                     viewport_rows: tab_viewport.rows,
@@ -139,17 +140,15 @@ impl Screen {
             pane_manifest.panes.insert(tab.position, tab.pane_infos());
         }
         // A plugin pane is not a process in a folder, so it is left without one.
-        for pane_info in pane_manifest
-            .panes
-            .values_mut()
-            .flatten()
-            .filter(|pane_info| !pane_info.is_plugin)
-        {
+        for pane_info in pane_manifest.panes.values_mut().flatten() {
+            let PaneId::Terminal(terminal_id) = pane_info.id else {
+                continue;
+            };
             pane_info.cwd = self
                 .terminal_cwds
-                .get(&TerminalId(pane_info.id))
+                .get(&terminal_id)
                 .map(|cwd| cwd.to_string_lossy().into_owned());
-            pane_info.host = self.terminal_hosts.get(&TerminalId(pane_info.id)).cloned();
+            pane_info.host = self.terminal_hosts.get(&terminal_id).cloned();
             // The worktree the pane's VM actually mirrors, for a pane that named none of
             // its own: `pane_info.target` is what the pane was *asked* for, and a pane
             // that joined an existing VM asked for a VM by name and nothing else. Only
@@ -161,8 +160,7 @@ impl Screen {
                     worktree: named, ..
                 },
             ) = (
-                self.terminal_firecracker_worktrees
-                    .get(&TerminalId(pane_info.id)),
+                self.terminal_firecracker_worktrees.get(&terminal_id),
                 &mut pane_info.target,
             ) {
                 if named.is_none() {
@@ -218,7 +216,8 @@ impl Screen {
         }
 
         fn sort_panes_by_tab_and_type(pane_entries: &mut [PaneListEntry]) {
-            pane_entries.sort_by_key(|e| (e.tab_position, !e.pane_info.is_plugin, e.pane_info.id));
+            pane_entries
+                .sort_by_key(|e| (e.tab_position, !e.pane_info.is_plugin(), e.pane_info.id));
         }
 
         let mut pane_entries = Vec::new();
@@ -286,7 +285,7 @@ impl Screen {
     /// to what is left, so the finished string fits the cap the bars apply anyway
     /// (`MAX_TAB_NAME_WIDTH`) and they have nothing to take off the end - which is where
     /// the exit marker lives, and the part a reader could not put back.
-    pub(super) fn plugin_tab_names(&self) -> HashMap<usize, String> {
+    pub(super) fn plugin_tab_names(&self) -> HashMap<TabId, String> {
         // Positions, because the `#1`/`#2` a collision earns are read off the tab
         // bar left to right. Ids would number by age instead, which is invisible.
         let mut by_position: Vec<&Tab> = self.tabs.values().collect();
@@ -373,20 +372,20 @@ impl Screen {
     pub(crate) fn convert_pane_metadata(
         pane_manifest: &PaneManifest,
         tab_infos: &[TabInfo],
-    ) -> Vec<zellij_utils::session_recording::PaneMetadata> {
-        use zellij_utils::session_recording::PaneMetadata;
+    ) -> Vec<zellij_storage::session_recording::PaneMetadata> {
+        use zellij_storage::session_recording::PaneMetadata;
         let mut result = Vec::new();
         // Build a map from tab position to TabInfo for quick lookup
-        let tab_by_position: std::collections::HashMap<usize, &TabInfo> =
+        let tab_by_position: std::collections::HashMap<TabPosition, &TabInfo> =
             tab_infos.iter().map(|t| (t.position, t)).collect();
         for (tab_position_key, pane_infos) in &pane_manifest.panes {
             if let Some(tab_info) = tab_by_position.get(tab_position_key) {
                 for pane in pane_infos {
-                    if pane.is_plugin {
+                    let PaneId::Terminal(terminal_id) = pane.id else {
                         continue;
-                    }
+                    };
                     result.push(PaneMetadata {
-                        terminal_id: pane.id,
+                        terminal_id,
                         tab_id: tab_info.tab_id,
                         tab_position: tab_info.position,
                         tab_name: tab_info.name.clone(),
@@ -436,7 +435,7 @@ impl Screen {
         if self.cached_layouts.is_empty() {
             #[cfg(not(test))]
             {
-                let (layouts, errors) = Layout::list_available_layouts(
+                let (layouts, errors) = zellij_config::layout::list_available_layouts(
                     self.layout_dir.clone(),
                     &self.default_layout_name,
                 );
@@ -470,12 +469,12 @@ impl Screen {
             tab_history: self
                 .tab_history
                 .iter()
-                .map(|(id, history)| (id.0, history.clone()))
+                .map(|(id, history)| (*id, history.clone()))
                 .collect(),
             pane_history: self
                 .pane_history
                 .iter()
-                .map(|(k, v)| (k.0, v.iter().map(|v| (*v).into()).collect()))
+                .map(|(k, v)| (*k, v.clone()))
                 .collect(),
             creation_time,
         };

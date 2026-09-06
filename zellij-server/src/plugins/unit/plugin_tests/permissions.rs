@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 #[serial(plugin_tests)]
@@ -28,7 +29,7 @@ pub fn send_configuration_to_plugins() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -52,7 +53,7 @@ pub fn send_configuration_to_plugins() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -105,7 +106,7 @@ pub fn request_plugin_permissions() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -125,7 +126,7 @@ pub fn request_plugin_permissions() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -177,7 +178,7 @@ pub fn granted_permission_request_result() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -198,7 +199,7 @@ pub fn granted_permission_request_result() {
                     ScreenInstruction::RequestPluginPermissions(_, plugin_permission) => {
                         let _ =
                             plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
-                                crate::PluginId(0),
+                                crate::PluginId::new(0),
                                 Some(client_id),
                                 plugin_permission.permissions,
                                 PermissionStatus::Granted,
@@ -222,7 +223,7 @@ pub fn granted_permission_request_result() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin.clone(),
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -274,7 +275,7 @@ pub fn denied_permission_request_result() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -295,7 +296,7 @@ pub fn denied_permission_request_result() {
                     ScreenInstruction::RequestPluginPermissions(_, plugin_permission) => {
                         let _ =
                             plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
-                                crate::PluginId(0),
+                                crate::PluginId::new(0),
                                 Some(client_id),
                                 plugin_permission.permissions,
                                 PermissionStatus::Denied,
@@ -319,7 +320,7 @@ pub fn denied_permission_request_result() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin.clone(),
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,

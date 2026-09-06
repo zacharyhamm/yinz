@@ -8,10 +8,14 @@ use crate::ui::boundaries::Boundaries;
 use crate::ui::pane_boundaries_frame::{FrameParams, StackListEntry};
 use crate::ClientId;
 use std::collections::{HashMap, HashSet};
-use zellij_utils::animation::blend;
-use zellij_utils::data::{client_id_to_colors, InputMode, PaletteColor, Style};
-use zellij_utils::errors::prelude::*;
-use zellij_utils::pane_size::PaneGeom;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::animation::blend;
+use zellij_types::pane_size::PaneGeom;
+use zellij_types::style::Style;
+use {
+    zellij_types::data::client_id_to_colors, zellij_types::data::InputMode,
+    zellij_types::data::PaletteColor,
+};
 
 pub fn dim_character_chunks(character_chunks: &mut Vec<CharacterChunk>) {
     for chunk in character_chunks.iter_mut() {
@@ -259,7 +263,7 @@ impl<'a> PaneContentsAndUi<'a> {
                     format!("failed to render fake cursor if needed for client {client_id}")
                 })?;
             if let Some(colors) = client_id_to_colors(
-                fake_cursor_client_id.0,
+                *fake_cursor_client_id,
                 self.style.colors.multiplayer_user_colors,
             ) {
                 let cursor_is_visible = self
@@ -588,7 +592,7 @@ pub fn frame_color(
                     Some((style.colors.frame_selected.base, 4))
                 } else {
                     let colors =
-                        client_id_to_colors(client_id.0, style.colors.multiplayer_user_colors);
+                        client_id_to_colors(client_id, style.colors.multiplayer_user_colors);
                     colors.map(|colors| (colors.0, 4))
                 }
             },

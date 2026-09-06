@@ -2,6 +2,7 @@
 //! stream rather than a guess at one.
 
 use super::*;
+use zellij_types::internal_ids::ProcessId;
 
 use hegel::generators;
 
@@ -153,7 +154,7 @@ fn test_session() -> (
         "/bin/sh".to_owned(),
         PtyHostHandle::for_test(control),
         OwnedFd::from(master),
-        std::process::id(),
+        ProcessId::new(std::process::id()),
     );
     (session, control_peer, master_peer)
 }

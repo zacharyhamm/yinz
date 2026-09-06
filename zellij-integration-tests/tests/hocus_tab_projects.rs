@@ -115,7 +115,7 @@ fn a_lone_shell_gets_a_project_name_after_tab_creation() {
         "args": {"name": "quiet-shell-project", "root": folder.path()},
     });
     assert_eq!(
-        zellij.run_cli_action(zellij_utils::cli::CliAction::Pipe {
+        zellij.run_cli_action(zellij_cli::args::CliAction::Pipe {
             name: Some("store_mutate".to_owned()),
             payload: Some(payload.to_string()),
             args: None,

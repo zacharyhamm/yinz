@@ -27,21 +27,28 @@ use std::env::temp_dir;
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
-use zellij_utils::data::AgentInfo;
-use zellij_utils::data::PaneContents;
-use zellij_utils::data::{
-    Direction, KeyWithModifier, NewPanePlacement, OverlayKind, OverlayPlacement, PaneInfo,
-    PermissionStatus, PermissionType, PluginPermission, RegexHighlight, ResizeStrategy, Style,
-    StyledText,
+use zellij_runtime::errors::prelude::*;
+use zellij_types::agent::AgentInfo;
+use zellij_types::data::PaneContents;
+use zellij_types::geometry::{Direction, ResizeStrategy};
+use zellij_types::input::command::RunCommand;
+use zellij_types::input::options::DEFAULT_WORD_SEPARATORS;
+use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
+use zellij_types::internal_ids::TerminalId;
+use zellij_types::keys::KeyWithModifier;
+use zellij_types::mouse::MouseEvent;
+use zellij_types::position::Position;
+use zellij_types::position::{Column, Line};
+use zellij_types::style::Style;
+use zellij_types::text::clean_string_from_control_and_linebreak;
+use {
+    zellij_types::data::NewPanePlacement, zellij_types::data::OverlayKind,
+    zellij_types::data::OverlayPlacement, zellij_types::data::PaneInfo,
+    zellij_types::data::PermissionStatus, zellij_types::data::PermissionType,
+    zellij_types::data::PluginPermission, zellij_types::data::RegexHighlight,
+    zellij_types::data::StyledText,
 };
-use zellij_utils::errors::prelude::*;
-use zellij_utils::input::command::RunCommand;
-use zellij_utils::input::mouse::MouseEvent;
-use zellij_utils::input::options::DEFAULT_WORD_SEPARATORS;
-use zellij_utils::internal_ids::TerminalId;
-use zellij_utils::position::Position;
-use zellij_utils::position::{Column, Line};
-use zellij_utils::shared::clean_string_from_control_and_linebreak;
 
 use crate::background_jobs::BackgroundJob;
 use crate::pane_groups::PaneGroups;
@@ -82,19 +89,18 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     str,
 };
-use zellij_utils::{
-    data::{Event, FloatingPaneCoordinates, InputMode, ModeInfo, Palette, PaletteColor, Styling},
-    input::{
-        command::TerminalAction,
-        layout::{
-            FloatingPaneLayout, PercentOrFixed, Run, RunPluginOrAlias, SplitDirection,
-            SwapFloatingLayout, SwapTiledLayout, TiledPaneLayout,
-        },
-        options::PaneFrameStyle,
-        parse_keys,
-    },
-    nested_session::NestedSessionMessage,
+use zellij_types::style::{Palette, Styling};
+use zellij_types::{
+    geometry::{FloatingPaneCoordinates, PercentOrFixed, SplitDirection},
     pane_size::{Dimension, Offset, PaneGeom, Size, SizeInPixels, Viewport},
+};
+use {
+    zellij_ipc::nested_session::NestedSessionMessage, zellij_types::data::Event,
+    zellij_types::data::InputMode, zellij_types::data::ModeInfo, zellij_types::data::PaletteColor,
+    zellij_types::input::command::TerminalAction, zellij_types::input::layout::FloatingPaneLayout,
+    zellij_types::input::layout::Run, zellij_types::input::layout::RunPluginOrAlias,
+    zellij_types::input::layout::SwapFloatingLayout, zellij_types::input::layout::SwapTiledLayout,
+    zellij_types::input::layout::TiledPaneLayout, zellij_types::input::options::PaneFrameStyle,
 };
 
 #[macro_export]
@@ -281,8 +287,8 @@ enum BufferedTabInstruction {
 }
 
 pub(crate) struct Tab {
-    pub id: usize,
-    pub position: usize,
+    pub id: TabId,
+    pub position: TabPosition,
     pub name: String,
     pub prev_name: String,
     default_name: String,
@@ -699,7 +705,7 @@ pub trait Pane {
     /// underlying app opted in via `CSI ? 2031 h`.
     /// Only relevant to terminal panes, plugin panes receive this through
     /// `Event::HostTerminalThemeChanged`
-    fn push_color_palette_dsr(&mut self, _mode: zellij_utils::data::HostTerminalThemeMode) {}
+    fn push_color_palette_dsr(&mut self, _mode: zellij_types::style::HostTerminalThemeMode) {}
     fn drain_clipboard_update(&mut self) -> Option<String> {
         None
     }
@@ -1127,8 +1133,8 @@ impl Tab {
     // FIXME: Still too many arguments for clippy to be happy...
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        id: usize,
-        position: usize,
+        id: TabId,
+        position: TabPosition,
         name: String,
         display_area: Size,
         character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
@@ -1167,7 +1173,7 @@ impl Tab {
         context_menu_on_right_click: bool,
     ) -> Self {
         let default_name = if name.is_empty() {
-            format!("Tab #{}", id + 1)
+            format!("Tab #{}", id.get() + 1)
         } else {
             String::new()
         };
@@ -3045,7 +3051,7 @@ impl Tab {
                 pid,
                 initial_pane_title,
                 invoked_with,
-                pane_id_to_replace.map(|id| id.into()),
+                pane_id_to_replace,
                 close_replaced_pane,
                 client_id,
                 blocking_notification,
@@ -3060,7 +3066,7 @@ impl Tab {
                 invoked_with,
                 start_suppressed,
                 should_focus_pane,
-                pane_id_to_stack_under.map(|id| id.into()),
+                pane_id_to_stack_under,
                 client_id,
                 blocking_notification,
                 borderless,
@@ -3750,13 +3756,11 @@ impl Tab {
             let _ = self.senders.send_to_plugin(PluginInstruction::Update(vec![(
                 None,
                 None,
-                Event::PaneClosed(pane_id.into()),
+                Event::PaneClosed(pane_id),
             )]));
             let _ = self
                 .senders
-                .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers {
-                    pane_id: pane_id.into(),
-                });
+                .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id });
             drop(replaced_pane);
         }
     }
@@ -4970,7 +4974,7 @@ impl Tab {
                 },
                 Some(AdjustedInput::WriteBytesToTerminal(adjusted_input)) => {
                     let mut plugin_updates = vec![];
-                    for key in parse_keys(&adjusted_input) {
+                    for key in zellij_runtime::keys::parse_keys(&adjusted_input) {
                         plugin_updates.push((Some(pid), client_id, Event::Key(key)));
                     }
                     self.senders
@@ -5996,17 +6000,9 @@ impl Tab {
                 },
                 Err(err) => match err.downcast_ref::<ZellijError>() {
                     Some(ZellijError::CantResizeFixedPanes { pane_ids }) => {
-                        let mut pane_ids_to_error = vec![];
-                        for (id, is_terminal) in pane_ids {
-                            if *is_terminal {
-                                pane_ids_to_error.push(PaneId::Terminal(TerminalId(*id)));
-                            } else {
-                                pane_ids_to_error.push(PaneId::Plugin(PluginId(*id)));
-                            };
-                        }
                         self.senders
                             .send_to_background_jobs(BackgroundJob::DisplayPaneError(
-                                pane_ids_to_error,
+                                pane_ids.clone(),
                                 "FIXED!".into(),
                             ))
                             .with_context(err_context)?;
@@ -6632,12 +6628,12 @@ impl Tab {
                 let _ = self.senders.send_to_plugin(PluginInstruction::Update(vec![(
                     None,
                     None,
-                    Event::PaneClosed(id.into()),
+                    Event::PaneClosed(id),
                 )]));
                 let _ =
                     self.senders
                         .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers {
-                            pane_id: id.into(),
+                            pane_id: id,
                         });
                 return;
             }
@@ -6714,13 +6710,11 @@ impl Tab {
         let _ = self.senders.send_to_plugin(PluginInstruction::Update(vec![(
             None,
             None,
-            Event::PaneClosed(id.into()),
+            Event::PaneClosed(id),
         )]));
         let _ = self
             .senders
-            .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers {
-                pane_id: id.into(),
-            });
+            .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id: id });
     }
     pub fn extract_pane(
         &mut self,
@@ -7177,7 +7171,7 @@ impl Tab {
     pub fn scroll_terminal_up(&mut self, terminal_pane_id: TerminalId) -> Result<()> {
         let pane_id = PaneId::Terminal(terminal_pane_id);
         let err_context = || format!("failed to scroll up pane {pane_id:?}");
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         let synthetic_position = Position::new(0, 0);
         let (mouse_sgr, is_alt) = match self.get_pane_with_id(pane_id) {
             Some(pane) => (
@@ -7216,7 +7210,7 @@ impl Tab {
     pub fn scroll_terminal_down(&mut self, terminal_pane_id: TerminalId) -> Result<()> {
         let pane_id = PaneId::Terminal(terminal_pane_id);
         let err_context = || format!("failed to scroll down pane {pane_id:?}");
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         let synthetic_position = Position::new(0, 0);
         let (mouse_sgr, is_alt) = match self.get_pane_with_id(pane_id) {
             Some(pane) => (
@@ -7256,10 +7250,10 @@ impl Tab {
 
     pub fn scroll_terminal_page_up(&mut self, terminal_pane_id: TerminalId) {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
-            let fictitious_client_id = ClientId(1); // this is not checked for terminal panes and we
-                                                    // don't have an actual client id here
-                                                    // TODO: traits were a mistake
-                                                    // prevent overflow when row == 0
+            let fictitious_client_id = ClientId::new(1); // this is not checked for terminal panes and we
+                                                         // don't have an actual client id here
+                                                         // TODO: traits were a mistake
+                                                         // prevent overflow when row == 0
             let scroll_rows = terminal_pane.rows().max(1).saturating_sub(1);
             terminal_pane.scroll_up(scroll_rows, fictitious_client_id);
         }
@@ -7284,9 +7278,9 @@ impl Tab {
 
     pub fn scroll_terminal_page_down(&mut self, terminal_pane_id: TerminalId) {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
-            let fictitious_client_id = ClientId(1); // this is not checked for terminal panes and we
-                                                    // don't have an actual client id here
-                                                    // TODO: traits were a mistake
+            let fictitious_client_id = ClientId::new(1); // this is not checked for terminal panes and we
+                                                         // don't have an actual client id here
+                                                         // TODO: traits were a mistake
             let scroll_rows = terminal_pane.get_content_rows();
             terminal_pane.scroll_down(scroll_rows, fictitious_client_id);
             if !terminal_pane.is_scrolled() {
@@ -7450,9 +7444,9 @@ impl Tab {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
             terminal_pane.clear_scroll();
             if let Some(size) = terminal_pane.get_line_number() {
-                let fictitious_client_id = ClientId(1); // this is not checked for terminal panes and we
-                                                        // don't have an actual client id here
-                                                        // TODO: traits were a mistake
+                let fictitious_client_id = ClientId::new(1); // this is not checked for terminal panes and we
+                                                             // don't have an actual client id here
+                                                             // TODO: traits were a mistake
                 terminal_pane.scroll_up(size, fictitious_client_id);
             }
         }
@@ -8880,17 +8874,9 @@ impl Tab {
                 Ok(_) => {},
                 Err(err) => match err.downcast_ref::<ZellijError>() {
                     Some(ZellijError::CantResizeFixedPanes { pane_ids }) => {
-                        let mut pane_ids_to_error = vec![];
-                        for (id, is_terminal) in pane_ids {
-                            if *is_terminal {
-                                pane_ids_to_error.push(PaneId::Terminal(TerminalId(*id)));
-                            } else {
-                                pane_ids_to_error.push(PaneId::Plugin(PluginId(*id)));
-                            };
-                        }
                         self.senders
                             .send_to_background_jobs(BackgroundJob::DisplayPaneError(
-                                pane_ids_to_error,
+                                pane_ids.clone(),
                                 "FIXED!".into(),
                             ))
                             .with_context(err_context)?;
@@ -9397,13 +9383,13 @@ impl Tab {
     }
     // --- Pane-targeting CLI methods ---
     pub fn scroll_up_by_pane_id(&mut self, pane_id: PaneId) {
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.scroll_up(1, fictitious_client_id);
         }
     }
     pub fn scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.scroll_down(1, fictitious_client_id);
             if !pane.is_scrolled() {
@@ -9415,7 +9401,7 @@ impl Tab {
         Ok(())
     }
     pub fn scroll_to_top_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.clear_scroll();
             if let Some(size) = pane.get_line_number() {
@@ -9436,14 +9422,14 @@ impl Tab {
         Ok(())
     }
     pub fn page_scroll_up_by_pane_id(&mut self, pane_id: PaneId) {
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = pane.rows().max(1).saturating_sub(1);
             pane.scroll_up(scroll_rows, fictitious_client_id);
         }
     }
     pub fn page_scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = pane.get_content_rows();
             pane.scroll_down(scroll_rows, fictitious_client_id);
@@ -9456,14 +9442,14 @@ impl Tab {
         Ok(())
     }
     pub fn half_page_scroll_up_by_pane_id(&mut self, pane_id: PaneId) {
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = (pane.rows().max(1).saturating_sub(1)) / 2;
             pane.scroll_up(scroll_rows, fictitious_client_id);
         }
     }
     pub fn half_page_scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = (pane.rows().max(1).saturating_sub(1)) / 2;
             pane.scroll_down(scroll_rows, fictitious_client_id);
@@ -9620,10 +9606,7 @@ pub fn pane_info_for_pane(
                 .map(|position| (*client_id, position))
         })
         .collect();
-    pane_info.index_in_pane_group = index_in_pane_group
-        .into_iter()
-        .map(|(id, index)| (id.0, index))
-        .collect();
+    pane_info.index_in_pane_group = index_in_pane_group;
 
     let (default_fg, default_bg) = pane.get_pane_default_colors();
     pane_info.default_fg = default_fg;
@@ -9632,8 +9615,7 @@ pub fn pane_info_for_pane(
 
     match pane_id {
         PaneId::Terminal(terminal_id) => {
-            pane_info.id = terminal_id.0;
-            pane_info.is_plugin = false;
+            pane_info.id = PaneId::Terminal(*terminal_id);
             if let Some(Run::Command(command)) = pane.invoked_with() {
                 pane_info.target = command.target.clone();
             }
@@ -9643,8 +9625,7 @@ pub fn pane_info_for_pane(
             });
         },
         PaneId::Plugin(plugin_id) => {
-            pane_info.id = plugin_id.0;
-            pane_info.is_plugin = true;
+            pane_info.id = PaneId::Plugin(*plugin_id);
             pane_info.plugin_url = pane.invoked_with().as_ref().and_then(|c| match c {
                 Run::Plugin(run_plugin_or_alias) => Some(run_plugin_or_alias.location_string()),
                 _ => None,

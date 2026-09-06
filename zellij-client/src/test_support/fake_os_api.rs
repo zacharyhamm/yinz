@@ -8,10 +8,13 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use zellij_utils::data::Palette;
-use zellij_utils::errors::ErrorContext;
-use zellij_utils::ipc::{ClientToServerMsg, IpcRecv, ServerToClientMsg};
-use zellij_utils::pane_size::Size;
+use zellij_types::diagnostics::ErrorContext;
+use zellij_types::pane_size::Size;
+use zellij_types::style::Palette;
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcRecv,
+    zellij_ipc::ipc::ServerToClientMsg,
+};
 
 /// A `ClientOsApi` that does nothing until you ask it to.
 ///

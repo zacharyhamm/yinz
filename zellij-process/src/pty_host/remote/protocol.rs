@@ -22,7 +22,8 @@
 use std::io::{self, Read, Write};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use zellij_utils::{errors::prelude::*, input::command::RunCommand};
+use zellij_runtime::errors::prelude::*;
+use zellij_types::input::command::RunCommand;
 
 use crate::pty_host::protocol::{SpawnFailureKind, WireWinsize};
 

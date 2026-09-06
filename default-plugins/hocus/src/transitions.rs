@@ -5,6 +5,7 @@ use crate::*;
 use hocus_proto::jobs;
 use hocus_proto::llm::{api_error_message, retry_delay, streamed_retry_delay};
 use std::collections::BTreeMap;
+use zellij_tile::prelude::DataWatchId;
 use zellij_tile::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -614,7 +615,7 @@ impl State {
     /// Nothing here compares versions. The store re-runs a watch on every write
     /// and reports only when the rows actually differ, so an idempotent write is
     /// silent — which is what the snapshot watermark was approximating.
-    pub(crate) fn on_projects_changed(&mut self, watch_id: u64, rows: &DataRows) -> bool {
+    pub(crate) fn on_projects_changed(&mut self, watch_id: DataWatchId, rows: &DataRows) -> bool {
         if watch_id != self.project_watch {
             return false;
         }
@@ -812,7 +813,7 @@ impl State {
         self.archive_more = rows.truncated;
     }
 
-    pub(crate) fn send_run_detail(&self, plugin_id: u32, run_id: &str) {
+    pub(crate) fn send_run_detail(&self, plugin_id: zellij_tile::prelude::PluginId, run_id: &str) {
         let Ok(rows) = self.store().fetch(&agents::rows::run_by_id_request(run_id)) else {
             return;
         };
@@ -844,7 +845,7 @@ impl State {
     /// Answered either way (`wire::AGENT_RESUME_RESULT`). The panel put a confirmation in
     /// front of this, so the user has already said yes to something; a refusal that never
     /// arrives would leave that yes looking like a key that does nothing.
-    pub(crate) fn resume_run(&mut self, plugin_id: u32, run_id: &str) {
+    pub(crate) fn resume_run(&mut self, plugin_id: zellij_tile::prelude::PluginId, run_id: &str) {
         let answer = |detail: String| {
             let Ok(payload) = serde_json::to_string(&wire::ResumeResult {
                 run_id: run_id.to_owned(),
@@ -1498,7 +1499,12 @@ impl State {
     /// Addressed by plugin id rather than broadcast, unlike everything else
     /// hocus sends: the asker is one of possibly several, and an acknowledgement
     /// delivered to the wrong one would answer a question it never put.
-    fn ack_ask(&self, reply_to: Option<u32>, outcome: wire::AskOutcome, detail: &str) {
+    fn ack_ask(
+        &self,
+        reply_to: Option<zellij_tile::prelude::PluginId>,
+        outcome: wire::AskOutcome,
+        detail: &str,
+    ) {
         let Some(id) = reply_to else {
             return;
         };

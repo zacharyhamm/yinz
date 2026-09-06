@@ -9,9 +9,9 @@ fn write_to_suppressed_pane() {
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
@@ -19,23 +19,23 @@ fn write_to_suppressed_pane() {
 
     // Suppress pane 2 and remove it from active panes
     tab.replace_active_pane_with_editor_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
-        crate::ClientId(1),
+        PaneId::Terminal(crate::TerminalId::new(2)),
+        crate::ClientId::new(1),
     )
     .unwrap();
     tab.tiled_panes
-        .remove_pane(PaneId::Terminal(crate::TerminalId(2)));
+        .remove_pane(PaneId::Terminal(crate::TerminalId::new(2)));
 
     // Make sure it's suppressed now
     tab.suppressed_panes
-        .get(&PaneId::Terminal(crate::TerminalId(2)))
+        .get(&PaneId::Terminal(crate::TerminalId::new(2)))
         .unwrap();
     // Write content to it
     tab.write_to_pane_id(
         &None,
         vec![34, 127, 31, 82, 17, 182],
         false,
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
     )
@@ -50,14 +50,14 @@ fn split_panes_vertically() {
     };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    tab.vertical_split(new_pane_id, None, crate::ClientId(1), None, None)
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    tab.vertical_split(new_pane_id, None, crate::ClientId::new(1), None, None)
         .unwrap();
     assert_eq!(tab.tiled_panes.panes.len(), 2, "The tab has two panes");
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .x,
@@ -67,7 +67,7 @@ fn split_panes_vertically() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .y,
@@ -77,7 +77,7 @@ fn split_panes_vertically() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .cols
@@ -88,7 +88,7 @@ fn split_panes_vertically() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .rows
@@ -99,7 +99,7 @@ fn split_panes_vertically() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .x,
@@ -109,7 +109,7 @@ fn split_panes_vertically() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .y,
@@ -119,7 +119,7 @@ fn split_panes_vertically() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .cols
@@ -130,7 +130,7 @@ fn split_panes_vertically() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .rows
@@ -148,15 +148,15 @@ fn split_panes_horizontally() {
     };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    tab.horizontal_split(new_pane_id, None, crate::ClientId(1), None, None)
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
         .unwrap();
     assert_eq!(tab.tiled_panes.panes.len(), 2, "The tab has two panes");
 
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .x,
@@ -166,7 +166,7 @@ fn split_panes_horizontally() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .y,
@@ -176,7 +176,7 @@ fn split_panes_horizontally() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .cols
@@ -187,7 +187,7 @@ fn split_panes_horizontally() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .rows
@@ -199,7 +199,7 @@ fn split_panes_horizontally() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .x,
@@ -209,7 +209,7 @@ fn split_panes_horizontally() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .y,
@@ -219,7 +219,7 @@ fn split_panes_horizontally() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .cols
@@ -230,7 +230,7 @@ fn split_panes_horizontally() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .rows
@@ -249,7 +249,7 @@ fn split_largest_pane() {
     let stacked_resize = false; // note - this is not the default
     let mut tab = create_new_tab(size, stacked_resize);
     for i in 2..5 {
-        let new_pane_id = PaneId::Terminal(crate::TerminalId(i));
+        let new_pane_id = PaneId::Terminal(crate::TerminalId::new(i));
         tab.new_pane(
             new_pane_id,
             None,
@@ -257,7 +257,7 @@ fn split_largest_pane() {
             false,
             true,
             NewPanePlacement::default(),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
@@ -267,7 +267,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .x,
@@ -277,7 +277,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .y,
@@ -287,7 +287,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .cols
@@ -298,7 +298,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .rows
@@ -310,7 +310,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .x,
@@ -320,7 +320,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .y,
@@ -330,7 +330,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .cols
@@ -341,7 +341,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .rows
@@ -353,7 +353,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .x,
@@ -363,7 +363,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .y,
@@ -373,7 +373,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .cols
@@ -384,7 +384,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .rows
@@ -396,7 +396,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .x,
@@ -406,7 +406,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .y,
@@ -416,7 +416,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .cols
@@ -427,7 +427,7 @@ fn split_largest_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .rows
@@ -443,9 +443,9 @@ pub fn cannot_split_panes_vertically_when_active_pane_is_too_small() {
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
@@ -463,9 +463,9 @@ pub fn cannot_split_panes_horizontally_when_active_pane_is_too_small() {
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     tab.horizontal_split(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
@@ -483,13 +483,13 @@ pub fn cannot_split_largest_pane_when_there_is_no_room() {
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     tab.new_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
         true,
         NewPanePlacement::default(),
-        Some(crate::ClientId(1)),
+        Some(crate::ClientId::new(1)),
         None,
     )
     .unwrap();
@@ -510,9 +510,9 @@ pub fn cannot_split_panes_vertically_when_active_pane_has_fixed_columns() {
     initial_layout.children = vec![fixed_child, TiledPaneLayout::default()];
     let mut tab = create_new_tab_with_layout(size, initial_layout);
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
@@ -530,9 +530,9 @@ pub fn cannot_split_panes_horizontally_when_active_pane_has_fixed_rows() {
     initial_layout.children = vec![fixed_child, TiledPaneLayout::default()];
     let mut tab = create_new_tab_with_layout(size, initial_layout);
     tab.horizontal_split(
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
@@ -548,9 +548,9 @@ pub fn split_in_direction_without_a_connected_client_still_creates_the_pane() {
     };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
-    tab.remove_client(crate::ClientId(1));
+    tab.remove_client(crate::ClientId::new(1));
     tab.new_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
@@ -578,9 +578,9 @@ pub fn split_in_direction_without_a_connected_client_splits_the_existing_pane() 
     };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
-    tab.remove_client(crate::ClientId(1));
+    tab.remove_client(crate::ClientId::new(1));
     tab.new_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
@@ -596,13 +596,13 @@ pub fn split_in_direction_without_a_connected_client_splits_the_existing_pane() 
     let first_pane_geom = tab
         .tiled_panes
         .panes
-        .get(&PaneId::Terminal(crate::TerminalId(1)))
+        .get(&PaneId::Terminal(crate::TerminalId::new(1)))
         .unwrap()
         .position_and_size();
     let new_pane_geom = tab
         .tiled_panes
         .panes
-        .get(&PaneId::Terminal(crate::TerminalId(2)))
+        .get(&PaneId::Terminal(crate::TerminalId::new(2)))
         .unwrap()
         .position_and_size();
     assert_eq!(first_pane_geom.x, 0, "the existing pane keeps its position");

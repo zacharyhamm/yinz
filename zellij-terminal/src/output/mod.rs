@@ -20,11 +20,14 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     str,
 };
-use zellij_utils::data::{HighlightLayer, PaneContents, PaneRenderReport};
-use zellij_utils::errors::prelude::*;
-use zellij_utils::kitty_placeholders::PLACEHOLDER;
-use zellij_utils::pane_size::SizeInPixels;
-use zellij_utils::pane_size::{PaneGeom, Size};
+use zellij_runtime::errors::prelude::*;
+use zellij_types::kitty_placeholders::PLACEHOLDER;
+use zellij_types::pane_size::SizeInPixels;
+use zellij_types::pane_size::{PaneGeom, Size};
+use {
+    zellij_types::data::HighlightLayer, zellij_types::data::PaneContents,
+    zellij_types::data::PaneRenderReport,
+};
 
 fn vte_goto_instruction(x_coords: usize, y_coords: usize, vte_output: &mut String) -> Result<()> {
     write!(
@@ -422,8 +425,8 @@ pub struct KittyFrameInput<'a> {
 
 fn pane_sort_key(pane_id: PaneId) -> (u8, u32) {
     match pane_id {
-        PaneId::Terminal(id) => (0, id.0),
-        PaneId::Plugin(id) => (1, id.0),
+        PaneId::Terminal(id) => (0, id.get()),
+        PaneId::Plugin(id) => (1, id.get()),
     }
 }
 
@@ -1185,11 +1188,8 @@ impl Output {
         pane_id: PaneId,
         pane_contents: PaneContents,
     ) {
-        self.pane_render_report.add_pane_contents(
-            &client_ids.iter().map(|id| id.0).collect::<Vec<_>>(),
-            pane_id.into(),
-            pane_contents,
-        );
+        self.pane_render_report
+            .add_pane_contents(client_ids, pane_id, pane_contents);
     }
     pub fn add_pane_contents_with_ansi(
         &mut self,
@@ -1197,11 +1197,8 @@ impl Output {
         pane_id: PaneId,
         pane_contents: PaneContents,
     ) {
-        self.pane_render_report.add_pane_contents_with_ansi(
-            &client_ids.iter().map(|id| id.0).collect::<Vec<_>>(),
-            pane_id.into(),
-            pane_contents,
-        );
+        self.pane_render_report
+            .add_pane_contents_with_ansi(client_ids, pane_id, pane_contents);
     }
     pub fn drain_pane_render_report(&mut self) -> PaneRenderReport {
         let empty_pane_render_report = PaneRenderReport::default();

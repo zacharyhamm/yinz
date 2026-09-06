@@ -7,13 +7,11 @@ use super::{
 };
 use crate::panes::terminal_character::RESET_STYLES;
 use crate::panes::{terminal_character::CharacterStyles, AnsiCode};
-use zellij_utils::{
-    data::{PaletteColor, Style, StyleDeclaration},
-    shared::ansi_len,
-};
+use zellij_types::style::{Style, StyleDeclaration};
+use {zellij_types::data::PaletteColor, zellij_types::text::ansi_len};
 
 use unicode_width::UnicodeWidthChar;
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 
 pub fn text(content: Text, style: &Style, component_coordinates: Option<Coordinates>) -> Vec<u8> {
     if content.disabled {
@@ -74,7 +72,7 @@ pub fn stringify_text(
     left_padding: Option<usize>,
     coordinates: &Option<Coordinates>,
     style: &StyleDeclaration,
-    styling: &zellij_utils::data::Styling,
+    styling: &zellij_types::style::Styling,
     component_text_style: CharacterStyles,
 ) -> (String, usize) {
     let mut text_width = 0;
@@ -137,7 +135,7 @@ pub fn color_index_character(
     index: usize,
     text: &Text,
     declaration: &StyleDeclaration,
-    styling: &zellij_utils::data::Styling,
+    styling: &zellij_types::style::Styling,
     base_text_style: CharacterStyles,
 ) -> String {
     let mut character_style = text
@@ -249,7 +247,7 @@ impl Text {
         &self,
         index: usize,
         style: &StyleDeclaration,
-        styling: &zellij_utils::data::Styling,
+        styling: &zellij_types::style::Styling,
     ) -> Option<PaletteColor> {
         const ERROR_COLOR_LEVEL: usize = 6;
         const SUCCESS_COLOR_LEVEL: usize = 7;

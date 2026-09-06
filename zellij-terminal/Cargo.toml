@@ -9,6 +9,9 @@ description = "Terminal emulation and output serialization for Zellij"
 workspace = true
 
 [dependencies]
+zellij-ipc = { workspace = true }
+zellij-runtime = { workspace = true }
+zellij-types = { workspace = true }
 libc = { workspace = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
@@ -20,7 +23,6 @@ sixel-image = { version = "0.2.1", default-features = false }
 sixel-tokenizer = { version = "0.1.0", default-features = false }
 unicode-width = { workspace = true }
 vte = { workspace = true }
-zellij-utils = { workspace = true }
 
 [dev-dependencies]
 hegeltest = "0.29.3"

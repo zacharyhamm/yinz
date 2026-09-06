@@ -17,7 +17,7 @@ fn tab_with_basic_layout() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab_with_layout(size, ModeInfo::default(), layout);
     let mut output = Output::default();
     tab.render(&mut output, None).unwrap();
@@ -45,7 +45,7 @@ fn tab_with_layout_that_has_floating_panes() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab_with_layout(size, ModeInfo::default(), layout);
     let mut output = Output::default();
     tab.render(&mut output, None).unwrap();
@@ -74,16 +74,16 @@ fn titles_frame_style_with_fixed_size_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab_with_layout(size, ModeInfo::default(), layout);
     tab.set_pane_frames(PaneFrameStyle::Titles);
     tab.handle_pty_bytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         Vec::from("I am the fixed size pane".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("I am the flexible pane".as_bytes()),
     )
     .unwrap();
@@ -125,7 +125,7 @@ fn tab_with_nested_layout() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab_with_layout(size, ModeInfo::default(), layout);
     let mut output = Output::default();
     tab.render(&mut output, None).unwrap();
@@ -159,7 +159,7 @@ fn tab_with_nested_uneven_layout() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab_with_layout(size, ModeInfo::default(), layout);
     let mut output = Output::default();
     tab.render(&mut output, None).unwrap();
@@ -179,7 +179,7 @@ fn pane_bracketed_paste_ignored_when_not_in_bracketed_paste_mode() {
         cols: 121,
         rows: 20,
     };
-    let client_id: u16 = 1;
+    let client_id = ClientId::new(1);
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
     let mut tab = create_new_tab_with_mock_pty_writer(
@@ -191,27 +191,12 @@ fn pane_bracketed_paste_ignored_when_not_in_bracketed_paste_mode() {
 
     let bracketed_paste_start = vec![27, 91, 50, 48, 48, 126]; // \u{1b}[200~
     let bracketed_paste_end = vec![27, 91, 50, 48, 49, 126]; // \u{1b}[201
-    tab.write_to_active_terminal(
-        &None,
-        bracketed_paste_start,
-        false,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
-    tab.write_to_active_terminal(
-        &None,
-        "test".as_bytes().to_vec(),
-        false,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
-    tab.write_to_active_terminal(
-        &None,
-        bracketed_paste_end,
-        false,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
+    tab.write_to_active_terminal(&None, bracketed_paste_start, false, client_id)
+        .unwrap();
+    tab.write_to_active_terminal(&None, "test".as_bytes().to_vec(), false, client_id)
+        .unwrap();
+    tab.write_to_active_terminal(&None, bracketed_paste_end, false, client_id)
+        .unwrap();
 
     pty_instruction_bus.exit();
 
@@ -224,7 +209,7 @@ fn pane_faux_scrolling_in_alternate_mode() {
         cols: 121,
         rows: 20,
     };
-    let client_id: u16 = 1;
+    let client_id = ClientId::new(1);
     let lines_to_scroll = 3;
 
     let mut pty_instruction_bus = MockPtyInstructionBus::new();
@@ -239,56 +224,32 @@ fn pane_faux_scrolling_in_alternate_mode() {
     let set_application_mode = String::from("\u{1b}[?1h");
 
     // no output since alternate scren not active yet
-    tab.handle_scrollwheel_up(
-        &Position::new(1, 1),
-        lines_to_scroll,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
-    tab.handle_scrollwheel_down(
-        &Position::new(1, 1),
-        lines_to_scroll,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
+    tab.handle_scrollwheel_up(&Position::new(1, 1), lines_to_scroll, client_id)
+        .unwrap();
+    tab.handle_scrollwheel_down(&Position::new(1, 1), lines_to_scroll, client_id)
+        .unwrap();
 
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         enable_alternate_screen.as_bytes().to_vec(),
     )
     .unwrap();
     // CSI A * lines_to_scroll, CSI B * lines_to_scroll
-    tab.handle_scrollwheel_up(
-        &Position::new(1, 1),
-        lines_to_scroll,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
-    tab.handle_scrollwheel_down(
-        &Position::new(1, 1),
-        lines_to_scroll,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
+    tab.handle_scrollwheel_up(&Position::new(1, 1), lines_to_scroll, client_id)
+        .unwrap();
+    tab.handle_scrollwheel_down(&Position::new(1, 1), lines_to_scroll, client_id)
+        .unwrap();
 
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         set_application_mode.as_bytes().to_vec(),
     )
     .unwrap();
     // SS3 A * lines_to_scroll, SS3 B * lines_to_scroll
-    tab.handle_scrollwheel_up(
-        &Position::new(1, 1),
-        lines_to_scroll,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
-    tab.handle_scrollwheel_down(
-        &Position::new(1, 1),
-        lines_to_scroll,
-        crate::ClientId(client_id),
-    )
-    .unwrap();
+    tab.handle_scrollwheel_up(&Position::new(1, 1), lines_to_scroll, client_id)
+        .unwrap();
+    tab.handle_scrollwheel_down(&Position::new(1, 1), lines_to_scroll, client_id)
+        .unwrap();
 
     pty_instruction_bus.exit();
 
@@ -307,14 +268,14 @@ fn move_pane_focus_sends_tty_csi_event() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let tty_stdin_bytes = Arc::new(Mutex::new(BTreeMap::new()));
     let os_api = Box::new(FakeInputOutput {
         tty_stdin_bytes: tty_stdin_bytes.clone(),
         ..Default::default()
     });
     let mut tab = create_new_tab_with_os_api(size, ModeInfo::default(), &os_api);
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
     tab.new_pane(
         new_pane_id_1,
         None,
@@ -327,13 +288,13 @@ fn move_pane_focus_sends_tty_csi_event() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         // subscribe to focus events
         Vec::from("\u{1b}[?1004h".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         // subscribe to focus events
         Vec::from("\u{1b}[?1004h".as_bytes()),
     )
@@ -348,15 +309,15 @@ fn move_floating_pane_focus_sends_tty_csi_event() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let tty_stdin_bytes = Arc::new(Mutex::new(BTreeMap::new()));
     let os_api = Box::new(FakeInputOutput {
         tty_stdin_bytes: tty_stdin_bytes.clone(),
         ..Default::default()
     });
     let mut tab = create_new_tab_with_os_api(size, ModeInfo::default(), &os_api);
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
 
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -383,19 +344,19 @@ fn move_floating_pane_focus_sends_tty_csi_event() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         // subscribe to focus events
         Vec::from("\u{1b}[?1004h".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         // subscribe to focus events
         Vec::from("\u{1b}[?1004h".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         // subscribe to focus events
         Vec::from("\u{1b}[?1004h".as_bytes()),
     )
@@ -410,15 +371,15 @@ fn toggle_floating_panes_on_sends_tty_csi_event() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let tty_stdin_bytes = Arc::new(Mutex::new(BTreeMap::new()));
     let os_api = Box::new(FakeInputOutput {
         tty_stdin_bytes: tty_stdin_bytes.clone(),
         ..Default::default()
     });
     let mut tab = create_new_tab_with_os_api(size, ModeInfo::default(), &os_api);
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
 
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -447,19 +408,19 @@ fn toggle_floating_panes_on_sends_tty_csi_event() {
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         // subscribe to focus events
         Vec::from("\u{1b}[?1004h".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         // subscribe to focus events
         Vec::from("\u{1b}[?1004h".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         // subscribe to focus events
         Vec::from("\u{1b}[?1004h".as_bytes()),
     )
@@ -475,15 +436,15 @@ fn toggle_floating_panes_off_sends_tty_csi_event() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let tty_stdin_bytes = Arc::new(Mutex::new(BTreeMap::new()));
     let os_api = Box::new(FakeInputOutput {
         tty_stdin_bytes: tty_stdin_bytes.clone(),
         ..Default::default()
     });
     let mut tab = create_new_tab_with_os_api(size, ModeInfo::default(), &os_api);
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
 
     tab.toggle_floating_panes(Some(client_id), None, None)
         .unwrap();
@@ -510,19 +471,19 @@ fn toggle_floating_panes_off_sends_tty_csi_event() {
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         // subscribe to focus events
         Vec::from("\u{1b}[?1004h".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         // subscribe to focus events
         Vec::from("\u{1b}[?1004h".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         // subscribe to focus events
         Vec::from("\u{1b}[?1004h".as_bytes()),
     )

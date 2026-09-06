@@ -15,12 +15,11 @@ use crate::{
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use zellij_utils::{
-    channels::SenderWithContext,
-    data::ConnectToSession,
-    errors::ContextType,
-    ipc::{ClientToServerMsg, ExitReason},
-    nested_session,
+use zellij_runtime::channels::SenderWithContext;
+use zellij_types::diagnostics::ContextType;
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ExitReason, zellij_ipc::nested_session,
+    zellij_types::data::SessionConnection,
 };
 
 /// Why the loop stopped, and what the caller should do next.
@@ -29,7 +28,7 @@ pub(crate) struct LoopOutcome {
     pub exit_msg: String,
     /// Set when the client should reconnect to a different session rather
     /// than exiting.
-    pub reconnect_to_session: Option<ConnectToSession>,
+    pub reconnect_to_session: Option<SessionConnection>,
 }
 
 pub(crate) struct ClientLoop<'a> {
@@ -52,9 +51,9 @@ impl ClientLoop<'_> {
     /// Run until the server tells us to exit or to switch sessions.
     pub fn run(
         mut self,
-        receive_client_instructions: &zellij_utils::channels::Receiver<(
+        receive_client_instructions: &zellij_runtime::channels::Receiver<(
             ClientInstruction,
-            zellij_utils::errors::ErrorContext,
+            zellij_types::diagnostics::ErrorContext,
         )>,
     ) -> LoopOutcome {
         let mut outcome = LoopOutcome {
@@ -69,7 +68,10 @@ impl ClientLoop<'_> {
                 .recv()
                 .expect("failed to receive app instruction on channel");
 
-            err_ctx.add_call(ContextType::Client((&client_instruction).into()));
+            zellij_runtime::errors::add_call(
+                &mut err_ctx,
+                ContextType::Client((&client_instruction).into()),
+            );
 
             let first_render_bytes = if waiting_for_first_render {
                 match &client_instruction {

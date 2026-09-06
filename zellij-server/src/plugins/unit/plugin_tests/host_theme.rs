@@ -1,6 +1,7 @@
 use super::*;
 use zellij_test_support::Watched;
-use zellij_utils::data::HostTerminalThemeMode;
+use zellij_types::internal_ids::TabId;
+use zellij_types::style::HostTerminalThemeMode;
 
 /// The rendered output of every `PluginBytes` asset in `instructions`.
 fn renders(instructions: &[ScreenInstruction]) -> Vec<String> {
@@ -26,7 +27,7 @@ pub fn a_plugin_subscribing_after_the_broadcast_is_told_the_current_host_theme_m
     let cache_path = plugin_host_folder.join("permissions_test.kdl");
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -92,7 +93,7 @@ pub fn a_plugin_subscribing_after_the_broadcast_is_told_the_current_host_theme_m
         false,
         Some("test_plugin".to_owned()),
         run_plugin,
-        Some(1),
+        Some(TabId::new(1)),
         None,
         client_id,
         size,

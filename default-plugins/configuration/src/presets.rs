@@ -1503,11 +1503,11 @@ mod tests {
 
     #[test]
     fn generated_presets_preserve_agent_bindings_after_parsing_and_saving() {
-        use zellij_utils::data::{InputMode, KeyWithModifier};
-        use zellij_utils::input::{actions::Action, config::Config};
+        use {zellij_config::config::Config, zellij_types::input::actions::Action};
+        use {zellij_types::data::InputMode, zellij_types::data::KeyWithModifier};
 
         let canonical = Config::from_kdl(
-            include_str!("../../../zellij-utils/assets/config/default.kdl"),
+            include_str!("../../../zellij-config/assets/config/default.kdl"),
             None,
         )
         .unwrap();

@@ -27,40 +27,43 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
 };
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TerminalId;
 
 use crate::pty_host::client::{ChildRunState, ReleasedPane};
 use crate::pty_host::remote::protocol::ChildSignal;
 use tokio::task::JoinHandle;
-use zellij_utils::{
-    data::{
-        AgentInfo, CommandOrPlugin, Event, FloatingPaneCoordinates, GetPaneCwdResponse,
-        GetPaneGitProbeResponse, GetPanePidResponse, GetPaneRunningCommandResponse,
-        NewPanePlacement, OriginatingPlugin, OverlayPlacement, PaneGitProbe, SessionInfo,
-        WarpPlacement, WarpedPane, WarpedTab,
-    },
-    errors::prelude::*,
-    errors::{ContextType, PtyContext},
-    input::{
-        command::{OpenFilePayload, PaneTarget, RunCommand, TerminalAction},
-        layout::{
-            FloatingPaneLayout, Layout, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout,
-            TabLayoutInfo, TiledPaneLayout,
-        },
-    },
-    pane_size::Size,
-    session_serialization,
+use zellij_runtime::errors::prelude::*;
+use zellij_types::diagnostics::ContextType;
+use zellij_types::diagnostics::PtyContext;
+use zellij_types::pane_size::Size;
+use zellij_types::{agent::AgentInfo, command::PaneTarget, geometry::FloatingPaneCoordinates};
+use {
+    zellij_session::session_serialization, zellij_types::data::CommandOrPlugin,
+    zellij_types::data::Event, zellij_types::data::GetPaneCwdResponse,
+    zellij_types::data::GetPaneGitProbeResponse, zellij_types::data::GetPanePidResponse,
+    zellij_types::data::GetPaneRunningCommandResponse, zellij_types::data::NewPanePlacement,
+    zellij_types::data::OriginatingPlugin, zellij_types::data::OverlayPlacement,
+    zellij_types::data::PaneGitProbe, zellij_types::data::SessionInfo,
+    zellij_types::data::WarpPlacement, zellij_types::data::WarpedPane,
+    zellij_types::data::WarpedTab, zellij_types::input::command::OpenFilePayload,
+    zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction,
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Layout,
+    zellij_types::input::layout::Run, zellij_types::input::layout::RunPluginOrAlias,
+    zellij_types::input::layout::SwapFloatingLayout, zellij_types::input::layout::SwapTiledLayout,
+    zellij_types::input::layout::TabLayoutInfo, zellij_types::input::layout::TiledPaneLayout,
 };
 
 pub type VteBytes = Vec<u8>;
-pub type TabIndex = u32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClientTabIndexOrPaneId {
     ClientId(ClientId),
     ClientIdNoFocus(ClientId),
-    TabIndex(usize),
-    TabIndexNoFocus(usize),
+    TabIndex(TabId),
+    TabIndexNoFocus(TabId),
     PaneId(PaneId),
     /// Beside `PaneId`, or - when no tab holds it - in the tab `ClientId` is looking at.
     ///
@@ -123,9 +126,9 @@ fn finish_terminal_spawn(
                 pty.bus
                     .senders
                     .send_to_plugin(PluginInstruction::Update(vec![(
-                        Some(PluginId(originating_plugin.plugin_id)),
-                        Some(ClientId(originating_plugin.client_id)),
-                        Event::CommandPaneOpened(pid.0, originating_plugin.context),
+                        Some(originating_plugin.plugin_id),
+                        Some(originating_plugin.client_id),
+                        Event::CommandPaneOpened(pid, originating_plugin.context),
                     )]))
                     .with_context(err_context)?;
             }
@@ -136,9 +139,9 @@ fn finish_terminal_spawn(
                 pty.bus
                     .senders
                     .send_to_plugin(PluginInstruction::Update(vec![(
-                        Some(PluginId(originating_plugin.plugin_id)),
-                        Some(ClientId(originating_plugin.client_id)),
-                        Event::EditPaneOpened(pid.0, originating_plugin.context),
+                        Some(originating_plugin.plugin_id),
+                        Some(originating_plugin.client_id),
+                        Event::EditPaneOpened(pid, originating_plugin.context),
                     )]))
                     .with_context(err_context)?;
             }
@@ -178,10 +181,10 @@ fn finish_terminal_spawn(
                         pty.bus
                             .senders
                             .send_to_plugin(PluginInstruction::Update(vec![(
-                                Some(PluginId(originating_plugin.plugin_id)),
-                                Some(ClientId(originating_plugin.client_id)),
+                                Some(originating_plugin.plugin_id),
+                                Some(originating_plugin.client_id),
                                 Event::CommandPaneExited(
-                                    terminal_id.0,
+                                    terminal_id,
                                     Some(2),
                                     originating_plugin.context,
                                 ),
@@ -290,10 +293,10 @@ fn finish_command_rerun(
                     pty.bus
                         .senders
                         .send_to_plugin(PluginInstruction::Update(vec![(
-                            Some(PluginId(originating_plugin.plugin_id)),
-                            Some(ClientId(originating_plugin.client_id)),
+                            Some(originating_plugin.plugin_id),
+                            Some(originating_plugin.client_id),
                             Event::CommandPaneExited(
-                                terminal_id.0,
+                                terminal_id,
                                 Some(2),
                                 originating_plugin.context,
                             ),
@@ -409,7 +412,7 @@ pub struct PendingLayoutSpawn {
     adopted_panes: Option<AdoptedTabTerminals>,
     run_instructions: Vec<Option<Run>>,
     floating_run_instructions: Vec<Option<Run>>,
-    tab_index: usize,
+    tab_index: TabId,
     block_on_first_terminal: bool,
     should_change_focus_to_new_tab: bool,
     client_id: ClientId,
@@ -421,7 +424,11 @@ pub struct PendingLayoutSpawn {
 pub struct PendingLayoutOverride {
     cwd: Option<PathBuf>,
     default_shell: Option<TerminalAction>,
-    tabs: Vec<(TabLayoutInfo, HashMap<RunPluginOrAlias, Vec<PluginId>>)>,
+    tabs: Vec<(
+        TabId,
+        TabLayoutInfo,
+        HashMap<RunPluginOrAlias, Vec<PluginId>>,
+    )>,
     retain_existing_terminal_panes: bool,
     retain_existing_plugin_panes: bool,
     client_id: ClientId,
@@ -432,7 +439,7 @@ pub struct PendingLayoutOverride {
 pub struct SpawnedTerminal {
     terminal_id: TerminalId,
     reader: Box<dyn AsyncReader>,
-    child_pid: Option<u32>,
+    child_pid: Option<ProcessId>,
 }
 
 impl std::fmt::Debug for SpawnedTerminal {
@@ -447,7 +454,7 @@ impl std::fmt::Debug for SpawnedTerminal {
 #[doc(hidden)]
 pub struct SpawnedRerun {
     reader: Box<dyn AsyncReader>,
-    child_pid: Option<u32>,
+    child_pid: Option<ProcessId>,
 }
 
 impl std::fmt::Debug for SpawnedRerun {
@@ -556,7 +563,7 @@ fn handle_remote_agent_report(
     kind: &str,
     json: String,
 ) -> Result<()> {
-    use zellij_utils::agent::{self, HookEvent, HookOutcome};
+    use {zellij_types::agent, zellij_types::agent::HookEvent, zellij_types::agent::HookOutcome};
     if json.len() > agent::HOOK_BROADCAST_MAX_BYTES {
         return Err(anyhow!("agent hook event exceeds the 64 KiB limit"));
     }
@@ -580,7 +587,7 @@ fn handle_remote_agent_report(
         None,
         Event::AgentEvent(agent::AgentEvent::from_hook(
             kind,
-            terminal_id.0,
+            terminal_id,
             &event,
             json,
         )),
@@ -756,9 +763,9 @@ fn terminal_quit_callback(
         if let PaneId::Terminal(terminal_id) = pane_id {
             if let Some(plugin) = edit_plugin.as_ref() {
                 let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                    Some(PluginId(plugin.plugin_id)),
-                    Some(ClientId(plugin.client_id)),
-                    Event::EditPaneExited(terminal_id.0, exit_status, plugin.context.clone()),
+                    Some(plugin.plugin_id),
+                    Some(plugin.client_id),
+                    Event::EditPaneExited(terminal_id, exit_status, plugin.context.clone()),
                 )]));
             }
         }
@@ -776,9 +783,9 @@ fn terminal_quit_callback(
         if let PaneId::Terminal(terminal_id) = pane_id {
             if let Some(plugin) = command_plugin.as_ref() {
                 let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                    Some(PluginId(plugin.plugin_id)),
-                    Some(ClientId(plugin.client_id)),
-                    Event::CommandPaneExited(terminal_id.0, exit_status, plugin.context.clone()),
+                    Some(plugin.plugin_id),
+                    Some(plugin.client_id),
+                    Event::CommandPaneExited(terminal_id, exit_status, plugin.context.clone()),
                 )]));
             }
         }
@@ -809,13 +816,13 @@ pub enum PtyInstruction {
         Option<NotificationEnd>,
     ), // Option<usize> is the optional line number
     UpdateActivePane(Option<PaneId>, ClientId),
-    GoToTab(TabIndex, ClientId),
+    GoToTab(TabNumber, ClientId),
     NewTab(
         Option<PathBuf>,
         Option<TerminalAction>,
         Option<TiledPaneLayout>,
         Vec<FloatingPaneLayout>,
-        usize,                                    // tab_index
+        TabId,                                    // tab_index
         HashMap<RunPluginOrAlias, Vec<PluginId>>, // plugin_ids
         Option<Vec<CommandOrPlugin>>,             // initial_panes
         bool,                                     // block_on_first_terminal
@@ -824,11 +831,15 @@ pub enum PtyInstruction {
         Option<NotificationEnd>, // completion signal
     ), // the String is the tab name
     OverrideLayout(
-        Option<PathBuf>,                                                // CWD
-        Option<TerminalAction>,                                         // Default Shell
-        Vec<(TabLayoutInfo, HashMap<RunPluginOrAlias, Vec<PluginId>>)>, // (layout, plugin_ids) per tab
-        bool, // retain_existing_terminal_panes
-        bool, // retain_existing_plugin_panes
+        Option<PathBuf>,        // CWD
+        Option<TerminalAction>, // Default Shell
+        Vec<(
+            TabId,
+            TabLayoutInfo,
+            HashMap<RunPluginOrAlias, Vec<PluginId>>,
+        )>, // (resolved ID, layout, plugin_ids) per tab
+        bool,                   // retain_existing_terminal_panes
+        bool,                   // retain_existing_plugin_panes
         ClientId,
         Option<NotificationEnd>,
     ),
@@ -864,7 +875,7 @@ pub enum PtyInstruction {
     /// waits on before serializing the tab: N separate replies would mean N
     /// chances to serialize a tab that is only half released.
     ReleaseTerminalsForWarp {
-        tab_index: usize,
+        tab_index: TabId,
         terminal_ids: Vec<TerminalId>,
         /// The moment the warp's caller stops waiting for an answer.
         ///
@@ -903,7 +914,7 @@ pub enum PtyInstruction {
     /// first, so it is always here by the time the tab comes back round, and it
     /// is keyed so that a tab the user opens in the meantime cannot take it.
     ClaimAdoptedTab {
-        tab_index: usize,
+        tab_index: TabId,
         terminals: AdoptedTabTerminals,
     },
     ReRunCommandInPane(PaneId, RunCommand, Option<NotificationEnd>),
@@ -939,7 +950,7 @@ pub enum PtyInstruction {
         bool,           // close_replaced_pane
         Option<String>, // pane title
         RunPluginOrAlias,
-        usize,          // tab index
+        TabId,          // tab index
         Option<PaneId>, // pane id to replace if this is to be opened "in-place"
         ClientId,
         Size,
@@ -1000,7 +1011,7 @@ impl From<&PtyInstruction> for PtyContext {
 pub(crate) struct Pty {
     pub active_panes: HashMap<ClientId, PaneId>,
     pub bus: Bus<PtyInstruction>,
-    pub id_to_child_pid: HashMap<TerminalId, u32>, // terminal_id => child pid
+    pub id_to_child_pid: HashMap<TerminalId, ProcessId>, // terminal_id => child pid
     originating_plugins: HashMap<TerminalId, OriginatingPlugin>,
     debug_to_file: bool,
     task_handles: HashMap<TerminalId, JoinHandle<()>>, // terminal_id to join-handle
@@ -1023,7 +1034,7 @@ pub(crate) struct Pty {
     /// Screen claims an entry before sending that `NewTab`, so it is always here
     /// by the time the tab comes round: the claim is enqueued first, and the
     /// plugin thread cannot forward a `NewTab` it has not yet been sent.
-    adopted_tabs: HashMap<usize, AdoptedTabTerminals>,
+    adopted_tabs: HashMap<TabId, AdoptedTabTerminals>,
     /// Threads resolving and starting remote panes, so `Drop` need not wait
     /// for a boot; reaped as new ones start.
     spawn_workers: Vec<std::thread::JoinHandle<()>>,
@@ -1041,7 +1052,7 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
     pty.register_agent_report_callback();
     loop {
         let (event, mut err_ctx) = pty.bus.recv().expect("failed to receive event on channel");
-        err_ctx.add_call(ContextType::Pty((&event).into()));
+        zellij_runtime::errors::add_call(&mut err_ctx, ContextType::Pty((&event).into()));
         match event {
             PtyInstruction::SpawnTerminal(
                 terminal_action,
@@ -2028,10 +2039,10 @@ impl Pty {
                     self.bus
                         .senders
                         .send_to_plugin(PluginInstruction::Update(vec![(
-                            Some(PluginId(originating_plugin.plugin_id)),
-                            Some(ClientId(originating_plugin.client_id)),
+                            Some(originating_plugin.plugin_id),
+                            Some(originating_plugin.client_id),
                             Event::CommandPaneExited(
-                                terminal_id.0,
+                                terminal_id,
                                 Some(2),
                                 originating_plugin.context.clone(),
                             ),
@@ -2316,7 +2327,7 @@ impl Pty {
         default_shell: Option<TerminalAction>,
         plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
         initial_panes: Option<Vec<CommandOrPlugin>>,
-        tab_index: usize,
+        tab_index: TabId,
         block_on_first_terminal: bool,
         should_change_focus_to_new_tab: bool,
         client_id: ClientId,
@@ -2669,9 +2680,9 @@ impl Pty {
     fn finish_layout_override(&mut self, pending: PendingLayoutOverride) -> Result<()> {
         let err_context = || "failed to override layout";
         let mut all_tab_results = vec![];
+        let mut failed_tabs = vec![];
         let mut deferred_spawns = vec![];
-        for (tab, plugin_ids) in pending.tabs {
-            let tab_index = tab.tab_index;
+        for (tab_index, tab, plugin_ids) in pending.tabs {
             match self.spawn_terminals_for_layout_override(
                 pending.cwd.clone(),
                 tab.tiled_layout,
@@ -2690,9 +2701,12 @@ impl Pty {
                     all_tab_results.push(tab_result);
                     deferred_spawns.append(&mut tab_deferred_spawns);
                 },
-                Err(error) => Err::<(), _>(error)
-                    .with_context(|| format!("failed to spawn terminals for tab {tab_index}"))
-                    .non_fatal(),
+                Err(error) => {
+                    failed_tabs.push(tab_index);
+                    Err::<(), _>(error)
+                        .with_context(|| format!("failed to spawn terminals for tab {tab_index}"))
+                        .non_fatal();
+                },
             }
         }
         // The results carry the panes away with them, so note the ids while they
@@ -2713,6 +2727,7 @@ impl Pty {
                 .senders
                 .send_to_screen(ScreenInstruction::OverrideLayoutComplete(
                     all_tab_results,
+                    failed_tabs,
                     pending.retain_existing_terminal_panes,
                     pending.retain_existing_plugin_panes,
                     pending.client_id,
@@ -2744,7 +2759,7 @@ impl Pty {
         floating_panes_layout: Vec<FloatingPaneLayout>,
         default_shell: Option<TerminalAction>,
         plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
-        tab_index: usize,
+        tab_index: TabId,
         tab_name: Option<String>,
         client_id: ClientId,
         swap_tiled_layouts: Option<Vec<SwapTiledLayout>>,
@@ -2949,13 +2964,13 @@ impl Pty {
     ) {
         self.originating_plugins
             .insert(terminal_id, originating_plugin.clone());
-        let update_event = Event::CommandPaneOpened(terminal_id.0, originating_plugin.context);
+        let update_event = Event::CommandPaneOpened(terminal_id, originating_plugin.context);
         let _ = self
             .bus
             .senders
             .send_to_plugin(PluginInstruction::Update(vec![(
-                Some(PluginId(originating_plugin.plugin_id)),
-                Some(ClientId(originating_plugin.client_id)),
+                Some(originating_plugin.plugin_id),
+                Some(originating_plugin.client_id),
                 update_event,
             )]));
     }
@@ -3505,7 +3520,7 @@ impl Pty {
                 .tiled_panes
                 .iter()
                 .chain(payload.floating_panes.iter())
-                .map(|pane| pane.host_id.clone())
+                .map(|pane| pane.host_id.to_string())
                 .collect();
             for adopted in tiled.iter().chain(floating.iter()) {
                 if let Err(e) = self.release_terminal_for_warp(
@@ -3626,9 +3641,9 @@ impl Pty {
             self.bus
                 .senders
                 .send_to_plugin(PluginInstruction::Update(vec![(
-                    Some(PluginId(plugin.plugin_id)),
-                    Some(ClientId(plugin.client_id)),
-                    Event::CommandPaneReRun(id.0, plugin.context.clone()),
+                    Some(plugin.plugin_id),
+                    Some(plugin.client_id),
+                    Event::CommandPaneReRun(id, plugin.context.clone()),
                 )]))?;
         }
         Ok(())
@@ -3652,7 +3667,7 @@ impl Pty {
             .as_ref()
             .map(|os_input| os_input.get_cwds(pids))
             .unwrap_or_default();
-        let panes: Vec<(TerminalId, u32)> = terminal_ids
+        let panes: Vec<(TerminalId, ProcessId)> = terminal_ids
             .iter()
             .filter_map(|id| self.id_to_child_pid.get(id).map(|pid| (*id, *pid)))
             .collect();
@@ -3690,7 +3705,7 @@ impl Pty {
         close_replaced_pane: bool,  // close_replaced_pane
         pane_title: Option<String>, // pane title
         mut run: RunPluginOrAlias,
-        tab_index: usize,                   // tab index
+        tab_index: TabId,                   // tab index
         pane_id_to_replace: Option<PaneId>, // pane id to replace if this is to be opened "in-place"
         client_id: ClientId,
         size: Size,
@@ -3740,7 +3755,7 @@ impl Pty {
                     PaneId::Terminal(id) => Some(*id),
                     PaneId::Plugin(_) => None,
                 });
-            alias.set_caller_terminal_pane_id_if_not_set(pane_id.map(|id| id.0));
+            alias.set_caller_terminal_pane_id_if_not_set(pane_id);
         }
         self.bus.senders.send_to_plugin(PluginInstruction::Load(
             should_float,
@@ -3799,9 +3814,9 @@ impl Pty {
                 None,
                 None,
                 Event::CwdChanged(
-                    pane_id.into(),
+                    pane_id,
                     cwd.clone(),
-                    focused_client_ids.into_iter().map(|id| id.0).collect(),
+                    focused_client_ids.into_iter().collect(),
                 ),
             )]));
         let _ = self
@@ -3904,7 +3919,7 @@ impl Pty {
     fn capture_initial_cwd(
         &mut self,
         terminal_id: TerminalId,
-        child_pid: u32,
+        child_pid: ProcessId,
         requested_cwd: Option<PathBuf>,
     ) {
         let cwd = self
@@ -3975,7 +3990,7 @@ impl Pty {
             }
         }
 
-        let panes: Vec<(TerminalId, u32)> = active_local
+        let panes: Vec<(TerminalId, ProcessId)> = active_local
             .iter()
             .filter_map(|id| self.id_to_child_pid.get(id).map(|pid| (*id, *pid)))
             .collect();
@@ -4048,10 +4063,10 @@ impl Pty {
                         None,
                         None,
                         Event::CommandChanged(
-                            pane_id.into(),
+                            pane_id,
                             command,
                             is_foreground,
-                            focused_client_ids.into_iter().map(|id| id.0).collect(),
+                            focused_client_ids.into_iter().collect(),
                         ),
                     )]));
                 self.terminal_foreground_cmds
@@ -4168,7 +4183,7 @@ impl Pty {
                     ));
                 }
                 if let Some(&child_pid) = self.id_to_child_pid.get(&terminal_id) {
-                    GetPanePidResponse::Ok(child_pid as i32)
+                    GetPanePidResponse::Ok(child_pid)
                 } else {
                     GetPanePidResponse::Err(format!(
                         "Terminal pane {} not found or not running",
@@ -4375,7 +4390,7 @@ fn pane_start_failure(err: &anyhow::Error) -> Option<(TerminalId, String)> {
             terminal_id,
             command,
         } => Some((
-            TerminalId(*terminal_id),
+            *terminal_id,
             format!(
                 "Command not found: {command}\n\rIf you were including arguments as part of \
                  the command, try including them as 'args' instead."
@@ -4384,7 +4399,7 @@ fn pane_start_failure(err: &anyhow::Error) -> Option<(TerminalId, String)> {
         ZellijError::PaneStartFailed {
             terminal_id,
             message,
-        } => Some((TerminalId(*terminal_id), message.clone())),
+        } => Some((*terminal_id, message.clone())),
         _ => None,
     }
 }

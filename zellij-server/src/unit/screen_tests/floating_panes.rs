@@ -1,4 +1,5 @@
 use super::*;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 fn open_new_floating_pane_with_custom_coordinates() {
@@ -8,11 +9,11 @@ fn open_new_floating_pane_with_custom_coordinates() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
+    new_tab(&mut screen, 1, TabId::new(0));
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             None,
             None,
             false,
@@ -25,11 +26,11 @@ fn open_new_floating_pane_with_custom_coordinates() {
                 pinned: None,
                 borderless: Some(false),
             })),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
-    let active_pane = active_tab.get_active_pane(crate::ClientId(1)).unwrap();
+    let active_pane = active_tab.get_active_pane(crate::ClientId::new(1)).unwrap();
     assert_eq!(active_pane.x(), 12, "x coordinates set properly");
     assert_eq!(active_pane.y(), 5, "y coordinates set properly");
     assert_eq!(active_pane.rows(), 2, "rows set properly");
@@ -44,11 +45,11 @@ fn open_new_floating_pane_with_custom_coordinates_exceeding_viewport() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
+    new_tab(&mut screen, 1, TabId::new(0));
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             None,
             None,
             false,
@@ -61,11 +62,11 @@ fn open_new_floating_pane_with_custom_coordinates_exceeding_viewport() {
                 pinned: None,
                 borderless: Some(false),
             })),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
-    let active_pane = active_tab.get_active_pane(crate::ClientId(1)).unwrap();
+    let active_pane = active_tab.get_active_pane(crate::ClientId::new(1)).unwrap();
     assert_eq!(active_pane.x(), 111, "x coordinates set properly");
     assert_eq!(active_pane.y(), 10, "y coordinates set properly");
     assert_eq!(active_pane.rows(), 10, "rows set properly");
@@ -80,11 +81,11 @@ fn floating_pane_auto_centers_horizontally_with_only_width() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
+    new_tab(&mut screen, 1, TabId::new(0));
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             None,
             None,
             false,
@@ -97,11 +98,11 @@ fn floating_pane_auto_centers_horizontally_with_only_width() {
                 pinned: None,
                 borderless: Some(false),
             })),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
-    let active_pane = active_tab.get_active_pane(crate::ClientId(1)).unwrap();
+    let active_pane = active_tab.get_active_pane(crate::ClientId::new(1)).unwrap();
     assert_eq!(active_pane.x(), 30, "x centered: (120-60)/2 = 30");
     assert_eq!(active_pane.y(), 5, "y explicitly set");
     assert_eq!(active_pane.cols(), 60, "width set");
@@ -116,11 +117,11 @@ fn floating_pane_auto_centers_vertically_with_only_height() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
+    new_tab(&mut screen, 1, TabId::new(0));
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             None,
             None,
             false,
@@ -133,11 +134,11 @@ fn floating_pane_auto_centers_vertically_with_only_height() {
                 pinned: None,
                 borderless: Some(false),
             })),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
-    let active_pane = active_tab.get_active_pane(crate::ClientId(1)).unwrap();
+    let active_pane = active_tab.get_active_pane(crate::ClientId::new(1)).unwrap();
     assert_eq!(active_pane.x(), 10, "x explicitly set");
     assert_eq!(active_pane.y(), 10, "y centered: (40-20)/2 = 10");
     assert_eq!(active_pane.cols(), 50, "width set");
@@ -152,11 +153,11 @@ fn floating_pane_auto_centers_both_axes_with_only_size() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
+    new_tab(&mut screen, 1, TabId::new(0));
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             None,
             None,
             false,
@@ -169,11 +170,11 @@ fn floating_pane_auto_centers_both_axes_with_only_size() {
                 pinned: None,
                 borderless: Some(false),
             })),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
-    let active_pane = active_tab.get_active_pane(crate::ClientId(1)).unwrap();
+    let active_pane = active_tab.get_active_pane(crate::ClientId::new(1)).unwrap();
     assert_eq!(active_pane.x(), 20, "x centered: (120-80)/2 = 20");
     assert_eq!(active_pane.y(), 5, "y centered: (40-30)/2 = 5");
     assert_eq!(active_pane.cols(), 80, "width set");
@@ -188,11 +189,11 @@ fn floating_pane_respects_explicit_coordinates_with_size() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
+    new_tab(&mut screen, 1, TabId::new(0));
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             None,
             None,
             false,
@@ -205,11 +206,11 @@ fn floating_pane_respects_explicit_coordinates_with_size() {
                 pinned: None,
                 borderless: Some(false),
             })),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
-    let active_pane = active_tab.get_active_pane(crate::ClientId(1)).unwrap();
+    let active_pane = active_tab.get_active_pane(crate::ClientId::new(1)).unwrap();
     assert_eq!(active_pane.x(), 15, "x explicitly set, not centered");
     assert_eq!(active_pane.y(), 8, "y explicitly set, not centered");
     assert_eq!(active_pane.cols(), 80, "width set");
@@ -224,11 +225,11 @@ fn floating_pane_centers_with_percentage_width() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
+    new_tab(&mut screen, 1, TabId::new(0));
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             None,
             None,
             false,
@@ -241,11 +242,11 @@ fn floating_pane_centers_with_percentage_width() {
                 pinned: None,
                 borderless: Some(false),
             })),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
-    let active_pane = active_tab.get_active_pane(crate::ClientId(1)).unwrap();
+    let active_pane = active_tab.get_active_pane(crate::ClientId::new(1)).unwrap();
     let expected_width = ((50.0_f64 / 100.0) * 120.0).floor() as usize;
     let expected_x = (120 - expected_width) / 2;
     assert_eq!(active_pane.cols(), expected_width, "width is 50% of 120");
@@ -265,11 +266,11 @@ fn floating_pane_centers_large_pane_safely() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
+    new_tab(&mut screen, 1, TabId::new(0));
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             None,
             None,
             false,
@@ -282,11 +283,11 @@ fn floating_pane_centers_large_pane_safely() {
                 pinned: None,
                 borderless: Some(false),
             })),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
-    let active_pane = active_tab.get_active_pane(crate::ClientId(1)).unwrap();
+    let active_pane = active_tab.get_active_pane(crate::ClientId::new(1)).unwrap();
     assert_eq!(
         active_pane.x(),
         0,

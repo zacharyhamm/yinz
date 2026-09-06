@@ -1,0 +1,129 @@
+//! The store's own tables, and how a database created by an older zellij is brought forward.
+//!
+//! Distinct from [`super::migrate`], which is about a *plugin's* entity changing shape. This is
+//! about the store itself changing shape, and it applies to every entity at once.
+//!
+//! The steps are Rust rather than SQL strings because the interesting ones are not expressible as
+//! a statement: adding a column to every entity table means reading the registry first to learn
+//! which tables exist. Each step is written once against [`Executor`] and runs on both engines,
+//! asking [`Dialect`] for whatever the two spell differently — the same arrangement the rest of
+//! the store uses.
+//!
+//! A step must be idempotent in effect but is only ever *run* once per database, guarded by the
+//! version in `store_meta`. Steps are append-only: editing one already released means a database
+//! that ran the old version never gets the new one.
+
+use zellij_types::plugin_data::{AttrKind, DataError, DataValue};
+
+use super::executor::{query_all, Executor};
+use super::sql::{quote_ident, StoreContext};
+
+/// One step forward. Applied in order, from the recorded version to [`current_version`].
+type Step = fn(&mut dyn Executor) -> Result<(), DataError>;
+
+const MIGRATIONS: &[Step] = &[create_registry, add_rev_to_every_entity];
+
+/// The key `store_meta` holds the schema version under.
+pub(super) const VERSION_KEY: &str = "schema_version";
+
+/// The version a database is at once every step has been applied.
+pub(super) fn current_version() -> i64 {
+    MIGRATIONS.len() as i64
+}
+
+/// Apply every step past `recorded`, and report the version that leaves the database at.
+///
+/// A database *newer* than this binary is refused rather than downgraded: the steps only go
+/// forward, and a zellij that does not know what a later one did cannot safely write to what it
+/// produced. This is the case a shared Postgres makes real — one machine upgrades first.
+pub(super) fn run(exec: &mut dyn Executor, recorded: i64) -> Result<i64, DataError> {
+    let current = current_version();
+    if recorded > current {
+        return Err(DataError::Storage(format!(
+            "the plugin data store is at version {}, newer than this zellij's {}; upgrade zellij \
+             or point it at another database",
+            recorded, current
+        )));
+    }
+    for (index, step) in MIGRATIONS.iter().enumerate().skip(recorded.max(0) as usize) {
+        step(exec).with_context(|| format!("failed to apply store migration {}", index + 1))?;
+    }
+    Ok(current)
+}
+
+/// 1: the entity registry.
+fn create_registry(exec: &mut dyn Executor) -> Result<(), DataError> {
+    let ddl = exec.dialect().registry_ddl();
+    exec.execute_batch(ddl)
+}
+
+/// 2: `rev`, the row revision every entity table carries.
+///
+/// New tables get it from `Dialect::store_columns`; this is for the ones already out there. The
+/// default puts every existing row at revision 1, which is where a row written after this lands
+/// too — an unwritten row and a once-written row are the same thing to a reader, and pretending
+/// existing rows had a history they never had would be worse.
+fn add_rev_to_every_entity(exec: &mut dyn Executor) -> Result<(), DataError> {
+    let column = exec.dialect().rev_column_added();
+    let rows = query_all(exec, "SELECT id FROM store_entities", &[], &[AttrKind::Int])
+        .context("failed to list the entity tables")?;
+    for row in rows {
+        let Some(DataValue::Int(row_id)) = row.first() else {
+            return Err(DataError::Storage(
+                "the entity registry returned a row id that is not an integer".to_owned(),
+            ));
+        };
+        let table = quote_ident(&format!("e_{}", row_id));
+        exec.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN \"rev\" {column};"))
+            .with_context(|| format!("failed to add `rev` to entity table {}", table))?;
+    }
+    Ok(())
+}
+
+/// Read the recorded version, treating a database with no `store_meta` row as version 0.
+///
+/// A value that does not parse also reads as 0. That is deliberate and safe: the steps are
+/// idempotent in effect, so re-running them costs a little work rather than corrupting anything,
+/// whereas refusing to open the store would cost the user their session.
+pub(super) fn recorded_version(exec: &mut dyn Executor) -> Result<i64, DataError> {
+    let meta_ddl = exec.dialect().store_meta_ddl();
+    exec.execute_batch(meta_ddl)
+        .context("failed to create the store's metadata table")?;
+    let mut params = super::dialect::Params::new(exec.dialect());
+    let key = params.bind(DataValue::Text(VERSION_KEY.to_owned()));
+    let sql = format!("SELECT value FROM store_meta WHERE key = {key}");
+    let rows = query_all(exec, &sql, &params.into_values(), &[AttrKind::Text])
+        .context("failed to read the store's schema version")?;
+    Ok(match rows.first().and_then(|row| row.first()) {
+        Some(DataValue::Text(value)) => value.parse::<i64>().unwrap_or(0),
+        _ => 0,
+    })
+}
+
+/// Record the version reached, if it moved.
+pub(super) fn record_version(exec: &mut dyn Executor, version: i64) -> Result<(), DataError> {
+    let mut params = super::dialect::Params::new(exec.dialect());
+    let key = params.bind(DataValue::Text(VERSION_KEY.to_owned()));
+    let value = params.bind(DataValue::Text(version.to_string()));
+    let sql = format!(
+        "INSERT INTO store_meta (key, value) VALUES ({key}, {value}) \
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value"
+    );
+    exec.execute(&sql, &params.into_values())
+        .context("failed to record the store's schema version")?;
+    Ok(())
+}
+
+/// Bring the store's own tables up to date, in one pass.
+///
+/// The caller supplies the transaction and has already taken whatever lock serializes schema
+/// changes on its engine, because two servers opening one database at once must not both decide
+/// a step has not run.
+pub(super) fn migrate_store(exec: &mut dyn Executor) -> Result<(), DataError> {
+    let recorded = recorded_version(exec)?;
+    let reached = run(exec, recorded)?;
+    if reached != recorded {
+        record_version(exec, reached)?;
+    }
+    Ok(())
+}

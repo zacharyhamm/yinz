@@ -27,10 +27,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
 
 use serde::Deserialize;
-use zellij_utils::{consts::ZELLIJ_SOCK_DIR, errors::prelude::*, input::command::RunCommand};
+use zellij_runtime::errors::prelude::*;
+use {zellij_runtime::consts::ZELLIJ_SOCK_DIR, zellij_types::input::command::RunCommand};
 
 use super::conn::{Reconnected, Reconnector, RemoteConn};
 use super::env;
@@ -40,8 +41,7 @@ use super::protocol::{
 };
 use crate::pty_host::ensure_secure_dir;
 use crate::pty_host::protocol::{
-    check_socket_path_length, new_host_id, SpawnFailureKind, WireWinsize,
-    SSH_CONTROL_PATH_RENAME_MARGIN,
+    check_socket_path_length, SpawnFailureKind, WireWinsize, SSH_CONTROL_PATH_RENAME_MARGIN,
 };
 
 /// How long to wait for the forwarded socket to become connectable.
@@ -235,7 +235,7 @@ impl Default for RemoteHosts {
     fn default() -> Self {
         Self {
             forwards: Mutex::new(HashMap::new()),
-            instance: new_host_id(),
+            instance: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(),
         }
     }
 }
@@ -759,7 +759,7 @@ fn bootstrap_with_options(host: &str, options: &SshOptions) -> Result<BrokerEndp
              versions on both machines.",
             endpoint.protocol_version,
             endpoint.zellij_version,
-            zellij_utils::consts::VERSION,
+            zellij_runtime::consts::VERSION,
         ));
     }
     Ok(endpoint)
@@ -902,7 +902,7 @@ fn handshake_and_spawn(
             failover_cmd: None,
             initial_size,
             env: env.to_vec(),
-            terminal_id: terminal_id.0,
+            terminal_id: terminal_id.get(),
         },
     )?;
     match read_broker_msg(&mut read_half)? {
@@ -913,7 +913,7 @@ fn handshake_and_spawn(
             // is a placeholder the far machine could not know; `spawn_terminal`
             // rewrites it with the one it reserved before asking.
             SpawnFailureKind::CommandNotFound => Err(ZellijError::CommandNotFound {
-                terminal_id: 0,
+                terminal_id: zellij_types::internal_ids::TerminalId::new(0),
                 command: cmd.command.to_string_lossy().to_string(),
             }
             .into()),
@@ -931,7 +931,7 @@ fn say_hello(write_half: &mut UnixStream, read_half: &mut UnixStream, host: &str
         write_half,
         &ServerToBrokerMsg::Hello {
             protocol_version: REMOTE_PROTOCOL_VERSION,
-            zellij_version: zellij_utils::consts::VERSION.to_owned(),
+            zellij_version: zellij_runtime::consts::VERSION.to_owned(),
         },
     )?;
     match read_broker_msg(read_half)? {

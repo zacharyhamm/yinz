@@ -7,7 +7,8 @@ mod tooltip;
 
 use std::cmp::{max, min};
 use std::collections::BTreeMap;
-use std::convert::TryInto;
+use zellij_tile::prelude::TabNumber;
+use zellij_tile::prelude::TabPosition;
 
 use tab::get_tab_to_focus;
 use zellij_tile::prelude::*;
@@ -40,14 +41,14 @@ const MIN_TAB_NAME_WIDTH: usize = 8;
 pub struct LinePart {
     part: String,
     len: usize,
-    tab_index: Option<usize>,
+    tab_index: Option<TabPosition>,
 }
 
 #[derive(Default)]
 struct State {
     // Tab state
     tabs: Vec<TabInfo>,
-    active_tab_idx: usize,
+    active_tab_idx: TabNumber,
 
     // Display state
     mode_info: ModeInfo,
@@ -63,7 +64,7 @@ struct State {
 
     // Plugin configuration
     config: BTreeMap<String, String>,
-    own_plugin_id: Option<u32>,
+    own_plugin_id: Option<zellij_tile::prelude::PluginId>,
     toggle_tooltip_key: Option<String>,
 
     // Tooltip state
@@ -71,8 +72,8 @@ struct State {
     tooltip_is_active: bool,
     persist: bool,
     is_first_run: bool,
-    own_tab_index: Option<usize>,
-    own_client_id: u16,
+    own_tab_index: Option<TabPosition>,
+    own_client_id: ClientId,
 
     // Keybinding cache
     cached_keybinds: KeybindsVec,
@@ -139,7 +140,7 @@ impl ZellijPlugin for State {
             && message.is_private
             && self.toggle_tooltip_key.is_some()
             // only launch once per plugin instance
-            && self.own_tab_index == Some(self.active_tab_idx.saturating_sub(1))
+            && self.own_tab_index == Some(self.active_tab_idx.position())
             // only launch once per client of plugin instance
             && Some(format!("{}", self.own_client_id)) == message.payload
         {
@@ -260,7 +261,9 @@ impl State {
         self.update_display_area(&tabs);
 
         if let Some(active_tab_index) = tabs.iter().position(|t| t.active) {
-            let active_tab_idx = active_tab_index + 1; // Convert to 1-based indexing
+            let Ok(active_tab_idx) = TabNumber::try_from(TabPosition::new(active_tab_index)) else {
+                return false;
+            }; // Convert to 1-based indexing
             let should_render = self.active_tab_idx != active_tab_idx || self.tabs != tabs;
 
             if self.is_tooltip && self.active_tab_idx != active_tab_idx {
@@ -378,10 +381,10 @@ impl State {
         false
     }
 
-    fn find_own_tab_index(&self, pane_manifest: &PaneManifest) -> Option<usize> {
+    fn find_own_tab_index(&self, pane_manifest: &PaneManifest) -> Option<TabPosition> {
         for (tab_index, panes) in &pane_manifest.panes {
             for pane in panes {
-                if pane.is_plugin && Some(pane.id) == self.own_plugin_id {
+                if Some(pane.id) == self.own_plugin_id.map(PaneId::Plugin) {
                     return Some(*tab_index);
                 }
             }
@@ -391,18 +394,22 @@ impl State {
 
     fn handle_tab_click(&self, col: usize) {
         if let Some(tab_idx) = get_tab_to_focus(&self.tab_line, self.active_tab_idx, col) {
-            switch_tab_to(tab_idx.try_into().unwrap());
+            switch_tab_to(tab_idx);
         }
     }
 
     fn scroll_tab_up(&self) {
-        let next_tab = min(self.active_tab_idx + 1, self.tabs.len());
-        switch_tab_to(next_tab as u32);
+        if let Ok(next_tab) = TabNumber::try_from(min(
+            (self.active_tab_idx.get() as usize).saturating_add(1),
+            self.tabs.len(),
+        )) {
+            switch_tab_to(next_tab);
+        }
     }
 
     fn scroll_tab_down(&self) {
-        let prev_tab = max(self.active_tab_idx.saturating_sub(1), 1);
-        switch_tab_to(prev_tab as u32);
+        let prev_tab = max(self.active_tab_idx.get().saturating_sub(1), 1);
+        switch_tab_to(TabNumber::new(prev_tab));
     }
 
     fn clear_clipboard_state(&mut self) {
@@ -464,11 +471,11 @@ impl State {
         }
     }
 
-    fn move_tooltip_to_new_tab(&self, new_tab_index: usize) {
+    fn move_tooltip_to_new_tab(&self, new_tab_index: TabNumber) {
         if let Some(plugin_id) = self.own_plugin_id {
             break_panes_to_tab_with_index(
                 &[PaneId::Plugin(plugin_id)],
-                new_tab_index.saturating_sub(1), // Convert to 0-based indexing
+                new_tab_index.position(), // Convert to 0-based indexing
                 false,
             );
         }
@@ -603,7 +610,7 @@ impl State {
             let tab_name = self.get_tab_display_name(tab);
 
             if tab.active {
-                active_tab_index = tab.position;
+                active_tab_index = tab.position.get();
                 if self.mode_info.mode != InputMode::RenameTab {
                     is_swap_layout_dirty = tab.is_swap_layout_dirty;
                     active_swap_layout_name = tab.active_swap_layout_name.clone();
@@ -641,7 +648,7 @@ impl State {
     }
 }
 
-fn bind_toggle_key_config(toggle_key: &str, client_id: u16) -> String {
+fn bind_toggle_key_config(toggle_key: &str, client_id: ClientId) -> String {
     format!(
         r#"
         keybinds {{

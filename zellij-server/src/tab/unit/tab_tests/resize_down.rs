@@ -17,10 +17,10 @@ pub fn resize_down_with_pane_above() {
     };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    tab.horizontal_split(new_pane_id, None, crate::ClientId(1), None, None)
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
         .unwrap();
-    tab_resize_down(&mut tab, crate::ClientId(1));
+    tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
@@ -68,7 +68,7 @@ pub fn resize_down_with_pane_above() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .x,
@@ -78,7 +78,7 @@ pub fn resize_down_with_pane_above() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .y,
@@ -88,7 +88,7 @@ pub fn resize_down_with_pane_above() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .cols
@@ -99,7 +99,7 @@ pub fn resize_down_with_pane_above() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .rows
@@ -125,11 +125,11 @@ pub fn resize_down_with_pane_below() {
     };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    tab.horizontal_split(new_pane_id, None, crate::ClientId(1), None, None)
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
         .unwrap();
-    tab.move_focus_up(crate::ClientId(1)).unwrap();
-    tab_resize_down(&mut tab, crate::ClientId(1));
+    tab.move_focus_up(crate::ClientId::new(1)).unwrap();
+    tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
@@ -177,7 +177,7 @@ pub fn resize_down_with_pane_below() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .x,
@@ -187,7 +187,7 @@ pub fn resize_down_with_pane_below() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .y,
@@ -197,7 +197,7 @@ pub fn resize_down_with_pane_below() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .cols
@@ -208,7 +208,7 @@ pub fn resize_down_with_pane_below() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .rows
@@ -238,15 +238,15 @@ pub fn resize_down_with_panes_above_and_below() {
     };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
-    let first_pane_id = PaneId::Terminal(crate::TerminalId(1));
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    tab.horizontal_split(new_pane_id_1, None, crate::ClientId(1), None, None)
+    let first_pane_id = PaneId::Terminal(crate::TerminalId::new(1));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    tab.horizontal_split(new_pane_id_1, None, crate::ClientId::new(1), None, None)
         .unwrap();
-    tab.horizontal_split(new_pane_id_2, None, crate::ClientId(1), None, None)
+    tab.horizontal_split(new_pane_id_2, None, crate::ClientId::new(1), None, None)
         .unwrap();
-    tab.move_focus_up(crate::ClientId(1)).unwrap();
-    tab_resize_down(&mut tab, crate::ClientId(1));
+    tab.move_focus_up(crate::ClientId::new(1)).unwrap();
+    tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
@@ -394,16 +394,16 @@ pub fn resize_down_with_multiple_panes_above() {
     };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
-    let first_pane_id = PaneId::Terminal(crate::TerminalId(1));
-    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(2));
-    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId(3));
-    tab.horizontal_split(new_pane_id_1, None, crate::ClientId(1), None, None)
+    let first_pane_id = PaneId::Terminal(crate::TerminalId::new(1));
+    let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
+    let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
+    tab.horizontal_split(new_pane_id_1, None, crate::ClientId::new(1), None, None)
         .unwrap();
-    tab.move_focus_up(crate::ClientId(1)).unwrap();
-    tab.vertical_split(new_pane_id_2, None, crate::ClientId(1), None, None)
+    tab.move_focus_up(crate::ClientId::new(1)).unwrap();
+    tab.vertical_split(new_pane_id_2, None, crate::ClientId::new(1), None, None)
         .unwrap();
-    tab.move_focus_down(crate::ClientId(1)).unwrap();
-    tab_resize_down(&mut tab, crate::ClientId(1));
+    tab.move_focus_down(crate::ClientId::new(1)).unwrap();
+    tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
@@ -551,19 +551,19 @@ pub fn resize_down_with_panes_above_aligned_left_with_current_pane() {
     };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
-    let pane_above_and_left = PaneId::Terminal(crate::TerminalId(1));
-    let pane_to_the_left = PaneId::Terminal(crate::TerminalId(2));
-    let focused_pane = PaneId::Terminal(crate::TerminalId(3));
-    let pane_above = PaneId::Terminal(crate::TerminalId(4));
-    tab.horizontal_split(pane_to_the_left, None, crate::ClientId(1), None, None)
+    let pane_above_and_left = PaneId::Terminal(crate::TerminalId::new(1));
+    let pane_to_the_left = PaneId::Terminal(crate::TerminalId::new(2));
+    let focused_pane = PaneId::Terminal(crate::TerminalId::new(3));
+    let pane_above = PaneId::Terminal(crate::TerminalId::new(4));
+    tab.horizontal_split(pane_to_the_left, None, crate::ClientId::new(1), None, None)
         .unwrap();
-    tab.vertical_split(focused_pane, None, crate::ClientId(1), None, None)
+    tab.vertical_split(focused_pane, None, crate::ClientId::new(1), None, None)
         .unwrap();
-    tab.move_focus_up(crate::ClientId(1)).unwrap();
-    tab.vertical_split(pane_above, None, crate::ClientId(1), None, None)
+    tab.move_focus_up(crate::ClientId::new(1)).unwrap();
+    tab.vertical_split(pane_above, None, crate::ClientId::new(1), None, None)
         .unwrap();
-    tab.move_focus_down(crate::ClientId(1)).unwrap();
-    tab_resize_down(&mut tab, crate::ClientId(1));
+    tab.move_focus_down(crate::ClientId::new(1)).unwrap();
+    tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
@@ -755,18 +755,24 @@ pub fn resize_down_with_panes_below_aligned_left_with_current_pane() {
     };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
-    let pane_to_the_left = PaneId::Terminal(crate::TerminalId(1));
-    let pane_below_and_left = PaneId::Terminal(crate::TerminalId(2));
-    let pane_below = PaneId::Terminal(crate::TerminalId(3));
-    let focused_pane = PaneId::Terminal(crate::TerminalId(4));
-    tab.horizontal_split(pane_below_and_left, None, crate::ClientId(1), None, None)
+    let pane_to_the_left = PaneId::Terminal(crate::TerminalId::new(1));
+    let pane_below_and_left = PaneId::Terminal(crate::TerminalId::new(2));
+    let pane_below = PaneId::Terminal(crate::TerminalId::new(3));
+    let focused_pane = PaneId::Terminal(crate::TerminalId::new(4));
+    tab.horizontal_split(
+        pane_below_and_left,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.vertical_split(pane_below, None, crate::ClientId::new(1), None, None)
         .unwrap();
-    tab.vertical_split(pane_below, None, crate::ClientId(1), None, None)
+    tab.move_focus_up(crate::ClientId::new(1)).unwrap();
+    tab.vertical_split(focused_pane, None, crate::ClientId::new(1), None, None)
         .unwrap();
-    tab.move_focus_up(crate::ClientId(1)).unwrap();
-    tab.vertical_split(focused_pane, None, crate::ClientId(1), None, None)
-        .unwrap();
-    tab_resize_down(&mut tab, crate::ClientId(1));
+    tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
@@ -958,20 +964,26 @@ pub fn resize_down_with_panes_above_aligned_right_with_current_pane() {
     };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
-    let pane_above = PaneId::Terminal(crate::TerminalId(1));
-    let focused_pane = PaneId::Terminal(crate::TerminalId(2));
-    let pane_to_the_right = PaneId::Terminal(crate::TerminalId(3));
-    let pane_above_and_right = PaneId::Terminal(crate::TerminalId(4));
-    tab.horizontal_split(focused_pane, None, crate::ClientId(1), None, None)
+    let pane_above = PaneId::Terminal(crate::TerminalId::new(1));
+    let focused_pane = PaneId::Terminal(crate::TerminalId::new(2));
+    let pane_to_the_right = PaneId::Terminal(crate::TerminalId::new(3));
+    let pane_above_and_right = PaneId::Terminal(crate::TerminalId::new(4));
+    tab.horizontal_split(focused_pane, None, crate::ClientId::new(1), None, None)
         .unwrap();
-    tab.vertical_split(pane_to_the_right, None, crate::ClientId(1), None, None)
+    tab.vertical_split(pane_to_the_right, None, crate::ClientId::new(1), None, None)
         .unwrap();
-    tab.move_focus_up(crate::ClientId(1)).unwrap();
-    tab.vertical_split(pane_above_and_right, None, crate::ClientId(1), None, None)
-        .unwrap();
-    tab.move_focus_down(crate::ClientId(1)).unwrap();
-    tab.move_focus_left(crate::ClientId(1)).unwrap();
-    tab_resize_down(&mut tab, crate::ClientId(1));
+    tab.move_focus_up(crate::ClientId::new(1)).unwrap();
+    tab.vertical_split(
+        pane_above_and_right,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.move_focus_down(crate::ClientId::new(1)).unwrap();
+    tab.move_focus_left(crate::ClientId::new(1)).unwrap();
+    tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
@@ -1163,19 +1175,25 @@ pub fn resize_down_with_panes_below_aligned_right_with_current_pane() {
     };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
-    let focused_pane = PaneId::Terminal(crate::TerminalId(1));
-    let pane_below = PaneId::Terminal(crate::TerminalId(2));
-    let pane_below_and_right = PaneId::Terminal(crate::TerminalId(3));
-    let pane_to_the_right = PaneId::Terminal(crate::TerminalId(4));
-    tab.horizontal_split(pane_below, None, crate::ClientId(1), None, None)
+    let focused_pane = PaneId::Terminal(crate::TerminalId::new(1));
+    let pane_below = PaneId::Terminal(crate::TerminalId::new(2));
+    let pane_below_and_right = PaneId::Terminal(crate::TerminalId::new(3));
+    let pane_to_the_right = PaneId::Terminal(crate::TerminalId::new(4));
+    tab.horizontal_split(pane_below, None, crate::ClientId::new(1), None, None)
         .unwrap();
-    tab.vertical_split(pane_below_and_right, None, crate::ClientId(1), None, None)
+    tab.vertical_split(
+        pane_below_and_right,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.move_focus_up(crate::ClientId::new(1)).unwrap();
+    tab.vertical_split(pane_to_the_right, None, crate::ClientId::new(1), None, None)
         .unwrap();
-    tab.move_focus_up(crate::ClientId(1)).unwrap();
-    tab.vertical_split(pane_to_the_right, None, crate::ClientId(1), None, None)
-        .unwrap();
-    tab.move_focus_left(crate::ClientId(1)).unwrap();
-    tab_resize_down(&mut tab, crate::ClientId(1));
+    tab.move_focus_left(crate::ClientId::new(1)).unwrap();
+    tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
@@ -1368,54 +1386,54 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     tab.horizontal_split(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
-        crate::ClientId(1),
-        None,
-        None,
-    )
-    .unwrap();
-    tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(3)),
-        None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(4)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
-        crate::ClientId(1),
-        None,
-        None,
-    )
-    .unwrap();
-    tab.move_focus_up(crate::ClientId(1)).unwrap();
-    tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(5)),
-        None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(6)),
+        PaneId::Terminal(crate::TerminalId::new(4)),
         None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
-    tab.move_focus_left(crate::ClientId(1)).unwrap();
-    tab.move_focus_down(crate::ClientId(1)).unwrap();
-    tab_resize_down(&mut tab, crate::ClientId(1));
+    tab.move_focus_up(crate::ClientId::new(1)).unwrap();
+    tab.vertical_split(
+        PaneId::Terminal(crate::TerminalId::new(5)),
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.vertical_split(
+        PaneId::Terminal(crate::TerminalId::new(6)),
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.move_focus_left(crate::ClientId::new(1)).unwrap();
+    tab.move_focus_down(crate::ClientId::new(1)).unwrap();
+    tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .x,
@@ -1425,7 +1443,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .y,
@@ -1435,7 +1453,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .cols
@@ -1446,7 +1464,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .rows
@@ -1458,7 +1476,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .x,
@@ -1468,7 +1486,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .y,
@@ -1478,7 +1496,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .cols
@@ -1489,7 +1507,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .rows
@@ -1501,7 +1519,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .x,
@@ -1511,7 +1529,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .y,
@@ -1521,7 +1539,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .cols
@@ -1532,7 +1550,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .rows
@@ -1544,7 +1562,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .x,
@@ -1554,7 +1572,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .y,
@@ -1564,7 +1582,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .cols
@@ -1575,7 +1593,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .rows
@@ -1587,7 +1605,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .x,
@@ -1597,7 +1615,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .y,
@@ -1607,7 +1625,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .cols
@@ -1618,7 +1636,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .rows
@@ -1630,7 +1648,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .x,
@@ -1640,7 +1658,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .y,
@@ -1650,7 +1668,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .cols
@@ -1661,7 +1679,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .rows
@@ -1689,53 +1707,53 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     tab.horizontal_split(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
-        crate::ClientId(1),
-        None,
-        None,
-    )
-    .unwrap();
-    tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(3)),
-        None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(4)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
-        crate::ClientId(1),
-        None,
-        None,
-    )
-    .unwrap();
-    tab.move_focus_up(crate::ClientId(1)).unwrap();
-    tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(5)),
-        None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(6)),
+        PaneId::Terminal(crate::TerminalId::new(4)),
         None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
-    tab.move_focus_left(crate::ClientId(1)).unwrap();
-    tab_resize_down(&mut tab, crate::ClientId(1));
+    tab.move_focus_up(crate::ClientId::new(1)).unwrap();
+    tab.vertical_split(
+        PaneId::Terminal(crate::TerminalId::new(5)),
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.vertical_split(
+        PaneId::Terminal(crate::TerminalId::new(6)),
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.move_focus_left(crate::ClientId::new(1)).unwrap();
+    tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .x,
@@ -1745,7 +1763,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .y,
@@ -1755,7 +1773,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .cols
@@ -1766,7 +1784,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .rows
@@ -1778,7 +1796,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .x,
@@ -1788,7 +1806,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .y,
@@ -1798,7 +1816,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .cols
@@ -1809,7 +1827,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .rows
@@ -1821,7 +1839,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .x,
@@ -1831,7 +1849,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .y,
@@ -1841,7 +1859,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .cols
@@ -1852,7 +1870,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .rows
@@ -1864,7 +1882,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .x,
@@ -1874,7 +1892,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .y,
@@ -1884,7 +1902,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .cols
@@ -1895,7 +1913,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .rows
@@ -1907,7 +1925,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .x,
@@ -1917,7 +1935,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .y,
@@ -1927,7 +1945,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .cols
@@ -1938,7 +1956,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .rows
@@ -1950,7 +1968,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .x,
@@ -1960,7 +1978,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .y,
@@ -1970,7 +1988,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .cols
@@ -1981,7 +1999,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2009,71 +2027,71 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     tab.horizontal_split(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
-        crate::ClientId(1),
-        None,
-        None,
-    )
-    .unwrap();
-    tab.move_focus_up(crate::ClientId(1)).unwrap();
-    tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(3)),
-        None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
+    tab.move_focus_up(crate::ClientId::new(1)).unwrap();
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(4)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
-        crate::ClientId(1),
-        None,
-        None,
-    )
-    .unwrap();
-    tab.move_focus_down(crate::ClientId(1)).unwrap();
-    tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(5)),
-        None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(6)),
+        PaneId::Terminal(crate::TerminalId::new(4)),
         None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
-    tab.move_focus_left(crate::ClientId(1)).unwrap();
+    tab.move_focus_down(crate::ClientId::new(1)).unwrap();
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(7)),
+        PaneId::Terminal(crate::TerminalId::new(5)),
         None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(8)),
+        PaneId::Terminal(crate::TerminalId::new(6)),
         None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
-    tab.move_focus_left(crate::ClientId(1)).unwrap();
-    tab_resize_down(&mut tab, crate::ClientId(1));
+    tab.move_focus_left(crate::ClientId::new(1)).unwrap();
+    tab.vertical_split(
+        PaneId::Terminal(crate::TerminalId::new(7)),
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.vertical_split(
+        PaneId::Terminal(crate::TerminalId::new(8)),
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.move_focus_left(crate::ClientId::new(1)).unwrap();
+    tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2083,7 +2101,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2093,7 +2111,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2104,7 +2122,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2116,7 +2134,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2126,7 +2144,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2136,7 +2154,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2147,7 +2165,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2159,7 +2177,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2169,7 +2187,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2179,7 +2197,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2190,7 +2208,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2202,7 +2220,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2212,7 +2230,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2222,7 +2240,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2233,7 +2251,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2245,7 +2263,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2255,7 +2273,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2265,7 +2283,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2276,7 +2294,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2288,7 +2306,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2298,7 +2316,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2308,7 +2326,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2319,7 +2337,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2331,7 +2349,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(7)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(7)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2341,7 +2359,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(7)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(7)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2351,7 +2369,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(7)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(7)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2362,7 +2380,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(7)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(7)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2374,7 +2392,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(8)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(8)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2384,7 +2402,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(8)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(8)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2394,7 +2412,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(8)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(8)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2405,7 +2423,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(8)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(8)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2433,73 +2451,73 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     tab.horizontal_split(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
-        crate::ClientId(1),
-        None,
-        None,
-    )
-    .unwrap();
-    tab.move_focus_up(crate::ClientId(1)).unwrap();
-    tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(3)),
-        None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
+    tab.move_focus_up(crate::ClientId::new(1)).unwrap();
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(4)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
-        crate::ClientId(1),
-        None,
-        None,
-    )
-    .unwrap();
-    tab.move_focus_left(crate::ClientId(1)).unwrap();
-    tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(5)),
-        None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(6)),
+        PaneId::Terminal(crate::TerminalId::new(4)),
         None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
-    tab.move_focus_down(crate::ClientId(1)).unwrap();
+    tab.move_focus_left(crate::ClientId::new(1)).unwrap();
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(7)),
+        PaneId::Terminal(crate::TerminalId::new(5)),
         None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(8)),
+        PaneId::Terminal(crate::TerminalId::new(6)),
         None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
-    tab.move_focus_left(crate::ClientId(1)).unwrap();
-    tab.move_focus_up(crate::ClientId(1)).unwrap();
-    tab.move_focus_left(crate::ClientId(1)).unwrap();
-    tab_resize_down(&mut tab, crate::ClientId(1));
+    tab.move_focus_down(crate::ClientId::new(1)).unwrap();
+    tab.vertical_split(
+        PaneId::Terminal(crate::TerminalId::new(7)),
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.vertical_split(
+        PaneId::Terminal(crate::TerminalId::new(8)),
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.move_focus_left(crate::ClientId::new(1)).unwrap();
+    tab.move_focus_up(crate::ClientId::new(1)).unwrap();
+    tab.move_focus_left(crate::ClientId::new(1)).unwrap();
+    tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2509,7 +2527,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2519,7 +2537,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2530,7 +2548,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2542,7 +2560,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2552,7 +2570,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2562,7 +2580,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2573,7 +2591,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2585,7 +2603,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2595,7 +2613,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2605,7 +2623,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2616,7 +2634,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(3)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(3)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2628,7 +2646,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2638,7 +2656,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2648,7 +2666,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2659,7 +2677,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(4)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(4)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2671,7 +2689,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2681,7 +2699,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2691,7 +2709,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2702,7 +2720,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(5)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(5)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2714,7 +2732,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2724,7 +2742,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2734,7 +2752,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2745,7 +2763,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(6)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(6)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2757,7 +2775,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(7)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(7)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2767,7 +2785,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(7)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(7)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2777,7 +2795,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(7)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(7)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2788,7 +2806,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(7)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(7)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2800,7 +2818,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(8)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(8)))
             .unwrap()
             .position_and_size()
             .x,
@@ -2810,7 +2828,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(8)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(8)))
             .unwrap()
             .position_and_size()
             .y,
@@ -2820,7 +2838,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(8)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(8)))
             .unwrap()
             .position_and_size()
             .cols
@@ -2831,7 +2849,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(8)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(8)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2857,20 +2875,20 @@ pub fn cannot_resize_down_when_pane_below_is_at_minimum_height() {
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     tab.horizontal_split(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
-    tab.move_focus_up(crate::ClientId(1)).unwrap();
-    tab_resize_down(&mut tab, crate::ClientId(1));
+    tab.move_focus_up(crate::ClientId::new(1)).unwrap();
+    tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2881,7 +2899,7 @@ pub fn cannot_resize_down_when_pane_below_is_at_minimum_height() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(2)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(2)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2911,12 +2929,12 @@ pub fn cannot_resize_down_when_pane_has_fixed_rows() {
     fixed_child.split_size = Some(SplitSize::Fixed(10));
     initial_layout.children = vec![fixed_child, TiledPaneLayout::default()];
     let mut tab = create_new_tab_with_layout(size, initial_layout);
-    tab_resize_down(&mut tab, crate::ClientId(1));
+    tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(0)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(0)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2927,7 +2945,7 @@ pub fn cannot_resize_down_when_pane_has_fixed_rows() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2957,12 +2975,12 @@ pub fn cannot_resize_down_when_pane_below_has_fixed_rows() {
     fixed_child.split_size = Some(SplitSize::Fixed(10));
     initial_layout.children = vec![TiledPaneLayout::default(), fixed_child];
     let mut tab = create_new_tab_with_layout(size, initial_layout);
-    tab_resize_down(&mut tab, crate::ClientId(1));
+    tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(0)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(0)))
             .unwrap()
             .position_and_size()
             .rows
@@ -2973,7 +2991,7 @@ pub fn cannot_resize_down_when_pane_below_has_fixed_rows() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .rows
@@ -3003,12 +3021,12 @@ pub fn cannot_resize_up_when_pane_below_has_fixed_rows() {
     fixed_child.split_size = Some(SplitSize::Fixed(10));
     initial_layout.children = vec![TiledPaneLayout::default(), fixed_child];
     let mut tab = create_new_tab_with_layout(size, initial_layout);
-    tab_resize_up(&mut tab, crate::ClientId(1));
+    tab_resize_up(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(0)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(0)))
             .unwrap()
             .position_and_size()
             .rows
@@ -3019,7 +3037,7 @@ pub fn cannot_resize_up_when_pane_below_has_fixed_rows() {
     assert_eq!(
         tab.tiled_panes
             .panes
-            .get(&PaneId::Terminal(crate::TerminalId(1)))
+            .get(&PaneId::Terminal(crate::TerminalId::new(1)))
             .unwrap()
             .position_and_size()
             .rows

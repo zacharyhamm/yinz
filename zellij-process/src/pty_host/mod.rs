@@ -22,28 +22,39 @@ pub mod protocol;
 pub mod remote;
 
 pub use host::{run_pty_host, serve, ServeConfig};
+use zellij_types::internal_ids::ProcessId;
+
+/// A process identity must not become a kernel process-group selector.
+pub fn process_pid(pid: ProcessId) -> zellij_runtime::errors::prelude::Result<nix::unistd::Pid> {
+    use zellij_runtime::errors::prelude::*;
+    let raw = i32::try_from(pid).context("process ID exceeds the kernel PID range")?;
+    if raw == 0 {
+        return Err(anyhow!("process ID zero does not identify a process"));
+    }
+    Ok(nix::unistd::Pid::from_raw(raw))
+}
 
 pub(crate) fn ensure_secure_dir(
     path: &std::path::Path,
-) -> zellij_utils::errors::prelude::Result<()> {
-    use zellij_utils::errors::prelude::*;
+) -> zellij_runtime::errors::prelude::Result<()> {
+    use zellij_runtime::errors::prelude::*;
 
     std::fs::create_dir_all(path)
         .with_context(|| format!("failed to create {}", path.display()))?;
-    zellij_utils::shared::set_permissions(path, 0o700)
+    zellij_runtime::shared::set_permissions(path, 0o700)
         .with_context(|| format!("failed to secure {}", path.display()))
 }
 
-fn secure_socket(path: &std::path::Path, mode: u32) -> zellij_utils::errors::prelude::Result<()> {
-    secure_socket_with(path, mode, zellij_utils::shared::set_permissions)
+fn secure_socket(path: &std::path::Path, mode: u32) -> zellij_runtime::errors::prelude::Result<()> {
+    secure_socket_with(path, mode, zellij_runtime::shared::set_permissions)
 }
 
 fn secure_socket_with(
     path: &std::path::Path,
     mode: u32,
     set_permissions: impl FnOnce(&std::path::Path, u32) -> std::io::Result<()>,
-) -> zellij_utils::errors::prelude::Result<()> {
-    use zellij_utils::errors::prelude::*;
+) -> zellij_runtime::errors::prelude::Result<()> {
+    use zellij_runtime::errors::prelude::*;
 
     if let Err(error) = set_permissions(path, mode) {
         std::fs::remove_file(path).with_context(|| {
@@ -97,6 +108,19 @@ mod tests {
 
     use hegel::generators;
     use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+
+    #[test]
+    fn process_ids_cannot_signal_a_process_group_by_wrapping() {
+        use zellij_types::internal_ids::ProcessId;
+        for raw in [0, 2147483648, u32::MAX] {
+            assert!(process_pid(ProcessId::new(raw)).is_err());
+        }
+        assert_eq!(process_pid(ProcessId::new(1)).unwrap().as_raw(), 1);
+        assert_eq!(
+            process_pid(ProcessId::new(2147483647)).unwrap().as_raw(),
+            i32::MAX
+        );
+    }
 
     fn argv(args: &[&str]) -> Vec<String> {
         args.iter().map(|a| (*a).to_string()).collect()

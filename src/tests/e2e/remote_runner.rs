@@ -6,8 +6,9 @@ use vte;
 use zellij_server::panes::kitty_graphics::KittyImageStore;
 use zellij_server::panes::sixel::SixelImageStore;
 use zellij_server::panes::{LinkHandler, TerminalPane};
-use zellij_utils::data::{Palette, Style};
-use zellij_utils::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
+
+use zellij_types::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
+use zellij_types::style::{Palette, Style};
 
 use ssh2::Session;
 use std::io::prelude::*;
@@ -169,7 +170,7 @@ fn read_from_channel(
                 let styled_underlines = true;
                 let explicitly_disable_kitty_keyboard_protocol = false;
                 let mut terminal_output = TerminalPane::new(
-                    zellij_server::TerminalId(0),
+                    zellij_server::TerminalId::new(0),
                     pane_geom,
                     Style::default(),
                     0,

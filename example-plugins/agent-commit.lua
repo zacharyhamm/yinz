@@ -15,7 +15,7 @@
 -- point of hooks existing: the choices at agent exit are a script, not a branch in the terminal
 -- emulator.
 --
--- Read `zellij-utils/assets/plugins/agent-exit.lua` first; this is that file with one more key.
+-- Read `zellij-config/assets/plugins/agent-exit.lua` first; this is that file with one more key.
 -- Read it rather than copy it: your own hook is a file you write.
 --
 -- Opened by hand - `plugin_reload`, say - a hook gets no payload, so `agent_pane_id` is nil and

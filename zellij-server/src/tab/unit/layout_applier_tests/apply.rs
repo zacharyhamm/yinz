@@ -66,9 +66,9 @@ fn test_apply_empty_layout() {
         tiled_layout,
         floating_layout,
         terminal_ids,
-        vec![],             // new_floating_terminal_ids
-        HashMap::new(),     // new_plugin_ids
-        crate::ClientId(1), // client_id
+        vec![],                  // new_floating_terminal_ids
+        HashMap::new(),          // new_plugin_ids
+        crate::ClientId::new(1), // client_id
     );
 
     assert!(result.is_ok());
@@ -94,7 +94,7 @@ fn test_apply_simple_two_pane_layout() {
     "#;
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
-    let terminal_ids = vec![(TerminalId(1), None), (TerminalId(2), None)];
+    let terminal_ids = vec![(TerminalId::new(1), None), (TerminalId::new(2), None)];
 
     let size = Size {
         cols: 100,
@@ -155,7 +155,7 @@ fn test_apply_simple_two_pane_layout() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -182,9 +182,9 @@ fn test_apply_three_pane_layout() {
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
     let terminal_ids = vec![
-        (TerminalId(1), None),
-        (TerminalId(2), None),
-        (TerminalId(3), None),
+        (TerminalId::new(1), None),
+        (TerminalId::new(2), None),
+        (TerminalId::new(3), None),
     ];
 
     let size = Size {
@@ -246,7 +246,7 @@ fn test_apply_three_pane_layout() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -271,7 +271,7 @@ fn test_apply_horizontal_split_with_sizes() {
     "#;
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
-    let terminal_ids = vec![(TerminalId(1), None), (TerminalId(2), None)];
+    let terminal_ids = vec![(TerminalId::new(1), None), (TerminalId::new(2), None)];
 
     let size = Size {
         cols: 100,
@@ -332,7 +332,7 @@ fn test_apply_horizontal_split_with_sizes() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -357,7 +357,7 @@ fn test_apply_vertical_split_with_sizes() {
     "#;
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
-    let terminal_ids = vec![(TerminalId(1), None), (TerminalId(2), None)];
+    let terminal_ids = vec![(TerminalId::new(1), None), (TerminalId::new(2), None)];
 
     let size = Size {
         cols: 100,
@@ -418,7 +418,7 @@ fn test_apply_vertical_split_with_sizes() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -447,9 +447,9 @@ fn test_apply_nested_layout() {
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
     let terminal_ids = vec![
-        (TerminalId(1), None),
-        (TerminalId(2), None),
-        (TerminalId(3), None),
+        (TerminalId::new(1), None),
+        (TerminalId::new(2), None),
+        (TerminalId::new(3), None),
     ];
 
     let size = Size {
@@ -511,7 +511,7 @@ fn test_apply_nested_layout() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -536,9 +536,9 @@ fn test_apply_layout_with_focus() {
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
     let terminal_ids = vec![
-        (TerminalId(1), None),
-        (TerminalId(2), None),
-        (TerminalId(3), None),
+        (TerminalId::new(1), None),
+        (TerminalId::new(2), None),
+        (TerminalId::new(3), None),
     ];
 
     let size = Size {
@@ -600,7 +600,7 @@ fn test_apply_layout_with_focus() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -628,9 +628,9 @@ fn test_apply_layout_with_commands() {
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
     let terminal_ids = vec![
-        (TerminalId(1), None),
-        (TerminalId(2), None),
-        (TerminalId(3), None),
+        (TerminalId::new(1), None),
+        (TerminalId::new(2), None),
+        (TerminalId::new(3), None),
     ];
 
     let size = Size {
@@ -692,7 +692,7 @@ fn test_apply_layout_with_commands() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -717,9 +717,9 @@ fn test_apply_layout_with_named_panes() {
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
     let terminal_ids = vec![
-        (TerminalId(1), None),
-        (TerminalId(2), None),
-        (TerminalId(3), None),
+        (TerminalId::new(1), None),
+        (TerminalId::new(2), None),
+        (TerminalId::new(3), None),
     ];
 
     let size = Size {
@@ -781,7 +781,7 @@ fn test_apply_layout_with_named_panes() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -806,9 +806,9 @@ fn test_apply_layout_with_borderless_panes() {
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
     let terminal_ids = vec![
-        (TerminalId(1), None),
-        (TerminalId(2), None),
-        (TerminalId(3), None),
+        (TerminalId::new(1), None),
+        (TerminalId::new(2), None),
+        (TerminalId::new(3), None),
     ];
 
     let size = Size {
@@ -870,7 +870,7 @@ fn test_apply_layout_with_borderless_panes() {
             terminal_ids,
             vec![],
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -902,8 +902,8 @@ fn test_apply_layout_with_floating_panes() {
     "#;
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
-    let terminal_ids = vec![(TerminalId(1), None), (TerminalId(2), None)];
-    let floating_terminal_ids = vec![(TerminalId(3), None)];
+    let terminal_ids = vec![(TerminalId::new(1), None), (TerminalId::new(2), None)];
+    let floating_terminal_ids = vec![(TerminalId::new(3), None)];
 
     let size = Size {
         cols: 100,
@@ -964,7 +964,7 @@ fn test_apply_layout_with_floating_panes() {
             terminal_ids,
             floating_terminal_ids,
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -997,8 +997,8 @@ fn test_apply_layout_with_floating_pane_with_command() {
     "#;
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
-    let terminal_ids = vec![(TerminalId(1), None)];
-    let floating_terminal_ids = vec![(TerminalId(2), None)];
+    let terminal_ids = vec![(TerminalId::new(1), None)];
+    let floating_terminal_ids = vec![(TerminalId::new(2), None)];
 
     let size = Size {
         cols: 100,
@@ -1059,7 +1059,7 @@ fn test_apply_layout_with_floating_pane_with_command() {
             terminal_ids,
             floating_terminal_ids,
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -1107,11 +1107,11 @@ fn test_apply_layout_with_mixed_tiled_and_floating_panes() {
 
     let (tiled_layout, floating_layout) = parse_kdl_layout(kdl_layout);
     let terminal_ids = vec![
-        (TerminalId(1), None),
-        (TerminalId(2), None),
-        (TerminalId(3), None),
+        (TerminalId::new(1), None),
+        (TerminalId::new(2), None),
+        (TerminalId::new(3), None),
     ];
-    let floating_terminal_ids = vec![(TerminalId(4), None), (TerminalId(5), None)];
+    let floating_terminal_ids = vec![(TerminalId::new(4), None), (TerminalId::new(5), None)];
 
     let size = Size {
         cols: 150,
@@ -1172,7 +1172,7 @@ fn test_apply_layout_with_mixed_tiled_and_floating_panes() {
             terminal_ids,
             floating_terminal_ids,
             HashMap::new(),
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 

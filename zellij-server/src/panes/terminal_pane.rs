@@ -23,26 +23,26 @@ use std::fmt::Debug;
 use std::rc::Rc;
 use std::time::{self, Instant};
 use vte;
-use zellij_utils::animation::blink_is_lit;
-use zellij_utils::data::PaneContents;
-use zellij_utils::data::{AgentInfo, AgentSource, AgentState, HOCUS_AGENT_PANE_CONTEXT};
-use zellij_utils::input::command::RunCommand;
-use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
-use zellij_utils::internal_ids::PluginId;
-use zellij_utils::internal_ids::TerminalId;
-use zellij_utils::pane_size::Offset;
-use zellij_utils::{
-    data::{
-        BareKey, Direction, InputMode, KeyWithModifier, Palette, PaletteColor, RegexHighlight,
-        Style, Styling,
-    },
-    errors::prelude::*,
-    input::layout::Run,
-    nested_session::NestedSessionMessage,
-    pane_size::PaneGeom,
-    pane_size::SizeInPixels,
-    position::Position,
-    shared::make_terminal_title,
+use zellij_runtime::errors::prelude::*;
+use zellij_runtime::shared::make_terminal_title;
+use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
+use zellij_types::animation::blink_is_lit;
+use zellij_types::data::PaneContents;
+use zellij_types::data::HOCUS_AGENT_PANE_CONTEXT;
+use zellij_types::input::command::RunCommand;
+use zellij_types::internal_ids::PluginId;
+use zellij_types::internal_ids::TerminalId;
+use zellij_types::keys::{BareKey, KeyWithModifier};
+use zellij_types::mouse::{MouseEvent, MouseEventType};
+use zellij_types::pane_size::Offset;
+use zellij_types::pane_size::PaneGeom;
+use zellij_types::position::Position;
+use zellij_types::style::{Palette, Style, Styling};
+use zellij_types::{geometry::Direction, pane_size::SizeInPixels};
+use {
+    zellij_ipc::nested_session::NestedSessionMessage, zellij_types::data::InputMode,
+    zellij_types::data::PaletteColor, zellij_types::data::RegexHighlight,
+    zellij_types::input::layout::Run,
 };
 
 use crate::ui::pane_boundaries_frame::{FrameParams, PaneFrame};
@@ -979,7 +979,7 @@ impl Pane for TerminalPane {
         self.forward_paused
     }
 
-    fn push_color_palette_dsr(&mut self, mode: zellij_utils::data::HostTerminalThemeMode) {
+    fn push_color_palette_dsr(&mut self, mode: zellij_types::style::HostTerminalThemeMode) {
         self.grid.push_color_palette_dsr(mode);
     }
 
@@ -1674,7 +1674,7 @@ fn agent_from_run(invoked_with: Option<&Run>) -> Option<AgentInfo> {
     let context = &run_command.originating_plugin.as_ref()?.context;
     let marker = context.get(HOCUS_AGENT_PANE_CONTEXT)?;
     let kind = match marker.trim() {
-        "" | "true" => zellij_utils::agent::agent_kind_of(&run_command.command, &run_command.args)?,
+        "" | "true" => zellij_types::agent::agent_kind_of(&run_command.command, &run_command.args)?,
         kind => kind.to_owned(),
     };
     Some(AgentInfo {
@@ -1883,7 +1883,7 @@ impl TerminalPane {
             // this terminal pane *is* operating in "kitty keys" mode - so we need to serialize the "non kitty"
             // key to a "kitty key"
             key.as_ref()
-                .and_then(|k| k.serialize_kitty())
+                .and_then(zellij_runtime::keys::serialize_kitty)
                 .map(|s| AdjustedInput::WriteBytesToTerminal(s.as_bytes().to_vec()))
         }
     }
@@ -1969,7 +1969,7 @@ impl TerminalPane {
             // possible - if not possible (eg. with multiple modifiers), we'll return a None here
             // and write nothing to the terminal pane
             key.as_ref()
-                .and_then(|k| k.serialize_non_kitty())
+                .and_then(zellij_runtime::keys::serialize_non_kitty)
                 .map(|s| AdjustedInput::WriteBytesToTerminal(s.as_bytes().to_vec()))
         } else {
             Some(AdjustedInput::WriteBytesToTerminal(raw_input_bytes))

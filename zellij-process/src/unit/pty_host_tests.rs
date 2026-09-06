@@ -1,4 +1,6 @@
 use super::*;
+use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
 
 use crate::pty_host::fdpass::recv_fd;
 use nix::sys::termios;
@@ -17,7 +19,7 @@ struct TestHost {
 impl TestHost {
     /// Boots a supervisor in a thread over a socketpair and completes the
     /// handshake, returning once `HelloAck` is in hand.
-    fn start() -> (Self, String, Option<PathBuf>) {
+    fn start() -> (Self, SupervisorId, Option<PathBuf>) {
         let (server_end, host_end) = UnixStream::pair().expect("socketpair failed");
         let handle = std::thread::spawn(move || {
             serve(
@@ -63,7 +65,7 @@ impl TestHost {
     }
 
     /// Sends `Spawn` and completes the `Spawned` + fd-handoff exchange.
-    fn spawn(&mut self, cmd: RunCommand) -> (u32, std::fs::File) {
+    fn spawn(&mut self, cmd: RunCommand) -> (ProcessId, std::fs::File) {
         self.spawn_with(
             cmd,
             None,
@@ -83,7 +85,7 @@ impl TestHost {
         cmd: RunCommand,
         termios: Option<WireTermios>,
         initial_size: Option<WireWinsize>,
-    ) -> (u32, std::fs::File) {
+    ) -> (ProcessId, std::fs::File) {
         self.spawn_with_arg0(cmd, termios, initial_size, None)
     }
 
@@ -93,7 +95,7 @@ impl TestHost {
         termios: Option<WireTermios>,
         initial_size: Option<WireWinsize>,
         arg0: Option<String>,
-    ) -> (u32, std::fs::File) {
+    ) -> (ProcessId, std::fs::File) {
         self.spawn_with_env(cmd, termios, initial_size, arg0, vec![], false)
     }
 
@@ -108,7 +110,7 @@ impl TestHost {
         arg0: Option<String>,
         env: Vec<(String, String)>,
         login_session: bool,
-    ) -> (u32, std::fs::File) {
+    ) -> (ProcessId, std::fs::File) {
         self.send(&ServerToHostMsg::Spawn {
             job_control: true,
             terminal_id: 0,
@@ -157,14 +159,14 @@ fn sh(script: &str) -> RunCommand {
     }
 }
 
-fn process_alive(pid: u32) -> bool {
-    kill(Pid::from_raw(pid as i32), None).is_ok()
+fn process_alive(pid: ProcessId) -> bool {
+    kill(Pid::from_raw(i32::try_from(pid).unwrap()), None).is_ok()
 }
 
 /// The argv of `pid` as the kernel currently sees it, so a test can tell a shell
 /// apart from what it has `exec`ed into.
-fn process_argv(pid: u32) -> Option<Vec<String>> {
-    let pid = sysinfo::Pid::from_u32(pid);
+fn process_argv(pid: ProcessId) -> Option<Vec<String>> {
+    let pid = sysinfo::Pid::from_u32(pid.get());
     let mut system = sysinfo::System::new();
     system.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::Some(&[pid]),
@@ -190,7 +192,7 @@ fn process_argv(pid: u32) -> Option<Vec<String>> {
 /// an `exec` discards a pending continue notification on XNU, so a stop landing
 /// in the gap is a stop of a process that is about to be replaced, and the
 /// resume that follows is reported to nobody.
-fn wait_for_exec_into(pid: u32, program: &str) {
+fn wait_for_exec_into(pid: ProcessId, program: &str) {
     wait_until(
         // argv[0], not any argument: the shell's own argv is `sh -c ... exec
         // sleep 30`, which contains the program's name while still being the
@@ -236,7 +238,7 @@ fn read_until(master: &mut std::fs::File, needle: &str) -> String {
 fn the_handed_off_master_carries_the_childs_output() {
     let (mut host, _host_id, _sock) = TestHost::start();
     let (child_pid, mut master) = host.spawn(sh("echo zellij-pty-host-marker"));
-    assert!(child_pid > 0);
+    assert!(child_pid > zellij_types::internal_ids::ProcessId::new(0));
 
     let output = read_until(&mut master, "zellij-pty-host-marker");
     assert!(
@@ -377,7 +379,7 @@ fn pane_children_do_not_inherit_the_supervisors_ignored_signals() {
         }
     }
 
-    fn ignored_signals(pid: u32) -> u64 {
+    fn ignored_signals(pid: ProcessId) -> u64 {
         let status =
             std::fs::read_to_string(format!("/proc/{pid}/status")).expect("read child status");
         let field = status
@@ -857,7 +859,7 @@ fn a_malformed_cli_request_does_not_take_the_supervisor_down() {
 #[test]
 fn classify_spawn_failure_sees_through_the_context_layers() {
     let bare: anyhow::Error = ZellijError::CommandNotFound {
-        terminal_id: 3,
+        terminal_id: zellij_types::internal_ids::TerminalId::new(3),
         command: "/nonexistent/binary".to_owned(),
     }
     .into();
@@ -1031,7 +1033,7 @@ fn the_dropped_byte_count_never_decreases(tc: hegel::TestCase) {
 /// returning the reply and (on success) the pty master it sent with it.
 fn attach_over_socket(
     socket: &std::path::Path,
-    terminal_id: u32,
+    terminal_id: zellij_types::internal_ids::TerminalId,
     session_name: Option<&str>,
 ) -> (HostToServerMsg, Option<std::fs::File>) {
     let mut stream = UnixStream::connect(socket).expect("failed to connect to the named socket");
@@ -1043,7 +1045,7 @@ fn attach_over_socket(
         &ServerToHostMsg::Attach {
             protocol_version: PROTOCOL_VERSION,
             zellij_version: VERSION.to_owned(),
-            terminal_id,
+            terminal_id: terminal_id.get(),
             session_name: session_name.map(str::to_owned),
         },
     )
@@ -1141,7 +1143,11 @@ fn an_attach_hands_the_master_and_the_buffered_output_over() {
         "the detached supervisor to buffer its child's output",
     );
 
-    let (reply, master) = attach_over_socket(&control_socket, 42, Some("the-other-session"));
+    let (reply, master) = attach_over_socket(
+        &control_socket,
+        zellij_types::internal_ids::TerminalId::new(42),
+        Some("the-other-session"),
+    );
     let (buffered, cmd, status) = match reply {
         HostToServerMsg::AttachAck {
             host_id: acked_id,
@@ -1206,7 +1212,11 @@ fn the_buffered_output_is_delivered_once_and_then_cleared() {
         "the detached supervisor to buffer its child's output",
     );
 
-    let (first, first_master) = attach_over_socket(&control_socket, 1, None);
+    let (first, first_master) = attach_over_socket(
+        &control_socket,
+        zellij_types::internal_ids::TerminalId::new(1),
+        None,
+    );
     let first_buffered = match first {
         HostToServerMsg::AttachAck {
             buffered_base64, ..
@@ -1232,7 +1242,11 @@ fn the_buffered_output_is_delivered_once_and_then_cleared() {
         || !query_status(&control_socket).attached,
         "the supervisor to notice the first attacher went away",
     );
-    let (second, _) = attach_over_socket(&control_socket, 2, None);
+    let (second, _) = attach_over_socket(
+        &control_socket,
+        zellij_types::internal_ids::TerminalId::new(2),
+        None,
+    );
     match second {
         HostToServerMsg::AttachAck {
             buffered_base64, ..
@@ -1260,7 +1274,11 @@ fn an_attach_is_refused_while_a_server_is_attached() {
     let control_socket = control_socket.expect("the supervisor should have bound a socket");
     let (_child_pid, master) = host.spawn(sh("sleep 60"));
 
-    let (reply, no_master) = attach_over_socket(&control_socket, 42, None);
+    let (reply, no_master) = attach_over_socket(
+        &control_socket,
+        zellij_types::internal_ids::TerminalId::new(42),
+        None,
+    );
     match reply {
         HostToServerMsg::AttachRefused { reason, .. } => {
             assert_eq!(reason, AttachRefusal::AlreadyAttached)
@@ -1389,7 +1407,11 @@ fn a_release_racing_an_attach_is_ordered_by_the_poll_loop() {
 
     // Both land in kernel buffers with the supervisor still blocked in `poll`.
     host.send(&ServerToHostMsg::Release);
-    let (reply, attached_master) = attach_over_socket(&control_socket, 42, Some("second"));
+    let (reply, attached_master) = attach_over_socket(
+        &control_socket,
+        zellij_types::internal_ids::TerminalId::new(42),
+        Some("second"),
+    );
     match reply {
         HostToServerMsg::AttachAck { child_pid: p, .. } => assert_eq!(p, child_pid),
         other => panic!(
@@ -1624,7 +1646,11 @@ fn a_stopped_child_is_reported_and_so_is_its_continue() {
     read_until(&mut master, "ready");
     wait_for_exec_into(child_pid, "sleep");
 
-    kill(Pid::from_raw(child_pid as i32), Some(Signal::SIGSTOP)).expect("could not stop the child");
+    kill(
+        Pid::from_raw(i32::try_from(child_pid).unwrap()),
+        Some(Signal::SIGSTOP),
+    )
+    .expect("could not stop the child");
     match host.recv() {
         HostToServerMsg::ChildStopped { signal } => {
             assert_eq!(
@@ -1636,8 +1662,11 @@ fn a_stopped_child_is_reported_and_so_is_its_continue() {
         other => panic!("expected ChildStopped, got {other:?}"),
     }
 
-    kill(Pid::from_raw(child_pid as i32), Some(Signal::SIGCONT))
-        .expect("could not continue the child");
+    kill(
+        Pid::from_raw(i32::try_from(child_pid).unwrap()),
+        Some(Signal::SIGCONT),
+    )
+    .expect("could not continue the child");
     match host.recv() {
         HostToServerMsg::ChildContinued => {},
         other => panic!("expected ChildContinued, got {other:?}"),
@@ -1645,7 +1674,11 @@ fn a_stopped_child_is_reported_and_so_is_its_continue() {
 
     // The waiter has to survive both transitions: a stop that swallowed the
     // exit would leave the pane open forever.
-    kill(Pid::from_raw(child_pid as i32), Some(Signal::SIGKILL)).expect("could not kill the child");
+    kill(
+        Pid::from_raw(i32::try_from(child_pid).unwrap()),
+        Some(Signal::SIGKILL),
+    )
+    .expect("could not kill the child");
     match host.recv() {
         HostToServerMsg::ChildExited { status } => assert_eq!(status, None),
         other => panic!("expected ChildExited, got {other:?}"),
@@ -1664,7 +1697,7 @@ fn a_child_that_stops_again_after_continuing_is_reported_again() {
     let (child_pid, mut master) = host.spawn(sh("echo ready; exec sleep 30"));
     read_until(&mut master, "ready");
     wait_for_exec_into(child_pid, "sleep");
-    let pid = Pid::from_raw(child_pid as i32);
+    let pid = Pid::from_raw(i32::try_from(child_pid).unwrap());
 
     for round in 0..2 {
         kill(pid, Some(Signal::SIGSTOP)).expect("could not stop the child");
@@ -1692,7 +1725,7 @@ fn a_child_killed_while_stopped_still_reports_its_exit() {
     let (child_pid, mut master) = host.spawn(sh("echo ready; exec sleep 30"));
     read_until(&mut master, "ready");
     wait_for_exec_into(child_pid, "sleep");
-    let pid = Pid::from_raw(child_pid as i32);
+    let pid = Pid::from_raw(i32::try_from(child_pid).unwrap());
 
     kill(pid, Some(Signal::SIGSTOP)).expect("could not stop the child");
     match host.recv() {
@@ -1721,7 +1754,11 @@ fn terminating_a_stopped_child_still_waits_for_its_real_exit() {
     let (child_pid, mut master) = host.spawn(sh("echo ready; exec sleep 30"));
     read_until(&mut master, "ready");
 
-    kill(Pid::from_raw(child_pid as i32), Some(Signal::SIGSTOP)).expect("could not stop the child");
+    kill(
+        Pid::from_raw(i32::try_from(child_pid).unwrap()),
+        Some(Signal::SIGSTOP),
+    )
+    .expect("could not stop the child");
     match host.recv() {
         HostToServerMsg::ChildStopped { .. } => {},
         other => panic!("expected ChildStopped, got {other:?}"),

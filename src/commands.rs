@@ -4,40 +4,47 @@ use std::{
     process,
     time::Duration,
 };
+use zellij_types::internal_ids::SupervisorId;
+use zellij_types::units::{ElapsedMicros, UnixMicros};
 
 use zellij_client::{
     os_input_output::get_client_os_input, start_client as start_client_impl, ClientInfo,
 };
 
-use zellij_utils::sessions::{
-    assert_dead_session, assert_session_ne, delete_session as delete_session_impl,
-    generate_unique_session_name, get_active_session, get_resurrectable_sessions, get_sessions,
-    get_sessions_sorted_by_mtime, get_sessions_with_status, kill_session as kill_session_impl,
-    match_session_name, print_sessions, print_sessions_with_index, resurrection_layout,
-    session_left, session_listing_error_message, session_status, unacted_kill_message,
-    undeliverable_kill_message, unresponsive_session_message, validate_session_name, ActiveSession,
-    SessionListing, SessionNameMatch, SessionProbe, KILL_CONFIRM_TIMEOUT,
+use {
+    zellij_cli::sessions::assert_dead_session, zellij_cli::sessions::assert_session_ne,
+    zellij_cli::sessions::delete_session as delete_session_impl,
+    zellij_cli::sessions::generate_unique_session_name, zellij_cli::sessions::get_active_session,
+    zellij_cli::sessions::print_sessions, zellij_cli::sessions::print_sessions_with_index,
+    zellij_cli::sessions::session_listing_error_message,
+    zellij_cli::sessions::unacted_kill_message, zellij_cli::sessions::undeliverable_kill_message,
+    zellij_cli::sessions::unresponsive_session_message, zellij_cli::sessions::ActiveSession,
+    zellij_cli::sessions::SessionListing, zellij_ipc::probe::SessionProbe,
+    zellij_session::sessions::get_resurrectable_sessions, zellij_session::sessions::get_sessions,
+    zellij_session::sessions::get_sessions_sorted_by_mtime,
+    zellij_session::sessions::get_sessions_with_status,
+    zellij_session::sessions::kill_session as kill_session_impl,
+    zellij_session::sessions::match_session_name, zellij_session::sessions::resurrection_layout,
+    zellij_session::sessions::session_left, zellij_session::sessions::session_status,
+    zellij_session::sessions::validate_session_name, zellij_session::sessions::SessionNameMatch,
+    zellij_session::sessions::KILL_CONFIRM_TIMEOUT,
 };
 
-use zellij_utils::consts::session_layout_cache_file_name;
+use zellij_runtime::consts::session_layout_cache_file_name;
 
 use miette::{Report, Result};
+use zellij_runtime::envs;
 use zellij_server::{
     os_input_output::get_server_os_input_from_termios_arg, start_server as start_server_impl,
 };
-use zellij_utils::{
-    cli::{CliArgs, Command, SessionCommand, Sessions},
-    data::ConnectToSession,
-    envs,
-    input::{
-        actions::Action,
-        config::{Config, ConfigError},
-        options::Options,
-    },
-    setup::Setup,
+use {
+    zellij_cli::args::CliArgs, zellij_cli::args::Command, zellij_cli::args::SessionCommand,
+    zellij_cli::args::Sessions, zellij_cli::setup::Setup, zellij_config::config::Config,
+    zellij_config::config::ConfigError, zellij_types::data::SessionConnection,
+    zellij_types::input::actions::Action, zellij_types::input::options::Options,
 };
 
-pub(crate) use zellij_utils::sessions::list_sessions;
+pub(crate) use zellij_cli::sessions::list_sessions;
 
 fn sessions_to_kill(
     get_sessions: impl FnOnce() -> Result<Vec<(String, Duration, SessionProbe)>, std::io::ErrorKind>,
@@ -51,9 +58,9 @@ fn sessions_to_kill(
 }
 
 pub(crate) fn firecracker(
-    command: zellij_utils::cli::Firecracker,
+    command: zellij_cli::args::Firecracker,
     config: &Config,
-) -> zellij_utils::errors::prelude::Result<()> {
+) -> zellij_runtime::errors::prelude::Result<()> {
     let provider = zellij_server::firecracker::provider_from_options(
         config.options.firecracker_provider.as_deref(),
         config.options.firecracker_provider_timeout_secs,
@@ -120,8 +127,8 @@ pub(crate) fn resolve_firecracker_session(
     explicit: Option<String>,
     env_session: Option<String>,
     active: ActiveSession,
-) -> zellij_utils::errors::prelude::Result<String> {
-    use zellij_utils::errors::prelude::*;
+) -> zellij_runtime::errors::prelude::Result<String> {
+    use zellij_runtime::errors::prelude::*;
 
     explicit
         .or(env_session)
@@ -139,15 +146,17 @@ pub(crate) fn resolve_firecracker_session(
 /// checkouts happen to exist on the machine running them; production passes
 /// [`git_branch`].
 pub(crate) fn run_firecracker(
-    command: zellij_utils::cli::Firecracker,
+    command: zellij_cli::args::Firecracker,
     provider: &zellij_server::firecracker::Provider,
     branch_of: &dyn Fn(&Path) -> Option<String>,
     out: &mut impl std::io::Write,
     err: &mut impl std::io::Write,
-) -> zellij_utils::errors::prelude::Result<()> {
-    use zellij_utils::cli::Firecracker;
+) -> zellij_runtime::errors::prelude::Result<()> {
+    use zellij_cli::args::Firecracker;
 
-    fn selected_session(explicit: Option<String>) -> zellij_utils::errors::prelude::Result<String> {
+    fn selected_session(
+        explicit: Option<String>,
+    ) -> zellij_runtime::errors::prelude::Result<String> {
         // The active-session scan is only worth doing without an explicit choice.
         match explicit {
             Some(session) => Ok(session),
@@ -463,7 +472,7 @@ fn get_os_input<OsInputOutput>(
 
 pub(crate) fn start_server(path: PathBuf, debug: bool, termios: Option<String>) {
     // Set instance-wide debug mode
-    zellij_utils::consts::DEBUG_MODE.set(debug).unwrap();
+    zellij_runtime::consts::DEBUG_MODE.set(debug).unwrap();
     let os_input = get_os_input(|| get_server_os_input_from_termios_arg(termios.as_deref()));
     start_server_impl(Box::new(os_input), path);
 }
@@ -492,11 +501,11 @@ fn find_indexed_session(
     }
 }
 
-/// Client entrypoint for all [`zellij_utils::cli::CliAction`]
+/// Client entrypoint for all [`zellij_cli::args::CliAction`]
 ///
 /// Checks session to send the action to and attaches with client
 pub(crate) fn send_action_to_session(
-    mut cli_action: zellij_utils::cli::CliAction,
+    mut cli_action: zellij_cli::args::CliAction,
     mut requested_session_name: Option<String>,
     config: Option<Config>,
 ) {
@@ -566,15 +575,15 @@ pub(crate) fn send_action_to_session(
 /// while its supervisor is re-keyed to the adopting session and id. Explicit CLI targets still
 /// win; this only replaces the implicit environment-based route used by agent hooks.
 pub(crate) fn retarget_implicit_agent_report(
-    cli_action: &mut zellij_utils::cli::CliAction,
+    cli_action: &mut zellij_cli::args::CliAction,
     requested_session_name: &mut Option<String>,
     pane_ref: Option<String>,
     query: impl FnOnce(
-        &str,
+        &SupervisorId,
     )
         -> std::result::Result<zellij_server::pty_host::protocol::HostStatus, String>,
 ) -> std::result::Result<(), String> {
-    let zellij_utils::cli::CliAction::AgentReport {
+    let zellij_cli::args::CliAction::AgentReport {
         pane_id: pane_id @ None,
         ..
     } = cli_action
@@ -594,6 +603,7 @@ pub(crate) fn retarget_implicit_agent_report(
         ));
     }
 
+    let pane_ref = SupervisorId::new(pane_ref);
     let status = query(&pane_ref)?;
     if status.host_id != pane_ref {
         return Err(format!(
@@ -665,7 +675,7 @@ fn resolve_session_for_stream(requested_session_name: Option<String>, purpose: &
 }
 
 pub(crate) fn subscribe_to_session(
-    subscribe_cli: zellij_utils::cli::SubscribeCli,
+    subscribe_cli: zellij_cli::args::SubscribeCli,
     requested_session_name: Option<String>,
     _config: Option<Config>,
 ) {
@@ -679,7 +689,7 @@ pub(crate) fn subscribe_to_session(
 }
 
 pub(crate) fn stream_session_events(
-    events_cli: zellij_utils::cli::EventsCli,
+    events_cli: zellij_cli::args::EventsCli,
     requested_session_name: Option<String>,
     _config: Option<Config>,
 ) {
@@ -689,13 +699,13 @@ pub(crate) fn stream_session_events(
 }
 
 fn attach_with_cli_client(
-    cli_action: zellij_utils::cli::CliAction,
+    cli_action: zellij_cli::args::CliAction,
     session_name: &str,
     config: Option<Config>,
 ) {
     let os_input = get_os_input(zellij_client::os_input_output::get_cli_client_os_input);
     let get_current_dir = || std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    match Action::actions_from_cli(cli_action, Box::new(get_current_dir), config) {
+    match zellij_cli::actions::actions_from_cli(cli_action, Box::new(get_current_dir), config) {
         Ok(actions) => {
             let exit_status = zellij_client::cli_client::start_cli_client(
                 Box::new(os_input),
@@ -826,7 +836,7 @@ pub(crate) fn start_client(opts: CliArgs) {
         },
     };
 
-    let mut reconnect_to_session: Option<ConnectToSession> = None;
+    let mut reconnect_to_session: Option<SessionConnection> = None;
     let os_input = get_os_input(get_client_os_input);
     loop {
         let os_input = os_input.clone();
@@ -888,7 +898,9 @@ pub(crate) fn start_client(opts: CliArgs) {
         })) = opts.command.clone()
         {
             let config_options = match options.as_deref() {
-                Some(SessionCommand::Options(o)) => config_options.merge_from_cli(o.to_owned()),
+                Some(SessionCommand::Options(o)) => {
+                    zellij_cli::options::merge_from_cli(&config_options, o.to_owned().into())
+                },
                 None => config_options,
             };
             should_create_detached = create_background;
@@ -1183,9 +1195,9 @@ fn reload_config_from_disk(
 }
 
 #[cfg(unix)]
-pub(crate) fn pty_hosts(command: zellij_utils::cli::PtyHosts) -> anyhow::Result<()> {
+pub(crate) fn pty_hosts(command: zellij_cli::args::PtyHosts) -> anyhow::Result<()> {
+    use zellij_cli::args::PtyHosts as PtyHostsCli;
     use zellij_server::pty_host::cli;
-    use zellij_utils::cli::PtyHosts as PtyHostsCli;
     match command {
         PtyHostsCli::List { json, host } => match host {
             Some(host) => cli::remote_list(&host, json),
@@ -1205,13 +1217,13 @@ pub(crate) fn pty_hosts(command: zellij_utils::cli::PtyHosts) -> anyhow::Result<
 /// session, then hands the pane to one as an ordinary CLI action.
 #[cfg(unix)]
 pub(crate) fn pty_host_adopt(
-    command: zellij_utils::cli::PtyHosts,
+    command: zellij_cli::args::PtyHosts,
     requested_session_name: Option<String>,
     config: Option<Config>,
 ) {
+    use zellij_cli::args::PtyHosts as PtyHostsCli;
     use zellij_server::pty_host::cli;
-    use zellij_utils::cli::PtyHosts as PtyHostsCli;
-    use zellij_utils::input::actions::warp_placement;
+    use zellij_types::input::actions::warp_placement;
 
     let PtyHostsCli::Adopt {
         host_id,
@@ -1256,10 +1268,10 @@ pub(crate) fn pty_host_adopt(
 /// `zellij plugins ...`: the plugin folder is the session's - `user_plugin_dir` in the config,
 /// or `<config dir>/plugins` - so what is written here is what `plugin_reload` and a layout's
 /// `file:` location find.
-pub(crate) fn plugins(command: zellij_utils::cli::Plugins, opts: &CliArgs) -> anyhow::Result<()> {
-    use zellij_utils::cli::Plugins as PluginsCli;
-    let config = Config::try_from(opts).ok();
-    let plugin_dir = zellij_utils::home::user_plugin_dir_or_default(
+pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> anyhow::Result<()> {
+    use zellij_cli::args::Plugins as PluginsCli;
+    let config = zellij_cli::setup::load_config(opts).ok();
+    let plugin_dir = zellij_runtime::home::user_plugin_dir_or_default(
         config
             .as_ref()
             .and_then(|config| config.options.user_plugin_dir.clone()),
@@ -1313,7 +1325,7 @@ pub(crate) fn plugins(command: zellij_utils::cli::Plugins, opts: &CliArgs) -> an
                 ),
                 (Some(name), None) => {
                     let path =
-                        zellij_utils::plugin_authoring::resolve_plugin_file(&plugin_dir, &name)
+                        zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir, &name)
                             .map_err(|e| anyhow::anyhow!(e))?;
                     (
                         path.file_name()
@@ -1333,13 +1345,13 @@ pub(crate) fn plugins(command: zellij_utils::cli::Plugins, opts: &CliArgs) -> an
             Ok(())
         },
         PluginsCli::Reload { name } => {
-            let path = zellij_utils::plugin_authoring::resolve_plugin_file(&plugin_dir, &name)
+            let path = zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir, &name)
                 .map_err(|e| anyhow::anyhow!(e))?;
             if !path.is_file() {
                 anyhow::bail!("{} is not there; write it first", path.display());
             }
             send_action_to_session(
-                zellij_utils::cli::CliAction::StartOrReloadPlugin {
+                zellij_cli::args::CliAction::StartOrReloadPlugin {
                     url: format!("file:{}", path.display()),
                     configuration: None,
                 },
@@ -1349,9 +1361,9 @@ pub(crate) fn plugins(command: zellij_utils::cli::Plugins, opts: &CliArgs) -> an
             Ok(())
         },
         PluginsCli::Log { name, lines } => {
-            let path = zellij_utils::plugin_authoring::resolve_plugin_file(&plugin_dir, &name)
+            let path = zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir, &name)
                 .map_err(|e| anyhow::anyhow!(e))?;
-            let log_file = zellij_utils::consts::ZELLIJ_TMP_LOG_FILE.clone();
+            let log_file = zellij_runtime::consts::ZELLIJ_TMP_LOG_FILE.clone();
             print!(
                 "{}",
                 zellij_server::plugin_authoring::log_tail(&log_file, &path, lines)?
@@ -1394,7 +1406,7 @@ fn plugin_name_of(plugin_dir: &std::path::Path, file: &std::path::Path) -> Strin
 /// What the source is going to do wrong at run time, on stderr, under whatever the command
 /// printed. Compiling is the verdict; these are the traps a compile cannot see.
 fn print_plugin_lint(name: &str, source: &str) {
-    for finding in zellij_utils::plugin_authoring::lint(name, source) {
+    for finding in zellij_plugin_api::authoring::lint(name, source) {
         eprintln!("warning: {finding}");
     }
 }
@@ -1415,11 +1427,11 @@ fn read_source(file: Option<&Path>) -> anyhow::Result<String> {
 }
 
 pub(crate) fn recordings(
-    command: zellij_utils::cli::Recordings,
+    command: zellij_cli::args::Recordings,
     data_dir: PathBuf,
 ) -> anyhow::Result<()> {
-    use zellij_utils::cli::Recordings as RecordingsCli;
-    let data_access = zellij_utils::data_access::DataAccess::sqlite(&data_dir);
+    use zellij_cli::args::Recordings as RecordingsCli;
+    let data_access = zellij_storage::data_access::DataAccess::sqlite(&data_dir);
     match command {
         RecordingsCli::List { json } => {
             let summaries = data_access.recordings().list()?;
@@ -1466,7 +1478,9 @@ pub(crate) fn recordings(
     }
 }
 
-pub(crate) fn format_search_results(hits: &[zellij_utils::session_recording::SearchHit]) -> String {
+pub(crate) fn format_search_results(
+    hits: &[zellij_storage::session_recording::SearchHit],
+) -> String {
     if hits.is_empty() {
         return "No matches.\n".to_string();
     }
@@ -1500,7 +1514,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 }
 
 pub(crate) fn format_recordings_list(
-    summaries: &[zellij_utils::session_recording::RecordingSummary],
+    summaries: &[zellij_storage::session_recording::RecordingSummary],
 ) -> String {
     // Header as specified in plan
     let mut out = String::new();
@@ -1535,13 +1549,13 @@ pub(crate) fn format_recordings_list(
     out
 }
 
-fn format_started(started_at_us: i64) -> String {
-    let t = std::time::UNIX_EPOCH + Duration::from_micros(started_at_us.max(0) as u64);
+fn format_started(started_at_us: UnixMicros) -> String {
+    let t = std::time::UNIX_EPOCH + Duration::from_micros(started_at_us.get().max(0) as u64);
     humantime::format_rfc3339_seconds(t).to_string()
 }
 
-fn format_duration(duration_us: i64) -> String {
-    let secs = duration_us as f64 / 1_000_000.0;
+fn format_duration(duration_us: ElapsedMicros) -> String {
+    let secs = duration_us.get() as f64 / 1_000_000.0;
     if secs < 60.0 {
         format!("{:.1}s", secs)
     } else if secs < 3600.0 {
@@ -1558,10 +1572,11 @@ mod tests {
         sessions_to_delete, sessions_to_kill, KillOutcome,
     };
     use std::{cell::Cell, io, time::Duration};
+    use zellij_cli::args::CliAction;
     use zellij_server::pty_host::protocol::HostStatus;
-    use zellij_utils::cli::CliAction;
-    use zellij_utils::sessions::{
-        session_listing_error_message, unresponsive_session_message, SessionProbe,
+    use {
+        zellij_cli::sessions::session_listing_error_message,
+        zellij_cli::sessions::unresponsive_session_message, zellij_ipc::probe::SessionProbe,
     };
 
     fn session(name: &str) -> (String, Duration) {
@@ -1583,13 +1598,13 @@ mod tests {
 
     fn pane_status(attached: bool) -> HostStatus {
         HostStatus {
-            host_id: "abcdef012345".to_owned(),
+            host_id: zellij_types::internal_ids::SupervisorId::new("abcdef012345"),
             session_name: Some("after-warp".to_owned()),
             terminal_id: 42,
             command: "codex".to_owned(),
             cwd: Some("/work".into()),
-            child_pid: Some(10),
-            host_pid: 11,
+            child_pid: Some(zellij_types::internal_ids::ProcessId::new(10)),
+            host_pid: zellij_types::internal_ids::ProcessId::new(11),
             started_at_unix: 0,
             attached,
             child_exit_status: None,
@@ -1794,10 +1809,10 @@ mod firecracker_command_tests {
         time::Duration,
     };
     use tempfile::TempDir;
+    use zellij_cli::args::Firecracker;
+    use zellij_cli::sessions::ActiveSession;
     use zellij_server::firecracker::Provider;
     use zellij_test_support::write_warm_script;
-    use zellij_utils::cli::Firecracker;
-    use zellij_utils::sessions::ActiveSession;
 
     #[test]
     fn branch_lookup_stays_at_the_supplied_worktree_root() {

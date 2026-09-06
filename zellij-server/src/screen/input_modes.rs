@@ -1,11 +1,14 @@
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 
 use super::{active_tab, Screen};
 use crate::panes::PaneId;
 use crate::plugins::{PluginId, PluginInstruction};
 use crate::tab::Tab;
 use crate::{ClientId, ServerInstruction};
-use zellij_utils::data::{Event, EventType, InputMode, ModeInfo};
+use {
+    zellij_types::data::Event, zellij_types::data::EventType, zellij_types::data::InputMode,
+    zellij_types::data::ModeInfo,
+};
 
 impl Screen {
     pub fn change_mode(

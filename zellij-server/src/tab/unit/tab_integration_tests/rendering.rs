@@ -7,11 +7,11 @@ fn increase_tiled_pane_sizes_with_stacked_resizes() {
         cols: 200,
         rows: 40,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
     for i in 2..5 {
-        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(i));
+        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(i));
         tab.new_pane(
             new_pane_id_1,
             None,
@@ -61,11 +61,11 @@ fn increase_tiled_pane_sizes_with_stacked_resizes_into_uneven_panes() {
         cols: 200,
         rows: 40,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
     for i in 2..4 {
-        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(i));
+        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(i));
         tab.new_pane(
             new_pane_id_1,
             None,
@@ -80,7 +80,7 @@ fn increase_tiled_pane_sizes_with_stacked_resizes_into_uneven_panes() {
     }
     tab.move_focus_up(client_id).unwrap();
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(4)),
+        PaneId::Terminal(crate::TerminalId::new(4)),
         None,
         client_id,
         None,
@@ -89,7 +89,7 @@ fn increase_tiled_pane_sizes_with_stacked_resizes_into_uneven_panes() {
     .unwrap();
     tab.move_focus_right(client_id).unwrap();
     tab.horizontal_split(
-        PaneId::Terminal(crate::TerminalId(5)),
+        PaneId::Terminal(crate::TerminalId::new(5)),
         None,
         client_id,
         None,
@@ -134,11 +134,11 @@ fn split_stack_vertically() {
         cols: 200,
         rows: 40,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
     for i in 2..4 {
-        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(i));
+        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(i));
         tab.new_pane(
             new_pane_id_1,
             None,
@@ -157,7 +157,7 @@ fn split_stack_vertically() {
     tab.resize(client_id, ResizeStrategy::new(Resize::Increase, None))
         .unwrap();
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(4)),
+        PaneId::Terminal(crate::TerminalId::new(4)),
         None,
         client_id,
         None,
@@ -181,11 +181,11 @@ fn split_stack_horizontally() {
         cols: 200,
         rows: 40,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
     for i in 2..4 {
-        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(i));
+        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(i));
         tab.new_pane(
             new_pane_id_1,
             None,
@@ -204,7 +204,7 @@ fn split_stack_horizontally() {
     tab.resize(client_id, ResizeStrategy::new(Resize::Increase, None))
         .unwrap();
     tab.horizontal_split(
-        PaneId::Terminal(crate::TerminalId(4)),
+        PaneId::Terminal(crate::TerminalId::new(4)),
         None,
         client_id,
         None,
@@ -230,11 +230,11 @@ fn render_stacks_without_pane_frames() {
         cols: 100,
         rows: 40,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab_without_pane_frames(size, ModeInfo::default());
     let mut output = Output::default();
     for i in 2..4 {
-        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(i));
+        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(i));
         tab.new_pane(
             new_pane_id_1,
             None,
@@ -253,7 +253,7 @@ fn render_stacks_without_pane_frames() {
     tab.resize(client_id, ResizeStrategy::new(Resize::Increase, None))
         .unwrap();
     tab.vertical_split(
-        PaneId::Terminal(crate::TerminalId(4)),
+        PaneId::Terminal(crate::TerminalId::new(4)),
         None,
         client_id,
         None,
@@ -261,7 +261,7 @@ fn render_stacks_without_pane_frames() {
     )
     .unwrap();
     for i in 5..7 {
-        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(i));
+        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(i));
         tab.new_pane(
             new_pane_id_1,
             None,
@@ -275,13 +275,13 @@ fn render_stacks_without_pane_frames() {
         .unwrap();
     }
     let _ = tab.focus_pane_with_id(
-        PaneId::Terminal(crate::TerminalId(1)),
+        PaneId::Terminal(crate::TerminalId::new(1)),
         false,
         false,
         client_id,
     );
     for i in 7..9 {
-        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(i));
+        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(i));
         tab.new_pane(
             new_pane_id_1,
             None,
@@ -295,13 +295,13 @@ fn render_stacks_without_pane_frames() {
         .unwrap();
     }
     let _ = tab.focus_pane_with_id(
-        PaneId::Terminal(crate::TerminalId(1)),
+        PaneId::Terminal(crate::TerminalId::new(1)),
         false,
         false,
         client_id,
     );
     for i in 9..11 {
-        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId(i));
+        let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(i));
         tab.new_pane(
             new_pane_id_1,
             None,
@@ -320,13 +320,13 @@ fn render_stacks_without_pane_frames() {
     )
     .unwrap();
     let _ = tab.focus_pane_with_id(
-        PaneId::Terminal(crate::TerminalId(7)),
+        PaneId::Terminal(crate::TerminalId::new(7)),
         false,
         false,
         client_id,
     );
     let _ = tab.focus_pane_with_id(
-        PaneId::Terminal(crate::TerminalId(5)),
+        PaneId::Terminal(crate::TerminalId::new(5)),
         false,
         false,
         client_id,
@@ -348,14 +348,14 @@ fn dump_screen() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let map = Arc::new(Mutex::new(HashMap::new()));
     tab.os_api = Box::new(FakeInputOutput {
         file_dumps: map.clone(),
         ..Default::default()
     });
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     tab.new_pane(
         new_pane_id,
         None,
@@ -367,7 +367,7 @@ fn dump_screen() {
         None,
     )
     .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("scratch".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(2), Vec::from("scratch".as_bytes()))
         .unwrap();
     let file = "/tmp/log.sh";
     tab.dump_active_terminal_screen(Some(file.to_string()), client_id, false)
@@ -385,14 +385,14 @@ fn clear_screen() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let map = Arc::new(Mutex::new(HashMap::new()));
     tab.os_api = Box::new(FakeInputOutput {
         file_dumps: map.clone(),
         ..Default::default()
     });
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     tab.new_pane(
         new_pane_id,
         None,
@@ -404,7 +404,7 @@ fn clear_screen() {
         None,
     )
     .unwrap();
-    tab.handle_pty_bytes(crate::TerminalId(2), Vec::from("scratch".as_bytes()))
+    tab.handle_pty_bytes(crate::TerminalId::new(2), Vec::from("scratch".as_bytes()))
         .unwrap();
     let file = "/tmp/log-clear-screen.sh";
     tab.clear_active_terminal_screen(client_id).unwrap();

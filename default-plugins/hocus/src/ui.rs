@@ -2882,16 +2882,16 @@ mod tests {
     #[test]
     fn kitty_graphics_support_is_scoped_to_the_rendering_client() {
         let mut state = State::default();
-        state.kitty_graphics.insert(1);
+        state.kitty_graphics.insert(ClientId::new(1));
 
-        state.client = 1;
+        state.client = ClientId::new(1);
         render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
-        assert!(state.wand_transmitted.contains(&1));
+        assert!(state.wand_transmitted.contains(&ClientId::new(1)));
 
-        state.client = 2;
+        state.client = ClientId::new(2);
         render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
         assert_eq!(wand_form(&state, WAND_HEIGHT, WAND_COLS), Some(Wand::Text));
-        assert!(!state.wand_transmitted.contains(&2));
+        assert!(!state.wand_transmitted.contains(&ClientId::new(2)));
     }
 
     #[test]
@@ -2979,22 +2979,25 @@ mod tests {
     #[test]
     fn the_first_message_stops_the_wand_and_releases_each_clients_images() {
         let mut state = empty_state(true);
-        state.client = 1;
-        state.kitty_graphics.insert(1);
+        state.client = ClientId::new(1);
+        state.kitty_graphics.insert(ClientId::new(1));
         render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
-        state.client = 2;
-        state.kitty_graphics.insert(2);
+        state.client = ClientId::new(2);
+        state.kitty_graphics.insert(ClientId::new(2));
         render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
         assert!(state.wand_drawing);
-        assert_eq!(state.wand_transmitted, BTreeSet::from([1, 2]));
+        assert_eq!(
+            state.wand_transmitted,
+            BTreeSet::from([ClientId::new(1), ClientId::new(2)])
+        );
 
         state.messages.push(Message::user("hello"));
-        state.client = 1;
+        state.client = ClientId::new(1);
         render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
         assert!(!state.wand_drawing);
-        assert_eq!(state.wand_transmitted, BTreeSet::from([2]));
+        assert_eq!(state.wand_transmitted, BTreeSet::from([ClientId::new(2)]));
 
-        state.client = 2;
+        state.client = ClientId::new(2);
         render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
         assert!(state.wand_transmitted.is_empty());
     }
@@ -3226,12 +3229,12 @@ mod tests {
     #[test]
     fn one_client_scrolling_does_not_release_another() {
         let mut state = state_mid_reply();
-        state.client = 1;
+        state.client = ClientId::new(1);
         state.scroll_up(3);
         render(&mut state);
         assert_eq!(state.scroll_offset(), 3);
 
-        state.client = 2;
+        state.client = ClientId::new(2);
         render(&mut state);
 
         let total = transcript(&state.messages, RENDER_COLS).lines.len();

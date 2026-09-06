@@ -55,7 +55,7 @@ carries is the *asking* session's, on a machine that has no such session - readi
 sends every event to whatever session happens to be running on that box, under a pane id that
 means something else.
 
-`agent-report` reads the event, works out what it means (`zellij-utils/src/agent.rs`,
+`agent-report` reads the event, works out what it means (`zellij-types/src/agent/hooks.rs`,
 `hook_outcome`) and sets the pane's **agent record** — `PaneInfo.agent`: the kind,
 the state, the tool it is running, what it is blocked on, its folder and its session id. The
 action normally reads the pane from `$ZELLIJ_PANE_ID`. A locally supervised pane also inherits
@@ -209,7 +209,7 @@ for a script of your own; `--clear` ends the record and fires nothing.
 
 A `claude` hocus spawns needs none of this: `agent_spawn` (and the `hocus-new-agent` modal)
 hands it the same hook wiring inline as `--settings`, built from the one event list in
-`zellij_utils::agent`. A user-level install on top double-reports harmlessly — an equal record
+`zellij_types::agent`. A user-level install on top double-reports harmlessly — an equal record
 is a no-op on the pane. Pass `hooks: false` to spawn without it. A spawned `codex` has no
 equivalent and uses the user-level install: its hooks are a file it has been asked to trust,
 and handing them in on a command line would be going round exactly the check that makes them
@@ -677,23 +677,23 @@ installed script is old, and `zellij hocus hooks install` rewrites it.
 
 | Piece | File |
 |---|---|
-| The record, and who may write it | `zellij-utils/src/data.rs` (`AgentInfo`, `AgentState`, `AgentSource`, `PaneInfo::agent`) |
-| Event → record, and every rule for reading one | `zellij-utils/src/agent.rs` (`HookEvent`, `hook_state`, `hook_detail`, `waiting_detail`, `waiting_needs_a_person`, `hook_outcome`, `WAITING_TOOLS`, `CLAUDE_HOOK_EVENTS`, `CODEX_HOOK_EVENTS`, `AGENT_HOOK_PIPE`) |
-| The action, the fan-out, and the installer | `zellij-utils/src/cli.rs` (`AgentReport`), `zellij-utils/src/input/actions.rs`, `src/hocus_hooks.rs` |
+| The record, and who may write it | `zellij-types/src/data.rs` (`AgentInfo`, `AgentState`, `AgentSource`, `PaneInfo::agent`) |
+| Event → record, and every rule for reading one | `zellij-types/src/agent/hooks.rs` (`HookEvent`, `hook_state`, `hook_detail`, `waiting_detail`, `waiting_needs_a_person`, `hook_outcome`, `WAITING_TOOLS`, `CLAUDE_HOOK_EVENTS`, `CODEX_HOOK_EVENTS`, `AGENT_HOOK_PIPE`) |
+| The action, the fan-out, and the installer | `zellij-cli/src/args.rs` (`AgentReport`), `zellij-types/src/input/actions.rs`, `src/hocus_hooks.rs` |
 | Carrying it on the pane | `zellij-server/src/panes/terminal_pane.rs` (`agent`, `agent_from_run`), `screen/thread_main.rs` (`SetPaneAgent`), `screen/mod.rs` (`fire_agent_exit_hook`, `fire_agent_state_hooks`, `agent_hook_edges`) |
-| The event, typed, and its route to plugins | `zellij-utils/src/agent.rs` (`AgentEvent`, `from_hook`), `zellij-utils/src/input/actions.rs` (`hook_report_actions`, `Action::AgentEvent`), `zellij-server/src/route.rs` (to the plugin thread as `Event::AgentEvent`), `zellij-server/src/pty.rs` (`handle_remote_agent_report`, the broker's road to the same event) |
-| The blinking bell in the pane's corner | `zellij-server/src/panes/terminal_pane.rs` (`agent_attention_since`, `acknowledge_agent_attention`), `ui/pane_boundaries_frame.rs` (`render_agent_attention`), `screen/mod.rs` (`blinking_agent_panes`, `animation_clock_period`, `advance_agent_attention_blinks`), `zellij-utils/src/animation.rs` (`blink_is_lit`, `BLINK_PERIOD`) |
+| The event, typed, and its route to plugins | `zellij-types/src/agent/hooks.rs` (`AgentEvent`, `from_hook`), `zellij-types/src/input/actions.rs` (`hook_report_actions`, `Action::AgentEvent`), `zellij-server/src/route.rs` (to the plugin thread as `Event::AgentEvent`), `zellij-server/src/pty.rs` (`handle_remote_agent_report`, the broker's road to the same event) |
+| The blinking bell in the pane's corner | `zellij-server/src/panes/terminal_pane.rs` (`agent_attention_since`, `acknowledge_agent_attention`), `ui/pane_boundaries_frame.rs` (`render_agent_attention`), `screen/mod.rs` (`blinking_agent_panes`, `animation_clock_period`, `advance_agent_attention_blinks`), `zellij-types/src/animation.rs` (`blink_is_lit`, `BLINK_PERIOD`) |
 | What a row draws | `default-plugins/hocus-proto/src/agents.rs` (`HookFeed::from_agent`, `status_cell`, `waiting_marker`, `kind_cell`, `HOOK_MARKER`) |
 | What a wait says, and the summary | same (`waiting_toast`, `run_summary_request_body`, `local_summary`) |
 | Run types, reduction and rendering | same (`AgentRun`, `run_entry`, `run_history`, `rows::run_mutations`, `rows::hydrate_entries`) |
 | The header pinned above a run's timeline | same (`run_header`, `wrapped_field`, `wall_clock`, `civil_from_days`, `HistoryLines::header`), drawn by `default-plugins/hocus-agents/src/main.rs` (`header_rows`, `render_history`) |
-| The local UTC offset a wall clock needs | `zellij-tile/src/shim.rs` (`get_local_utc_offset`), `zellij-server/src/plugins/zellij_exports.rs` (`get_local_utc_offset`), `zellij-utils/src/data.rs` (`PluginCommand::GetLocalUtcOffset`) |
+| The local UTC offset a wall clock needs | `zellij-tile/src/shim.rs` (`get_local_utc_offset`), `zellij-server/src/plugins/zellij_exports.rs` (`get_local_utc_offset`), `zellij-types/src/data.rs` (`PluginCommand::GetLocalUtcOffset`) |
 | Receiving the broadcast, persisting, publishing, toasting | `default-plugins/hocus-agentd/src/main.rs` (`on_hook_with`, `record_run_event`, `summarize_run_now_with`, `finish_local_summary_with`) |
 | Summaries somebody asked for | `default-plugins/hocus-agentd/src/main.rs` (`summarize_pane_now_with`, `send_run_summary`, `summarize_run_now_with`, `finish_run_summary`, `run_delta`), `default-plugins/hocus-proto/src/agents.rs` (`push_summary_entry`, `RunEntryKind::Summary`), `default-plugins/hocus-agents/src/main.rs` (`request_summary`) |
 | Archive paging and selection | `default-plugins/hocus/src/transitions.rs`, `default-plugins/hocus-agents/src/main.rs` |
 
 The pipe's name and its two arguments — the pane, and the kind — are spelled once, in
-`zellij_utils::agent`; `hocus_proto::wire` re-exports all three, so the two ends of a broadcast
+`zellij_types::agent`; `hocus_proto::wire` re-exports all three, so the two ends of a broadcast
 that is silent when it does not match cannot drift. A broadcast that names no kind is read as a
 `claude`, which is what every script old enough to omit it was installed for.
 
@@ -706,7 +706,7 @@ the wait falls back to "a question" rather than mistaking another field for the 
 
 Note: `zellij hocus hooks` is unrelated to the `hooks { … }` block in zellij's own
 config, which binds a plugin to a moment in the session's life
-(`zellij-utils/src/input/hooks.rs`).
+(`zellij-types/src/input/hooks.rs`).
 
 ## Local report acceptance and timing
 

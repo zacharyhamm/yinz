@@ -815,7 +815,7 @@ fn host_theme_dsr_997_dark_in_one_chunk() {
     assert_eq!(replies.len(), 1);
     match &replies[0] {
         HostReply::HostTerminalThemeChanged(mode) => {
-            assert_eq!(*mode, zellij_utils::data::HostTerminalThemeMode::Dark);
+            assert_eq!(*mode, zellij_types::style::HostTerminalThemeMode::Dark);
         },
         other => panic!("expected HostTerminalThemeChanged, got {:?}", other),
     }
@@ -828,7 +828,7 @@ fn host_theme_dsr_997_light_in_one_chunk() {
     assert!(residue.is_empty());
     match &replies[0] {
         HostReply::HostTerminalThemeChanged(mode) => {
-            assert_eq!(*mode, zellij_utils::data::HostTerminalThemeMode::Light);
+            assert_eq!(*mode, zellij_types::style::HostTerminalThemeMode::Light);
         },
         other => panic!("expected HostTerminalThemeChanged, got {:?}", other),
     }
@@ -861,7 +861,7 @@ fn host_theme_dsr_997_across_chunk_boundaries() {
         let reply = r1.replies.into_iter().chain(r2.replies).next().unwrap();
         match reply {
             HostReply::HostTerminalThemeChanged(mode) => {
-                assert_eq!(mode, zellij_utils::data::HostTerminalThemeMode::Dark);
+                assert_eq!(mode, zellij_types::style::HostTerminalThemeMode::Dark);
             },
             other => panic!("expected HostTerminalThemeChanged, got {:?}", other),
         }
@@ -941,10 +941,10 @@ fn kitty_kbd_event_does_not_wedge_subsequent_forward_reply() {
 }
 
 use crate::keyboard_parser::{KittyKeyboardParser, KittyParseOutcome};
-use zellij_utils::data::BareKey;
-use zellij_utils::vendored::termwiz::input::{
+use zellij_runtime::vendored::termwiz::input::{
     InputEvent, InputParser, KeyCode, KeyEvent, Modifiers,
 };
+use zellij_types::keys::BareKey;
 
 fn assert_held_across_idle(parser: &mut StdinAnsiParser) {
     assert_eq!(
@@ -1731,15 +1731,17 @@ fn unsolicited_theme_notification_classifies_without_outstanding_query() {
     assert_eq!(out.replies.len(), 1);
     match &out.replies[0] {
         HostReply::HostTerminalThemeChanged(mode) => {
-            assert_eq!(*mode, zellij_utils::data::HostTerminalThemeMode::Dark);
+            assert_eq!(*mode, zellij_types::style::HostTerminalThemeMode::Dark);
         },
         other => panic!("expected HostTerminalThemeChanged, got {:?}", other),
     }
 }
 
 fn announce_frame_and_payload() -> (Vec<u8>, Vec<u8>) {
-    use zellij_utils::nested_session::{
-        encode_frame, encode_payload, NestedSessionCapability, NestedSessionMessage,
+    use {
+        zellij_ipc::nested_session::encode_frame, zellij_ipc::nested_session::encode_payload,
+        zellij_ipc::nested_session::NestedSessionCapability,
+        zellij_ipc::nested_session::NestedSessionMessage,
     };
     let message = NestedSessionMessage::Announce {
         session_name: "guest-session".to_owned(),

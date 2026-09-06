@@ -21,15 +21,15 @@ pub mod shim;
 pub mod ui_components;
 
 /// The session's reading of a Claude Code hook event, for plugins that speak for an agent.
-pub use zellij_utils::agent;
+pub use zellij_runtime::agent;
 
 /// Naming, linting and backing up a plugin in the user's plugin folder - the rules a plugin
 /// that authors other plugins works under, shared with `zellij plugins` so both spell them once.
-pub use zellij_utils::plugin_authoring;
+pub use zellij_plugin_api::authoring as plugin_authoring;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use zellij_utils::data::{Event, PipeMessage};
+use {zellij_types::data::Event, zellij_types::data::PipeMessage};
 
 // use zellij_tile::shim::plugin_api::event::ProtobufEvent;
 
@@ -245,6 +245,6 @@ macro_rules! register_worker {
     };
 }
 
-pub use zellij_utils::project_config;
+pub use zellij_config::project_config;
 
 pub mod text;

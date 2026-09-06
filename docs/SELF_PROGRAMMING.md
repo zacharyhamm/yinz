@@ -53,14 +53,14 @@ install` writes Claude Code hooks to `~/.claude/settings.json` and Codex hooks t
 inline as `--settings`, so it reports with nothing installed. Codex requires its installed hooks
 to be reviewed and trusted with `/hooks`.
 
-Entry points: `zellij-utils/src/data.rs` (`AgentInfo`), `zellij-utils/src/agent.rs` (hook
+Entry points: `zellij-types/src/agent.rs` (`AgentInfo`), `zellij-types/src/agent/hooks.rs` (hook
 reading, the event list), `zellij-server/src/panes/terminal_pane.rs`, `screen/thread_main.rs`
 (`SetPaneAgent`), `src/hocus_hooks.rs`, `default-plugins/hocus-agentd/src/main.rs`.
 
 Where an agent pane *goes* is the server's too. Every spawn route - hocus's tools and modal,
 `zellij run -- claude`, a keybinding's `Run` - ends in one `NewPane` on the screen thread, and
 `screen/agent_placement.rs` decides there, from the same two signals the record starts from: the
-plugin context marker, or a command line that names a known agent (`zellij_utils::agent::KINDS`,
+plugin context marker, or a command line that names a known agent (`zellij_types::agent::KINDS`,
 the one list `hocus-agentd` detects with). The rule is a size, not a count: the tab's tiled
 panes and the newcomer are imagined sharing the viewport equally, and a share below
 `agent_pane_min_columns` x `agent_pane_min_rows` (80x24 by default; 0 turns it off) sends the
@@ -127,7 +127,7 @@ numbers), a ripgrep-shaped `plugin_search`, and a range `plugin_read`. `plugin_e
 replacement or an `edits` batch under one confirmation and answers with the lines it changed; a
 miss says which lines nearly matched instead of asking for a re-read. `plugin_docs` takes a
 `query=` and a page range as well as a section. The outline extractor is
-`zellij_utils::plugin_authoring::outline`, beside `lint`, so a `zellij plugins outline` can reuse
+`zellij_plugin_api::authoring::outline`, beside `lint`, so a `zellij plugins outline` can reuse
 it. All of it exists because hocus re-sends the transcript every turn: a page read to find one
 function is paid for on every round after it, and a search hit is not.
 
@@ -135,7 +135,7 @@ Server side: `PluginCommand::CheckLuaPlugin`, `ReloadPluginByUrl`, `ReadPluginLo
 root in `zellij_exports::fs_roots`; `zellij-tile` gained `fs_read`/`fs_list`/`fs_metadata`/
 `fs_write`/`fs_remove`/`fs_create_dir`/`fs_rename`. File work lives in
 `zellij_server::plugin_authoring` (`write`, `log_tail`) and
-`zellij_utils::plugin_authoring::resolve_plugin_file`, so the CLI, hocus and the tests run one
+`zellij_plugin_api::authoring::resolve_plugin_file`, so the CLI, hocus and the tests run one
 code path.
 
 ### Config that writes itself
@@ -227,7 +227,7 @@ oneof 163 (`agent_event`; 161–162 are `main`'s text-selection actions; next 16
 **Test recipes.**
 
 ```sh
-cargo x test -p zellij-utils -p zellij-server -p zellij -p hocus -p hocus-agentd -p hocus-proto \
+cargo x test -p zellij-types -p zellij-runtime -p zellij-config -p zellij-plugin-api -p zellij-ipc -p zellij-session -p zellij-cli -p zellij-server -p zellij -p hocus -p hocus-agentd -p hocus-proto \
   -E 'test(/agent/) | test(/events/) | test(/reconfigure/) | test(/set_hook/) | test(/overlay/) \
       | test(/plugin_authoring/) | test(/lua/) | test(/pipe/) | test(/hook/) \
       | test(/job/) | test(/chat/) | test(/plugin_/) | test(/shipped/)'
@@ -265,7 +265,7 @@ beside a first. What landed, all in `docs/LUA_PLUGINS.md`:
   `pane_workflow` is one such task now. Timers are `zellij.after`/`zellij.every` on one host
   timer; `set_timeout`/`set_interval` are gone from the prelude's contract.
 - **`zellij.agent`**: `spawn` (`PluginCommand::SpawnAgent`, the launch planner moved from
-  hocus-proto to `zellij_utils::agent::launch` so hocus, the modal and Lua run one code path),
+  hocus-proto to `zellij_runtime::agent::launch` so hocus, the modal and Lua run one code path),
   `info`/`all` off the manifest, `on`/`send`/`prompt` and `zellij.async.turn` over the new
   typed `Event::AgentEvent`, which replaced the `agent_hook` pipe broadcast.
 - **Typed hook payloads** (`HookPayload::{Agent, PaneExit, SessionStart}`) and the `agent_idle`

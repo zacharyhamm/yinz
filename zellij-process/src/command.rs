@@ -1,5 +1,5 @@
 use std::{env, path::PathBuf};
-use zellij_utils::input::command::RunCommand;
+use zellij_types::input::command::RunCommand;
 
 fn find_executable(candidate: &std::path::Path) -> Option<PathBuf> {
     if candidate.exists() && candidate.is_file() {

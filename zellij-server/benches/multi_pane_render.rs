@@ -32,8 +32,9 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use zellij_server::output::{HostKittyState, Output};
 use zellij_server::panes::{KittyImageStore, LinkHandler, SixelImageStore, TerminalPane};
 use zellij_server::tab::Pane;
-use zellij_utils::data::{Palette, Style};
-use zellij_utils::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
+
+use zellij_types::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
+use zellij_types::style::{Palette, Style};
 
 /// The host terminal the pane fleet is tiled over. Large enough that a 16-way split still leaves
 /// each pane a usable 50x12.
@@ -52,7 +53,7 @@ const PANE_COUNTS: &[usize] = &[1, 2, 4, 8, 16];
 /// `CursorMoves` only writes to every `ROW_STRIDE`th row, so the rest of the viewport stays clean.
 const ROW_STRIDE: usize = 4;
 
-const CLIENT_ID: zellij_server::ClientId = zellij_server::ClientId(1);
+const CLIENT_ID: zellij_server::ClientId = zellij_server::ClientId::new(1);
 
 // ---------------------------------------------------------------------------------------------
 // deterministic byte generation
@@ -330,7 +331,7 @@ impl PaneFleet {
             .enumerate()
             .map(|(index, geom)| {
                 TerminalPane::new(
-                    zellij_server::TerminalId(index as u32),
+                    zellij_server::TerminalId::new(index as u32),
                     geom,
                     Style::default(),
                     index,

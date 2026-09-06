@@ -1,6 +1,6 @@
 use super::NotificationProtocol;
 use std::collections::BTreeMap;
-use zellij_utils::input::options::HostNotificationProtocol;
+use zellij_types::input::options::HostNotificationProtocol;
 
 fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs

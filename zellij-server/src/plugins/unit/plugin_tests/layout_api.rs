@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 #[serial(plugin_tests)]
@@ -16,7 +17,7 @@ pub fn generate_random_name_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -29,7 +30,7 @@ pub fn generate_random_name_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -42,7 +43,7 @@ pub fn generate_random_name_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -109,7 +110,7 @@ pub fn dump_layout_success_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -122,7 +123,7 @@ pub fn dump_layout_success_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -135,7 +136,7 @@ pub fn dump_layout_success_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -190,7 +191,7 @@ pub fn dump_layout_success_plugin_command() {
 /// The data store round trip across the wasm boundary: declare an entity, write to it, read it
 /// back, full-text search it, count it and watch it.
 ///
-/// The engine itself is covered by unit tests in `zellij-utils`; what this covers is the hop those
+/// The engine itself is covered by unit tests in `zellij-config`; what this covers is the hop those
 /// cannot reach — protobuf encode, the JSON-wrapped pipe, dispatch, and decode back in the guest.
 #[test]
 #[serial(plugin_tests)]
@@ -207,7 +208,7 @@ pub fn data_store_plugin_commands() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -220,7 +221,7 @@ pub fn data_store_plugin_commands() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -233,7 +234,7 @@ pub fn data_store_plugin_commands() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -299,7 +300,7 @@ pub fn dump_layout_not_found_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -312,7 +313,7 @@ pub fn dump_layout_not_found_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -325,7 +326,7 @@ pub fn dump_layout_not_found_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -392,7 +393,7 @@ pub fn get_layout_dir_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -405,7 +406,7 @@ pub fn get_layout_dir_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -418,7 +419,7 @@ pub fn get_layout_dir_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -485,7 +486,7 @@ pub fn get_focused_pane_info_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -498,7 +499,7 @@ pub fn get_focused_pane_info_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -511,7 +512,7 @@ pub fn get_focused_pane_info_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -572,7 +573,7 @@ pub fn dump_session_layout_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -585,7 +586,7 @@ pub fn dump_session_layout_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -598,7 +599,7 @@ pub fn dump_session_layout_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -658,7 +659,7 @@ pub fn dump_session_layout_for_tab_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -671,7 +672,7 @@ pub fn dump_session_layout_for_tab_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -684,7 +685,7 @@ pub fn dump_session_layout_for_tab_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -744,7 +745,7 @@ pub fn parse_layout_success_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -757,7 +758,7 @@ pub fn parse_layout_success_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -770,7 +771,7 @@ pub fn parse_layout_success_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -837,7 +838,7 @@ pub fn parse_layout_error_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -850,7 +851,7 @@ pub fn parse_layout_error_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -863,7 +864,7 @@ pub fn parse_layout_error_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -930,7 +931,7 @@ pub fn save_layout_success_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -943,7 +944,7 @@ pub fn save_layout_success_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -956,7 +957,7 @@ pub fn save_layout_success_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -1023,7 +1024,7 @@ pub fn save_layout_already_exists_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -1036,7 +1037,7 @@ pub fn save_layout_already_exists_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1049,7 +1050,7 @@ pub fn save_layout_already_exists_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -1129,7 +1130,7 @@ pub fn save_layout_with_overwrite_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -1142,7 +1143,7 @@ pub fn save_layout_with_overwrite_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1155,7 +1156,7 @@ pub fn save_layout_with_overwrite_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -1222,7 +1223,7 @@ pub fn save_layout_invalid_kdl_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -1235,7 +1236,7 @@ pub fn save_layout_invalid_kdl_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1248,7 +1249,7 @@ pub fn save_layout_invalid_kdl_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -1315,7 +1316,7 @@ pub fn rename_layout_success_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -1328,7 +1329,7 @@ pub fn rename_layout_success_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1341,7 +1342,7 @@ pub fn rename_layout_success_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -1421,7 +1422,7 @@ pub fn rename_layout_not_found_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -1434,7 +1435,7 @@ pub fn rename_layout_not_found_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1447,7 +1448,7 @@ pub fn rename_layout_not_found_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -1519,7 +1520,7 @@ pub fn delete_layout_success_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -1532,7 +1533,7 @@ pub fn delete_layout_success_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1545,7 +1546,7 @@ pub fn delete_layout_success_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -1642,7 +1643,7 @@ pub fn delete_layout_not_found_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -1655,7 +1656,7 @@ pub fn delete_layout_not_found_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1668,7 +1669,7 @@ pub fn delete_layout_not_found_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -1735,7 +1736,7 @@ pub fn save_layout_path_traversal_blocked_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -1748,7 +1749,7 @@ pub fn save_layout_path_traversal_blocked_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1761,7 +1762,7 @@ pub fn save_layout_path_traversal_blocked_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -1836,7 +1837,7 @@ pub fn edit_layout_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -1849,7 +1850,7 @@ pub fn edit_layout_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1862,7 +1863,7 @@ pub fn edit_layout_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -1929,7 +1930,7 @@ pub fn override_layout_plugin_command() {
         screen_receiver,
         cache_path,
         plugin_thread_sender.clone(),
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         PermissionStatus::Granted,
     );
 
@@ -1942,7 +1943,7 @@ pub fn override_layout_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -1955,7 +1956,7 @@ pub fn override_layout_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,

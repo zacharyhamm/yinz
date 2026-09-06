@@ -1,12 +1,15 @@
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::NotificationId;
+use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 
 use super::agent_placement::AgentPlacement;
 use super::warp_ops::{PANE_WARP_SCREEN_RESERVE, TAB_WARP_SCREEN_RESERVE};
 use super::{
     active_tab, active_tab_and_connected_client_id,
     active_tab_and_connected_client_id_with_first_tab_fallback, denormalize_notification_response,
-    find_already_running_panes, get_default_editor, replay_pending_plugin_events, CopyOptions,
-    Notification, Screen, ScreenInstruction,
+    get_default_editor, replay_pending_plugin_events, CopyOptions, Notification, Screen,
+    ScreenInstruction,
 };
 use crate::background_jobs::BackgroundJob;
 use crate::os_input_output::ResizeCache;
@@ -22,38 +25,48 @@ use crate::{ClientId, ServerInstruction};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use zellij_utils::consts::{session_info_folder_for_session, ZELLIJ_SOCK_DIR};
-use zellij_utils::data::{
-    AgentInfo, Direction, Event, GetFocusedPaneInfoResponse, HostTerminalThemeMode, InputMode,
-    NewPanePlacement, NotificationInfo, OverlayPlacement, PaneScrollbackResponse,
-    PluginCapabilities, SessionInfo,
+use zellij_config::config::Config;
+use zellij_ipc::get_mode_info;
+use zellij_ipc::nested_session;
+use zellij_ipc::nested_session::NestedSessionMessage;
+use zellij_runtime::envs::set_session_name;
+use zellij_types::diagnostics::ContextType;
+use zellij_types::pane_size::Size;
+use zellij_types::style::HostTerminalThemeMode;
+use zellij_types::{agent::AgentInfo, geometry::Direction};
+use {zellij_ipc::ipc::ClientAttributes, zellij_ipc::ipc::ServerToClientMsg};
+use {
+    zellij_runtime::consts::session_info_folder_for_session,
+    zellij_runtime::consts::ZELLIJ_SOCK_DIR,
 };
-use zellij_utils::envs::set_session_name;
-use zellij_utils::errors::ContextType;
-use zellij_utils::input::command::{RunCommand, TerminalAction};
-use zellij_utils::input::config::Config;
-use zellij_utils::input::get_mode_info;
-use zellij_utils::input::layout::{Layout, Run};
-use zellij_utils::input::options::{
-    PaneFrameStyle, DEFAULT_AGENT_PANE_MIN_COLUMNS, DEFAULT_AGENT_PANE_MIN_ROWS,
-    DEFAULT_NOTIFICATION_TIMEOUT_SECS, DEFAULT_WORD_SEPARATORS,
+use {
+    zellij_types::data::Event, zellij_types::data::GetFocusedPaneInfoResponse,
+    zellij_types::data::InputMode, zellij_types::data::NewPanePlacement,
+    zellij_types::data::NotificationInfo, zellij_types::data::OverlayPlacement,
+    zellij_types::data::PaneScrollbackResponse, zellij_types::data::PluginCapabilities,
+    zellij_types::data::SessionInfo,
 };
-use zellij_utils::ipc::{ClientAttributes, ServerToClientMsg};
-use zellij_utils::nested_session;
-use zellij_utils::nested_session::NestedSessionMessage;
-use zellij_utils::pane_size::Size;
+use {zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction};
+use {zellij_types::input::layout::Layout, zellij_types::input::layout::Run};
+use {
+    zellij_types::input::options::PaneFrameStyle,
+    zellij_types::input::options::DEFAULT_AGENT_PANE_MIN_COLUMNS,
+    zellij_types::input::options::DEFAULT_AGENT_PANE_MIN_ROWS,
+    zellij_types::input::options::DEFAULT_NOTIFICATION_TIMEOUT_SECS,
+    zellij_types::input::options::DEFAULT_WORD_SEPARATORS,
+};
 
 fn apply_queued_agent_report(
     screen: &mut Screen,
-    report: &zellij_utils::agent::report::AgentReport,
+    report: &zellij_types::agent::report::AgentReport,
     accepted_at: std::time::Instant,
 ) -> Result<bool> {
-    use zellij_utils::agent::report::AgentReportState;
+    use zellij_types::agent::report::AgentReportState;
     let pane_id = report.pane_id.into();
     if screen.tab_containing_pane(pane_id).is_none() {
         return Ok(false);
     }
-    let mut trace = report.diagnostics();
+    let mut trace = zellij_runtime::agent::report::report_diagnostics(&report);
     trace.session = screen.session_name.clone();
     trace.record("screen_queue", accepted_at.elapsed(), "ok");
     let started = std::time::Instant::now();
@@ -80,7 +93,7 @@ fn apply_queued_agent_report(
             .send_to_plugin(PluginInstruction::Update(vec![(
                 None,
                 None,
-                zellij_utils::data::Event::AgentEvent(event.clone()),
+                zellij_types::data::Event::AgentEvent(event.clone()),
             )]))
     } else {
         Ok(())
@@ -374,8 +387,7 @@ pub(crate) fn screen_thread_main(
     }
     screen.set_host_notification_protocol(host_notification_protocol);
 
-    let mut pending_tab_switches: HashSet<(usize, ClientId)> = HashSet::new(); // usize is the
-                                                                               // tab_index
+    let mut pending_tab_switches: HashSet<(TabPosition, ClientId)> = HashSet::new();
     let mut pending_events_waiting_for_tab: Vec<ScreenInstruction> = vec![];
     let mut pending_events_waiting_for_client: Vec<ScreenInstruction> = vec![];
     let mut pending_events_waiting_for_pane: HashMap<PaneId, Vec<ScreenInstruction>> =
@@ -387,7 +399,7 @@ pub(crate) fn screen_thread_main(
             .bus
             .recv()
             .context("failed to receive event on channel")?;
-        err_ctx.add_call(ContextType::Screen((&event).into()));
+        zellij_runtime::errors::add_call(&mut err_ctx, ContextType::Screen((&event).into()));
         // here we start caching resizes, so that we'll send them in bulk at the end of each event
         // when this cache is Dropped, for more information, see the comments in PtyWriter
         let _resize_cache = ResizeCache::new(thread_senders.clone());
@@ -2050,13 +2062,12 @@ pub(crate) fn screen_thread_main(
                     }
                 }
                 if !screen.has_pending_tabs() {
-                    for (tab_index, client_id) in pending_tab_switches.drain() {
-                        screen.go_to_tab(tab_index + 1, client_id)?;
+                    for (tab_position, client_id) in pending_tab_switches.drain() {
+                        screen.switch_active_tab(tab_position, None, true, client_id)?;
                     }
                     if should_change_focus_to_new_tab {
-                        // Convert ID → position for go_to_tab (which expects 1-based position)
                         if let Some(tab_position) = screen.get_tab_position_by_id(tab_id) {
-                            screen.go_to_tab(tab_position + 1, client_id)?;
+                            screen.switch_active_tab(tab_position, None, true, client_id)?;
                         }
                     }
                 } else if should_change_focus_to_new_tab {
@@ -2130,12 +2141,12 @@ pub(crate) fn screen_thread_main(
                     // the client focus, which should have happened before this instruction and not
                     // after)
                     Some(client_id) if !screen.has_pending_tabs() => {
-                        screen.go_to_tab(tab_index as usize, client_id)?;
+                        screen.go_to_tab(tab_index, client_id)?;
                         screen.render(None)?;
                     },
                     _ => {
                         if let Some(client_id) = client_id {
-                            pending_tab_switches.insert((tab_index as usize, client_id));
+                            pending_tab_switches.insert((tab_index.position(), client_id));
                         }
                     },
                 }
@@ -2725,131 +2736,27 @@ pub(crate) fn screen_thread_main(
             ScreenInstruction::OverrideLayout(
                 cwd,
                 default_shell,
-                mut tab_layouts,
+                tab_layouts,
                 retain_existing_terminal_panes,
                 retain_existing_plugin_panes,
                 apply_only_to_focused_tab,
                 client_id,
                 completion_tx,
             ) => {
-                // 1. Determine which tabs to close (exist but not in layout)
-                let existing_tab_indices: HashSet<usize> = screen.tabs.keys().copied().collect();
-                let layout_tab_indices: HashSet<usize> =
-                    tab_layouts.iter().map(|tl| tl.tab_index).collect();
-                let tabs_to_close: Vec<usize> = existing_tab_indices
-                    .difference(&layout_tab_indices)
-                    .copied()
-                    .collect();
-
-                // 2. Process each tab layout
-                let mut processed_tab_layouts = Vec::new();
-
-                if apply_only_to_focused_tab {
-                    match screen.get_active_tab_mut(client_id) {
-                        Ok(active_tab) => {
-                            if tab_layouts.is_empty() {
-                                log::error!("No tab layouts found, cannot override.");
-                                continue;
-                            }
-                            let mut tab_layout_info = tab_layouts.remove(0);
-                            tab_layout_info.tab_index = active_tab.id;
-                            // Set the tab name if provided
-                            if let Some(name) = tab_layout_info.tab_name.take() {
-                                active_tab.name = name;
-                            }
-
-                            // Find already-running panes for this tab
-                            let (tiled_to_ignore, floating_indices) = find_already_running_panes(
-                                &tab_layout_info.tiled_layout,
-                                &tab_layout_info.floating_layouts,
-                                active_tab,
-                            );
-
-                            // Mark run instructions to ignore (prevents re-spawning)
-                            for run_instruction in tiled_to_ignore {
-                                tab_layout_info
-                                    .tiled_layout
-                                    .ignore_run_instruction(run_instruction);
-                            }
-
-                            for idx in floating_indices {
-                                tab_layout_info
-                                    .floating_layouts
-                                    .get_mut(idx)
-                                    .map(|f| f.already_running = true);
-                            }
-
-                            processed_tab_layouts.push(tab_layout_info);
-                        },
-                        Err(e) => {
-                            log::error!("Failed to override layout of active tab: {}", e);
-                        },
-                    }
-                } else {
-                    for mut tab_layout_info in tab_layouts {
-                        // Get the tab by index
-                        let tab = match screen.tabs.get_mut(&tab_layout_info.tab_index) {
-                            Some(t) => t,
-                            None => {
-                                // no corresponding tab exists, we'll create it
-                                processed_tab_layouts.push(tab_layout_info);
-                                continue;
-                            },
-                        };
-
-                        // Set the tab name if provided
-                        if let Some(name) = tab_layout_info.tab_name.take() {
-                            tab.name = name;
-                        }
-
-                        // Find already-running panes for this tab
-                        let (tiled_to_ignore, floating_indices) = find_already_running_panes(
-                            &tab_layout_info.tiled_layout,
-                            &tab_layout_info.floating_layouts,
-                            tab,
-                        );
-
-                        // Mark run instructions to ignore (prevents re-spawning)
-                        for run_instruction in tiled_to_ignore {
-                            tab_layout_info
-                                .tiled_layout
-                                .ignore_run_instruction(run_instruction);
-                        }
-
-                        for idx in floating_indices {
-                            tab_layout_info
-                                .floating_layouts
-                                .get_mut(idx)
-                                .map(|f| f.already_running = true);
-                        }
-
-                        processed_tab_layouts.push(tab_layout_info);
-                    }
-                }
-
-                // 3. Send to plugin thread with all tab layouts
-                screen
-                    .bus
-                    .senders
-                    .send_to_plugin(PluginInstruction::OverrideLayout(
-                        cwd,
-                        default_shell,
-                        processed_tab_layouts,
-                        retain_existing_terminal_panes,
-                        retain_existing_plugin_panes,
-                        client_id,
-                        completion_tx,
-                    ))?;
-
-                // 4. Close tabs that aren't in the layout
-                if !apply_only_to_focused_tab {
-                    for tab_index in tabs_to_close {
-                        screen.close_tab_by_id(tab_index)?;
-                    }
-                }
+                screen.override_layout(
+                    cwd,
+                    default_shell,
+                    tab_layouts,
+                    retain_existing_terminal_panes,
+                    retain_existing_plugin_panes,
+                    apply_only_to_focused_tab,
+                    client_id,
+                    completion_tx,
+                )?;
             },
             ScreenInstruction::OverrideLayoutComplete(
                 tab_results,
+                failed_tabs,
                 retain_existing_terminal_panes,
                 retain_existing_plugin_panes,
                 client_id,
@@ -2922,12 +2829,24 @@ pub(crate) fn screen_thread_main(
                     }
                 }
 
+                for tab_id in failed_tabs {
+                    if screen.tabs.get(&tab_id).is_some_and(Tab::is_pending) {
+                        screen.close_tab_by_id(tab_id)?;
+                    }
+                }
+
                 for event in pending_events_waiting_for_client.drain(..) {
                     replay_pending_pane_event(&mut screen, event).non_fatal();
                 }
 
                 for event in pending_events_waiting_for_tab.drain(..) {
                     replay_pending_pane_event(&mut screen, event).non_fatal();
+                }
+
+                if !screen.has_pending_tabs() {
+                    for (tab_position, client_id) in pending_tab_switches.drain() {
+                        screen.switch_active_tab(tab_position, None, true, client_id)?;
+                    }
                 }
 
                 // Single render and log after all tabs are updated (performance optimization)
@@ -2957,8 +2876,13 @@ pub(crate) fn screen_thread_main(
                 explicit_tab_id,
                 no_focus,
             ) => {
-                let tab_index = explicit_tab_id
-                    .unwrap_or_else(|| *screen.active_tab_ids.values().next().unwrap_or(&1));
+                let tab_index = explicit_tab_id.unwrap_or_else(|| {
+                    *screen
+                        .active_tab_ids
+                        .values()
+                        .next()
+                        .unwrap_or(&TabId::new(1))
+                });
                 let size = Size::default();
                 let should_float = Some(false);
                 let should_be_opened_in_place = false;
@@ -3083,7 +3007,12 @@ pub(crate) fn screen_thread_main(
                 }
             },
             ScreenInstruction::StartOrReloadPluginPane(run_plugin, pane_title, completion_tx) => {
-                let tab_index = screen.active_tab_ids.values().next().unwrap_or(&1);
+                let tab_index = screen
+                    .active_tab_ids
+                    .values()
+                    .next()
+                    .copied()
+                    .unwrap_or(TabId::new(1));
                 let size = Size::default();
                 let should_float = Some(false);
 
@@ -3094,7 +3023,7 @@ pub(crate) fn screen_thread_main(
                         should_float,
                         pane_title,
                         run_plugin,
-                        *tab_index,
+                        tab_index,
                         size,
                         completion_tx,
                     ))?;
@@ -3633,7 +3562,7 @@ pub(crate) fn screen_thread_main(
                                 // waiting for it
             ) => {
                 // tab_index here is 1-based user input representing display position
-                let tab_position = tab_index.saturating_sub(1); // Convert to 0-based
+                let tab_position = tab_index.position();
 
                 match screen.get_tab_by_position_mut(tab_position) {
                     Some(tab) => {
@@ -3687,7 +3616,7 @@ pub(crate) fn screen_thread_main(
                 // name with it. Tabs we have never heard of are kept: a plugin can
                 // know about a tab before we have finished making it, and the next
                 // pass drops whatever is genuinely gone.
-                let tab_projects: HashMap<usize, String> = tab_projects.into_iter().collect();
+                let tab_projects: HashMap<TabId, String> = tab_projects.into_iter().collect();
                 if tab_projects != screen.tab_projects {
                     screen.tab_projects = tab_projects;
                     if screen.update_plugin_tab_names() {
@@ -4058,10 +3987,11 @@ pub(crate) fn screen_thread_main(
                 let tab_infos = screen.generate_and_report_tab_state()?;
 
                 #[cfg(not(test))]
-                let (available_layouts, _layout_errors) = Layout::list_available_layouts(
-                    screen.layout_dir.clone(),
-                    &screen.default_layout_name,
-                );
+                let (available_layouts, _layout_errors) =
+                    zellij_config::layout::list_available_layouts(
+                        screen.layout_dir.clone(),
+                        &screen.default_layout_name,
+                    );
                 #[cfg(test)]
                 let available_layouts = vec![];
 
@@ -4085,12 +4015,12 @@ pub(crate) fn screen_thread_main(
                     tab_history: screen
                         .tab_history
                         .iter()
-                        .map(|(id, history)| (id.0, history.clone()))
+                        .map(|(id, history)| (*id, history.clone()))
                         .collect(),
                     pane_history: screen
                         .pane_history
                         .iter()
-                        .map(|(k, v)| (k.0, v.iter().map(|v| (*v).into()).collect()))
+                        .map(|(k, v)| (*k, v.clone()))
                         .collect(),
                     creation_time,
                 };
@@ -4121,7 +4051,8 @@ pub(crate) fn screen_thread_main(
             ) => {
                 let now = Instant::now();
                 let id = screen.next_notification_id;
-                screen.next_notification_id += 1;
+                screen.next_notification_id =
+                    NotificationId::new(screen.next_notification_id.get() + 1);
                 let received_at_unix_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()

@@ -1,6 +1,9 @@
 use super::*;
 use hocus_proto::notes;
 use hocus_proto::panes::terminal_panes;
+use zellij_tile::prelude::HostId;
+use zellij_tile::prelude::TabId;
+use zellij_tile::prelude::TabPosition;
 
 fn state_with(messages: Vec<Message>, status: Status) -> State {
     State {
@@ -62,7 +65,7 @@ fn ready_state() -> State {
         // first one. The host is named rather than left empty so that a helper which forgot to
         // write it fails a test instead of matching the pre-migration rows.
         zellij_session_name: "test-session".to_owned(),
-        host_id: "test-host".to_owned(),
+        host_id: HostId::new("test-host"),
         cfg: Config::resolve(
             &BTreeMap::new(),
             &BTreeMap::from([("OPENAI_API_KEY".to_owned(), "sk-test".to_owned())]),
@@ -255,8 +258,8 @@ fn models_context() -> BTreeMap<String, String> {
 fn state_with_worktrees() -> State {
     let mut state = idle_state();
     state.set_panes(vec![
-        agent_in(3, "/work/hocus", 1),
-        agent_in(5, "/work/trees/topic", 2),
+        agent_in(3, "/work/hocus", TabId::new(1)),
+        agent_in(5, "/work/trees/topic", TabId::new(2)),
     ]);
     state.repositories = BTreeMap::from([
         (
@@ -275,13 +278,13 @@ fn state_with_worktrees() -> State {
 /// `branch`.
 fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(1),
+        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(1)),
         name: wire::AGENT_SNAPSHOT.to_owned(),
         payload: Some(
             serde_json::to_string(&PollReply {
                 panes: Some(vec![
-                    agent_in(3, "/work/hocus", 1),
-                    agent_in(5, "/work/trees/topic", 2),
+                    agent_in(3, "/work/hocus", TabId::new(1)),
+                    agent_in(5, "/work/trees/topic", TabId::new(2)),
                 ]),
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
@@ -334,16 +337,16 @@ fn mode_updates_keep_kitty_graphics_support_per_client() {
         Event::ModeUpdate(mode_info)
     };
 
-    state.client = 1;
+    state.client = ClientId::new(1);
     assert!(state.handle(mode_update(true)));
-    state.client = 2;
+    state.client = ClientId::new(2);
     assert!(!state.handle(mode_update(false)));
-    assert_eq!(state.kitty_graphics, BTreeSet::from([1]));
+    assert_eq!(state.kitty_graphics, BTreeSet::from([ClientId::new(1)]));
 
     assert!(state.handle(mode_update(true)));
-    state.client = 1;
+    state.client = ClientId::new(1);
     assert!(state.handle(mode_update(false)));
-    assert_eq!(state.kitty_graphics, BTreeSet::from([2]));
+    assert_eq!(state.kitty_graphics, BTreeSet::from([ClientId::new(2)]));
 }
 
 fn schedule_call(arguments: &str) -> ToolCall {
@@ -355,7 +358,7 @@ fn schedule_call(arguments: &str) -> ToolCall {
 }
 
 /// An agent pane in a folder, in a tab, as a poll would report it.
-fn agent_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
+fn agent_in(pane_id: u32, cwd: &str, tab_id: TabId) -> agents::AgentPane {
     agents::AgentPane {
         pane_id,
         title: "codex".to_owned(),
@@ -373,7 +376,7 @@ fn agent_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
 
 /// An agent in a Firecracker VM, whose folder is a guest path in a copy of
 /// `worktree` — the folder on this machine its work is merged back into.
-fn vm_agent_in(pane_id: u32, worktree: &str, tab_id: usize) -> agents::AgentPane {
+fn vm_agent_in(pane_id: u32, worktree: &str, tab_id: TabId) -> agents::AgentPane {
     agents::AgentPane {
         host: Some("firecracker:review".to_owned()),
         firecracker_worktree: Some(worktree.to_owned()),
@@ -382,7 +385,7 @@ fn vm_agent_in(pane_id: u32, worktree: &str, tab_id: usize) -> agents::AgentPane
 }
 
 /// A plain shell, which names a tab but is nobody's agent.
-fn shell_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
+fn shell_in(pane_id: u32, cwd: &str, tab_id: TabId) -> agents::AgentPane {
     agents::AgentPane {
         title: "zsh".to_owned(),
         command: Some("zsh".to_owned()),
@@ -391,7 +394,7 @@ fn shell_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
 }
 
 /// A state with one tab, active, that the poll can assign.
-fn state_with_tab(tab_id: usize) -> State {
+fn state_with_tab(tab_id: TabId) -> State {
     let mut state = idle_state();
     state.tabs = vec![TabInfo {
         active: true,
@@ -542,7 +545,7 @@ fn give_projects(state: &mut State, registry: projects::Registry) {
 /// A state whose active project is `hocus` at `/work/hocus`, assigned by
 /// hand, so the todo tools have somewhere to write.
 fn state_with_project() -> State {
-    let mut state = state_with_tab(9);
+    let mut state = state_with_tab(TabId::new(9));
     state.run_local(&agent_call(
         "project_assign",
         r#"{"name":"hocus","root":"/work/hocus"}"#,
@@ -621,7 +624,7 @@ fn stored_note(state: &State, id: u64) -> Option<notes::Note> {
 
 fn pane_info(id: u32, title: &str, command: Option<&str>) -> PaneInfo {
     PaneInfo {
-        id,
+        id: zellij_tile::prelude::PaneId::from_legacy(id, false),
         title: title.to_owned(),
         terminal_command: command.map(str::to_owned),
         ..PaneInfo::default()
@@ -630,13 +633,13 @@ fn pane_info(id: u32, title: &str, command: Option<&str>) -> PaneInfo {
 
 fn manifest(panes: Vec<PaneInfo>) -> PaneManifest {
     PaneManifest {
-        panes: std::collections::HashMap::from([(0, panes)]),
+        panes: std::collections::HashMap::from([(TabPosition::new(0), panes)]),
     }
 }
 
-fn tab_info(position: usize, tab_id: usize, name: &str) -> TabInfo {
+fn tab_info(position: usize, tab_id: TabId, name: &str) -> TabInfo {
     TabInfo {
-        position,
+        position: TabPosition::new(position),
         tab_id,
         name: name.to_owned(),
         ..TabInfo::default()
@@ -684,7 +687,7 @@ fn agent_snapshot(seq: u64) -> PipeMessage {
 /// A snapshot carrying `seq` and the panes it saw.
 fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(1),
+        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(1)),
         name: wire::AGENT_SNAPSHOT.to_owned(),
         payload: Some(
             serde_json::to_string(&PollReply {
@@ -714,13 +717,13 @@ fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
 /// with the nested layout, so this is the shape a real session produces.
 fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(1),
+        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(1)),
         name: wire::AGENT_SNAPSHOT.to_owned(),
         payload: Some(
             serde_json::to_string(&PollReply {
                 panes: Some(vec![
-                    agent_in(3, "/work/hocus", 1),
-                    agent_in(5, NESTED_WORKTREE, 2),
+                    agent_in(3, "/work/hocus", TabId::new(1)),
+                    agent_in(5, NESTED_WORKTREE, TabId::new(2)),
                 ]),
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
@@ -757,7 +760,7 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
 /// As a plugin asker sends one: a plugin-sourced pipe carrying a `wire::Ask`.
 fn ask(text: &str) -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(7),
+        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(7)),
         name: wire::ASK.to_owned(),
         payload: Some(
             serde_json::to_string(&wire::Ask {
@@ -822,11 +825,11 @@ mod web_search;
 #[test]
 fn a_pane_renamed_from_outside_is_titled_again_on_the_next_render() {
     let mut state = idle_state();
-    state.own_plugin_id = 7;
+    state.own_plugin_id = zellij_tile::prelude::PluginId::new(7);
     state.last_pane_title = Some("hocus — a-model".to_owned());
 
     let mut own = pane_info(7, "hocus — a-model", None);
-    own.is_plugin = true;
+    own.id = zellij_tile::prelude::PaneId::from_legacy(own.id.legacy_parts().0, true);
     state.on_panes(manifest(vec![own.clone()]));
     assert_eq!(
         state.last_pane_title.as_deref(),
@@ -835,7 +838,7 @@ fn a_pane_renamed_from_outside_is_titled_again_on_the_next_render() {
     );
 
     let mut renamed = pane_info(7, "something else", None);
-    renamed.is_plugin = true;
+    renamed.id = zellij_tile::prelude::PaneId::from_legacy(renamed.id.legacy_parts().0, true);
     state.on_panes(manifest(vec![renamed]));
     assert_eq!(
         state.last_pane_title, None,

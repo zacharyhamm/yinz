@@ -12,29 +12,29 @@ use std::{
 };
 use wasmi::{Instance, Store};
 use wasmi_wasi::WasiCtx;
+use zellij_types::internal_ids::TabId;
 
 use crate::{thread_bus::ThreadSenders, ClientId};
 
 use prost::Message;
 use tokio::sync::mpsc::UnboundedSender;
-use zellij_utils::data_access::DataAccess;
-use zellij_utils::plugin_api::action::ProtobufPluginConfiguration;
-use zellij_utils::plugin_api::event::ProtobufEvent;
-use zellij_utils::plugin_api::pipe_message::ProtobufPipeMessage;
+use zellij_plugin_api::action::ProtobufPluginConfiguration;
+use zellij_plugin_api::event::ProtobufEvent;
+use zellij_plugin_api::pipe_message::ProtobufPipeMessage;
+use zellij_storage::data_access::DataAccess;
 
 use crate::plugins::queues::Queues;
 use crate::plugins::wasm_bridge::WasmBridge;
-use zellij_utils::{
-    data::EventType,
-    data::InputMode,
-    input::command::TerminalAction,
-    input::keybinds::Keybinds,
-    input::layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation},
-    input::plugins::{PluginAliases, PluginConfig},
+use zellij_runtime::errors::prelude::*;
+use {
+    zellij_config::plugins::PluginConfig, zellij_types::data::EventType,
+    zellij_types::data::InputMode, zellij_types::input::command::TerminalAction,
+    zellij_types::input::keybinds::Keybinds, zellij_types::input::layout::PluginUserConfiguration,
+    zellij_types::input::layout::RunPlugin, zellij_types::input::layout::RunPluginLocation,
+    zellij_types::input::plugins::PluginAliases,
 };
-use zellij_utils::{
-    data::{Event, PermissionType, PipeMessage},
-    errors::prelude::*,
+use {
+    zellij_types::data::Event, zellij_types::data::PermissionType, zellij_types::data::PipeMessage,
 };
 
 // the idea here is to provide atomicity when adding/removing plugins from the map (eg. when a new
@@ -415,7 +415,7 @@ pub struct PluginEnv {
     /// The WASI context backing a wasm plugin's filesystem and stdio. `None` for runtimes that
     /// have no WASI layer at all, such as Lua.
     pub wasi_ctx: Option<WasiCtx>,
-    pub tab_index: Option<usize>,
+    pub tab_index: Option<TabId>,
     /// The client this instance is currently acting on behalf of. For a shared plugin (one
     /// instance for the whole session) this is set to the client whose event is being handled, so
     /// that host commands act on the right client. Use `owner_client_id` for anything keyed in
@@ -741,7 +741,7 @@ impl RunningPlugin {
 #[cfg(test)]
 mod tests {
     use super::configuration_matches_for_reload;
-    use zellij_utils::input::layout::PluginUserConfiguration;
+    use zellij_types::input::layout::PluginUserConfiguration;
 
     fn configuration(entries: &[(&str, &str)]) -> PluginUserConfiguration {
         PluginUserConfiguration::new(

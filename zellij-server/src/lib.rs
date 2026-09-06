@@ -10,6 +10,9 @@ compile_error!("Zellij does not support Windows");
 
 pub use zellij_process::firecracker;
 pub use zellij_terminal::host_query;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
+use zellij_types::style::default_palette;
 pub mod os_input_output;
 pub use zellij_terminal::output;
 pub mod panes;
@@ -123,14 +126,16 @@ impl Drop for ConnectionSlot {
         self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
-use zellij_utils::data_access::DataAccess;
-use zellij_utils::envs;
-use zellij_utils::pane_size::Size;
+use zellij_runtime::envs;
+use zellij_storage::data_access::DataAccess;
+use zellij_types::pane_size::Size;
 
-use zellij_utils::input::cli_assets::CliAssets;
-use zellij_utils::input::options::{
-    PaneFrameStyle, DEFAULT_AGENT_PANE_MIN_COLUMNS, DEFAULT_AGENT_PANE_MIN_ROWS,
-    DEFAULT_WORD_SEPARATORS,
+use zellij_types::input::cli_assets::CliAssets;
+use {
+    zellij_types::input::options::PaneFrameStyle,
+    zellij_types::input::options::DEFAULT_AGENT_PANE_MIN_COLUMNS,
+    zellij_types::input::options::DEFAULT_AGENT_PANE_MIN_ROWS,
+    zellij_types::input::options::DEFAULT_WORD_SEPARATORS,
 };
 
 use wasmi::Engine;
@@ -144,30 +149,37 @@ use crate::{
     thread_bus::{Bus, ThreadSenders},
 };
 use route::{route_thread_main, NotificationEnd};
-use zellij_utils::{
-    channels::{self, ChannelWithContext, SenderWithContext},
-    consts::{
-        DEFAULT_SCROLL_BUFFER_SIZE, SCROLL_BUFFER_SIZE, ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE,
-    },
-    data::{
-        ConnectToSession, Direction, InputMode, KeyWithModifier, LayoutInfo, LayoutWithError, Style,
-    },
-    errors::{prelude::*, ContextType, ErrorInstruction, FatalError, ServerContext},
-    home::{default_layout_dir, get_default_data_dir, user_plugin_dir_or_default},
-    input::{
-        actions::Action,
-        command::{RunCommand, TerminalAction},
-        config::{watch_config_file_changes, watch_layout_dir_changes, Config},
-        keybinds::Keybinds,
-        layout::{FloatingPaneLayout, Layout, PluginAlias, Run, RunPluginOrAlias},
-        options::Options,
-        plugins::PluginAliases,
-    },
-    ipc::{ClientAttributes, ExitReason, ServerToClientMsg},
-    shared::default_palette,
+use zellij_runtime::channels;
+use zellij_runtime::channels::ChannelWithContext;
+use zellij_runtime::channels::SenderWithContext;
+use zellij_runtime::errors::prelude::*;
+use zellij_runtime::errors::ErrorInstruction;
+use zellij_runtime::errors::FatalError;
+use zellij_runtime::home::default_layout_dir;
+use zellij_runtime::home::get_default_data_dir;
+use zellij_runtime::home::user_plugin_dir_or_default;
+use zellij_types::diagnostics::ContextType;
+use zellij_types::diagnostics::ServerContext;
+use zellij_types::geometry::Direction;
+use zellij_types::keys::KeyWithModifier;
+use zellij_types::style::Style;
+use {
+    zellij_config::config::watch_config_file_changes,
+    zellij_config::config::watch_layout_dir_changes, zellij_config::config::Config,
+    zellij_ipc::ipc::ClientAttributes, zellij_ipc::ipc::ExitReason,
+    zellij_ipc::ipc::ServerToClientMsg, zellij_runtime::consts::DEFAULT_SCROLL_BUFFER_SIZE,
+    zellij_runtime::consts::SCROLL_BUFFER_SIZE,
+    zellij_runtime::consts::ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE, zellij_types::data::InputMode,
+    zellij_types::data::LayoutInfo, zellij_types::data::LayoutWithError,
+    zellij_types::data::SessionConnection, zellij_types::input::actions::Action,
+    zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction,
+    zellij_types::input::keybinds::Keybinds, zellij_types::input::layout::FloatingPaneLayout,
+    zellij_types::input::layout::Layout, zellij_types::input::layout::PluginAlias,
+    zellij_types::input::layout::Run, zellij_types::input::layout::RunPluginOrAlias,
+    zellij_types::input::options::Options, zellij_types::input::plugins::PluginAliases,
 };
 
-pub use zellij_utils::internal_ids::{ClientId, PluginId, TerminalId};
+pub use zellij_types::internal_ids::{ClientId, PluginId, TerminalId};
 
 /// Instructions related to server-side application
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
@@ -182,15 +194,15 @@ pub enum ServerInstruction {
     DetachSession(Vec<ClientId>, Option<NotificationEnd>),
     AttachClient(
         CliAssets,
-        Option<usize>,  // tab position to focus
-        Option<PaneId>, // pane to focus
+        Option<TabNumber>, // tab number to focus
+        Option<PaneId>,    // pane to focus
         ClientId,
     ),
     AttachWatcherClient(ClientId, Size),
     ConnStatus(ClientId),
     Log(Vec<String>, ClientId, Option<NotificationEnd>),
     LogError(Vec<String>, ClientId, Option<NotificationEnd>),
-    SwitchSession(ConnectToSession, ClientId, Option<NotificationEnd>),
+    SwitchSession(SessionConnection, ClientId, Option<NotificationEnd>),
     UnblockCliPipeInput(String),   // String -> Pipe name
     CliPipeOutput(String, String), // String -> Pipe name, String -> Output
     /// One event for a `zellij events` client: its type by name, and the event as JSON.
@@ -519,8 +531,8 @@ impl SessionMetaData {
             let pane_still_active = self.key_passthrough_clients.values().any(|p| *p == pane_id);
             if !pane_still_active && notify_guest {
                 if let PaneId::Terminal(terminal_id) = pane_id {
-                    let frame = zellij_utils::nested_session::encode_frame(
-                        &zellij_utils::nested_session::NestedSessionMessage::FocusLost,
+                    let frame = zellij_ipc::nested_session::encode_frame(
+                        &zellij_ipc::nested_session::NestedSessionMessage::FocusLost,
                     );
                     let _ = self.senders.send_to_pty_writer(PtyWriteInstruction::Write(
                         frame,
@@ -841,14 +853,14 @@ impl SessionState {
 
         let mut next_client_id = 1;
         loop {
-            if all_ids.contains(&ClientId(next_client_id)) {
+            if all_ids.contains(&ClientId::new(next_client_id)) {
                 next_client_id += 1;
             } else {
                 break;
             }
         }
-        self.clients.insert(ClientId(next_client_id));
-        ClientId(next_client_id)
+        self.clients.insert(ClientId::new(next_client_id));
+        ClientId::new(next_client_id)
     }
     pub fn associate_pipe_with_client(&mut self, pipe_id: String, client_id: ClientId) {
         self.pipes.insert(pipe_id, client_id);
@@ -966,7 +978,7 @@ pub fn start_server_impl(
 
     if install_panic_hook {
         std::panic::set_hook({
-            use zellij_utils::errors::handle_panic;
+            use zellij_runtime::errors::handle_panic;
             let to_server = to_server.clone();
             Box::new(move |info| {
                 handle_panic(info, Some(&to_server));
@@ -978,8 +990,8 @@ pub fn start_server_impl(
         .name("server_listener".to_string())
         .spawn({
             use interprocess::local_socket::prelude::*;
-            use zellij_utils::consts::ipc_bind;
-            use zellij_utils::shared::set_permissions;
+            use zellij_ipc::consts::ipc_bind;
+            use zellij_runtime::shared::set_permissions;
 
             let os_input = os_input.clone();
             let session_data = session_data.clone();
@@ -1133,7 +1145,10 @@ pub fn start_server_impl(
             server_receiver.recv()
         };
         let (instruction, mut err_ctx) = recv.unwrap();
-        err_ctx.add_call(ContextType::IPCServer((&instruction).into()));
+        zellij_runtime::errors::add_call(
+            &mut err_ctx,
+            ContextType::IPCServer((&instruction).into()),
+        );
         match &instruction {
             ServerInstruction::AttachClient(_, _, _, client_id) => log::info!(
                 "attach trace: server main loop received AttachClient client_id={client_id}"
@@ -1146,25 +1161,26 @@ pub fn start_server_impl(
         match instruction {
             ServerInstruction::FirstClientConnected(cli_assets, client_id) => {
                 let host_terminal_env = cli_assets.host_terminal_env.clone();
-                let (config, layout) = match cli_assets.load_config_and_layout() {
-                    Ok(config_and_layout) => config_and_layout,
-                    Err(error) => {
-                        let _ = os_input.send_to_client(
-                            client_id,
-                            ServerToClientMsg::Exit {
-                                exit_reason: ExitReason::Error(format!(
-                                    "failed to load session checkpoint: {error:#}"
-                                )),
-                            },
-                        );
-                        Err::<(), _>(error)
-                            .context("failed to load session checkpoint")
-                            .non_fatal();
-                        remove_client!(client_id, os_input, session_state, session_data);
-                        exit_reason = "failed to load session checkpoint";
-                        break;
-                    },
-                };
+                let (config, layout) =
+                    match zellij_config::cli_assets::load_config_and_layout(&cli_assets) {
+                        Ok(config_and_layout) => config_and_layout,
+                        Err(error) => {
+                            let _ = os_input.send_to_client(
+                                client_id,
+                                ServerToClientMsg::Exit {
+                                    exit_reason: ExitReason::Error(format!(
+                                        "failed to load session checkpoint: {error:#}"
+                                    )),
+                                },
+                            );
+                            Err::<(), _>(error)
+                                .context("failed to load session checkpoint")
+                                .non_fatal();
+                            remove_client!(client_id, os_input, session_state, session_data);
+                            exit_reason = "failed to load session checkpoint";
+                            break;
+                        },
+                    };
                 let layout_is_welcome_screen = cli_assets.layout
                     == Some(LayoutInfo::BuiltIn("welcome".to_owned()))
                     || config.options.default_layout == Some(PathBuf::from("welcome"));
@@ -1276,11 +1292,12 @@ pub fn start_server_impl(
                 };
 
                 if layout.has_tabs() {
-                    let focused_tab_index = layout.focused_tab_index().unwrap_or(0);
+                    let focused_tab_index =
+                        layout.focused_tab_index().unwrap_or(TabPosition::new(0));
                     for (tab_index, (tab_name, tab_layout, floating_panes_layout)) in
                         layout.tabs().into_iter().enumerate()
                     {
-                        let should_focus_tab = tab_index == focused_tab_index;
+                        let should_focus_tab = TabPosition::new(tab_index) == focused_tab_index;
                         spawn_tabs(
                             Some(tab_layout.clone()),
                             floating_panes_layout.clone(),
@@ -2230,8 +2247,8 @@ pub fn start_server_impl(
                                     if let crate::panes::PaneId::Terminal(terminal_id) =
                                         previous_pane_id
                                     {
-                                        let frame = zellij_utils::nested_session::encode_frame(
-                                            &zellij_utils::nested_session::NestedSessionMessage::FocusLost,
+                                        let frame = zellij_ipc::nested_session::encode_frame(
+                                            &zellij_ipc::nested_session::NestedSessionMessage::FocusLost,
                                         );
                                         let _ = session_data.senders.send_to_pty_writer(
                                             PtyWriteInstruction::Write(frame, terminal_id, None),
@@ -2248,8 +2265,8 @@ pub fn start_server_impl(
                                 .insert(client_id, new_pane_id);
                             if !pane_already_active {
                                 if let crate::panes::PaneId::Terminal(terminal_id) = new_pane_id {
-                                    let frame = zellij_utils::nested_session::encode_frame(
-                                        &zellij_utils::nested_session::NestedSessionMessage::FocusGained {
+                                    let frame = zellij_ipc::nested_session::encode_frame(
+                                        &zellij_ipc::nested_session::NestedSessionMessage::FocusGained {
                                             from_direction: entered_from_direction,
                                         },
                                     );
@@ -2360,9 +2377,13 @@ fn init_session(
     let data_dir = cli_assets.data_dir.unwrap_or_else(get_default_data_dir);
     // Before anything can write to the plugin data store: this is the one place that holds both
     // the data dir and the options the id is resolved from, and every later reader takes what is
-    // cached here. See `zellij_utils::host_identity`.
-    zellij_utils::host_identity::init_host_id(&data_dir, config.options.host_id.as_deref());
-    let data_access = Arc::new(DataAccess::from_options(&config.options, &data_dir));
+    // cached here. See `zellij_runtime::host_identity`.
+    zellij_runtime::host_identity::init_host_id(&data_dir, config.options.host_id.as_ref());
+    let data_access = Arc::new(DataAccess::configured(
+        config.options.plugin_data_url.as_deref(),
+        config.options.plugin_data_schema.as_deref(),
+        &data_dir,
+    ));
 
     let recording_enabled = config.options.session_recording.unwrap_or(false);
     let input_enabled = config.options.session_recording_input.unwrap_or(false);
@@ -2523,11 +2544,11 @@ fn init_session(
     // Expose them to plugins so their child CLI commands use this session's config.
     for (key, path) in [
         (
-            zellij_utils::consts::ZELLIJ_CONFIG_FILE_ENV,
+            zellij_runtime::consts::ZELLIJ_CONFIG_FILE_ENV,
             cli_assets.config_file_path.as_ref(),
         ),
         (
-            zellij_utils::consts::ZELLIJ_CONFIG_DIR_ENV,
+            zellij_runtime::consts::ZELLIJ_CONFIG_DIR_ENV,
             cli_assets.config_dir.as_ref(),
         ),
     ] {
@@ -2858,14 +2879,14 @@ fn update_new_saved_config(
                     .unwrap()
                     .config_dir
                     .clone();
-                zellij_utils::home::get_config_overlay_dir(
-                    config_dir.or_else(zellij_utils::home::find_default_config_dir),
+                zellij_runtime::home::get_config_overlay_dir(
+                    config_dir.or_else(zellij_runtime::home::find_default_config_dir),
                 )
             };
             let written = match overlay_dir {
                 Some(dir) => Config::write_managed_fragment(&dir, &fragment).map_err(|e| {
                     log::error!("Failed to persist the config fragment: {}", e);
-                    Some(dir.join(zellij_utils::input::config::MANAGED_CONFIG_FILE_NAME))
+                    Some(dir.join(zellij_config::config::MANAGED_CONFIG_FILE_NAME))
                 }),
                 None => {
                     log::error!("No config directory to persist the config fragment in.");
@@ -3028,7 +3049,7 @@ fn get_available_layouts(config_options: &Options) -> (Vec<LayoutInfo>, Vec<Layo
         .default_layout
         .as_ref()
         .map(|l| format!("{}", l.display()));
-    Layout::list_available_layouts(layout_dir, &default_layout_name)
+    zellij_config::layout::list_available_layouts(layout_dir, &default_layout_name)
 }
 
 #[cfg(test)]
@@ -3044,10 +3065,10 @@ mod session_state_tests {
     #[test]
     fn pick_forward_target_prefers_last_active_when_still_connected() {
         let mut s = SessionState::new();
-        s.clients.insert(crate::ClientId(1));
-        s.clients.insert(crate::ClientId(2));
-        s.set_last_active_client(crate::ClientId(2));
-        assert_eq!(s.pick_forward_target(), Some(ClientId(2)));
+        s.clients.insert(crate::ClientId::new(1));
+        s.clients.insert(crate::ClientId::new(2));
+        s.set_last_active_client(crate::ClientId::new(2));
+        assert_eq!(s.pick_forward_target(), Some(ClientId::new(2)));
     }
 
     #[test]
@@ -3061,7 +3082,7 @@ mod session_state_tests {
             .insert(key.clone(), vec![Action::Quit]);
         let mut configuration = SessionConfiguration::default();
         configuration.set_saved_configuration(base.clone());
-        configuration.set_client_runtime_configuration(crate::ClientId(1), base);
+        configuration.set_client_runtime_configuration(crate::ClientId::new(1), base);
 
         let mut defaults = Keybinds::default();
         defaults.0.entry(InputMode::Normal).or_default().insert(
@@ -3072,20 +3093,23 @@ mod session_state_tests {
                 start_suppressed: false,
             }],
         );
-        configuration.register_plugin_default_keybinds(crate::PluginId(2), defaults);
+        configuration.register_plugin_default_keybinds(crate::PluginId::new(2), defaults);
         assert_eq!(
             configuration
-                .get_client_keybinds(&ClientId(1))
+                .get_client_keybinds(&ClientId::new(1))
                 .get_actions_for_key_in_mode(&InputMode::Normal, &key),
             Some(&vec![Action::Quit])
         );
 
-        let (_, changed) =
-            configuration.rebind_keys(&ClientId(1), vec![], vec![(InputMode::Normal, key.clone())]);
+        let (_, changed) = configuration.rebind_keys(
+            &ClientId::new(1),
+            vec![],
+            vec![(InputMode::Normal, key.clone())],
+        );
         assert!(changed);
         assert_eq!(
             configuration
-                .get_client_keybinds(&ClientId(1))
+                .get_client_keybinds(&ClientId::new(1))
                 .get_actions_for_key_in_mode(&InputMode::Normal, &key),
             Some(&vec![Action::NewPane {
                 direction: None,
@@ -3099,7 +3123,7 @@ mod session_state_tests {
     fn lower_plugin_id_wins_default_keybind_conflicts_until_it_unloads() {
         let key = KeyWithModifier::from_str("Alt x").unwrap();
         let mut configuration = SessionConfiguration::default();
-        configuration.set_client_runtime_configuration(crate::ClientId(1), Config::default());
+        configuration.set_client_runtime_configuration(crate::ClientId::new(1), Config::default());
         for (plugin_id, action) in [(9, Action::Quit), (3, Action::NoOp)] {
             let mut defaults = Keybinds::default();
             defaults
@@ -3107,19 +3131,21 @@ mod session_state_tests {
                 .entry(InputMode::Normal)
                 .or_default()
                 .insert(key.clone(), vec![action]);
-            configuration.register_plugin_default_keybinds(crate::PluginId(plugin_id), defaults);
+            configuration
+                .register_plugin_default_keybinds(crate::PluginId::new(plugin_id), defaults);
         }
         assert_eq!(
             configuration
-                .get_client_keybinds(&ClientId(1))
+                .get_client_keybinds(&ClientId::new(1))
                 .get_actions_for_key_in_mode(&InputMode::Normal, &key),
             Some(&vec![Action::NoOp])
         );
 
-        configuration.register_plugin_default_keybinds(crate::PluginId(3), Keybinds::default());
+        configuration
+            .register_plugin_default_keybinds(crate::PluginId::new(3), Keybinds::default());
         assert_eq!(
             configuration
-                .get_client_keybinds(&ClientId(1))
+                .get_client_keybinds(&ClientId::new(1))
                 .get_actions_for_key_in_mode(&InputMode::Normal, &key),
             Some(&vec![Action::Quit])
         );
@@ -3128,16 +3154,16 @@ mod session_state_tests {
     #[test]
     fn pick_forward_target_falls_back_when_last_active_disconnected() {
         let mut s = SessionState::new();
-        s.clients.insert(crate::ClientId(1));
-        s.clients.insert(crate::ClientId(2));
+        s.clients.insert(crate::ClientId::new(1));
+        s.clients.insert(crate::ClientId::new(2));
         // Client 3 was last active but has since disconnected — not in
         // `clients` map anymore. Must fall through to any connected
         // client rather than returning None.
-        s.last_active_client = Some(crate::ClientId(3));
+        s.last_active_client = Some(crate::ClientId::new(3));
         let picked = s
             .pick_forward_target()
             .expect("some client still connected");
-        assert!(picked == crate::ClientId(1) || picked == crate::ClientId(2));
+        assert!(picked == crate::ClientId::new(1) || picked == crate::ClientId::new(2));
     }
 
     #[test]
@@ -3148,32 +3174,32 @@ mod session_state_tests {
 
     #[test]
     fn remove_client_returns_stuck_forward_tokens() {
-        let mut s = with_client(crate::ClientId(1));
-        s.mark_forward_in_flight(10, crate::ClientId(1));
-        s.mark_forward_in_flight(11, crate::ClientId(1));
+        let mut s = with_client(crate::ClientId::new(1));
+        s.mark_forward_in_flight(10, crate::ClientId::new(1));
+        s.mark_forward_in_flight(11, crate::ClientId::new(1));
         // A forward dispatched to a *different* client — must not be
         // returned when we remove client 1.
-        s.clients.insert(crate::ClientId(2));
-        s.mark_forward_in_flight(12, crate::ClientId(2));
+        s.clients.insert(crate::ClientId::new(2));
+        s.mark_forward_in_flight(12, crate::ClientId::new(2));
 
-        let mut stuck = s.remove_client(crate::ClientId(1));
+        let mut stuck = s.remove_client(crate::ClientId::new(1));
         stuck.sort_unstable();
         assert_eq!(stuck, vec![10, 11]);
-        assert_eq!(s.forwards_in_flight.get(&12), Some(&ClientId(2)));
+        assert_eq!(s.forwards_in_flight.get(&12), Some(&ClientId::new(2)));
     }
 
     #[test]
     fn remove_client_returns_empty_when_no_forwards_in_flight() {
-        let mut s = with_client(crate::ClientId(1));
-        assert!(s.remove_client(crate::ClientId(1)).is_empty());
+        let mut s = with_client(crate::ClientId::new(1));
+        assert!(s.remove_client(crate::ClientId::new(1)).is_empty());
     }
 
     #[test]
     fn clear_forward_in_flight_removes_entry() {
-        let mut s = with_client(crate::ClientId(1));
-        s.mark_forward_in_flight(42, crate::ClientId(1));
+        let mut s = with_client(crate::ClientId::new(1));
+        s.mark_forward_in_flight(42, crate::ClientId::new(1));
         s.clear_forward_in_flight(42);
         // After clear, removing the client yields no stuck tokens.
-        assert!(s.remove_client(crate::ClientId(1)).is_empty());
+        assert!(s.remove_client(crate::ClientId::new(1)).is_empty());
     }
 }

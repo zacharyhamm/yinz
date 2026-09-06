@@ -11,7 +11,9 @@ use super::*;
 use crate::panes::PaneId;
 use crate::ClientId;
 use zellij_test_support::Watched;
-use zellij_utils::data::{BareKey, KeyWithModifier, MessageToPlugin, PermissionStatus};
+use zellij_types::internal_ids::TabId;
+use zellij_types::keys::{BareKey, KeyWithModifier};
+use {zellij_types::data::MessageToPlugin, zellij_types::data::PermissionStatus};
 
 const WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -183,7 +185,7 @@ impl Harness {
         let cache_path = plugin_host_folder.join("permissions_test.kdl");
         let (to_plugin, screen_receiver, teardown) =
             create_plugin_thread(Some(plugin_host_folder), None);
-        let client_id = ClientId(1);
+        let client_id = ClientId::new(1);
         let log = Watched::new(vec![]);
         let screen_thread = std::thread::Builder::new()
             .name("fake_screen_thread".to_string())
@@ -238,7 +240,9 @@ impl Harness {
     }
 
     fn load_with_configuration(&self, url: &str, configuration: &[(&str, &str)]) {
-        let mut run_plugin = RunPluginOrAlias::from_url(url, &None, None, None).unwrap();
+        let mut run_plugin =
+            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(url, &None, None, None)
+                .unwrap();
         if let RunPluginOrAlias::RunPlugin(run_plugin) = &mut run_plugin {
             for (key, value) in configuration {
                 run_plugin.configuration.insert(*key, *value);
@@ -250,7 +254,7 @@ impl Harness {
             false,
             Some("queue_test_plugin".to_owned()),
             run_plugin,
-            Some(1),
+            Some(TabId::new(1)),
             None,
             self.client_id,
             Size { cols: 80, rows: 20 },
@@ -273,9 +277,9 @@ impl Harness {
     }
 
     /// Pipe a message straight to one job plugin, the way another plugin would.
-    fn pipe_to(&self, plugin_id: u32, name: &str) {
+    fn pipe_to(&self, plugin_id: zellij_types::internal_ids::PluginId, name: &str) {
         let _ = self.to_plugin.send(PluginInstruction::MessageFromPlugin {
-            source_plugin_id: crate::PluginId(0),
+            source_plugin_id: crate::PluginId::new(0),
             message: MessageToPlugin {
                 destination_plugin_id: Some(plugin_id),
                 ..MessageToPlugin::new(name)
@@ -290,7 +294,7 @@ impl Harness {
 
     /// Block until some rendered frame contains `needle`, and return that frame.
     fn wait_for(&self, needle: &str) -> String {
-        self.log.wait_until(
+        self.log.wait_until_described(
             &format!("a render containing {needle:?}"),
             WAIT,
             |instructions| {
@@ -298,11 +302,12 @@ impl Harness {
                     .into_iter()
                     .find(|frame| frame.contains(needle))
             },
+            |instructions| format!("{:#?}", rendered_frames(instructions)),
         )
     }
 
     /// The job's plugin id, from the enqueuer's `started` line.
-    fn wait_for_started(&self, job_id: u64) -> u32 {
+    fn wait_for_started(&self, job_id: u64) -> crate::PluginId {
         let frame = self.wait_for(&format!("started {job_id} pid="));
         started_plugin_id(&frame, job_id).unwrap()
     }
@@ -318,7 +323,7 @@ impl Harness {
             .collect()
     }
 
-    fn suppressed_add_plugin_instructions(&self) -> Vec<zellij_utils::internal_ids::PluginId> {
+    fn suppressed_add_plugin_instructions(&self) -> Vec<zellij_types::internal_ids::PluginId> {
         self.log
             .lock()
             .iter()
@@ -344,7 +349,7 @@ impl Drop for Harness {
 }
 
 /// The plugin id in the enqueuer's `started <job_id> pid=<plugin_id> ...` line, if `frame` has it.
-fn started_plugin_id(frame: &str, job_id: u64) -> Option<u32> {
+fn started_plugin_id(frame: &str, job_id: u64) -> Option<crate::PluginId> {
     let prefix = format!("started {job_id} pid=");
     let line = frame.lines().find(|line| line.starts_with(&prefix))?;
     line[prefix.len()..]
@@ -394,13 +399,13 @@ pub fn a_job_runs_headless_and_reports_back() {
 
     assert_eq!(
         harness.suppressed_add_plugin_instructions(),
-        vec![zellij_utils::internal_ids::PluginId(job_plugin_id)],
+        vec![job_plugin_id],
         "the job got a suppressed pane and nothing else"
     );
     harness.log.wait_until("the job's pane to be closed", WAIT, |instructions| {
         instructions
             .iter()
-            .any(|i| matches!(i, ScreenInstruction::ClosePane(PaneId::Plugin(id), ..) if *id == crate::PluginId(job_plugin_id)))
+            .any(|i| matches!(i, ScreenInstruction::ClosePane(PaneId::Plugin(id), ..) if *id == job_plugin_id))
             .then_some(())
     });
 }
@@ -496,7 +501,7 @@ pub fn cancelling_a_running_job_unloads_it_and_starts_the_next() {
     let second = harness.wait_for_started(2);
     assert!(harness
         .close_pane_instructions()
-        .contains(&PaneId::Plugin(crate::PluginId(first))));
+        .contains(&PaneId::Plugin(first)));
 
     harness.pipe_to(second, "finish");
     harness.wait_for("finished 2 Failed");
@@ -513,12 +518,12 @@ pub fn a_job_is_one_instance_no_matter_how_many_clients_are_attached() {
     let enqueuer = harness.write_plugin("enqueuer.lua", &enqueuer_source(&job));
     harness.load_with_configuration(&enqueuer, &[("shared", "true")]);
     harness.wait_for("ready");
-    harness.add_client(crate::ClientId(2));
+    harness.add_client(crate::ClientId::new(2));
     harness.key(ENQUEUE);
 
     let job_plugin_id = harness.wait_for_started(1);
     harness.wait_for("pipe job_loaded");
-    harness.add_client(crate::ClientId(3));
+    harness.add_client(crate::ClientId::new(3));
     harness.pipe_to(job_plugin_id, "finish");
     let frame = harness.wait_for("finished 1 Succeeded");
     assert_eq!(
@@ -686,6 +691,9 @@ pub fn a_wasm_plugin_can_enqueue_and_be_a_job() {
     let harness = Harness::new(PermissionStatus::Granted);
     let fixture = format!("file:{}", *PLUGIN_FIXTURE);
     harness.load(&fixture);
+    // Broadcast pipes enumerate loaded plugins. The fixture's first frame proves it is
+    // loaded; without this wait a slow WASM load can miss the enqueue request entirely.
+    harness.wait_for("Received events:");
     // The fixture renders every event it receives, so a render mentioning a queue event is the
     // assertion. Ask it to queue *itself*.
     let _ = harness.to_plugin.send(PluginInstruction::CliPipe {
@@ -711,7 +719,7 @@ pub fn a_wasm_plugin_can_enqueue_and_be_a_job() {
         .suppressed_add_plugin_instructions()
         .last()
         .expect("the job was launched headless");
-    harness.pipe_to(job_plugin_id.0, "finish_queue_job");
+    harness.pipe_to(job_plugin_id, "finish_queue_job");
     let frame = harness.wait_for("QueueJobFinished");
     assert!(frame.contains("Succeeded"), "{frame}");
 }

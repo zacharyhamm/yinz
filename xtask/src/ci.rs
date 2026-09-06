@@ -280,6 +280,11 @@ fn cross() -> anyhow::Result<PathBuf> {
 fn check(sh: &Shell) -> anyhow::Result<()> {
     let mut failed: Vec<&str> = Vec::new();
 
+    if let Err(error) = crate::metadata::check_dependency_boundaries(sh) {
+        eprintln!("Dependency boundaries: {error:#}");
+        failed.push("dependency boundaries");
+    }
+
     if crate::format::format(sh, flags::Format { check: true }).is_err() {
         failed.push("format --check");
     }

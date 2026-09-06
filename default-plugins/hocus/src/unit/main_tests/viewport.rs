@@ -69,22 +69,22 @@ fn a_transcript_that_changed_since_the_render_makes_the_measured_max_stale() {
 #[test]
 fn each_client_scrolls_its_own_copy() {
     let mut state = State {
-        client: 1,
+        client: ClientId::new(1),
         ..Default::default()
     };
 
     state.scroll_up(4);
-    state.client = 2;
+    state.client = ClientId::new(2);
     state.scroll_up(9);
 
     assert_eq!(state.scroll_offset(), 9);
-    state.client = 1;
+    state.client = ClientId::new(1);
     assert_eq!(state.scroll_offset(), 4);
 
     // A new message is everyone's, so it puts everyone back on the tail.
     state.pin_to_bottom();
     assert_eq!(state.scroll_offset(), 0);
-    state.client = 2;
+    state.client = ClientId::new(2);
     assert_eq!(state.scroll_offset(), 0);
 }
 
@@ -98,7 +98,7 @@ fn each_client_scrolls_its_own_copy() {
 #[test]
 fn two_clients_share_one_measured_maximum_but_not_a_position() {
     let mut state = State {
-        client: 1,
+        client: ClientId::new(1),
         messages: vec![Message::user("hi"), Message::assistant("there")],
         ..Default::default()
     };
@@ -109,7 +109,7 @@ fn two_clients_share_one_measured_maximum_but_not_a_position() {
     assert!(!state.scroll_up(1), "and clamped there");
     assert_eq!(state.scroll_offset(), 5);
 
-    state.client = 2;
+    state.client = ClientId::new(2);
     assert_eq!(state.scroll_offset(), 0, "client 2 was never moved");
     assert!(
         state.scroll_up(9),
@@ -121,7 +121,7 @@ fn two_clients_share_one_measured_maximum_but_not_a_position() {
         "clamped by the same maximum, not by client 1's position"
     );
 
-    state.client = 1;
+    state.client = ClientId::new(1);
     assert_eq!(state.scroll_offset(), 5, "client 1 stayed where it was");
 }
 
@@ -132,11 +132,11 @@ fn scrolling_releases_only_the_client_that_scrolled() {
     let mut state = State::default();
     state.view.anchor = Some(3);
 
-    state.client = 1;
+    state.client = ClientId::new(1);
     state.scroll_up(4);
 
     assert_eq!(state.anchor(), None, "the client that scrolled");
-    state.client = 2;
+    state.client = ClientId::new(2);
     assert_eq!(state.anchor(), Some(3), "the client that did not");
 }
 
@@ -195,7 +195,7 @@ fn a_reply_cut_short_keeps_its_anchor() {
 fn parking_a_chat_takes_its_viewport_with_it() {
     let mut state = State::default();
     state.view.anchor = Some(3);
-    state.client = 1;
+    state.client = ClientId::new(1);
     state.scroll_up(4);
 
     let parked = state.take_chat();
@@ -205,5 +205,5 @@ fn parking_a_chat_takes_its_viewport_with_it() {
     state.put_chat(parked);
     assert_eq!(state.view.anchor, Some(3));
     assert_eq!(state.scroll_offset(), 4);
-    assert!(state.view.released.contains(&1));
+    assert!(state.view.released.contains(&ClientId::new(1)));
 }

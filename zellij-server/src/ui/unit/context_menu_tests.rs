@@ -1,5 +1,5 @@
 use super::*;
-use zellij_utils::data::ContextMenuItem;
+use zellij_types::data::ContextMenuItem;
 
 fn viewport(cols: usize, rows: usize) -> Viewport {
     Viewport {

@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 /// Blocks until `plugin_id` has rendered at least once, which is the observable signal that the
 /// plugin finished loading.
@@ -7,7 +8,10 @@ use zellij_test_support::Watched;
 /// Loading a plugin compiles and instantiates a real wasm module, so how long it takes depends
 /// entirely on the machine and its current load. Sleeping a fixed 500ms for it is a guess that is
 /// wasteful when it is too long and flaky when it is too short.
-fn wait_for_plugin_to_load(log: &Watched<Vec<ScreenInstruction>>, plugin_id: u32) {
+fn wait_for_plugin_to_load(
+    log: &Watched<Vec<ScreenInstruction>>,
+    plugin_id: zellij_types::internal_ids::PluginId,
+) {
     log.wait_until_described(
         &format!("plugin {plugin_id} to load and render"),
         zellij_test_support::default_timeout(),
@@ -15,9 +19,9 @@ fn wait_for_plugin_to_load(log: &Watched<Vec<ScreenInstruction>>, plugin_id: u32
             instructions
                 .iter()
                 .any(|instruction| match instruction {
-                    ScreenInstruction::PluginBytes(assets) => assets
-                        .iter()
-                        .any(|asset| asset.plugin_id == crate::PluginId(plugin_id)),
+                    ScreenInstruction::PluginBytes(assets) => {
+                        assets.iter().any(|asset| asset.plugin_id == plugin_id)
+                    },
                     _ => false,
                 })
                 .then_some(())
@@ -35,8 +39,8 @@ fn wait_for_plugin_to_load(log: &Watched<Vec<ScreenInstruction>>, plugin_id: u32
 
 fn plugin_render_ids(
     instructions: &[ScreenInstruction],
-) -> Vec<zellij_utils::internal_ids::PluginId> {
-    let mut ids: Vec<zellij_utils::internal_ids::PluginId> = instructions
+) -> Vec<zellij_types::internal_ids::PluginId> {
+    let mut ids: Vec<zellij_types::internal_ids::PluginId> = instructions
         .iter()
         .filter_map(|instruction| match instruction {
             ScreenInstruction::PluginBytes(assets) => Some(assets.iter().map(|a| a.plugin_id)),
@@ -61,7 +65,7 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         create_plugin_thread(Some(plugin_host_folder), None);
     let plugin_should_float = Some(false);
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -129,7 +133,7 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         false,
         Some("plugin_a".to_owned()),
         run_plugin_a,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -141,7 +145,10 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         None,
         None,
     ));
-    wait_for_plugin_to_load(&received_screen_instructions, 0);
+    wait_for_plugin_to_load(
+        &received_screen_instructions,
+        zellij_types::internal_ids::PluginId::new(0),
+    );
 
     // Load plugin B
     let _ = plugin_thread_sender.send(PluginInstruction::Load(
@@ -150,7 +157,7 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         false,
         Some("plugin_b".to_owned()),
         run_plugin_b,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -162,7 +169,10 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         None,
         None,
     ));
-    wait_for_plugin_to_load(&received_screen_instructions, 1);
+    wait_for_plugin_to_load(
+        &received_screen_instructions,
+        zellij_types::internal_ids::PluginId::new(1),
+    );
 
     // Set keybinds on all plugins via Reconfigure so that Plugin A (legacy)
     // will have non-empty keybinds in its internal state
@@ -280,7 +290,7 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         create_plugin_thread(Some(plugin_host_folder), None);
     let plugin_should_float = Some(false);
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -337,7 +347,7 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         false,
         Some("test_plugin".to_owned()),
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -349,7 +359,10 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         None,
         None,
     ));
-    wait_for_plugin_to_load(&received_screen_instructions, 0);
+    wait_for_plugin_to_load(
+        &received_screen_instructions,
+        zellij_types::internal_ids::PluginId::new(0),
+    );
 
     // Build new keybinds for reconfiguration
     let mut keybind_map = std::collections::HashMap::new();

@@ -4,56 +4,128 @@ use std::{
     io,
     path::{Path, PathBuf},
 };
-use zellij_utils::data::*;
-use zellij_utils::errors::prelude::*;
-use zellij_utils::input::actions::Action;
-pub use zellij_utils::input::layout::PercentOrFixed;
-pub use zellij_utils::plugin_api;
-use zellij_utils::plugin_api::event::ProtobufPaneScrollbackResponse;
-use zellij_utils::plugin_api::generated_api::api::plugin_command::{
-    hide_floating_panes_response, save_session_response, show_floating_panes_response,
+pub use zellij_plugin_api as plugin_api;
+use zellij_plugin_api::event::ProtobufPaneScrollbackResponse;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::agent::{AgentInfo, AgentSpawnSpec};
+use zellij_types::command::{CommandToRun, GitCheckout};
+use zellij_types::data::*;
+pub use zellij_types::geometry::PercentOrFixed;
+use zellij_types::geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy};
+use zellij_types::input::actions::Action;
+use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
+use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
+use zellij_types::internal_ids::{ContextMenuRequestId, DataWatchId, QueueJobId};
+use {
+    zellij_plugin_api::generated_api::api::plugin_command::hide_floating_panes_response,
+    zellij_plugin_api::generated_api::api::plugin_command::save_session_response,
+    zellij_plugin_api::generated_api::api::plugin_command::show_floating_panes_response,
 };
-use zellij_utils::plugin_api::plugin_command::{
-    dump_layout_response, dump_session_layout_response, fs_list_response, fs_metadata_response,
-    fs_mutate_response, fs_read_response, get_focused_pane_info_response, get_pane_cwd_response,
-    get_pane_git_probe_response, get_pane_running_command_response, parse_layout_response,
-    read_plugin_log_response, ProtobufBreakPanesToNewTabResponse,
-    ProtobufBreakPanesToTabWithIdResponse, ProtobufBreakPanesToTabWithIndexResponse,
-    ProtobufCheckLuaPluginResponse, ProtobufCurrentSessionLastSavedTimeResponse,
-    ProtobufDataApplyResponse, ProtobufDataCatalogResponse, ProtobufDataCountResponse,
-    ProtobufDataDefineResponse, ProtobufDataFetchResponse, ProtobufDataUnwatchResponse,
-    ProtobufDataWatchResponse, ProtobufDeleteAllDeadSessionsResponse,
-    ProtobufDeleteDeadSessionResponse, ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse,
-    ProtobufDumpSessionLayoutResponse, ProtobufEditLayoutResponse, ProtobufEnqueueQueueJobResponse,
-    ProtobufFocusOrCreateTabResponse, ProtobufFsListResponse, ProtobufFsMetadataResponse,
-    ProtobufFsMutateResponse, ProtobufFsReadResponse, ProtobufGenerateRandomNameResponse,
-    ProtobufGetFocusedPaneInfoResponse, ProtobufGetLayoutDirResponse,
-    ProtobufGetLocalUtcOffsetResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneGitProbeResponse,
-    ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
-    ProtobufGetPluginAliasConfigurationResponse, ProtobufGetSessionEnvironmentVariablesResponse,
-    ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse, ProtobufGetUserPluginDirResponse,
-    ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
-    ProtobufListNotificationsResponse, ProtobufListOrphanedPanesResponse,
-    ProtobufListRecordingsResponse, ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse,
-    ProtobufNewTabsResponse, ProtobufNewTiledPaneInTabResponse,
-    ProtobufOpenCommandPaneBackgroundResponse, ProtobufOpenCommandPaneFloatingNearPluginResponse,
-    ProtobufOpenCommandPaneFloatingResponse, ProtobufOpenCommandPaneInGitCheckoutResponse,
-    ProtobufOpenCommandPaneInPlaceOfPaneIdResponse, ProtobufOpenCommandPaneInPlaceOfPluginResponse,
-    ProtobufOpenCommandPaneInPlaceResponse, ProtobufOpenCommandPaneNearPluginResponse,
-    ProtobufOpenCommandPaneOverlayResponse, ProtobufOpenCommandPaneResponse,
-    ProtobufOpenEditPaneInPlaceOfPaneIdResponse, ProtobufOpenFileFloatingNearPluginResponse,
-    ProtobufOpenFileFloatingResponse, ProtobufOpenFileInPlaceOfPluginResponse,
-    ProtobufOpenFileInPlaceResponse, ProtobufOpenFileNearPluginResponse, ProtobufOpenFileResponse,
-    ProtobufOpenPaneInNewTabResponse, ProtobufOpenPluginPaneFloatingResponse,
-    ProtobufOpenTerminalFloatingNearPluginResponse, ProtobufOpenTerminalFloatingResponse,
-    ProtobufOpenTerminalInPlaceOfPluginResponse, ProtobufOpenTerminalInPlaceResponse,
-    ProtobufOpenTerminalNearPluginResponse, ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
-    ProtobufOpenTerminalResponse, ProtobufParseLayoutResponse, ProtobufPluginCommand,
-    ProtobufQueueStatusResponse, ProtobufReadPluginLogResponse, ProtobufRenameLayoutResponse,
-    ProtobufSaveLayoutResponse, ProtobufSaveSessionResponse, ProtobufSearchRecordingsResponse,
-    ProtobufShowFloatingPanesResponse, ProtobufSpawnAgentResponse, ProtobufWarpPaneResponse,
+use {
+    zellij_plugin_api::plugin_command::dump_layout_response,
+    zellij_plugin_api::plugin_command::dump_session_layout_response,
+    zellij_plugin_api::plugin_command::fs_list_response,
+    zellij_plugin_api::plugin_command::fs_metadata_response,
+    zellij_plugin_api::plugin_command::fs_mutate_response,
+    zellij_plugin_api::plugin_command::fs_read_response,
+    zellij_plugin_api::plugin_command::get_focused_pane_info_response,
+    zellij_plugin_api::plugin_command::get_pane_cwd_response,
+    zellij_plugin_api::plugin_command::get_pane_git_probe_response,
+    zellij_plugin_api::plugin_command::get_pane_running_command_response,
+    zellij_plugin_api::plugin_command::parse_layout_response,
+    zellij_plugin_api::plugin_command::read_plugin_log_response,
+    zellij_plugin_api::plugin_command::ProtobufBreakPanesToNewTabResponse,
+    zellij_plugin_api::plugin_command::ProtobufBreakPanesToTabWithIdResponse,
+    zellij_plugin_api::plugin_command::ProtobufBreakPanesToTabWithIndexResponse,
+    zellij_plugin_api::plugin_command::ProtobufCheckLuaPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufCurrentSessionLastSavedTimeResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataApplyResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataCatalogResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataCountResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataDefineResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataFetchResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataUnwatchResponse,
+    zellij_plugin_api::plugin_command::ProtobufDataWatchResponse,
+    zellij_plugin_api::plugin_command::ProtobufDeleteAllDeadSessionsResponse,
+    zellij_plugin_api::plugin_command::ProtobufDeleteDeadSessionResponse,
+    zellij_plugin_api::plugin_command::ProtobufDeleteLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufDumpLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufDumpSessionLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufEditLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufEnqueueQueueJobResponse,
+    zellij_plugin_api::plugin_command::ProtobufFocusOrCreateTabResponse,
+    zellij_plugin_api::plugin_command::ProtobufFsListResponse,
+    zellij_plugin_api::plugin_command::ProtobufFsMetadataResponse,
+    zellij_plugin_api::plugin_command::ProtobufFsMutateResponse,
+    zellij_plugin_api::plugin_command::ProtobufFsReadResponse,
+    zellij_plugin_api::plugin_command::ProtobufGenerateRandomNameResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetFocusedPaneInfoResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetLayoutDirResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetLocalUtcOffsetResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPaneCwdResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPaneGitProbeResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPaneInfoResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPanePidResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPaneRunningCommandResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetPluginAliasConfigurationResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetSessionEnvironmentVariablesResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetSessionListResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetTabInfoResponse,
+    zellij_plugin_api::plugin_command::ProtobufGetUserPluginDirResponse,
+    zellij_plugin_api::plugin_command::ProtobufHideFloatingPanesResponse,
+    zellij_plugin_api::plugin_command::ProtobufKillSessionsResponse,
+    zellij_plugin_api::plugin_command::ProtobufListNotificationsResponse,
+    zellij_plugin_api::plugin_command::ProtobufListOrphanedPanesResponse,
+    zellij_plugin_api::plugin_command::ProtobufListRecordingsResponse,
+    zellij_plugin_api::plugin_command::ProtobufNewTabResponse,
+    zellij_plugin_api::plugin_command::ProtobufNewTabUnfocusedResponse,
+    zellij_plugin_api::plugin_command::ProtobufNewTabsResponse,
+    zellij_plugin_api::plugin_command::ProtobufNewTiledPaneInTabResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneBackgroundResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneFloatingNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneFloatingResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneInGitCheckoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneInPlaceOfPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneInPlaceResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneOverlayResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenCommandPaneResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenEditPaneInPlaceOfPaneIdResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileFloatingNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileFloatingResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileInPlaceOfPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileInPlaceResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenFileResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenPaneInNewTabResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenPluginPaneFloatingResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalFloatingNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalFloatingResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalInPlaceOfPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalInPlaceResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalNearPluginResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
+    zellij_plugin_api::plugin_command::ProtobufOpenTerminalResponse,
+    zellij_plugin_api::plugin_command::ProtobufParseLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufPluginCommand,
+    zellij_plugin_api::plugin_command::ProtobufQueueStatusResponse,
+    zellij_plugin_api::plugin_command::ProtobufReadPluginLogResponse,
+    zellij_plugin_api::plugin_command::ProtobufRenameLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufSaveLayoutResponse,
+    zellij_plugin_api::plugin_command::ProtobufSaveSessionResponse,
+    zellij_plugin_api::plugin_command::ProtobufSearchRecordingsResponse,
+    zellij_plugin_api::plugin_command::ProtobufShowFloatingPanesResponse,
+    zellij_plugin_api::plugin_command::ProtobufSpawnAgentResponse,
+    zellij_plugin_api::plugin_command::ProtobufWarpPaneResponse,
 };
-use zellij_utils::plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufZellijVersion};
+use {
+    zellij_plugin_api::plugin_ids::ProtobufPluginIds,
+    zellij_plugin_api::plugin_ids::ProtobufZellijVersion,
+};
 
 pub use super::ui_components::*;
 pub use prost::{self, *};
@@ -269,14 +341,14 @@ pub fn get_plugin_alias_configuration(alias: &str) -> BTreeMap<String, String> {
 }
 
 /// Returns the focused pane ID and tab index for the client associated with this plugin.
-pub fn get_focused_pane_info() -> Result<(usize, PaneId), String> {
+pub fn get_focused_pane_info() -> Result<(TabId, PaneId), String> {
     let plugin_command = PluginCommand::GetFocusedPaneInfo;
     let protobuf_response: ProtobufGetFocusedPaneInfoResponse =
         command_response(plugin_command, "GetFocusedPaneInfo")?;
 
     match protobuf_response.result {
         Some(get_focused_pane_info_response::Result::FocusedPaneInfo(info)) => {
-            let tab_index = info.focused_tab_index as usize;
+            let tab_index = TabId::new(info.focused_tab_index as usize);
             match info.focused_pane_id {
                 Some(pb_pane_id) => match pb_pane_id.try_into() {
                     Ok(pane_id) => Ok((tab_index, pane_id)),
@@ -310,7 +382,7 @@ pub fn get_focused_pane_info() -> Result<(usize, PaneId), String> {
 /// use zellij_tile::prelude::*;
 ///
 /// // Query info for a specific pane
-/// let pane_id = PaneId::Terminal(1);
+/// let pane_id = PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1));
 /// match get_pane_info(pane_id) {
 ///     Some(info) => {
 ///         println!("Pane title: {}", info.title);
@@ -354,7 +426,7 @@ pub fn get_pane_info(pane_id: PaneId) -> Option<PaneInfo> {
 /// use zellij_tile::prelude::*;
 ///
 /// // Query info for a specific tab
-/// let tab_id = 3;
+/// let tab_id = TabId::new(3);
 /// match get_tab_info(tab_id) {
 ///     Some(info) => {
 ///         println!("Tab name: {}", info.name);
@@ -365,7 +437,7 @@ pub fn get_pane_info(pane_id: PaneId) -> Option<PaneInfo> {
 ///     None => println!("Tab not found"),
 /// }
 /// ```
-pub fn get_tab_info(tab_id: usize) -> Option<TabInfo> {
+pub fn get_tab_info(tab_id: TabId) -> Option<TabInfo> {
     let plugin_command = PluginCommand::GetTabInfo(tab_id);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -722,7 +794,7 @@ pub fn open_command_pane_in_git_checkout_near_plugin_with_automatic_firecracker_
 }
 
 /// Start a coding agent in a command pane near this plugin: the launch planner
-/// (`zellij_utils::agent::launch::plan`) decides the argv, the host makes the branch or
+/// (`zellij_runtime::agent::launch::plan`) decides the argv, the host makes the branch or
 /// worktree `spec` names, opens the pane there and records it as an agent pane. Answers with
 /// the pane and what it got - the branch and folder it actually landed on, which are not
 /// always the ones asked for - or the error text. See `PluginCommand::SpawnAgent` for the arguments, and for
@@ -955,7 +1027,7 @@ pub fn open_command_pane_background(
 }
 
 /// Change the focused tab to the specified index (corresponding with the default tab names, to starting at `1`, `0` will be considered as `1`).
-pub fn switch_tab_to(tab_idx: u32) {
+pub fn switch_tab_to(tab_idx: TabNumber) {
     let plugin_command = PluginCommand::SwitchTabTo(tab_idx);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1157,7 +1229,7 @@ pub fn switch_to_input_mode(mode: &InputMode) {
 /// Provide a stringified [`layout`](https://zellij.dev/documentation/layouts.html) to be applied to the current session. If the layout has multiple tabs, they will all be opened.
 /// Requires `ChangeApplicationState` plus the permission for every command, editor or plugin pane
 /// the layout starts.
-pub fn new_tabs_with_layout(layout: &str) -> Vec<usize> {
+pub fn new_tabs_with_layout(layout: &str) -> Vec<TabId> {
     let plugin_command = PluginCommand::NewTabsWithLayout(layout.to_owned());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1171,7 +1243,7 @@ pub fn new_tabs_with_layout(layout: &str) -> Vec<usize> {
 /// File layouts are confined to the layout directory and require `OpenFiles`, `RunCommands` and
 /// `OpenTerminalsOrPlugins`; URL layouts additionally require `WebAccess`. Stringified and
 /// built-in layouts require only the capabilities they actually start.
-pub fn new_tabs_with_layout_info<L: AsRef<LayoutInfo>>(layout_info: L) -> Vec<usize> {
+pub fn new_tabs_with_layout_info<L: AsRef<LayoutInfo>>(layout_info: L) -> Vec<TabId> {
     let plugin_command = PluginCommand::NewTabsWithLayoutInfo(layout_info.as_ref().clone());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1182,7 +1254,7 @@ pub fn new_tabs_with_layout_info<L: AsRef<LayoutInfo>>(layout_info: L) -> Vec<us
 }
 
 /// Open a new tab with the default layout
-pub fn new_tab<S>(name: Option<S>, cwd: Option<S>) -> Option<usize>
+pub fn new_tab<S>(name: Option<S>, cwd: Option<S>) -> Option<TabId>
 where
     S: AsRef<str> + ToString,
 {
@@ -1197,7 +1269,7 @@ where
     NewTabResponse::try_from(response).unwrap()
 }
 
-pub fn new_tab_unfocused<S>(name: Option<S>, cwd: Option<S>) -> Option<usize>
+pub fn new_tab_unfocused<S>(name: Option<S>, cwd: Option<S>) -> Option<TabId>
 where
     S: AsRef<str> + ToString,
 {
@@ -1213,7 +1285,7 @@ where
     NewTabUnfocusedResponse::try_from(response).unwrap()
 }
 
-pub fn new_tiled_pane_in_tab(tab_position: usize) -> Option<PaneId> {
+pub fn new_tiled_pane_in_tab(tab_position: TabId) -> Option<PaneId> {
     let plugin_command = PluginCommand::NewTiledPaneInTab { tab_position };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1229,7 +1301,7 @@ pub fn new_tiled_pane_in_tab(tab_position: usize) -> Option<PaneId> {
 pub fn open_command_pane_in_new_tab(
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
-) -> (Option<usize>, Option<PaneId>) {
+) -> (Option<TabId>, Option<PaneId>) {
     let plugin_command = PluginCommand::OpenCommandPaneInNewTab(command_to_run, context);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1248,7 +1320,7 @@ pub fn open_plugin_pane_in_new_tab(
     plugin_url: impl ToString,
     configuration: BTreeMap<String, String>,
     context: BTreeMap<String, String>,
-) -> (Option<usize>, Option<PaneId>) {
+) -> (Option<TabId>, Option<PaneId>) {
     let plugin_command = PluginCommand::OpenPluginPaneInNewTab {
         plugin_url: plugin_url.to_string(),
         configuration,
@@ -1293,7 +1365,7 @@ pub fn open_plugin_pane_floating(
 pub fn open_editor_pane_in_new_tab(
     file_to_open: FileToOpen,
     context: BTreeMap<String, String>,
-) -> (Option<usize>, Option<PaneId>) {
+) -> (Option<TabId>, Option<PaneId>) {
     let plugin_command = PluginCommand::OpenEditorPaneInNewTab(file_to_open, context);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1585,7 +1657,7 @@ pub fn new_pane() {
     unsafe { host_run_plugin_command() };
 }
 
-pub fn toggle_floating_panes(tab_id: Option<u64>) {
+pub fn toggle_floating_panes(tab_id: Option<TabId>) {
     let plugin_command = PluginCommand::ToggleFloatingPanes { tab_id };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1648,7 +1720,7 @@ pub fn go_to_tab_name(tab_name: &str) {
 }
 
 /// Change focus to the tab with the specified name or create it if it does not exist
-pub fn focus_or_create_tab(tab_name: &str) -> Option<usize> {
+pub fn focus_or_create_tab(tab_name: &str) -> Option<TabId> {
     let plugin_command = PluginCommand::FocusOrCreateTab(tab_name.to_owned());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1659,7 +1731,7 @@ pub fn focus_or_create_tab(tab_name: &str) -> Option<usize> {
     FocusOrCreateTabResponse::try_from(response).unwrap()
 }
 
-pub fn go_to_tab(tab_index: u32) {
+pub fn go_to_tab(tab_index: TabPosition) {
     let plugin_command = PluginCommand::GoToTab(tab_index);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1687,7 +1759,7 @@ pub fn start_or_reload_plugin(url: &str) {
 }
 
 /// Closes a terminal pane with the specified id
-pub fn close_terminal_pane(terminal_pane_id: u32) {
+pub fn close_terminal_pane(terminal_pane_id: zellij_types::internal_ids::TerminalId) {
     let plugin_command = PluginCommand::CloseTerminalPane(terminal_pane_id);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1695,7 +1767,7 @@ pub fn close_terminal_pane(terminal_pane_id: u32) {
 }
 
 /// Closes a plugin pane with the specified id
-pub fn close_plugin_pane(plugin_pane_id: u32) {
+pub fn close_plugin_pane(plugin_pane_id: zellij_types::internal_ids::PluginId) {
     let plugin_command = PluginCommand::ClosePluginPane(plugin_pane_id);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1704,7 +1776,7 @@ pub fn close_plugin_pane(plugin_pane_id: u32) {
 
 /// Changes the focus to the terminal pane with the specified id, unsuppressing it if it was suppressed and switching to its tab and layer (eg. floating/tiled).
 pub fn focus_terminal_pane(
-    terminal_pane_id: u32,
+    terminal_pane_id: zellij_types::internal_ids::TerminalId,
     should_float_if_hidden: bool,
     should_be_in_place_if_hidden: bool,
 ) {
@@ -1720,7 +1792,7 @@ pub fn focus_terminal_pane(
 
 /// Changes the focus to the plugin pane with the specified id, unsuppressing it if it was suppressed and switching to its tab and layer (eg. floating/tiled).
 pub fn focus_plugin_pane(
-    plugin_pane_id: u32,
+    plugin_pane_id: zellij_types::internal_ids::PluginId,
     should_float_if_hidden: bool,
     should_be_in_place_if_hidden: bool,
 ) {
@@ -1735,8 +1807,10 @@ pub fn focus_plugin_pane(
 }
 
 /// Changes the name (the title that appears in the UI) of the terminal pane with the specified id.
-pub fn rename_terminal_pane<S>(terminal_pane_id: u32, new_name: S)
-where
+pub fn rename_terminal_pane<S>(
+    terminal_pane_id: zellij_types::internal_ids::TerminalId,
+    new_name: S,
+) where
     S: AsRef<str> + ToString,
 {
     let plugin_command = PluginCommand::RenameTerminalPane(terminal_pane_id, new_name.to_string());
@@ -1746,7 +1820,7 @@ where
 }
 
 /// Changes the name (the title that appears in the UI) of the plugin pane with the specified id.
-pub fn rename_plugin_pane<S>(plugin_pane_id: u32, new_name: S)
+pub fn rename_plugin_pane<S>(plugin_pane_id: zellij_types::internal_ids::PluginId, new_name: S)
 where
     S: AsRef<str> + ToString,
 {
@@ -1761,7 +1835,7 @@ where
 /// `tab_position` is the 0-based display position, matching [`go_to_tab`]. A position
 /// shifts whenever a tab closes; use [`rename_tab_with_id`] to name a tab that stays
 /// the same one.
-pub fn rename_tab<S>(tab_position: u32, new_name: S)
+pub fn rename_tab<S>(tab_position: TabPosition, new_name: S)
 where
     S: AsRef<str> + ToString,
 {
@@ -1772,7 +1846,7 @@ where
 }
 
 /// Changes the name (the title that appears in the UI) of the tab with the specified id.
-pub fn rename_tab_with_id<S>(tab_id: u64, new_name: S)
+pub fn rename_tab_with_id<S>(tab_id: TabId, new_name: S)
 where
     S: AsRef<str> + ToString,
 {
@@ -1788,7 +1862,7 @@ where
 /// tab the user named keeps that name. Two tabs on the same project are told
 /// apart with a `#1`/`#2` suffix. The map is the whole truth each time it is
 /// sent, so a tab left out of it goes back to its own name.
-pub fn set_tab_projects(tab_projects: BTreeMap<u64, String>) {
+pub fn set_tab_projects(tab_projects: BTreeMap<TabId, String>) {
     let plugin_command = PluginCommand::SetTabProjects(tab_projects);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1836,8 +1910,8 @@ pub fn switch_session_with_cwd(name: Option<&str>, cwd: Option<PathBuf>) {
 /// tab position (in that order)
 pub fn switch_session_with_focus(
     name: &str,
-    tab_position: Option<usize>,
-    pane_id: Option<(u32, bool)>,
+    tab_position: Option<TabPosition>,
+    pane_id: Option<zellij_types::pane_id::PaneId>,
 ) {
     let plugin_command = PluginCommand::SwitchSession(ConnectToSession {
         name: Some(name.to_owned()),
@@ -2052,7 +2126,7 @@ pub fn warp_pane_from_session(
 ///
 /// # Permissions Required
 /// * `ChangeApplicationState`
-pub fn warp_tab_to_session(tab_index: usize, to_session: &str) -> Result<String, String> {
+pub fn warp_tab_to_session(tab_index: TabId, to_session: &str) -> Result<String, String> {
     warp_request(PluginCommand::WarpTabToSession {
         tab_index,
         to_session: to_session.to_owned(),
@@ -2067,7 +2141,7 @@ pub fn warp_tab_to_session(tab_index: usize, to_session: &str) -> Result<String,
 ///
 /// # Permissions Required
 /// * `ChangeApplicationState`
-pub fn warp_tab_from_session(tab_index: usize, from_session: &str) -> Result<String, String> {
+pub fn warp_tab_from_session(tab_index: TabId, from_session: &str) -> Result<String, String> {
     warp_request(PluginCommand::WarpTabFromSession {
         tab_index,
         from_session: from_session.to_owned(),
@@ -2079,9 +2153,12 @@ pub fn warp_tab_from_session(tab_index: usize, from_session: &str) -> Result<Str
 ///
 /// # Permissions Required
 /// * `ChangeApplicationState`
-pub fn adopt_orphaned_pane(host_id: &str, placement: WarpPlacement) -> Result<String, String> {
+pub fn adopt_orphaned_pane(
+    host_id: &SupervisorId,
+    placement: WarpPlacement,
+) -> Result<String, String> {
     warp_request(PluginCommand::AdoptOrphanedPane {
-        host_id: host_id.to_owned(),
+        host_id: host_id.clone(),
         placement,
     })
 }
@@ -2351,7 +2428,7 @@ pub fn data_watch(request: &FetchRequest, mode: WatchMode) -> Result<DataWatchHa
 /// # Permissions Required
 ///
 /// `PermissionType::PluginData`
-pub fn data_unwatch(watch_id: u64) -> Result<(), String> {
+pub fn data_unwatch(watch_id: DataWatchId) -> Result<(), String> {
     let response: DataUnwatchResponse = data_request::<_, ProtobufDataUnwatchResponse>(
         PluginCommand::DataUnwatch { watch_id },
         "unwatch",
@@ -2365,7 +2442,7 @@ pub fn data_unwatch(watch_id: u64) -> Result<(), String> {
 /// Terminal operations on a [`FetchRequest`], so that a query reads as one expression.
 ///
 /// An extension trait rather than inherent methods because `FetchRequest` is defined in
-/// `zellij-utils`, which cannot reach the host-call shims here.
+/// `zellij-plugin-api`, which cannot reach the host-call shims here.
 ///
 /// ```no_run
 /// use zellij_tile::prelude::*;
@@ -2430,13 +2507,13 @@ pub fn dump_session_layout() -> Result<(String, Option<LayoutMetadata>), String>
 /// Get the serialized layout for a specific tab in KDL format synchronously
 /// note: this removes the requesting plugin from the dumped layout
 pub fn dump_session_layout_for_tab(
-    tab_index: usize,
+    tab_index: TabId,
 ) -> Result<(String, Option<LayoutMetadata>), String> {
     dump_session_layout_impl(Some(tab_index))
 }
 
 fn dump_session_layout_impl(
-    tab_index: Option<usize>,
+    tab_index: Option<TabId>,
 ) -> Result<(String, Option<LayoutMetadata>), String> {
     let plugin_command = PluginCommand::DumpSessionLayout { tab_index };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -2781,7 +2858,7 @@ pub fn reconfigure(new_config: String, save_configuration_file: bool) {
 }
 
 /// Re-run command in pane
-pub fn rerun_command_pane(terminal_pane_id: u32) {
+pub fn rerun_command_pane(terminal_pane_id: zellij_types::internal_ids::TerminalId) {
     let plugin_command = PluginCommand::RerunCommandPane(terminal_pane_id);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -2934,7 +3011,7 @@ pub fn send_sigkill_to_pane_id(pane_id: PaneId) {
 }
 
 /// Get the PID of the process running inside a terminal pane
-pub fn get_pane_pid(pane_id: PaneId) -> Result<i32, String> {
+pub fn get_pane_pid(pane_id: PaneId) -> Result<ProcessId, String> {
     let plugin_command = PluginCommand::GetPanePid { pane_id };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -2983,7 +3060,7 @@ pub fn get_pane_pid(pane_id: PaneId) -> Result<i32, String> {
 /// ```no_run
 /// use zellij_tile::prelude::*;
 ///
-/// let pane_id = PaneId::Terminal(1);
+/// let pane_id = PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1));
 /// match get_pane_running_command(pane_id) {
 ///     Ok(cmd) => eprintln!("Running: {} {}", cmd[0], cmd[1..].join(" ")),
 ///     Err(e) => eprintln!("Error: {}", e),
@@ -3042,7 +3119,7 @@ pub fn get_session_list() -> Result<SessionListSnapshot, String> {
 /// ```no_run
 /// use zellij_tile::prelude::*;
 ///
-/// let pane_id = PaneId::Terminal(1);
+/// let pane_id = PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1));
 /// match get_pane_cwd(pane_id) {
 ///     Ok(cwd) => eprintln!("CWD: {}", cwd.display()),
 ///     Err(e) => eprintln!("Error: {}", e),
@@ -3370,7 +3447,7 @@ pub fn toggle_pane_embed_or_eject_for_pane_id(pane_id: PaneId) {
 }
 
 /// Close the focused tab
-pub fn close_tab_with_index(tab_index: usize) {
+pub fn close_tab_with_index(tab_index: TabPosition) {
     let plugin_command = PluginCommand::CloseTabWithIndex(tab_index);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -3382,7 +3459,7 @@ pub fn close_tab_with_index(tab_index: usize) {
 /// Unlike `close_tab_with_index`, this function identifies the tab by its stable
 /// `tab_id` rather than its display position, which may change as tabs are moved
 /// or closed. The tab_id can be obtained from `TabInfo.tab_id`.
-pub fn close_tab_with_id(tab_id: u64) {
+pub fn close_tab_with_id(tab_id: TabId) {
     let plugin_command = PluginCommand::CloseTabWithId(tab_id);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -3394,7 +3471,7 @@ pub fn close_tab_with_id(tab_id: u64) {
 /// Unlike `go_to_tab`, this function identifies the tab by its stable `tab_id`
 /// rather than its display position, which may change as tabs are moved or
 /// closed. The tab_id can be obtained from `TabInfo.tab_id`.
-pub fn go_to_tab_with_id(tab_id: u64) {
+pub fn go_to_tab_with_id(tab_id: TabId) {
     let plugin_command = PluginCommand::GoToTabWithId(tab_id);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -3441,7 +3518,7 @@ pub fn break_panes_to_new_tab(
     pane_ids: &[PaneId],
     new_tab_name: Option<String>,
     should_change_focus_to_new_tab: bool,
-) -> Option<usize> {
+) -> Option<TabId> {
     let plugin_command = PluginCommand::BreakPanesToNewTab(
         pane_ids.to_vec(),
         new_tab_name,
@@ -3459,9 +3536,9 @@ pub fn break_panes_to_new_tab(
 /// Move the pane ids to the tab with the specified index
 pub fn break_panes_to_tab_with_index(
     pane_ids: &[PaneId],
-    tab_index: usize,
+    tab_index: TabPosition,
     should_change_focus_to_new_tab: bool,
-) -> Option<usize> {
+) -> Option<TabId> {
     let plugin_command = PluginCommand::BreakPanesToTabWithIndex(
         pane_ids.to_vec(),
         tab_index,
@@ -3480,12 +3557,12 @@ pub fn break_panes_to_tab_with_index(
 /// Move the pane ids to the tab with the specified id
 pub fn break_panes_to_tab_with_id(
     pane_ids: &[PaneId],
-    tab_id: usize,
+    tab_id: TabId,
     should_change_focus_to_target_tab: bool,
-) -> Option<usize> {
+) -> Option<TabId> {
     let plugin_command = PluginCommand::BreakPanesToTabWithId(
         pane_ids.to_vec(),
-        tab_id as u64,
+        tab_id,
         should_change_focus_to_target_tab,
     );
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -3499,7 +3576,7 @@ pub fn break_panes_to_tab_with_id(
 }
 
 /// Reload an already-running plugin in this session
-pub fn reload_plugin_with_id(plugin_id: u32) {
+pub fn reload_plugin_with_id(plugin_id: zellij_types::internal_ids::PluginId) {
     let plugin_command = PluginCommand::ReloadPlugin(plugin_id);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -3541,7 +3618,7 @@ pub fn enqueue_queue_job<Q, U>(
     plugin_url: U,
     config: BTreeMap<String, String>,
     context: BTreeMap<String, String>,
-) -> Result<u64, String>
+) -> Result<QueueJobId, String>
 where
     Q: ToString,
     U: ToString,
@@ -3575,7 +3652,7 @@ pub fn configure_queue<Q: ToString>(queue: Q, concurrency: usize) {
 
 /// Drop a pending job, or unload a running one. Its enqueuer is told `Cancelled`. Needs
 /// `ChangeApplicationState`.
-pub fn cancel_queue_job(job_id: u64) {
+pub fn cancel_queue_job(job_id: QueueJobId) {
     let plugin_command = PluginCommand::CancelQueueJob { job_id };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -3907,11 +3984,14 @@ pub fn get_focused_tab(tab_infos: &Vec<TabInfo>) -> Option<TabInfo> {
 
 #[allow(unused)]
 /// Returns the `PaneInfo` corresponding to the currently active pane (ignoring plugins)
-pub fn get_focused_pane(tab_position: usize, pane_manifest: &PaneManifest) -> Option<PaneInfo> {
+pub fn get_focused_pane(
+    tab_position: TabPosition,
+    pane_manifest: &PaneManifest,
+) -> Option<PaneInfo> {
     let panes = pane_manifest.panes.get(&tab_position);
     if let Some(panes) = panes {
         for pane in panes {
-            if pane.is_focused & !pane.is_plugin {
+            if pane.is_focused & !pane.is_plugin() {
                 return Some(pane.clone());
             }
         }
@@ -3995,7 +4075,7 @@ pub fn run_action(action: Action, context: BTreeMap<String, String>) {
 /// Returns `Ok(true)` if the floating panes were made visible (state changed),
 /// `Ok(false)` if the floating panes were already visible (no change),
 /// or `Err(String)` if the specified tab was not found.
-pub fn show_floating_panes(tab_id: Option<usize>) -> Result<bool, String> {
+pub fn show_floating_panes(tab_id: Option<TabId>) -> Result<bool, String> {
     let plugin_command = PluginCommand::ShowFloatingPanes { tab_id };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -4018,7 +4098,7 @@ pub fn show_floating_panes(tab_id: Option<usize>) -> Result<bool, String> {
 /// Returns `Ok(true)` if the floating panes were hidden (state changed),
 /// `Ok(false)` if the floating panes were already hidden (no change),
 /// or `Err(String)` if the specified tab was not found.
-pub fn hide_floating_panes(tab_id: Option<usize>) -> Result<bool, String> {
+pub fn hide_floating_panes(tab_id: Option<TabId>) -> Result<bool, String> {
     let plugin_command = PluginCommand::HideFloatingPanes { tab_id };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -4070,7 +4150,7 @@ pub fn set_pane_regex_highlights(pane_id: PaneId, highlights: Vec<RegexHighlight
 /// carrying its `context` - from where `run_action` can do anything an action could.
 ///
 /// Requires `RunActionsAsUser` permission.
-pub fn set_context_menu(request_id: u64, items: Vec<ContextMenuItem>) {
+pub fn set_context_menu(request_id: ContextMenuRequestId, items: Vec<ContextMenuItem>) {
     let plugin_command = PluginCommand::SetContextMenu { request_id, items };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -4101,7 +4181,7 @@ unsafe fn host_run_plugin_command() {}
 /// Read project workflow settings; requires ReadFiles.
 pub fn project_config_read(
     directory: PathBuf,
-) -> Result<zellij_utils::project_config::Snapshot, String> {
+) -> Result<zellij_config::project_config::Snapshot, String> {
     project_config_response(PluginCommand::ProjectConfigRead { directory })
 }
 
@@ -4110,7 +4190,7 @@ pub fn project_config_write(
     directory: PathBuf,
     source: String,
     expected: Option<String>,
-) -> Result<zellij_utils::project_config::Snapshot, String> {
+) -> Result<zellij_config::project_config::Snapshot, String> {
     project_config_response(PluginCommand::ProjectConfigWrite {
         directory,
         source,
@@ -4120,7 +4200,7 @@ pub fn project_config_write(
 
 fn project_config_response(
     command: PluginCommand,
-) -> Result<zellij_utils::project_config::Snapshot, String> {
+) -> Result<zellij_config::project_config::Snapshot, String> {
     let response: ProtobufFsReadResponse = fs_command_response(command)?;
     match response.result {
         Some(fs_read_response::Result::Contents(contents)) => {
@@ -4143,7 +4223,7 @@ mod tests {
         set_test_command_response(Err("stdin closed".to_owned()));
     }
 
-    fn enqueue_test_job() -> Result<u64, String> {
+    fn enqueue_test_job() -> Result<QueueJobId, String> {
         enqueue_queue_job(
             "test-queue",
             "file:/plugin.wasm",
@@ -4154,7 +4234,7 @@ mod tests {
 
     #[test]
     fn plugin_queries_return_stdin_read_errors() {
-        let pane_id = PaneId::Terminal(1);
+        let pane_id = PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1));
 
         fail_next_read();
         assert_eq!(
@@ -4197,9 +4277,11 @@ mod tests {
             .encode_to_vec();
         truncated.pop();
         set_test_command_response(Ok(truncated));
-        assert!(get_pane_running_command(PaneId::Terminal(1))
-            .unwrap_err()
-            .starts_with("Malformed GetPaneRunningCommand response:"));
+        assert!(get_pane_running_command(PaneId::Terminal(
+            zellij_types::internal_ids::TerminalId::new(1)
+        ))
+        .unwrap_err()
+        .starts_with("Malformed GetPaneRunningCommand response:"));
 
         set_test_command_response(Ok(vec![0xff]));
         assert!(get_session_list()
@@ -4219,7 +4301,7 @@ mod tests {
 
     #[test]
     fn plugin_queries_preserve_server_errors() {
-        let pane_id = PaneId::Terminal(1);
+        let pane_id = PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1));
         let expected = "server refused the query".to_owned();
 
         respond(ProtobufGetPaneRunningCommandResponse::from(
@@ -4254,7 +4336,7 @@ mod tests {
 
     #[test]
     fn plugin_queries_decode_valid_responses() {
-        let pane_id = PaneId::Terminal(1);
+        let pane_id = PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1));
 
         let command = vec!["sh".to_owned(), "-l".to_owned()];
         respond(ProtobufGetPaneRunningCommandResponse::from(
@@ -4291,15 +4373,21 @@ mod tests {
 
         respond(ProtobufGetFocusedPaneInfoResponse::from(
             GetFocusedPaneInfoResponse::Ok {
-                tab_index: 7,
-                pane_id: PaneId::Plugin(42),
+                tab_index: TabId::new(7),
+                pane_id: PaneId::Plugin(zellij_types::internal_ids::PluginId::new(42)),
             },
         ));
-        assert_eq!(get_focused_pane_info(), Ok((7, PaneId::Plugin(42))));
+        assert_eq!(
+            get_focused_pane_info(),
+            Ok((
+                TabId::new(7),
+                PaneId::Plugin(zellij_types::internal_ids::PluginId::new(42))
+            ))
+        );
 
         respond(ProtobufEnqueueQueueJobResponse::from(
-            EnqueueQueueJobResponse::Ok(99),
+            EnqueueQueueJobResponse::Ok(zellij_types::internal_ids::QueueJobId::new(99)),
         ));
-        assert_eq!(enqueue_test_job(), Ok(99));
+        assert_eq!(enqueue_test_job(), Ok(QueueJobId::new(99)));
     }
 }

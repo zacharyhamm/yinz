@@ -15,10 +15,11 @@ use crate::ui::hint_text::{
     suspended_segments, HintExitStatus, HintLevel, HintSegment, HintTier,
 };
 use crate::ClientId;
-use zellij_utils::data::{client_id_to_colors, PaletteColor, Style};
-use zellij_utils::errors::prelude::*;
-use zellij_utils::pane_size::{Offset, PaneGeom, Viewport};
-use zellij_utils::position::Position;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::pane_size::{Offset, PaneGeom, Viewport};
+use zellij_types::position::Position;
+use zellij_types::style::Style;
+use {zellij_types::data::client_id_to_colors, zellij_types::data::PaletteColor};
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -222,7 +223,7 @@ impl PaneFrame {
         self.color_override = Some(color);
     }
     fn client_cursor(&self, client_id: ClientId) -> Vec<TerminalCharacter> {
-        let color = client_id_to_colors(client_id.0, self.style.colors.multiplayer_user_colors);
+        let color = client_id_to_colors(client_id, self.style.colors.multiplayer_user_colors);
         background_color(" ", color.map(|c| c.0))
     }
     fn get_corner(&self, corner: &'static str) -> &'static str {
@@ -1579,8 +1580,8 @@ impl PaneFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zellij_utils::data::Style;
-    use zellij_utils::pane_size::{Offset, Viewport};
+    use zellij_types::pane_size::{Offset, Viewport};
+    use zellij_types::style::Style;
 
     fn pane_frame_with(mouse_scroll_resize: bool, is_floating: bool, cols: usize) -> PaneFrame {
         PaneFrame::new(

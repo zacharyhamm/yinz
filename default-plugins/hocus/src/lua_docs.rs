@@ -701,7 +701,7 @@ mod tests {
 
     /// The two store rules that cost the most to learn at run time: a namespace that is not
     /// `shared:`-prefixed is refused, and a declared `created_at` fails the whole define. Both
-    /// are enforced in `zellij_utils::plugin_data`, and both have to be sayable from the guide.
+    /// are enforced in `zellij_types::plugin_data`, and both have to be sayable from the guide.
     #[test]
     fn the_guide_states_the_data_store_rules_it_cannot_enforce() {
         let data = section("data").expect("the data section");

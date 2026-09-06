@@ -21,7 +21,7 @@
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::engine::Engine as _;
-use zellij_utils::kitty_placeholders::{PLACEHOLDER, ROWCOLUMN_DIACRITICS};
+use zellij_types::kitty_placeholders::{PLACEHOLDER, ROWCOLUMN_DIACRITICS};
 
 /// The largest image id [`image_row`] can encode: the id travels in a 24-bit foreground colour.
 pub const MAX_IMAGE_ID: u32 = 0x00ff_ffff;

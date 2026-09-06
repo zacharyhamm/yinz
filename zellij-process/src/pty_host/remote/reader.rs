@@ -17,10 +17,10 @@ use std::collections::VecDeque;
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
 
 use tokio::io::unix::AsyncFd;
-use zellij_utils::input::command::RunCommand;
+use zellij_types::input::command::RunCommand;
 
 use super::conn::{RemoteConn, RemoteGitProbe, RemoteStatus};
 use super::protocol::{self, BrokerToServerMsg, Frame};
@@ -109,7 +109,7 @@ impl RemoteReader {
             synthetic_prefix: 0,
             on_exit: Mutex::new(None),
             cmd: RunCommand::default(),
-            terminal_id: TerminalId(0),
+            terminal_id: TerminalId::new(0),
             agent_report_cb: None,
         })
     }

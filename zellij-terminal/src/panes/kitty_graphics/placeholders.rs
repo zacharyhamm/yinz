@@ -2,11 +2,11 @@
 //! parsed off the wire.
 //!
 //! The character and the diacritic table themselves live in
-//! [`zellij_utils::kitty_placeholders`], because plugins emit placeholder cells too and a second
+//! [`zellij_types::kitty_placeholders`], because plugins emit placeholder cells too and a second
 //! copy of 297 codepoints is a second copy to keep right. They are re-exported here so the rest of
 //! this module reads as it always did.
 
-pub use zellij_utils::kitty_placeholders::{diacritic_value, PLACEHOLDER, ROWCOLUMN_DIACRITICS};
+pub use zellij_types::kitty_placeholders::{diacritic_value, PLACEHOLDER, ROWCOLUMN_DIACRITICS};
 
 /// The row, column and image-id byte a single placeholder cell spells out, in the order the marks
 /// arrive. A field left `None` is inherited from the cell to the left when the placements are

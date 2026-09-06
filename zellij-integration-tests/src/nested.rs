@@ -4,7 +4,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crossbeam::channel::{Receiver, Sender};
-use zellij_utils::nested_session::{decode_payload, NestedFrameExtractor, NestedSessionMessage};
+use {
+    zellij_ipc::nested_session::decode_payload, zellij_ipc::nested_session::NestedFrameExtractor,
+    zellij_ipc::nested_session::NestedSessionMessage,
+};
 
 use crate::client_screen::GridSnapshot;
 use crate::fake_pty::FakePtyHandle;

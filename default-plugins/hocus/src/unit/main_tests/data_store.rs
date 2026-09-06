@@ -1,4 +1,6 @@
 use super::*;
+use zellij_tile::prelude::DataWatchId;
+use zellij_tile::prelude::HostId;
 
 /// A change to rows this plugin is not watching is somebody else's.
 #[test]
@@ -6,7 +8,7 @@ fn a_change_for_another_watch_is_ignored() {
     let mut state = state_with_project();
     let rows = projects::to_rows(&projects::Registry::new());
 
-    assert!(!state.on_projects_changed(state.project_watch + 1, &rows));
+    assert!(!state.on_projects_changed(DataWatchId::new(state.project_watch.get() + 1), &rows));
     assert_eq!(
         state.active_project.as_deref(),
         Some("hocus"),
@@ -112,7 +114,7 @@ fn summaries_are_mirrored_and_restored_without_their_hash() {
     // `store::agent_summary_def`.
     let mut restarted = State {
         zellij_session_name: "test-session".to_owned(),
-        host_id: "test-host".to_owned(),
+        host_id: HostId::new("test-host"),
         ..State::default()
     };
     restarted

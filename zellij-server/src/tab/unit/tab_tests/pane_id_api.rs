@@ -14,29 +14,29 @@ fn correctly_resize_frameless_panes_on_pane_close() {
     let pane = tab
         .tiled_panes
         .panes
-        .get(&PaneId::Terminal(crate::TerminalId(1)))
+        .get(&PaneId::Terminal(crate::TerminalId::new(1)))
         .unwrap();
     let content_size = (pane.get_content_columns(), pane.get_content_rows());
     assert_eq!(content_size, (cols, rows));
 
     tab.new_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
         true,
         NewPanePlacement::default(),
-        Some(crate::ClientId(1)),
+        Some(crate::ClientId::new(1)),
         None,
     )
     .unwrap();
-    tab.close_pane(PaneId::Terminal(crate::TerminalId(2)), true, None);
+    tab.close_pane(PaneId::Terminal(crate::TerminalId::new(2)), true, None);
 
     // the size should be the same after adding and then removing a pane
     let pane = tab
         .tiled_panes
         .panes
-        .get(&PaneId::Terminal(crate::TerminalId(1)))
+        .get(&PaneId::Terminal(crate::TerminalId::new(1)))
         .unwrap();
     let content_size = (pane.get_content_columns(), pane.get_content_rows());
     assert_eq!(content_size, (cols, rows));
@@ -50,11 +50,11 @@ fn floating_pane_z_index_is_tracked() {
     };
     let stacked_resize = false;
     let mut tab = create_new_tab(size, stacked_resize);
-    let _client_id = ClientId(1);
+    let _client_id = ClientId::new(1);
 
     // Create first floating pane (should_float = true means it will be a floating pane)
     tab.new_floating_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
@@ -66,7 +66,7 @@ fn floating_pane_z_index_is_tracked() {
 
     // Create second floating pane
     tab.new_floating_pane(
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
         None,
         false,
@@ -79,10 +79,10 @@ fn floating_pane_z_index_is_tracked() {
     // Verify z-indices exist and are different
     let z_index_pane2 = tab
         .floating_panes
-        .get_pane_z_index(PaneId::Terminal(crate::TerminalId(2)));
+        .get_pane_z_index(PaneId::Terminal(crate::TerminalId::new(2)));
     let z_index_pane3 = tab
         .floating_panes
-        .get_pane_z_index(PaneId::Terminal(crate::TerminalId(3)));
+        .get_pane_z_index(PaneId::Terminal(crate::TerminalId::new(3)));
 
     assert!(
         z_index_pane2.is_some(),
@@ -106,11 +106,11 @@ fn pinned_floating_pane_has_higher_z_index() {
     };
     let stacked_resize = false;
     let mut tab = create_new_tab(size, stacked_resize);
-    let _client_id = ClientId(1);
+    let _client_id = ClientId::new(1);
 
     // Create first floating pane (will be unpinned)
     tab.new_floating_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
@@ -122,7 +122,7 @@ fn pinned_floating_pane_has_higher_z_index() {
 
     // Create second floating pane and pin it
     tab.new_floating_pane(
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
         None,
         false,
@@ -131,16 +131,16 @@ fn pinned_floating_pane_has_higher_z_index() {
         None,
     )
     .unwrap();
-    tab.set_floating_pane_pinned(PaneId::Terminal(crate::TerminalId(3)), true);
+    tab.set_floating_pane_pinned(PaneId::Terminal(crate::TerminalId::new(3)), true);
 
     // Get z-indices
     let z_index_unpinned = tab
         .floating_panes
-        .get_pane_z_index(PaneId::Terminal(crate::TerminalId(2)))
+        .get_pane_z_index(PaneId::Terminal(crate::TerminalId::new(2)))
         .expect("Unpinned pane should have z-index");
     let z_index_pinned = tab
         .floating_panes
-        .get_pane_z_index(PaneId::Terminal(crate::TerminalId(3)))
+        .get_pane_z_index(PaneId::Terminal(crate::TerminalId::new(3)))
         .expect("Pinned pane should have z-index");
 
     assert!(
@@ -159,11 +159,11 @@ fn pinned_pane_z_index_higher_than_regular_floating_panes() {
     };
     let stacked_resize = false;
     let mut tab = create_new_tab(size, stacked_resize);
-    let _client_id = ClientId(1);
+    let _client_id = ClientId::new(1);
 
     // Create first floating pane
     tab.new_floating_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
@@ -175,7 +175,7 @@ fn pinned_pane_z_index_higher_than_regular_floating_panes() {
 
     // Create second floating pane
     tab.new_floating_pane(
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
         None,
         false,
@@ -186,15 +186,15 @@ fn pinned_pane_z_index_higher_than_regular_floating_panes() {
     .unwrap();
 
     // Pin the second pane so it's on top
-    tab.set_floating_pane_pinned(PaneId::Terminal(crate::TerminalId(3)), true);
+    tab.set_floating_pane_pinned(PaneId::Terminal(crate::TerminalId::new(3)), true);
 
     // Verify that get_pane_z_index returns correct values for both panes
     let z_index_bottom = tab
         .floating_panes
-        .get_pane_z_index(PaneId::Terminal(crate::TerminalId(2)));
+        .get_pane_z_index(PaneId::Terminal(crate::TerminalId::new(2)));
     let z_index_top = tab
         .floating_panes
-        .get_pane_z_index(PaneId::Terminal(crate::TerminalId(3)));
+        .get_pane_z_index(PaneId::Terminal(crate::TerminalId::new(3)));
 
     assert!(
         z_index_bottom.is_some(),
@@ -220,7 +220,7 @@ fn active_pane_z_index_retrieved_for_cursor_visibility() {
     };
     let stacked_resize = false;
     let mut tab = create_new_tab(size, stacked_resize);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     // Start with tiled panes - active pane should not have z-index
     let active_pane_id_tiled = tab.get_active_pane_id(client_id).unwrap();
@@ -232,7 +232,7 @@ fn active_pane_z_index_retrieved_for_cursor_visibility() {
 
     // Create a floating pane
     tab.new_floating_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
@@ -259,11 +259,11 @@ fn get_pane_z_index_returns_none_for_nonexistent_pane() {
     };
     let stacked_resize = false;
     let mut tab = create_new_tab(size, stacked_resize);
-    let _client_id = ClientId(1);
+    let _client_id = ClientId::new(1);
 
     // Create two floating panes
     tab.new_floating_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
@@ -273,7 +273,7 @@ fn get_pane_z_index_returns_none_for_nonexistent_pane() {
     )
     .unwrap();
     tab.new_floating_pane(
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
         None,
         false,
@@ -286,7 +286,7 @@ fn get_pane_z_index_returns_none_for_nonexistent_pane() {
     // Query for a pane that doesn't exist
     let z_index_nonexistent = tab
         .floating_panes
-        .get_pane_z_index(PaneId::Terminal(crate::TerminalId(999)));
+        .get_pane_z_index(PaneId::Terminal(crate::TerminalId::new(999)));
 
     assert!(
         z_index_nonexistent.is_none(),
@@ -296,10 +296,10 @@ fn get_pane_z_index_returns_none_for_nonexistent_pane() {
     // Query for existing panes
     let z_index_2 = tab
         .floating_panes
-        .get_pane_z_index(PaneId::Terminal(crate::TerminalId(2)));
+        .get_pane_z_index(PaneId::Terminal(crate::TerminalId::new(2)));
     let z_index_3 = tab
         .floating_panes
-        .get_pane_z_index(PaneId::Terminal(crate::TerminalId(3)));
+        .get_pane_z_index(PaneId::Terminal(crate::TerminalId::new(3)));
 
     assert!(
         z_index_2.is_some(),
@@ -323,17 +323,17 @@ pub fn bell_in_unfocused_pane_sets_notification() {
     };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    let client_id = ClientId(1);
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    let client_id = ClientId::new(1);
 
-    // Create a second pane; client is focused on pane 1 (PaneId::Terminal(TerminalId(1)))
+    // Create a second pane; client is focused on pane 1 (PaneId::Terminal(TerminalId::new(1)))
     tab.horizontal_split(new_pane_id, None, client_id, None, None)
         .unwrap();
     // Move focus back to pane 1
     tab.move_focus_up(client_id).unwrap();
 
     // Simulate bell in pane 2 via pty bytes (\x07)
-    tab.handle_pty_bytes(crate::TerminalId(2), vec![7u8])
+    tab.handle_pty_bytes(crate::TerminalId::new(2), vec![7u8])
         .unwrap();
 
     // Now call check_and_handle_bell_notifications as non-active tab
@@ -368,15 +368,15 @@ pub fn clearing_last_pane_bell_clears_tab_bell() {
     };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    let client_id = ClientId(1);
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    let client_id = ClientId::new(1);
 
     tab.horizontal_split(new_pane_id, None, client_id, None, None)
         .unwrap();
     tab.move_focus_up(client_id).unwrap();
 
     // Set bell on unfocused pane 2 via check_and_handle_bell_notifications
-    tab.handle_pty_bytes(crate::TerminalId(2), vec![7u8])
+    tab.handle_pty_bytes(crate::TerminalId::new(2), vec![7u8])
         .unwrap();
     tab.check_and_handle_bell_notifications(false);
 
@@ -407,7 +407,7 @@ pub fn scroll_up_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     assert!(tab.has_pane_with_pid(&pane_id));
     tab.scroll_up_by_pane_id(pane_id);
 }
@@ -419,7 +419,7 @@ pub fn scroll_down_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     assert!(tab.has_pane_with_pid(&pane_id));
     let _ = tab.scroll_down_by_pane_id(pane_id);
 }
@@ -431,7 +431,7 @@ pub fn scroll_to_top_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     assert!(tab.has_pane_with_pid(&pane_id));
     let _ = tab.scroll_to_top_by_pane_id(pane_id);
 }
@@ -443,7 +443,7 @@ pub fn scroll_to_bottom_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     assert!(tab.has_pane_with_pid(&pane_id));
     let _ = tab.scroll_to_bottom_by_pane_id(pane_id);
 }
@@ -455,7 +455,7 @@ pub fn page_scroll_up_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     assert!(tab.has_pane_with_pid(&pane_id));
     tab.page_scroll_up_by_pane_id(pane_id);
 }
@@ -467,7 +467,7 @@ pub fn page_scroll_down_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     assert!(tab.has_pane_with_pid(&pane_id));
     let _ = tab.page_scroll_down_by_pane_id(pane_id);
 }
@@ -479,7 +479,7 @@ pub fn half_page_scroll_up_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     assert!(tab.has_pane_with_pid(&pane_id));
     tab.half_page_scroll_up_by_pane_id(pane_id);
 }
@@ -491,7 +491,7 @@ pub fn half_page_scroll_down_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     assert!(tab.has_pane_with_pid(&pane_id));
     let _ = tab.half_page_scroll_down_by_pane_id(pane_id);
 }
@@ -503,7 +503,7 @@ pub fn rename_pane_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     assert!(tab.has_pane_with_pid(&pane_id));
     let _ = tab.rename_pane_by_pane_id(pane_id, "new-name".as_bytes().to_vec());
 }
@@ -515,7 +515,7 @@ pub fn undo_rename_pane_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     assert!(tab.has_pane_with_pid(&pane_id));
     let _ = tab.rename_pane_by_pane_id(pane_id, "new-name".as_bytes().to_vec());
     tab.undo_rename_pane_by_pane_id(pane_id);
@@ -529,8 +529,8 @@ pub fn close_pane_by_pane_id() {
     };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    tab.horizontal_split(new_pane_id, None, crate::ClientId(1), None, None)
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
         .unwrap();
     assert_eq!(tab.tiled_panes.panes.len(), 2);
     tab.close_pane_by_pane_id(new_pane_id, None).unwrap();
@@ -545,8 +545,8 @@ pub fn resize_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    tab.horizontal_split(new_pane_id, None, crate::ClientId(1), None, None)
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
         .unwrap();
     assert_eq!(tab.tiled_panes.panes.len(), 2);
     tab.resize_by_pane_id(
@@ -562,8 +562,8 @@ pub fn toggle_fullscreen_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    tab.horizontal_split(new_pane_id, None, crate::ClientId(1), None, None)
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
         .unwrap();
     assert_eq!(tab.tiled_panes.panes.len(), 2);
     tab.toggle_fullscreen_by_pane_id(new_pane_id);
@@ -576,8 +576,8 @@ pub fn move_pane_by_pane_id_down() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    tab.horizontal_split(new_pane_id, None, crate::ClientId(1), None, None)
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
         .unwrap();
     assert_eq!(tab.tiled_panes.panes.len(), 2);
     tab.move_pane_by_pane_id(new_pane_id, Some(Direction::Down));
@@ -590,8 +590,8 @@ pub fn move_pane_backwards_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    tab.horizontal_split(new_pane_id, None, crate::ClientId(1), None, None)
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
         .unwrap();
     assert_eq!(tab.tiled_panes.panes.len(), 2);
     tab.move_pane_backwards_by_pane_id(new_pane_id);
@@ -604,7 +604,7 @@ pub fn clear_screen_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     assert!(tab.has_pane_with_pid(&pane_id));
     let _ = tab.clear_screen_by_pane_id(pane_id);
 }
@@ -616,7 +616,7 @@ pub fn toggle_pane_embed_or_floating_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     assert!(tab.has_pane_with_pid(&pane_id));
     let _ = tab.toggle_pane_embed_or_floating_for_pane_id(pane_id, None);
 }
@@ -628,7 +628,7 @@ pub fn toggle_pane_pinned_by_pane_id() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     assert!(tab.has_pane_with_pid(&pane_id));
     tab.toggle_pane_pinned_by_pane_id(pane_id);
 }
@@ -640,7 +640,7 @@ pub fn scroll_up_nonexistent_pane_id_does_not_panic() {
         rows: 20,
     };
     let mut tab = create_new_tab(size, true);
-    let pane_id = PaneId::Terminal(crate::TerminalId(999));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(999));
     assert!(!tab.has_pane_with_pid(&pane_id));
     tab.scroll_up_by_pane_id(pane_id);
 }

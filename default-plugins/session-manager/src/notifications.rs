@@ -252,7 +252,7 @@ mod tests {
 
     fn notification(id: u64, message: &str) -> NotificationInfo {
         NotificationInfo {
-            id,
+            id: zellij_tile::prelude::NotificationId::new(id),
             message: message.to_owned(),
             received_at_unix_ms: id,
         }

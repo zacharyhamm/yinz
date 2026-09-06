@@ -11,13 +11,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use vte;
-use zellij_utils::consts::SCROLL_BUFFER_SIZE;
-use zellij_utils::{
-    data::{Palette, Style},
-    input::options::DEFAULT_WORD_SEPARATORS,
-    pane_size::SizeInPixels,
-    position::Position,
-};
+use zellij_runtime::consts::SCROLL_BUFFER_SIZE;
+use zellij_types::input::options::DEFAULT_WORD_SEPARATORS;
+use zellij_types::pane_size::SizeInPixels;
+use zellij_types::position::Position;
+use zellij_types::style::{Palette, Style};
 
 use std::fmt::Write;
 
@@ -86,7 +84,11 @@ fn viewport_position_of(grid: &Grid, needle: &str) -> Position {
 use crate::panes::grid::MouseTracking;
 use crate::panes::terminal_character::AnsiCode;
 use std::collections::BTreeMap;
-use zellij_utils::data::{Direction, HighlightLayer, HighlightStyle, RegexHighlight};
+use zellij_types::geometry::Direction;
+use {
+    zellij_types::data::HighlightLayer, zellij_types::data::HighlightStyle,
+    zellij_types::data::RegexHighlight,
+};
 
 #[test]
 fn keyboard_selection_remembers_copies_until_select_mode_finishes() {
@@ -460,10 +462,10 @@ fn new_grid_for_nested_frames() -> Grid {
     )
 }
 
-fn nested_announce_message() -> zellij_utils::nested_session::NestedSessionMessage {
-    zellij_utils::nested_session::NestedSessionMessage::Announce {
+fn nested_announce_message() -> zellij_ipc::nested_session::NestedSessionMessage {
+    zellij_ipc::nested_session::NestedSessionMessage::Announce {
         session_name: "guest-session".to_owned(),
-        capabilities: vec![zellij_utils::nested_session::NestedSessionCapability::NestedControl],
+        capabilities: vec![zellij_ipc::nested_session::NestedSessionCapability::NestedControl],
     }
 }
 
@@ -991,7 +993,7 @@ fn ui_component_dcs_payload_is_bounded_and_recovers() {
 
 #[test]
 fn nested_frame_dcs_payload_is_bounded_and_recovers() {
-    let prefix = format!("\x1bP{}n", zellij_utils::nested_session::NESTED_DCS_PARAM);
+    let prefix = format!("\x1bP{}n", zellij_ipc::nested_session::NESTED_DCS_PARAM);
     assert_dcs_payload_is_bounded(prefix.as_bytes(), BufferedDcs::NestedFrame);
 }
 
@@ -1106,7 +1108,7 @@ fn search_match_ending_on_a_full_tail_row_below_a_wide_char_wrap_stays_on_that_r
 
 #[test]
 fn wheel_reports_share_encoding_and_preserve_modifiers() {
-    use zellij_utils::input::mouse::MouseEvent;
+    use zellij_types::mouse::MouseEvent;
 
     let position = Position::new(4, 6);
     for encoding in ["", "\u{1b}[?1005h", "\u{1b}[?1006h"] {

@@ -1,6 +1,6 @@
 ---
 source: zellij-server/src/screen/../unit/screen_tests/cli_actions.rs
-assertion_line: 1835
+assertion_line: 1840
 expression: "format!(\"{:#?}\", new_tab_action)"
 ---
 Some(
@@ -65,7 +65,9 @@ Some(
             },
         ),
         [],
-        0,
+        TabId(
+            0,
+        ),
         None,
         false,
         true,

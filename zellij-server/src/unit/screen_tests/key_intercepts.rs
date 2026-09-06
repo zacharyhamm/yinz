@@ -3,7 +3,8 @@
 use super::*;
 use crate::screen::PluginId;
 use zellij_test_support::Watched;
-use zellij_utils::data::{BareKey, KeyWithModifier};
+
+use zellij_types::keys::{BareKey, KeyWithModifier};
 
 fn typed(key: char, client_id: ClientId) -> ScreenInstruction {
     ScreenInstruction::WriteCharacter(
@@ -48,10 +49,10 @@ fn clearing_another_plugins_intercept_leaves_this_ones_in_place() {
     let (intercepting, other) = (2, 1);
 
     for step in [
-        ScreenInstruction::InterceptKeyPresses(crate::PluginId(intercepting), client_id),
-        ScreenInstruction::ClearKeyPressesIntercepts(crate::PluginId(other), client_id),
+        ScreenInstruction::InterceptKeyPresses(crate::PluginId::new(intercepting), client_id),
+        ScreenInstruction::ClearKeyPressesIntercepts(crate::PluginId::new(other), client_id),
         typed('x', client_id),
-        ScreenInstruction::ClearKeyPressesIntercepts(crate::PluginId(intercepting), client_id),
+        ScreenInstruction::ClearKeyPressesIntercepts(crate::PluginId::new(intercepting), client_id),
         typed('y', client_id),
     ] {
         let _ = mock_screen.to_screen.send(step);
@@ -61,7 +62,7 @@ fn clearing_another_plugins_intercept_leaves_this_ones_in_place() {
         zellij_test_support::default_timeout(),
         |instructions| {
             intercepted_keys(instructions)
-                .contains(&(crate::PluginId(intercepting), 'x'))
+                .contains(&(crate::PluginId::new(intercepting), 'x'))
                 .then_some(())
         },
     );
@@ -69,7 +70,7 @@ fn clearing_another_plugins_intercept_leaves_this_ones_in_place() {
 
     assert_eq!(
         intercepted_keys(&received.lock()),
-        vec![(zellij_utils::internal_ids::PluginId(intercepting), 'x')],
+        vec![(zellij_types::internal_ids::PluginId::new(intercepting), 'x')],
         "the other plugin's clear left the intercept standing; the plugin's own ended it"
     );
 }

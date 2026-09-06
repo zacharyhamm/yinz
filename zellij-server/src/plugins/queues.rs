@@ -18,19 +18,22 @@
 //! what an unload reports, and `plugin_to_queue` is the reverse index that makes the unload hook
 //! a single lookup rather than a scan of every queue.
 //!
-//! [`Event::QueueJobStarted`]: zellij_utils::data::Event::QueueJobStarted
-//! [`Event::QueueJobFinished`]: zellij_utils::data::Event::QueueJobFinished
+//! [`Event::QueueJobStarted`]: zellij_types::data::Event::QueueJobStarted
+//! [`Event::QueueJobFinished`]: zellij_types::data::Event::QueueJobFinished
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 
-use zellij_utils::data::{QueueJobInfo, QueueJobOutcome, QueueJobState, QueueSnapshot};
-use zellij_utils::input::layout::RunPluginOrAlias;
+use zellij_types::input::layout::RunPluginOrAlias;
+use {
+    zellij_types::data::QueueJobInfo, zellij_types::data::QueueJobOutcome,
+    zellij_types::data::QueueJobState, zellij_types::data::QueueSnapshot,
+};
 
 use super::PluginId;
 use crate::ClientId;
 
-pub type JobId = u64;
+pub use zellij_types::internal_ids::QueueJobId as JobId;
 
 /// A queue that nobody configured runs one job at a time.
 pub const DEFAULT_CONCURRENCY: usize = 1;
@@ -54,8 +57,8 @@ impl QueuedJob {
             job_id: self.job_id,
             queue: self.queue.clone(),
             plugin_url: self.run_plugin_or_alias.location_string(),
-            plugin_id: plugin_id.map(|id| id.0),
-            enqueuer_plugin_id: self.enqueuer.0 .0,
+            plugin_id,
+            enqueuer_plugin_id: self.enqueuer.0,
             context: self.context.clone(),
             state,
         }
@@ -166,7 +169,7 @@ impl Queues {
         context: BTreeMap<String, String>,
         cwd: Option<PathBuf>,
     ) -> JobId {
-        self.next_job_id += 1;
+        self.next_job_id = JobId::new(self.next_job_id.get() + 1);
         let job_id = self.next_job_id;
         self.queue_mut(queue).pending.push_back(QueuedJob {
             job_id,

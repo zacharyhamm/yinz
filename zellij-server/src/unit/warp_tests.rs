@@ -8,11 +8,13 @@
 //! pane instead of an error message.
 
 use super::*;
+use zellij_types::internal_ids::SupervisorId;
+use zellij_types::internal_ids::TabId;
 
 use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 use std::path::PathBuf;
-use zellij_utils::channels::{unbounded, SenderWithContext};
-use zellij_utils::errors::ErrorContext;
+use zellij_runtime::channels::{unbounded, SenderWithContext};
+use zellij_types::diagnostics::ErrorContext;
 
 /// A short budget for the timeout paths. Long enough that a loaded CI machine
 /// will not trip it by accident, short enough that the suite stays quick.
@@ -20,8 +22,8 @@ const TEST_TIMEOUT: Duration = Duration::from_millis(200);
 
 struct Harness {
     senders: ThreadSenders,
-    screen: zellij_utils::channels::Receiver<(ScreenInstruction, ErrorContext)>,
-    pty: zellij_utils::channels::Receiver<(PtyInstruction, ErrorContext)>,
+    screen: zellij_runtime::channels::Receiver<(ScreenInstruction, ErrorContext)>,
+    pty: zellij_runtime::channels::Receiver<(PtyInstruction, ErrorContext)>,
 }
 
 fn harness() -> Harness {
@@ -96,8 +98,8 @@ fn warping_to_the_current_session_is_refused_before_anything_is_asked_of_screen(
 
     let result = warp_pane_to_session(
         &harness.senders,
-        crate::ClientId(1),
-        Some(PaneId::Terminal(crate::TerminalId(3))),
+        crate::ClientId::new(1),
+        Some(PaneId::Terminal(crate::TerminalId::new(3))),
         "here",
         "here",
         WarpPlacement::NewTab,
@@ -122,8 +124,8 @@ fn an_unreachable_target_releases_nothing() {
 
     let result = warp_pane_to_session(
         &harness.senders,
-        crate::ClientId(1),
-        Some(PaneId::Terminal(crate::TerminalId(3))),
+        crate::ClientId::new(1),
+        Some(PaneId::Terminal(crate::TerminalId::new(3))),
         "here",
         &unreachable_session("unreachable"),
         WarpPlacement::NewTab,
@@ -146,7 +148,7 @@ fn bringing_a_pane_from_the_current_session_is_refused() {
     let result = warp_pane_from_session(
         "here",
         "here",
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         WarpPlacement::NewTab,
         TEST_TIMEOUT,
     );
@@ -162,7 +164,7 @@ fn bringing_a_pane_into_a_nameless_session_is_refused() {
     let result = warp_pane_from_session(
         "",
         &unreachable_session("nameless"),
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         WarpPlacement::NewTab,
         TEST_TIMEOUT,
     );
@@ -180,7 +182,7 @@ fn bringing_a_pane_from_an_unreachable_session_reports_which_one() {
     let result = warp_pane_from_session(
         "here",
         &missing,
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         WarpPlacement::NewTab,
         TEST_TIMEOUT,
     );
@@ -198,9 +200,9 @@ fn adopting_times_out_rather_than_waiting_on_a_pty_thread_that_never_answers() {
 
     let result = adopt_pane_here(
         &harness.senders,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         Box::new(WarpedPane {
-            host_id: "abc123".to_owned(),
+            host_id: SupervisorId::new("abc123".to_owned()),
             control_socket: PathBuf::from("/nonexistent.sock"),
             title: Some("top".to_owned()),
             contents: None,
@@ -242,9 +244,9 @@ fn a_pty_side_refusal_to_adopt_comes_back_verbatim() {
 
     let result = adopt_pane_here(
         &senders,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         Box::new(WarpedPane {
-            host_id: "abc123".to_owned(),
+            host_id: SupervisorId::new("abc123".to_owned()),
             control_socket: PathBuf::from("/nonexistent.sock"),
             title: None,
             contents: None,
@@ -274,8 +276,8 @@ fn warping_a_tab_to_the_current_session_is_refused_before_anything_is_asked_of_s
 
     let result = warp_tab_to_session(
         &harness.senders,
-        crate::ClientId(1),
-        Some(0),
+        crate::ClientId::new(1),
+        Some(TabId::new(0)),
         "here",
         "here",
         TEST_TIMEOUT,
@@ -300,8 +302,8 @@ fn an_unreachable_target_releases_no_part_of_a_tab() {
 
     let result = warp_tab_to_session(
         &harness.senders,
-        crate::ClientId(1),
-        Some(0),
+        crate::ClientId::new(1),
+        Some(TabId::new(0)),
         "here",
         &unreachable_session("tab-unreachable"),
         TEST_TIMEOUT,
@@ -320,7 +322,7 @@ fn an_unreachable_target_releases_no_part_of_a_tab() {
 
 #[test]
 fn bringing_a_tab_from_the_current_session_is_refused() {
-    let result = warp_tab_from_session("here", "here", 0, TEST_TIMEOUT);
+    let result = warp_tab_from_session("here", "here", TabId::new(0), TEST_TIMEOUT);
 
     assert_eq!(result, Err("'here' is this session".to_owned()));
 }
@@ -329,7 +331,12 @@ fn bringing_a_tab_from_the_current_session_is_refused() {
 fn bringing_a_tab_into_a_nameless_session_is_refused() {
     // A session with no name has no address to give the source, so asking would
     // send a tab to nowhere.
-    let result = warp_tab_from_session("", &unreachable_session("nameless-tab"), 0, TEST_TIMEOUT);
+    let result = warp_tab_from_session(
+        "",
+        &unreachable_session("nameless-tab"),
+        TabId::new(0),
+        TEST_TIMEOUT,
+    );
 
     assert_eq!(
         result,
@@ -341,7 +348,7 @@ fn bringing_a_tab_into_a_nameless_session_is_refused() {
 fn bringing_a_tab_from_an_unreachable_session_reports_which_one() {
     let missing = unreachable_session("tab-source");
 
-    let result = warp_tab_from_session("here", &missing, 0, TEST_TIMEOUT);
+    let result = warp_tab_from_session("here", &missing, TabId::new(0), TEST_TIMEOUT);
 
     let error = result.expect_err("a session that is not running has no tab to give");
     assert!(
@@ -356,7 +363,7 @@ fn adopting_a_tab_times_out_rather_than_waiting_on_a_pty_thread_that_never_answe
 
     let result = adopt_tab_here(
         &harness.senders,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         Box::default(),
         TEST_TIMEOUT,
     );
@@ -392,7 +399,7 @@ fn a_pty_side_refusal_to_adopt_a_tab_comes_back_verbatim() {
 
     let result = adopt_tab_here(
         &senders,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         Box::default(),
         Duration::from_secs(5),
     );
@@ -414,12 +421,12 @@ fn a_pty_side_refusal_to_adopt_a_tab_comes_back_verbatim() {
 
 fn remote_pane(host: &str, pane_token: &str) -> WarpedPane {
     WarpedPane {
-        host_id: String::new(),
+        host_id: SupervisorId::new(String::new()),
         control_socket: PathBuf::new(),
         title: None,
         contents: None,
         borderless: false,
-        remote: Some(zellij_utils::data::RemotePaneHandoff {
+        remote: Some(zellij_types::data::RemotePaneHandoff {
             host: host.to_owned(),
             pane_token: pane_token.to_owned(),
             received: 0,
@@ -444,7 +451,7 @@ fn a_remote_pane_is_recovered_through_the_broker_holding_it() {
 fn a_local_pane_is_recovered_by_its_supervisor_id() {
     assert_eq!(
         recovery_command(&WarpedPane {
-            host_id: "abc123".to_owned(),
+            host_id: SupervisorId::new("abc123".to_owned()),
             ..Default::default()
         }),
         "zellij pty-host adopt abc123",

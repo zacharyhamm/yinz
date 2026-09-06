@@ -7,10 +7,10 @@
 #![allow(clippy::borrowed_box)]
 #![allow(clippy::redundant_closure)]
 #![allow(clippy::option_as_ref_deref)]
-use crate::{PluginId, TerminalId};
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
+use zellij_types::internal_ids::TabId;
 
 use crate::global_async_runtime::get_tokio_runtime;
 use crate::thread_bus::ThreadSenders;
@@ -25,20 +25,19 @@ use crate::{
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
-use zellij_utils::{
-    channels::SenderWithContext,
-    data::{
-        BareKey, ConnectToSession, Direction, Event, InputMode, KeyModifier, ListPanesResponse,
-        ListTabsResponse, NewPanePlacement, PaneListEntry, ResizeStrategy, TabInfo,
-        UnblockCondition,
-    },
-    envs,
-    errors::prelude::*,
-    input::{
-        actions::{Action, SearchDirection, SearchOption},
-        command::TerminalAction,
-    },
-    ipc::{ClientToServerMsg, ExitReason, IpcReceiverWithContext, IpcRecv, ServerToClientMsg},
+use zellij_runtime::{channels::SenderWithContext, envs, errors::prelude::*};
+use zellij_types::geometry::{Direction, ResizeStrategy};
+use zellij_types::keys::{BareKey, KeyModifier};
+use {
+    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ExitReason,
+    zellij_ipc::ipc::IpcReceiverWithContext, zellij_ipc::ipc::IpcRecv,
+    zellij_ipc::ipc::ServerToClientMsg, zellij_types::data::Event, zellij_types::data::InputMode,
+    zellij_types::data::ListPanesResponse, zellij_types::data::ListTabsResponse,
+    zellij_types::data::NewPanePlacement, zellij_types::data::PaneListEntry,
+    zellij_types::data::SessionConnection, zellij_types::data::TabInfo,
+    zellij_types::data::UnblockCondition, zellij_types::input::actions::Action,
+    zellij_types::input::actions::SearchDirection, zellij_types::input::actions::SearchOption,
+    zellij_types::input::command::TerminalAction,
 };
 
 use crate::ClientId;
@@ -58,7 +57,7 @@ const ACTION_COMPLETION_TIMEOUT: Duration = Duration::from_secs(1);
 pub struct ActionCompletionResult {
     pub exit_status: Option<i32>,
     pub affected_pane_id: Option<PaneId>,
-    pub affected_tab_id: Option<usize>,
+    pub affected_tab_id: Option<TabId>,
     pub error_message: Option<String>,
     pub stdout_message: Option<String>,
 }
@@ -134,7 +133,7 @@ pub struct NotificationEnd {
     exit_status: Option<i32>,
     unblock_condition: Option<UnblockCondition>,
     affected_pane_id: Option<PaneId>, // optional payload of the pane id affected by this action
-    affected_tab_id: Option<usize>,   // optional payload of the tab id affected by this action
+    affected_tab_id: Option<TabId>,   // optional payload of the tab id affected by this action
     error_message: Option<String>,
     stdout_message: Option<String>,
     /// Handles answered together with this one, with its payload: see `join`.
@@ -214,7 +213,7 @@ impl NotificationEnd {
         self.affected_pane_id = Some(pane_id);
     }
 
-    pub fn set_affected_tab_id(&mut self, tab_id: usize) {
+    pub fn set_affected_tab_id(&mut self, tab_id: TabId) {
         self.affected_tab_id = Some(tab_id);
     }
 
@@ -300,7 +299,7 @@ pub(crate) fn actions_leave_clipboard_message(actions: &[Action]) -> bool {
 fn new_pane_routing(
     no_focus: bool,
     near_current_pane: bool,
-    tab_id: Option<usize>,
+    tab_id: Option<TabId>,
     pane_id: Option<PaneId>,
     client_id: ClientId,
 ) -> ClientTabIndexOrPaneId {
@@ -407,7 +406,7 @@ pub(crate) fn route_action(
             senders
                 .send_to_screen(ScreenInstruction::WriteToPaneId(
                     bytes,
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -420,7 +419,7 @@ pub(crate) fn route_action(
             senders
                 .send_to_screen(ScreenInstruction::WriteToPaneId(
                     bytes,
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -433,7 +432,7 @@ pub(crate) fn route_action(
             senders
                 .send_to_screen(ScreenInstruction::Paste(
                     bytes,
-                    pane_id.map(|p| p.into()),
+                    pane_id,
                     client_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -454,7 +453,7 @@ pub(crate) fn route_action(
         Action::SetPaneAgent { pane_id, agent } => {
             senders
                 .send_to_screen(ScreenInstruction::SetPaneAgent(
-                    pane_id.into(),
+                    pane_id,
                     agent,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -477,7 +476,7 @@ pub(crate) fn route_action(
         Action::SetPaneColor { pane_id, fg, bg } => {
             senders
                 .send_to_screen(ScreenInstruction::SetPaneColor(
-                    pane_id.into(),
+                    pane_id,
                     fg,
                     bg,
                     Some(NotificationEnd::new(completion_tx)),
@@ -530,7 +529,7 @@ pub(crate) fn route_action(
         Action::FocusPaneByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::FocusPaneWithId(
-                    pane_id.into(),
+                    pane_id,
                     true,  // should_float_if_hidden
                     false, // should_be_in_place_if_hidden
                     client_id,
@@ -623,7 +622,7 @@ pub(crate) fn route_action(
                     file_path,
                     client_id,
                     include_scrollback,
-                    pane_id.map(|p| p.into()),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                     cli_client_id,
                     ansi,
@@ -882,10 +881,10 @@ pub(crate) fn route_action(
                 NewPanePlacement::Stacked {
                     pane_id_to_stack_under,
                     ..
-                } => pane_id_to_stack_under.map(|p| p.into()).or(pane_id),
+                } => pane_id_to_stack_under.or(pane_id),
                 NewPanePlacement::InPlace {
                     pane_id_to_replace, ..
-                } => pane_id_to_replace.map(|p| p.into()).or(pane_id),
+                } => pane_id_to_replace.or(pane_id),
                 _ => pane_id,
             };
 
@@ -1002,8 +1001,7 @@ pub(crate) fn route_action(
             let run_cmd = run_command
                 .map(|cmd| TerminalAction::RunCommand(cmd.into()))
                 .or_else(|| default_shell.clone());
-            let explicit_pane_id_to_replace: Option<PaneId> = pane_id_to_replace
-                .and_then(|pane_id_to_replace| pane_id_to_replace.try_into().ok());
+            let explicit_pane_id_to_replace: Option<PaneId> = pane_id_to_replace;
             let pane_id = explicit_pane_id_to_replace.or(pane_id);
             let client_tab_index_or_paneid = if let Some(tab_id) = tab_id {
                 if no_focus {
@@ -1057,7 +1055,7 @@ pub(crate) fn route_action(
                 let pane_id = pane_id.unwrap();
                 (
                     NewPanePlacement::Stacked {
-                        pane_id_to_stack_under: Some(pane_id.into()),
+                        pane_id_to_stack_under: Some(pane_id),
                         borderless: None,
                     },
                     ClientTabIndexOrPaneId::PaneId(pane_id),
@@ -1294,7 +1292,7 @@ pub(crate) fn route_action(
         Action::GoToTabById { id } => {
             senders
                 .send_to_screen(ScreenInstruction::GoToTabWithId(
-                    id as usize,
+                    id,
                     Some(client_id),
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -1303,7 +1301,7 @@ pub(crate) fn route_action(
         Action::CloseTabById { id } => {
             senders
                 .send_to_screen(ScreenInstruction::CloseTabWithId(
-                    id as usize,
+                    id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -1311,7 +1309,7 @@ pub(crate) fn route_action(
         Action::RenameTabById { id, name } => {
             senders
                 .send_to_screen(ScreenInstruction::RenameTabWithId(
-                    id as usize,
+                    id,
                     name.into_bytes(),
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -1393,7 +1391,7 @@ pub(crate) fn route_action(
             match crate::warp::warp_pane_to_session(
                 &senders,
                 client_id,
-                pane_id.map(|pane_id| pane_id.into()),
+                pane_id,
                 &crate::warp::current_session_name(),
                 &to_session,
                 placement,
@@ -1482,7 +1480,7 @@ pub(crate) fn route_action(
         } => {
             let current_session_name = envs::get_session_name().unwrap_or_else(|_| String::new());
             if name != current_session_name {
-                let connect_to_session = ConnectToSession {
+                let connect_to_session = SessionConnection {
                     name: Some(name.clone()),
                     tab_position: tab_position.clone(),
                     pane_id: pane_id.clone(),
@@ -1760,7 +1758,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::ClosePane(
-                    PaneId::Terminal(TerminalId(terminal_pane_id)),
+                    PaneId::Terminal(terminal_pane_id),
                     None, // we send None here so that the terminal pane would be closed anywhere
                     // in the app, not just in the client's tab
                     Some(NotificationEnd::new(completion_tx)),
@@ -1773,7 +1771,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::ClosePane(
-                    PaneId::Plugin(PluginId(plugin_pane_id)),
+                    PaneId::Plugin(plugin_pane_id),
                     None, // we send None here so that the terminal pane would be closed anywhere
                     // in the app, not just in the client's tab
                     Some(NotificationEnd::new(completion_tx)),
@@ -1788,7 +1786,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::FocusPaneWithId(
-                    PaneId::Terminal(TerminalId(pane_id)),
+                    PaneId::Terminal(pane_id),
                     should_float_if_hidden,
                     should_be_in_place_if_hidden,
                     client_id,
@@ -1803,7 +1801,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::FocusPaneWithId(
-                    PaneId::Plugin(PluginId(pane_id)),
+                    PaneId::Plugin(pane_id),
                     should_float_if_hidden,
                     should_be_in_place_if_hidden,
                     client_id,
@@ -1817,7 +1815,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::RenamePane(
-                    PaneId::Terminal(TerminalId(pane_id)),
+                    PaneId::Terminal(pane_id),
                     name_bytes,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -1829,7 +1827,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::RenamePane(
-                    PaneId::Plugin(PluginId(pane_id)),
+                    PaneId::Plugin(pane_id),
                     name_bytes,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -1841,7 +1839,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::RenameTab(
-                    tab_position as usize,
+                    tab_position,
                     name_bytes,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2005,8 +2003,7 @@ pub(crate) fn route_action(
                         pane_title,
                         skip_cache,
                         cli_client_id: client_id,
-                        plugin_and_client_id: plugin_id
-                            .map(|plugin_id| (PluginId(plugin_id), client_id)),
+                        plugin_and_client_id: plugin_id.map(|plugin_id| (plugin_id, client_id)),
                         notification_end: Some(NotificationEnd::new(completion_tx)),
                     })
                     .with_context(err_context)?;
@@ -2130,7 +2127,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::StackPanes(
-                    pane_ids_to_stack.iter().map(|p| PaneId::from(*p)).collect(),
+                    pane_ids_to_stack,
                     client_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2142,7 +2139,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::ChangeFloatingPanesCoordinates(
-                    vec![(pane_id.into(), coordinates)],
+                    vec![(pane_id, coordinates)],
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2150,7 +2147,7 @@ pub(crate) fn route_action(
         Action::TogglePaneBorderless { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::TogglePaneBorderless(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2161,7 +2158,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::SetPaneBorderless(
-                    pane_id.into(),
+                    pane_id,
                     borderless,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2214,7 +2211,7 @@ pub(crate) fn route_action(
         Action::ScrollUpByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::ScrollUpWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2222,7 +2219,7 @@ pub(crate) fn route_action(
         Action::ScrollDownByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::ScrollDownWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2230,7 +2227,7 @@ pub(crate) fn route_action(
         Action::ScrollToTopByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::ScrollToTopWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2238,7 +2235,7 @@ pub(crate) fn route_action(
         Action::ScrollToBottomByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::ScrollToBottomWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2246,7 +2243,7 @@ pub(crate) fn route_action(
         Action::PageScrollUpByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::PageScrollUpWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2254,7 +2251,7 @@ pub(crate) fn route_action(
         Action::PageScrollDownByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::PageScrollDownWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2262,7 +2259,7 @@ pub(crate) fn route_action(
         Action::HalfPageScrollUpByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::HalfPageScrollUpWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2270,7 +2267,7 @@ pub(crate) fn route_action(
         Action::HalfPageScrollDownByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::HalfPageScrollDownWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2283,7 +2280,7 @@ pub(crate) fn route_action(
             let resize_strategy = ResizeStrategy::new(resize, direction);
             senders
                 .send_to_screen(ScreenInstruction::ResizeWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     resize_strategy,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2292,7 +2289,7 @@ pub(crate) fn route_action(
         Action::MovePaneByPaneId { pane_id, direction } => {
             senders
                 .send_to_screen(ScreenInstruction::MovePaneWithPaneIdCli(
-                    pane_id.into(),
+                    pane_id,
                     direction,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2301,7 +2298,7 @@ pub(crate) fn route_action(
         Action::MovePaneBackwardsByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::MovePaneBackwardsWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2309,7 +2306,7 @@ pub(crate) fn route_action(
         Action::ClearScreenByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::ClearScreenWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2317,7 +2314,7 @@ pub(crate) fn route_action(
         Action::EditScrollbackByPaneId { pane_id, ansi } => {
             senders
                 .send_to_screen(ScreenInstruction::EditScrollbackWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     ansi,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2326,7 +2323,7 @@ pub(crate) fn route_action(
         Action::ToggleFocusFullscreenByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::ToggleFullscreenWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2334,7 +2331,7 @@ pub(crate) fn route_action(
         Action::ToggleFocusNoUiFullscreenByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::ToggleNoUiFullscreenWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2342,7 +2339,7 @@ pub(crate) fn route_action(
         Action::TogglePaneEmbedOrFloatingByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::TogglePaneEmbedOrFloatingWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2350,7 +2347,7 @@ pub(crate) fn route_action(
         Action::CloseFocusByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::CloseFocusWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2358,7 +2355,7 @@ pub(crate) fn route_action(
         Action::RenamePaneByPaneId { pane_id, name } => {
             let instruction = match pane_id {
                 Some(pane_id) => ScreenInstruction::RenamePaneWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     name,
                     Some(NotificationEnd::new(completion_tx)),
                 ),
@@ -2375,7 +2372,7 @@ pub(crate) fn route_action(
         Action::UndoRenamePaneByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::UndoRenamePaneWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2383,7 +2380,7 @@ pub(crate) fn route_action(
         Action::TogglePanePinnedByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::TogglePanePinnedWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2392,7 +2389,7 @@ pub(crate) fn route_action(
         Action::UndoRenameTabByTabId { id } => {
             senders
                 .send_to_screen(ScreenInstruction::UndoRenameTabWithTabId(
-                    id as usize,
+                    id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2400,7 +2397,7 @@ pub(crate) fn route_action(
         Action::ToggleActiveSyncTabByTabId { id } => {
             senders
                 .send_to_screen(ScreenInstruction::ToggleActiveSyncTabWithTabId(
-                    id as usize,
+                    id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2408,7 +2405,7 @@ pub(crate) fn route_action(
         Action::ToggleFloatingPanesByTabId { id } => {
             senders
                 .send_to_screen(ScreenInstruction::ToggleFloatingPanesWithTabId(
-                    id as usize,
+                    id,
                     default_shell.clone(),
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2417,7 +2414,7 @@ pub(crate) fn route_action(
         Action::PreviousSwapLayoutByTabId { id } => {
             senders
                 .send_to_screen(ScreenInstruction::PreviousSwapLayoutWithTabId(
-                    id as usize,
+                    id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2425,7 +2422,7 @@ pub(crate) fn route_action(
         Action::NextSwapLayoutByTabId { id } => {
             senders
                 .send_to_screen(ScreenInstruction::NextSwapLayoutWithTabId(
-                    id as usize,
+                    id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2433,7 +2430,7 @@ pub(crate) fn route_action(
         Action::MoveTabByTabId { id, direction } => {
             senders
                 .send_to_screen(ScreenInstruction::MoveTabWithTabId(
-                    id as usize,
+                    id,
                     direction,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2528,10 +2525,10 @@ macro_rules! send_to_screen_or_retry_queue {
 
 fn enqueue_agent_report(
     senders: Option<&ThreadSenders>,
-    report: zellij_utils::agent::report::AgentReport,
+    report: zellij_types::agent::report::AgentReport,
     accepted_at: std::time::Instant,
 ) -> Result<()> {
-    report.validate()?;
+    zellij_runtime::agent::report::validate_report(&report)?;
     // Use the actual unbounded sender: even test senders must not turn a closed queue into
     // a successful acceptance via `should_silently_fail`.
     senders
@@ -2545,11 +2542,11 @@ fn enqueue_agent_report(
 
 fn accept_agent_report(
     senders: Option<&ThreadSenders>,
-    report: zellij_utils::agent::report::AgentReport,
+    report: zellij_types::agent::report::AgentReport,
     reply: impl FnOnce(ServerToClientMsg) -> Result<()>,
 ) -> Result<()> {
     let accepted_at = std::time::Instant::now();
-    let trace = report.diagnostics();
+    let trace = zellij_runtime::agent::report::report_diagnostics(&report);
     if trace.enabled {
         trace.record("acceptance", Duration::ZERO, "enter");
     }
@@ -2639,7 +2636,7 @@ pub(crate) fn route_thread_main(
         match receiver.recv_client_msg() {
             IpcRecv::Msg(instruction, err_ctx) => {
                 consecutive_malformed_messages_received = 0;
-                err_ctx.update_thread_ctx();
+                zellij_runtime::errors::update_thread_ctx(&err_ctx);
                 if !received_first_message {
                     received_first_message = true;
                     receiver
@@ -2897,8 +2894,6 @@ pub(crate) fn route_thread_main(
                             client_id: maybe_client_id,
                             is_cli_client,
                         } => {
-                            let maybe_pane_id = maybe_pane_id.map(TerminalId);
-                            let maybe_client_id = maybe_client_id.map(ClientId);
                             let cli_client_id = client_id;
                             let client_id = if is_cli_client {
                                 // for cli clients, we want to default to the last active client
@@ -3093,7 +3088,7 @@ pub(crate) fn route_thread_main(
                             let attach_client_instruction = ServerInstruction::AttachClient(
                                 cli_assets,
                                 tab_position_to_focus,
-                                pane_id_to_focus.map(|p| if p.is_plugin { PaneId::Plugin(PluginId(p.pane_id)) } else { PaneId::Terminal(TerminalId(p.pane_id)) }),
+                                pane_id_to_focus,
                                 client_id,
                             );
                             to_server
@@ -3135,7 +3130,7 @@ pub(crate) fn route_thread_main(
                         },
                         ClientToServerMsg::DetachSession { client_ids } => {
                             let _ =
-                                to_server.send(ServerInstruction::DetachSession(client_ids.into_iter().map(ClientId).collect(), None));
+                                to_server.send(ServerInstruction::DetachSession(client_ids, None));
                             should_break = true;
                         },
                         ClientToServerMsg::DesktopNotificationResponse { ref raw_bytes } => {
@@ -3208,8 +3203,8 @@ pub(crate) fn route_thread_main(
                             }
                         },
                         ClientToServerMsg::NestedSessionFrameFromHost { ref payload_bytes } => {
-                            match zellij_utils::nested_session::decode_payload(payload_bytes) {
-                                Some(message @ zellij_utils::nested_session::NestedSessionMessage::AnnounceAck { .. }) => {
+                            match zellij_ipc::nested_session::decode_payload(payload_bytes) {
+                                Some(message @ zellij_ipc::nested_session::NestedSessionMessage::AnnounceAck { .. }) => {
                                     let _ = send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
@@ -3217,7 +3212,7 @@ pub(crate) fn route_thread_main(
                                         retry_queue
                                     );
                                 },
-                                Some(message @ zellij_utils::nested_session::NestedSessionMessage::FocusGained { .. }) => {
+                                Some(message @ zellij_ipc::nested_session::NestedSessionMessage::FocusGained { .. }) => {
                                     let _ = send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
@@ -3225,7 +3220,7 @@ pub(crate) fn route_thread_main(
                                         retry_queue
                                     );
                                 },
-                                Some(message @ zellij_utils::nested_session::NestedSessionMessage::FocusLost) => {
+                                Some(message @ zellij_ipc::nested_session::NestedSessionMessage::FocusLost) => {
                                     let _ = send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
@@ -3233,7 +3228,7 @@ pub(crate) fn route_thread_main(
                                         retry_queue
                                     );
                                 },
-                                Some(message @ zellij_utils::nested_session::NestedSessionMessage::ShortcutUpdate { .. }) => {
+                                Some(message @ zellij_ipc::nested_session::NestedSessionMessage::ShortcutUpdate { .. }) => {
                                     let _ = send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
@@ -3241,7 +3236,7 @@ pub(crate) fn route_thread_main(
                                         retry_queue
                                     );
                                 },
-                                Some(message @ zellij_utils::nested_session::NestedSessionMessage::FullscreenState { .. }) => {
+                                Some(message @ zellij_ipc::nested_session::NestedSessionMessage::FullscreenState { .. }) => {
                                     let _ = send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
@@ -3249,7 +3244,7 @@ pub(crate) fn route_thread_main(
                                         retry_queue
                                     );
                                 },
-                                Some(message @ zellij_utils::nested_session::NestedSessionMessage::AncestryUpdate { .. }) => {
+                                Some(message @ zellij_ipc::nested_session::NestedSessionMessage::AncestryUpdate { .. }) => {
                                     let _ = send_to_screen_or_retry_queue!(
                                         senders,
                                         ScreenInstruction::NestedSessionMessageFromHost { client_id, message },
@@ -3501,8 +3496,8 @@ fn enrich_panes_with_pty_data(
     senders: &ThreadSenders,
 ) -> Result<()> {
     for entry in pane_entries.iter_mut() {
-        if !entry.pane_info.is_plugin {
-            let pane_id = PaneId::Terminal(TerminalId(entry.pane_info.id));
+        if !entry.pane_info.is_plugin() {
+            let pane_id = entry.pane_info.id;
             enrich_pane_with_running_command(entry, pane_id, senders)?;
             enrich_pane_with_cwd(entry, pane_id, senders)?;
         }
@@ -3517,7 +3512,7 @@ fn enrich_pane_with_running_command(
 ) -> Result<()> {
     use crossbeam::channel::unbounded;
     use std::time::Duration;
-    use zellij_utils::data::GetPaneRunningCommandResponse;
+    use zellij_types::data::GetPaneRunningCommandResponse;
 
     let (cmd_sender, cmd_receiver) = unbounded();
     senders.send_to_pty(PtyInstruction::GetPaneRunningCommand {
@@ -3541,7 +3536,7 @@ fn enrich_pane_with_cwd(
 ) -> Result<()> {
     use crossbeam::channel::unbounded;
     use std::time::Duration;
-    use zellij_utils::data::GetPaneCwdResponse;
+    use zellij_types::data::GetPaneCwdResponse;
 
     let (cwd_sender, cwd_receiver) = unbounded();
     senders.send_to_pty(PtyInstruction::GetPaneCwd {
@@ -3667,16 +3662,12 @@ fn build_table_row(
     row.join("  ")
 }
 
-fn format_pane_id(pane_info: &zellij_utils::data::PaneInfo) -> String {
-    if pane_info.is_plugin {
-        format!("plugin_{}", pane_info.id)
-    } else {
-        format!("terminal_{}", pane_info.id)
-    }
+fn format_pane_id(pane_info: &zellij_types::data::PaneInfo) -> String {
+    pane_info.id.to_string()
 }
 
-fn format_pane_type(pane_info: &zellij_utils::data::PaneInfo) -> String {
-    if pane_info.is_plugin {
+fn format_pane_type(pane_info: &zellij_types::data::PaneInfo) -> String {
+    if pane_info.is_plugin() {
         "plugin".to_string()
     } else {
         "terminal".to_string()
@@ -3871,19 +3862,23 @@ mod tests {
 
     #[test]
     fn reports_are_accepted_while_consumers_are_paused_and_rejected_for_closed_queues() {
-        use zellij_utils::agent::report::{AgentReport, AgentReportState};
-        let (tx, rx) = zellij_utils::channels::unbounded();
+        use {
+            zellij_types::agent::report::AgentReport, zellij_types::agent::report::AgentReportState,
+        };
+        let (tx, rx) = zellij_runtime::channels::unbounded();
         let senders = ThreadSenders {
             to_screen: Some(SenderWithContext::new(tx)),
             ..Default::default()
         };
         let report = AgentReport {
             report_id: "00000000-0000-4000-8000-000000000001".into(),
-            pane_id: zellij_utils::data::PaneId::Terminal(1),
+            pane_id: zellij_types::data::PaneId::Terminal(
+                zellij_types::internal_ids::TerminalId::new(1),
+            ),
             state: AgentReportState::Clear,
             event: None,
             trace: false,
-            process_id: 42,
+            process_id: zellij_types::internal_ids::ProcessId::new(42),
             kind: "claude".into(),
         };
         let (release, gate) = std::sync::mpsc::channel();
@@ -3973,7 +3968,7 @@ mod tests {
     #[test]
     fn a_suppressed_action_tells_the_plugins_nothing_about_the_input() {
         let route = |leaves_clipboard_message| {
-            let (tx, rx) = zellij_utils::channels::unbounded();
+            let (tx, rx) = zellij_runtime::channels::unbounded();
             let senders = ThreadSenders {
                 to_plugin: Some(SenderWithContext::new(tx)),
                 should_silently_fail: true,
@@ -3983,7 +3978,7 @@ mod tests {
                 Action::SwitchToMode {
                     input_mode: InputMode::Normal,
                 },
-                ClientId(1),
+                ClientId::new(1),
                 None,
                 None,
                 senders,
@@ -4094,12 +4089,12 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         let mut notification_end = NotificationEnd::new(tx);
 
-        notification_end.set_affected_tab_id(42);
+        notification_end.set_affected_tab_id(TabId::new(42));
 
         drop(notification_end);
 
         let result = rx.blocking_recv().unwrap();
-        assert_eq!(result.affected_tab_id, Some(42));
+        assert_eq!(result.affected_tab_id, Some(TabId::new(42)));
     }
 
     #[test]
@@ -4118,12 +4113,12 @@ mod tests {
         let result = ActionCompletionResult {
             exit_status: None,
             affected_pane_id: None,
-            affected_tab_id: Some(123),
+            affected_tab_id: Some(TabId::new(123)),
             error_message: None,
             stdout_message: None,
         };
 
-        assert_eq!(result.affected_tab_id, Some(123));
+        assert_eq!(result.affected_tab_id, Some(TabId::new(123)));
     }
 
     #[test]
@@ -4131,29 +4126,29 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         let mut notification_end = NotificationEnd::new(tx);
 
-        notification_end.set_affected_pane_id(PaneId::Terminal(TerminalId(10)));
-        notification_end.set_affected_tab_id(5);
+        notification_end.set_affected_pane_id(PaneId::Terminal(crate::TerminalId::new(10)));
+        notification_end.set_affected_tab_id(TabId::new(5));
 
         drop(notification_end);
 
         let result = rx.blocking_recv().unwrap();
         assert_eq!(
             result.affected_pane_id,
-            Some(PaneId::Terminal(TerminalId(10)))
+            Some(PaneId::Terminal(crate::TerminalId::new(10)))
         );
-        assert_eq!(result.affected_tab_id, Some(5));
+        assert_eq!(result.affected_tab_id, Some(TabId::new(5)));
     }
 
     #[test]
     fn test_notification_end_clone_does_not_copy_channel() {
         let (tx, _rx) = oneshot::channel();
         let mut notification_end = NotificationEnd::new(tx);
-        notification_end.set_affected_tab_id(99);
+        notification_end.set_affected_tab_id(TabId::new(99));
 
         let cloned = notification_end.clone();
 
         // Verify the clone has the same data
-        assert_eq!(cloned.affected_tab_id, Some(99));
+        assert_eq!(cloned.affected_tab_id, Some(TabId::new(99)));
         // But channel should be None (as per the Clone implementation comment)
         assert!(cloned.channel.is_none());
     }

@@ -1,10 +1,9 @@
 #![allow(clippy::needless_borrow)]
 #![allow(clippy::if_same_then_else)]
 pub mod floating_pane_grid;
-use zellij_utils::{
-    data::{Direction, FloatingPaneCoordinates, PaneInfo, ResizeStrategy},
-    position::Position,
-};
+use zellij_types::data::PaneInfo;
+use zellij_types::geometry::{Direction, FloatingPaneCoordinates, ResizeStrategy};
+use zellij_types::position::Position;
 
 use crate::panes::kitty_graphics::KittyHostSupport;
 use crate::resize_pty;
@@ -26,13 +25,13 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Instant;
-use zellij_utils::{
-    data::{ModeInfo, Style, Styling},
-    errors::prelude::*,
-    input::command::RunCommand,
-    input::layout::{FloatingPaneLayout, Run, RunPluginOrAlias},
-    input::options::PaneFrameStyle,
-    pane_size::{Dimension, Offset, PaneGeom, Size, SizeInPixels, Viewport},
+use zellij_runtime::errors::prelude::*;
+use zellij_types::pane_size::{Dimension, Offset, PaneGeom, Size, SizeInPixels, Viewport};
+use zellij_types::style::{Style, Styling};
+use {
+    zellij_types::data::ModeInfo, zellij_types::input::command::RunCommand,
+    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Run,
+    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::options::PaneFrameStyle,
 };
 
 const RESIZE_INCREMENT_WIDTH: usize = 5;

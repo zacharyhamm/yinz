@@ -14,10 +14,10 @@
 //! So the pipe comes from outside every plugin, exactly as the generated script sends
 //! it, and the assertion is read off hocus's own `agent_list` on the grid.
 
+use zellij_cli::args::CliAction;
 use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE};
-use zellij_utils::cli::CliAction;
-use zellij_utils::data::PaneId;
-use zellij_utils::input::actions::hook_report_actions;
+use zellij_types::data::PaneId;
+use zellij_types::input::actions::hook_report_actions;
 
 /// hocus and the daemon, both shared, with the daemon loaded in the background as the
 /// real config has it. `zellij:` rather than `file:` for the reason `hocus_store.rs`
@@ -78,7 +78,7 @@ fn send_hook(zellij: &mut TestSession, pane_id: u32, payload: &str) {
     let event = serde_json::from_str(payload).expect("the test's own hook event parses");
     let actions = hook_report_actions(
         "claude",
-        PaneId::Terminal(pane_id),
+        PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(pane_id)),
         &event,
         payload.to_owned(),
     );
@@ -133,8 +133,12 @@ fn hooks_keep_the_pane_record_and_hocus_waiting_status_in_agreement() {
             r#"{"hook_event_name":"Notification","notification_type":"worker_permission_prompt"}"#,
         ] {
             let event = serde_json::from_str(payload).unwrap();
-            let actions =
-                hook_report_actions(kind, PaneId::Terminal(pane_id), &event, payload.to_owned());
+            let actions = hook_report_actions(
+                kind,
+                PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(pane_id)),
+                &event,
+                payload.to_owned(),
+            );
             let (exit_code, output) = zellij.run_actions_reporting(actions);
             assert_eq!(exit_code, 0, "{output}");
             let (exit_code, listed) = zellij.run_cli_action_reporting(CliAction::ListPanes {

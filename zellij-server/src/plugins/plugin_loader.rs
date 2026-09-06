@@ -21,23 +21,23 @@ use wasmi_wasi::sync::WasiCtxBuilder;
 use wasmi_wasi::wasi_common::pipe::{ReadPipe, WritePipe};
 use wasmi_wasi::Dir;
 use wasmi_wasi::WasiCtx;
+use zellij_types::internal_ids::TabId;
 
 use crate::{
     logging_pipe::LoggingPipe, thread_bus::ThreadSenders,
     ui::loading_indication::LoadingIndication, ClientId,
 };
 
-use zellij_utils::data_access::DataAccess;
+use zellij_storage::data_access::DataAccess;
 
 use crate::plugins::queues::Queues;
-use zellij_utils::{
-    consts::ZELLIJ_TMP_DIR,
-    data::InputMode,
-    errors::prelude::*,
-    input::command::TerminalAction,
-    input::keybinds::Keybinds,
-    input::plugins::{PluginAliases, PluginConfig, PluginRuntime},
-    pane_size::Size,
+use zellij_runtime::errors::prelude::*;
+use zellij_types::pane_size::Size;
+use {
+    zellij_config::plugins::PluginConfig, zellij_config::plugins::PluginRuntime,
+    zellij_runtime::consts::ZELLIJ_TMP_DIR, zellij_types::data::InputMode,
+    zellij_types::input::command::TerminalAction, zellij_types::input::keybinds::Keybinds,
+    zellij_types::input::plugins::PluginAliases,
 };
 
 fn open_dir(path: &std::path::Path) -> std::io::Result<std::fs::File> {
@@ -99,7 +99,7 @@ pub struct PluginLoader<'a> {
     plugin_own_data_dir: PathBuf,
     plugin_own_cache_dir: PathBuf,
     plugin_config: PluginConfig,
-    tab_index: Option<usize>,
+    tab_index: Option<TabId>,
     path_to_default_shell: PathBuf,
     session_env_vars: std::collections::BTreeMap<String, String>,
     plugin_aliases: Arc<Mutex<PluginAliases>>,
@@ -657,9 +657,9 @@ mod tests {
     use std::collections::VecDeque;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
-    use zellij_utils::data::PluginTag;
-    use zellij_utils::input::layout::{RunPlugin, RunPluginLocation};
-    use zellij_utils::input::plugins::PluginConfig;
+    use zellij_config::plugins::PluginConfig;
+    use zellij_types::data::PluginTag;
+    use {zellij_types::input::layout::RunPlugin, zellij_types::input::layout::RunPluginLocation};
 
     #[test]
     fn builtin_plugin_cache_key_includes_only_its_configured_source_directory() {
@@ -695,7 +695,7 @@ mod tests {
             &dir.path().to_path_buf(),
             None,
             &plugin_url,
-            zellij_utils::internal_ids::PluginId(1),
+            zellij_types::internal_ids::PluginId::new(1),
             Arc::new(Mutex::new(VecDeque::new())),
             Arc::new(Mutex::new(VecDeque::new())),
         )
