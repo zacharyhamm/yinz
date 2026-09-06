@@ -237,8 +237,20 @@ pub struct Endpoint {
     /// Fully resolved completions endpoint, derived from the configured base URL.
     pub url: String,
     pub api_key: String,
-    /// The model summaries are asked of: `summary_model` when set, otherwise `model`.
+    /// The model to ask, chosen for the lane that resolved this: `summary_model` falling
+    /// back to `model` for a summary, `model` alone for a completion.
     pub model: String,
+}
+
+/// Which of the two configured models an endpoint is resolved for.
+///
+/// A type rather than a bool because the two lanes are asymmetric: the summary lane falls
+/// back from `summary_model` to `model`, and the completion lane must not fall the other
+/// way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Model {
+    Summary,
+    Chat,
 }
 
 impl Endpoint {
@@ -255,15 +267,43 @@ impl Endpoint {
         if !summaries_enabled(kdl) {
             return None;
         }
+        Self::resolve_for(kdl, env, Model::Summary)
+    }
+
+    /// The same endpoint, for a caller that is not asking for a summary.
+    ///
+    /// Not gated on `summaries`: that key means *do not describe my agents*, which is a
+    /// statement about one feature rather than about whether the session has a model at
+    /// all. [`plugin_completions_enabled`] is the key that governs this lane, and the
+    /// caller checks it — the two `None`s here stay the ones about configuration.
+    ///
+    /// Resolves `model` and never `summary_model`. A plugin asking a real question must
+    /// not silently land on whatever cheap model the user picked for one-line pane
+    /// summaries, which is exactly what [`Endpoint::resolve`]'s precedence would do.
+    pub fn resolve_for_completion(
+        kdl: &BTreeMap<String, String>,
+        env: &BTreeMap<String, String>,
+    ) -> Option<Self> {
+        Self::resolve_for(kdl, env, Model::Chat)
+    }
+
+    /// The shared body of both resolvers: everything but which model key wins.
+    fn resolve_for(
+        kdl: &BTreeMap<String, String>,
+        env: &BTreeMap<String, String>,
+        model: Model,
+    ) -> Option<Self> {
         let base_url = non_empty(kdl, "base_url")
             .or_else(|| non_empty(env, "OPENAI_BASE_URL"))
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_owned());
         // The summary model falls back to the chat model rather than to the built-in
         // default, so configuring one model configures both.
-        let model = non_empty(kdl, "summary_model")
-            .or_else(|| non_empty(kdl, "model"))
-            .or_else(|| non_empty(env, "OPENAI_MODEL"))
-            .unwrap_or_else(|| DEFAULT_MODEL.to_owned());
+        let model = match model {
+            Model::Summary => non_empty(kdl, "summary_model").or_else(|| non_empty(kdl, "model")),
+            Model::Chat => non_empty(kdl, "model"),
+        }
+        .or_else(|| non_empty(env, "OPENAI_MODEL"))
+        .unwrap_or_else(|| DEFAULT_MODEL.to_owned());
         let api_key_env =
             non_empty(kdl, "api_key_env").unwrap_or_else(|| DEFAULT_API_KEY_ENV.to_owned());
         let api_key = non_empty(env, &api_key_env)?;
@@ -301,6 +341,29 @@ impl Endpoint {
 /// see `send_run_summary` in `hocus-agentd`.
 pub fn summaries_enabled(kdl: &BTreeMap<String, String>) -> bool {
     !non_empty(kdl, "summaries").is_some_and(|value| value.eq_ignore_ascii_case("false"))
+}
+
+/// Whether the KDL block lets other plugins spend the user's API key.
+///
+/// Same stance as [`summaries_enabled`] and hocus's `tools` key: anything but an explicit
+/// `false` leaves it on, so a typo does not silently disable the feature.
+///
+/// What keeps that default honest is not the flag but the shape of what is on offer. A
+/// caller names messages, tools and at most a model — never a URL, a key, a header or a
+/// provider — so the worst a hostile plugin can do is spend tokens at the user's own
+/// endpoint rather than carry the key anywhere. The rest of the guard is structural: the
+/// caps in `completion::validate` and the daemon's concurrency limit.
+pub fn plugin_completions_enabled(kdl: &BTreeMap<String, String>) -> bool {
+    !non_empty(kdl, "plugin_completions").is_some_and(|value| value.eq_ignore_ascii_case("false"))
+}
+
+/// A model the user pinned for plugin completions, which overrides any a caller names.
+///
+/// For the session that wants the feature on but not at a caller's choice of price. Unset
+/// is the ordinary case, and then the caller's model wins over the configured one — a
+/// plugin that knows it needs a reasoning model should be able to say so.
+pub fn pinned_completion_model(kdl: &BTreeMap<String, String>) -> Option<String> {
+    non_empty(kdl, "plugin_completion_model")
 }
 
 // ---------------------------------------------------------------------------
@@ -558,6 +621,99 @@ learn more."}}}}"#
         assert!(Endpoint::resolve(&map(&[("summaries", "true")]), &env).is_some());
         assert!(Endpoint::resolve(&map(&[("summaries", "flase")]), &env).is_some());
         assert!(Endpoint::resolve(&map(&[]), &env).is_some());
+    }
+
+    /// `summaries "false"` is a statement about describing agents, not about whether the
+    /// session has a model — a plugin asking its own question is unaffected.
+    #[test]
+    fn a_completion_endpoint_resolves_with_summaries_switched_off() {
+        let kdl = map(&[("summaries", "false")]);
+        let env = map(&[("OPENAI_API_KEY", "sk-1")]);
+        assert!(Endpoint::resolve(&kdl, &env).is_none());
+        let endpoint = Endpoint::resolve_for_completion(&kdl, &env).expect("resolved");
+        assert_eq!(endpoint.api_key, "sk-1");
+        assert_eq!(endpoint.url, "https://api.openai.com/v1/chat/completions");
+    }
+
+    /// The whole reason the completion lane has a resolver of its own: a real question must
+    /// not land on whatever cheap model was picked for one-line pane summaries.
+    #[test]
+    fn a_completion_endpoint_prefers_the_chat_model_over_the_summary_model() {
+        let kdl = map(&[("model", "gpt-5"), ("summary_model", "gpt-4o-mini")]);
+        let env = map(&[("OPENAI_API_KEY", "k")]);
+        assert_eq!(Endpoint::resolve(&kdl, &env).unwrap().model, "gpt-4o-mini");
+        assert_eq!(
+            Endpoint::resolve_for_completion(&kdl, &env).unwrap().model,
+            "gpt-5"
+        );
+    }
+
+    /// With no `model` at all it still falls through env and then the built-in default,
+    /// rather than reaching sideways for `summary_model`.
+    #[test]
+    fn a_completion_endpoint_falls_through_env_to_the_default_model() {
+        let env = map(&[("OPENAI_API_KEY", "k")]);
+        assert_eq!(
+            Endpoint::resolve_for_completion(&map(&[("summary_model", "cheap")]), &env)
+                .unwrap()
+                .model,
+            DEFAULT_MODEL
+        );
+        assert_eq!(
+            Endpoint::resolve_for_completion(
+                &map(&[("summary_model", "cheap")]),
+                &map(&[("OPENAI_API_KEY", "k"), ("OPENAI_MODEL", "from-env")]),
+            )
+            .unwrap()
+            .model,
+            "from-env"
+        );
+    }
+
+    #[test]
+    fn a_completion_endpoint_is_none_without_a_key() {
+        assert!(Endpoint::resolve_for_completion(&map(&[]), &map(&[])).is_none());
+        assert!(
+            Endpoint::resolve_for_completion(&map(&[]), &map(&[("OPENAI_API_KEY", "  ")]))
+                .is_none()
+        );
+    }
+
+    /// Only an explicit `false`, for the reason summaries take the same stance.
+    #[test]
+    fn plugin_completions_are_on_unless_switched_off_in_so_many_words() {
+        assert!(!plugin_completions_enabled(&map(&[(
+            "plugin_completions",
+            "false"
+        )])));
+        assert!(!plugin_completions_enabled(&map(&[(
+            "plugin_completions",
+            "FALSE"
+        )])));
+        assert!(plugin_completions_enabled(&map(&[(
+            "plugin_completions",
+            "flase"
+        )])));
+        assert!(plugin_completions_enabled(&map(&[(
+            "plugin_completions",
+            "true"
+        )])));
+        assert!(plugin_completions_enabled(&map(&[])));
+        // The two gates are independent: switching summaries off says nothing about this.
+        assert!(plugin_completions_enabled(&map(&[("summaries", "false")])));
+    }
+
+    #[test]
+    fn a_pinned_completion_model_is_read_and_whitespace_is_not_one() {
+        assert_eq!(
+            pinned_completion_model(&map(&[("plugin_completion_model", "gpt-5")])).as_deref(),
+            Some("gpt-5")
+        );
+        assert_eq!(
+            pinned_completion_model(&map(&[("plugin_completion_model", "   ")])),
+            None
+        );
+        assert_eq!(pinned_completion_model(&map(&[("model", "gpt-5")])), None);
     }
 
     #[test]

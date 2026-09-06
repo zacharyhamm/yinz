@@ -81,6 +81,7 @@ nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "sign
 signal-hook = { workspace = true }
 
 [dev-dependencies]
+hocus-proto = { path = "../default-plugins/hocus-proto" }
 png = { version = "0.17.16", default-features = false }
 criterion = { workspace = true }
 hegeltest = "0.29.3"

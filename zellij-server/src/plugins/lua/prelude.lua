@@ -1713,6 +1713,109 @@ table.insert(pipe_intercepts, function(message)
   return false
 end)
 
+--- A one-shot model call: the plugin's own turn, not hocus's.
+---
+--- Served by hocus-agentd, the half of hocus that is always running, so it needs no hocus
+--- pane open and does not contend with the user's conversation. Stateless: no transcript, no
+--- hocus tools, no session prompt. Whatever you send is everything the model sees.
+---
+---     local reply = zellij.await(zellij.hocus.complete {
+---       system = "You name panes. One short noun phrase, no punctuation.",
+---       messages = { { role = "user", content = screen } },
+---       timeout = 60,
+---     })
+---     if reply.error then
+---       zellij.log(reply.error)
+---     else
+---       zellij.rename_terminal_pane { pane_id = id, name = reply.content }
+---     end
+---
+--- Which means a tool loop is yours to drive: pass `tools`, get `reply.tool_calls` back as a
+--- list of `{ id, name, arguments }` - `arguments` the raw JSON string the model wrote - run
+--- them yourself, and call again with the assistant's calls and your results appended:
+---
+---     table.insert(messages, { role = "assistant", tool_calls = reply.tool_calls })
+---     table.insert(messages, { role = "tool", tool_call_id = call.id, content = result })
+---
+--- Answers `{ content, tool_calls, finish_reason, usage, model }` on success and
+--- `{ error = "..." }` on anything else - a session with no API key, a rate limit, a timeout.
+--- Needs `message_and_launch_other_plugins` and `read_application_state`, and hocus configured; the
+--- user can switch it off with `plugin_completions "false"` on hocus's config block.
+local HOCUS_COMPLETE, HOCUS_COMPLETE_RESULT = "hocus_complete", "hocus_complete_result"
+local hocus_completions = {} -- request id -> { resolve, plugin_id }
+local hocus_complete_count = 0
+
+function zellij.hocus.complete(opts)
+  hocus_complete_count = hocus_complete_count + 1
+  local request_id = interpreter_id .. ":hc" .. hocus_complete_count
+  local aw, resolve = zellij.async.future()
+  local ok, snapshot = pcall(zellij.get_session_list)
+  if not ok or type(snapshot) ~= "table" then
+    resolve { error = "cannot discover hocus-agentd: " .. tostring(snapshot) }
+    return aw
+  end
+  local daemon_id
+  for _, session in ipairs(snapshot.live_sessions or {}) do
+    if session.is_current_session then
+      for id, plugin in pairs(session.plugins or {}) do
+        if plugin.location == "zellij:hocus-agentd" then
+          if daemon_id ~= nil then
+            resolve { error = "multiple hocus-agentd plugins in the current session" }
+            return aw
+          end
+          daemon_id = id
+        end
+      end
+    end
+  end
+  if daemon_id == nil then
+    resolve { error = "no hocus-agentd in the current session" }
+    return aw
+  end
+  hocus_completions[request_id] = { resolve = resolve, plugin_id = daemon_id }
+  -- Address the existing daemon by its host-reported id, without launching or broadcasting.
+  zellij.message_to_plugin {
+    destination_plugin_id = daemon_id,
+    message_name = HOCUS_COMPLETE,
+    message_payload = zellij.json.encode {
+      request_id = request_id,
+      messages = opts.messages,
+      system = opts.system,
+      model = opts.model,
+      tools = opts.tools,
+      tool_choice = opts.tool_choice,
+      temperature = opts.temperature,
+      max_tokens = opts.max_tokens,
+    },
+  }
+  -- A daemon can disappear or stop answering after discovery. Always bound the wait.
+  local timeout = opts.timeout or 60
+  table.insert(at(timeout).on_settle, function()
+    if hocus_completions[request_id] then
+      hocus_completions[request_id] = nil
+      resolve { error = "no answer from hocus-agentd in " .. timeout .. "s" }
+    end
+  end)
+  return aw
+end
+
+table.insert(pipe_intercepts, function(message)
+  if message.name == HOCUS_COMPLETE then
+    -- Reserve the completion wire for the daemon, rather than the plugin's own pipe handler.
+    return true
+  elseif message.name == HOCUS_COMPLETE_RESULT then
+    local ok, reply = pcall(zellij.json.decode, message.payload or "")
+    local pending = ok and type(reply) == "table" and hocus_completions[reply.request_id]
+    if pending and type(message.source) == "table" and message.source.Plugin == pending.plugin_id then
+      hocus_completions[reply.request_id] = nil
+      if reply.error == "" then reply.error = nil end
+      pending.resolve(reply)
+    end
+    return true
+  end
+  return false
+end)
+
 --- Called from `__load`: the two configuration keys hocus sets on an extension it launched.
 local function note_hocus_launch(config)
   local namespace, path = config and config.hocus_extension_name, config and config.hocus_extension_path

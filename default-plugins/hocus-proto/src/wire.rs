@@ -180,6 +180,27 @@ pub const ASK: &str = "hocus_ask";
 /// hocus" — a broadcast to nobody is silent.
 pub const ASK_ACK: &str = "hocus_ask_ack";
 
+/// → hocus-agentd: one stateless completion, from a plugin or from `zellij pipe`.
+///
+/// [`ASK`] puts a question into the user's conversation and answers only whether hocus took
+/// it. This is the other thing a plugin might want: its own turn, with its own messages and
+/// its own tools, answered to itself. The daemon keeps nothing between requests — everything
+/// the model is to see travels in the [`CompletionRequest`] — which is what lets a caller
+/// drive its own tool loop by sending the whole transcript back each round.
+///
+/// Discover exactly one `zellij:hocus-agentd` in the current session through
+/// `get_session_list`, then send with `destination_plugin_id`. This needs
+/// `read_application_state` and `message_and_launch_other_plugins`. Discovery failure sends
+/// nothing. Accept replies only from the discovered plugin ID, with the matching request ID.
+/// A bare daemon URL can launch another instance, so callers must not use it as the address.
+pub const COMPLETE: &str = "hocus_complete";
+/// hocus-agentd → the caller: what the model said.
+///
+/// Addressed by `destination_plugin_id`, taken from the `PipeSource::Plugin` of the request,
+/// for the reason [`ASK_ACK`] is: an asker is one of possibly several and must not read
+/// somebody else's answer. A CLI caller is answered on its own pipe instead.
+pub const COMPLETE_RESULT: &str = "hocus_complete_result";
+
 /// One agent poll: what goes out and what comes back. The activity map rides
 /// along both ways so the caller's copy stays the only truth — the poller keeps
 /// no state of its own.
@@ -371,6 +392,128 @@ pub struct AskAck {
     pub detail: String,
 }
 
+/// One turn of a conversation the *caller* owns.
+///
+/// Every field the model is to see is here, because the daemon holds nothing between
+/// requests. That is the whole design: a caller that wants a tool loop runs one by sending
+/// this again with the assistant's calls and its own results appended.
+///
+/// The endpoint, the key and the provider are deliberately absent. A caller names messages,
+/// tools and at most a model — never where to send them or with what credentials — so the
+/// worst a hostile plugin can do is spend tokens at the user's own endpoint.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CompletionRequest {
+    /// The caller's own correlation id, echoed on the reply untouched.
+    ///
+    /// A plugin needs one: it may have several in flight and is answered on a message name
+    /// it shares with every other caller. Someone at a shell does not, and may leave it
+    /// empty — the answer comes back down their own pipe — which is the stance
+    /// [`Mutation::request_id`] already takes.
+    #[serde(default)]
+    pub request_id: String,
+    pub messages: Vec<CompletionMessage>,
+    /// Prepended as a `system` message.
+    ///
+    /// A convenience over writing one into `messages`, and the shape a caller wants that is
+    /// asking one question rather than keeping a transcript.
+    #[serde(default)]
+    pub system: Option<String>,
+    /// Override the configured model, unless the session pinned one — see
+    /// `llm::pinned_completion_model`.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// OpenAI-shaped tool specs, passed to the endpoint verbatim.
+    ///
+    /// Untyped because they are the caller's, not ours: a schema here would be one more
+    /// thing to keep in step with whatever the provider accepts this month, and every
+    /// mistake in one is already reported by the endpoint in words.
+    #[serde(default)]
+    pub tools: Vec<serde_json::Value>,
+    /// `"auto"`, `"none"`, `"required"`, or a `{"type":"function",…}` object. Passed through.
+    #[serde(default)]
+    pub tool_choice: Option<serde_json::Value>,
+    /// Omitted from the body entirely when unset, for the reason
+    /// `agents::summary_request_body` omits both: providers disagree about them, and a
+    /// rejected request buys nothing over a slightly long answer.
+    #[serde(default)]
+    pub temperature: Option<f64>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+}
+
+/// One message, in the one shape all four roles fit through.
+///
+/// Flat where hocus's own `api::WireMessage` is an untagged enum, because this crosses a
+/// JSON boundary a Lua table has to be able to write by hand.
+/// `completion::completion_request_body` is what re-nests it into the shapes the endpoint
+/// expects.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CompletionMessage {
+    /// `system`, `user`, `assistant` or `tool`.
+    pub role: String,
+    #[serde(default)]
+    pub content: String,
+    /// On an `assistant` message handed back: what the model asked for last round.
+    #[serde(default)]
+    pub tool_calls: Vec<CompletionToolCall>,
+    /// On a `tool` message: which call this answers.
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+}
+
+/// One tool call, flattened out of the endpoint's `{id, type, function:{name, arguments}}`.
+///
+/// `arguments` stays the raw JSON *string* the model produced, undecoded. A model that emits
+/// malformed arguments is a thing the caller has to be told about rather than have swallowed
+/// by a parse failure here, and it is also the only form that survives a round trip back
+/// into the next request byte for byte.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletionToolCall {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub arguments: String,
+}
+
+/// What the turn cost, as the endpoint reported it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletionUsage {
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    #[serde(default)]
+    pub completion_tokens: u64,
+    #[serde(default)]
+    pub total_tokens: u64,
+}
+
+/// What became of a [`CompletionRequest`].
+///
+/// One shape for every outcome with `error` empty on success, the stance [`AskAck::detail`]
+/// and [`ResumeResult::detail`] already take. An enum would read better in Rust and worse in
+/// the Lua table this becomes, and a caller has to branch on failure either way.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CompletionReply {
+    pub request_id: String,
+    #[serde(default)]
+    pub content: String,
+    #[serde(default)]
+    pub tool_calls: Vec<CompletionToolCall>,
+    /// `stop`, `tool_calls`, `length`, … as the endpoint named it. Empty when the request
+    /// never reached one.
+    #[serde(default)]
+    pub finish_reason: String,
+    #[serde(default)]
+    pub usage: Option<CompletionUsage>,
+    /// The model that actually answered, as the endpoint named it. Empty on a failure and
+    /// on a provider that does not echo it.
+    #[serde(default)]
+    pub model: String,
+    /// Empty on success. Otherwise the whole of what went wrong: a refusal from the daemon,
+    /// `llm::api_error_message` for a non-2xx, or an answer that never arrived.
+    #[serde(default)]
+    pub error: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +561,111 @@ mod tests {
         let ack: AskAck = serde_json::from_str(&json).expect("parsed");
         assert_eq!(ack.outcome, AskOutcome::Refused);
         assert_eq!(ack.detail, "hocus has no working API configuration");
+    }
+
+    /// The smallest thing a caller can send. Everything but `messages` is optional so a
+    /// shell one-liner is a shell one-liner.
+    #[test]
+    fn a_completion_request_parses_with_nothing_but_its_messages() {
+        let request: CompletionRequest =
+            serde_json::from_str(r#"{"messages":[{"role":"user","content":"why?"}]}"#)
+                .expect("parsed");
+        assert!(request.request_id.is_empty());
+        assert_eq!(request.messages.len(), 1);
+        assert_eq!(request.messages[0].role, "user");
+        assert!(request.messages[0].tool_calls.is_empty());
+        assert_eq!(request.messages[0].tool_call_id, None);
+        assert_eq!(request.system, None);
+        assert_eq!(request.model, None);
+        assert!(request.tools.is_empty());
+        assert_eq!(request.tool_choice, None);
+        assert_eq!(request.temperature, None);
+        assert_eq!(request.max_tokens, None);
+    }
+
+    /// The round a caller's own tool loop sends back: the assistant's calls, then a result
+    /// naming the call it answers.
+    #[test]
+    fn a_completion_request_round_trips_a_tool_round() {
+        let request = CompletionRequest {
+            request_id: "lua:hc1".to_owned(),
+            messages: vec![
+                CompletionMessage {
+                    role: "assistant".to_owned(),
+                    tool_calls: vec![CompletionToolCall {
+                        id: "call_1".to_owned(),
+                        name: "lookup".to_owned(),
+                        arguments: r#"{"city":"Oslo"}"#.to_owned(),
+                    }],
+                    ..Default::default()
+                },
+                CompletionMessage {
+                    role: "tool".to_owned(),
+                    content: "clear".to_owned(),
+                    tool_call_id: Some("call_1".to_owned()),
+                    ..Default::default()
+                },
+            ],
+            tools: vec![serde_json::json!({ "type": "function" })],
+            tool_choice: Some(serde_json::json!("auto")),
+            temperature: Some(0.5),
+            max_tokens: Some(256),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&request).expect("encoded");
+        let back: CompletionRequest = serde_json::from_str(&json).expect("parsed");
+        assert_eq!(back.request_id, "lua:hc1");
+        assert_eq!(
+            back.messages[0].tool_calls[0].arguments,
+            r#"{"city":"Oslo"}"#
+        );
+        assert_eq!(back.messages[1].tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(back.tool_choice, Some(serde_json::json!("auto")));
+        assert_eq!(back.temperature, Some(0.5));
+        assert_eq!(back.max_tokens, Some(256));
+    }
+
+    #[test]
+    fn a_completion_reply_round_trips_with_tool_calls_and_usage() {
+        let reply = CompletionReply {
+            request_id: "lua:hc1".to_owned(),
+            content: "here".to_owned(),
+            tool_calls: vec![CompletionToolCall {
+                id: "call_1".to_owned(),
+                name: "lookup".to_owned(),
+                arguments: "{}".to_owned(),
+            }],
+            finish_reason: "tool_calls".to_owned(),
+            usage: Some(CompletionUsage {
+                prompt_tokens: 38,
+                completion_tokens: 24,
+                total_tokens: 62,
+            }),
+            model: "gpt-5".to_owned(),
+            error: String::new(),
+        };
+        let json = serde_json::to_string(&reply).expect("encoded");
+        let back: CompletionReply = serde_json::from_str(&json).expect("parsed");
+        assert_eq!(back.request_id, "lua:hc1");
+        assert_eq!(back.tool_calls, reply.tool_calls);
+        assert_eq!(back.finish_reason, "tool_calls");
+        assert_eq!(back.usage.unwrap().total_tokens, 62);
+        assert_eq!(back.model, "gpt-5");
+        // Success is the empty error, which is what a caller branches on.
+        assert!(back.error.is_empty());
+    }
+
+    /// A provider that echoes no usage, and a caller that must not need one on the wire to
+    /// read the answer.
+    #[test]
+    fn a_completion_reply_parses_without_its_optional_halves() {
+        let reply: CompletionReply =
+            serde_json::from_str(r#"{"request_id":"x","content":"hi"}"#).expect("parsed");
+        assert_eq!(reply.content, "hi");
+        assert!(reply.tool_calls.is_empty());
+        assert!(reply.finish_reason.is_empty());
+        assert_eq!(reply.usage, None);
+        assert!(reply.error.is_empty());
     }
 
     /// The accepting outcomes have nothing to explain, so an asker must not

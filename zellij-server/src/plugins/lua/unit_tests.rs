@@ -997,6 +997,95 @@ fn the_agent_harness_example_loads_and_waits_for_its_permissions() {
     );
 }
 
+/// `example-plugins/hocus-complete.lua` is what the completions documentation points at, and
+/// it is the only worked example of the loop — ask, run the model's tool, ask again — so drive
+/// the whole of it rather than only the load.
+#[test]
+fn the_hocus_complete_example_runs_a_whole_tool_loop() {
+    // The requests go out over `message_to_plugin`, which a test env swallows, so stand in for
+    // it and keep the ids — the same trick the rpc tests use, applied from outside the file so
+    // the example itself stays the thing the docs point at.
+    let source = example_plugin("hocus-complete.lua").replace(
+        r#"local zellij = require("zellij")"#,
+        r#"local zellij = require("zellij")
+        __sent = {}
+        zellij.message_to_plugin = function(args)
+          assert(args.destination_plugin_id == 3 and args.plugin_url == nil)
+          table.insert(__sent, args.message_payload)
+        end"#,
+    );
+    let source = source.replace(
+        "__sent = {}",
+        &format!("__sent = {{}}\n{COMPLETION_DISCOVERY}"),
+    );
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
+    let mut plugin = load_lua_plugin(&source, "hocus-complete.lua", env).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+
+    plugin
+        .update(&Event::Key(KeyWithModifier::new(BareKey::Enter)))
+        .unwrap();
+
+    /// The id of the last request that went out, read back out of the stub.
+    fn last_request_id(plugin: &mut super::LuaPlugin) -> String {
+        let sent: Vec<String> = plugin
+            .lua
+            .globals()
+            .get("__sent")
+            .expect("the stub recorded what went out");
+        sent.last()
+            .expect("a completion request went out")
+            .split(r#""request_id":""#)
+            .nth(1)
+            .and_then(|value| value.split('"').next())
+            .expect("a request id")
+            .to_owned()
+    }
+    let answer = |plugin: &mut super::LuaPlugin, payload: String| {
+        plugin
+            .pipe(&zellij_types::data::PipeMessage::new(
+                zellij_types::data::PipeSource::Plugin(zellij_types::internal_ids::PluginId::new(
+                    3,
+                )),
+                "hocus_complete_result",
+                &Some(payload),
+                &None,
+                false,
+            ))
+            .unwrap();
+    };
+
+    // Round one: the model asks for the tool, and the example runs it and asks again.
+    let first = last_request_id(&mut plugin);
+    answer(&mut plugin, completion_reply(&first, "", "", true));
+    let second = last_request_id(&mut plugin);
+    assert_ne!(second, first, "the loop sent the transcript back");
+    assert_eq!(plugin.lua.globals().get::<u32>("__discoveries").unwrap(), 2);
+
+    let sent: Vec<String> = plugin.lua.globals().get("__sent").unwrap();
+    let request: serde_json::Value = serde_json::from_str(&sent[0]).unwrap();
+    assert!(request["tools"][0]["function"]["parameters"]
+        .get("properties")
+        .is_none());
+    let continued: serde_json::Value = serde_json::from_str(&sent[1]).unwrap();
+    assert_eq!(continued["messages"][1]["role"], "assistant");
+    assert_eq!(continued["messages"][2]["role"], "tool");
+
+    // Round two: prose, so the loop stops.
+    answer(
+        &mut plugin,
+        completion_reply(&second, "a shell and an editor", "", false),
+    );
+
+    let rendered = String::from_utf8(plugin.render(12, 70).unwrap()).unwrap();
+    assert!(rendered.contains("count_panes"), "got: {rendered}");
+    assert!(
+        rendered.contains("a shell and an editor"),
+        "got: {rendered}"
+    );
+}
+
 #[test]
 fn the_agent_commit_example_loads_and_stages_on_c() {
     // `example-plugins/agent-commit.lua` is what the hooks documentation points at, so it should
@@ -3681,6 +3770,13 @@ fn the_session_list_arrives_as_the_snapshot_the_shim_builds() {
             name: "work".to_owned().into(),
             connected_clients: 2,
             is_current_session: true,
+            plugins: BTreeMap::from([(
+                zellij_types::internal_ids::PluginId::new(3),
+                zellij_types::data::PluginInfo {
+                    location: "zellij:hocus-agentd".to_owned(),
+                    ..Default::default()
+                },
+            )]),
             ..Default::default()
         }],
         resurrectable_sessions: vec![(
@@ -3697,9 +3793,10 @@ fn the_session_list_arrives_as_the_snapshot_the_shim_builds() {
             r#"local live = v.live_sessions[1]
                local dead = v.resurrectable_sessions[1]
                return live.name .. ' ' .. live.connected_clients .. ' ' .. tostring(live.is_current_session)
+                 .. ' ' .. live.plugins[3].location
                  .. ' | ' .. dead[1] .. ' ' .. dead[2].secs"#
         ),
-        "work 2 true | yesterday 90"
+        "work 2 true zellij:hocus-agentd | yesterday 90"
     );
     let reply = ProtobufGetSessionListResponse::from(GetSessionListResponse::Err(
         "not scanning".to_owned(),
@@ -6220,6 +6317,219 @@ fn post_message_to_is_refused_by_name() {
     let error =
         error_from_load(r#"zellij.post_message_to { name = "w", payload = "" }"#).expect("refused");
     assert!(error.contains("not available from Lua"), "got: {error}");
+}
+
+/// Replies use the actual Rust wire format, including the empty success error.
+fn completion_reply(request_id: &str, content: &str, error: &str, tool: bool) -> String {
+    use hocus_proto::wire::{CompletionReply, CompletionToolCall};
+    serde_json::to_string(&CompletionReply {
+        request_id: request_id.to_owned(),
+        content: content.to_owned(),
+        error: error.to_owned(),
+        tool_calls: if tool {
+            vec![CompletionToolCall {
+                id: "c1".to_owned(),
+                name: "count_panes".to_owned(),
+                arguments: "{}".to_owned(),
+            }]
+        } else {
+            vec![]
+        },
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+fn completion_message(
+    source: zellij_types::data::PipeSource,
+    payload: String,
+) -> zellij_types::data::PipeMessage {
+    zellij_types::data::PipeMessage::new(
+        source,
+        "hocus_complete_result",
+        &Some(payload),
+        &None,
+        false,
+    )
+}
+
+const COMPLETION_DISCOVERY: &str = r#"
+    zellij.get_session_list = function()
+      __discoveries = (__discoveries or 0) + 1
+      return { live_sessions = {
+        { is_current_session = false, plugins = { [99] = { location = "zellij:hocus-agentd" } } },
+        { is_current_session = true, plugins = {
+          [3] = { location = "zellij:hocus-agentd" },
+          [4] = { location = "file:/tmp/hocus-agentd.wasm" },
+          [5] = { location = "zellij:hocus-agentd-extra" },
+        } },
+      } }
+    end
+"#;
+
+#[test]
+fn hocus_complete_addresses_daemon_and_checks_reply_source() {
+    use zellij_types::data::PipeSource;
+    use zellij_types::internal_ids::PluginId;
+    for error in ["", "provider refused"] {
+        let source = format!(
+            r#"
+            local zellij = require("zellij")
+            {COMPLETION_DISCOVERY}
+            local M = {{ log = {{}} }}
+            zellij.message_to_plugin = function(args)
+              assert(args.destination_plugin_id == 3 and args.plugin_url == nil)
+              __request = zellij.json.decode(args.message_payload).request_id
+            end
+            function M.load()
+              zellij.task(function()
+                local reply = zellij.await(zellij.hocus.complete {{
+                  messages = {{ {{ role = "user", content = "why?" }} }}, timeout = 0,
+                }})
+                table.insert(M.log, tostring(reply.content) .. "/" .. tostring(reply.error))
+              end)
+            end
+            function M.pipe(message) table.insert(M.log, "unexpected pipe") end
+            function M.render() return table.concat(M.log, " | ") end
+            return M
+        "#
+        );
+        let mut plugin = load_permitted(&source).unwrap();
+        plugin.load(&BTreeMap::new()).unwrap();
+        let request_id: String = plugin.lua.globals().get("__request").unwrap();
+        let payload = completion_reply(&request_id, "answer", error, false);
+        for source in [
+            PipeSource::Plugin(PluginId::new(4)),
+            PipeSource::Cli("cli".to_owned()),
+            PipeSource::Keybind,
+        ] {
+            plugin
+                .pipe(&completion_message(source, payload.clone()))
+                .unwrap();
+            assert_eq!(logged(&mut plugin), "");
+        }
+        plugin
+            .pipe(&completion_message(
+                PipeSource::Plugin(PluginId::new(3)),
+                completion_reply("unrelated", "no", "", false),
+            ))
+            .unwrap();
+        assert_eq!(logged(&mut plugin), "");
+        let reply = completion_message(PipeSource::Plugin(PluginId::new(3)), payload);
+        plugin.pipe(&reply).unwrap();
+        let expected = format!("answer/{}", if error.is_empty() { "nil" } else { error });
+        assert_eq!(logged(&mut plugin), expected);
+        plugin.pipe(&reply).unwrap();
+        plugin
+            .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+                1.0,
+            )))
+            .unwrap();
+        assert_eq!(
+            logged(&mut plugin),
+            expected,
+            "settled requests stay settled"
+        );
+    }
+}
+
+#[test]
+fn hocus_complete_gives_up_when_nothing_answers() {
+    let source = format!(
+        r#"
+        local zellij = require("zellij")
+        {COMPLETION_DISCOVERY}
+        local M = {{ log = "" }}
+        zellij.message_to_plugin = function(args)
+          __request = zellij.json.decode(args.message_payload).request_id
+        end
+        function M.load()
+          zellij.task(function()
+            local reply = zellij.await(zellij.hocus.complete {{
+              messages = {{ {{ role = "user", content = "why?" }} }}, timeout = 0,
+            }})
+            M.log = M.log .. reply.error
+          end)
+        end
+        function M.render() return M.log end
+        return M
+    "#
+    );
+    let mut plugin = load_permitted(&source).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    assert_eq!(logged(&mut plugin), "");
+    plugin
+        .update(&Event::Timer(zellij_types::units::FractionalSeconds::new(
+            1.0,
+        )))
+        .unwrap();
+    let expected = "no answer from hocus-agentd in 0s";
+    assert_eq!(logged(&mut plugin), expected);
+    let request_id: String = plugin.lua.globals().get("__request").unwrap();
+    plugin
+        .pipe(&completion_message(
+            zellij_types::data::PipeSource::Plugin(zellij_types::internal_ids::PluginId::new(3)),
+            completion_reply(&request_id, "late", "", false),
+        ))
+        .unwrap();
+    assert_eq!(logged(&mut plugin), expected);
+}
+
+#[test]
+fn hocus_complete_discovery_failures_send_no_transcript() {
+    for discovery in [
+        "error('permission denied')",
+        "return nil",
+        "return { live_sessions = {} }",
+        "return { live_sessions = { { is_current_session = false, plugins = { [3] = { location = 'zellij:hocus-agentd' } } } } }",
+        "return { live_sessions = { { is_current_session = true, plugins = { [3] = { location = 'file:/tmp/hocus-agentd.wasm' }, [4] = { location = 'zellij:hocus-agentd-extra' } } } } }",
+        "return { live_sessions = { { is_current_session = true, plugins = { [3] = { location = 'zellij:hocus-agentd' }, [4] = { location = 'zellij:hocus-agentd' } } } } }",
+    ] {
+        let source = format!(r#"
+            local zellij = require("zellij")
+            zellij.get_session_list = function() {discovery} end
+            local M = {{ log = "" }}
+            zellij.message_to_plugin = function() M.log = M.log .. "SENT TRANSCRIPT" end
+            function M.load()
+              zellij.task(function()
+                local reply = zellij.await(zellij.hocus.complete {{ messages = {{ {{ role = "user", content = "secret" }} }} }})
+                assert(type(reply.error) == "string" and #reply.error > 0)
+                M.log = M.log .. "error"
+              end)
+            end
+            function M.render() return M.log end
+            return M
+        "#);
+        let mut plugin = load_permitted(&source).unwrap();
+        plugin.load(&BTreeMap::new()).unwrap();
+        assert_eq!(logged(&mut plugin), "error", "{discovery}");
+    }
+}
+
+/// Completion wire messages remain reserved for the prelude and daemon.
+#[test]
+fn a_completion_request_never_reaches_a_plugins_own_pipe() {
+    let mut plugin = load_permitted(
+        r#"
+        local zellij = require("zellij")
+        local M = { log = {} }
+        function M.pipe(message) table.insert(M.log, "pipe:" .. message.name) end
+        function M.render() return table.concat(M.log, " | ") end
+        return M
+        "#,
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    plugin
+        .pipe(&zellij_types::data::PipeMessage::new(
+            zellij_types::data::PipeSource::Plugin(zellij_types::internal_ids::PluginId::new(3)),
+            "hocus_complete",
+            &Some(r#"{"request_id":"x","messages":[]}"#.to_owned()),
+            &None,
+            false,
+        ))
+        .unwrap();
+    assert_eq!(logged(&mut plugin), "");
 }
 
 /// `zellij.hocus.tools` is the whole of an extension's wiring: the registration hocus reads,
