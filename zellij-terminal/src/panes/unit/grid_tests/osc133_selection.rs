@@ -229,8 +229,8 @@ fn double_click_selection_preserved_after_scroll() {
     let selection_after_start = grid.selection.start;
     let selection_after_end = grid.selection.end;
 
-    assert_eq!(selection_after_start.line.0, word_start.line.0 + 1);
-    assert_eq!(selection_after_end.line.0, word_end.line.0 + 1);
+    assert_eq!(selection_after_start.line.get(), word_start.line.get() + 1);
+    assert_eq!(selection_after_end.line.get(), word_end.line.get() + 1);
     assert_eq!(selection_after_start.column, word_start.column);
     assert_eq!(selection_after_end.column, word_end.column);
 
@@ -263,8 +263,8 @@ fn triple_click_selection_preserved_after_scroll() {
     let selection_after_start = grid.selection.start;
     let selection_after_end = grid.selection.end;
 
-    assert_eq!(selection_after_start.line.0, line_start.line.0 + 1);
-    assert_eq!(selection_after_end.line.0, line_end.line.0 + 1);
+    assert_eq!(selection_after_start.line.get(), line_start.line.get() + 1);
+    assert_eq!(selection_after_end.line.get(), line_end.line.get() + 1);
     assert_eq!(selection_after_start.column, line_start.column);
     assert_eq!(selection_after_end.column, line_end.column);
 
@@ -293,8 +293,11 @@ fn double_click_selection_moves_with_multiple_scrolls() {
         grid.scroll_up_one_line();
     }
 
-    assert_eq!(grid.selection.start.line.0, initial_start.line.0 + 5);
-    assert_eq!(grid.selection.end.line.0, initial_end.line.0 + 5);
+    assert_eq!(
+        grid.selection.start.line.get(),
+        initial_start.line.get() + 5
+    );
+    assert_eq!(grid.selection.end.line.get(), initial_end.line.get() + 5);
     assert_eq!(grid.selection.start.column, initial_start.column);
     assert_eq!(grid.selection.end.column, initial_end.column);
 }
@@ -318,8 +321,8 @@ fn single_click_drag_selection_preserved_after_scroll() {
 
     grid.scroll_up_one_line();
 
-    assert_eq!(grid.selection.start.line.0, start_before.line.0 + 1);
-    assert_eq!(grid.selection.end.line.0, end_before.line.0 + 1);
+    assert_eq!(grid.selection.start.line.get(), start_before.line.get() + 1);
+    assert_eq!(grid.selection.end.line.get(), end_before.line.get() + 1);
     assert_eq!(grid.selection.start.column, start_before.column);
     assert_eq!(grid.selection.end.column, end_before.column);
 }

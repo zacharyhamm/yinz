@@ -115,13 +115,13 @@ fn partial_scroll_region_selection_adjusted_on_newline() {
     let pos = Position::new(3, 5);
     grid.start_selection(&pos);
     grid.end_selection(&pos);
-    let start_before = grid.selection.start.line.0;
-    let end_before = grid.selection.end.line.0;
+    let start_before = grid.selection.start.line.get();
+    let end_before = grid.selection.end.line.get();
 
     feed_bytes(&mut grid, b"\x1b[8;1H\r\nnew line");
 
-    assert_eq!(grid.selection.start.line.0, start_before - 1);
-    assert_eq!(grid.selection.end.line.0, end_before - 1);
+    assert_eq!(grid.selection.start.line.get(), start_before - 1);
+    assert_eq!(grid.selection.end.line.get(), end_before - 1);
 }
 
 #[test]
@@ -132,13 +132,13 @@ fn partial_scroll_region_selection_adjusted_on_csi_s() {
     let pos = Position::new(4, 2);
     grid.start_selection(&pos);
     grid.end_selection(&pos);
-    let start_before = grid.selection.start.line.0;
-    let end_before = grid.selection.end.line.0;
+    let start_before = grid.selection.start.line.get();
+    let end_before = grid.selection.end.line.get();
 
     feed_bytes(&mut grid, b"\x1b[2S");
 
-    assert_eq!(grid.selection.start.line.0, start_before - 2);
-    assert_eq!(grid.selection.end.line.0, end_before - 2);
+    assert_eq!(grid.selection.start.line.get(), start_before - 2);
+    assert_eq!(grid.selection.end.line.get(), end_before - 2);
 }
 
 #[test]
@@ -149,13 +149,13 @@ fn partial_scroll_region_selection_adjusted_on_csi_m() {
     let pos = Position::new(5, 2);
     grid.start_selection(&pos);
     grid.end_selection(&pos);
-    let start_before = grid.selection.start.line.0;
-    let end_before = grid.selection.end.line.0;
+    let start_before = grid.selection.start.line.get();
+    let end_before = grid.selection.end.line.get();
 
     feed_bytes(&mut grid, b"\x1b[3M");
 
-    assert_eq!(grid.selection.start.line.0, start_before - 3);
-    assert_eq!(grid.selection.end.line.0, end_before - 3);
+    assert_eq!(grid.selection.start.line.get(), start_before - 3);
+    assert_eq!(grid.selection.end.line.get(), end_before - 3);
 }
 
 #[test]

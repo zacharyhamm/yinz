@@ -129,7 +129,7 @@ fn the_last_completed_command_output_is_the_most_recent_finished_one() {
         .expect("twelve completed commands");
     assert_eq!(output, "out11");
     assert!(
-        start.line.0 < end.line.0,
+        start.line.get() < end.line.get(),
         "the output spans from the C marker down to the D marker"
     );
 }
@@ -166,8 +166,8 @@ fn the_command_output_flash_follows_its_rows_into_the_scrollback() {
     feed_bytes(&mut grid, b"late output\r\n");
 
     let after = grid.command_output_flash.unwrap();
-    assert_eq!(after.start.line.0, before.start.line.0 - 1);
-    assert_eq!(after.end.line.0, before.end.line.0 - 1);
+    assert_eq!(after.start.line.get(), before.start.line.get() - 1);
+    assert_eq!(after.end.line.get(), before.end.line.get() - 1);
 }
 
 #[test]

@@ -340,11 +340,11 @@ pub(crate) fn keys_with_modifier(tc: &hegel::TestCase) -> KeyWithModifier {
 }
 
 /// The line crosses the client-server wire as `int32 line`; the column is `uint64` there and
-/// `int64` on the plugin wire, both of which hold any `usize`.
+/// `int64` on the plugin wire, so generate values representable by both.
 pub(crate) fn positions(tc: &hegel::TestCase) -> Position {
     Position {
-        line: Line(tc.draw(generators::integers::<i32>()) as isize),
-        column: Column(tc.draw(generators::integers::<usize>())),
+        line: Line::new(tc.draw(generators::integers::<i32>()) as isize),
+        column: Column::new(tc.draw(generators::integers::<usize>()) & (i64::MAX as usize)),
     }
 }
 

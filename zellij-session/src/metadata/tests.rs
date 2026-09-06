@@ -61,15 +61,15 @@ fn serialize_and_deserialize_session_info_with_data() {
             exited: false,
             exit_status: None,
             is_held: false,
-            pane_x: 0,
-            pane_content_x: 1,
-            pane_y: 0,
-            pane_content_y: 1,
-            pane_rows: 5,
-            pane_content_rows: 4,
-            pane_columns: 22,
-            pane_content_columns: 21,
-            cursor_coordinates_in_pane: Some((0, 0)),
+            pane_x: zellij_types::position::Column::new(0),
+            pane_content_x: zellij_types::position::Column::new(1),
+            pane_y: zellij_types::position::Row::new(0),
+            pane_content_y: zellij_types::position::Row::new(1),
+            pane_rows: zellij_types::position::RowCount::new(5),
+            pane_content_rows: zellij_types::position::RowCount::new(4),
+            pane_columns: zellij_types::position::ColumnCount::new(22),
+            pane_content_columns: zellij_types::position::ColumnCount::new(21),
+            cursor_coordinates_in_pane: Some((0, 0).into()),
             terminal_command: Some("foo".to_owned()),
             plugin_url: None,
             is_selectable: true,
@@ -91,15 +91,15 @@ fn serialize_and_deserialize_session_info_with_data() {
             exited: false,
             exit_status: None,
             is_held: false,
-            pane_x: 0,
-            pane_content_x: 1,
-            pane_y: 0,
-            pane_content_y: 1,
-            pane_rows: 5,
-            pane_content_rows: 4,
-            pane_columns: 22,
-            pane_content_columns: 21,
-            cursor_coordinates_in_pane: Some((0, 0)),
+            pane_x: zellij_types::position::Column::new(0),
+            pane_content_x: zellij_types::position::Column::new(1),
+            pane_y: zellij_types::position::Row::new(0),
+            pane_content_y: zellij_types::position::Row::new(1),
+            pane_rows: zellij_types::position::RowCount::new(5),
+            pane_content_rows: zellij_types::position::RowCount::new(4),
+            pane_columns: zellij_types::position::ColumnCount::new(22),
+            pane_content_columns: zellij_types::position::ColumnCount::new(21),
+            cursor_coordinates_in_pane: Some((0, 0).into()),
             terminal_command: None,
             plugin_url: Some("i_am_a_fake_plugin".to_owned()),
             is_selectable: true,
@@ -128,10 +128,10 @@ fn serialize_and_deserialize_session_info_with_data() {
                 ],
                 active_swap_layout_name: Some("BASE".to_owned()),
                 is_swap_layout_dirty: true,
-                viewport_rows: 10,
-                viewport_columns: 10,
-                display_area_rows: 10,
-                display_area_columns: 10,
+                viewport_rows: zellij_types::position::RowCount::new(10),
+                viewport_columns: zellij_types::position::ColumnCount::new(10),
+                display_area_rows: zellij_types::position::RowCount::new(10),
+                display_area_columns: zellij_types::position::ColumnCount::new(10),
                 selectable_tiled_panes_count: 10,
                 selectable_floating_panes_count: 10,
                 tab_id: TabId::new(0),
@@ -152,10 +152,10 @@ fn serialize_and_deserialize_session_info_with_data() {
                 ],
                 active_swap_layout_name: None,
                 is_swap_layout_dirty: false,
-                viewport_rows: 10,
-                viewport_columns: 10,
-                display_area_rows: 10,
-                display_area_columns: 10,
+                viewport_rows: zellij_types::position::RowCount::new(10),
+                viewport_columns: zellij_types::position::ColumnCount::new(10),
+                display_area_rows: zellij_types::position::RowCount::new(10),
+                display_area_columns: zellij_types::position::ColumnCount::new(10),
                 selectable_tiled_panes_count: 10,
                 selectable_floating_panes_count: 10,
                 tab_id: TabId::new(1),
@@ -189,7 +189,9 @@ fn serialize_and_deserialize_session_info_with_data() {
 #[test]
 fn pane_identity_checks_kdl_range() {
     let pane = PaneInfo::default();
-    let encoded = crate::metadata::pane_info::encode_to_kdl(&pane).to_string();
+    let encoded = crate::metadata::pane_info::encode_to_kdl(&pane)
+        .unwrap()
+        .to_string();
     for id in [-1_i64, i64::from(u32::MAX) + 1, i64::MAX] {
         let document = encoded
             .replacen("id 0", &format!("id {id}"), 1)
@@ -225,5 +227,40 @@ fn tab_identity_checks_kdl_range() {
             .tab_history
             .insert(ClientId::new(1), vec![TabId::new(usize::MAX)]);
         assert!(crate::metadata::session_info::to_string(&session).is_err());
+    }
+}
+
+#[test]
+fn manifest_coordinates_preserve_kdl_and_reject_out_of_range_values() {
+    use zellij_types::position::{CellCoordinates, Column, ColumnCount, Row};
+    let pane = PaneInfo {
+        pane_x: Column::new(7),
+        cursor_coordinates_in_pane: Some(CellCoordinates::new(Column::new(5), Row::new(3))),
+        ..Default::default()
+    };
+    let encoded = pane_info::encode_to_kdl(&pane).unwrap().to_string();
+    assert!(encoded.contains("pane_x 7"));
+    assert!(encoded.contains("cursor_coordinates_in_pane 5 3"));
+    let (_, decoded) = pane_info::decode_from_kdl(&encoded.parse().unwrap()).unwrap();
+    assert_eq!(decoded.pane_x, pane.pane_x);
+    assert_eq!(
+        decoded.cursor_coordinates_in_pane,
+        pane.cursor_coordinates_in_pane
+    );
+    for invalid in [
+        encoded.replace("pane_x 7", "pane_x -1"),
+        encoded.replace(
+            "cursor_coordinates_in_pane 5 3",
+            "cursor_coordinates_in_pane 5 -1",
+        ),
+    ] {
+        assert!(pane_info::decode_from_kdl(&invalid.parse().unwrap()).is_err());
+    }
+    if usize::BITS == 64 {
+        let pane = PaneInfo {
+            pane_columns: ColumnCount::new(usize::MAX),
+            ..Default::default()
+        };
+        assert!(pane_info::encode_to_kdl(&pane).is_err());
     }
 }

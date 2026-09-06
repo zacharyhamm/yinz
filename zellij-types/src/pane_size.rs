@@ -261,8 +261,8 @@ impl Eq for Constraint {}
 
 impl PaneGeom {
     pub fn contains(&self, point: &Position) -> bool {
-        let col = point.column.0;
-        let row = point.line.0 as usize;
+        let col = point.column.get();
+        let row = point.line.get() as usize;
         self.x <= col
             && col < self.x + self.cols.as_usize()
             && self.y <= row

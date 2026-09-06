@@ -447,10 +447,10 @@ pub(crate) struct Rect {
 impl Rect {
     pub(crate) fn of(pane: &PaneInfo) -> Rect {
         Rect {
-            x: pane.pane_x,
-            y: pane.pane_y,
-            cols: pane.pane_columns,
-            rows: pane.pane_rows,
+            x: (pane.pane_x).get(),
+            y: (pane.pane_y).get(),
+            cols: (pane.pane_columns).get(),
+            rows: (pane.pane_rows).get(),
         }
     }
 
@@ -787,7 +787,10 @@ fn placement_terms(
 /// (`OverlayPanes::surface`), which is the tab's display area - chrome included - at the screen
 /// origin. That is the pair the arithmetic in `overlay_rects` has to use.
 pub(crate) fn surface_of(tab: &TabInfo) -> (usize, usize) {
-    (tab.display_area_rows, tab.display_area_columns)
+    (
+        (tab.display_area_rows).get(),
+        (tab.display_area_columns).get(),
+    )
 }
 
 /// What to do about an agent list that is not on the conversation's tab.

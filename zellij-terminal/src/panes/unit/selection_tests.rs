@@ -424,8 +424,8 @@ mod props {
     fn oracle_contains(selection: &Selection, row: usize, col: usize) -> bool {
         let sorted = selection.sorted();
         let cell = (row as isize, col);
-        let start = (sorted.start.line.0, sorted.start.column.0);
-        let end = (sorted.end.line.0, sorted.end.column.0);
+        let start = (sorted.start.line.get(), sorted.start.column.get());
+        let end = (sorted.end.line.get(), sorted.end.column.get());
         cell >= start && cell < end
     }
 
@@ -435,8 +435,8 @@ mod props {
         // Query near the selection's own lines, otherwise almost every probe
         // lands outside and the test proves nothing.
         let sorted = selection.sorted();
-        let low = sorted.start.line.0.max(0);
-        let high = sorted.end.line.0.max(0);
+        let low = sorted.start.line.get().max(0);
+        let high = sorted.end.line.get().max(0);
         let row = tc.draw(
             generators::integers::<isize>()
                 .min_value((low - 2).max(0))
@@ -491,8 +491,8 @@ mod props {
         let sorted = selection.sorted();
         let row = tc.draw(
             generators::integers::<isize>()
-                .min_value(sorted.start.line.0.max(0))
-                .max_value(sorted.end.line.0.max(0)),
+                .min_value(sorted.start.line.get().max(0))
+                .max_value(sorted.end.line.get().max(0)),
         ) as usize;
         let col = tc.draw(generators::integers::<usize>().max_value(u16::MAX as usize));
         if selection.contains(row, col) {
@@ -540,8 +540,8 @@ mod props {
             );
         } else {
             assert_eq!(
-                selection.end.line.0,
-                original.end.line.0 - lines as isize,
+                selection.end.line.get(),
+                original.end.line.get() - lines as isize,
                 "inactive selection {:?} did not move its end",
                 original
             );
@@ -558,8 +558,8 @@ mod props {
         let sorted = selection.sorted();
         let row = tc.draw(
             generators::integers::<isize>()
-                .min_value(sorted.start.line.0.max(0))
-                .max_value(sorted.end.line.0.max(0)),
+                .min_value(sorted.start.line.get().max(0))
+                .max_value(sorted.end.line.get().max(0)),
         ) as usize;
         let col = tc.draw(generators::integers::<usize>().max_value(u16::MAX as usize));
         assert_eq!(

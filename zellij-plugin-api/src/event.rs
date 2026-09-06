@@ -62,6 +62,7 @@ use zellij_types::internal_ids::SessionName;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::keys::{KeyModifier, KeyWithModifier};
+use zellij_types::position::{CellCoordinates, Column, ColumnCount, Row, RowCount};
 use zellij_types::style::{HostTerminalThemeMode, Style};
 #[allow(hidden_glob_reexports)]
 use {
@@ -2241,17 +2242,25 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
             exited: protobuf_pane_info.exited,
             exit_status: protobuf_pane_info.exit_status,
             is_held: protobuf_pane_info.is_held,
-            pane_x: protobuf_pane_info.pane_x as usize,
-            pane_content_x: protobuf_pane_info.pane_content_x as usize,
-            pane_y: protobuf_pane_info.pane_y as usize,
-            pane_content_y: protobuf_pane_info.pane_content_y as usize,
-            pane_rows: protobuf_pane_info.pane_rows as usize,
-            pane_content_rows: protobuf_pane_info.pane_content_rows as usize,
-            pane_columns: protobuf_pane_info.pane_columns as usize,
-            pane_content_columns: protobuf_pane_info.pane_content_columns as usize,
+            pane_x: Column::try_from(protobuf_pane_info.pane_x)
+                .map_err(|_| "pane_x exceeds usize")?,
+            pane_content_x: Column::try_from(protobuf_pane_info.pane_content_x)
+                .map_err(|_| "pane_content_x exceeds usize")?,
+            pane_y: Row::try_from(protobuf_pane_info.pane_y).map_err(|_| "pane_y exceeds usize")?,
+            pane_content_y: Row::try_from(protobuf_pane_info.pane_content_y)
+                .map_err(|_| "pane_content_y exceeds usize")?,
+            pane_rows: RowCount::try_from(protobuf_pane_info.pane_rows)
+                .map_err(|_| "pane_rows exceeds usize")?,
+            pane_content_rows: RowCount::try_from(protobuf_pane_info.pane_content_rows)
+                .map_err(|_| "pane_content_rows exceeds usize")?,
+            pane_columns: ColumnCount::try_from(protobuf_pane_info.pane_columns)
+                .map_err(|_| "pane_columns exceeds usize")?,
+            pane_content_columns: ColumnCount::try_from(protobuf_pane_info.pane_content_columns)
+                .map_err(|_| "pane_content_columns exceeds usize")?,
             cursor_coordinates_in_pane: protobuf_pane_info
                 .cursor_coordinates_in_pane
-                .map(|position| (position.column as usize, position.line as usize)),
+                .map(TryInto::try_into)
+                .transpose()?,
             terminal_command: protobuf_pane_info.terminal_command,
             plugin_url: protobuf_pane_info.plugin_url,
             is_selectable: protobuf_pane_info.is_selectable,
@@ -2306,20 +2315,23 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
             exited: pane_info.exited,
             exit_status: pane_info.exit_status,
             is_held: pane_info.is_held,
-            pane_x: pane_info.pane_x as u32,
-            pane_content_x: pane_info.pane_content_x as u32,
-            pane_y: pane_info.pane_y as u32,
-            pane_content_y: pane_info.pane_content_y as u32,
-            pane_rows: pane_info.pane_rows as u32,
-            pane_content_rows: pane_info.pane_content_rows as u32,
-            pane_columns: pane_info.pane_columns as u32,
-            pane_content_columns: pane_info.pane_content_columns as u32,
-            cursor_coordinates_in_pane: pane_info.cursor_coordinates_in_pane.map(|(x, y)| {
-                ProtobufPosition {
-                    column: x as i64,
-                    line: y as i64,
-                }
-            }),
+            pane_x: u32::try_from(pane_info.pane_x).map_err(|_| "pane_x exceeds u32")?,
+            pane_content_x: u32::try_from(pane_info.pane_content_x)
+                .map_err(|_| "pane_content_x exceeds u32")?,
+            pane_y: u32::try_from(pane_info.pane_y).map_err(|_| "pane_y exceeds u32")?,
+            pane_content_y: u32::try_from(pane_info.pane_content_y)
+                .map_err(|_| "pane_content_y exceeds u32")?,
+            pane_rows: u32::try_from(pane_info.pane_rows).map_err(|_| "pane_rows exceeds u32")?,
+            pane_content_rows: u32::try_from(pane_info.pane_content_rows)
+                .map_err(|_| "pane_content_rows exceeds u32")?,
+            pane_columns: u32::try_from(pane_info.pane_columns)
+                .map_err(|_| "pane_columns exceeds u32")?,
+            pane_content_columns: u32::try_from(pane_info.pane_content_columns)
+                .map_err(|_| "pane_content_columns exceeds u32")?,
+            cursor_coordinates_in_pane: pane_info
+                .cursor_coordinates_in_pane
+                .map(TryInto::try_into)
+                .transpose()?,
             terminal_command: pane_info.terminal_command,
             plugin_url: pane_info.plugin_url,
             is_selectable: pane_info.is_selectable,
@@ -2368,10 +2380,14 @@ impl TryFrom<ProtobufTabInfo> for TabInfo {
                 .map_err(|_| "client_id is outside u16 range")?,
             active_swap_layout_name: protobuf_tab_info.active_swap_layout_name,
             is_swap_layout_dirty: protobuf_tab_info.is_swap_layout_dirty,
-            viewport_rows: protobuf_tab_info.viewport_rows as usize,
-            viewport_columns: protobuf_tab_info.viewport_columns as usize,
-            display_area_rows: protobuf_tab_info.display_area_rows as usize,
-            display_area_columns: protobuf_tab_info.display_area_columns as usize,
+            viewport_rows: RowCount::try_from(protobuf_tab_info.viewport_rows)
+                .map_err(|_| "viewport_rows exceeds usize")?,
+            viewport_columns: ColumnCount::try_from(protobuf_tab_info.viewport_columns)
+                .map_err(|_| "viewport_columns exceeds usize")?,
+            display_area_rows: RowCount::try_from(protobuf_tab_info.display_area_rows)
+                .map_err(|_| "display_area_rows exceeds usize")?,
+            display_area_columns: ColumnCount::try_from(protobuf_tab_info.display_area_columns)
+                .map_err(|_| "display_area_columns exceeds usize")?,
             selectable_tiled_panes_count: protobuf_tab_info.selectable_tiled_panes_count as usize,
             selectable_floating_panes_count: protobuf_tab_info.selectable_floating_panes_count
                 as usize,
@@ -2402,10 +2418,14 @@ impl TryFrom<TabInfo> for ProtobufTabInfo {
                 .collect(),
             active_swap_layout_name: tab_info.active_swap_layout_name,
             is_swap_layout_dirty: tab_info.is_swap_layout_dirty,
-            viewport_rows: tab_info.viewport_rows as u32,
-            viewport_columns: tab_info.viewport_columns as u32,
-            display_area_rows: tab_info.display_area_rows as u32,
-            display_area_columns: tab_info.display_area_columns as u32,
+            viewport_rows: u32::try_from(tab_info.viewport_rows)
+                .map_err(|_| "viewport_rows exceeds u32")?,
+            viewport_columns: u32::try_from(tab_info.viewport_columns)
+                .map_err(|_| "viewport_columns exceeds u32")?,
+            display_area_rows: u32::try_from(tab_info.display_area_rows)
+                .map_err(|_| "display_area_rows exceeds u32")?,
+            display_area_columns: u32::try_from(tab_info.display_area_columns)
+                .map_err(|_| "display_area_columns exceeds u32")?,
             selectable_tiled_panes_count: tab_info.selectable_tiled_panes_count as u32,
             selectable_floating_panes_count: tab_info.selectable_floating_panes_count as u32,
             tab_id: u32::try_from(tab_info.tab_id.get())
@@ -3053,10 +3073,10 @@ fn serialize_tab_update_event_with_non_default_values() {
             other_focused_clients: vec![ClientId::new(2), ClientId::new(3), ClientId::new(4)],
             active_swap_layout_name: Some("my cool swap layout".to_owned()),
             is_swap_layout_dirty: false,
-            viewport_rows: 10,
-            viewport_columns: 10,
-            display_area_rows: 10,
-            display_area_columns: 10,
+            viewport_rows: zellij_types::position::RowCount::new(10),
+            viewport_columns: zellij_types::position::ColumnCount::new(10),
+            display_area_rows: zellij_types::position::RowCount::new(10),
+            display_area_columns: zellij_types::position::ColumnCount::new(10),
             selectable_tiled_panes_count: 10,
             selectable_floating_panes_count: 10,
             tab_id: TabId::new(0),
@@ -3077,10 +3097,10 @@ fn serialize_tab_update_event_with_non_default_values() {
             other_focused_clients: vec![ClientId::new(1), ClientId::new(5), ClientId::new(111)],
             active_swap_layout_name: None,
             is_swap_layout_dirty: true,
-            viewport_rows: 10,
-            viewport_columns: 10,
-            display_area_rows: 10,
-            display_area_columns: 10,
+            viewport_rows: zellij_types::position::RowCount::new(10),
+            viewport_columns: zellij_types::position::ColumnCount::new(10),
+            display_area_rows: zellij_types::position::RowCount::new(10),
+            display_area_columns: zellij_types::position::ColumnCount::new(10),
             selectable_tiled_panes_count: 10,
             selectable_floating_panes_count: 10,
             tab_id: TabId::new(1),
@@ -3265,10 +3285,10 @@ fn serialize_session_update_event_with_non_default_values() {
             other_focused_clients: vec![ClientId::new(2), ClientId::new(3), ClientId::new(4)],
             active_swap_layout_name: Some("my cool swap layout".to_owned()),
             is_swap_layout_dirty: false,
-            viewport_rows: 10,
-            viewport_columns: 10,
-            display_area_rows: 10,
-            display_area_columns: 10,
+            viewport_rows: zellij_types::position::RowCount::new(10),
+            viewport_columns: zellij_types::position::ColumnCount::new(10),
+            display_area_rows: zellij_types::position::RowCount::new(10),
+            display_area_columns: zellij_types::position::ColumnCount::new(10),
             selectable_tiled_panes_count: 10,
             selectable_floating_panes_count: 10,
             tab_id: TabId::new(0),
@@ -3289,10 +3309,10 @@ fn serialize_session_update_event_with_non_default_values() {
             other_focused_clients: vec![ClientId::new(1), ClientId::new(5), ClientId::new(111)],
             active_swap_layout_name: None,
             is_swap_layout_dirty: true,
-            viewport_rows: 10,
-            viewport_columns: 10,
-            display_area_rows: 10,
-            display_area_columns: 10,
+            viewport_rows: zellij_types::position::RowCount::new(10),
+            viewport_columns: zellij_types::position::ColumnCount::new(10),
+            display_area_rows: zellij_types::position::RowCount::new(10),
+            display_area_columns: zellij_types::position::ColumnCount::new(10),
             selectable_tiled_panes_count: 10,
             selectable_floating_panes_count: 10,
             tab_id: TabId::new(1),
@@ -3328,15 +3348,15 @@ fn serialize_session_update_event_with_non_default_values() {
             exited: false,
             exit_status: None,
             is_held: false,
-            pane_x: 0,
-            pane_content_x: 1,
-            pane_y: 0,
-            pane_content_y: 1,
-            pane_rows: 5,
-            pane_content_rows: 4,
-            pane_columns: 22,
-            pane_content_columns: 21,
-            cursor_coordinates_in_pane: Some((0, 0)),
+            pane_x: zellij_types::position::Column::new(0),
+            pane_content_x: zellij_types::position::Column::new(1),
+            pane_y: zellij_types::position::Row::new(0),
+            pane_content_y: zellij_types::position::Row::new(1),
+            pane_rows: zellij_types::position::RowCount::new(5),
+            pane_content_rows: zellij_types::position::RowCount::new(4),
+            pane_columns: zellij_types::position::ColumnCount::new(22),
+            pane_content_columns: zellij_types::position::ColumnCount::new(21),
+            cursor_coordinates_in_pane: Some((0, 0).into()),
             terminal_command: Some("foo".to_owned()),
             plugin_url: None,
             is_selectable: true,
@@ -3358,15 +3378,15 @@ fn serialize_session_update_event_with_non_default_values() {
             exited: false,
             exit_status: None,
             is_held: false,
-            pane_x: 0,
-            pane_content_x: 1,
-            pane_y: 0,
-            pane_content_y: 1,
-            pane_rows: 5,
-            pane_content_rows: 4,
-            pane_columns: 22,
-            pane_content_columns: 21,
-            cursor_coordinates_in_pane: Some((0, 0)),
+            pane_x: zellij_types::position::Column::new(0),
+            pane_content_x: zellij_types::position::Column::new(1),
+            pane_y: zellij_types::position::Row::new(0),
+            pane_content_y: zellij_types::position::Row::new(1),
+            pane_rows: zellij_types::position::RowCount::new(5),
+            pane_content_rows: zellij_types::position::RowCount::new(4),
+            pane_columns: zellij_types::position::ColumnCount::new(22),
+            pane_content_columns: zellij_types::position::ColumnCount::new(21),
+            cursor_coordinates_in_pane: Some((0, 0).into()),
             terminal_command: None,
             plugin_url: Some("i_am_a_fake_plugin".to_owned()),
             is_selectable: true,
@@ -3580,7 +3600,8 @@ impl TryFrom<ProtobufPaneContents> for PaneContents {
             .transpose()?;
         let cursor = protobuf_contents
             .cursor
-            .map(|p| (p.column as usize, p.line as usize));
+            .map(TryInto::try_into)
+            .transpose()?;
 
         Ok(PaneContents {
             viewport: protobuf_contents.viewport,
@@ -3603,10 +3624,7 @@ impl TryFrom<PaneContents> for ProtobufPaneContents {
             .selected_text
             .map(|st| st.try_into())
             .transpose()?;
-        let cursor = pane_contents.cursor.map(|(x, y)| ProtobufPosition {
-            line: y as i64,
-            column: x as i64,
-        });
+        let cursor = pane_contents.cursor.map(TryInto::try_into).transpose()?;
 
         Ok(ProtobufPaneContents {
             viewport: pane_contents.viewport,
@@ -4336,5 +4354,45 @@ mod tests {
                 "protobuf round trip changed the event"
             );
         }
+    }
+}
+
+impl TryFrom<ProtobufPosition> for CellCoordinates {
+    type Error = &'static str;
+    fn try_from(value: ProtobufPosition) -> Result<Self, Self::Error> {
+        Ok(Self::new(
+            Column::try_from(value.column).map_err(|_| "cursor column outside usize range")?,
+            Row::try_from(value.line).map_err(|_| "cursor row outside usize range")?,
+        ))
+    }
+}
+impl TryFrom<CellCoordinates> for ProtobufPosition {
+    type Error = &'static str;
+    fn try_from(value: CellCoordinates) -> Result<Self, Self::Error> {
+        Ok(Self {
+            column: i64::try_from(value.x).map_err(|_| "cursor column exceeds i64")?,
+            line: i64::try_from(value.y).map_err(|_| "cursor row exceeds i64")?,
+        })
+    }
+}
+
+#[test]
+fn cursor_protobuf_preserves_xy_order_and_rejects_invalid_coordinates() {
+    use prost::Message;
+    let cursor = CellCoordinates::new(Column::new(7), Row::new(3));
+    let proto = ProtobufPosition::try_from(cursor).unwrap();
+    assert_eq!(proto.encode_to_vec(), [8, 3, 16, 7]);
+    assert_eq!(CellCoordinates::try_from(proto).unwrap(), cursor);
+    for (line, column) in [(-1, 0), (0, -1)] {
+        assert!(CellCoordinates::try_from(ProtobufPosition { line, column }).is_err());
+    }
+    if usize::BITS == 64 {
+        assert!(ProtobufPosition::try_from(CellCoordinates::from((usize::MAX, 0))).is_err());
+        assert!(ProtobufPosition::try_from(CellCoordinates::from((0, usize::MAX))).is_err());
+        let pane = PaneInfo {
+            pane_columns: ColumnCount::new(usize::MAX),
+            ..Default::default()
+        };
+        assert!(ProtobufPaneInfo::try_from(pane).is_err());
     }
 }

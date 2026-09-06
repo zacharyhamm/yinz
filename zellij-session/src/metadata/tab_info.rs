@@ -1,6 +1,7 @@
 use super::*;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
+use zellij_types::position::{ColumnCount, RowCount};
 
 pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
     macro_rules! int_node {
@@ -74,10 +75,17 @@ pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
         }
     }
     let active_swap_layout_name = optional_string_node!("active_swap_layout_name");
-    let viewport_rows = optional_int_node!("viewport_rows", usize).unwrap_or(0);
-    let viewport_columns = optional_int_node!("viewport_columns", usize).unwrap_or(0);
-    let display_area_rows = optional_int_node!("display_area_rows", usize).unwrap_or(0);
-    let display_area_columns = optional_int_node!("display_area_columns", usize).unwrap_or(0);
+    let viewport_rows = RowCount::try_from(optional_int_node!("viewport_rows", i64).unwrap_or(0))
+        .map_err(|_| "viewport_rows is out of range")?;
+    let viewport_columns =
+        ColumnCount::try_from(optional_int_node!("viewport_columns", i64).unwrap_or(0))
+            .map_err(|_| "viewport_columns is out of range")?;
+    let display_area_rows =
+        RowCount::try_from(optional_int_node!("display_area_rows", i64).unwrap_or(0))
+            .map_err(|_| "display_area_rows is out of range")?;
+    let display_area_columns =
+        ColumnCount::try_from(optional_int_node!("display_area_columns", i64).unwrap_or(0))
+            .map_err(|_| "display_area_columns is out of range")?;
     let is_swap_layout_dirty = bool_node!("is_swap_layout_dirty");
     let selectable_tiled_panes_count =
         optional_int_node!("selectable_tiled_panes_count", usize).unwrap_or(0);
@@ -153,19 +161,19 @@ pub fn encode_to_kdl(value: &TabInfo) -> anyhow::Result<KdlDocument> {
     }
 
     let mut viewport_rows = KdlNode::new("viewport_rows");
-    viewport_rows.push(value.viewport_rows as i64);
+    viewport_rows.push(i64::try_from(value.viewport_rows)?);
     kdl_doucment.nodes_mut().push(viewport_rows);
 
     let mut viewport_columns = KdlNode::new("viewport_columns");
-    viewport_columns.push(value.viewport_columns as i64);
+    viewport_columns.push(i64::try_from(value.viewport_columns)?);
     kdl_doucment.nodes_mut().push(viewport_columns);
 
     let mut display_area_columns = KdlNode::new("display_area_columns");
-    display_area_columns.push(value.display_area_columns as i64);
+    display_area_columns.push(i64::try_from(value.display_area_columns)?);
     kdl_doucment.nodes_mut().push(display_area_columns);
 
     let mut display_area_rows = KdlNode::new("display_area_rows");
-    display_area_rows.push(value.display_area_rows as i64);
+    display_area_rows.push(i64::try_from(value.display_area_rows)?);
     kdl_doucment.nodes_mut().push(display_area_rows);
 
     let mut is_swap_layout_dirty = KdlNode::new("is_swap_layout_dirty");

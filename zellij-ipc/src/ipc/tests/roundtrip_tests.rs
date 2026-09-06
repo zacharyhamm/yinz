@@ -4845,3 +4845,39 @@ fn override_layout_positions_survive_ipc_and_plugin_action_round_trips() {
         tabs
     );
 }
+
+#[test]
+fn position_wire_preserves_scrollback_and_rejects_line_overflow() {
+    use crate::client_server_contract::client_server_contract::Position as ProtoPosition;
+    use zellij_types::position::{Column, Line};
+    let position = Position {
+        line: Line::new(-1),
+        column: Column::new(7),
+    };
+    let proto = ProtoPosition::try_from(position).unwrap();
+    assert_eq!(
+        proto.encode_to_vec(),
+        [8, 255, 255, 255, 255, 255, 255, 255, 255, 255, 1, 16, 7]
+    );
+    assert_eq!(Position::try_from(proto).unwrap(), position);
+    let maximum_column = Position {
+        line: Line::new(0),
+        column: Column::new(usize::MAX),
+    };
+    assert_eq!(
+        Position::try_from(ProtoPosition::try_from(maximum_column).unwrap()).unwrap(),
+        maximum_column
+    );
+    if isize::BITS > 32 {
+        assert!(ProtoPosition::try_from(Position {
+            line: Line::new(isize::MAX),
+            column: Column::new(0)
+        })
+        .is_err());
+        assert!(ProtoPosition::try_from(Position {
+            line: Line::new(isize::MIN),
+            column: Column::new(0)
+        })
+        .is_err());
+    }
+}
