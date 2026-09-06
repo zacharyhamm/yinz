@@ -228,8 +228,13 @@ fn open_overlay_plugin(
     tab_id: usize,
     coordinates: FloatingPaneCoordinates,
 ) -> (RunPluginOrAlias, PaneId) {
-    let run_plugin =
-        RunPluginOrAlias::from_url("file:/path/to/fake/popup", &None, None, None).unwrap();
+    let run_plugin = RunPluginOrAlias::from_url(
+        &format!("file:/path/to/fake/popup-{plugin_id}"),
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
     let plugin_sender = screen.bus.senders.to_plugin.clone().unwrap_or_else(|| {
         let (plugin_tx, _plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
         SenderWithContext::new(plugin_tx)
@@ -4868,6 +4873,143 @@ fn launch_or_focus_plugin_takes_the_keyboard_back_from_a_sibling_overlay() {
         Some(chat_id),
         "the revealed conversation takes the keyboard back from the list"
     );
+}
+
+/// Summoning either half must carry the link before any plugin can reconcile its placement.
+#[test]
+fn summoning_a_linked_overlay_moves_and_reveals_the_whole_panel() {
+    let client_id = crate::ClientId(1);
+    let geom = |screen: &Screen, tab_id, pane_id| {
+        screen.tabs[&tab_id]
+            .get_pane_with_id(pane_id)
+            .expect("TEST")
+            .position_and_size()
+    };
+    let drag = |screen: &mut Screen, pane_id, tab_id| {
+        let before = geom(screen, tab_id, pane_id);
+        // The middle of the top frame is an outer edge of either half, never the seam.
+        let from = Position::new(before.y as i32, (before.x + 5) as u16);
+        let to = Position::new(before.y as i32 + 2, (before.x + 8) as u16);
+        screen.handle_mouse_event(MouseEvent::new_left_press_event(from), client_id);
+        screen.handle_mouse_event(MouseEvent::new_left_motion_event(to), client_id);
+        screen.handle_mouse_event(MouseEvent::new_left_release_event(to), client_id);
+    };
+    for requested in 0..2 {
+        for hidden in [[false, false], [true, false], [false, true], [true, true]] {
+            for previously_placed in [false, true] {
+                let mut screen = create_non_mirrored_screen(Size {
+                    cols: 120,
+                    rows: 40,
+                });
+                new_tab(&mut screen, 1, 0);
+                let coordinates = |x| FloatingPaneCoordinates {
+                    x: Some(PercentOrFixed::Fixed(x)),
+                    y: Some(PercentOrFixed::Fixed(5)),
+                    width: Some(PercentOrFixed::Fixed(25)),
+                    height: Some(PercentOrFixed::Fixed(12)),
+                    ..Default::default()
+                };
+                let pair = [
+                    open_overlay_plugin(&mut screen, 7, 0, coordinates(5)),
+                    open_overlay_plugin(&mut screen, 8, 0, coordinates(30)),
+                ];
+                screen
+                    .tabs
+                    .get_mut(&0)
+                    .unwrap()
+                    .link_touching_overlays(&[pair[0].1, pair[1].1]);
+                if previously_placed {
+                    let before = geom(&screen, 0, pair[1].1);
+                    screen
+                        .tabs
+                        .get_mut(&0)
+                        .unwrap()
+                        .resize(
+                            client_id,
+                            ResizeStrategy::new(Resize::Increase, Some(Direction::Right)),
+                        )
+                        .expect("TEST");
+                    assert!(geom(&screen, 0, pair[1].1).cols.as_usize() > before.cols.as_usize());
+                    drag(&mut screen, pair[0].1, 0);
+                    assert_eq!(geom(&screen, 0, pair[1].1).x, before.x + 3);
+                }
+                let before = pair.each_ref().map(|(_, id)| geom(&screen, 0, *id));
+                for (index, (_, id)) in pair.iter().enumerate() {
+                    if hidden[index] {
+                        screen.tabs.get_mut(&0).unwrap().hide_overlay_pane(*id);
+                    }
+                }
+                let (_, unrelated) = open_overlay_plugin(&mut screen, 9, 0, coordinates(85));
+                let unrelated_before = geom(&screen, 0, unrelated);
+                new_tab(&mut screen, 2, 1);
+                let (completion_tx, mut completion_rx) = tokio::sync::oneshot::channel();
+                let mut completion = Some(crate::NotificationEnd::new(completion_tx));
+                assert!(screen
+                    .focus_plugin_pane(
+                        &pair[requested].0,
+                        true,
+                        true,
+                        false,
+                        client_id,
+                        &mut completion,
+                    )
+                    .expect("TEST"));
+                drop(completion);
+                assert_eq!(
+                    completion_rx.try_recv().expect("TEST").affected_pane_id,
+                    Some(pair[requested].1)
+                );
+                assert_eq!(screen.active_tab_ids[&client_id], 1);
+                assert_eq!(screen.active_pane_id(client_id), Some(pair[requested].1));
+                for (index, (_, id)) in pair.iter().enumerate() {
+                    assert!(
+                        !screen.tabs[&0].has_pane_with_pid(id),
+                        "both halves must leave"
+                    );
+                    assert!(
+                        screen.tabs[&1].pane_is_overlay(*id),
+                        "both halves must arrive"
+                    );
+                    assert!(
+                        !screen.tabs[&1].overlay_carry_for(*id).hidden,
+                        "both halves are revealed"
+                    );
+                    let after = geom(&screen, 1, *id);
+                    assert_eq!(
+                        (
+                            after.x,
+                            after.y,
+                            after.cols.as_usize(),
+                            after.rows.as_usize()
+                        ),
+                        (
+                            before[index].x,
+                            before[index].y,
+                            before[index].cols.as_usize(),
+                            before[index].rows.as_usize()
+                        ),
+                    );
+                }
+                for (_, dragged) in &pair {
+                    let before = pair.each_ref().map(|(_, id)| geom(&screen, 1, *id));
+                    drag(&mut screen, *dragged, 1);
+                    for (index, (_, id)) in pair.iter().enumerate() {
+                        let after = geom(&screen, 1, *id);
+                        assert_eq!(
+                            (after.x, after.y),
+                            (before[index].x + 3, before[index].y + 2)
+                        );
+                        assert_eq!(
+                            (after.cols, after.rows),
+                            (before[index].cols, before[index].rows)
+                        );
+                    }
+                }
+                assert_eq!(geom(&screen, 0, unrelated), unrelated_before);
+                assert!(!screen.tabs[&1].has_pane_with_pid(&unrelated));
+            }
+        }
+    }
 }
 
 /// Collect every pane the pty thread was told to tear down, from either instruction that does it.

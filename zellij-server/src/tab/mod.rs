@@ -5331,6 +5331,9 @@ impl Tab {
     pub fn pane_is_overlay(&self, pane_id: PaneId) -> bool {
         self.overlay_panes.panes_contain(&pane_id)
     }
+    pub fn linked_overlay_partner(&self, pane_id: PaneId) -> Option<PaneId> {
+        self.overlay_panes.linked_partner(&pane_id)
+    }
     /// Set an overlay aside without unloading it - the overlay half of `suppress_pane`, which
     /// cannot be used here because it extracts the pane from its collection and an overlay put
     /// back afterwards would have lost its kind and its coordinates.
