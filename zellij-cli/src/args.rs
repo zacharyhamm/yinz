@@ -916,13 +916,13 @@ pub enum CliAction {
         /// Name of the session to move the tab to
         #[clap(long, short, conflicts_with = "from_session")]
         to_session: Option<String>,
-        /// Name of the session to bring a tab from. Requires --tab-index.
+        /// Name of the session to bring a tab from. Requires --tab-id.
         #[clap(long, short, conflicts_with = "to_session")]
         from_session: Option<String>,
-        /// The tab to move. Defaults to the focused tab, and is required with
+        /// The stable ID of the tab to move. Defaults to the focused tab, and is required with
         /// --from-session.
         #[clap(long)]
-        tab_index: Option<TabId>,
+        tab_id: Option<TabId>,
     },
     /// Change focus to the last focused frame
     FocusLastPane,
@@ -1865,6 +1865,63 @@ tail -f /tmp/my-live-logfile | zellij action pipe --name logs --plugin https://e
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn warp_tab_uses_tab_id() {
+        use zellij_types::input::actions::Action;
+
+        for (direction, expected) in [
+            (
+                "--to-session",
+                Action::WarpTab {
+                    tab_id: Some(TabId::new(7)),
+                    to_session: "work".into(),
+                },
+            ),
+            (
+                "--from-session",
+                Action::WarpTabFrom {
+                    tab_id: TabId::new(7),
+                    from_session: "work".into(),
+                },
+            ),
+        ] {
+            let parsed = try_parse_cli([
+                "zellij", "action", "warp-tab", direction, "work", "--tab-id", "7",
+            ])
+            .unwrap();
+            let Some(Command::Action(action)) = parsed.command else {
+                panic!("expected an action");
+            };
+            assert_eq!(
+                crate::actions::actions_from_cli(*action, Box::new(PathBuf::new), None).unwrap(),
+                vec![expected],
+            );
+            assert!(try_parse_cli([
+                "zellij",
+                "action",
+                "warp-tab",
+                direction,
+                "work",
+                "--tab-index",
+                "7",
+            ])
+            .is_err());
+        }
+        assert_eq!(
+            crate::actions::actions_from_cli(
+                CliAction::WarpTab {
+                    tab_id: None,
+                    to_session: None,
+                    from_session: Some("work".into()),
+                },
+                Box::new(PathBuf::new),
+                None
+            )
+            .unwrap_err(),
+            "--from-session also needs --tab-id",
+        );
+    }
+
     #[test]
     fn help_preserves_the_existing_cli() {
         for (args, expected) in [

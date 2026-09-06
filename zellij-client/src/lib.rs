@@ -374,7 +374,7 @@ pub fn start_client(
     config: Config,          // saved to disk (or default?)
     config_options: Options, // CLI options merged into (getting priority over) saved config options
     info: ClientInfo,
-    tab_position_to_focus: Option<TabNumber>,
+    tab_number_to_focus: Option<TabNumber>,
     pane_id_to_focus: Option<zellij_types::pane_id::PaneId>,
     is_a_reconnect: bool,
     start_detached_and_exit: bool,
@@ -458,7 +458,7 @@ pub fn start_client(
         &mut os_input,
         info,
         crate::startup::AttachFocus {
-            tab_position: tab_position_to_focus,
+            tab_number: tab_number_to_focus,
             pane: pane_id_to_focus,
         },
     );

@@ -342,7 +342,7 @@ pub fn get_plugin_alias_configuration(alias: &str) -> BTreeMap<String, String> {
     response.configuration.into_iter().collect()
 }
 
-/// Returns the focused pane ID and tab index for the client associated with this plugin.
+/// Returns the focused pane ID and tab ID for the client associated with this plugin.
 pub fn get_focused_pane_info() -> Result<(TabId, PaneId), String> {
     let plugin_command = PluginCommand::GetFocusedPaneInfo;
     let protobuf_response: ProtobufGetFocusedPaneInfoResponse =
@@ -350,10 +350,10 @@ pub fn get_focused_pane_info() -> Result<(TabId, PaneId), String> {
 
     match protobuf_response.result {
         Some(get_focused_pane_info_response::Result::FocusedPaneInfo(info)) => {
-            let tab_index = TabId::new(info.focused_tab_index as usize);
+            let tab_id = TabId::new(info.focused_tab_id as usize);
             match info.focused_pane_id {
                 Some(pb_pane_id) => match pb_pane_id.try_into() {
-                    Ok(pane_id) => Ok((tab_index, pane_id)),
+                    Ok(pane_id) => Ok((tab_id, pane_id)),
                     Err(_) => Err("Invalid pane_id in response".to_string()),
                 },
                 None => Err("Missing pane_id in response".to_string()),
@@ -1287,8 +1287,8 @@ where
     NewTabUnfocusedResponse::try_from(response).unwrap()
 }
 
-pub fn new_tiled_pane_in_tab(tab_position: TabId) -> Option<PaneId> {
-    let plugin_command = PluginCommand::NewTiledPaneInTab { tab_position };
+pub fn new_tiled_pane_in_tab(tab_id: TabId) -> Option<PaneId> {
+    let plugin_command = PluginCommand::NewTiledPaneInTab { tab_id };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };
@@ -2121,16 +2121,16 @@ pub fn warp_pane_from_session(
 /// Blocks on the same terms as [`warp_pane_to_session`], and for longer — a tab's
 /// worth of supervisors have to be released here and re-attached there.
 ///
-/// Despite the name, `tab_index` is the tab's **stable id**, not its display
+/// `tab_id` is the tab's **stable id**, not its display
 /// position: `Screen` keys its tabs by id and looks this value up there directly.
 /// Passing a position warps whichever tab happens to own that number as an id,
 /// which stops being the same tab as soon as the session closes one.
 ///
 /// # Permissions Required
 /// * `ChangeApplicationState`
-pub fn warp_tab_to_session(tab_index: TabId, to_session: &SessionName) -> Result<String, String> {
+pub fn warp_tab_to_session(tab_id: TabId, to_session: &SessionName) -> Result<String, String> {
     warp_request(PluginCommand::WarpTabToSession {
-        tab_index,
+        tab_id,
         to_session: to_session.clone(),
     })
 }
@@ -2138,17 +2138,14 @@ pub fn warp_tab_to_session(tab_index: TabId, to_session: &SessionName) -> Result
 /// Bring a tab from another session into this one.
 ///
 /// The mirror of [`warp_tab_to_session`]: the source session does the work, so
-/// `tab_index` is a stable tab id in *that* session's numbering, not this one's,
+/// `tab_id` is a stable tab id in *that* session's numbering, not this one's,
 /// and not a display position in either.
 ///
 /// # Permissions Required
 /// * `ChangeApplicationState`
-pub fn warp_tab_from_session(
-    tab_index: TabId,
-    from_session: &SessionName,
-) -> Result<String, String> {
+pub fn warp_tab_from_session(tab_id: TabId, from_session: &SessionName) -> Result<String, String> {
     warp_request(PluginCommand::WarpTabFromSession {
-        tab_index,
+        tab_id,
         from_session: from_session.clone(),
     })
 }
@@ -4381,7 +4378,7 @@ mod tests {
 
         respond(ProtobufGetFocusedPaneInfoResponse::from(
             GetFocusedPaneInfoResponse::Ok {
-                tab_index: TabId::new(7),
+                tab_id: TabId::new(7),
                 pane_id: PaneId::Plugin(zellij_types::internal_ids::PluginId::new(42)),
             },
         ));

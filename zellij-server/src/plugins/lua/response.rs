@@ -201,7 +201,7 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
                     value(
                         lua,
                         FocusedPane {
-                            tab_index: TabId::new(info.focused_tab_index as usize),
+                            tab_id: TabId::new(info.focused_tab_id as usize),
                             pane_id,
                         },
                     )
@@ -709,7 +709,7 @@ struct FsEntry {
 /// The two halves of `GetFocusedPaneInfo`, which protobuf keeps apart and a plugin wants together.
 #[derive(Serialize)]
 struct FocusedPane {
-    tab_index: TabId,
+    tab_id: TabId,
     pane_id: PaneId,
 }
 

@@ -146,7 +146,7 @@ pub enum ClientToServerMsg {
     },
     AttachClient {
         cli_assets: CliAssets,
-        tab_position_to_focus: Option<TabNumber>,
+        tab_number_to_focus: Option<TabNumber>,
         #[serde(default, with = "zellij_types::pane_id::legacy_reference")]
         pane_to_focus: Option<PaneId>,
     },

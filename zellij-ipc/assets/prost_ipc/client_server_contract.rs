@@ -1661,7 +1661,7 @@ pub struct WarpTabAction {
     pub to_session: ::prost::alloc::string::String,
     /// Absent means "whichever tab is focused".
     #[prost(uint32, optional, tag="2")]
-    pub tab_index: ::core::option::Option<u32>,
+    pub tab_id: ::core::option::Option<u32>,
 }
 /// Ask another session to send us one of its tabs. There is no focused-tab
 /// default here: the tab being named is in someone else's session.
@@ -1671,7 +1671,7 @@ pub struct WarpTabFromAction {
     #[prost(string, tag="1")]
     pub from_session: ::prost::alloc::string::String,
     #[prost(uint32, tag="2")]
-    pub tab_index: u32,
+    pub tab_id: u32,
 }
 /// Take a whole tab over from a session warping it here.
 ///
@@ -3561,7 +3561,7 @@ pub struct AttachClientMsg {
     #[prost(message, optional, tag="1")]
     pub cli_assets: ::core::option::Option<CliAssets>,
     #[prost(uint32, optional, tag="2")]
-    pub tab_position_to_focus: ::core::option::Option<u32>,
+    pub tab_number_to_focus: ::core::option::Option<u32>,
     #[prost(message, optional, tag="3")]
     pub pane_to_focus: ::core::option::Option<PaneReference>,
 }

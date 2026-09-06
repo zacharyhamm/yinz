@@ -118,7 +118,7 @@ end
 actions.p = function()
   try("get_focused_pane_info", function()
     local focused = zellij.get_focused_pane_info()
-    return string.format("tab %d, %s", focused.tab_index, describe_pane(focused.pane_id))
+    return string.format("tab %d, %s", focused.tab_id, describe_pane(focused.pane_id))
   end)
 end
 

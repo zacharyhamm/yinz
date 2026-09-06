@@ -1706,7 +1706,7 @@ pub enum ListOrphanedPanesResponse {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GetFocusedPaneInfoResponse {
-    Ok { tab_index: TabId, pane_id: PaneId },
+    Ok { tab_id: TabId, pane_id: PaneId },
     Err(String),
 }
 
@@ -2560,7 +2560,7 @@ pub enum PluginCommand {
         cwd: Option<String>,
     },
     NewTiledPaneInTab {
-        tab_position: TabId,
+        tab_id: TabId,
     },
     ToggleFloatingPanes {
         tab_id: Option<TabId>,
@@ -2957,12 +2957,12 @@ pub enum PluginCommand {
     /// response back, and blocks until the tab has landed or the move has been
     /// undone.
     WarpTabToSession {
-        tab_index: TabId,
+        tab_id: TabId,
         to_session: SessionName,
     },
     /// Ask another session for one of its tabs. Sends a response back.
     WarpTabFromSession {
-        tab_index: TabId,
+        tab_id: TabId,
         from_session: SessionName,
     },
     /// Panes whose session died but whose process is still running. Sends a

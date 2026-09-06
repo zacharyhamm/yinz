@@ -401,7 +401,7 @@ fn a_tab_of_local_and_remote_panes_warps_whole() {
     let (exit_code, reported) = sender.run_cli_action_reporting(CliAction::WarpTab {
         to_session: Some(receiver.session_name().to_owned()),
         from_session: None,
-        tab_index: None,
+        tab_id: None,
     });
     assert_eq!(exit_code, 0, "the tab warp was refused: {reported}");
 
@@ -530,7 +530,7 @@ fn one_unmovable_pane_stops_a_whole_tab_and_leaves_it_working() {
     let (exit_code, reported) = sender.run_cli_action_reporting(CliAction::WarpTab {
         to_session: Some(receiver.session_name().to_owned()),
         from_session: None,
-        tab_index: None,
+        tab_id: None,
     });
 
     assert_ne!(exit_code, 0, "a tab with an unmovable pane cannot be moved");
@@ -631,7 +631,7 @@ fn a_tab_holding_a_stacked_pane_list_warps_whole() {
     let (exit_code, reported) = sender.run_cli_action_reporting(CliAction::WarpTab {
         to_session: Some(receiver.session_name().to_owned()),
         from_session: None,
-        tab_index: None,
+        tab_id: None,
     });
     assert_eq!(exit_code, 0, "the tab warp was refused: {reported}");
 

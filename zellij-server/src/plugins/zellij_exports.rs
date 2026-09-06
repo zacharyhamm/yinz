@@ -541,9 +541,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             } => edit_layout(env, layout_name, context),
             PluginCommand::NewTab { name, cwd } => new_tab(env, name, cwd),
             PluginCommand::NewTabUnfocused { name, cwd } => new_tab_unfocused(env, name, cwd),
-            PluginCommand::NewTiledPaneInTab { tab_position } => {
-                new_tiled_pane_in_tab(env, tab_position)
-            },
+            PluginCommand::NewTiledPaneInTab { tab_id } => new_tiled_pane_in_tab(env, tab_id),
             PluginCommand::ToggleFloatingPanes { tab_id } => toggle_floating_panes(env, tab_id),
             PluginCommand::NewPane => new_pane(env),
             PluginCommand::GoToNextTab => go_to_next_tab(env),
@@ -705,14 +703,13 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 placement,
             } => warp_pane_from_session(env, pane_id.into(), from_session, placement),
             PluginCommand::ListOrphanedPanes => list_orphaned_panes(env),
-            PluginCommand::WarpTabToSession {
-                tab_index,
-                to_session,
-            } => warp_tab_to_session(env, tab_index, to_session),
+            PluginCommand::WarpTabToSession { tab_id, to_session } => {
+                warp_tab_to_session(env, tab_id, to_session)
+            },
             PluginCommand::WarpTabFromSession {
-                tab_index,
+                tab_id,
                 from_session,
-            } => warp_tab_from_session(env, tab_index, from_session),
+            } => warp_tab_from_session(env, tab_id, from_session),
             PluginCommand::AdoptOrphanedPane { host_id, placement } => {
                 adopt_orphaned_pane(env, host_id, placement)
             },
@@ -4175,8 +4172,8 @@ fn new_tab_unfocused(env: &mut PluginEnv, name: Option<String>, cwd: Option<Stri
         .non_fatal();
 }
 
-fn new_tiled_pane_in_tab(env: &mut PluginEnv, tab_position: TabId) {
-    let error_msg = || format!("failed to open new tiled pane in tab {}", tab_position);
+fn new_tiled_pane_in_tab(env: &mut PluginEnv, tab_id: TabId) {
+    let error_msg = || format!("failed to open new tiled pane in tab {}", tab_id);
     let default_shell = env.default_shell.clone().unwrap_or_else(|| {
         TerminalAction::RunCommand(RunCommand {
             command: env.path_to_default_shell.clone(),
@@ -4195,7 +4192,7 @@ fn new_tiled_pane_in_tab(env: &mut PluginEnv, tab_position: TabId) {
         near_current_pane: false,
         no_focus: false,
         borderless: None,
-        tab_id: Some(tab_position),
+        tab_id: Some(tab_id),
     };
     let result = apply_action!(action, error_msg, env);
 
@@ -4876,13 +4873,13 @@ fn warp_pane_from_session(
     write_warp_response(env, result);
 }
 
-fn warp_tab_to_session(env: &mut PluginEnv, tab_index: TabId, to_session: SessionName) {
+fn warp_tab_to_session(env: &mut PluginEnv, tab_id: TabId, to_session: SessionName) {
     let result = crate::warp::warp_tab_to_session(
         &env.senders,
         env.client_id,
         // Explicit for the same reason the pane version is: a plugin acts on a
         // snapshot, and `env.client_id` is whichever client's event is in hand.
-        Some(tab_index),
+        Some(tab_id),
         &crate::warp::current_session_name(),
         &to_session,
         crate::warp::PLUGIN_WARP_TIMEOUT,
@@ -4890,11 +4887,11 @@ fn warp_tab_to_session(env: &mut PluginEnv, tab_index: TabId, to_session: Sessio
     write_warp_response(env, result);
 }
 
-fn warp_tab_from_session(env: &mut PluginEnv, tab_index: TabId, from_session: SessionName) {
+fn warp_tab_from_session(env: &mut PluginEnv, tab_id: TabId, from_session: SessionName) {
     let result = crate::warp::warp_tab_from_session(
         &crate::warp::current_session_name(),
         &from_session,
-        tab_index,
+        tab_id,
         crate::warp::WARP_PULL_TIMEOUT,
     );
     write_warp_response(env, result);

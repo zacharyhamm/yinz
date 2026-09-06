@@ -1013,14 +1013,14 @@ message RemotePaneHandoff {
 message WarpTabAction {
   string to_session = 1;
   // Absent means "whichever tab is focused".
-  optional uint32 tab_index = 2;
+  optional uint32 tab_id = 2;
 }
 
 // Ask another session to send us one of its tabs. There is no focused-tab
 // default here: the tab being named is in someone else's session.
 message WarpTabFromAction {
   string from_session = 1;
-  uint32 tab_index = 2;
+  uint32 tab_id = 2;
 }
 
 // Take a whole tab over from a session warping it here.

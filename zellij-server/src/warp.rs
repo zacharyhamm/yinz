@@ -369,7 +369,7 @@ pub fn warp_pane_from_session(
 pub fn warp_tab_to_session(
     senders: &ThreadSenders,
     client_id: ClientId,
-    tab_index: Option<TabId>,
+    tab_id: Option<TabId>,
     current_session: &SessionName,
     to_session: &SessionName,
     timeout: Duration,
@@ -388,7 +388,7 @@ pub fn warp_tab_to_session(
     let deadline = Instant::now() + timeout;
     senders
         .send_to_screen(ScreenInstruction::WarpTab {
-            tab_index,
+            tab_id,
             client_id,
             response_channel: response_sender,
             deadline,
@@ -471,7 +471,7 @@ pub fn adopt_tab_here(
 pub fn warp_tab_from_session(
     current_session: &SessionName,
     from_session: &SessionName,
-    tab_index: TabId,
+    tab_id: TabId,
     timeout: Duration,
 ) -> std::result::Result<String, String> {
     let started_at = std::time::Instant::now();
@@ -486,7 +486,7 @@ pub fn warp_tab_from_session(
     sender
         .send_client_msg(ClientToServerMsg::Action {
             action: Action::WarpTab {
-                tab_index: Some(tab_index),
+                tab_id: Some(tab_id),
                 to_session: current_session.to_owned(),
             },
             terminal_id: None,

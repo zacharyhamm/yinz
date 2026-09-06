@@ -1418,15 +1418,12 @@ pub(crate) fn route_action(
                 Err(message) => send_error_to_client(cli_client_id, os_input.as_ref(), &message),
             }
         },
-        Action::WarpTab {
-            tab_index,
-            to_session,
-        } => {
+        Action::WarpTab { tab_id, to_session } => {
             drop(completion_tx);
             match crate::warp::warp_tab_to_session(
                 &senders,
                 client_id,
-                tab_index,
+                tab_id,
                 &crate::warp::current_session_name(),
                 &to_session,
                 crate::warp::WARP_TIMEOUT,
@@ -1453,7 +1450,7 @@ pub(crate) fn route_action(
         },
         Action::WarpTabFrom {
             from_session,
-            tab_index,
+            tab_id,
         } => {
             drop(completion_tx);
             // Handed straight on to the source session, which does all of it —
@@ -1462,7 +1459,7 @@ pub(crate) fn route_action(
             match crate::warp::warp_tab_from_session(
                 &crate::warp::current_session_name(),
                 &from_session,
-                tab_index,
+                tab_id,
                 crate::warp::WARP_PULL_TIMEOUT,
             ) {
                 Ok(message) => {
@@ -3083,12 +3080,12 @@ pub(crate) fn route_thread_main(
                         },
                         ClientToServerMsg::AttachClient {
                             cli_assets,
-                            tab_position_to_focus,
+                            tab_number_to_focus,
                             pane_to_focus: pane_id_to_focus,
                         } => {
                             let attach_client_instruction = ServerInstruction::AttachClient(
                                 cli_assets,
-                                tab_position_to_focus,
+                                tab_number_to_focus,
                                 pane_id_to_focus,
                                 client_id,
                             );

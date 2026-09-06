@@ -202,14 +202,14 @@ pub fn actions_from_cli(
         CliAction::WarpTab {
             to_session,
             from_session,
-            tab_index,
+            tab_id,
         } => match (to_session, from_session) {
             (Some(to_session), None) => {
                 if to_session.trim().is_empty() {
                     return Err("--to-session cannot be empty".to_owned());
                 }
                 Ok(vec![Action::WarpTab {
-                    tab_index,
+                    tab_id,
                     to_session: to_session.into(),
                 }])
             },
@@ -219,11 +219,11 @@ pub fn actions_from_cli(
                 }
                 // Unlike the push, there is no focused tab to fall back on:
                 // the tab being named lives in a session that is not ours.
-                let tab_index =
-                    tab_index.ok_or_else(|| "--from-session also needs --tab-index".to_owned())?;
+                let tab_id =
+                    tab_id.ok_or_else(|| "--from-session also needs --tab-id".to_owned())?;
                 Ok(vec![Action::WarpTabFrom {
                     from_session: from_session.into(),
-                    tab_index,
+                    tab_id,
                 }])
             },
             _ => Err("warp-tab needs exactly one of --to-session or --from-session".to_owned()),

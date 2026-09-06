@@ -1361,7 +1361,7 @@ pub fn start_server_impl(
             },
             ServerInstruction::AttachClient(
                 cli_assets,
-                tab_position_to_focus,
+                tab_number_to_focus,
                 pane_id_to_focus,
                 client_id,
             ) => {
@@ -1447,7 +1447,7 @@ pub fn start_server_impl(
                     .send_to_screen(ScreenInstruction::AddClient(
                         client_id,
                         client_attributes.size,
-                        tab_position_to_focus,
+                        tab_number_to_focus,
                         pane_id_to_focus,
                     ))
                     .unwrap();

@@ -1000,7 +1000,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             placement: warp_placements(tc),
         },
         ActionKind::WarpTab => Action::WarpTab {
-            tab_index: optional_usize_as_u32(tc).map(TabId::new),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
             to_session: strings(tc).into(),
         },
         ActionKind::AdoptTab => Action::AdoptTab {
@@ -1008,7 +1008,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         },
         ActionKind::WarpTabFrom => Action::WarpTabFrom {
             from_session: strings(tc).into(),
-            tab_index: TabId::new(usize_as_u32(tc)),
+            tab_id: TabId::new(usize_as_u32(tc)),
         },
         ActionKind::LaunchOrFocusPlugin => Action::LaunchOrFocusPlugin {
             plugin: run_plugins_or_aliases(tc),
@@ -1675,9 +1675,9 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             name: optional_strings(tc),
             cwd: optional_strings(tc),
         },
-        // `NewTiledPaneInTabPayload.tab_position` is a `uint32`.
+        // `NewTiledPaneInTabPayload.tab_id` is a `uint32`.
         CommandType::NewTiledPaneInTab => PluginCommand::NewTiledPaneInTab {
-            tab_position: TabId::new(usize_as_u32(tc)),
+            tab_id: TabId::new(usize_as_u32(tc)),
         },
         CommandType::ToggleFloatingPanes => PluginCommand::ToggleFloatingPanes {
             tab_id: booleans(tc)
@@ -2158,14 +2158,14 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             from_session: strings(tc).into(),
             placement: warp_placements(tc),
         },
-        // `WarpTabToSessionPayload.tab_index` and `WarpTabFromSessionPayload.tab_index` are
+        // `WarpTabToSessionPayload.tab_id` and `WarpTabFromSessionPayload.tab_id` are
         // `uint32`.
         CommandType::WarpTabToSession => PluginCommand::WarpTabToSession {
-            tab_index: TabId::new(usize_as_u32(tc)),
+            tab_id: TabId::new(usize_as_u32(tc)),
             to_session: strings(tc).into(),
         },
         CommandType::WarpTabFromSession => PluginCommand::WarpTabFromSession {
-            tab_index: TabId::new(usize_as_u32(tc)),
+            tab_id: TabId::new(usize_as_u32(tc)),
             from_session: strings(tc).into(),
         },
         CommandType::ListOrphanedPanes => PluginCommand::ListOrphanedPanes,
