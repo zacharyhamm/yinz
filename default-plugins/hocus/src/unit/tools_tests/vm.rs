@@ -2,6 +2,7 @@
 //! `vm_close` will close before it sends it.
 
 use super::*;
+use zellij_tile::prelude::TabPosition;
 
 fn vm_argv_for(name: &str, arguments: &str) -> Result<Vec<String>, String> {
     vm_argv(
@@ -105,7 +106,7 @@ fn only_the_panes_running_in_that_vm_are_selected() {
     let current = SessionInfo {
         name: "work".to_owned(),
         panes: zellij_tile::prelude::PaneManifest {
-            panes: std::collections::HashMap::from([(0, panes)]),
+            panes: std::collections::HashMap::from([(TabPosition::new(0), panes)]),
         },
         ..Default::default()
     };

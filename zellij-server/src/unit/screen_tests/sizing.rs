@@ -1,5 +1,6 @@
 use super::*;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 
 #[test]
 fn pane_buffers_pty_bytes_while_forward_paused() {
@@ -480,7 +481,7 @@ fn resize_to_clients_keeps_every_tab_within_smallest_client_bounds() {
         },
     );
     screen
-        .switch_active_tab(0, None, true, crate::ClientId::new(2))
+        .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(2))
         .expect("TEST");
     screen.resize_to_clients().expect("TEST");
 
@@ -565,7 +566,7 @@ fn switching_tabs_keeps_source_and_destination_at_session_bounds() {
     );
 
     screen
-        .switch_active_tab(0, None, true, crate::ClientId::new(1))
+        .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(1))
         .expect("TEST");
 
     assert_eq!(
@@ -600,7 +601,7 @@ fn break_pane_to_new_tab_recomputes_source_and_destination() {
         },
     );
     screen
-        .switch_active_tab(0, None, true, crate::ClientId::new(1))
+        .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(1))
         .expect("TEST");
     assert_eq!(
         screen.tabs.get(&TabId::new(0)).unwrap().size,
@@ -665,7 +666,7 @@ fn moving_panes_between_tabs_with_focus_change_recomputes_both() {
         },
     );
     screen
-        .switch_active_tab(0, None, true, crate::ClientId::new(2))
+        .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(2))
         .expect("TEST");
     assert_eq!(
         screen.tabs.get(&TabId::new(0)).unwrap().size,
@@ -796,7 +797,7 @@ fn closing_a_tab_resizes_the_tab_it_returns_to() {
 
     assert_eq!(
         screen.get_active_tab(client_id).unwrap().position,
-        0,
+        TabPosition::new(0),
         "Focus returns to the previous tab"
     );
     assert_eq!(

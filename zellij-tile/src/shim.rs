@@ -14,6 +14,8 @@ pub use zellij_types::geometry::PercentOrFixed;
 use zellij_types::geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy};
 use zellij_types::input::actions::Action;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 use {
     zellij_plugin_api::generated_api::api::plugin_command::hide_floating_panes_response,
     zellij_plugin_api::generated_api::api::plugin_command::save_session_response,
@@ -1022,7 +1024,7 @@ pub fn open_command_pane_background(
 }
 
 /// Change the focused tab to the specified index (corresponding with the default tab names, to starting at `1`, `0` will be considered as `1`).
-pub fn switch_tab_to(tab_idx: u32) {
+pub fn switch_tab_to(tab_idx: TabNumber) {
     let plugin_command = PluginCommand::SwitchTabTo(tab_idx);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1726,7 +1728,7 @@ pub fn focus_or_create_tab(tab_name: &str) -> Option<TabId> {
     FocusOrCreateTabResponse::try_from(response).unwrap()
 }
 
-pub fn go_to_tab(tab_index: u32) {
+pub fn go_to_tab(tab_index: TabPosition) {
     let plugin_command = PluginCommand::GoToTab(tab_index);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1830,7 +1832,7 @@ where
 /// `tab_position` is the 0-based display position, matching [`go_to_tab`]. A position
 /// shifts whenever a tab closes; use [`rename_tab_with_id`] to name a tab that stays
 /// the same one.
-pub fn rename_tab<S>(tab_position: u32, new_name: S)
+pub fn rename_tab<S>(tab_position: TabPosition, new_name: S)
 where
     S: AsRef<str> + ToString,
 {
@@ -1905,7 +1907,7 @@ pub fn switch_session_with_cwd(name: Option<&str>, cwd: Option<PathBuf>) {
 /// tab position (in that order)
 pub fn switch_session_with_focus(
     name: &str,
-    tab_position: Option<usize>,
+    tab_position: Option<TabPosition>,
     pane_id: Option<zellij_types::pane_id::PaneId>,
 ) {
     let plugin_command = PluginCommand::SwitchSession(ConnectToSession {
@@ -3439,7 +3441,7 @@ pub fn toggle_pane_embed_or_eject_for_pane_id(pane_id: PaneId) {
 }
 
 /// Close the focused tab
-pub fn close_tab_with_index(tab_index: usize) {
+pub fn close_tab_with_index(tab_index: TabPosition) {
     let plugin_command = PluginCommand::CloseTabWithIndex(tab_index);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -3528,7 +3530,7 @@ pub fn break_panes_to_new_tab(
 /// Move the pane ids to the tab with the specified index
 pub fn break_panes_to_tab_with_index(
     pane_ids: &[PaneId],
-    tab_index: usize,
+    tab_index: TabPosition,
     should_change_focus_to_new_tab: bool,
 ) -> Option<TabId> {
     let plugin_command = PluginCommand::BreakPanesToTabWithIndex(
@@ -3976,7 +3978,10 @@ pub fn get_focused_tab(tab_infos: &Vec<TabInfo>) -> Option<TabInfo> {
 
 #[allow(unused)]
 /// Returns the `PaneInfo` corresponding to the currently active pane (ignoring plugins)
-pub fn get_focused_pane(tab_position: usize, pane_manifest: &PaneManifest) -> Option<PaneInfo> {
+pub fn get_focused_pane(
+    tab_position: TabPosition,
+    pane_manifest: &PaneManifest,
+) -> Option<PaneInfo> {
     let panes = pane_manifest.panes.get(&tab_position);
     if let Some(panes) = panes {
         for pane in panes {

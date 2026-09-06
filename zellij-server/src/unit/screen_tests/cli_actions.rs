@@ -4,6 +4,7 @@ const TAB_0: TabId = TabId::new(0);
 use super::*;
 use zellij_test_support::Watched;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
 
 // Following are tests for sending CLI actions
 // these tests are only partially relevant to Screen
@@ -2003,7 +2004,9 @@ pub fn send_cli_goto_tab_action() {
         ServerInstruction::KillSession,
         server_receiver
     );
-    let goto_tab = CliAction::GoToTab { index: 1 };
+    let goto_tab = CliAction::GoToTab {
+        index: TabNumber::new(1),
+    };
     send_cli_action_to_server(&session_metadata, goto_tab, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);

@@ -2537,7 +2537,7 @@ struct PanePosition {
     id: PaneId,
     /// An option rather than a sentinel: panes with no tab would otherwise compare as
     /// "the same tab" in `plan_swap`.
-    tab_position: Option<usize>,
+    tab_position: Option<zellij_tile::prelude::TabPosition>,
     x: usize,
     y: usize,
     columns: usize,
@@ -4210,7 +4210,7 @@ pub fn session_listing(session: &SessionInfo) -> Value {
                 // A label, not an address: this is the number the tab bar
                 // shows the user, and it shifts whenever a tab closes.
                 // Every tool takes tab_id.
-                "tab_number": tab.position + 1,
+                "tab_number": tab.position.get() + 1,
                 "tab_id": tab.tab_id,
                 "name": tab.name,
                 "active": tab.active,
@@ -4457,7 +4457,7 @@ mod host {
                         // tab_id is what warp_tab_here takes; tab_number is only
                         // the label that session's tab bar shows.
                         json!({
-                            "tab_number": tab.position + 1,
+                            "tab_number": tab.position.get() + 1,
                             "tab_id": tab.tab_id,
                             "name": tab.name,
                             "panes": panes,

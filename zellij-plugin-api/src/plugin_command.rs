@@ -188,6 +188,8 @@ pub use super::generated_api::api::{
     resize::ResizeAction as ProtobufResizeAction,
 };
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::{RecordingId, TerminalId};
 use zellij_types::units::{ElapsedMicros, UnixMicros};
 
@@ -1032,9 +1034,9 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 _ => Err("Mismatched payload for OpenCommandPaneOverlay"),
             },
             Some(CommandName::SwitchTabTo) => match protobuf_plugin_command.payload {
-                Some(Payload::SwitchTabToPayload(switch_to_tab_payload)) => {
-                    Ok(PluginCommand::SwitchTabTo(switch_to_tab_payload.tab_index))
-                },
+                Some(Payload::SwitchTabToPayload(switch_to_tab_payload)) => Ok(
+                    PluginCommand::SwitchTabTo(TabNumber::new(switch_to_tab_payload.tab_index)),
+                ),
                 _ => Err("Mismatched payload for SwitchToTab"),
             },
             Some(CommandName::SetTimeout) => match protobuf_plugin_command.payload {
@@ -1420,7 +1422,9 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 _ => Err("Mismatched payload for FocusOrCreateTab"),
             },
             Some(CommandName::GoToTab) => match protobuf_plugin_command.payload {
-                Some(Payload::GoToTabPayload(tab_index)) => Ok(PluginCommand::GoToTab(tab_index)),
+                Some(Payload::GoToTabPayload(tab_index)) => {
+                    Ok(PluginCommand::GoToTab(TabPosition::new(tab_index as usize)))
+                },
                 _ => Err("Mismatched payload for GoToTab"),
             },
             Some(CommandName::StartOrReloadPlugin) => match protobuf_plugin_command.payload {
@@ -1497,7 +1501,10 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 Some(Payload::RenameTabPayload(payload)) => {
                     let tab_index = payload.id;
                     let name = payload.new_name;
-                    Ok(PluginCommand::RenameTab(tab_index, name))
+                    Ok(PluginCommand::RenameTab(
+                        TabPosition::new(tab_index as usize),
+                        name,
+                    ))
                 },
                 _ => Err("Mismatched payload for RenameTab"),
             },
@@ -1531,7 +1538,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     };
                     Ok(PluginCommand::SwitchSession(ConnectToSession {
                         name: payload.name,
-                        tab_position: payload.tab_position.map(|p| p as usize),
+                        tab_position: payload.tab_position.map(|p| TabPosition::new(p as usize)),
                         pane_id,
                         layout: payload.layout.and_then(|l| l.try_into().ok()),
                         cwd: payload.cwd.map(PathBuf::from),
@@ -2253,9 +2260,11 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 }
             },
             Some(CommandName::CloseTabWithIndex) => match protobuf_plugin_command.payload {
-                Some(Payload::CloseTabWithIndexPayload(close_tab_index_payload)) => Ok(
-                    PluginCommand::CloseTabWithIndex(close_tab_index_payload.tab_index as usize),
-                ),
+                Some(Payload::CloseTabWithIndexPayload(close_tab_index_payload)) => {
+                    Ok(PluginCommand::CloseTabWithIndex(TabPosition::new(
+                        close_tab_index_payload.tab_index as usize,
+                    )))
+                },
                 _ => Err("Mismatched payload for CloseTabWithIndex"),
             },
             Some(CommandName::BreakPanesToNewTab) => match protobuf_plugin_command.payload {
@@ -2281,7 +2290,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         .into_iter()
                         .filter_map(|p_id| p_id.try_into().ok())
                         .collect(),
-                    break_panes_to_tab_with_index_payload.tab_index as usize,
+                    TabPosition::new(break_panes_to_tab_with_index_payload.tab_index as usize),
                     break_panes_to_tab_with_index_payload.should_change_focus_to_target_tab,
                 )),
                 _ => Err("Mismatched payload for BreakPanesToTabWithIndex"),
@@ -3654,7 +3663,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::SwitchTabTo(tab_index) => Ok(ProtobufPluginCommand {
                 name: CommandName::SwitchTabTo as i32,
                 payload: Some(Payload::SwitchTabToPayload(SwitchTabToPayload {
-                    tab_index,
+                    tab_index: tab_index.get(),
                 })),
             }),
             PluginCommand::SetTimeout(seconds) => Ok(ProtobufPluginCommand {
@@ -3917,7 +3926,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             }),
             PluginCommand::GoToTab(tab_index) => Ok(ProtobufPluginCommand {
                 name: CommandName::GoToTab as i32,
-                payload: Some(Payload::GoToTabPayload(tab_index)),
+                payload: Some(Payload::GoToTabPayload(
+                    u32::try_from(tab_index.get())
+                        .map_err(|_| "tab position is outside u32 range")?,
+                )),
             }),
             PluginCommand::StartOrReloadPlugin(url) => Ok(ProtobufPluginCommand {
                 name: CommandName::StartOrReloadPlugin as i32,
@@ -3972,7 +3984,8 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::RenameTab(tab_index, new_name) => Ok(ProtobufPluginCommand {
                 name: CommandName::RenameTab as i32,
                 payload: Some(Payload::RenameTabPayload(IdAndNewName {
-                    id: tab_index,
+                    id: u32::try_from(tab_index.get())
+                        .map_err(|_| "tab position is outside u32 range")?,
                     new_name,
                 })),
             }),
@@ -3996,7 +4009,11 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::SwitchSession as i32,
                 payload: Some(Payload::SwitchSessionPayload(SwitchSessionPayload {
                     name: switch_to_session.name,
-                    tab_position: switch_to_session.tab_position.map(|t| t as u32),
+                    tab_position: switch_to_session
+                        .tab_position
+                        .map(|t| u32::try_from(t.get()))
+                        .transpose()
+                        .map_err(|_| "Tab position is outside u32 range")?,
                     pane_id: switch_to_session.pane_id.map(|p| p.legacy_parts().0),
                     pane_id_is_plugin: switch_to_session.pane_id.map(|p| p.legacy_parts().1),
                     layout: switch_to_session.layout.and_then(|l| l.try_into().ok()),
@@ -4617,7 +4634,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::CloseTabWithIndex as i32,
                 payload: Some(Payload::CloseTabWithIndexPayload(
                     CloseTabWithIndexPayload {
-                        tab_index: u32::try_from(tab_index)
+                        tab_index: u32::try_from(tab_index.get())
                             .map_err(|_| "tab_position is outside u32 range")?,
                     },
                 )),
@@ -4651,7 +4668,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                             .into_iter()
                             .filter_map(|p_id| p_id.try_into().ok())
                             .collect(),
-                        tab_index: u32::try_from(tab_index)
+                        tab_index: u32::try_from(tab_index.get())
                             .map_err(|_| "tab_position is outside u32 range")?,
                         should_change_focus_to_target_tab,
                     },
@@ -6981,6 +6998,43 @@ mod tests {
     use super::*;
     use zellij_types::command::{CommandToRun, GitCheckout};
     use zellij_types::data::PluginCommand;
+
+    #[test]
+    fn tab_commands_preserve_their_zero_and_one_based_values() {
+        for value in [0, 1, u32::MAX] {
+            for original in [
+                PluginCommand::GoToTab(TabPosition::new(value as usize)),
+                PluginCommand::SwitchTabTo(TabNumber::new(value)),
+            ] {
+                let proto = ProtobufPluginCommand::try_from(original.clone()).unwrap();
+                match &proto.payload {
+                    Some(Payload::GoToTabPayload(index)) => assert_eq!(*index, value),
+                    Some(Payload::SwitchTabToPayload(payload)) => {
+                        assert_eq!(payload.tab_index, value)
+                    },
+                    _ => panic!("the command changed its payload"),
+                }
+                assert_eq!(PluginCommand::try_from(proto).unwrap(), original);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn tab_commands_reject_positions_outside_the_wire_range() {
+        let position = TabPosition::new(usize::MAX);
+        for command in [
+            PluginCommand::GoToTab(position),
+            PluginCommand::CloseTabWithIndex(position),
+            PluginCommand::RenameTab(position, "work".to_owned()),
+            PluginCommand::SwitchSession(ConnectToSession {
+                tab_position: Some(position),
+                ..Default::default()
+            }),
+        ] {
+            assert!(ProtobufPluginCommand::try_from(command).is_err());
+        }
+    }
 
     #[test]
     fn default_keybindings_survive_the_wire() {

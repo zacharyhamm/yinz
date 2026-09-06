@@ -288,7 +288,7 @@ impl TabLinePopulator {
         LinePart {
             part: ANSIStrings(&styled_parts).to_string(),
             len: text_len,
-            tab_index: Some(tab_index),
+            tab_index: Some(TabPosition::new(tab_index)),
         }
     }
 }

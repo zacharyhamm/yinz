@@ -88,6 +88,7 @@ use zellij_types::geometry::{Direction, FloatingPaneCoordinates, ResizeStrategy}
 use zellij_types::geometry::{PercentOrFixed, SplitDirection};
 use zellij_types::input::actions::Action;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::mouse::{MouseEvent, MouseEventType};
 use {
@@ -662,7 +663,9 @@ impl TryFrom<ProtobufAction> for Action {
                 None => Ok(Action::CloseTab),
             },
             Some(ProtobufActionName::GoToTab) => match protobuf_action.optional_payload {
-                Some(OptionalPayload::GoToTabPayload(index)) => Ok(Action::GoToTab { index }),
+                Some(OptionalPayload::GoToTabPayload(index)) => Ok(Action::GoToTab {
+                    index: TabNumber::new(index),
+                }),
                 _ => Err("Wrong payload for Action::GoToTab"),
             },
             Some(ProtobufActionName::GoToTabName) => match protobuf_action.optional_payload {
@@ -1060,7 +1063,7 @@ impl TryFrom<ProtobufAction> for Action {
                     let tab_index = payload.id;
                     let new_tab_name = payload.name;
                     Ok(Action::RenameTab {
-                        tab_index,
+                        tab_index: TabNumber::new(tab_index),
                         name: new_tab_name,
                     })
                 },
@@ -1774,7 +1777,7 @@ impl TryFrom<Action> for ProtobufAction {
             }),
             Action::GoToTab { index: tab_index } => Ok(ProtobufAction {
                 name: ProtobufActionName::GoToTab as i32,
-                optional_payload: Some(OptionalPayload::GoToTabPayload(tab_index)),
+                optional_payload: Some(OptionalPayload::GoToTabPayload(tab_index.get())),
             }),
             Action::GoToTabName {
                 name: tab_name,
@@ -2047,7 +2050,7 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::RenameTab as i32,
                 optional_payload: Some(OptionalPayload::RenameTabPayload(IdAndName {
                     name: new_name,
-                    id: tab_index,
+                    id: tab_index.get(),
                 })),
             }),
             Action::BreakPane => Ok(ProtobufAction {

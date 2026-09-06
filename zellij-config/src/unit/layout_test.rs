@@ -5,6 +5,7 @@ use zellij_types::command::PaneTarget;
 use zellij_types::data::PluginTag;
 use zellij_types::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use zellij_types::input::command::RunCommand;
+use zellij_types::internal_ids::TabPosition;
 
 fn normalize_layout_debug(s: String) -> String {
     s
@@ -771,7 +772,7 @@ fn layout_with_focused_tab() {
             (None, TiledPaneLayout::default(), vec![]),
         ],
         template: Some((TiledPaneLayout::default(), vec![])),
-        focused_tab_index: Some(1),
+        focused_tab_index: Some(TabPosition::new(1)),
         ..Default::default()
     };
     assert_eq!(layout, expected_layout);

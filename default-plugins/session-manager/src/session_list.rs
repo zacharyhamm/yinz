@@ -1,6 +1,7 @@
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use zellij_tile::prelude::PaneId;
+use zellij_tile::prelude::TabPosition;
 
 use crate::ui::{
     components::{Colors, LineToRender, ListItem},
@@ -9,7 +10,7 @@ use crate::ui::{
 
 /// One flattened row of the session list: the item itself, the session it belongs to, the tab
 /// position, the (pane id, is_plugin) pair, and whether it is the current session.
-type FlattenedAsset = (ListItem, String, Option<usize>, Option<PaneId>, bool);
+type FlattenedAsset = (ListItem, String, Option<TabPosition>, Option<PaneId>, bool);
 
 #[derive(Debug, Default)]
 pub struct SessionList {
@@ -118,7 +119,7 @@ impl SessionList {
                 .unwrap_or(false)
         }
     }
-    pub fn get_selected_tab_position(&self) -> Option<usize> {
+    pub fn get_selected_tab_position(&self) -> Option<TabPosition> {
         if self.is_searching {
             self.selected_search_index
                 .and_then(|i| self.search_results.get(i))
@@ -415,7 +416,7 @@ pub struct SearchResult {
     indices: Vec<usize>,
     list_item: ListItem,
     session_name: String,
-    tab_position: Option<usize>,
+    tab_position: Option<TabPosition>,
     pane_id: Option<PaneId>,
     is_current_session: bool,
 }
@@ -426,7 +427,7 @@ impl SearchResult {
         indices: Vec<usize>,
         list_item: ListItem,
         session_name: String,
-        tab_position: Option<usize>,
+        tab_position: Option<TabPosition>,
         pane_id: Option<PaneId>,
         is_current_session: bool,
     ) -> Self {

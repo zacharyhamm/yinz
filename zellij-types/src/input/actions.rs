@@ -13,6 +13,7 @@ use crate::data::{
 use crate::geometry::FloatingPaneCoordinates;
 use crate::input::options::{OnForceClose, PaneFrameStyle};
 use crate::internal_ids::TabId;
+use crate::internal_ids::TabNumber;
 use crate::keys::KeyWithModifier;
 use crate::mouse::MouseEvent;
 use crate::{
@@ -367,7 +368,7 @@ pub enum Action {
     /// Close the current tab.
     CloseTab,
     GoToTab {
-        index: u32,
+        index: TabNumber,
     },
     GoToTabName {
         name: String,
@@ -413,7 +414,7 @@ pub enum Action {
     /// Switch to a different session
     SwitchSession {
         name: String,
-        tab_position: Option<usize>,
+        tab_position: Option<TabNumber>,
         #[serde(default, with = "crate::pane_id::legacy_tuple")]
         pane_id: Option<PaneId>,
         layout: Option<LayoutInfo>,
@@ -586,7 +587,7 @@ pub enum Action {
         name: Vec<u8>,
     },
     RenameTab {
-        tab_index: u32,
+        tab_index: TabNumber,
         name: Vec<u8>,
     },
     GoToTabById {

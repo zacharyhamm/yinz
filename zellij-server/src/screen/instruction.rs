@@ -1,5 +1,7 @@
 use zellij_runtime::errors::prelude::*;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
 
 use super::{GuestModalOutcome, HoldForCommand, InitialTitle, TabOverrideResult};
@@ -263,7 +265,7 @@ pub enum ScreenInstruction {
     SwitchTabPrev(ClientId, Option<NotificationEnd>),
     ToggleActiveSyncTab(ClientId, Option<NotificationEnd>),
     CloseTab(ClientId, Option<NotificationEnd>),
-    GoToTab(u32, Option<ClientId>, Option<NotificationEnd>), // this Option is a hacky workaround, please do not copy this behaviour
+    GoToTab(TabNumber, Option<ClientId>, Option<NotificationEnd>), // this Option is a hacky workaround, please do not copy this behaviour
     GoToTabName(
         String,
         Option<TerminalAction>, // default_shell
@@ -370,9 +372,9 @@ pub enum ScreenInstruction {
     Copy(ClientId, Option<NotificationEnd>),
     AddClient(
         ClientId,
-        Size,           // client viewport size
-        Option<usize>,  // tab position to focus
-        Option<PaneId>, // pane to focus
+        Size,              // client viewport size
+        Option<TabNumber>, // tab number to focus
+        Option<PaneId>,    // pane to focus
     ),
     RemoveClient(ClientId),
     UpdateSearch(Vec<u8>, ClientId, Option<NotificationEnd>),
@@ -515,7 +517,7 @@ pub enum ScreenInstruction {
     // should_be_in_place_if_hidden
     RenamePane(PaneId, Vec<u8>, Option<NotificationEnd>),
     RenameActivePane(Vec<u8>, ClientId, Option<NotificationEnd>),
-    RenameTab(usize, Vec<u8>, Option<NotificationEnd>),
+    RenameTab(TabNumber, Vec<u8>, Option<NotificationEnd>),
     RequestPluginPermissions(
         PluginId, // plugin_id
         PluginPermission,
@@ -732,7 +734,7 @@ pub enum ScreenInstruction {
     PageScrollDownInPaneId(PaneId),
     TogglePaneIdFullscreen(PaneId),
     TogglePaneEmbedOrEjectForPaneId(PaneId),
-    CloseTabWithIndex(usize),
+    CloseTabWithIndex(TabPosition),
     BreakPanesToNewTab {
         pane_ids: Vec<PaneId>,
         default_shell: Option<TerminalAction>,
@@ -743,7 +745,7 @@ pub enum ScreenInstruction {
     },
     BreakPanesToTabWithIndex {
         pane_ids: Vec<PaneId>,
-        tab_index: usize,
+        tab_index: TabPosition,
         should_change_focus_to_new_tab: bool,
         client_id: ClientId,
         completion_tx: Option<NotificationEnd>,

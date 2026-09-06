@@ -1,6 +1,7 @@
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use uuid::Uuid;
+use zellij_tile::prelude::TabPosition;
 use zellij_tile::prelude::*;
 
 use std::collections::{BTreeMap, HashMap};
@@ -493,8 +494,8 @@ struct State {
     search_results: Vec<SearchResult>,
     selected_index: Option<usize>,
     expanded_indices: Vec<usize>,
-    tab_position_to_tab_name: HashMap<usize, String>,
-    plugin_id_to_tab_position: HashMap<PluginId, usize>,
+    tab_position_to_tab_name: HashMap<TabPosition, String>,
+    plugin_id_to_tab_position: HashMap<PluginId, TabPosition>,
     search_term: String,
     new_plugin_screen: Option<NewPluginScreen>,
     colors: Styling,

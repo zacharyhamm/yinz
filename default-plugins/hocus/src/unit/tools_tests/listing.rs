@@ -1,10 +1,11 @@
 use super::*;
 use zellij_tile::prelude::TabId;
+use zellij_tile::prelude::TabPosition;
 use zellij_tile::prelude::{PaneInfo, PaneManifest, TabInfo};
 
 fn tab(position: usize, tab_id: TabId, name: &str) -> TabInfo {
     TabInfo {
-        position,
+        position: TabPosition::new(position),
         tab_id,
         name: name.to_owned(),
         active: position == 0,
@@ -35,7 +36,9 @@ fn session(tabs: Vec<TabInfo>, panes: PaneManifest) -> SessionInfo {
 #[test]
 fn a_listing_is_the_session_name_and_its_tabs() {
     let mut manifest = PaneManifest::default();
-    manifest.panes.insert(0, vec![pane(3, "vim")]);
+    manifest
+        .panes
+        .insert(TabPosition::new(0), vec![pane(3, "vim")]);
 
     let listing = session_listing(&session(vec![tab(0, TabId::new(1), "edit")], manifest));
     assert_eq!(listing["session"], "work");

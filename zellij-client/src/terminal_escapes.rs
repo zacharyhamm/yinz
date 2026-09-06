@@ -275,7 +275,7 @@ impl ClientTeardown {
 
     /// Hand the terminal back and print `message`, without exiting.
     ///
-    /// Used on the path that returns a `ConnectToSession` to the caller, which
+    /// Used on the path that returns a `SessionConnection` to the caller, which
     /// needs the process to stay alive to reconnect.
     pub fn restore<O: TtyControl + StdioAccess + ?Sized>(&self, os_input: &O, message: &str) {
         os_input.disable_mouse().non_fatal();

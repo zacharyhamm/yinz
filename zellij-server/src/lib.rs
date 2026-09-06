@@ -10,6 +10,8 @@ compile_error!("Zellij does not support Windows");
 
 pub use zellij_process::firecracker;
 pub use zellij_terminal::host_query;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::style::default_palette;
 pub mod os_input_output;
 pub use zellij_terminal::output;
@@ -167,15 +169,14 @@ use {
     zellij_ipc::ipc::ClientAttributes, zellij_ipc::ipc::ExitReason,
     zellij_ipc::ipc::ServerToClientMsg, zellij_runtime::consts::DEFAULT_SCROLL_BUFFER_SIZE,
     zellij_runtime::consts::SCROLL_BUFFER_SIZE,
-    zellij_runtime::consts::ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE,
-    zellij_types::data::ConnectToSession, zellij_types::data::InputMode,
+    zellij_runtime::consts::ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE, zellij_types::data::InputMode,
     zellij_types::data::LayoutInfo, zellij_types::data::LayoutWithError,
-    zellij_types::input::actions::Action, zellij_types::input::command::RunCommand,
-    zellij_types::input::command::TerminalAction, zellij_types::input::keybinds::Keybinds,
-    zellij_types::input::layout::FloatingPaneLayout, zellij_types::input::layout::Layout,
-    zellij_types::input::layout::PluginAlias, zellij_types::input::layout::Run,
-    zellij_types::input::layout::RunPluginOrAlias, zellij_types::input::options::Options,
-    zellij_types::input::plugins::PluginAliases,
+    zellij_types::data::SessionConnection, zellij_types::input::actions::Action,
+    zellij_types::input::command::RunCommand, zellij_types::input::command::TerminalAction,
+    zellij_types::input::keybinds::Keybinds, zellij_types::input::layout::FloatingPaneLayout,
+    zellij_types::input::layout::Layout, zellij_types::input::layout::PluginAlias,
+    zellij_types::input::layout::Run, zellij_types::input::layout::RunPluginOrAlias,
+    zellij_types::input::options::Options, zellij_types::input::plugins::PluginAliases,
 };
 
 pub use zellij_types::internal_ids::{ClientId, PluginId, TerminalId};
@@ -193,15 +194,15 @@ pub enum ServerInstruction {
     DetachSession(Vec<ClientId>, Option<NotificationEnd>),
     AttachClient(
         CliAssets,
-        Option<usize>,  // tab position to focus
-        Option<PaneId>, // pane to focus
+        Option<TabNumber>, // tab number to focus
+        Option<PaneId>,    // pane to focus
         ClientId,
     ),
     AttachWatcherClient(ClientId, Size),
     ConnStatus(ClientId),
     Log(Vec<String>, ClientId, Option<NotificationEnd>),
     LogError(Vec<String>, ClientId, Option<NotificationEnd>),
-    SwitchSession(ConnectToSession, ClientId, Option<NotificationEnd>),
+    SwitchSession(SessionConnection, ClientId, Option<NotificationEnd>),
     UnblockCliPipeInput(String),   // String -> Pipe name
     CliPipeOutput(String, String), // String -> Pipe name, String -> Output
     /// One event for a `zellij events` client: its type by name, and the event as JSON.
@@ -1291,11 +1292,12 @@ pub fn start_server_impl(
                 };
 
                 if layout.has_tabs() {
-                    let focused_tab_index = layout.focused_tab_index().unwrap_or(0);
+                    let focused_tab_index =
+                        layout.focused_tab_index().unwrap_or(TabPosition::new(0));
                     for (tab_index, (tab_name, tab_layout, floating_panes_layout)) in
                         layout.tabs().into_iter().enumerate()
                     {
-                        let should_focus_tab = tab_index == focused_tab_index;
+                        let should_focus_tab = TabPosition::new(tab_index) == focused_tab_index;
                         spawn_tabs(
                             Some(tab_layout.clone()),
                             floating_panes_layout.clone(),

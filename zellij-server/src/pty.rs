@@ -28,6 +28,7 @@ use std::{
     path::PathBuf,
 };
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TerminalId;
 
 use crate::pty_host::client::{ChildRunState, ReleasedPane};
@@ -55,7 +56,6 @@ use {
 };
 
 pub type VteBytes = Vec<u8>;
-pub type TabIndex = u32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClientTabIndexOrPaneId {
@@ -811,7 +811,7 @@ pub enum PtyInstruction {
         Option<NotificationEnd>,
     ), // Option<usize> is the optional line number
     UpdateActivePane(Option<PaneId>, ClientId),
-    GoToTab(TabIndex, ClientId),
+    GoToTab(TabNumber, ClientId),
     NewTab(
         Option<PathBuf>,
         Option<TerminalAction>,

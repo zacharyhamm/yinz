@@ -11,6 +11,7 @@ use zellij_types::data::ClientId;
 use zellij_types::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use zellij_types::input::cli_assets::CliAssets;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
 use zellij_types::keys::{BareKey, KeyModifier, KeyWithModifier};
 use zellij_types::mouse::{MouseEvent, MouseEventType};
 use zellij_types::pane_size::{Size, SizeInPixels};
@@ -21,11 +22,11 @@ use zellij_types::{
     geometry::{Direction, FloatingPaneCoordinates, Resize},
 };
 use {
-    zellij_types::data::CommandOrPlugin, zellij_types::data::ConnectToSession,
-    zellij_types::data::InputMode, zellij_types::data::LayoutInfo,
-    zellij_types::data::LayoutMetadata, zellij_types::data::NewPanePlacement,
-    zellij_types::data::OriginatingPlugin, zellij_types::data::PaneId,
-    zellij_types::data::PluginTag, zellij_types::data::RemotePaneHandoff,
+    zellij_types::data::CommandOrPlugin, zellij_types::data::InputMode,
+    zellij_types::data::LayoutInfo, zellij_types::data::LayoutMetadata,
+    zellij_types::data::NewPanePlacement, zellij_types::data::OriginatingPlugin,
+    zellij_types::data::PaneId, zellij_types::data::PluginTag,
+    zellij_types::data::RemotePaneHandoff, zellij_types::data::SessionConnection,
     zellij_types::data::UnblockCondition, zellij_types::data::WarpPlacement,
     zellij_types::data::WarpedPane, zellij_types::data::WarpedTab,
 };
@@ -994,7 +995,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
         cli_assets: CliAssets::default(),
-        tab_position_to_focus: Some(0),
+        tab_position_to_focus: Some(TabNumber::new(0)),
         pane_to_focus: None,
     });
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
@@ -2842,7 +2843,9 @@ fn test_client_messages() {
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
-        action: Action::GoToTab { index: 0 },
+        action: Action::GoToTab {
+            index: TabNumber::new(0)
+        },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
         is_cli_client: true,
@@ -3480,7 +3483,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::RenameTab {
-            tab_index: 11,
+            tab_index: TabNumber::new(11),
             name: "tab_new_name".as_bytes().to_vec(),
         },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
@@ -4457,21 +4460,21 @@ fn test_server_messages() {
         ],
     });
     test_server_roundtrip!(ServerToClientMsg::SwitchSession {
-        connect_to_session: ConnectToSession::default(),
+        connect_to_session: SessionConnection::default(),
     });
     test_server_roundtrip!(ServerToClientMsg::SwitchSession {
-        connect_to_session: ConnectToSession {
+        connect_to_session: SessionConnection {
             name: Some("new_session_name".to_owned()),
-            tab_position: Some(5),
+            tab_position: Some(TabNumber::new(5)),
             pane_id: Some(PaneId::from_legacy(5, true)),
             layout: Some(LayoutInfo::BuiltIn("compact".to_owned())),
             cwd: Some(PathBuf::from("/path/to/cwd")),
         }
     });
     test_server_roundtrip!(ServerToClientMsg::SwitchSession {
-        connect_to_session: ConnectToSession {
+        connect_to_session: SessionConnection {
             name: Some("new_session_name".to_owned()),
-            tab_position: Some(5),
+            tab_position: Some(TabNumber::new(5)),
             pane_id: Some(PaneId::from_legacy(5, true)),
             layout: Some(LayoutInfo::File(
                 "/path/to/my/file.kdl".to_owned(),
@@ -4485,18 +4488,18 @@ fn test_server_messages() {
         }
     });
     test_server_roundtrip!(ServerToClientMsg::SwitchSession {
-        connect_to_session: ConnectToSession {
+        connect_to_session: SessionConnection {
             name: Some("new_session_name".to_owned()),
-            tab_position: Some(5),
+            tab_position: Some(TabNumber::new(5)),
             pane_id: Some(PaneId::from_legacy(5, true)),
             layout: Some(LayoutInfo::Url("https://example.com/layout.kdl".to_owned())),
             cwd: Some(PathBuf::from("/path/to/cwd")),
         }
     });
     test_server_roundtrip!(ServerToClientMsg::SwitchSession {
-        connect_to_session: ConnectToSession {
+        connect_to_session: SessionConnection {
             name: Some("new_session_name".to_owned()),
-            tab_position: Some(5),
+            tab_position: Some(TabNumber::new(5)),
             pane_id: Some(PaneId::from_legacy(5, true)),
             layout: Some(LayoutInfo::Stringified(
                 "layout { pane; pane; pane; }".to_owned()

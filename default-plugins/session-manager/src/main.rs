@@ -1178,7 +1178,7 @@ impl State {
                         if let Some(pane_id) = selected_pane {
                             focus_pane_with_id(pane_id, true, false);
                         } else if let Some(tab_position) = selected_tab {
-                            go_to_tab(tab_position as u32);
+                            go_to_tab(tab_position);
                         } else {
                             self.show_error("Already attached...");
                         }

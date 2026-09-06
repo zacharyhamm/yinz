@@ -25,6 +25,7 @@ mod tools;
 mod transitions;
 pub use transitions::{Confirmation, PromptKind};
 use zellij_tile::prelude::TabId;
+use zellij_tile::prelude::TabPosition;
 pub mod ui;
 mod wand;
 mod worker;
@@ -707,7 +708,7 @@ pub struct State {
     /// Which tab this pane is currently on. An overlay lives on a tab, so hocus carries whichever
     /// halves are on screen to the tab that became active - `None` until the first `TabUpdate`
     /// says.
-    pub(crate) own_tab_index: Option<usize>,
+    pub(crate) own_tab_index: Option<TabPosition>,
     /// Whether our own pane is an overlay, as the manifest reports it - and so whether this
     /// instance is a *panel* at all. `None` until a `PaneUpdate` has named our pane.
     ///
@@ -745,7 +746,7 @@ pub struct State {
     /// `c` keybindings carry `move_to_focused_tab`, which moves only the pane the binding names,
     /// so a reveal from another tab brings the conversation across and leaves the list behind.
     /// `on_panes` is what notices and drags it after us.
-    pub(crate) agents_tab_index: Option<usize>,
+    pub(crate) agents_tab_index: Option<TabPosition>,
     /// Whether the agent list was drawn - not suppressed - in the last `PaneUpdate`.
     ///
     /// Not a state hocus keeps in step with its own: both halves hide and reveal together, so
@@ -761,7 +762,7 @@ pub struct State {
     /// every client's update is a move order: two clients on different tabs would drag the panes
     /// back and forth between them for as long as they stayed attached, each move provoking the
     /// report that causes the next one. See `overlay::tab_to_follow` for the rule this feeds.
-    pub(crate) client_tabs: BTreeMap<ClientId, usize>,
+    pub(crate) client_tabs: BTreeMap<ClientId, TabPosition>,
     /// Whether the **panel** has been set aside with Esc - both halves, since there is only ever
     /// one answer for the two of them.
     ///

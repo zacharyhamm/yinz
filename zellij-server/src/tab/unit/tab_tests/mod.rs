@@ -12,6 +12,7 @@ use zellij_types::geometry::{Direction, Resize, ResizeStrategy};
 use zellij_types::geometry::{SplitDirection, SplitSize};
 use zellij_types::input::layout::TiledPaneLayout;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
 use {zellij_types::data::NewPanePlacement, zellij_types::data::OverlayPlacement};
 
@@ -180,7 +181,7 @@ fn create_new_tab(size: Size, stacked_resize: bool) -> Tab {
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
         TabId::new(index),
-        position,
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -264,7 +265,7 @@ fn create_new_tab_with_layout(size: Size, layout: TiledPaneLayout) -> Tab {
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
         TabId::new(index),
-        position,
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -354,7 +355,7 @@ fn create_new_tab_with_cell_size(
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
         TabId::new(index),
-        position,
+        TabPosition::new(position),
         name,
         size,
         character_cell_size,

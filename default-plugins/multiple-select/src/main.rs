@@ -7,7 +7,7 @@ use zellij_tile::prelude::*;
 pub struct App {
     own_plugin_id: Option<zellij_tile::prelude::PluginId>,
     own_client_id: Option<ClientId>,
-    own_tab_index: Option<usize>,
+    own_tab_index: Option<TabPosition>,
     total_tabs_in_session: Option<usize>,
     grouped_panes: Vec<PaneId>,
     grouped_panes_count: usize,
@@ -415,8 +415,12 @@ impl App {
 
         let pane_ids = self.grouped_panes.clone();
 
-        if Some(own_tab_index + 1) < self.total_tabs_in_session {
-            break_panes_to_tab_with_index(&pane_ids, own_tab_index + 1, true);
+        if let Some(next) = own_tab_index
+            .get()
+            .checked_add(1)
+            .filter(|next| Some(*next) < self.total_tabs_in_session)
+        {
+            break_panes_to_tab_with_index(&pane_ids, TabPosition::new(next), true);
         } else {
             break_panes_to_new_tab(&pane_ids, None, true);
         }
@@ -431,8 +435,12 @@ impl App {
 
         let pane_ids = self.grouped_panes.clone();
 
-        if own_tab_index > 0 {
-            break_panes_to_tab_with_index(&pane_ids, own_tab_index.saturating_sub(1), true);
+        if own_tab_index.get() > 0 {
+            break_panes_to_tab_with_index(
+                &pane_ids,
+                TabPosition::new(own_tab_index.get() - 1),
+                true,
+            );
         } else {
             break_panes_to_new_tab(&pane_ids, None, true);
         }

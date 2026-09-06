@@ -9,6 +9,7 @@ use zellij_types::geometry::{Direction, Resize};
 use zellij_types::input::options::Options;
 use zellij_types::internal_ids::RecordingId;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
 use {
     zellij_runtime::consts::ZELLIJ_CONFIG_DIR_ENV, zellij_runtime::consts::ZELLIJ_CONFIG_FILE_ENV,
     zellij_types::input::layout::PluginUserConfiguration,
@@ -1355,7 +1356,7 @@ pub enum CliAction {
     },
     /// Go to tab with index [index]
     GoToTab {
-        index: u32,
+        index: TabNumber,
     },
     /// Go to tab with name [name]
     ///
@@ -1794,7 +1795,7 @@ tail -f /tmp/my-live-logfile | zellij action pipe --name logs --plugin https://e
         name: String,
         /// Optional tab position to focus
         #[clap(long)]
-        tab_position: Option<usize>,
+        tab_position: Option<TabNumber>,
         /// Optional pane ID to focus (eg. "terminal_1" for terminal pane with id 1, or "plugin_2" for plugin pane with id 2)
         #[clap(long)]
         pane_id: Option<String>,

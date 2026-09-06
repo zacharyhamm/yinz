@@ -9,6 +9,7 @@ use crate::{
 };
 use zellij_types::input::options::PaneFrameStyle;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
 
 use std::path::PathBuf;
@@ -242,7 +243,7 @@ fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
         TabId::new(index),
-        position,
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -333,7 +334,7 @@ fn create_new_tab_with_stacked_pane_list(
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
         TabId::new(index),
-        position,
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -424,7 +425,7 @@ fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
         TabId::new(index),
-        position,
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -524,7 +525,7 @@ fn create_new_tab_with_swap_layouts(
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
         TabId::new(index),
-        position,
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -629,7 +630,7 @@ fn create_new_tab_with_os_api(
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
         TabId::new(index),
-        position,
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -717,7 +718,7 @@ fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) 
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
         TabId::new(index),
-        position,
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -818,7 +819,7 @@ fn create_new_tab_with_mock_pty_writer(
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
         TabId::new(index),
-        position,
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -910,7 +911,7 @@ fn create_new_tab_with_sixel_support(
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
         TabId::new(index),
-        position,
+        TabPosition::new(position),
         name,
         size,
         character_cell_size,
@@ -1209,7 +1210,7 @@ fn create_new_tab_with_plugin_receiver_and_os(
     let mouse_scroll_resize = true;
     let mut tab = Tab::new(
         TabId::new(index),
-        position,
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,
@@ -1298,7 +1299,7 @@ fn create_new_tab_with_screen_receiver(
     let currently_marking_pane_group = Rc::new(RefCell::new(HashMap::new()));
     let mut tab = Tab::new(
         TabId::new(index),
-        position,
+        TabPosition::new(position),
         name,
         size,
         character_cell_info,

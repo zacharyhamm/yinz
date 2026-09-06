@@ -899,7 +899,7 @@ mod tests {
         let metadata = PaneMetadata {
             terminal_id: TerminalId::new(1),
             tab_id: zellij_types::internal_ids::TabId::new(0),
-            tab_position: 0,
+            tab_position: zellij_types::internal_ids::TabPosition::new(0),
             tab_name: "tab".to_string(),
             title: "pane".to_string(),
             cols: 80,

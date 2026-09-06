@@ -3,6 +3,8 @@ const PLUGIN_2: zellij_types::internal_ids::PluginId = zellij_types::internal_id
 
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 
 #[test]
 pub fn background_plugin_receives_broadcasts_regardless_of_active_tab() {
@@ -47,7 +49,9 @@ pub fn background_plugin_receives_broadcasts_regardless_of_active_tab() {
     let instructions_before_switch = received_plugin_instructions.lock().len();
 
     // Switch to tab 0 (1-based index 1 = position 0 = tab with plugin 2)
-    let goto_tab = CliAction::GoToTab { index: 1 };
+    let goto_tab = CliAction::GoToTab {
+        index: TabNumber::new(1),
+    };
     send_cli_action_to_server(&session_metadata, goto_tab, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -140,7 +144,9 @@ pub fn tab_switch_only_updates_active_tab_plugins() {
     let instructions_before_switch = received_plugin_instructions.lock().len();
 
     // Switch to tab 0 (1-based index 1 = position 0 = tab with plugin 2)
-    let goto_tab = CliAction::GoToTab { index: 1 };
+    let goto_tab = CliAction::GoToTab {
+        index: TabNumber::new(1),
+    };
     send_cli_action_to_server(&session_metadata, goto_tab, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -203,7 +209,9 @@ pub fn inactive_tab_plugins_get_fresh_state_on_activation() {
     let instructions_before_switch = received_plugin_instructions.lock().len();
 
     // Switch to tab 0 (1-based index 1 = position 0 = tab with plugin 2)
-    let goto_tab = CliAction::GoToTab { index: 1 };
+    let goto_tab = CliAction::GoToTab {
+        index: TabNumber::new(1),
+    };
     send_cli_action_to_server(&session_metadata, goto_tab, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
 
@@ -240,7 +248,8 @@ pub fn inactive_tab_plugins_get_fresh_state_on_activation() {
     // Tab at position 0 should be active after switching to GoToTab index 1 (1-based)
     let active_tab = active_tab.unwrap();
     assert_eq!(
-        active_tab.position, 0,
+        active_tab.position,
+        TabPosition::new(0),
         "The first tab (position 0) should be active, got position {}",
         active_tab.position
     );

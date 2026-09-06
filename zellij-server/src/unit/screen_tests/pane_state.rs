@@ -6,6 +6,7 @@
 use super::*;
 use zellij_types::internal_ids::PluginId;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 
 /// `CwdChanged` announces a move once. The manifest says where every pane is
 /// every time, which is what puts right a plugin that was not listening yet.
@@ -140,11 +141,12 @@ fn recorder_pane_metadata() {
         pane_content_columns: 80,
         ..Default::default()
     };
-    pane_manifest
-        .panes
-        .insert(0, vec![terminal_pane.clone(), plugin_pane]);
+    pane_manifest.panes.insert(
+        TabPosition::new(0),
+        vec![terminal_pane.clone(), plugin_pane],
+    );
     let tab_info = TabInfo {
-        position: 0,
+        position: TabPosition::new(0),
         name: "my tab".to_string(),
         ..Default::default()
     };
@@ -158,7 +160,7 @@ fn recorder_pane_metadata() {
         zellij_types::internal_ids::TerminalId::new(5)
     );
     assert_eq!(metadata[0].tab_id, TabId::new(0));
-    assert_eq!(metadata[0].tab_position, 0);
+    assert_eq!(metadata[0].tab_position, TabPosition::new(0));
     assert_eq!(metadata[0].tab_name, "my tab");
     assert_eq!(metadata[0].title, "my terminal");
     assert_eq!(metadata[0].cols, 80);

@@ -10,11 +10,12 @@ use std::{
 };
 use zellij_runtime::errors::prelude::*;
 use zellij_types::data::ClientId;
-use zellij_types::data::ConnectToSession;
 use zellij_types::data::PaneId;
+use zellij_types::data::SessionConnection;
 use zellij_types::diagnostics::ErrorContext;
 use zellij_types::input::actions::Action;
 use zellij_types::input::cli_assets::CliAssets;
+use zellij_types::internal_ids::TabNumber;
 use zellij_types::keys::KeyModifier;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::pane_size::Size;
@@ -144,7 +145,7 @@ pub enum ClientToServerMsg {
     },
     AttachClient {
         cli_assets: CliAssets,
-        tab_position_to_focus: Option<usize>,
+        tab_position_to_focus: Option<TabNumber>,
         #[serde(default, with = "zellij_types::pane_id::legacy_reference")]
         pane_to_focus: Option<PaneId>,
     },
@@ -235,7 +236,7 @@ pub enum ServerToClientMsg {
         lines: Vec<String>,
     },
     SwitchSession {
-        connect_to_session: ConnectToSession,
+        connect_to_session: SessionConnection,
     },
     UnblockCliPipeInput {
         pipe_name: String,

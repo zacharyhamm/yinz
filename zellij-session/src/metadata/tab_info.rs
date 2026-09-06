@@ -1,5 +1,6 @@
 use super::*;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 
 pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
     macro_rules! int_node {
@@ -50,7 +51,8 @@ pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
         }};
     }
 
-    let position = int_node!("position", usize);
+    let position = TabPosition::try_from(int_node!("position", i64))
+        .map_err(|_| "Tab position is out of range")?;
     let name = string_node!("name");
     let active = bool_node!("active");
     let panes_to_hide = int_node!("panes_to_hide", usize);
@@ -109,7 +111,7 @@ pub fn encode_to_kdl(value: &TabInfo) -> anyhow::Result<KdlDocument> {
     let mut kdl_doucment = KdlDocument::new();
 
     let mut position = KdlNode::new("position");
-    position.push(value.position as i64);
+    position.push(i64::try_from(value.position.get())?);
     kdl_doucment.nodes_mut().push(position);
 
     let mut name = KdlNode::new("name");

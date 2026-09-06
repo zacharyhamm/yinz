@@ -1,5 +1,6 @@
 use super::*;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 
 #[test]
 fn client_history_preserves_boundaries_and_rejects_narrowing() {
@@ -101,12 +102,12 @@ fn serialize_and_deserialize_session_info_with_data() {
         },
     ];
     let mut panes = HashMap::new();
-    panes.insert(0, panes_list);
+    panes.insert(TabPosition::new(0), panes_list);
     let session_info = SessionInfo {
         name: "my session name".to_owned(),
         tabs: vec![
             TabInfo {
-                position: 0,
+                position: TabPosition::new(0),
                 name: "tab 1".to_owned(),
                 active: true,
                 panes_to_hide: 1,
@@ -130,7 +131,7 @@ fn serialize_and_deserialize_session_info_with_data() {
                 has_bell_notification: false,
             },
             TabInfo {
-                position: 1,
+                position: TabPosition::new(1),
                 name: "tab 2".to_owned(),
                 active: true,
                 panes_to_hide: 0,

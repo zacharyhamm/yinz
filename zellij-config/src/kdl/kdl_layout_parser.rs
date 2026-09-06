@@ -1,3 +1,4 @@
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::{
     command::PaneTarget,
     geometry::{PercentOrFixed, SplitDirection, SplitSize},
@@ -2232,7 +2233,7 @@ impl<'a> KdlLayoutParser<'a> {
         Ok(Layout {
             tabs,
             template,
-            focused_tab_index,
+            focused_tab_index: focused_tab_index.map(TabPosition::new),
             swap_tiled_layouts,
             swap_floating_layouts,
             ..Default::default()

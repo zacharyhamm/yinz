@@ -7,6 +7,8 @@
 
 use super::*;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 
 /// Two tabs with a terminal in each. `client_id` 1 starts on tab 0.
 fn screen_with_two_tabs() -> Screen {
@@ -15,7 +17,9 @@ fn screen_with_two_tabs() -> Screen {
     new_tab(&mut screen, 2, TabId::new(1));
     // `new_tab` leaves the client on the tab it just made; the reveal is only
     // interesting from somewhere else.
-    screen.go_to_tab(1, crate::ClientId::new(1)).expect("TEST");
+    screen
+        .go_to_tab(TabNumber::new(1), crate::ClientId::new(1))
+        .expect("TEST");
     screen
 }
 
@@ -42,7 +46,7 @@ fn a_client_focused_inside_a_tab_is_not_dragged_out_of_it() {
 
     assert_eq!(
         screen.get_active_tab(client_id).unwrap().position,
-        0,
+        TabPosition::new(0),
         "the view should have stayed where the client was"
     );
     assert_eq!(screen.get_active_pane_id(&client_id), focused_before);

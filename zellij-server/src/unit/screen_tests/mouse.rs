@@ -9,6 +9,8 @@ use std::time::Instant;
 use zellij_test_support::Watched;
 use zellij_types::animation::Tween;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 
 /// A toast that has finished arriving and is sitting still, which is what every hit-test below
 /// wants: the animation is not under test here, the geometry is.
@@ -38,7 +40,9 @@ fn clicking_a_pane_notification_focuses_its_pane_and_dismisses_it() {
             b"\x1b[?1002h\x1b[?1006h".to_vec(),
         )
         .unwrap();
-    screen.go_to_tab(2, client_id).expect("TEST");
+    screen
+        .go_to_tab(TabNumber::new(2), client_id)
+        .expect("TEST");
 
     let text = "agent idle";
     screen.notifications.push(settled_notification(
@@ -54,7 +58,10 @@ fn clicking_a_pane_notification_focuses_its_pane_and_dismisses_it() {
         client_id,
     );
 
-    assert_eq!(screen.get_active_tab(client_id).unwrap().position, 0);
+    assert_eq!(
+        screen.get_active_tab(client_id).unwrap().position,
+        TabPosition::new(0)
+    );
     assert_eq!(
         screen.get_active_pane_id(&client_id),
         Some(PaneId::Terminal(crate::TerminalId::new(1)))
@@ -107,7 +114,9 @@ fn clicking_overlapping_pane_notifications_uses_paint_order() {
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
-    screen.go_to_tab(2, client_id).expect("TEST");
+    screen
+        .go_to_tab(TabNumber::new(2), client_id)
+        .expect("TEST");
 
     let text = "agent idle";
     let newer = settled_notification(1, text, PaneId::Terminal(crate::TerminalId::new(2)));

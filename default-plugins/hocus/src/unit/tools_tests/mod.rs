@@ -34,7 +34,7 @@ fn call(name: &str, arguments: &str) -> ToolCall {
 fn positioned_pane(id: u32, x: usize, y: usize, columns: usize, rows: usize) -> PanePosition {
     PanePosition {
         id: PaneId::Terminal(zellij_tile::prelude::TerminalId::new(id)),
-        tab_position: Some(0),
+        tab_position: Some(zellij_tile::prelude::TabPosition::new(0)),
         x,
         y,
         columns,

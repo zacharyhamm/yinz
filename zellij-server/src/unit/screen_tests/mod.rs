@@ -11,6 +11,7 @@ use crate::{
 };
 use zellij_test_support::Watched;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
 
 use insta::assert_snapshot;
@@ -2111,12 +2112,12 @@ fn screen_with_diverged_tab_ids() -> Screen {
 
     assert_eq!(
         screen.tabs.get(&TabId::new(2)).map(|t| t.position),
-        Some(0),
+        Some(TabPosition::new(0)),
         "Pre-condition: tab id 2 sits at position 0"
     );
     assert_eq!(
         screen.tabs.get(&TabId::new(3)).map(|t| t.position),
-        Some(1),
+        Some(TabPosition::new(1)),
         "Pre-condition: tab id 3 sits at position 1"
     );
     screen

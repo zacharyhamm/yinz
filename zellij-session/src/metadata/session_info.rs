@@ -183,7 +183,7 @@ pub fn to_string(value: &SessionInfo) -> anyhow::Result<String> {
     tabs.set_children(tab_children);
 
     let mut panes = KdlNode::new("panes");
-    panes.set_children(pane_manifest::encode_to_kdl(&value.panes));
+    panes.set_children(pane_manifest::encode_to_kdl(&value.panes)?);
 
     let mut available_layouts = KdlNode::new("available_layouts");
     let mut available_layouts_children = KdlDocument::new();

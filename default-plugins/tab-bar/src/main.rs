@@ -3,7 +3,8 @@ mod tab;
 
 use std::cmp::{max, min};
 use std::collections::BTreeMap;
-use std::convert::TryInto;
+use zellij_tile::prelude::TabNumber;
+use zellij_tile::prelude::TabPosition;
 
 use tab::get_tab_to_focus;
 use unicode_width::UnicodeWidthStr;
@@ -26,7 +27,7 @@ const MIN_TAB_NAME_WIDTH: usize = 8;
 pub struct LinePart {
     part: String,
     len: usize,
-    tab_index: Option<usize>,
+    tab_index: Option<TabPosition>,
 }
 
 impl LinePart {
@@ -39,7 +40,7 @@ impl LinePart {
 #[derive(Default, Debug)]
 struct State {
     tabs: Vec<TabInfo>,
-    active_tab_idx: usize,
+    active_tab_idx: TabNumber,
     mode_info: ModeInfo,
     tab_line: Vec<LinePart>,
     hide_swap_layout_indication: bool,
@@ -47,7 +48,7 @@ struct State {
     active_pane_scroll: Option<(usize, usize)>,
     new_tab_button_range: Option<(usize, usize)>,
     breadcrumb_range: Option<(usize, usize)>,
-    hovered_tab_idx: Option<usize>,
+    hovered_tab_idx: Option<TabNumber>,
     hovered_new_tab_button: bool,
     hint_text: Option<BTreeMap<usize, StyledText>>,
     outstanding_hint_timeouts: usize,
@@ -132,7 +133,11 @@ impl ZellijPlugin for State {
             Event::TabUpdate(tabs) => {
                 if let Some(active_tab_index) = tabs.iter().position(|t| t.active) {
                     // tabs are indexed starting from 1 so we need to add 1
-                    let active_tab_idx = active_tab_index + 1;
+                    let Ok(active_tab_idx) =
+                        TabNumber::try_from(TabPosition::new(active_tab_index))
+                    else {
+                        return false;
+                    };
 
                     if self.active_tab_idx != active_tab_idx || self.tabs != tabs {
                         should_render = true;
@@ -191,7 +196,7 @@ impl ZellijPlugin for State {
                     }
                     let tab_to_focus = get_tab_to_focus(&self.tab_line, self.active_tab_idx, col);
                     if let Some(idx) = tab_to_focus {
-                        switch_tab_to(idx.try_into().unwrap());
+                        switch_tab_to(idx);
                     }
                 },
                 Mouse::Hover(_, col) => {
@@ -218,10 +223,18 @@ impl ZellijPlugin for State {
                     }
                 },
                 Mouse::ScrollUp(_) => {
-                    switch_tab_to(min(self.active_tab_idx + 1, self.tabs.len()) as u32);
+                    if let Ok(next) = TabNumber::try_from(min(
+                        (self.active_tab_idx.get() as usize).saturating_add(1),
+                        self.tabs.len(),
+                    )) {
+                        switch_tab_to(next);
+                    }
                 },
                 Mouse::ScrollDown(_) => {
-                    switch_tab_to(max(self.active_tab_idx.saturating_sub(1), 1) as u32);
+                    switch_tab_to(TabNumber::new(max(
+                        self.active_tab_idx.get().saturating_sub(1),
+                        1,
+                    )));
                 },
                 _ => {},
             },
@@ -259,11 +272,11 @@ impl ZellijPlugin for State {
                 if tabname.is_empty() {
                     tabname = String::from("Enter name...");
                 }
-                active_tab_index = t.position;
+                active_tab_index = t.position.get();
             } else if t.active {
-                active_tab_index = t.position;
+                active_tab_index = t.position.get();
             }
-            let is_hovered = self.hovered_tab_idx == Some(t.position + 1);
+            let is_hovered = self.hovered_tab_idx.map(TabNumber::position) == Some(t.position);
             let tab = tab_style(
                 tabname,
                 t,

@@ -163,7 +163,7 @@ fn left_more_message(
     LinePart {
         part: more_styled_text,
         len: more_text_len,
-        tab_index: Some(tab_index),
+        tab_index: Some(TabPosition::new(tab_index)),
     }
 }
 
@@ -201,7 +201,7 @@ fn right_more_message(
     LinePart {
         part: more_styled_text,
         len: more_text_len,
-        tab_index: Some(tab_index),
+        tab_index: Some(TabPosition::new(tab_index)),
     }
 }
 

@@ -31,13 +31,13 @@ use zellij_types::keys::{BareKey, KeyModifier};
 use {
     zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::ExitReason,
     zellij_ipc::ipc::IpcReceiverWithContext, zellij_ipc::ipc::IpcRecv,
-    zellij_ipc::ipc::ServerToClientMsg, zellij_types::data::ConnectToSession,
-    zellij_types::data::Event, zellij_types::data::InputMode,
+    zellij_ipc::ipc::ServerToClientMsg, zellij_types::data::Event, zellij_types::data::InputMode,
     zellij_types::data::ListPanesResponse, zellij_types::data::ListTabsResponse,
     zellij_types::data::NewPanePlacement, zellij_types::data::PaneListEntry,
-    zellij_types::data::TabInfo, zellij_types::data::UnblockCondition,
-    zellij_types::input::actions::Action, zellij_types::input::actions::SearchDirection,
-    zellij_types::input::actions::SearchOption, zellij_types::input::command::TerminalAction,
+    zellij_types::data::SessionConnection, zellij_types::data::TabInfo,
+    zellij_types::data::UnblockCondition, zellij_types::input::actions::Action,
+    zellij_types::input::actions::SearchDirection, zellij_types::input::actions::SearchOption,
+    zellij_types::input::command::TerminalAction,
 };
 
 use crate::ClientId;
@@ -1480,7 +1480,7 @@ pub(crate) fn route_action(
         } => {
             let current_session_name = envs::get_session_name().unwrap_or_else(|_| String::new());
             if name != current_session_name {
-                let connect_to_session = ConnectToSession {
+                let connect_to_session = SessionConnection {
                     name: Some(name.clone()),
                     tab_position: tab_position.clone(),
                     pane_id: pane_id.clone(),
@@ -1839,7 +1839,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::RenameTab(
-                    tab_position as usize,
+                    tab_position,
                     name_bytes,
                     Some(NotificationEnd::new(completion_tx)),
                 ))

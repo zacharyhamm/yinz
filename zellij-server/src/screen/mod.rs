@@ -66,6 +66,7 @@ use std::str;
 use std::time::{Duration, Instant};
 use zellij_types::animation::{Tween, BLINK_TICK, FRAME_PERIOD};
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
 
 use crate::route::NotificationEnd;
@@ -1735,7 +1736,7 @@ impl Screen {
 
         let tab_name = tab_name.unwrap_or_else(String::new);
 
-        let position = self.tabs.len();
+        let position = TabPosition::new(self.tabs.len());
         let tab_size = self.size_for_client(client_id);
         let mut tab = Tab::new(
             tab_id,
@@ -2252,10 +2253,13 @@ impl Screen {
         match self.get_active_tab(client_id) {
             Ok(active_tab) => {
                 let active_tab_pos = active_tab.position;
-                if active_tab_pos == 0 {
+                if active_tab_pos == TabPosition::new(0) {
                     self.rotate_tab_positions_left();
                 } else {
-                    self.switch_tabs(active_tab_pos, active_tab_pos.saturating_sub(1));
+                    self.switch_tabs(
+                        active_tab_pos,
+                        TabPosition::new(active_tab_pos.get().saturating_sub(1)),
+                    );
                 }
                 self.log_and_report_session_state()
                     .context("failed to move tab to left")?;
@@ -2280,7 +2284,7 @@ impl Screen {
     /// * `other_tab_pos` - Position to swap with (0-based)
     ///
     /// NOTE: this expects positions rather than IDs (see distinction at top of file)
-    fn switch_tabs(&mut self, active_tab_pos: usize, other_tab_pos: usize) {
+    fn switch_tabs(&mut self, active_tab_pos: TabPosition, other_tab_pos: TabPosition) {
         let Some(active_tab_id) = self
             .tabs
             .values()
@@ -2330,12 +2334,12 @@ impl Screen {
     }
 
     fn rotate_tab_positions_left(&mut self) {
-        let last_position = self.tabs.len().saturating_sub(1);
+        let last_position = TabPosition::new(self.tabs.len().saturating_sub(1));
         for tab in self.tabs.values_mut() {
-            tab.position = if tab.position == 0 {
+            tab.position = if tab.position == TabPosition::new(0) {
                 last_position
             } else {
-                tab.position.saturating_sub(1)
+                TabPosition::new(tab.position.get().saturating_sub(1))
             };
         }
     }
@@ -2343,7 +2347,7 @@ impl Screen {
     fn rotate_tab_positions_right(&mut self) {
         let num_tabs = self.tabs.len();
         for tab in self.tabs.values_mut() {
-            tab.position = (tab.position + 1) % num_tabs;
+            tab.position = TabPosition::new((tab.position.get() + 1) % num_tabs);
         }
     }
 
@@ -2360,10 +2364,10 @@ impl Screen {
         match self.get_active_tab(client_id) {
             Ok(active_tab) => {
                 let active_tab_pos = active_tab.position;
-                if active_tab_pos == self.tabs.len().saturating_sub(1) {
+                if active_tab_pos.get() == self.tabs.len().saturating_sub(1) {
                     self.rotate_tab_positions_right();
                 } else {
-                    self.switch_tabs(active_tab_pos, active_tab_pos + 1);
+                    self.switch_tabs(active_tab_pos, TabPosition::new(active_tab_pos.get() + 1));
                 }
                 self.log_and_report_session_state()
                     .context("failed to move tab to the right")?;
@@ -2382,17 +2386,20 @@ impl Screen {
             let num_tabs = self.tabs.len();
             match direction {
                 Direction::Left => {
-                    if tab_pos == 0 {
+                    if tab_pos == TabPosition::new(0) {
                         self.rotate_tab_positions_left();
                     } else {
-                        self.switch_tabs(tab_pos, tab_pos.saturating_sub(1));
+                        self.switch_tabs(
+                            tab_pos,
+                            TabPosition::new(tab_pos.get().saturating_sub(1)),
+                        );
                     }
                 },
                 Direction::Right => {
-                    if tab_pos == num_tabs.saturating_sub(1) {
+                    if tab_pos.get() == num_tabs.saturating_sub(1) {
                         self.rotate_tab_positions_right();
                     } else {
-                        self.switch_tabs(tab_pos, tab_pos + 1);
+                        self.switch_tabs(tab_pos, TabPosition::new(tab_pos.get() + 1));
                     }
                 },
                 _ => return Ok(()),
@@ -2545,7 +2552,7 @@ impl Screen {
             .context("failed to toggle tabs")?;
         if let Some(t) = tab {
             let position = t.position;
-            self.go_to_tab(position + 1, client_id)
+            self.switch_active_tab(position, None, true, client_id)
                 .context("failed to toggle tabs")?;
         };
 
@@ -2685,7 +2692,7 @@ impl Screen {
                 let tab_position = self
                     .get_tab_position_by_id(tab_id)
                     .with_context(err_context)?;
-                self.go_to_tab(tab_position + 1, client_id)?;
+                self.switch_active_tab(tab_position, None, true, client_id)?;
                 self.tabs
                     .get_mut(&tab_id)
                     .with_context(err_context)?
@@ -2777,7 +2784,7 @@ impl Screen {
         let tab_index = self.tab_position_containing_pane(pane_id);
         match tab_index {
             Some(tab_index) => {
-                self.go_to_tab(tab_index + 1, client_id)?;
+                self.switch_active_tab(tab_index, None, true, client_id)?;
                 // The tab's own result is what gets logged. Mapping over the lookup used to
                 // produce an `Option<Result>` whose *outer* layer was the only thing
                 // `non_fatal` ever looked at, so a tab that failed to focus the pane was

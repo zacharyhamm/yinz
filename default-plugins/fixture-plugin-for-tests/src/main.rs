@@ -221,7 +221,7 @@ impl ZellijPlugin for State {
                 },
                 BareKey::Char('e') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                     let tab_index = 2;
-                    go_to_tab(tab_index)
+                    go_to_tab(TabPosition::new(tab_index))
                 },
                 BareKey::Char('f') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                     let plugin_url = "file:/path/to/my/plugin.wasm";
@@ -298,7 +298,7 @@ impl ZellijPlugin for State {
                     );
                 },
                 BareKey::Char('o') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
-                    switch_tab_to(1);
+                    switch_tab_to(TabNumber::new(1));
                 },
                 BareKey::Char('p') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                     hide_self();
@@ -344,7 +344,7 @@ impl ZellijPlugin for State {
                     );
                 },
                 BareKey::Char('x') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
-                    rename_tab(0, "new tab name");
+                    rename_tab(TabPosition::new(0), "new tab name");
                 },
                 BareKey::Char('z') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                     go_to_tab_name(&format!("{:?}", self.configuration));
@@ -527,7 +527,7 @@ impl ZellijPlugin for State {
                     ));
                 },
                 BareKey::Char('t') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    close_tab_with_index(2);
+                    close_tab_with_index(TabPosition::new(2));
                 },
                 BareKey::Char('u') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     let should_change_focus_to_new_tab = true;
@@ -547,7 +547,7 @@ impl ZellijPlugin for State {
                             PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1)),
                             PaneId::Plugin(zellij_tile::prelude::PluginId::new(2)),
                         ],
-                        2,
+                        TabPosition::new(2),
                         should_change_focus_to_target_tab,
                     );
                 },
