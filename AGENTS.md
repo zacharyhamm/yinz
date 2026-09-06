@@ -98,8 +98,8 @@ past one crate:
   `zellij-ipc`, `zellij-session`, `zellij-cli`, `zellij-storage`) — changes can reach every consumer
 - `zellij-storage/src/plugin_data_store/` — also run `cargo x postgres-test`: the same test files
   run against SQLite and Postgres, and only the Postgres half needs a server
-- `zellij-tile/`, `zellij-tile-utils/`, or anything under `zellij-config/assets/` (protobufs,
-  embedded plugins — also regenerate with `cargo x proto`)
+- `zellij-tile/`, `zellij-tile-utils/`, or assets under `zellij-config/`, `zellij-plugin-api/`,
+  or `zellij-ipc/` (regenerate changed protobufs with `cargo x proto`)
 - the render path in `zellij-server/` (grid, panes, output), which the `insta` snapshots and
   integration tests cover broadly
 - screen/tab/pty plumbing that both plugins and the client sit on
@@ -247,7 +247,8 @@ and which have not. Read it before touching plugin event delivery or the plugin 
 - **Logs** while debugging: `$TMPDIR/zellij-<UID>/zellij-log/zellij.log` (truncated at
   100KB). `--debug` also dumps raw pty bytes per pane.
 - Toolchain is `stable` per `rust-toolchain.toml`; no MSRV policy.
-- Changing protobufs under `zellij-config/assets/`: regenerate with `cargo x proto`.
+- Changing protobufs under `zellij-plugin-api/assets/` or `zellij-ipc/assets/`: regenerate with
+  `cargo x proto`.
 
 ## Self-programming
 

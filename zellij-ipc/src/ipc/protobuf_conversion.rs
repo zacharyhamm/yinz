@@ -1,6 +1,7 @@
 #![allow(clippy::unnecessary_fallible_conversions)]
 use std::str::FromStr;
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 
@@ -1127,7 +1128,7 @@ fn warped_pane_to_protobuf(
     pane: &zellij_types::data::WarpedPane,
 ) -> crate::client_server_contract::client_server_contract::WarpedPane {
     crate::client_server_contract::client_server_contract::WarpedPane {
-        host_id: pane.host_id.clone(),
+        host_id: pane.host_id.clone().into_string(),
         control_socket: pane.control_socket.to_string_lossy().to_string(),
         title: pane.title.clone(),
         contents: pane.contents.clone(),
@@ -1141,7 +1142,7 @@ fn warped_pane_from_protobuf(
     pane: crate::client_server_contract::client_server_contract::WarpedPane,
 ) -> Result<zellij_types::data::WarpedPane> {
     Ok(zellij_types::data::WarpedPane {
-        host_id: pane.host_id,
+        host_id: SupervisorId::new(pane.host_id),
         control_socket: std::path::PathBuf::from(pane.control_socket),
         title: pane.title,
         contents: pane.contents,
@@ -1897,7 +1898,7 @@ impl TryFrom<zellij_types::input::actions::Action>
             }),
             zellij_types::input::actions::Action::AdoptPane { payload, placement } => {
                 ActionType::AdoptPane(AdoptPaneAction {
-                    host_id: payload.host_id.clone(),
+                    host_id: payload.host_id.clone().into_string(),
                     control_socket: payload.control_socket.to_string_lossy().to_string(),
                     title: payload.title.clone(),
                     contents: payload.contents.clone(),
@@ -2963,7 +2964,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                 Ok(zellij_types::input::actions::Action::AdoptPane {
                     placement: warp_placement_from_i32(adopt_pane_action.placement)?,
                     payload: Box::new(zellij_types::data::WarpedPane {
-                        host_id: adopt_pane_action.host_id.clone(),
+                        host_id: SupervisorId::new(adopt_pane_action.host_id.clone()),
                         control_socket: PathBuf::from(&adopt_pane_action.control_socket),
                         title: adopt_pane_action.title.clone(),
                         contents: adopt_pane_action.contents.clone(),

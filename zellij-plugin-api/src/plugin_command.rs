@@ -192,6 +192,7 @@ use zellij_types::internal_ids::DataWatchId;
 use zellij_types::internal_ids::NotificationId;
 use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::QueueJobId;
+use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
@@ -3326,7 +3327,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::AdoptOrphanedPane) => match protobuf_plugin_command.payload {
                 Some(Payload::AdoptOrphanedPanePayload(payload)) => {
                     Ok(PluginCommand::AdoptOrphanedPane {
-                        host_id: payload.host_id,
+                        host_id: SupervisorId::new(payload.host_id),
                         placement: warp_placement_from_i32(payload.placement)?,
                     })
                 },
@@ -5625,7 +5626,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::AdoptOrphanedPane as i32,
                 payload: Some(Payload::AdoptOrphanedPanePayload(
                     AdoptOrphanedPanePayload {
-                        host_id,
+                        host_id: host_id.into_string(),
                         placement: ProtobufWarpPlacement::from(placement) as i32,
                     },
                 )),
@@ -5822,7 +5823,7 @@ impl From<OrphanedPane> for ProtobufOrphanedPane {
             Some(code) => (true, code),
         };
         ProtobufOrphanedPane {
-            host_id: pane.host_id,
+            host_id: pane.host_id.into_string(),
             session_name: pane.session_name,
             command: pane.command,
             cwd: pane.cwd.map(|cwd| cwd.display().to_string()),
@@ -5838,7 +5839,7 @@ impl From<OrphanedPane> for ProtobufOrphanedPane {
 impl From<ProtobufOrphanedPane> for OrphanedPane {
     fn from(pane: ProtobufOrphanedPane) -> Self {
         OrphanedPane {
-            host_id: pane.host_id,
+            host_id: SupervisorId::new(pane.host_id),
             session_name: pane.session_name,
             command: pane.command,
             cwd: pane.cwd.map(PathBuf::from),
@@ -7537,7 +7538,7 @@ mod tests {
     fn adopt_orphaned_pane_protobuf_round_trip() {
         for placement in EVERY_PLACEMENT {
             let original = PluginCommand::AdoptOrphanedPane {
-                host_id: "abc123".to_owned(),
+                host_id: SupervisorId::new("abc123".to_owned()),
                 placement,
             };
             let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
@@ -7547,7 +7548,7 @@ mod tests {
                     host_id,
                     placement: decoded_placement,
                 } => {
-                    assert_eq!(host_id, "abc123");
+                    assert_eq!(host_id, SupervisorId::new("abc123"));
                     assert_eq!(decoded_placement, placement);
                 },
                 other => panic!("expected AdoptOrphanedPane, got {:?}", other),
@@ -7583,7 +7584,7 @@ mod tests {
     fn an_orphaned_panes_exit_state_survives_the_wire() {
         for exit_status in [None, Some(None), Some(Some(1))] {
             let pane = OrphanedPane {
-                host_id: "abc123".to_owned(),
+                host_id: SupervisorId::new("abc123".to_owned()),
                 session_name: Some("gone".to_owned()),
                 command: "top".to_owned(),
                 cwd: Some(PathBuf::from("/tmp")),
@@ -7602,7 +7603,7 @@ mod tests {
         for response in [
             ListOrphanedPanesResponse::Ok(vec![]),
             ListOrphanedPanesResponse::Ok(vec![OrphanedPane {
-                host_id: "abc123".to_owned(),
+                host_id: SupervisorId::new("abc123".to_owned()),
                 command: "top".to_owned(),
                 ..Default::default()
             }]),

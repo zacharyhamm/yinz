@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TerminalId;
 
 use nix::sys::signal::{kill, Signal};
@@ -67,7 +68,7 @@ pub struct PendingHost {
     control: Option<UnixStream>,
     reader_stream: Option<UnixStream>,
     host_child: Option<Child>,
-    host_id: String,
+    host_id: SupervisorId,
     host_pid: ProcessId,
     control_socket: Option<PathBuf>,
     master: Option<OwnedFd>,
@@ -141,7 +142,7 @@ pub struct SpawnedHost {
 /// The server's end of one supervisor. Dropping it does **not** kill the pane —
 /// that is the whole point. Only `terminate()` does.
 pub struct PtyHostHandle {
-    pub host_id: String,
+    pub host_id: SupervisorId,
     pub host_pid: ProcessId,
     pub control_socket: Option<PathBuf>,
     control: UnixStream,
@@ -156,7 +157,7 @@ pub struct PtyHostHandle {
 /// What a caller needs to hand a released supervisor on to its next owner.
 #[derive(Debug, Clone)]
 pub struct ReleasedPtyHost {
-    pub host_id: String,
+    pub host_id: SupervisorId,
     pub host_pid: ProcessId,
     /// `None` if the supervisor never managed to bind its named socket, which is
     /// the one case where a pane is detachable but not transferable — there is no
@@ -211,7 +212,7 @@ impl ReleasedPane {
     /// lives with the type rather than at either call site.
     pub fn recovery_id(&self) -> String {
         match self {
-            ReleasedPane::Local(local) => local.host_id.clone(),
+            ReleasedPane::Local(local) => local.host_id.to_string(),
             ReleasedPane::Remote(remote) => format!("{}:{}", remote.host, remote.pane_token),
         }
     }
@@ -220,9 +221,10 @@ impl ReleasedPane {
     pub fn recovery_command(&self) -> String {
         match self {
             ReleasedPane::Local(local) => recovery_command(&local.host_id, None),
-            ReleasedPane::Remote(remote) => {
-                recovery_command("", Some((&remote.host, &remote.pane_token)))
-            },
+            ReleasedPane::Remote(remote) => recovery_command(
+                &SupervisorId::default(),
+                Some((&remote.host, &remote.pane_token)),
+            ),
         }
     }
 }
@@ -238,7 +240,7 @@ impl ReleasedPane {
 /// Written once and called from everywhere that has to say it — the release
 /// path, the warp's rollback and the containment when both have failed — because
 /// a second wording of this is a second chance to get it wrong.
-pub fn recovery_command(local_host_id: &str, remote: Option<(&str, &str)>) -> String {
+pub fn recovery_command(local_host_id: &SupervisorId, remote: Option<(&str, &str)>) -> String {
     match remote {
         Some((host, pane_token)) => format!("zellij pty-host adopt --host {host} {pane_token}"),
         None => format!("zellij pty-host adopt {local_host_id}"),
@@ -256,7 +258,7 @@ impl PtyHostHandle {
     /// this handle's is not a real supervisor's.
     pub(crate) fn for_test(control: UnixStream) -> Self {
         Self {
-            host_id: "test".to_owned(),
+            host_id: SupervisorId::new("test"),
             host_pid: ProcessId::new(std::process::id()),
             control_socket: None,
             control,
@@ -447,7 +449,7 @@ pub type AgentReportCb = Arc<dyn Fn(TerminalId, String, String) + Send + Sync>;
 fn handshake_and_spawn(
     control: &UnixStream,
     params: &SpawnParams<'_>,
-) -> Result<(ProcessId, OwnedFd, String, ProcessId, Option<PathBuf>)> {
+) -> Result<(ProcessId, OwnedFd, SupervisorId, ProcessId, Option<PathBuf>)> {
     control
         .set_read_timeout(Some(HANDSHAKE_TIMEOUT))
         .context("failed to bound the handshake")?;
@@ -547,7 +549,7 @@ pub struct AttachParams<'a> {
 pub struct PendingAttach {
     control: Option<UnixStream>,
     reader_stream: Option<UnixStream>,
-    host_id: String,
+    host_id: SupervisorId,
     host_pid: ProcessId,
     control_socket: PathBuf,
     master: Option<OwnedFd>,
@@ -794,7 +796,7 @@ fn place_control_fd(host_raw: RawFd) -> std::io::Result<()> {
 fn spawn_reader_thread(
     mut stream: UnixStream,
     host_process: HostProcess,
-    host_id: String,
+    host_id: SupervisorId,
     host_pid: ProcessId,
     terminal_id: TerminalId,
     cmd: RunCommand,
@@ -869,7 +871,7 @@ fn spawn_reader_thread(
 /// `ECHILD`. It still has to be held to the same deadline, since this runs on the
 /// paths where the pane really is finished; liveness is probed with a null signal
 /// instead, and the reaping is left to init once it exits.
-fn reap_host(host_process: HostProcess, host_pid: ProcessId, host_id: &str) {
+fn reap_host(host_process: HostProcess, host_pid: ProcessId, host_id: &SupervisorId) {
     let Some(pid) = super::process_pid(host_pid).to_log().ok() else {
         return;
     };

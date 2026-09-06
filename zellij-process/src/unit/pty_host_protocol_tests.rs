@@ -1,5 +1,6 @@
 use super::*;
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
 
 use crate::pty_host::protocol;
 use nix::pty::openpty;
@@ -167,8 +168,8 @@ fn unknown_fields_are_tolerated() {
 fn host_ids_are_short_and_distinct() {
     let a = new_host_id();
     let b = new_host_id();
-    assert_eq!(a.len(), 12);
-    assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_eq!(a.as_str().len(), 12);
+    assert!(a.as_str().chars().all(|c| c.is_ascii_hexdigit()));
     assert_ne!(a, b);
 }
 
@@ -240,7 +241,7 @@ fn wire_winsizes(tc: &hegel::TestCase) -> WireWinsize {
 #[hegel::composite]
 fn host_statuses(tc: &hegel::TestCase) -> HostStatus {
     HostStatus {
-        host_id: tc.draw(generators::text()),
+        host_id: SupervisorId::new(tc.draw(generators::text())),
         session_name: tc.draw(generators::optional(generators::text())),
         terminal_id: tc.draw(generators::integers::<u32>()),
         command: tc.draw(generators::text()),
@@ -304,7 +305,7 @@ fn host_to_server_msgs(tc: &hegel::TestCase) -> HostToServerMsg {
         5 => HostToServerMsg::AttachAck {
             protocol_version: tc.draw(generators::integers::<u32>()),
             zellij_version: tc.draw(generators::text()),
-            host_id: tc.draw(generators::text()),
+            host_id: SupervisorId::new(tc.draw(generators::text())),
             host_pid: ProcessId::new(tc.draw(generators::integers::<u32>())),
             child_pid: ProcessId::new(tc.draw(generators::integers::<u32>())),
             cmd: tc.draw(run_commands()),
@@ -323,7 +324,7 @@ fn host_to_server_msgs(tc: &hegel::TestCase) -> HostToServerMsg {
         0 => HostToServerMsg::HelloAck {
             protocol_version: tc.draw(generators::integers::<u32>()),
             zellij_version: tc.draw(generators::text()),
-            host_id: tc.draw(generators::text()),
+            host_id: SupervisorId::new(tc.draw(generators::text())),
             host_pid: ProcessId::new(tc.draw(generators::integers::<u32>())),
             control_socket: tc
                 .draw(generators::optional(generators::text()))
@@ -629,11 +630,11 @@ fn a_control_path_that_only_fits_without_the_ssh_rename_margin_is_refused() {
 /// path.
 #[test]
 fn host_ids_are_unique_across_many_draws() {
-    let ids: HashSet<HostId> = (0..1000).map(|_| new_host_id()).collect();
+    let ids: HashSet<SupervisorId> = (0..1000).map(|_| new_host_id()).collect();
     assert_eq!(ids.len(), 1000, "new_host_id() produced a collision");
     assert!(
         ids.iter()
-            .all(|id| id.len() == 12 && id.chars().all(|c| c.is_ascii_hexdigit())),
+            .all(|id| id.as_str().len() == 12 && id.as_str().chars().all(|c| c.is_ascii_hexdigit())),
         "every host id should be 12 hex characters"
     );
 }
@@ -666,7 +667,7 @@ fn a_full_ring_fits_in_one_frame() {
     let msg = HostToServerMsg::AttachAck {
         protocol_version: PROTOCOL_VERSION,
         zellij_version: "0.0.0-a-generously-long-version-string".to_owned(),
-        host_id: "a3f1c2d4e5b6".to_owned(),
+        host_id: SupervisorId::new("a3f1c2d4e5b6".to_owned()),
         host_pid: ProcessId::new(u32::MAX),
         child_pid: ProcessId::new(u32::MAX),
         cmd: RunCommand {
@@ -681,7 +682,7 @@ fn a_full_ring_fits_in_one_frame() {
             remote_default_shell: false,
         },
         status: HostStatus {
-            host_id: "a3f1c2d4e5b6".to_owned(),
+            host_id: SupervisorId::new("a3f1c2d4e5b6".to_owned()),
             session_name: Some("a-session-with-a-name".to_owned()),
             terminal_id: u32::MAX,
             command: "some-fairly-long-command-name --with --several".to_owned(),

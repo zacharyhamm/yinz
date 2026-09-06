@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use zellij_types::internal_ids::SupervisorId;
 
 use zellij_runtime::errors::prelude::*;
 use zellij_types::input::command::RunCommand;
@@ -102,7 +103,7 @@ pub fn list(as_json: bool) -> Result<()> {
         .map(|entry| {
             let s = &entry.status;
             [
-                s.host_id.clone(),
+                s.host_id.to_string(),
                 s.session_name.clone().unwrap_or_else(|| "-".to_owned()),
                 s.terminal_id.to_string(),
                 s.child_pid
@@ -206,7 +207,7 @@ fn resolve(host_id: &str) -> Result<Entry> {
     let entries = collect()?;
     let mut matches: Vec<Entry> = entries
         .into_iter()
-        .filter(|e| e.status.host_id == host_id || e.status.host_id.starts_with(host_id))
+        .filter(|e| e.status.host_id.as_str().starts_with(host_id))
         .collect();
 
     match matches.len() {
@@ -410,7 +411,7 @@ fn warped_pane_from_entry(
     }
     Ok(WarpedPane {
         // No local supervisor to name. See `WarpedPane::remote`.
-        host_id: String::new(),
+        host_id: SupervisorId::default(),
         control_socket: PathBuf::new(),
         // A survivor brings no screen with it — the server that held its
         // scrollback is what died, or never took delivery. Name it after the

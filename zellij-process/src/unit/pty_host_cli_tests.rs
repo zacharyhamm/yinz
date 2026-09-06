@@ -11,6 +11,7 @@
 
 use super::*;
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
 
 use crate::pty_host::remote::protocol::RemotePaneEntry;
 use hegel::generators;
@@ -151,7 +152,7 @@ fn an_age_from_the_future_is_reported_as_zero_rather_than_underflowing() {
 #[hegel::composite]
 fn host_statuses(tc: &hegel::TestCase) -> HostStatus {
     HostStatus {
-        host_id: tc.draw(generators::text()),
+        host_id: SupervisorId::new(tc.draw(generators::text())),
         session_name: tc.draw(generators::optional(generators::text())),
         terminal_id: tc.draw(generators::integers::<u32>()),
         command: tc.draw(generators::text()),
@@ -362,7 +363,11 @@ fn a_stranded_pane_is_addressed_by_its_broker_and_nothing_local() {
     let pane = warped_pane_from_entry("build-box", remote_entry("/usr/bin/cargo watch", false))
         .expect("an unattached pane is exactly what this command recovers");
 
-    assert_eq!(pane.host_id, "", "there is no local supervisor to name");
+    assert_eq!(
+        pane.host_id,
+        SupervisorId::new(""),
+        "there is no local supervisor to name"
+    );
     assert_eq!(pane.control_socket, PathBuf::new());
     let remote = pane.remote.expect("the pane's only address is its broker");
     assert_eq!(remote.host, "build-box");

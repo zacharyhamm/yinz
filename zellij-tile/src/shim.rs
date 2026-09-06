@@ -14,6 +14,7 @@ pub use zellij_types::geometry::PercentOrFixed;
 use zellij_types::geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy};
 use zellij_types::input::actions::Action;
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
@@ -425,7 +426,7 @@ pub fn get_pane_info(pane_id: PaneId) -> Option<PaneInfo> {
 /// use zellij_tile::prelude::*;
 ///
 /// // Query info for a specific tab
-/// let tab_id = 3;
+/// let tab_id = TabId::new(3);
 /// match get_tab_info(tab_id) {
 ///     Some(info) => {
 ///         println!("Tab name: {}", info.name);
@@ -2152,9 +2153,12 @@ pub fn warp_tab_from_session(tab_index: TabId, from_session: &str) -> Result<Str
 ///
 /// # Permissions Required
 /// * `ChangeApplicationState`
-pub fn adopt_orphaned_pane(host_id: &str, placement: WarpPlacement) -> Result<String, String> {
+pub fn adopt_orphaned_pane(
+    host_id: &SupervisorId,
+    placement: WarpPlacement,
+) -> Result<String, String> {
     warp_request(PluginCommand::AdoptOrphanedPane {
-        host_id: host_id.to_owned(),
+        host_id: host_id.clone(),
         placement,
     })
 }

@@ -92,7 +92,7 @@ fn agent_in(
         .values()
         .filter_map(|panes| panes.as_array())
         .flatten()
-        .find(|pane| pane["id"] == terminal_id && pane["is_plugin"] == false)?
+        .find(|pane| pane["id"] == terminal_id.get() && pane["is_plugin"] == false)?
         .get("agent")?;
     Some((
         agent.get("source")?.as_str()?.to_owned(),

@@ -16,6 +16,7 @@ use zellij_types::internal_ids::ContextMenuItemId;
 use zellij_types::internal_ids::ContextMenuRequestId;
 use zellij_types::internal_ids::DataWatchId;
 use zellij_types::internal_ids::QueueJobId;
+use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
@@ -730,7 +731,7 @@ pub(crate) fn layout_infos(tc: &hegel::TestCase) -> LayoutInfo {
 
 pub(crate) fn warped_panes(tc: &hegel::TestCase) -> WarpedPane {
     WarpedPane {
-        host_id: strings(tc),
+        host_id: SupervisorId::new(strings(tc)),
         control_socket: paths(tc),
         title: optional_strings(tc),
         contents: optional_strings(tc),
@@ -2161,7 +2162,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         },
         CommandType::ListOrphanedPanes => PluginCommand::ListOrphanedPanes,
         CommandType::AdoptOrphanedPane => PluginCommand::AdoptOrphanedPane {
-            host_id: strings(tc),
+            host_id: SupervisorId::new(strings(tc)),
             placement: warp_placements(tc),
         },
         CommandType::DataDefineEntity => PluginCommand::DataDefineEntity {

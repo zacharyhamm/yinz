@@ -4,6 +4,7 @@ use std::{
     process,
     time::Duration,
 };
+use zellij_types::internal_ids::SupervisorId;
 use zellij_types::units::{ElapsedMicros, UnixMicros};
 
 use zellij_client::{
@@ -578,7 +579,7 @@ pub(crate) fn retarget_implicit_agent_report(
     requested_session_name: &mut Option<String>,
     pane_ref: Option<String>,
     query: impl FnOnce(
-        &str,
+        &SupervisorId,
     )
         -> std::result::Result<zellij_server::pty_host::protocol::HostStatus, String>,
 ) -> std::result::Result<(), String> {
@@ -602,6 +603,7 @@ pub(crate) fn retarget_implicit_agent_report(
         ));
     }
 
+    let pane_ref = SupervisorId::new(pane_ref);
     let status = query(&pane_ref)?;
     if status.host_id != pane_ref {
         return Err(format!(
@@ -1596,7 +1598,7 @@ mod tests {
 
     fn pane_status(attached: bool) -> HostStatus {
         HostStatus {
-            host_id: "abcdef012345".to_owned(),
+            host_id: zellij_types::internal_ids::SupervisorId::new("abcdef012345"),
             session_name: Some("after-warp".to_owned()),
             terminal_id: 42,
             command: "codex".to_owned(),

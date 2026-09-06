@@ -11,6 +11,7 @@ use zellij_types::data::ClientId;
 use zellij_types::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use zellij_types::input::cli_assets::CliAssets;
 use zellij_types::internal_ids::ProcessId;
+use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::keys::{BareKey, KeyModifier, KeyWithModifier};
@@ -1069,7 +1070,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
-                host_id: "a3f1c2d4e5b6".to_owned(),
+                host_id: SupervisorId::new("a3f1c2d4e5b6".to_owned()),
                 control_socket: PathBuf::from("/run/user/1000/zellij/pty/a3f1c2d4e5b6.sock"),
                 title: None,
                 contents: None,
@@ -1102,7 +1103,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
-                host_id: String::new(),
+                host_id: SupervisorId::new(String::new()),
                 control_socket: PathBuf::new(),
                 title: Some("cargo watch".to_owned()),
                 contents: None,
@@ -1135,7 +1136,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
-                host_id: "a3f1c2d4e5b6".to_owned(),
+                host_id: SupervisorId::new("a3f1c2d4e5b6".to_owned()),
                 control_socket: PathBuf::from("/run/user/1000/zellij/pty/a3f1c2d4e5b6.sock"),
                 title: Some("vim src/main.rs".to_owned()),
                 contents: Some("\u{1b}[38;5;9mred\u{1b}[m ".repeat(200_000)),
@@ -1225,7 +1226,7 @@ fn test_client_messages() {
                 }],
                 tiled_panes: vec![
                     WarpedPane {
-                        host_id: "a3f1c2d4e5b6".to_owned(),
+                        host_id: SupervisorId::new("a3f1c2d4e5b6".to_owned()),
                         control_socket: PathBuf::from(
                             "/run/user/1000/zellij/pty/a3f1c2d4e5b6.sock"
                         ),
@@ -1240,7 +1241,7 @@ fn test_client_messages() {
                     // is warped whole, so both addressing shapes have to survive
                     // the same message.
                     WarpedPane {
-                        host_id: String::new(),
+                        host_id: SupervisorId::new(String::new()),
                         control_socket: PathBuf::new(),
                         title: Some("cargo watch".to_owned()),
                         contents: None,
@@ -1264,7 +1265,7 @@ fn test_client_messages() {
                     },
                 ],
                 floating_panes: vec![WarpedPane {
-                    host_id: "c5f3e4d6a7b8".to_owned(),
+                    host_id: SupervisorId::new("c5f3e4d6a7b8".to_owned()),
                     control_socket: PathBuf::from("/run/user/1000/zellij/pty/c5f3e4d6a7b8.sock"),
                     title: Some("notes".to_owned()),
                     contents: None,

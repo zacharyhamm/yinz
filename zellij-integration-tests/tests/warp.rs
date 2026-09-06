@@ -194,7 +194,7 @@ fn assert_waiting_agent(
         .iter()
         .filter(|pane| {
             pane["agent"]["kind"] == "codex"
-                && terminal_id.is_none_or(|terminal_id| pane["id"] == terminal_id)
+                && terminal_id.is_none_or(|terminal_id| pane["id"] == terminal_id.get())
         })
         .collect();
     assert_eq!(

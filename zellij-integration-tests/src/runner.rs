@@ -12,7 +12,7 @@ use zellij_types::input::actions::Action;
 use zellij_types::input::options::Options;
 use zellij_types::pane_size::Size;
 use {zellij_cli::args::CliAction, zellij_cli::args::CliArgs};
-use {zellij_types::data::ConnectToSession, zellij_types::data::LayoutInfo};
+use {zellij_types::data::LayoutInfo, zellij_types::data::SessionConnection};
 
 use crate::client_screen::GridSnapshot;
 use crate::fake_client_os_api::{FakeClientHandle, FakeClientOsApi};
@@ -213,7 +213,7 @@ fn spawn_client_thread(
     config: zellij_config::config::Config,
     config_options: Options,
     client_info: ClientInfo,
-) -> JoinHandle<Option<ConnectToSession>> {
+) -> JoinHandle<Option<SessionConnection>> {
     std::thread::Builder::new()
         .name("in_process_zellij_client".to_string())
         .spawn(move || {
@@ -238,7 +238,7 @@ fn spawn_client_thread(
 
 pub struct TestClient {
     fake_client_handle: FakeClientHandle,
-    thread: Option<JoinHandle<Option<ConnectToSession>>>,
+    thread: Option<JoinHandle<Option<SessionConnection>>>,
 }
 
 #[derive(Clone)]
@@ -306,14 +306,14 @@ impl TestClient {
         self.join();
     }
 
-    fn join(&mut self) -> Option<ConnectToSession> {
+    fn join(&mut self) -> Option<SessionConnection> {
         self.thread.take().and_then(join_client_thread_with_timeout)
     }
 }
 
 fn join_client_thread_with_timeout(
-    join_handle: JoinHandle<Option<ConnectToSession>>,
-) -> Option<ConnectToSession> {
+    join_handle: JoinHandle<Option<SessionConnection>>,
+) -> Option<SessionConnection> {
     let (done_tx, done_rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("nested_client_join_watchdog".to_string())
