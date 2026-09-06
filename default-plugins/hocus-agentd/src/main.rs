@@ -523,7 +523,7 @@ impl ZellijPlugin for State {
                 self.observe_activity();
                 self.repair_commands();
                 self.repair_cwds();
-                self.expire_probe_backoff(elapsed);
+                self.retry_repositories(elapsed);
                 // Every tick, not on the Git refresh interval: this reads a
                 // cache the far machine keeps fresh on its own clock, so waiting
                 // a minute would only add latency to an answer already sitting
@@ -1970,6 +1970,11 @@ impl State {
             self.rejoin_cwds();
             self.resolve_repositories();
         }
+    }
+
+    fn retry_repositories(&mut self, elapsed: f64) {
+        self.expire_probe_backoff(elapsed);
+        self.resolve_repositories();
     }
 
     /// Count down the folders we are leaving alone, and let the expired ones go.
@@ -4225,7 +4230,7 @@ mod tests {
     #[test]
     fn only_so_many_folders_are_probed_on_one_pass() {
         let count = GIT_PROBES_PER_PASS as u32 + 3;
-        let state = State {
+        let mut state = State {
             panes: Some(
                 (0..count)
                     .map(|id| pane(id, "zsh", &format!("/work/{id}")))
@@ -4235,7 +4240,12 @@ mod tests {
             ..State::default()
         };
 
-        assert_eq!(state.repository_cwds(false).len(), GIT_PROBES_PER_PASS);
+        state.resolve_repositories();
+        assert_eq!(state.git_probes.len(), GIT_PROBES_PER_PASS);
+        state.retry_repositories(ACTIVITY_SECONDS);
+        assert_eq!(state.git_probes.len(), count as usize);
+        state.retry_repositories(ACTIVITY_SECONDS);
+        assert_eq!(state.git_probe_seq, count as u64, "no overlapping probes");
     }
 
     /// The cap is spent on the folders a header is drawn from first.
@@ -4880,9 +4890,11 @@ mod tests {
         assert!(state.probe_backoff.contains_key(&local("/work")));
         assert!(state.repository_cwds(false).is_empty(), "not asked again");
 
-        state.expire_probe_backoff(GIT_RETRY_SECONDS);
+        state.retry_repositories(GIT_RETRY_SECONDS - ACTIVITY_SECONDS);
+        assert!(state.git_probes.is_empty(), "still in backoff");
+        state.retry_repositories(ACTIVITY_SECONDS);
         assert!(state.probe_backoff.is_empty());
-        assert_eq!(state.repository_cwds(false), vec![local("/work")]);
+        assert!(state.git_probes.contains_key(&local("/work")));
     }
 
     // -- summaries ----------------------------------------------------------
