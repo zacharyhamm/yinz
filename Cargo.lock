@@ -5082,7 +5082,6 @@ dependencies = [
 name = "zellij-types"
 version = "0.45.0"
 dependencies = [
- "base64",
  "colorsys",
  "hegeltest",
  "serde",

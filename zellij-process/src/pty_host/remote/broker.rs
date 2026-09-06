@@ -990,9 +990,7 @@ fn set_winsize(fd: std::os::unix::io::RawFd, cols: u16, rows: u16, xpixel: u16, 
 /// from the server's machine would name an unrelated process here, and this
 /// child's pid would name an unrelated process there.
 fn signal_child(child_pid: ProcessId, signal: ChildSignal) {
-    let Some(pid) = super::super::process_pid(child_pid).to_log().ok() else {
-        return;
-    };
+    let pid = super::super::kernel_pid(child_pid);
     let sig = match signal {
         ChildSignal::Hup => nix::sys::signal::Signal::SIGHUP,
         ChildSignal::Int => nix::sys::signal::Signal::SIGINT,

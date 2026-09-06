@@ -238,15 +238,6 @@ pub struct PollReply {
     /// answer it: a plugin cannot read its own focus off a `PaneUpdate`.
     #[serde(default)]
     pub focused: Option<u32>,
-    /// The plugin pane the user is looking at, if it is one.
-    ///
-    /// The counterpart of `focused`, and never set at the same time. Only the daemon
-    /// can answer this either, and for the same reason: the panes that would most like
-    /// to know — hocus and the agents pane, both global — hear no `PaneUpdate` about
-    /// themselves. It is what tells the two halves of the sidebar apart, which is what
-    /// the summary inset is gated on.
-    #[serde(default)]
-    pub focused_plugin: Option<u32>,
     /// What the model last said about each idle agent's pane.
     ///
     /// Only the daemon can answer this: it is the one thing watching for the busy→idle
@@ -275,9 +266,7 @@ pub use zellij_tile::agent::HookEvent;
 
 /// Where the cursor is in the agents pane.
 ///
-/// `plugin_id` is the pane's own id, sent so hocus can compare it against the
-/// `focused_plugin` the daemon reports and know that *this* pane — and not the chat
-/// beneath it — has the focus. A name or a title would be a guess; an id is the pane.
+/// `plugin_id` identifies the agents pane that sent the selection.
 ///
 /// `pane_id` is `None` when nothing selectable is on the list at all, which is a strip
 /// with no agents in it.

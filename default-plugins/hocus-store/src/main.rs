@@ -507,7 +507,6 @@ mod tests {
             tab_projects: assigned,
             focused: None,
             hooks: agents::HookFeeds::new(),
-            focused_plugin: None,
             summaries: agents::Summaries::new(),
             runs: Vec::new(),
         })
@@ -855,7 +854,6 @@ mod tests {
             // of folders, and a folder is a folder whether the agent in it is
             // working or waiting.
             hooks: agents::HookFeeds::new(),
-            focused_plugin: None,
             summaries: agents::Summaries::new(),
             runs: Vec::new(),
         })

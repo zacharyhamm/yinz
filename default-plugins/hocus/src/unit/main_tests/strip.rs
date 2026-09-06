@@ -122,7 +122,6 @@ const AGENTS_PANE: PluginId = PluginId::new(11);
 fn state_with_summary(polls: u32) -> State {
     let mut state = state_with_panes();
     state.agents_plugin = Some(AGENTS_PANE);
-    state.focused_plugin = Some(AGENTS_PANE.get());
     state.activity = agents::Activity::from([(3, (11, polls))]);
     state.summaries = agents::Summaries::from([(
         3,

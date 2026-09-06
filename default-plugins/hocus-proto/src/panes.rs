@@ -90,25 +90,8 @@ pub fn manifest_pane_ids(manifest: &PaneManifest) -> BTreeSet<u32> {
 /// `PaneInfo::is_focused` is "focused in its layer", so a manifest flags one pane per
 /// tab per layer — the answer is only the user's pane once the tab is the active one
 /// and the layer is the one on top. A plugin pane is not an answer at all: hocus
-/// itself is one, and focusing the sidebar must leave the last agent standing rather
-/// than name the sidebar.
-///
+/// itself is one, and focusing the sidebar returns no focused terminal.
 pub fn focused_pane(manifest: &PaneManifest, tabs: &[TabInfo]) -> Option<u32> {
-    focused(manifest, tabs, false)
-}
-
-/// The plugin pane the user is looking at, if it is one.
-///
-/// The other half of `focused_pane`, and the only way anyone learns that the sidebar
-/// has the focus rather than a terminal: hocus cannot see from its own `PaneUpdate`
-/// that hocus-agents — or hocus itself — is where the cursor is. The daemon can, and
-/// tells them.
-pub fn focused_plugin_pane(manifest: &PaneManifest, tabs: &[TabInfo]) -> Option<u32> {
-    focused(manifest, tabs, true)
-}
-
-/// The focused pane of one kind. See `focused_pane` for what makes a candidate.
-fn focused(manifest: &PaneManifest, tabs: &[TabInfo], plugin: bool) -> Option<u32> {
     let active = tabs.iter().find(|tab| tab.active);
     manifest
         .panes
@@ -116,7 +99,7 @@ fn focused(manifest: &PaneManifest, tabs: &[TabInfo], plugin: bool) -> Option<u3
         .filter(|(position, _)| active.map(|tab| tab.position) == Some(**position))
         .flat_map(|(_, panes)| panes.iter())
         .filter(|pane| active.map(|tab| tab.are_floating_panes_visible) == Some(pane.is_floating))
-        .find(|pane| pane.is_focused && pane.is_plugin() == plugin && !pane.is_suppressed)
+        .find(|pane| pane.is_focused && !pane.is_plugin() && !pane.is_suppressed)
         .map(|pane| pane.id.legacy_parts().0)
 }
 
@@ -268,41 +251,5 @@ mod tests {
         );
 
         assert_eq!(focused_pane(&manifest, &[tab(0, true, false)]), None);
-    }
-
-    /// The sidebar is two overlay plugin panes, and which of them holds the focus
-    /// is the whole question the summary inset is gated on.
-    #[test]
-    fn the_focused_plugin_pane_is_the_half_of_the_sidebar_the_user_is_in() {
-        let plugin = |id| PaneInfo {
-            id: zellij_tile::prelude::PaneId::from_legacy(id, true),
-            ..focused(id)
-        };
-        let mut manifest = PaneManifest::default();
-        manifest.panes.insert(
-            TabPosition::new(0),
-            vec![
-                PaneInfo {
-                    is_focused: false,
-                    ..plugin(11)
-                },
-                plugin(12),
-            ],
-        );
-
-        assert_eq!(
-            focused_plugin_pane(&manifest, &[tab(0, true, false)]),
-            Some(12)
-        );
-        // And the two never answer each other's question.
-        assert_eq!(focused_pane(&manifest, &[tab(0, true, false)]), None);
-    }
-
-    #[test]
-    fn a_focused_terminal_is_not_a_focused_plugin_pane() {
-        let mut manifest = PaneManifest::default();
-        manifest.panes.insert(TabPosition::new(0), vec![focused(3)]);
-
-        assert_eq!(focused_plugin_pane(&manifest, &[tab(0, true, false)]), None);
     }
 }

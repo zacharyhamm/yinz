@@ -34,6 +34,14 @@ pub fn process_pid(pid: ProcessId) -> zellij_runtime::errors::prelude::Result<ni
     Ok(nix::unistd::Pid::from_raw(raw))
 }
 
+/// Locally spawned kernel PIDs are positive signed integers. Never use this for
+/// IPC-derived IDs; those must pass through `process_pid`.
+pub(crate) fn kernel_pid(pid: ProcessId) -> nix::unistd::Pid {
+    let raw = pid.get();
+    assert!(raw > 0 && raw <= i32::MAX as u32, "invalid kernel PID");
+    nix::unistd::Pid::from_raw(raw as i32)
+}
+
 pub(crate) fn ensure_secure_dir(
     path: &std::path::Path,
 ) -> zellij_runtime::errors::prelude::Result<()> {
@@ -120,6 +128,13 @@ mod tests {
             process_pid(ProcessId::new(2147483647)).unwrap().as_raw(),
             i32::MAX
         );
+    }
+
+    #[test]
+    fn kernel_process_ids_preserve_the_positive_signed_range() {
+        for raw in [1, std::process::id(), i32::MAX as u32] {
+            assert_eq!(kernel_pid(ProcessId::new(raw)).as_raw() as u32, raw);
+        }
     }
 
     fn argv(args: &[&str]) -> Vec<String> {

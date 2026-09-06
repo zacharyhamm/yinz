@@ -299,7 +299,6 @@ impl Config {
     }
 }
 
-/// The drop-in folder under the config dir. See `home::get_config_overlay_dir`.
 #[cfg(test)]
 use zellij_runtime::consts::CONFIG_OVERLAY_DIR_NAME;
 /// The drop-in zellij writes itself, for anything it is asked to persist: `zellij action

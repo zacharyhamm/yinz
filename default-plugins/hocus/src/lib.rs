@@ -676,11 +676,6 @@ pub struct State {
     /// one can say which agent to put the cursor on, but never that the cursor is
     /// somewhere the user no longer is, which is the difference the pane draws.
     focused_pane: Option<u32>,
-    /// The plugin pane the daemon last reported focused.
-    ///
-    /// Reported to the agents pane along with the strip, so it can tell "you are in this
-    /// agent" from "you were in it". `None` whenever a terminal has the focus.
-    focused_plugin: Option<u32>,
     /// The session surface the overlays are placed against, from the active tab's `TabInfo`.
     ///
     /// An overlay's coordinates are resolved against the whole session surface
@@ -1027,7 +1022,6 @@ impl Default for State {
             tabs: Vec::new(),
             last_focused_agent: None,
             focused_pane: None,
-            focused_plugin: None,
             own_plugin_id: zellij_tile::prelude::PluginId::new(0),
             last_pane_title: None,
             surface_rows: 0,
@@ -1321,10 +1315,6 @@ impl ZellijPlugin for State {
         self.repositories = reply.repositories;
         self.merge_run_headers(reply.runs);
 
-        // Outside the panes below: a quiet reply — one from a daemon with no session
-        // to report — still says where the focus went, and the strip carries it on
-        // to the agents pane whether or not there were panes in this reply.
-        self.focused_plugin = reply.focused_plugin;
         if let Some(panes) = reply.panes {
             self.apply_poll(
                 panes,

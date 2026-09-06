@@ -23,4 +23,3 @@ strum_macros = { workspace = true }
 hegeltest = "0.29.3"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-base64 = { version = "0.22", default-features = false, features = ["std"] }
