@@ -321,11 +321,10 @@ fn host_keys_act_on_host_until_focus_enters_the_guest_then_route_to_guest() {
     let guest_new_pane = nested.guest.expect_pty_spawn();
     guest_new_pane.output(PROMPT);
     let guest_after_new_pane = nested.guest.wait_until(
-        "guest spawned a second pane and showed the passed-through Alt key hint",
-        // ModifiersHeld reaches the status bar separately from the pane split.
-        // At this width its Alt hint is an overflow marker; the next host
-        // snapshot also expects it. Wait for that state before taking either.
-        |grid| two_pane_guest_settled(grid) && last_line_contains(grid, "..."),
+        "guest spawned a second pane from the passed-through Alt key",
+        // At this width the Alt hint does not fit, so the status bar keeps its clock.
+        // The clock is normalized out of snapshots; the pane split proves key routing.
+        two_pane_guest_settled,
     );
     assert_snapshot!(
         "guest_reacts_to_passed_through_new_pane_key",
