@@ -40,8 +40,6 @@ cargo xtask run
 cargo xtask run -- -l strider
 # Install Zellij to some directory
 cargo xtask install /path/of/zellij/binary
-# Publish the zellij and zellij-tile crates
-cargo xtask publish
 ```
 
 You can see a list of all commands (with supported arguments) with `cargo xtask

@@ -41,18 +41,6 @@ xflags::xflags! {
 
         cmd proto {}
 
-        /// Publish zellij and all the sub-crates
-        cmd publish {
-            /// Perform a dry-run (don't push/publish anything)
-            optional --dry-run
-            /// Publish but don't push a commit to git (only works with '--cargo-registry')
-            optional --no-push
-            /// Push commit to custom git remote
-            optional --git-remote remote: OsString
-            /// Publish crates to custom registry
-            optional --cargo-registry registry: OsString
-        }
-
         /// Sequentially call: format, build, test
         cmd make {
             /// Build in release mode without debug symbols
@@ -191,7 +179,6 @@ pub enum XtaskCmd {
     Deprecated(Deprecated),
     Ci(Ci),
     Proto(Proto),
-    Publish(Publish),
     Make(Make),
     Install(Install),
     Run(Run),
@@ -245,14 +232,6 @@ pub struct BuildRelease;
 
 #[derive(Debug)]
 pub struct Proto;
-
-#[derive(Debug)]
-pub struct Publish {
-    pub dry_run: bool,
-    pub no_push: bool,
-    pub git_remote: Option<OsString>,
-    pub cargo_registry: Option<OsString>,
-}
 
 #[derive(Debug)]
 pub struct Make {
