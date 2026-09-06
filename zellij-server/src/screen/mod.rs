@@ -2551,6 +2551,7 @@ impl Screen {
         let err_context = || "failed to focus_plugin_pane".to_string();
         let mut tab_id_and_plugin_pane_id = None;
         let mut plugin_pane_to_move_to_active_tab = None;
+        let mut linked_panel_to_move = None;
         // the tab a pane leaves forgets that it was an overlay - carry the placement over, or the
         // pane lands in the new tab sized against its viewport
         let mut overlay_placement = None;
@@ -2575,6 +2576,11 @@ impl Screen {
             if let Some(plugin_pane_id) = tab.find_plugin(&run_plugin) {
                 tab_id_and_plugin_pane_id = Some((*tab_id, plugin_pane_id));
                 if move_to_focused_tab && focused_tab_id.is_some_and(|focused| focused != *tab_id) {
+                    // Extraction forgets the link, so carry the panel as one batch instead.
+                    if let Some(partner) = tab.linked_overlay_partner(plugin_pane_id) {
+                        linked_panel_to_move = Some((plugin_pane_id, partner));
+                        break;
+                    }
                     overlay_placement = tab.overlay_placement_for(plugin_pane_id);
                     overlay_carry = tab.overlay_carry_for(plugin_pane_id);
                     plugin_pane_to_move_to_active_tab = tab.extract_pane(plugin_pane_id, true);
@@ -2582,6 +2588,19 @@ impl Screen {
 
                 break;
             }
+        }
+        if let Some((plugin_pane_id, partner)) = linked_panel_to_move {
+            let destination = focused_tab_id.with_context(err_context)?;
+            self.break_multiple_panes_to_tab_with_id(
+                vec![plugin_pane_id, partner],
+                destination,
+                false,
+                client_id,
+            )?;
+            let tab = self.tabs.get_mut(&destination).with_context(err_context)?;
+            tab.show_overlay_pane(partner);
+            tab.show_overlay_pane(plugin_pane_id);
+            tab_id_and_plugin_pane_id = Some((destination, plugin_pane_id));
         }
         if let Some(plugin_pane_to_move_to_active_tab) = plugin_pane_to_move_to_active_tab.take() {
             let pane_id = plugin_pane_to_move_to_active_tab.pid();
