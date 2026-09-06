@@ -1,5 +1,7 @@
 //! Applying mutations: the `INSERT`, `UPDATE` and `DELETE` half of the store.
 
+use zellij_types::internal_ids::DataRevision;
+use zellij_types::internal_ids::DataRowId;
 use zellij_types::plugin_data::{
     ApplyReport, AttrKind, DataError, DataValue, Mutation, REV_ABSENT,
 };
@@ -68,7 +70,7 @@ pub(super) fn build_put(
     uid: Option<&str>,
     values: &[(String, DataValue)],
     now: i64,
-    expect_rev: Option<i64>,
+    expect_rev: Option<DataRevision>,
 ) -> (String, Vec<DataValue>) {
     let mut params = Params::new(dialect);
     let mut columns = vec![
@@ -144,7 +146,7 @@ pub(super) fn build_guarded_put(
     uid: &str,
     values: &[(String, DataValue)],
     now: i64,
-    expect_rev: i64,
+    expect_rev: DataRevision,
 ) -> (String, Vec<DataValue>) {
     let mut params = Params::new(dialect);
     let mut assignments: Vec<String> = values
@@ -157,7 +159,7 @@ pub(super) fn build_guarded_put(
     ));
     assignments.push("\"rev\" = \"rev\" + 1".to_owned());
     let uid_p = params.bind(DataValue::Text(uid.to_owned()));
-    let rev_p = params.bind(DataValue::Int(expect_rev));
+    let rev_p = params.bind(DataValue::from(expect_rev));
     let sql = format!(
         "UPDATE {} SET {} WHERE \"uid\" = {} AND \"rev\" = {} RETURNING \"id\"",
         quote_ident(&schema.table()),
@@ -174,7 +176,7 @@ pub(super) fn build_update(
     filter: &zellij_types::plugin_data::Pred,
     values: &[(String, DataValue)],
     now: i64,
-    expect_rev: Option<i64>,
+    expect_rev: Option<DataRevision>,
 ) -> Result<(String, Vec<DataValue>), DataError> {
     let table = schema.table();
     let mut params = Params::new(dialect);
@@ -192,7 +194,7 @@ pub(super) fn build_update(
     // still means whatever its filter meant, and with a filter naming one row — the normal case —
     // the pair is a compare-and-set on that row.
     if let Some(rev) = expect_rev {
-        let rev_p = params.bind(DataValue::Int(rev));
+        let rev_p = params.bind(DataValue::from(rev));
         where_sql = format!(
             "({}) AND {}.\"rev\" = {}",
             where_sql,
@@ -255,7 +257,7 @@ pub(super) fn apply_one(
                 Some(DataValue::Int(id)) => {
                     report.rows_written += 1;
                     report.per_mutation.push(1);
-                    report.ids.push(*id);
+                    report.ids.push(DataRowId::new(*id));
                 },
                 _ => {
                     conflict(expect_rev, entity)?;
@@ -299,7 +301,7 @@ pub(super) fn apply_one(
 
 /// Report a guarded write that matched nothing. A write with no guard matching nothing is not an
 /// error — it is the answer to the question it asked — so this is a no-op there.
-fn conflict(expect_rev: &Option<i64>, entity: &str) -> Result<(), DataError> {
+fn conflict(expect_rev: &Option<DataRevision>, entity: &str) -> Result<(), DataError> {
     let Some(rev) = *expect_rev else {
         return Ok(());
     };

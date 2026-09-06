@@ -18,6 +18,7 @@
 
 use crate::store::Backend;
 use std::collections::{BTreeMap, BTreeSet};
+use zellij_tile::prelude::DataRevision;
 use zellij_tile::prelude::{DataRows, DataValue, FetchRequest, Mutation, Pred, SortDir};
 
 /// The most notes one scope holds, live or archived. Equal to the most rows a
@@ -77,7 +78,7 @@ pub struct Note {
     pub updated_at: i64,
     /// The store's revision of this row when it was read, and what an edit guards on. Zero on a
     /// note that did not come from a store row.
-    pub rev: i64,
+    pub rev: DataRevision,
     pub tags: Vec<String>,
     pub todo_ids: Vec<u64>,
 }
@@ -283,7 +284,9 @@ pub fn from_rows(rows: &DataRows) -> Vec<Note> {
                 archived: bool_at(rows, row, "archived"),
                 created_at: int_at(rows, row, "created_at").unwrap_or_default(),
                 updated_at: int_at(rows, row, "updated_at").unwrap_or_default(),
-                rev: int_at(rows, row, "rev").unwrap_or_default(),
+                rev: int_at(rows, row, "rev")
+                    .map(DataRevision::new)
+                    .unwrap_or_default(),
                 tags: Vec::new(),
                 todo_ids: Vec::new(),
             })
@@ -652,7 +655,7 @@ pub fn note_json(note: &Note, now_ms: i64) -> serde_json::Value {
     });
     // The revision this note was read at, so an edit composed from it can say so and be
     // refused if somebody has since rewritten it. Left out when there is none.
-    if note.rev > 0 {
+    if note.rev > DataRevision::new(0) {
         value["rev"] = serde_json::json!(note.rev);
     }
     if !note.body.is_empty() {
@@ -767,7 +770,7 @@ pub fn plan_edit(
     note: &Note,
     title: Option<&str>,
     body: Option<&str>,
-    expect_rev: Option<i64>,
+    expect_rev: Option<DataRevision>,
 ) -> Result<(Vec<Mutation>, Note), String> {
     if title.is_none() && body.is_none() {
         return Err("give a title, a body, or both".to_owned());
@@ -819,7 +822,7 @@ pub fn plan_edit(
 pub fn plan_set_tags(
     note: &Note,
     tags: &[String],
-    expect_rev: Option<i64>,
+    expect_rev: Option<DataRevision>,
     guard: bool,
 ) -> Result<(Vec<Mutation>, Vec<String>), String> {
     let tags = normalize_tags(tags)?;
@@ -916,7 +919,7 @@ mod tests {
         let (mutations, draft) =
             plan_add(count, root, title, body, "user", &strings(tags), todo_ids).expect("planned");
         let report = backend.apply(mutations).expect("wrote the note");
-        let id = report.ids[0] as u64;
+        let id = u64::try_from(report.ids[0].get()).unwrap();
         let attach = plan_attach(id, &draft.tags, &draft.todo_ids);
         if !attach.is_empty() {
             backend.apply(attach).expect("attached");
@@ -932,7 +935,7 @@ mod tests {
                 .set("done", false)
                 .build()])
             .expect("wrote a todo");
-        report.ids[0] as u64
+        u64::try_from(report.ids[0].get()).unwrap()
     }
 
     fn titles(notes: &[Note]) -> Vec<&str> {
@@ -984,7 +987,7 @@ mod tests {
         let local = store::Local::shared("hocus");
         local.define_all(&store::shared_defs()).unwrap();
         let (mutations, _) = plan_add(0, None, "Why", "because", "user", &[], &[]).unwrap();
-        let id = local.apply(mutations).unwrap().ids[0] as u64;
+        let id = u64::try_from(local.apply(mutations).unwrap().ids[0].get()).unwrap();
 
         // Both read the same note.
         let mine = fetch_note(&local, id).unwrap().expect("stored");
@@ -1037,12 +1040,12 @@ mod tests {
         let local = store::Local::shared("hocus");
         local.define_all(&store::shared_defs()).unwrap();
         let (mutations, _) = plan_add(0, None, "Why", "because", "user", &[], &[]).unwrap();
-        let id = local.apply(mutations).unwrap().ids[0] as u64;
+        let id = u64::try_from(local.apply(mutations).unwrap().ids[0].get()).unwrap();
 
         // What the reader was shown, and the revision it was shown beside the body.
         let read = fetch_note(&local, id).unwrap().unwrap();
         let saw = read.rev;
-        assert!(saw > 0);
+        assert!(saw > DataRevision::new(0));
         assert_eq!(
             note_json(&read, 0)["rev"],
             serde_json::json!(saw),
@@ -1086,12 +1089,12 @@ mod tests {
         let local = store::Local::shared("hocus");
         local.define_all(&store::shared_defs()).unwrap();
         let (mutations, _) = plan_add(0, None, "Why", "because", "user", &[], &[]).unwrap();
-        let id = local.apply(mutations).unwrap().ids[0] as u64;
+        let id = u64::try_from(local.apply(mutations).unwrap().ids[0].get()).unwrap();
 
         let listed = list_notes(&local, Filter::default()).unwrap();
         let listed = listed.iter().find(|note| note.id == id).expect("listed");
         assert_eq!(listed.rev, fetch_note(&local, id).unwrap().unwrap().rev);
-        assert!(listed.rev > 0);
+        assert!(listed.rev > DataRevision::new(0));
 
         // And an edit planned from the listing is guarded, rather than quietly not being.
         local
@@ -1112,7 +1115,7 @@ mod tests {
         let local = store::Local::shared("hocus");
         local.define_all(&store::shared_defs()).unwrap();
         let (mutations, _) = plan_add(0, None, "Why", "because", "user", &[], &[]).unwrap();
-        let id = local.apply(mutations).unwrap().ids[0] as u64;
+        let id = u64::try_from(local.apply(mutations).unwrap().ids[0].get()).unwrap();
 
         // Somebody edits the body, moving the revision on.
         let fresh = fetch_note(&local, id).unwrap().unwrap();
@@ -1418,7 +1421,7 @@ mod tests {
         let id = add(&backend, None, "n", "b", &["old"], &[]);
         let read = fetch_note(&backend, id).unwrap().unwrap();
         let saw = read.rev;
-        assert!(saw > 0);
+        assert!(saw > DataRevision::new(0));
 
         // Somebody else retags it in the meantime.
         backend

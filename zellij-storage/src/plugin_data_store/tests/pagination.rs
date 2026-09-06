@@ -1,4 +1,5 @@
 use super::*;
+use zellij_types::internal_ids::DataRowId;
 
 #[test]
 fn a_fetch_is_capped_at_the_maximum_however_much_it_asks_for() {
@@ -53,7 +54,7 @@ fn combining_a_cursor_with_a_sort_is_an_error_rather_than_wrong_results() {
         .fetch(
             NS,
             &FetchRequest::entity("agent")
-                .after_id(1)
+                .after_id(DataRowId::new(1))
                 .sort_by("updated_at_ms", SortDir::Desc),
         )
         .unwrap_err();

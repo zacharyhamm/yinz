@@ -330,6 +330,37 @@ unsigned_identity!(
     ContextMenuItemId(u64)
 );
 
+numeric_identity!(
+    /// A plugin data row identity. Its signed representation matches SQL and the plugin protocol.
+    ///
+    /// ```compile_fail
+    /// use zellij_types::internal_ids::{DataRowId, DataRevision};
+    /// let _: DataRowId = DataRevision::new(1);
+    /// ```
+    DataRowId(i64)
+);
+impl TryFrom<u64> for DataRowId {
+    type Error = std::num::TryFromIntError;
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        i64::try_from(value).map(Self::new)
+    }
+}
+numeric_identity!(
+    /// The revision read by a plugin data writer. Zero retains the absent-row sentinel.
+    ///
+    /// ```compile_fail
+    /// use zellij_types::internal_ids::{DataRevision, DataRowId};
+    /// let _: DataRevision = DataRowId::new(1);
+    /// ```
+    DataRevision(i64)
+);
+impl TryFrom<u64> for DataRevision {
+    type Error = std::num::TryFromIntError;
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        i64::try_from(value).map(Self::new)
+    }
+}
+
 impl TryFrom<usize> for TabNumber {
     type Error = std::num::TryFromIntError;
     fn try_from(value: usize) -> Result<Self, Self::Error> {

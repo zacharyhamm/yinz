@@ -1944,7 +1944,8 @@ impl State {
                     &args.todo_ids,
                 )?;
                 let report = backend.apply(mutations)?;
-                let id = report.ids.first().copied().unwrap_or_default().max(0) as u64;
+                let id = u64::try_from(report.ids.first().copied().unwrap_or_default().get())
+                    .unwrap_or_default();
                 let attach = notes::plan_attach(id, &draft.tags, &draft.todo_ids);
                 let warning = if attach.is_empty() {
                     None

@@ -17,6 +17,7 @@
 //! should be would write that nothing back over them.
 
 use hocus_proto::store::{self, Backend};
+use zellij_tile::prelude::DataRowId;
 use zellij_tile::prelude::*;
 
 use crate::tools::ToolCall;
@@ -201,7 +202,9 @@ pub fn save(
                 .first()
                 .copied()
                 .ok_or("the store did not report an id for the new chat")?;
-            *id.insert(new as u64)
+            *id.insert(
+                u64::try_from(new.get()).map_err(|_| "the store returned a negative chat id")?,
+            )
         },
     };
 
@@ -290,7 +293,7 @@ pub fn load_usage(backend: &impl Backend, id: u64) -> Result<Option<TokenUsage>,
 /// suffix is ever deleted, but that is a fact about today's writers.
 pub fn load(backend: &impl Backend, id: u64) -> Option<Vec<Message>> {
     let mut found: Vec<(u64, Message)> = Vec::new();
-    let mut cursor: Option<i64> = None;
+    let mut cursor: Option<DataRowId> = None;
     loop {
         let mut request = FetchRequest::entity("chat_message")
             .filter(Pred::eq("chat_id", id))
@@ -639,6 +642,44 @@ mod tests {
             .define_all(&store::private_defs())
             .expect("declared the private entities");
         backend
+    }
+
+    #[test]
+    fn a_negative_chat_row_id_is_rejected_before_it_replaces_the_callers_id() {
+        struct NegativeId;
+        impl Backend for NegativeId {
+            fn define(&self, _: &EntityDef) -> Result<DataSchemaInfo, String> {
+                unreachable!()
+            }
+            fn fetch(&self, _: &FetchRequest) -> Result<DataRows, String> {
+                unreachable!()
+            }
+            fn count(&self, _: &FetchRequest) -> Result<u64, String> {
+                unreachable!()
+            }
+            fn watch(&self, _: &FetchRequest, _: WatchMode) -> Result<DataWatchHandle, String> {
+                unreachable!()
+            }
+            fn apply(&self, _: Vec<Mutation>) -> Result<ApplyReport, WriteError> {
+                Ok(ApplyReport {
+                    ids: vec![DataRowId::new(-1)],
+                    ..Default::default()
+                })
+            }
+        }
+        let mut id = None;
+        let error = save(
+            &NegativeId,
+            HOST,
+            &mut id,
+            &[Message::user("question")],
+            0,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error, "the store returned a negative chat id");
+        assert_eq!(id, None);
     }
 
     #[test]

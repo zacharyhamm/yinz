@@ -1,5 +1,6 @@
 use super::*;
 use hegel::generators::{self, Generator};
+use zellij_types::internal_ids::DataRowId;
 
 /// A string that exercises the FTS5 parser: bare words, the operators it recognises, and the
 /// punctuation and unbalanced quotes that make it a syntax error.
@@ -97,7 +98,7 @@ fn paging_by_cursor_yields_every_row_exactly_once(tc: hegel::TestCase) {
     }
 
     let mut seen: Vec<String> = Vec::new();
-    let mut cursor: Option<i64> = None;
+    let mut cursor: Option<DataRowId> = None;
     // one iteration per row plus a margin, so that a bug which fails to advance terminates
     // instead of hanging
     for _ in 0..row_count + 5 {

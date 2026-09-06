@@ -9,6 +9,8 @@
 //! Name validation lives here rather than in the engine so that a plugin can reject a bad entity
 //! or attribute name locally, and get the same message it would have got from the host.
 
+use crate::internal_ids::DataRevision;
+use crate::internal_ids::DataRowId;
 use crate::internal_ids::DataWatchId;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -158,6 +160,17 @@ impl From<&str> for DataValue {
 impl From<String> for DataValue {
     fn from(v: String) -> Self {
         DataValue::Text(v)
+    }
+}
+
+impl From<DataRowId> for DataValue {
+    fn from(value: DataRowId) -> Self {
+        DataValue::Int(value.get())
+    }
+}
+impl From<DataRevision> for DataValue {
+    fn from(value: DataRevision) -> Self {
+        DataValue::Int(value.get())
     }
 }
 
@@ -748,7 +761,7 @@ pub struct FetchRequest {
     pub offset: u32,
     /// Keyset pagination: return only rows with `id` greater than this. Prefer this to `offset`
     /// for walking a large set, since it doesn't re-scan what it has already returned.
-    pub after_id: Option<i64>,
+    pub after_id: Option<DataRowId>,
 }
 
 impl FetchRequest {
@@ -805,7 +818,7 @@ impl FetchRequest {
         self
     }
 
-    pub fn after_id(mut self, id: i64) -> Self {
+    pub fn after_id(mut self, id: DataRowId) -> Self {
         self.after_id = Some(id);
         self
     }
@@ -853,7 +866,7 @@ pub enum Mutation {
         /// The `rev` the row must be at, if the caller is guarding on one. Meaningless without a
         /// `uid`, since a Put with no uid always inserts and there is no row to compare against.
         #[serde(default)]
-        expect_rev: Option<i64>,
+        expect_rev: Option<DataRevision>,
     },
     /// Set attributes on every row matching `filter`.
     Update {
@@ -864,7 +877,7 @@ pub enum Mutation {
         /// on a revision matches only rows at that revision — with a filter naming one row, which
         /// is the normal case, that is a compare-and-set on that row.
         #[serde(default)]
-        expect_rev: Option<i64>,
+        expect_rev: Option<DataRevision>,
     },
     /// Remove every row matching `filter`.
     Delete { entity: String, filter: Pred },
@@ -875,7 +888,7 @@ pub enum Mutation {
 /// Zero rather than a separate variant because no stored row is ever at revision 0 — the column
 /// starts at 1 — so it is an impossible revision and reads as "before the first write". A Put
 /// guarded on it inserts or conflicts, and never overwrites.
-pub const REV_ABSENT: i64 = 0;
+pub const REV_ABSENT: DataRevision = DataRevision::new(0);
 
 impl Mutation {
     pub fn put(entity: impl Into<String>) -> PutBuilder {
@@ -976,7 +989,7 @@ impl Mutation {
 /// A revision below [`REV_ABSENT`] never existed, so a guard naming one could only ever fail.
 /// Rejecting it up front turns a write that would have silently conflicted forever into an error
 /// the plugin author can read.
-fn validate_expect_rev(expect_rev: Option<i64>) -> Result<(), DataError> {
+fn validate_expect_rev(expect_rev: Option<DataRevision>) -> Result<(), DataError> {
     match expect_rev {
         Some(rev) if rev < REV_ABSENT => Err(DataError::InvalidQuery(format!(
             "expected revision {} is negative; revisions start at 1, and {} means the row must \
@@ -1009,7 +1022,7 @@ pub struct PutBuilder {
     entity: String,
     uid: Option<String>,
     values: Vec<(String, DataValue)>,
-    expect_rev: Option<i64>,
+    expect_rev: Option<DataRevision>,
 }
 
 impl PutBuilder {
@@ -1026,7 +1039,7 @@ impl PutBuilder {
 
     /// Apply only if the row is still at `rev`. Needs a `uid`; [`REV_ABSENT`] means it must not
     /// exist yet.
-    pub fn expect_rev(mut self, rev: i64) -> Self {
+    pub fn expect_rev(mut self, rev: DataRevision) -> Self {
         self.expect_rev = Some(rev);
         self
     }
@@ -1058,7 +1071,7 @@ pub struct UpdateBuilder {
     entity: String,
     filter: Pred,
     values: Vec<(String, DataValue)>,
-    expect_rev: Option<i64>,
+    expect_rev: Option<DataRevision>,
 }
 
 impl UpdateBuilder {
@@ -1068,7 +1081,7 @@ impl UpdateBuilder {
     }
 
     /// Apply only to rows still at `rev`, and refuse the batch if none match.
-    pub fn expect_rev(mut self, rev: i64) -> Self {
+    pub fn expect_rev(mut self, rev: DataRevision) -> Self {
         self.expect_rev = Some(rev);
         self
     }
@@ -1100,7 +1113,7 @@ pub struct DataRows {
     /// Set when the fetch stopped at a row or byte limit rather than at the end of the results.
     pub truncated: bool,
     /// The `id` of the last row returned, to pass back as [`FetchRequest::after_id`].
-    pub next_cursor: Option<i64>,
+    pub next_cursor: Option<DataRowId>,
 }
 
 impl DataRows {
@@ -1129,7 +1142,7 @@ pub struct ApplyReport {
     pub rows_written: u64,
     pub rows_deleted: u64,
     /// The `id` of each row inserted or replaced by a `Put`, in order.
-    pub ids: Vec<i64>,
+    pub ids: Vec<DataRowId>,
     /// Rows affected by each mutation of the batch, in the order they were given.
     ///
     /// The totals above cannot answer "did *that* one match": a batch is one number, and a write

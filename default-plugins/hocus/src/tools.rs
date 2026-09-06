@@ -11,6 +11,7 @@
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
 use std::collections::{BTreeMap, BTreeSet};
+use zellij_tile::prelude::DataRevision;
 use zellij_tile::prelude::TabId;
 
 use hocus_proto::launch;
@@ -2735,7 +2736,7 @@ pub struct Args {
     /// The `rev` an edited item or note was read at, so a write composed from that reading is
     /// refused rather than landing on somebody else's. Spelled out rather than reusing
     /// `revision`, which is the `agent_run` timeline's position and means something else.
-    pub expect_rev: Option<i64>,
+    pub expect_rev: Option<DataRevision>,
     pub parent_id: Option<u64>,
     pub include_done: bool,
     pub all_projects: bool,

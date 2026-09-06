@@ -11,6 +11,7 @@ use hocus_proto::notes::{self, Filter, Note, Where};
 use hocus_proto::store::{self, Backend};
 use hocus_proto::{projects, todos};
 use serde_json::{json, Value};
+use zellij_tile::prelude::DataRevision;
 use zellij_tile::prelude::FetchRequest;
 
 pub type OpResult = Result<String, String>;
@@ -34,8 +35,10 @@ fn id_arg(args: &Value, key: &str) -> Option<u64> {
 /// The revision the caller composed its text from, where it says. Absent is the ordinary case
 /// and means "guard on what the row said when this call read it" — see
 /// `hocus_proto::store::guarded_rev`.
-fn rev_arg(args: &Value) -> Option<i64> {
-    args.get("expect_rev").and_then(Value::as_i64)
+fn rev_arg(args: &Value) -> Option<DataRevision> {
+    args.get("expect_rev")
+        .and_then(Value::as_i64)
+        .map(DataRevision::new)
 }
 
 fn flag(args: &Value, key: &str) -> bool {
@@ -146,7 +149,8 @@ pub fn run_mutate(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
             let (mutations, draft) =
                 notes::plan_add(count, root, title, body, author, &tags, &todo_ids)?;
             let report = backend.apply(mutations)?;
-            let id = report.ids.first().copied().unwrap_or_default().max(0) as u64;
+            let id = u64::try_from(report.ids.first().copied().unwrap_or_default().get())
+                .unwrap_or_default();
             let attach = notes::plan_attach(id, &draft.tags, &draft.todo_ids);
             let attach_error = if attach.is_empty() {
                 None
