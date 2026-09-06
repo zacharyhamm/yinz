@@ -1,6 +1,10 @@
 /** Typed bridge transport. Replies describe host outcomes, not merely CLI completion. @module */
 import { z } from "npm:zod@4.3.6";
 import { checked, Context, Key, Literal } from "./workflow.ts";
+export const PromptText = z.string().min(1).refine(
+    (s) => new TextEncoder().encode(s).length <= 262144,
+    "Prompt exceeds 256 KiB (262144 UTF-8 bytes)",
+);
 export const Owner = z.object({
     host_id: z.string().min(1),
     session: z.string().min(1),
@@ -105,9 +109,7 @@ export async function bridge(
         "swamp",
         "--plugin",
         "zellij:swamp-bridge",
-        "--",
-        JSON.stringify(request),
-    ]);
+    ], JSON.stringify(request) + "\n");
     const response = z.object({
         result: z.unknown().optional(),
         error: z.string().optional(),
@@ -116,6 +118,20 @@ export async function bridge(
     return response.result;
 }
 export async function operation(c: Context, request: Record<string, unknown>) {
+    if (request.method === "agent_prompt") {
+        const prompt = PromptText.parse(request.prompt);
+        const hash = await crypto.subtle.digest(
+            "SHA-256",
+            new TextEncoder().encode(prompt),
+        );
+        request = {
+            ...request,
+            prompt_sha256: Array.from(
+                new Uint8Array(hash),
+                (b) => b.toString(16).padStart(2, "0"),
+            ).join(""),
+        };
+    }
     return Operation.parse(await bridge(c, request));
 }
 export async function observe(

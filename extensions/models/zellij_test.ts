@@ -42,8 +42,23 @@ Deno.test("Zellij methods preserve argv, validate snapshots, and fail without wr
     class FakeCommand {
         constructor(binary: string | URL, options: Deno.CommandOptions) {
             equal(binary, "zellij");
-            equal(options.stdin, "null");
+            equal(
+                options.stdin,
+                options.args?.includes("zellij:swamp-bridge")
+                    ? "piped"
+                    : "null",
+            );
             calls.push(options.args ?? []);
+        }
+        spawn() {
+            return {
+                stdin: new WritableStream<Uint8Array>({
+                    write(bytes) {
+                        calls.at(-1)!.push(new TextDecoder().decode(bytes));
+                    },
+                }),
+                output: () => this.output(),
+            };
         }
         output() {
             const response = responses.shift();

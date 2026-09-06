@@ -23,6 +23,10 @@ class Command extends originalCommand {
     constructor(command: string | URL, opts: Deno.CommandOptions) {
         super(command, opts);
         if (command === "zellij") {
+            this.spawn = () => ({
+                stdin: new WritableStream<Uint8Array>(),
+                output: () => this.output(),
+            } as Deno.ChildProcess);
             this.output = () =>
                 Promise.resolve({
                     code: 0,

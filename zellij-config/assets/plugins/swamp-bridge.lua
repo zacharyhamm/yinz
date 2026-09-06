@@ -259,6 +259,9 @@ handle = function(args)
     return operation
   end
 
+  if args.method == 'agent_prompt' then
+    assert(type(args.prompt) == 'string' and #args.prompt > 0 and #args.prompt <= 262144, 'Prompt must contain 1–262144 UTF-8 bytes (256 KiB)')
+  end
   local uid, previous, value, row
   if args.method=='vm_status' then
     value={work=args.work,key=args.key,request=encode(args),incarnation=identity.incarnation}
@@ -326,7 +329,6 @@ handle = function(args)
     local agent_row
     agent, agent_row = read(agent_uid)
     assert(not agent.outstanding, 'One outstanding prompt is permitted per agent')
-    assert(type(args.prompt) == 'string' and #args.prompt > 0 and #args.prompt <= 8000, 'Prompt must contain 1–8000 UTF-8 bytes for complete hook correlation')
     value.owner, value.pane, value.outcome = agent.owner, agent.pane, 'pending'
     value.supervisor,value.process=agent.supervisor,agent.process
     value.remoteHost,value.remotePaneId=agent.remoteHost,agent.remotePaneId
@@ -431,7 +433,13 @@ z.on('agent_event', function(event)
     local value, row = read(agent.outstanding)
     if value and value.outcome == 'pending' then
       local request = decode(value.request)
-      if request.prompt == event.prompt then
+      local matches
+      if request.prompt_sha256 and raw.prompt_sha256 then
+        matches = request.prompt_sha256 == raw.prompt_sha256
+      else
+        matches = request.prompt == event.prompt
+      end
+      if matches and not value.accepted then
         value.accepted = true
         value.agentSession=event.session_id
         value.turn=raw.turn_id

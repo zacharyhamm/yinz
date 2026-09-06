@@ -5087,6 +5087,7 @@ dependencies = [
  "hegeltest",
  "serde",
  "serde_json",
+ "sha2",
  "strip-ansi-escapes",
  "strum",
  "strum_macros",

@@ -107,6 +107,13 @@ impl ZellijPlugin for State {
             EventType::QueueJobStarted,
             EventType::QueueJobFinished,
         ]);
+        if self
+            .configuration
+            .get("subscribe_agent_event")
+            .is_some_and(|v| v == "true")
+        {
+            subscribe(&[EventType::AgentEvent]);
+        }
         if should_subscribe_initial_keybinds {
             subscribe(&[EventType::InitialKeybinds, EventType::ModeUpdate]);
         }

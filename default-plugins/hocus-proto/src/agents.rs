@@ -7667,27 +7667,30 @@ mod tests {
         assert_eq!(id_of("fix the flaky test"), None);
     }
 
-    /// The premise of the cut rule, driven through the real mechanism rather than a hand-cut
-    /// string: a `UserPromptSubmit` carries no `tool_input`, so the first prune always fits and
-    /// every cut prompt is cut at the same 8192 characters. Two reports of one task that agree
-    /// up to there arrive identical, and an id would have dropped the second for good.
+    /// Reports that differ only beyond the retained prefix must not share a history id.
     #[test]
     fn a_notification_cut_by_the_broadcast_cap_gets_no_id() {
-        // Five hundred lines of result is comfortably over the cap, and 501 differs from 500
-        // only in a line appended past it.
+        let lines = zellij_tile::agent::HOOK_BROADCAST_MAX_BYTES / 10;
+        let prune = |text: &str| {
+            let event = prompt_event(text);
+            event
+                .broadcast(serde_json::to_string(&event).unwrap())
+                .0
+                .into_owned()
+        };
         let (first, second) = (
-            prompt_event(&task_notification(500)).pruned(),
-            prompt_event(&task_notification(501)).pruned(),
+            prune(&task_notification(lines)),
+            prune(&task_notification(lines + 1)),
         );
         assert_ne!(
-            id_of(&task_notification(500)),
-            id_of(&task_notification(501))
+            id_of(&task_notification(lines)),
+            id_of(&task_notification(lines + 1))
         );
         assert_eq!(
             first.prompt, second.prompt,
             "the cap took the difference between them"
         );
-
+        assert_ne!(first.prompt_sha256, second.prompt_sha256);
         for event in [&first, &second] {
             let (_, text) = run_entry(event).expect("an entry");
             assert_eq!(run_event_id(event, &text), None);

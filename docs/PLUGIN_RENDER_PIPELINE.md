@@ -88,6 +88,10 @@ turns each of its frames into a burst of events for every other plugin — and f
 one now short-circuits when the name has not actually changed (`Tab::rename_pane` returns
 whether it moved), but the underlying cost of a real rename is unchanged.
 
+Each Wasm plugin instance can grow its linear memory through 1 GiB, allocated on demand.
+A smaller module-declared maximum still applies. Allocation refusals retain plugin and size
+diagnostics. This ceiling does not reserve 1 GiB for each plugin.
+
 ## The only throttle that exists
 
 `BackgroundJob::RenderToClients` is debounced at 10 ms (`background_jobs.rs:221` `REPAINT_DELAY_MS`,
