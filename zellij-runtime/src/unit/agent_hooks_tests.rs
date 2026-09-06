@@ -186,3 +186,162 @@ fn codex_permission_state_and_broadcast_agree_even_after_pruning() {
         assert!(zellij_types::agent::waiting_needs_a_person(&event));
     }
 }
+
+fn assistant(id: Option<&str>, phase: &str, text: &str) -> String {
+    format!(
+        "{}\n",
+        json!({"type":"response_item","payload":{
+            "type":"message","role":"assistant","id":id,"phase":phase,
+            "content":[{"type":"output_text","text":text}]
+        }})
+    )
+}
+
+#[test]
+fn codex_messages_replay_completed_prose_in_turn_order_and_ignore_partial_writes() {
+    let commentary = assistant(Some("m1"), "commentary", "checking 雪\n");
+    let final_answer = assistant(None, "final_answer", "done");
+    let contents = format!(
+        "{META}{AUTO}{commentary}{}{}{}{}{}",
+        json!({"type":"response_item","payload":{"type":"function_call_output","output":"secret"}})
+            .to_string()
+            + "\n",
+        assistant(Some("reason"), "analysis", "reasoning"),
+        final_answer,
+        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn\"}}\n",
+        assistant(Some("orphan"), "commentary", "not in a turn")
+    );
+    let (mut file, mut hook) = fixture(&contents);
+    hook["hook_event_name"] = "PostToolUse".into();
+    let (event, _) = parse_hook_event("codex", hook.to_string()).unwrap();
+    assert_eq!(
+        event
+            .assistant_messages
+            .iter()
+            .map(|m| m.text.as_str())
+            .collect::<Vec<_>>(),
+        ["checking 雪\n", "done"]
+    );
+    assert!(event.assistant_messages.iter().all(|m| m.turn_id == "turn"));
+    assert!(event.assistant_messages[1].source_id.contains("offset:"));
+    file.write_all(b"{\"type\":\"response_item\"").unwrap();
+    let (partial, _) = parse_hook_event("codex", hook.to_string()).unwrap();
+    assert_eq!(partial.assistant_messages, event.assistant_messages);
+    hook["session_id"] = "wrong".into();
+    assert!(parse_hook_event("codex", hook.to_string())
+        .unwrap()
+        .0
+        .assistant_messages
+        .is_empty());
+}
+
+#[test]
+fn codex_message_tail_and_payload_limits_are_marked_and_keep_newest_in_order() {
+    let padding = json!({"type":"unused","text":"x".repeat(TAIL_BYTES as usize)});
+    let (_file, hook) = fixture(&format!(
+        "{META}{AUTO}{padding}\n{}",
+        assistant(None, "commentary", "no boundary")
+    ));
+    assert!(parse_hook_event("codex", hook.to_string())
+        .unwrap()
+        .0
+        .assistant_messages
+        .is_empty());
+    assert!(
+        parse_hook_event("codex", hook.to_string())
+            .unwrap()
+            .0
+            .messages_omitted
+    );
+    let body: String = (0..100)
+        .map(|n| assistant(Some(&format!("m{n}")), "commentary", &"雪".repeat(4000)))
+        .collect();
+    let (_file, hook) = fixture(&format!("{META}{padding}\n{AUTO}{body}"));
+    let (event, raw) = parse_hook_event("codex", hook.to_string()).unwrap();
+    assert!(raw.len() <= zellij_types::agent::HOOK_BROADCAST_MAX_BYTES);
+    assert!(event.messages_omitted);
+    assert!(!event.assistant_messages.is_empty());
+    assert_eq!(
+        event.assistant_messages.last().unwrap().source_id,
+        "session:m99"
+    );
+    assert!(event
+        .assistant_messages
+        .windows(2)
+        .all(|pair| { pair[0].source_id < pair[1].source_id }));
+    let (_file, hook) = fixture(&format!(
+        "{META}{AUTO}{}",
+        assistant(Some("huge"), "final_answer", &"雪".repeat(40000))
+    ));
+    let (event, raw) = parse_hook_event("codex", hook.to_string()).unwrap();
+    assert!(raw.len() <= zellij_types::agent::HOOK_BROADCAST_MAX_BYTES);
+    assert!(event.assistant_messages[0].incomplete);
+}
+
+#[test]
+fn codex_messages_require_known_records_and_explicit_turn_boundaries() {
+    for middle in [
+        "{broken}\n".to_owned(),
+        "{\"type\":\"turn_context\",\"payload\":{}}\n".to_owned(),
+        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_interrupted\"}}\n".to_owned(),
+    ] {
+        let (_file, hook) = fixture(&format!(
+            "{META}{AUTO}{middle}{}",
+            assistant(None, "commentary", "unattributed")
+        ));
+        assert!(parse_hook_event("codex", hook.to_string())
+            .unwrap()
+            .0
+            .assistant_messages
+            .is_empty());
+    }
+    let (_file, hook) = fixture(&format!(
+        "{META}{AUTO}{}{}",
+        assistant(Some("one"), "commentary", "same"),
+        AUTO.replace("turn\"", "second\"") + &assistant(Some("two"), "final_answer", "same")
+    ));
+    let messages = parse_hook_event("codex", hook.to_string())
+        .unwrap()
+        .0
+        .assistant_messages;
+    assert_eq!(messages.len(), 2);
+    assert_ne!(messages[0].turn_id, messages[1].turn_id);
+}
+
+#[test]
+fn display_message_bursts_only_broadcast_events_and_preserve_pruned_batch_metadata() {
+    for index in 0..100 {
+        let event = HookEvent {
+            hook_event_name: "MessageDisplay".into(),
+            session_id: "session".into(),
+            turn_id: Some("turn".into()),
+            message_id: Some("message".into()),
+            index: Some(index),
+            final_batch: Some(index == 99),
+            delta: Some(if index == 99 {
+                String::new()
+            } else {
+                "雪".repeat(40000)
+            }),
+            ..Default::default()
+        };
+        let actions = hook_report_actions(
+            "claude",
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7)),
+            &event,
+            serde_json::to_string(&event).unwrap(),
+        );
+        let [Action::AgentEvent(broadcast)] = &actions[..] else {
+            panic!("display batches must not set pane state: {actions:?}")
+        };
+        assert_eq!(broadcast.state, None);
+        assert_eq!(broadcast.detail, None);
+        assert!(broadcast.raw.len() <= zellij_types::agent::HOOK_BROADCAST_MAX_BYTES);
+        let received: HookEvent = serde_json::from_str(&broadcast.raw).unwrap();
+        assert_eq!(received.turn_id, event.turn_id);
+        assert_eq!(received.message_id, event.message_id);
+        assert_eq!(received.index, event.index);
+        assert_eq!(received.final_batch, event.final_batch);
+        assert_eq!(received.message_incomplete, index != 99);
+    }
+}

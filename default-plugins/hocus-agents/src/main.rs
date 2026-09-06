@@ -3231,7 +3231,7 @@ mod tests {
             .entries
             .iter()
             .any(|row| row.text.contains("Bash cargo")));
-        assert!(!history
+        assert!(history
             .entries
             .iter()
             .any(|row| row.text.contains("result: Implemented")));
@@ -3261,11 +3261,9 @@ mod tests {
             created_at_ms: None,
         });
         state.run = Some(run);
-        // Three rows of history below the divider, against four lines of timeline - the three
-        // entries the filter lets through and the run's summary under them - so exactly one
-        // line to wind back over.
-        state.render(7, 50);
-        assert_eq!(state.last_history_rows, 3);
+        // Four rows below the divider, against five timeline rows including the result.
+        state.render(8, 50);
+        assert_eq!(state.last_history_rows, 4);
         assert_eq!(state.last_history_max_scroll, 1);
 
         assert!(state.on_mouse(Mouse::ScrollUp(1)));

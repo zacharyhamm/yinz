@@ -781,8 +781,10 @@ pub enum RunEntryKind {
     Question,
     /// Kept only so histories written before questions had their own kind still deserialize.
     Step,
-    /// Hidden from the timeline but retained as input until a summary accepts this revision.
+    /// A final response retained from Stop when message capture did not supply it.
     Result,
+    /// Assistant prose, including commentary and attributed subagent output.
+    Message,
     /// A summary a person asked for, kept on the timeline at the point they asked.
     ///
     /// The automatic summaries do not land here: they replace [`AgentRun::summary`], which
@@ -806,6 +808,7 @@ impl RunEntryKind {
             RunEntryKind::Question => "question",
             RunEntryKind::Step => "step",
             RunEntryKind::Result => "result",
+            RunEntryKind::Message => "message",
             RunEntryKind::Summary => "summary",
         }
     }
@@ -822,6 +825,7 @@ impl RunEntryKind {
             "question" => Some(RunEntryKind::Question),
             "step" => Some(RunEntryKind::Step),
             "result" => Some(RunEntryKind::Result),
+            "message" => Some(RunEntryKind::Message),
             "summary" => Some(RunEntryKind::Summary),
             _ => None,
         }
@@ -2194,9 +2198,9 @@ pub fn run_history(
                 | RunEntryKind::Plan
                 | RunEntryKind::Question
                 | RunEntryKind::Summary
-        ) || (run.outcome != RunOutcome::Active
-            && entry.kind == RunEntryKind::Result
-            && entry.revision > run.summarized_revision)
+                | RunEntryKind::Message
+                | RunEntryKind::Result
+        )
     }) {
         let style = match entry.kind {
             RunEntryKind::Summary => SUMMARY_LABEL_STYLE,
@@ -4312,6 +4316,7 @@ mod tests {
             RunEntryKind::Question,
             RunEntryKind::Step,
             RunEntryKind::Result,
+            RunEntryKind::Message,
             RunEntryKind::Summary,
         ] {
             assert_eq!(RunEntryKind::from_label(kind.label()), Some(kind));
@@ -4479,9 +4484,7 @@ mod tests {
     }
 
     /// A summary somebody asked for is drawn wherever it was made, on a run that is still
-    /// going and on one that has ended - unlike a result, which is held back while the run
-    /// is live and hidden once a summary has absorbed it. Nothing gates this one: the
-    /// timeline is where its asker went looking for it.
+    /// going and on one that has ended. The timeline keeps it beside the original messages.
     #[test]
     fn a_summary_somebody_asked_for_is_drawn_on_the_timeline_whatever_the_run_is_doing() {
         let mut run = AgentRun {
@@ -4621,7 +4624,7 @@ mod tests {
     }
 
     #[test]
-    fn an_archived_run_shows_only_unsummarized_results() {
+    fn active_and_archived_runs_keep_results_visible_after_summarization() {
         let mut run = AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
@@ -4648,8 +4651,8 @@ mod tests {
         };
 
         assert!(
-            run_history(&run, 60, 100, 0).entries.is_empty(),
-            "a running agent's result is not final"
+            !run_history(&run, 60, 100, 0).entries.is_empty(),
+            "a completed response stays visible during the run"
         );
 
         run.outcome = RunOutcome::Completed;
@@ -4669,7 +4672,7 @@ mod tests {
             created_at_ms: None,
         });
         let summarized = run_history(&run, 60, 100, 0);
-        assert!(!summarized
+        assert!(summarized
             .entries
             .iter()
             .any(|line| line.text.contains("result:")));
