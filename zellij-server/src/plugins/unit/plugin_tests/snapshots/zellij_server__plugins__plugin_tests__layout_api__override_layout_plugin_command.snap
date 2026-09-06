@@ -9,7 +9,7 @@ Some(
         None,
         [
             TabLayoutInfo {
-                tab_index: TabId(
+                tab_index: TabPosition(
                     0,
                 ),
                 tab_name: None,

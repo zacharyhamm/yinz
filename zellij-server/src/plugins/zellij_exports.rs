@@ -7568,7 +7568,7 @@ fn override_layout(
         .iter()
         .enumerate()
         .map(|(index, (tab_name, tiled, floating))| TabLayoutInfo {
-            tab_index: TabId::new(index),
+            tab_index: TabPosition::new(index),
             tab_name: tab_name.clone(),
             tiled_layout: tiled.clone(),
             floating_layouts: floating.clone(),
@@ -7581,7 +7581,7 @@ fn override_layout(
     let tabs = if tabs.is_empty() {
         let (tiled, floating) = layout.new_tab();
         vec![TabLayoutInfo {
-            tab_index: TabId::new(0),
+            tab_index: TabPosition::new(0),
             tab_name: None,
             tiled_layout: tiled,
             floating_layouts: floating,

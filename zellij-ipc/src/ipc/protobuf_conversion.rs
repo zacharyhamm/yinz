@@ -4,6 +4,7 @@ use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -4817,7 +4818,7 @@ impl TryFrom<zellij_types::input::layout::TabLayoutInfo>
     fn try_from(tab_info: zellij_types::input::layout::TabLayoutInfo) -> Result<Self> {
         Ok(Self {
             tab_index: u32::try_from(tab_info.tab_index.get())
-                .context("tab_id is outside u32 range")?,
+                .context("tab position is outside u32 range")?,
             tab_name: tab_info.tab_name,
             tiled_layout: Some(tab_info.tiled_layout.into()),
             floating_layouts: tab_info
@@ -4850,8 +4851,8 @@ impl TryFrom<crate::client_server_contract::client_server_contract::TabLayoutInf
         protobuf_tab: crate::client_server_contract::client_server_contract::TabLayoutInfo,
     ) -> Result<Self> {
         Ok(zellij_types::input::layout::TabLayoutInfo {
-            tab_index: TabId::try_from(u64::from(protobuf_tab.tab_index))
-                .context("tab_id is outside usize range")?,
+            tab_index: TabPosition::try_from(u64::from(protobuf_tab.tab_index))
+                .context("tab position is outside usize range")?,
             tab_name: protobuf_tab.tab_name.filter(|s| !s.is_empty()),
             tiled_layout: protobuf_tab
                 .tiled_layout

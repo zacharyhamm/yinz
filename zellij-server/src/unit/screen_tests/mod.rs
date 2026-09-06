@@ -2218,6 +2218,7 @@ mod nested_sessions;
 mod new_pane_placement;
 mod notification_animation;
 mod overlays;
+mod override_layout;
 mod pane_state;
 mod plugin_broadcasts;
 mod quit;

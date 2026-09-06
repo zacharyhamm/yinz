@@ -2,7 +2,6 @@
 use super::{command::RunCommand, plugins::PluginAliases};
 use crate::data::{OverlayPlacement, PluginTag};
 use crate::geometry::{PercentOrFixed, SplitDirection, SplitSize};
-use crate::internal_ids::TabId;
 use crate::internal_ids::TabPosition;
 use crate::pane_size::{Dimension, PaneGeom};
 use serde::{Deserialize, Serialize};
@@ -683,7 +682,8 @@ pub struct Layout {
 /// Layout configuration for a single tab in multi-tab override
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TabLayoutInfo {
-    pub tab_index: TabId,
+    /// Zero-based display position, resolved to a stable ID by the screen.
+    pub tab_index: TabPosition,
     pub tab_name: Option<String>,
     pub tiled_layout: TiledPaneLayout,
     pub floating_layouts: Vec<FloatingPaneLayout>,

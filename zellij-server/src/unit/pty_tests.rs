@@ -26,6 +26,7 @@ use zellij_types::input::command::RunCommand;
 use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::style::Palette;
 use {
     zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcReceiverWithContext,
@@ -1249,8 +1250,9 @@ fn a_firecracker_layout_override_appears_before_transport() {
         cwd: None,
         default_shell: None,
         tabs: vec![(
+            TabId::new(7),
             TabLayoutInfo {
-                tab_index: TabId::new(0),
+                tab_index: TabPosition::new(0),
                 tab_name: None,
                 tiled_layout: TiledPaneLayout {
                     run: Some(Run::Command(command)),
@@ -1272,7 +1274,7 @@ fn a_firecracker_layout_override_appears_before_transport() {
     assert!(screen_rx.try_iter().any(|(instruction, _)| matches!(
         instruction,
         ScreenInstruction::OverrideLayoutComplete(tabs, false, false, CLIENT_1, _)
-            if tabs.len() == 1 && tabs[0].new_terminal_pids == vec![(TerminalId::new(0), None)]
+            if tabs.len() == 1 && tabs[0].tab_index == TabId::new(7) && tabs[0].new_terminal_pids == vec![(TerminalId::new(0), None)]
     )));
     os_api.spawn_started.wait();
     assert!(pty

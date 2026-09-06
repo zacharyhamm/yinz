@@ -8,8 +8,8 @@ use super::warp_ops::{PANE_WARP_SCREEN_RESERVE, TAB_WARP_SCREEN_RESERVE};
 use super::{
     active_tab, active_tab_and_connected_client_id,
     active_tab_and_connected_client_id_with_first_tab_fallback, denormalize_notification_response,
-    find_already_running_panes, get_default_editor, replay_pending_plugin_events, CopyOptions,
-    Notification, Screen, ScreenInstruction,
+    get_default_editor, replay_pending_plugin_events, CopyOptions, Notification, Screen,
+    ScreenInstruction,
 };
 use crate::background_jobs::BackgroundJob;
 use crate::os_input_output::ResizeCache;
@@ -2736,128 +2736,23 @@ pub(crate) fn screen_thread_main(
             ScreenInstruction::OverrideLayout(
                 cwd,
                 default_shell,
-                mut tab_layouts,
+                tab_layouts,
                 retain_existing_terminal_panes,
                 retain_existing_plugin_panes,
                 apply_only_to_focused_tab,
                 client_id,
                 completion_tx,
             ) => {
-                // 1. Determine which tabs to close (exist but not in layout)
-                let existing_tab_indices: HashSet<TabId> = screen.tabs.keys().copied().collect();
-                let layout_tab_indices: HashSet<TabId> =
-                    tab_layouts.iter().map(|tl| tl.tab_index).collect();
-                let tabs_to_close: Vec<TabId> = existing_tab_indices
-                    .difference(&layout_tab_indices)
-                    .copied()
-                    .collect();
-
-                // 2. Process each tab layout
-                let mut processed_tab_layouts = Vec::new();
-
-                if apply_only_to_focused_tab {
-                    match screen.get_active_tab_mut(client_id) {
-                        Ok(active_tab) => {
-                            if tab_layouts.is_empty() {
-                                log::error!("No tab layouts found, cannot override.");
-                                continue;
-                            }
-                            let mut tab_layout_info = tab_layouts.remove(0);
-                            tab_layout_info.tab_index = active_tab.id;
-                            // Set the tab name if provided
-                            if let Some(name) = tab_layout_info.tab_name.take() {
-                                active_tab.name = name;
-                            }
-
-                            // Find already-running panes for this tab
-                            let (tiled_to_ignore, floating_indices) = find_already_running_panes(
-                                &tab_layout_info.tiled_layout,
-                                &tab_layout_info.floating_layouts,
-                                active_tab,
-                            );
-
-                            // Mark run instructions to ignore (prevents re-spawning)
-                            for run_instruction in tiled_to_ignore {
-                                tab_layout_info
-                                    .tiled_layout
-                                    .ignore_run_instruction(run_instruction);
-                            }
-
-                            for idx in floating_indices {
-                                tab_layout_info
-                                    .floating_layouts
-                                    .get_mut(idx)
-                                    .map(|f| f.already_running = true);
-                            }
-
-                            processed_tab_layouts.push(tab_layout_info);
-                        },
-                        Err(e) => {
-                            log::error!("Failed to override layout of active tab: {}", e);
-                        },
-                    }
-                } else {
-                    for mut tab_layout_info in tab_layouts {
-                        // Get the tab by index
-                        let tab = match screen.tabs.get_mut(&tab_layout_info.tab_index) {
-                            Some(t) => t,
-                            None => {
-                                // no corresponding tab exists, we'll create it
-                                processed_tab_layouts.push(tab_layout_info);
-                                continue;
-                            },
-                        };
-
-                        // Set the tab name if provided
-                        if let Some(name) = tab_layout_info.tab_name.take() {
-                            tab.name = name;
-                        }
-
-                        // Find already-running panes for this tab
-                        let (tiled_to_ignore, floating_indices) = find_already_running_panes(
-                            &tab_layout_info.tiled_layout,
-                            &tab_layout_info.floating_layouts,
-                            tab,
-                        );
-
-                        // Mark run instructions to ignore (prevents re-spawning)
-                        for run_instruction in tiled_to_ignore {
-                            tab_layout_info
-                                .tiled_layout
-                                .ignore_run_instruction(run_instruction);
-                        }
-
-                        for idx in floating_indices {
-                            tab_layout_info
-                                .floating_layouts
-                                .get_mut(idx)
-                                .map(|f| f.already_running = true);
-                        }
-
-                        processed_tab_layouts.push(tab_layout_info);
-                    }
-                }
-
-                // 3. Send to plugin thread with all tab layouts
-                screen
-                    .bus
-                    .senders
-                    .send_to_plugin(PluginInstruction::OverrideLayout(
-                        cwd,
-                        default_shell,
-                        processed_tab_layouts,
-                        retain_existing_terminal_panes,
-                        retain_existing_plugin_panes,
-                        client_id,
-                        completion_tx,
-                    ))?;
-
-                // 4. Close tabs that aren't in the layout
-                if !apply_only_to_focused_tab {
-                    for tab_index in tabs_to_close {
-                        screen.close_tab_by_id(tab_index)?;
-                    }
-                }
+                screen.override_layout(
+                    cwd,
+                    default_shell,
+                    tab_layouts,
+                    retain_existing_terminal_panes,
+                    retain_existing_plugin_panes,
+                    apply_only_to_focused_tab,
+                    client_id,
+                    completion_tx,
+                )?;
             },
             ScreenInstruction::OverrideLayoutComplete(
                 tab_results,
