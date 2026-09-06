@@ -1355,22 +1355,30 @@ empty:
 | `agent_zellij_config_dir` | selected config directory, forwarded as `ZELLIJ_CONFIG_DIR` |
 
 For a worktree-backed Firecracker pane, the shipped hook checks the guest against its last sync
-baseline. Select `<S> sync` to sync before the host workflow starts. Changes include committed
+baseline. Select **Sync** to sync before the host workflow starts. Changes include committed
 and uncommitted file results. Sync failures remain on the hook with diagnostics. Restart is
-disabled while sync runs.
+disabled while the VM check or sync runs.
 
 
 ### Agent exit workflow
 
 The builtin `agent-exit` hook starts a local Git workflow after an agent exits, at any exit status.
-For a Firecracker checkout, select **S** to sync first. Remaining guest changes block host work.
-Sync warnings require **R** to review them and confirmation that the conflicts are resolved.
+For a Firecracker checkout, select **Sync** first. Remaining guest changes block host work.
+For sync warnings, select **Resolve sync conflicts**, then confirm that the conflicts are resolved.
 SSH checkouts retain restart and close controls.
 
-Use **R** to review branch commits, staged changes, unstaged changes, and untracked files.
-Use the arrow keys or page keys to scroll. Enter returns to the choices.
-**C** edits a commit message and asks for approval before staging all non-ignored changes.
-**G** asks a helper agent for a draft. A generated draft does not authorize a commit.
+The conversation keeps completed steps, choices, and results for the life of the plugin instance.
+The current controls stay at the bottom of the pane. Use Tab or Shift-Tab to move focus.
+Press Enter to activate a button, or click it. In a narrow pane, select an action, then activate **Choose**.
+Text fields support editing and paste. PageUp, PageDown, and the mouse wheel scroll the conversation.
+New messages follow the bottom of the conversation. If you scroll up, new messages preserve your position.
+Operation controls are unavailable while work runs.
+
+Select **review diff** to inspect branch commits, staged changes, unstaged changes, and untracked files.
+Select **return** to return to the choices.
+Select **commit** to edit a message. Accepting the draft does not approve a commit.
+A separate approval stages all non-ignored changes and commits them.
+Select **generate commit message** to ask a helper agent for a draft.
 After a commit, the hook attempts a rebase onto the local default branch. It never fetches or pushes.
 Conflicts offer a repair agent, continuation, and abort. Other failures show diagnostics.
 

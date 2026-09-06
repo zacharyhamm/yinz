@@ -37,7 +37,6 @@ local zellij = require("zellij")
 local M = {}
 
 local QUESTION = "Agent exited. Create another agent in the same directory?"
-local CONTROLS = "<ENTER> create another agent  <ESC> close pane"
 local MAX_OUTPUT = 8192
 
 --- The pane this hook stands in for. Supplied by the host in the hook payload; nil
@@ -47,30 +46,101 @@ local function pane_id()
   return M.pane_id
 end
 
---- Display width of a string. `#` counts bytes, which centres a path with any
---- non-ASCII in it a few columns off.
-local function width(text)
-  return utf8.len(text) or #text
-end
-
+-- History and widget state belong to this plugin instance only.
+local ui = zellij.ui
+local C = { entries = {}, scroll = 0, lines = 0, page = 0, follow = true, cols = 80 }
 local function display(text)
-  text = text:gsub("[%z\1-\8\11-\31\127]", "?")
   if not utf8.len(text) then
     text = text:gsub("[\128-\255]", function(byte) return ("\\x%02x"):format(byte:byte()) end)
   end
-  return text
+  return zellij.text.sanitize(text)
 end
-
-local function centered(text, cols)
-  text = display(text):gsub("\n", "?")
-  local padding = math.floor((cols - width(text)) / 2)
-  if padding < 1 then
-    return text
+local function literal(text)
+  text = display(tostring(text))
+  local fence = "```"
+  for ticks in text:gmatch("`+") do
+    if #ticks >= #fence then fence = string.rep("`", #ticks + 1) end
   end
-  return string.rep(" ", padding) .. text
+  return fence .. "\n" .. text .. "\n" .. fence
+end
+local function append(title, detail)
+  local heading = display(title):gsub("[\r\n]", " "):gsub("(%p)", "\\%1")
+  table.insert(C.entries, "## " .. heading .. (detail and detail ~= "" and "\n\n" .. literal(detail) or ""))
+  C.markdown = nil
+end
+local function controls(options, initial)
+  C.options, C.initial, C.form = options, initial, nil
+end
+local function form()
+  if C.form then return C.form end
+  local fields, keys, labels, size = {}, {}, {}, 0
+  for key in pairs(C.options or {}) do table.insert(keys, key) end
+  table.sort(keys)
+  -- Keep the default action stable, including when a resize changes the layout.
+  if C.options and C.options.Enter then
+    for i, key in ipairs(keys) do if key == "Enter" then table.remove(keys, i); break end end
+    table.insert(keys, 1, "Enter")
+  end
+  for _, key in ipairs(keys) do
+    local label = display(C.options[key])
+    table.insert(labels, label)
+    size = size + #label + 2
+  end
+  if C.initial ~= nil then
+    table.insert(fields, {kind="text_input", id="draft", label="", value=display(C.initial)})
+  end
+  C.compact = size > C.cols
+  C.keys = keys
+  if C.compact then
+    table.insert(fields, {kind="select", id="choice", label="", options=labels, max_visible_options=3})
+    table.insert(fields, {kind="button", id="activate", label="Choose"})
+  else
+    for i, key in ipairs(keys) do
+      table.insert(fields, {kind="button", id=key, label=labels[i]})
+    end
+  end
+  C.form = ui.form(fields, {enter_submits=C.initial ~= nil})
+  return C.form
+end
+local function scroll(event)
+  local delta
+  if event.name == "key" and (event.key == "PageDown" or event.key == "PageUp") then
+    delta = math.max(1, C.page - 1) * (event.key == "PageDown" and 1 or -1)
+  elseif event.name == "mouse" then
+    if event.value.ScrollUp then delta = -3
+    elseif event.value.ScrollDown then delta = 3 end
+  end
+  if not delta then return false end
+  local bottom = math.max(0, C.lines - C.page)
+  C.scroll = math.max(0, math.min(bottom, C.scroll + delta))
+  C.follow = C.scroll == bottom
+  return true
+end
+local function input(event)
+  local widget, action = form()
+  if event.name == "key" then action = widget:handle_key(event)
+  elseif event.name == "mouse" then action = widget:handle_mouse(event)
+  elseif event.name == "pasted_text" then action = widget:insert_pasted_text(display(event.value)) end
+  if not action then return nil end
+  if action.kind == "cancel" then return "cancel" end
+  if action.kind == "submit" and widget:focused_id() == "draft" then return "Enter" end
+  if action.kind == "button_pressed" then
+    return action.id == "activate" and C.keys[widget:value("choice")] or action.id
+  end
+end
+local function await_input()
+  form()
+  local pending, resolve = zellij.async.future()
+  C.resolve = resolve
+  local action = zellij.await(pending)
+  C.resolve = nil
+  return action
 end
 
 local function run(step, args)
+  M.syncing = true
+  controls({})
+  append("VM " .. step .. " running", table.concat(args, " "))
   zellij.run_command {
     command = args,
     env_variables = M.env_variables,
@@ -127,10 +197,13 @@ exit "$status"
 ]], "agent-exit", log, W.lock .. "/operation" }
   for _, arg in ipairs(argv) do table.insert(args, arg) end
   W.busy = true
+  controls({})
+  append("Operation running", zellij.json.encode(argv))
   local code, stdout, stderr = raw(args)
   W.busy = false
   W.diagnostic = stdout .. stderr .. "\nFull output: " .. log
   if #stdout >= 65536 then W.diagnostic = W.diagnostic .. "\n[display truncated at 64 KiB]" end
+  append("Operation finished (status " .. tostring(code) .. ")", W.diagnostic)
   return code, stdout
 end
 local function git(...)
@@ -145,32 +218,33 @@ local function must_git(...)
   return text:gsub("\n$", "")
 end
 local function choose(title, options, detail)
-  W.title, W.options, W.detail, W.offset = title, options, detail or "", 0
-  while true do
-    local event = zellij.await(zellij.async.event("key"))
-    event.workflow_handled = true
-    local key = event.key
-    if key == "Esc" or key == "q" then return nil end
-    if key == "Down" then W.offset = W.offset + 1
-    elseif key == "Up" then W.offset = math.max(0, W.offset - 1)
-    elseif key == "PageDown" then W.offset = W.offset + 15
-    elseif key == "PageUp" then W.offset = math.max(0, W.offset - 15)
-    elseif options[key] then return key end
-  end
+  options.cancel = "Leave step"
+  W.title, W.options, W.detail = title, options, detail or ""
+  local choices = {}
+  for _, label in pairs(options) do table.insert(choices, label) end
+  table.sort(choices)
+  append(title, W.detail .. (#choices > 0 and "\n\nAvailable actions: " .. table.concat(choices, "; ") .. "." or ""))
+  controls(options)
+  local key = await_input()
+  append("You", key == "cancel" and "Left this step." or options[key])
+  controls({})
+  return key ~= "cancel" and key or nil
 end
-local function edit(title, initial)
-  local text = initial or ""
-  W.title, W.options, W.offset = title, { Enter = "accept draft", Esc = "cancel" }, 0
+local function edit(title, initial, accept)
+  W.title, W.detail = title, initial or ""
+  append(title, W.detail .. (accept and "\n\nUse an existing local branch as the rebase and merge target. No fetch is performed." or
+    "\n\nAccept this draft to continue editing the workflow. Committing requires separate approval."))
+  controls({Enter=accept or "Accept draft", cancel="Cancel"}, initial or "")
   while true do
-    W.detail = text .. "\n\nType a message. Enter accepts this draft; committing needs separate approval."
-    local event = zellij.await(zellij.async.event("key"))
-    event.workflow_handled = true
-    if event.key == "Esc" then return nil
-    elseif event.key == "Enter" then if text:match("%S") then return text end
-    elseif event.key == "Backspace" then
-      local offset = utf8.offset(text, -1)
-      if offset then text = text:sub(1, offset - 1) end
-    elseif #event.key == 1 or utf8.len(event.key) == 1 then text = text .. event.key end
+    local key = await_input()
+    if key == "cancel" then append("You", "Cancelled editing."); controls({}); return nil end
+    local text = form():value("draft")
+    if key == "Enter" and text:match("%S") then
+      append("You accepted", text)
+      controls({})
+      return text
+    end
+    form():set_status("Enter a non-empty value.")
   end
 end
 local function config()
@@ -204,7 +278,7 @@ end
 local function default_branch()
   if not config() then error(W.config_error, 0) end
   local branch = W.config.default_branch or W.manual_default or inferred_default_branch()
-  if not branch then branch = edit("Local default branch (no fetch)", ""); W.manual_default = branch end
+  if not branch then branch = edit("Local default branch (no fetch)", "", "Use branch"); W.manual_default = branch end
   if not branch then return nil end
   local code = git_query("check-ref-format", "--branch", branch)
   if code ~= 0 or branch:sub(1, 1) == "-" then error("Invalid default branch: " .. branch, 0) end
@@ -256,8 +330,11 @@ local function helper(role, prompt)
   shell('printf "%s\\n" "$2" > "$1"', W.lock .. "/helper", tostring(id))
   W.title, W.detail, W.options = "Waiting for " .. role .. " agent", "Helper pane: " .. tostring(id), {}
   W.busy = true
+  controls({})
+  append(W.title, W.detail)
   local result = zellij.await(exited)
   W.busy = false
+  append(W.title .. " finished", "Status: " .. tostring(result.exit_code) .. (result.closed and " (pane closed)" or ""))
   raw { "rm", "-f", "--", W.lock .. "/helper" }
   return not result.closed, result.exit_code
 end
@@ -285,7 +362,7 @@ git ls-files --others --exclude-standard -z | while IFS= read -r -d '' path; do
 done
 ]], "agent-exit-review", W.root, W.default or "" }
   if code ~= 0 then error(W.diagnostic, 0) end
-  return choose("Review diff — Up/Down/PgUp/PgDn scroll", { Enter = "return" }, text ..
+  return choose("Review diff — PgUp/PgDn or mouse wheel to scroll", { Enter = "return" }, text ..
     "\nFull diff: " .. W.log .. (#text >= 65536 and "\n[display truncated at 64 KiB]" or ""))
 end
 local function commit()
@@ -300,6 +377,7 @@ local function commit()
     return "review"
   end
   if rebase_in_progress() then return "conflict" end
+  append("Commit approved", "Staging all non-ignored changes and committing the accepted message.")
   local code = git("add", "-A", "--", ".")
   if code == 0 then code = git("commit", "-m", draft, "--") end
   if code ~= 0 then W.notice = W.diagnostic; return "review" end
@@ -311,6 +389,7 @@ local function rebase()
   if not base then return nil end
   if not clean() then W.notice = "Commit all changes before rebasing."; return "review" end
   if W.branch == base then W.notice = "The agent checkout is already on the default branch; use a topic branch."; return "review" end
+  append("Rebase running", "Replaying " .. W.branch .. " on local branch " .. base .. ".")
   local code = git("rebase", "refs/heads/" .. base)
   local diagnostic = W.diagnostic
   W.notice = code ~= 0 and diagnostic or nil
@@ -369,9 +448,14 @@ trap 'rm -f -- "$operation"' EXIT
   local id = type(pane) == "table" and pane.Terminal or pane
   shell('printf "%s\\n" "$2" > "$1"', W.lock .. "/helper", tostring(id))
   W.title, W.detail, W.options, W.busy = "CI running", "Full log: " .. log, {}, true
+  controls({})
+  append(W.title, W.detail)
   local result = zellij.await(exited)
   W.busy = false
+  append(W.title .. " finished", "Status: " .. tostring(result.exit_code) .. (result.closed and " (pane closed)" or ""))
   raw { "rm", "-f", "--", W.lock .. "/helper" }
+  local _, log_output = raw { "cat", "--", log }
+  append("CI output", log_output .. "\nFull log: " .. log .. (#log_output >= 65536 and "\n[display truncated at 64 KiB]" or ""))
   if not result.closed and result.exit_code == 0 then W.tested = tested; return "merge" end
   W.tested = nil
   local details = "Command: " .. zellij.json.encode(argv) .. "\nStatus: " .. tostring(result.exit_code) ..
@@ -431,11 +515,12 @@ git -C "$target" merge --ff-only -- "$head"
   end
   if code ~= 0 then W.notice = diagnostic; W.tested = nil; return "review" end
   W.merged = tested.head
+  append("Merged locally", tested.head .. "\nDefault branch: " .. W.default)
   return "cleanup"
 end
 local function cleanup()
   local key = choose("Merged locally. Cleanup is optional.", { k = "keep both", w = "remove worktree", d = "delete branch", b = "remove both" }, W.branch .. "\n" .. W.root)
-  if not key or key == "k" then return nil end
+  if not key or key == "k" then append("Cleanup skipped", "Kept the branch and worktree."); return nil end
   if not clean() or must_git("rev-parse", "HEAD") ~= W.merged then error("Checkout changed after merge; cleanup refused.", 0) end
   local trees = worktrees()
   if not trees[1] or trees[1].path == W.root then error("Refusing cleanup of the primary checkout.", 0) end
@@ -455,6 +540,7 @@ local function cleanup()
   if key == "d" or key == "b" then
     if command { "git", "-C", trees[1].path, "branch", "-d", "--", W.branch } ~= 0 then error(W.diagnostic, 0) end
   end
+  append("Cleanup complete", W.options[key])
 end
 local function acquire()
   local ids = zellij.get_plugin_ids()
@@ -495,6 +581,7 @@ rmdir -- "$lock"
 mkdir -- "$lock"
 ]], W.lock, (owner:gsub("\n$", "")))
     if recovered ~= 0 then error("Ownership changed during recovery. Reopen the workflow.", 0) end
+    append("Recovery complete", "Repository inspection will establish the current state.")
   end
   local owner = ids.zellij_pid .. " " .. ids.plugin_id .. " " .. W.run
   if shell('printf "%s\\n" "$2" > "$1"', W.lock .. "/owner", owner) ~= 0 then error("Cannot write workflow owner", 0) end
@@ -516,6 +603,7 @@ local function workflow()
   local code, root, err = raw { "git", "-C", M.worktree or M.cwd, "rev-parse", "--show-toplevel" }
   if code ~= 0 then error("No usable local repository.\n" .. err, 0) end
   W.root = root:gsub("\n$", "")
+  append("Repository found", W.root)
   local gitdir
   code, gitdir = raw { "git", "-C", W.root, "rev-parse", "--absolute-git-dir" }
   if code ~= 0 then error("Cannot resolve Git worktree metadata.", 0) end
@@ -574,33 +662,20 @@ end
 function W.start()
   if W.active or not (M.worktree or M.cwd) then return end
   W.active = true
-  W.title, W.detail, W.options, W.offset = "Inspecting repository...", "", {}, 0
+  W.title, W.detail, W.options = "Inspecting repository...", "", {}
+  controls({})
+  append(W.title, "Checking the local checkout and workflow ownership before reviewing changes.")
   zellij.task(function()
     local ok, err = pcall(workflow)
     if not ok then
       if W.root then choose("Agent exit workflow unavailable", {}, tostring(err) .. "\nEsc returns to restart/close controls.")
-      else M.status = tostring(err) end
+      else M.status = tostring(err); append("Workflow unavailable", M.status) end
       release()
     end
     W.active = false
+    append("Workflow finished", "Create another agent in the same directory, or close the held pane.")
+    C.idle = nil
   end)
-end
-function W.render(rows, cols)
-  local lines = { W.title or "Inspecting repository...", "" }
-  local content = {}
-  -- Never interpret terminal control bytes from Git, filenames, or generated messages.
-  local detail = display(W.detail or "")
-  for line in (detail .. "\n"):gmatch("(.-)\n") do table.insert(content, line) end
-  W.offset = math.min(W.offset or 0, math.max(0, #content - math.max(1, rows - 5)))
-  for i = W.offset + 1, math.min(#content, W.offset + math.max(1, rows - 5)) do
-    table.insert(lines, zellij.text.truncate(content[i], cols))
-  end
-  local controls = {}
-  for key, label in pairs(not W.busy and W.options or {}) do table.insert(controls, key .. ": " .. label) end
-  table.sort(controls)
-  table.insert(lines, table.concat(controls, "  "))
-  table.insert(lines, W.busy and "Operation running. Close this plugin to leave; ownership stays until it finishes." or "Esc/q: leave workflow   Up/Down: scroll")
-  return table.concat(lines, "\n")
 end
 
 function M.load(config)
@@ -622,7 +697,8 @@ function M.load(config)
   if nonempty(config.agent_zellij_config_dir) then
     M.env_variables.ZELLIJ_CONFIG_DIR = config.agent_zellij_config_dir
   end
-  zellij.subscribe { "key", "run_command_result", "command_pane_exited", "pane_closed" }
+  zellij.subscribe { "key", "mouse", "pasted_text", "run_command_result", "command_pane_exited", "pane_closed" }
+  append(QUESTION, "Directory: " .. (M.cwd or (M.worktree and M.worktree .. " (host worktree)") or "unavailable"))
   if config.agent_workflow_owner and config.agent_workflow_run and config.agent_workflow_role then
     M.helper_owner = tonumber(config.agent_workflow_owner)
     M.status = "Helper finished. Return to workflow plugin " .. config.agent_workflow_owner .. "."
@@ -631,10 +707,12 @@ function M.load(config)
       message_name = "agent_exit_helper_finished", message_payload = config.agent_workflow_run,
       message_args = { role = config.agent_workflow_role, pane = tostring(M.pane_id) },
     }
+    append("Helper finished", M.status)
     return
   end
   if M.vm and M.worktree and M.session then
     M.status = "Checking VM worktree for changes..."
+    append(M.status)
     run("check", { M.zellij, "firecracker", "changes", M.vm, "--session", M.session })
   elseif config.agent_firecracker_vm ~= nil or config.agent_firecracker_worktree ~= nil then
     M.status = "VM changes not checked: VM or worktree details are unavailable."
@@ -645,16 +723,18 @@ function M.load(config)
   else
     M.status = "No working directory was reported; repository workflow unavailable."
   end
+  if M.status and not M.syncing then append("Repository workflow", M.status) end
 end
 
-zellij.on("key", function(event)
-  if event.workflow_handled or W.active then return true end
-  if event.key == "Enter" and M.helper_owner then
+local function idle_action(key)
+  append("You", (C.options or {})[key] or key)
+  C.idle = nil
+  if key == "Enter" and M.helper_owner then
     zellij.focus_plugin_pane(M.helper_owner, false, false)
     return true
-  elseif event.key == "Enter" and M.syncing then
+  elseif key == "Enter" and M.syncing then
     return true
-  elseif event.key == "Enter" then
+  elseif key == "Enter" then
     -- The pane replays the `RunCommand` it already holds, so the hook does not have
     -- to know how the agent was started. `rerun_terminal_pane_with_id` looks in
     -- `suppressed_panes`, so this reaches the pane hiding behind us.
@@ -662,7 +742,7 @@ zellij.on("key", function(event)
       zellij.rerun_command_pane(pane_id())
     end
     zellij.close_self()
-  elseif event.key == "Esc" then
+  elseif key == "Esc" then
     -- Order matters. Closing the suppressed pane first takes the "pane is itself
     -- suppressed, it just goes" branch in `Tab::close_pane`; after that this pane no
     -- longer stands in for anything and closes without resurrecting it.
@@ -670,25 +750,27 @@ zellij.on("key", function(event)
       zellij.close_terminal_pane(pane_id())
     end
     zellij.close_self()
-  elseif event.key == "r" and M.sync_warnings and not M.syncing then
+  elseif key == "r" and M.sync_warnings and not M.syncing then
     W.active = true
     zellij.task(function()
       local answer = choose("Resolve sync conflicts before continuing", { y = "I resolved these conflicts", Enter = "back" }, M.sync_warnings)
       W.active = false
+      C.idle = nil
       if answer == "y" then
         M.sync_warnings = nil
         M.syncing = true
+        append("Sync conflicts resolved", "Checking the VM again before continuing.")
         run("recheck", { M.zellij, "firecracker", "changes", M.vm, "--session", M.session })
       end
     end)
     return true
-  elseif event.key == "s" and M.changes and M.changes > 0 and not M.syncing then
+  elseif key == "s" and M.changes and M.changes > 0 and not M.syncing then
     M.syncing = true
     M.status = "Syncing VM worktree..."
     run("sync", { M.zellij, "firecracker", "sync", M.vm, "--session", M.session })
     return true
   end
-end)
+end
 
 zellij.on("run_command_result", function(event)
   local exit_code, stdout, stderr, context = table.unpack(event.value)
@@ -714,9 +796,13 @@ zellij.on("run_command_result", function(event)
       M.status = "VM changes could not be checked. See plugin log for details."
       log_failure(step, exit_code, stdout, stderr)
     end
-    if step == "recheck" then M.syncing = false end
+    M.syncing = false
+    append("VM " .. step .. " finished", M.status or (tostring(M.changes) .. " changed paths in the VM."))
+    C.idle = nil
     if M.changes == 0 then
-      if M.sync_warnings then M.status = "Sync conflicts require resolution. Press R to review and confirm."
+      if M.sync_warnings then
+        M.status = "Sync conflicts require resolution. Review and confirm before continuing."
+        append("Sync conflicts", M.status .. "\n" .. M.sync_warnings)
       else W.start() end
     end
     return true
@@ -725,37 +811,75 @@ zellij.on("run_command_result", function(event)
       local warnings = output(stderr):gsub("%s*\n%s*", " ")
       if warnings ~= "" then M.sync_warnings = (M.sync_warnings or "") .. "\n" .. output(stderr) end
       M.status = warnings == "" and "VM worktree synced." or "VM worktree synced. " .. warnings
+      append("VM sync finished", M.status)
       run("recheck", { M.zellij, "firecracker", "changes", M.vm, "--session", M.session })
     else
       M.syncing = false
       M.status = "VM worktree could not be synced. See plugin log for details."
       log_failure(step, exit_code, stdout, stderr)
+      append("VM sync failed", M.status)
+      C.idle = nil
     end
     return true
   end
 end)
 
+local function idle_controls()
+  if W.active or M.syncing or C.resolve then return end
+  local signature = tostring(M.changes) .. tostring(M.sync_warnings) .. tostring(M.helper_owner)
+  if C.idle == signature then return end
+  C.idle = signature
+  local options = {Enter=M.helper_owner and "Return to workflow" or "Create another agent", Esc="Close pane"}
+  if M.changes and M.changes > 0 then options.s = "Sync " .. M.changes .. " VM paths" end
+  if M.sync_warnings then options.r = "Resolve sync conflicts" end
+  controls(options)
+end
+function M.update(event)
+  if event.name ~= "key" and event.name ~= "mouse" and event.name ~= "pasted_text" then return false end
+  if scroll(event) then return true end
+  if W.busy or M.syncing or (W.active and not C.resolve) then return true end
+  idle_controls()
+  local key = input(event)
+  if not key then return true end
+  -- Resolve once and return. A dismissal must never reach the next form or held pane.
+  if C.resolve then C.resolve(key); return true end
+  if key == "cancel" then key = "Esc" end
+  idle_action(key)
+  return true
+end
 function M.render(rows, cols)
-  if W.active then return W.render(rows, cols) end
-  local middle = math.floor(rows / 2)
-  local lines = {}
-  for _ = 1, math.max(middle - 2, 0) do
-    table.insert(lines, "")
+  idle_controls()
+  if C.cols ~= cols then
+    if C.form and C.initial ~= nil then C.initial = C.form:value("draft") end
+    local focused = C.form and C.form:focused_id()
+    local selected = C.compact and C.form and C.keys[C.form:value("choice")] or focused
+    C.cols, C.form = cols, nil
+    local widget = form()
+    if C.compact then
+      for i, key in ipairs(C.keys) do if key == selected then widget:set_value("choice", i) end end
+      widget:focus(focused == "draft" and "draft" or "choice")
+    elseif selected then widget:focus(focused == "draft" and "draft" or selected) end
   end
-  local question = M.changes and M.changes > 0 and "Agent exited. What next?" or QUESTION
-  table.insert(lines, "\27[1m" .. centered(question, cols) .. "\27[0m")
-  table.insert(lines, "")
-  table.insert(lines, centered("Directory: " .. (M.cwd or
-    (M.worktree and M.worktree .. " (host worktree)") or "unavailable"), cols))
-  table.insert(lines, centered(zellij.text.truncate(M.status or "", cols), cols))
-  table.insert(lines, "")
-  local controls = M.helper_owner and "<ENTER> return to workflow  <ESC> close helper" or CONTROLS
-  if M.changes and M.changes > 0 then
-    controls = ("<ENTER> restart  <S> sync %d  <ESC> close pane"):format(M.changes)
+  local widget = form()
+  local help_rows = rows > 1 and 1 or 0
+  local wanted = (C.initial ~= nil and 1 or 0) + (C.compact and 2 or 1)
+  local footer_rows = math.min(wanted, math.max(0, rows - help_rows))
+  C.page = math.max(0, rows - footer_rows - help_rows)
+  if not C.markdown then C.markdown = ui.markdown(table.concat(C.entries, "\n\n")) end
+  local area = {width=cols, height=C.page, scroll=C.scroll}
+  local content
+  content, C.lines = C.markdown:render(area)
+  local bottom = math.max(0, C.lines - C.page)
+  local offset = C.follow and bottom or math.min(C.scroll, bottom)
+  if offset ~= C.scroll then C.scroll, area.scroll = offset, offset; content = C.markdown:render(area) end
+  C.follow = C.scroll == bottom
+  content = content .. widget:render{x=0, y=C.page, width=cols, height=footer_rows}
+  if help_rows > 0 then
+    local help = (W.busy or M.syncing or (W.active and not C.resolve)) and "Operation running | PgUp/PgDn: history" or
+      "Tab/Shift-Tab: focus  Enter: choose  Esc: back  PgUp/PgDn/wheel: history"
+    content = content .. ui.text(help):render{x=0, y=rows-1, width=cols, height=1}
   end
-  if M.sync_warnings then controls = controls .. "  <R> resolve sync conflicts" end
-  table.insert(lines, "\27[1m" .. centered(controls, cols) .. "\27[0m")
-  return table.concat(lines, "\n")
+  return content
 end
 
 return M

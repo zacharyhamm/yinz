@@ -797,9 +797,7 @@ fn agent_exit_payload() -> BTreeMap<String, String> {
 #[test]
 #[serial(plugin_tests)]
 pub fn the_agent_exit_hook_renders_the_screen_it_replaced() {
-    // The text this asserts used to be produced by `render_first_run_banner` in the terminal
-    // emulator. It is the same text because the point of moving it was to make it editable, not
-    // to change what an agent exiting looks like.
+    // The hook now renders positioned UI components, whose text is serialized as byte codes.
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, screen_receiver, teardown) =
@@ -842,16 +840,25 @@ pub fn the_agent_exit_hook_renders_the_screen_it_replaced() {
     teardown();
 
     let rendered = rendered_output(&received_screen_instructions.lock()).join("\n");
+    let contains = |text: &str| {
+        let codes = text
+            .as_bytes()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        rendered.contains(&codes)
+    };
     assert!(
-        rendered.contains("Agent exited. Create another agent in the same directory?"),
+        contains("Agent exited. Create another agent in the same directory?"),
         "got: {rendered}"
     );
     assert!(
-        rendered.contains("Directory: /work/.worktrees/topic"),
+        contains("Directory: /work/.worktrees/topic"),
         "the payload's cwd is shown, got: {rendered}"
     );
-    assert!(rendered.contains("create another agent"), "got: {rendered}");
-    assert!(rendered.contains("close pane"), "got: {rendered}");
+    assert!(contains("Create another agent"), "got: {rendered}");
+    assert!(contains("Close pane"), "got: {rendered}");
 }
 
 /// The `AddPlugin` a hook produces, as (plugin id, pane it replaces).
