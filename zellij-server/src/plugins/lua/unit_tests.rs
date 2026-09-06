@@ -6434,6 +6434,108 @@ fn hocus_complete_addresses_daemon_and_checks_reply_source() {
 }
 
 #[test]
+fn hocus_complete_encodes_lists_without_changing_callers_tables() {
+    for opts in [
+        "{ messages = {}, tools = {} }",
+        r#"{ messages = { { role = "assistant", tool_calls = {} }, { role = "user", content = "why?" } }, tools = {} }"#,
+        r#"{ messages = {}, tools = { { type = "function", ["function"] = { name = "count", parameters = { type = "object", properties = {} } } } } }"#,
+        r#"{ messages = { { role = "user", content = "why?" } } }"#,
+        "{}",
+    ] {
+        let source = format!(
+            r#"
+            local zellij = require("zellij")
+            {COMPLETION_DISCOVERY}
+            zellij.message_to_plugin = function(args) __payload = args.message_payload end
+            return {{ load = function()
+              local opts = {opts}
+              local before = zellij.json.encode(opts)
+              local messages, tools = opts.messages, opts.tools
+              local message = messages and messages[1]
+              local calls = message and message.tool_calls
+              zellij.hocus.complete(opts)
+              assert(zellij.json.encode(opts) == before)
+              assert(opts.messages == messages and opts.tools == tools)
+              assert(not message or (messages[1] == message and message.tool_calls == calls))
+            end }}
+            "#
+        );
+        let mut plugin = load_permitted(&source).unwrap();
+        plugin.load(&BTreeMap::new()).unwrap();
+        let payload: String = plugin.lua.globals().get("__payload").unwrap();
+        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        if opts == "{}" {
+            assert!(value.get("messages").is_none());
+            assert!(value.get("tools").is_none());
+            continue;
+        }
+        let request: hocus_proto::wire::CompletionRequest =
+            serde_json::from_str(&payload).expect("Lua lists deserialize as Rust vectors");
+        assert!(value["messages"].is_array());
+        if let Some(tools) = value.get("tools") {
+            assert!(tools.is_array());
+        }
+        if let Some(tool) = request.tools.first() {
+            assert!(tool["function"]["parameters"].is_object());
+            assert!(tool["function"]["parameters"]["properties"].is_object());
+        }
+        for message in value["messages"].as_array().unwrap() {
+            if let Some(calls) = message.get("tool_calls") {
+                assert_eq!(calls, &serde_json::json!([]));
+            }
+        }
+    }
+}
+
+#[test]
+fn hocus_complete_checks_encoded_bytes_before_sending_or_scheduling() {
+    for (bytes, utf8) in [(64_000, false), (64_001, false), (64_001, true)] {
+        let source = format!(
+            r#"
+            local zellij = require("zellij")
+            {COMPLETION_DISCOVERY}
+            local encode = zellij.json.encode
+            local encodings = 0
+            zellij.json.encode = function(payload)
+              encodings = encodings + 1
+              local room = {bytes} - #encode(payload)
+              payload.messages[1].content = {utf8} and
+                (string.rep("é", math.floor(room / 2)) .. string.rep("x", room % 2)) or string.rep("x", room)
+              __payload = encode(payload)
+              assert(#__payload == {bytes})
+              return __payload
+            end
+            local sent = false
+            local scheduled = false
+            zellij.set_timeout = function() scheduled = true end
+            zellij.message_to_plugin = function(args)
+              assert(args.message_payload == __payload)
+              sent = true
+            end
+            return {{ load = function()
+              local future = zellij.hocus.complete {{ messages = {{ {{ role = "user", content = "" }} }} }}
+              assert(encodings == 1)
+              assert(sent == ({bytes} <= 64000))
+              assert(scheduled == ({bytes} <= 64000))
+              assert(future.done == ({bytes} > 64000))
+              if future.done then __error = future.value.error end
+            end }}
+            "#
+        );
+        let mut plugin = load_permitted(&source).unwrap();
+        plugin.load(&BTreeMap::new()).unwrap();
+        if bytes > 64_000 {
+            let payload: String = plugin.lua.globals().get("__payload").unwrap();
+            let error: String = plugin.lua.globals().get("__error").unwrap();
+            assert_eq!(
+                error,
+                hocus_proto::completion::within_size(&payload).unwrap_err()
+            );
+        }
+    }
+}
+
+#[test]
 fn hocus_complete_gives_up_when_nothing_answers() {
     let source = format!(
         r#"

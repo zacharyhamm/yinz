@@ -3004,10 +3004,16 @@ impl State {
         let request = match serde_json::from_str::<wire::CompletionRequest>(payload) {
             Ok(request) => request,
             Err(error) => {
+                let value = serde_json::from_str::<serde_json::Value>(payload).ok();
+                let request_id = value
+                    .as_ref()
+                    .and_then(|value| value.get("request_id"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
                 answer(
                     source,
                     &completion::error_reply(
-                        "",
+                        request_id,
                         &format!("that is not a completion request: {error}"),
                     ),
                 );
@@ -9264,21 +9270,33 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_payload_is_answered_rather_than_ignored() {
-        let mut state = State::default();
-        let out = complete_raw(
-            &mut state,
-            &PipeSource::Plugin(PluginId::new(9)),
-            "{not json",
-            Some(&endpoint()),
-            true,
-            None,
-        );
+    fn invalid_completion_payloads_are_answered_with_any_recoverable_request_id() {
+        for (payload, request_id) in [
+            ("{not json", ""),
+            (r#"{"request_id":"caller-9","messages":{}}"#, "caller-9"),
+            (r#"{"request_id":"caller-9","messages":[]"#, ""),
+            (r#"{"messages":{}}"#, ""),
+            (r#"{"request_id":9,"messages":{}}"#, ""),
+            (r#"{"request_id":null,"messages":{}}"#, ""),
+        ] {
+            let mut state = State::default();
+            let out = complete_raw(
+                &mut state,
+                &PipeSource::Plugin(PluginId::new(9)),
+                payload,
+                Some(&endpoint()),
+                true,
+                None,
+            );
 
-        assert!(!out.sent);
-        assert_eq!(out.replies.len(), 1);
-        assert!(out.replies[0].error.contains("not a completion request"));
-        assert_eq!(out.replies[0].request_id, "");
+            assert!(!out.sent);
+            assert!(out.requests.is_empty());
+            assert_eq!(out.replies.len(), 1);
+            assert!(out.replies[0].error.contains("not a completion request"));
+            assert_eq!(out.replies[0].request_id, request_id);
+            assert!(state.completions.is_empty());
+            assert_eq!(state.completion_seq, 0);
+        }
     }
 
     #[test]
