@@ -71,6 +71,7 @@ struct State {
     /// The width of the last frame, which is what says whether a hover column is on the bar at
     /// all - see `pointer_left_the_bar`.
     last_render_cols: usize,
+    last_render_rows: usize,
     /// When the `set_timeout` believed to be outstanding will fire, if there is one. The host
     /// has no way to cancel a timer - each `set_timeout` spawns a task that will fire once, no
     /// matter what happens here - so the plugin has to stop asking for ones it already has.
@@ -314,6 +315,7 @@ impl ZellijPlugin for State {
                 let agent_counts = AgentCounts::from_manifest(&manifest);
                 if self.agent_counts != agent_counts {
                     self.agent_counts = agent_counts;
+                    self.arm_tick(now_ms());
                     should_render = true;
                 }
             },
@@ -333,9 +335,8 @@ impl ZellijPlugin for State {
                 }
             },
             Event::Timer(_) => {
-                // The tick does two jobs, and either can want a frame: it advances the clock,
-                // and it is what takes the hint back down. Both are re-armed here because
-                // `set_timeout` is one-shot.
+                // The tick advances the clock and agent animation, and expires hints.
+                // All are re-armed here because `set_timeout` is one-shot.
                 let now = now_ms();
                 // Only the tick that was actually waited for clears the record. A timer armed
                 // earlier than one already outstanding leaves a straggler behind it, and
@@ -351,7 +352,8 @@ impl ZellijPlugin for State {
                     self.hover_hint_until_ms = 0;
                 }
                 self.arm_tick(now);
-                should_render = clock_changed || hint_expired;
+                should_render =
+                    clock_changed || hint_expired || self.animation_interval_ms().is_some();
             },
             Event::CopyToClipboard(copy_destination) => {
                 match self.text_copy_destination {
@@ -412,6 +414,10 @@ impl ZellijPlugin for State {
         // Kept so a hover can be told from the leave the server sends when the pointer moves
         // off the bar, which arrives as a column past the end of it.
         self.last_render_cols = cols;
+        if self.last_render_rows != rows {
+            self.last_render_rows = rows;
+            self.arm_tick(now_ms());
+        }
         let supports_arrow_fonts = !self.mode_info.capabilities.arrow_fonts;
         let separator = if supports_arrow_fonts {
             ARROW_SEPARATOR
@@ -441,6 +447,7 @@ impl ZellijPlugin for State {
                     hint_revealed: self.hint_revealed(),
                     agent_counts: self.agent_counts,
                     clock: self.clock.clone(),
+                    now_ms: now_ms(),
                 },
             );
             self.new_pane_ribbon_range = new_pane_ribbon_range;
@@ -549,16 +556,17 @@ fn next_alt_hint_until(current: i64, now: i64, alt_is_down: bool, is_live: bool)
     }
 }
 
-/// When the next tick wants to land: the next minute boundary, or a nearer hint expiry.
+/// The next animation or minute boundary, or a nearer hint expiry.
 ///
 /// Aimed at the boundary rather than set to a flat 60s so the displayed minute turns over when
 /// the real one does instead of drifting away from it by however long the plugin took to get
 /// scheduled; capped so a hint waiting to expire is not left up until the next minute.
-fn next_tick_at(now: i64, hint_until_ms: i64) -> i64 {
-    let next_minute = now + (60_000 - now.rem_euclid(60_000));
+fn next_tick_at(now: i64, hint_until_ms: i64, animation_interval_ms: Option<i64>) -> i64 {
+    let interval = animation_interval_ms.unwrap_or(60_000);
+    let next_boundary = now + (interval - now.rem_euclid(interval));
     match hint_until_ms > now {
-        true => next_minute.min(hint_until_ms),
-        false => next_minute,
+        true => next_boundary.min(hint_until_ms),
+        false => next_boundary,
     }
 }
 
@@ -634,15 +642,23 @@ impl State {
         changed
     }
 
+    fn animation_interval_ms(&self) -> Option<i64> {
+        if !self.classic_ui && self.last_render_rows == 1 {
+            self.agent_counts.animation_interval_ms()
+        } else {
+            None
+        }
+    }
+
     /// Ask the host for the next tick, unless one already outstanding will do.
     ///
     /// `set_timeout` cannot be cancelled, so every call that is not needed is a timer firing
     /// for the rest of the session: this runs on every reveal-state change, and arming
     /// unconditionally meant every Alt chord left one more behind it.
     fn arm_tick(&mut self, now: i64) {
-        let at = next_tick_at(now, self.hint_until_ms());
+        let at = next_tick_at(now, self.hint_until_ms(), self.animation_interval_ms());
         if should_arm_tick(self.pending_tick_at_ms, at) {
-            set_timeout(((at - now) as f64 / 1000.0).max(0.1));
+            set_timeout(((at - now) as f64 / 1000.0).max(0.001));
             self.pending_tick_at_ms = Some(at);
         }
     }
@@ -1397,12 +1413,57 @@ pub mod tests {
     #[test]
     fn the_tick_lands_on_the_next_minute_unless_a_hint_expires_first() {
         // No hint: the next boundary, however far into the minute we are.
-        assert_eq!(next_tick_at(MINUTE + 100, 0), 2 * MINUTE);
+        assert_eq!(next_tick_at(MINUTE + 100, 0, None), 2 * MINUTE);
         // A hint expiring inside the minute pulls the tick in; one expiring past it does not.
-        assert_eq!(next_tick_at(MINUTE + 100, MINUTE + 3000), MINUTE + 3000);
-        assert_eq!(next_tick_at(MINUTE + 100, 5 * MINUTE), 2 * MINUTE);
+        assert_eq!(
+            next_tick_at(MINUTE + 100, MINUTE + 3000, None),
+            MINUTE + 3000
+        );
+        assert_eq!(next_tick_at(MINUTE + 100, 5 * MINUTE, None), 2 * MINUTE);
         // An already-expired deadline is not in the future and cannot pull anything in.
-        assert_eq!(next_tick_at(MINUTE + 100, MINUTE), 2 * MINUTE);
+        assert_eq!(next_tick_at(MINUTE + 100, MINUTE, None), 2 * MINUTE);
+    }
+
+    #[test]
+    fn agent_deadlines_follow_counts_and_leave_existing_ticks_alone() {
+        let mut state = State {
+            last_render_rows: 1,
+            ..State::default()
+        };
+        state.agent_counts = AgentCounts {
+            busy: 2,
+            waiting: 1,
+            idle: 3,
+        };
+        assert_eq!(state.animation_interval_ms(), Some(125));
+        let busy = next_tick_at(MINUTE + 100, 0, state.animation_interval_ms());
+        assert_eq!(busy, MINUTE + 125);
+        assert!(should_arm_tick(Some(2 * MINUTE), busy));
+        assert!(!should_arm_tick(Some(busy), busy));
+        // Both Alt and hover use this same deadline; hints do not stop animation.
+        assert_eq!(
+            next_tick_at(MINUTE + 100, MINUTE + 110, Some(125)),
+            MINUTE + 110
+        );
+        assert_eq!(next_tick_at(MINUTE + 100, MINUTE + 3000, Some(125)), busy);
+        assert_eq!(next_tick_at(MINUTE + 110, MINUTE + 110, Some(125)), busy);
+        state.agent_counts.busy = 0;
+        assert_eq!(state.animation_interval_ms(), Some(500));
+        let waiting = next_tick_at(MINUTE + 100, 0, state.animation_interval_ms());
+        assert_eq!(waiting, MINUTE + 500);
+        assert!(!should_arm_tick(Some(busy), waiting));
+        state.agent_counts.waiting = 0;
+        assert_eq!(state.animation_interval_ms(), None);
+        let clock = next_tick_at(MINUTE + 500, 0, state.animation_interval_ms());
+        assert_eq!(clock, 2 * MINUTE);
+        assert!(!should_arm_tick(Some(waiting), clock));
+        assert!(should_arm_tick(None, clock));
+        state.agent_counts.busy = 1;
+        state.classic_ui = true;
+        assert_eq!(state.animation_interval_ms(), None);
+        state.classic_ui = false;
+        state.last_render_rows = 2;
+        assert_eq!(state.animation_interval_ms(), None);
     }
 
     #[test]
@@ -1439,7 +1500,7 @@ pub mod tests {
         for chord in 0..100 {
             let now = MINUTE + chord * 10;
             hint_until = next_alt_hint_until(hint_until, now, true, false);
-            let at = next_tick_at(now, hint_until);
+            let at = next_tick_at(now, hint_until, None);
             if should_arm_tick(pending, at) {
                 pending = Some(at);
                 armed += 1;

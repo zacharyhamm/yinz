@@ -58,6 +58,16 @@ impl AgentCounts {
         counts
     }
 
+    pub fn animation_interval_ms(&self) -> Option<i64> {
+        if self.busy > 0 {
+            Some(125)
+        } else if self.waiting > 0 {
+            Some(500)
+        } else {
+            None
+        }
+    }
+
     fn is_empty(&self) -> bool {
         self.busy == 0 && self.waiting == 0 && self.idle == 0
     }
@@ -112,11 +122,12 @@ impl Segment {
 /// `arrow_fonts` in [`PluginCapabilities`] means the host was told not to expect a font with
 /// anything exotic in it, which is the same flag the superkey prefix already branches on. A
 /// braille cell and a lozenge are exactly the kind of thing it is warning about.
-fn state_marks(arrow_fonts: bool) -> (&'static str, &'static str, &'static str) {
+fn state_marks(arrow_fonts: bool, now_ms: i64) -> (&'static str, &'static str, &'static str) {
+    let frame = now_ms.div_euclid(125).rem_euclid(8) as usize;
     if arrow_fonts {
-        ("b", "w", "i")
+        (["|", "/", "-", "\\"][frame % 4], "w", "i")
     } else {
-        ("\u{28fe}", "\u{25c6}", "\u{00b7}")
+        (["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"][frame], "◆", "·")
     }
 }
 
@@ -124,12 +135,17 @@ fn state_marks(arrow_fonts: bool) -> (&'static str, &'static str, &'static str) 
 ///
 /// `with_idle` drops the idle count, which is the first thing to go when the line is tight:
 /// idle agents are the ones not asking for anything.
-fn agent_segments(counts: &AgentCounts, arrow_fonts: bool, with_idle: bool) -> Vec<Segment> {
+fn agent_segments(
+    counts: &AgentCounts,
+    arrow_fonts: bool,
+    with_idle: bool,
+    now_ms: i64,
+) -> Vec<Segment> {
     if counts.is_empty() {
         return vec![];
     }
-    let (busy, waiting, idle) = state_marks(arrow_fonts);
-    // In the simplified UI the mark follows the number (`2b`), because a bare letter in front
+    let (busy, waiting, idle) = state_marks(arrow_fonts, now_ms);
+    // In the simplified UI the mark follows the number (`2|`), because a bare letter in front
     // of a digit reads as a word; with the glyphs it leads, because that is what you scan for.
     let mark = |glyph: &str, count: usize| match arrow_fonts {
         true => format!("{count}{glyph}"),
@@ -138,7 +154,12 @@ fn agent_segments(counts: &AgentCounts, arrow_fonts: bool, with_idle: bool) -> V
     let mut segments = vec![];
     // Waiting first and always: it is the only one of the three that is a request.
     if counts.waiting > 0 {
-        segments.push(Segment::new(mark(waiting, counts.waiting), Paint::Alert));
+        let paint = if now_ms.div_euclid(500).rem_euclid(2) == 0 {
+            Paint::Alert
+        } else {
+            Paint::Dim
+        };
+        segments.push(Segment::new(mark(waiting, counts.waiting), paint));
     }
     if counts.busy > 0 {
         segments.push(Segment::new(mark(busy, counts.busy), Paint::Emphasis));
@@ -207,6 +228,7 @@ pub fn status_block(
     counts: &AgentCounts,
     clock: &Clock,
     max_len: usize,
+    now_ms: i64,
 ) -> LinePart {
     let arrow_fonts = help.capabilities.arrow_fonts;
     let dimmed = help.session_dimmed.unwrap_or(false);
@@ -220,7 +242,7 @@ pub fn status_block(
     for (with_agents, with_idle, with_date) in candidates {
         let mut segments = vec![];
         if with_agents {
-            segments.extend(agent_segments(counts, arrow_fonts, with_idle));
+            segments.extend(agent_segments(counts, arrow_fonts, with_idle, now_ms));
         }
         if !segments.is_empty() {
             // Wider than the gap between counts, so the two halves read as two things.
@@ -324,6 +346,62 @@ mod tests {
     }
 
     #[test]
+    fn animation_wraps_without_changing_text_width_or_session_dimming() {
+        let counts = AgentCounts {
+            busy: 12,
+            waiting: 34,
+            idle: 5,
+        };
+        let clock = Clock::at(0, 0);
+        for ascii in [false, true] {
+            let mut help = mode_info();
+            help.capabilities.arrow_fonts = ascii;
+            for (frame, glyph) in ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
+                .iter()
+                .cycle()
+                .take(17)
+                .enumerate()
+            {
+                let now = frame as i64 * 125;
+                let segments = agent_segments(&counts, ascii, true, now);
+                assert_eq!(segments[0].text, if ascii { "34w" } else { "◆34" });
+                assert_eq!(
+                    segments[2].text,
+                    if ascii {
+                        format!("12{}", ["|", "/", "-", "\\"][frame % 4])
+                    } else {
+                        format!("{glyph}12")
+                    }
+                );
+                let expected = if frame / 4 % 2 == 0 {
+                    Text::new(&segments[0].text).error_color_range(..)
+                } else {
+                    Text::new(&segments[0].text).dim_range(..)
+                };
+                assert_eq!(
+                    segments[0].serialize(false),
+                    serialize_text(&expected.opaque())
+                );
+                assert_eq!(
+                    segments[0].serialize(true),
+                    serialize_text(&Text::new(&segments[0].text).disabled().opaque())
+                );
+                for width in 0..80 {
+                    let block = status_block(&help, &counts, &clock, width, now);
+                    assert_eq!(
+                        block.len,
+                        status_block(&help, &counts, &clock, width, 0).len
+                    );
+                    let len = block.len;
+                    assert_eq!(crate::test_support::plain_text(block).width(), len);
+                }
+            }
+        }
+        assert_eq!(state_marks(false, 999).0, "⣷");
+        assert_eq!(state_marks(false, 1000).0, "⣾");
+    }
+
+    #[test]
     fn the_block_never_claims_more_columns_than_it_was_given() {
         let help = mode_info();
         let counts = AgentCounts {
@@ -333,7 +411,7 @@ mod tests {
         };
         let clock = Clock::at(1_709_208_000_000, 0);
         for max_len in 0..80 {
-            let part = status_block(&help, &counts, &clock, max_len);
+            let part = status_block(&help, &counts, &clock, max_len, 0);
             assert!(
                 part.len <= max_len,
                 "claimed {} columns of {}",
@@ -353,21 +431,24 @@ mod tests {
         };
         let clock = Clock::at(1_709_208_000_000, 0);
         // Widths, in the order the ladder gives them up.
-        let full = status_block(&help, &counts, &clock, 200).len;
-        let no_date = status_block(&help, &counts, &clock, full - 1).len;
-        let no_idle = status_block(&help, &counts, &clock, no_date - 1).len;
-        let clock_only = status_block(&help, &counts, &clock, no_idle - 1).len;
+        let full = status_block(&help, &counts, &clock, 200, 0).len;
+        let no_date = status_block(&help, &counts, &clock, full - 1, 0).len;
+        let no_idle = status_block(&help, &counts, &clock, no_date - 1, 0).len;
+        let clock_only = status_block(&help, &counts, &clock, no_idle - 1, 0).len;
         assert!(full > no_date && no_date > no_idle && no_idle > clock_only);
         // The last rung standing is the time, and nothing narrower than it draws at all.
         assert_eq!(clock_only, "14:32".width());
-        assert_eq!(status_block(&help, &counts, &clock, clock_only - 1).len, 0);
+        assert_eq!(
+            status_block(&help, &counts, &clock, clock_only - 1, 0).len,
+            0
+        );
     }
 
     #[test]
     fn with_no_agents_it_is_just_the_clock() {
         let help = mode_info();
         let clock = Clock::at(1_709_208_000_000, 0);
-        let part = status_block(&help, &AgentCounts::default(), &clock, 200);
+        let part = status_block(&help, &AgentCounts::default(), &clock, 200, 0);
         assert_eq!(part.len, "14:32  Fri 29 Feb".width());
     }
 
@@ -380,12 +461,12 @@ mod tests {
             waiting: 1,
             idle: 3,
         };
-        let segments = agent_segments(&counts, true, true);
+        let segments = agent_segments(&counts, true, true, 0);
         let text: String = segments
             .iter()
             .map(|segment| segment.text.clone())
             .collect();
-        assert_eq!(text, "1w 2b 3i");
+        assert_eq!(text, "1w 2| 3i");
         assert!(text.is_ascii());
     }
 
@@ -396,7 +477,7 @@ mod tests {
             waiting: 1,
             idle: 3,
         };
-        let segments = agent_segments(&counts, false, true);
+        let segments = agent_segments(&counts, false, true, 0);
         let text: String = segments
             .iter()
             .map(|segment| segment.text.clone())
@@ -411,7 +492,7 @@ mod tests {
             waiting: 0,
             idle: 2,
         };
-        let segments = agent_segments(&counts, false, true);
+        let segments = agent_segments(&counts, false, true, 0);
         let text: String = segments
             .iter()
             .map(|segment| segment.text.clone())
