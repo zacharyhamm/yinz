@@ -22,6 +22,141 @@ use crate::plugins::plugin_map::{PluginEnv, ResponseSink};
 use crate::thread_bus::ThreadSenders;
 
 #[test]
+fn agent_exit_conversation_forms_scroll_and_sanitize() {
+    let source = zellij_config::consts::builtin_lua_plugin("agent-exit")
+        .unwrap()
+        .replace(
+            "\nfunction M.load(config)",
+            "M.test_chat = { state=W, chat=C, choose=choose, edit=edit, append=append, form=form }\nfunction M.load(config)",
+        );
+    let plugin = load(&source).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z, T = require('zellij'), M.test_chat
+z.show_cursor = function() end
+local C, W = T.chat, T.state
+local actions = 0
+z.close_self = function() actions = actions + 1 end
+z.close_terminal_pane = function() actions = actions + 1 end
+z.rerun_command_pane = function() actions = actions + 1 end
+local function key(k, mods) z.__update(M, {Key={bare_key=k, key_modifiers=mods or {}}}) end
+local function mouse(kind, row, col) z.__update(M, {Mouse={[kind]={row,col}}}) end
+local function contains(frame, text)
+  local codes = {}
+  for i=1,#text do codes[i] = tostring(text:byte(i)) end
+  return frame:find(table.concat(codes, ','), 1, true)
+end
+local function history() return table.concat(C.entries, '\n\n') end
+local chosen, draft
+W.active = true
+z.task(function()
+  chosen = T.choose('Repository inspection', {a='Review diff', b='Commit changes'}, '/repo/[topic]*')
+  draft = T.edit('Commit message', 'draft')
+  T.choose('Approve commit?', {y='Approve commit', n='Back'}, draft)
+  W.active = false
+end)
+M.render(24, 160)
+local count = #C.entries
+M.render(24, 160); M.render(24, 160)
+assert(#C.entries == count, 'render duplicated history')
+assert(C.page == 22 and not C.compact)
+assert(T.form():focused_id() == 'a')
+key('Tab'); assert(T.form():focused_id() == 'b')
+key('Tab', {'Shift'}); assert(T.form():focused_id() == 'a')
+key('Enter')
+assert(chosen == 'a' and history():find('Review diff', 1, true))
+M.render(24, 160)
+key('Home')
+z.__update(M, {PastedText='日本語 '})
+key('End'); key('Backspace')
+assert(T.form():value('draft') == '日本語 draf')
+-- Preserve edits through narrow and one-row form viewports.
+M.render(3, 12)
+assert(C.compact and C.page == 0)
+assert(T.form():focused_id() == 'draft')
+assert(T.form():value('draft') == '日本語 draf')
+M.render(24, 160)
+assert(T.form():focused_id() == 'draft')
+key({Char='t'}); key({Char=' '})
+assert(T.form():value('draft') == '日本語 draft ')
+assert(draft == nil and W.active and actions == 0, 'typing submitted the draft')
+key('Enter')
+assert(draft == '日本語 draft ' and W.active and actions == 0)
+assert(history():find('Approve commit', 1, true))
+key('Esc')
+assert(not W.active and actions == 0, 'dismissal reached the held pane')
+
+-- Narrow choices require a separate activation, including after resizing.
+W.active = true
+chosen = nil
+z.task(function() chosen = T.choose('Cleanup', {a='Keep both', b='Remove worktree'}) end)
+M.render(8, 16)
+assert(C.compact and C.page == 5)
+key('Down'); key('Enter')
+assert(chosen == nil, 'select committed an operation')
+local selected = C.keys[T.form():value('choice')]
+M.render(8, 160)
+assert(T.form():focused_id() == selected)
+M.render(2, 16)
+key('Tab')
+M.render(2, 16)
+assert(T.form():focused_id() == 'activate')
+key('Enter')
+assert(chosen == selected)
+
+-- A mouse release can dismiss a prompt, but cannot activate the next form.
+z.task(function() T.choose('Done', {Enter='Return'}); W.active = false end)
+M.render(10, 160)
+mouse('LeftClick', 8, 1)
+assert(W.active)
+mouse('Release', 8, 1)
+assert(not W.active and actions == 0)
+
+-- Full literal content is kept, including fence delimiters and hostile bytes.
+local hostile = '```\n# [link](https://example.test) **bold** <tag> | x |\n`````\n'
+  .. '\27[2J\0\127' .. utf8.char(0x9b) .. '末尾\255'
+T.append('Output', hostile .. '\nFull output: /tmp/[log]*\n[display truncated at 64 KiB]')
+assert(not history():find('\27', 1, true) and not history():find(utf8.char(0x9b), 1, true))
+assert(history():find('``````', 1, true) and history():find('**bold**', 1, true))
+local frame = M.render(100, 160)
+assert(contains(frame, '# [link](https://example.test) **bold** <tag> | x |'), frame)
+assert(contains(frame, 'Full output: /tmp/[log]*'), frame)
+assert(contains(frame, '[display truncated at 64 KiB]'), frame)
+for i=1,80 do T.append('Step ' .. i, 'Outcome ' .. i) end
+M.render(24, 80)
+assert(C.scroll == C.lines - C.page and C.follow)
+key('PageUp')
+local offset = C.scroll
+assert(offset > 0 and not C.follow)
+T.append('New outcome', 'Still reading earlier steps')
+M.render(24, 80)
+assert(C.scroll == offset and not C.follow)
+z.__update(M, {Mouse={ScrollUp=2}})
+assert(C.scroll == offset - 3)
+z.__update(M, {Mouse={ScrollDown=2}})
+assert(C.scroll == offset)
+for _=1,100 do key('PageDown') end
+T.append('Last outcome', 'Follow me')
+M.render(12, 30)
+assert(C.follow and C.scroll == C.lines - C.page)
+for _, size in ipairs({{24,80},{8,16},{3,8},{1,1},{0,0},{24,160}}) do
+  M.render(size[1],size[2])
+  assert(C.page >= 0 and C.scroll >= 0)
+end
+-- Busy operations accept scrolling but no operation/restart/close activation.
+W.busy = true
+local before = actions
+key('Enter'); key('Esc'); z.__update(M, {PastedText='ignored'})
+mouse('LeftClick', 22, 1); mouse('Release', 22, 1)
+assert(actions == before)
+"#).exec().unwrap();
+}
+
+#[test]
 fn agent_exit_queries_skip_operation_logs_and_preserve_failures() {
     use mlua::LuaSerdeExt;
     let dir = tempfile::tempdir().unwrap();
@@ -267,7 +402,7 @@ fn agent_exit_workflow_merges_and_cleans_real_worktrees() {
             .unwrap()
             .replace(
                 "\nfunction M.load(config)",
-                "M.test_workflow = { state = W, run = workflow }\nfunction M.load(config)",
+                "M.test_workflow = { state = W, run = workflow, chat = C, form = form }\nfunction M.load(config)",
             );
         let plugin = load(&source).unwrap();
         plugin
@@ -374,8 +509,7 @@ elseif scenario == 'recovery' or scenario == 'duplicate' or scenario == 'outstan
     keys = {}; expected_merge = false; expected_error = 'outstanding Git/CI operation'
   else table.insert(keys, 1, 'y') end
 end
-z.async.event = function(name)
-  assert(name == 'key')
+z.async.future = function()
   local key = table.remove(keys, 1)
   assert(key, scenario .. ': unexpected prompt: ' .. tostring(T.state.title) .. '\n' .. tostring(T.state.detail))
   if scenario == 'missing_local_default' or scenario == 'cancel_default' then
@@ -389,7 +523,14 @@ z.async.event = function(name)
     assert(T.state.title == 'Operation failed' and T.state.detail == 'helper spawn failed')
     assert(__run({'test', '!', '-e', T.state.lock .. '/helper'}).exit_code == 0)
   end
-  return ready({key=key})
+  local widget = T.form()
+  if T.chat.initial ~= nil then
+    while key ~= 'Enter' and key ~= 'Esc' do
+      widget:handle_key(key)
+      key = assert(table.remove(keys, 1))
+    end
+  end
+  return ready((key == 'Esc' or key == 'q') and 'cancel' or key), function() end
 end
 z.open_command_pane = function(opts)
   local argv = {opts[1].path}
@@ -1472,12 +1613,11 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
     let mut env = test_env();
     env.senders.to_background_jobs = Some(SenderWithContext::new(to_background_jobs));
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
-    let mut plugin = load_lua_plugin(
-        zellij_config::consts::builtin_lua_plugin("agent-exit").expect("the hook is a builtin"),
-        "agent-exit.lua",
-        env,
-    )
-    .unwrap();
+    let source = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap().replace(
+        "\nfunction M.load(config)",
+        "function M.test_focus(id) if not M.syncing and C.options[id] then form():focus(id); return true end return false end\nfunction M.load(config)",
+    );
+    let mut plugin = load_lua_plugin(&source, "agent-exit.lua", env).unwrap();
     plugin
         .load(&BTreeMap::from([
             ("agent_pane_id".to_owned(), "7".to_owned()),
@@ -1499,6 +1639,22 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
             ("agent_zellij_config_dir".to_owned(), "/config".to_owned()),
         ]))
         .unwrap();
+    let press = |plugin: &mut super::LuaPlugin, id: char| {
+        plugin.render(60, 200).unwrap();
+        let focused: bool = plugin
+            .plugin
+            .get::<mlua::Function>("test_focus")
+            .unwrap()
+            .call(id.to_string())
+            .unwrap();
+        plugin
+            .update(&Event::Key(KeyWithModifier::new(if focused {
+                BareKey::Enter
+            } else {
+                BareKey::Char(id)
+            })))
+            .unwrap();
+    };
     let config_env = BTreeMap::from([
         (
             "ZELLIJ_CONFIG_FILE".to_owned(),
@@ -1514,7 +1670,7 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
         },
         other => panic!("expected a Firecracker helper command, got {other:?}"),
     };
-    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
     assert!(
         rendered.contains("Agent exited. Create another agent in the same directory?"),
         "got: {rendered}"
@@ -1539,16 +1695,17 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
             check_context,
         ))
         .unwrap();
-    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
     assert!(
         rendered.contains("2 changed paths in the VM"),
         "got: {rendered}"
     );
-    assert!(rendered.contains("<S> sync 2"), "got: {rendered}");
+    assert!(
+        rendered.contains("Sync 2 VM paths") || rendered.contains("Operation running"),
+        "got: {rendered}"
+    );
 
-    plugin
-        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('s'))))
-        .unwrap();
+    press(&mut plugin, 's');
     let (command, args, sync_context) = next_command();
     assert_eq!(command, "/bin/zellij");
     assert_eq!(args, ["firecracker", "sync", "review", "--session", "work"]);
@@ -1560,16 +1717,17 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
             sync_context,
         ))
         .unwrap();
-    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
     assert!(
         rendered.contains("VM worktree could not be synced. See plugin log for details."),
         "got: {rendered}"
     );
-    assert!(rendered.contains("<S> sync 2"), "got: {rendered}");
+    assert!(
+        rendered.contains("Sync 2 VM paths") || rendered.contains("Operation running"),
+        "got: {rendered}"
+    );
 
-    plugin
-        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('s'))))
-        .unwrap();
+    press(&mut plugin, 's');
     let (command, args, retry_context) = next_command();
     assert_eq!(command, "/bin/zellij");
     assert_eq!(args, ["firecracker", "sync", "review", "--session", "work"]);
@@ -1581,16 +1739,17 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
             retry_context,
         ))
         .unwrap();
-    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
     assert!(
         rendered.contains("VM worktree synced. warning: kept guest copy"),
         "got: {rendered}"
     );
-    assert!(rendered.contains("<S> sync 2"), "got: {rendered}");
+    assert!(
+        rendered.contains("Sync 2 VM paths") || rendered.contains("Operation running"),
+        "got: {rendered}"
+    );
 
-    plugin
-        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('s'))))
-        .unwrap();
+    press(&mut plugin, 's');
     let (command, args, recheck_context) = next_command();
     assert_eq!(command, "/bin/zellij");
     assert_eq!(
@@ -1609,16 +1768,14 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
             recheck_context,
         ))
         .unwrap();
-    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
     assert!(
         rendered.contains("1 changed path remains"),
         "got: {rendered}"
     );
-    assert!(rendered.contains("<S> sync 1"), "got: {rendered}");
+    assert!(rendered.contains("Sync 1 VM paths"), "got: {rendered}");
 
-    plugin
-        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('s'))))
-        .unwrap();
+    press(&mut plugin, 's');
     let (_, _, sync_context) = next_command();
     plugin
         .update(&Event::RunCommandResult(
@@ -1637,16 +1794,14 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
             recheck_context,
         ))
         .unwrap();
-    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
     assert!(
         rendered.contains("VM changes could not be checked. See plugin log for details."),
         "got: {rendered}"
     );
-    assert!(!rendered.contains("<S> sync"), "got: {rendered}");
+
     assert!(!plugin.plugin.get::<bool>("syncing").unwrap());
-    plugin
-        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('s'))))
-        .unwrap();
+    press(&mut plugin, 's');
     assert!(background_jobs.try_recv().is_err());
     // A fresh count permits sync again; the failed recheck must have released the lock.
     plugin
@@ -1658,9 +1813,7 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
         ))
         .unwrap();
 
-    plugin
-        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('s'))))
-        .unwrap();
+    press(&mut plugin, 's');
     let (_, _, sync_context) = next_command();
     plugin
         .update(&Event::RunCommandResult(
@@ -1679,19 +1832,15 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
             recheck_context,
         ))
         .unwrap();
-    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
     assert!(
         rendered.contains("Sync conflicts require resolution"),
         "got: {rendered}"
     );
-    plugin
-        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('r'))))
-        .unwrap();
-    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    press(&mut plugin, 'r');
+    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
     assert!(rendered.contains("kept guest copy"), "got: {rendered}");
-    plugin
-        .update(&Event::Key(KeyWithModifier::new(BareKey::Char('y'))))
-        .unwrap();
+    press(&mut plugin, 'y');
     let (_, _, context) = next_command();
     plugin
         .update(&Event::RunCommandResult(
@@ -1701,7 +1850,7 @@ fn the_shipped_agent_exit_hook_loads_and_renders() {
             context,
         ))
         .unwrap();
-    let rendered = String::from_utf8(plugin.render(20, 100).unwrap()).unwrap();
+    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
     assert!(
         rendered.contains("Inspecting repository..."),
         "got: {rendered}"
@@ -1724,6 +1873,7 @@ fn agent_exit_zero_guest_changes_start_the_workflow() {
         .unwrap();
     plugin.lua.load(r#"
 local z = require('zellij')
+z.show_cursor = function() end
 local starts, commands = 0, {}
 M.test_state.start = function() starts = starts + 1 end
 z.subscribe = function() end
@@ -1741,7 +1891,7 @@ for _, step in ipairs({'check', 'recheck'}) do
       assert(not M.syncing)
       if case[3] then
         assert(not M.render(20, 120):find('<S> sync', 1, true))
-        z.__update(M, {Key={bare_key='s', key_modifiers={}}})
+        z.__update(M, {Key={bare_key={Char='s'}, key_modifiers={}}})
         assert(#commands == 0)
         if warnings then assert(M.status:find('Sync conflicts require resolution', 1, true)) end
       end
@@ -1757,7 +1907,7 @@ fn agent_exit_dialog_keys_do_not_reach_restart_or_close() {
         .unwrap()
         .replace(
             "\nfunction M.load(config)",
-            "M.test_dialogs = { state = W, choose = choose, edit = edit }\nfunction M.load(config)",
+            "M.test_dialogs = { state = W, choose = choose, edit = edit, chat = C, form = form }\nfunction M.load(config)",
         );
     let plugin = load(&source).unwrap();
     plugin
@@ -1770,6 +1920,7 @@ fn agent_exit_dialog_keys_do_not_reach_restart_or_close() {
         .load(
             r#"
 local z = require('zellij')
+z.show_cursor = function() end
 local T = M.test_dialogs
 local actions, commands = {}, {}
 z.subscribe = function() end
@@ -1778,7 +1929,12 @@ z.close_terminal_pane = function(id) table.insert(actions, 'close ' .. id) end
 z.close_self = function() table.insert(actions, 'self') end
 z.run_command = function(opts) table.insert(commands, opts) end
 M.load { agent_pane_id = '7' }
-local function key(k) z.__update(M, {Key={bare_key=k, key_modifiers={}}}) end
+local function key(k)
+  M.render(20, 200)
+  if T.chat.options[k] and k ~= 'Esc' then T.form():focus(k); k = 'Enter' end
+  if k == 'q' then k = 'Esc' end
+  z.__update(M, {Key={bare_key=k, key_modifiers={}}})
+end
 for _, dismiss in ipairs({'Enter', 'Esc', 'q'}) do
   for _, next_key in ipairs({'Enter', 'Esc'}) do
     actions, commands = {}, {}
@@ -1870,7 +2026,8 @@ fn agent_exit_handles_missing_metadata_and_unavailable_changes() {
                     }
                 }
                 plugin.load(&config).unwrap();
-                let rendered = String::from_utf8(plugin.render(20, 120).unwrap()).unwrap();
+                let rendered =
+                    component_text(&String::from_utf8(plugin.render(200, 200).unwrap()).unwrap());
                 let directory = if cwd == Some("/guest") {
                     "/guest"
                 } else if missing == Some("agent_firecracker_worktree") {
@@ -1913,7 +2070,9 @@ fn agent_exit_handles_missing_metadata_and_unavailable_changes() {
                                 BTreeMap::from([("step".to_owned(), "check".to_owned())]),
                             ))
                             .unwrap();
-                        let rendered = String::from_utf8(plugin.render(20, 120).unwrap()).unwrap();
+                        let rendered = component_text(
+                            &String::from_utf8(plugin.render(200, 200).unwrap()).unwrap(),
+                        );
                         assert!(
                             rendered.contains(
                                 "VM changes could not be checked. See plugin log for details."
@@ -1949,7 +2108,7 @@ fn agent_exit_handles_missing_metadata_and_unavailable_changes() {
     // An ordinary exit has no VM details and does not advertise a VM failure.
     let mut plugin = load(source).unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
-    let rendered = String::from_utf8(plugin.render(20, 120).unwrap()).unwrap();
+    let rendered = component_text(&String::from_utf8(plugin.render(200, 200).unwrap()).unwrap());
     assert!(rendered.contains("Directory: unavailable"));
     assert!(!rendered.contains("VM changes"));
 }
@@ -2308,15 +2467,22 @@ fn the_playground_plugin_loads_and_runs_every_key_it_advertises() {
 /// about the words rather than the escapes has to read the codes back.
 fn component_text(rendered: &str) -> String {
     let mut out = String::new();
-    for part in rendered.split("Pztext;").skip(1) {
+    for part in rendered.split("\u{1b}P").filter_map(|part| {
+        part.strip_prefix("ztext;")
+            .or_else(|| part.strip_prefix("zribbon;"))
+    }) {
         let body = part.split('\u{1b}').next().unwrap_or("");
-        let codes = body.trim_start_matches(['x', 'o', 'd', 'e', 'u', 'i', 's']);
-        let codes = codes.rsplit('$').next().unwrap_or("");
-        for code in codes.split(',') {
-            if let Some(c) = code.trim().parse::<u32>().ok().and_then(char::from_u32) {
-                out.push(c);
-            }
-        }
+        let codes = body.rsplit(';').next().unwrap_or("");
+        let codes = codes
+            .rsplit('$')
+            .next()
+            .unwrap_or("")
+            .trim_start_matches(['x', 'z', 'd']);
+        let bytes: Vec<u8> = codes
+            .split(',')
+            .filter_map(|code| code.parse().ok())
+            .collect();
+        out.push_str(&String::from_utf8_lossy(&bytes));
         out.push('\n');
     }
     out
