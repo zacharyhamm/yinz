@@ -281,7 +281,6 @@ fn main() -> anyhow::Result<()> {
         flags::XtaskCmd::Install(flags) => pipelines::install(shell, flags),
         flags::XtaskCmd::Run(flags) => pipelines::run(shell, flags),
         flags::XtaskCmd::Ci(flags) => ci::main(shell, flags),
-        flags::XtaskCmd::Publish(flags) => pipelines::publish(shell, flags),
     }?;
 
     let elapsed = now.elapsed().as_secs();
@@ -337,7 +336,6 @@ anything!
 | make run                        | xtask run                     |
 | make run -l strider             | xtask run -- -l strider       |
 | make install /path/to/binary    | xtask install /path/to/binary |
-| make publish                    | xtask publish                 |
 
 
 In order to disable xtask during the transitioning period: Delete/comment the
@@ -352,6 +350,19 @@ we can discuss this before making it final for the next release. Thank you!
 mod tests {
     use super::insert_forwarding_separator;
     use std::ffi::OsString;
+
+    #[test]
+    fn publishing_is_not_a_command() {
+        let help = super::flags::Xtask::from_vec(vec![OsString::from("--help")])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("install"), "{help}");
+        assert!(!help.contains("publish"), "{help}");
+        let error = super::flags::Xtask::from_vec(vec![OsString::from("publish")])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unexpected argument"), "{error}");
+    }
 
     fn split(args: &[&str]) -> Vec<String> {
         insert_forwarding_separator(args.iter().map(OsString::from).collect())
