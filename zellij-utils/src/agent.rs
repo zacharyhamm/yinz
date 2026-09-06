@@ -54,9 +54,7 @@ pub const CLAUDE_HOOK_EVENTS: &[&str] = &[
     // instant version of it.
     "Elicitation",
     "ElicitationResult",
-    // The same, from the other direction: the backstop for a Claude Code too old to
-    // have `PermissionRequest`, and the only signal for an MCP form or a background
-    // session wanting input.
+    // Explicit input and elicitation notifications. Permission reminders are ignored.
     "Notification",
     // The turn ended: what moves the record back to `idle`. It also carries
     // `last_assistant_message`, which nothing buys a summary from any more - a summary is
@@ -380,6 +378,7 @@ fn interpreted_script<'a>(interpreter: &str, args: &'a [String]) -> Option<&'a s
 pub const HOOK_SESSION_END: &str = "SessionEnd";
 
 /// The `Notification` kinds that mean the agent is blocked on the user.
+/// Permission reminders are excluded: their timer can fire during automatic approval.
 ///
 /// Most notifications are not about being waited on — `auth_success` and the
 /// `quota_auto_resume_*` family say nothing about the turn, and `idle_prompt` fires a minute
@@ -400,11 +399,9 @@ pub const HOOK_SESSION_END: &str = "SessionEnd";
 /// raises it for teammate setup, a Slack-connect dialog and an offline file sync. Those are
 /// this session, blocked, with a person to tell.
 pub const WAITING_NOTIFICATIONS: &[&str] = &[
-    "permission_prompt",
     "elicitation_dialog",
     "elicitation_url_dialog",
     "agent_needs_input",
-    "worker_permission_prompt",
 ];
 
 /// The tools whose `PreToolUse` *is* the question going up.
@@ -420,49 +417,9 @@ pub const WAITING_NOTIFICATIONS: &[&str] = &[
 /// the first of them, and the second would then overwrite it with `busy`.
 pub const WAITING_TOOLS: &[&str] = &["AskUserQuestion", "ExitPlanMode", "request_user_input"];
 
-/// The permission modes that answer a permission prompt without a person.
-///
-/// A permission prompt reported under one of these usually has nobody to interrupt: either the
-/// mode decided already, or the prompt that fired is one the user has said in advance they do
-/// not want to see. The state is still recorded - it is what the agent said - but see
-/// [`waiting_needs_a_person`].
-///
-/// `bypassPermissions` and `dontAsk` do answer *every* one: Claude Code resolves them to a
-/// blanket allow and a blanket deny. `auto` resolves to a classifier, which clears what it
-/// judges safe and puts the rest in front of the user exactly as `default` would - so a wait
-/// under it is silenced on the odds rather than on a promise, which is the line
-/// [`PROMISED_ANSWER_MODES`] draws and [`suppression_is_a_guarantee`] reads.
-///
-/// `acceptEdits` is deliberately not here: it answers one kind of prompt rather than all of
-/// them, which is what [`AUTO_ACCEPTED_EDIT_TOOLS`] names.
-///
-/// Adding a mode here silences its prompts and grants nothing else. The backstop is named
-/// separately, in [`PROMISED_ANSWER_MODES`], and a mode absent from that list is never
-/// interrupted over - so if a new mode's silence is a promise rather than a guess, it belongs
-/// in both.
+/// Permission modes whose automatic approval is work, not a wait for user input.
+/// `acceptEdits` is handled separately because it only answers file-editing prompts.
 pub const UNATTENDED_MODES: &[&str] = &["bypassPermissions", "dontAsk", "auto"];
-
-/// The modes whose silence is a promise to answer rather than a guess at the odds.
-///
-/// `bypassPermissions` and `dontAsk` resolve a permission prompt outright, to a blanket allow
-/// and a blanket deny, and `acceptEdits` resolves the file-editing ones. So a prompt still up
-/// six seconds later under one of them is a promise that did not hold - a `deny` or `ask` rule,
-/// a `PreToolUse` hook that asks anyway, an edit outside the workspace - and the `Notification`
-/// behind it is worth acting on, which is what [`suppression_is_a_guarantee`] says.
-///
-/// This is an allowlist, and that direction is the point. `auto` is absent because it is a
-/// classifier: routinely still deciding a `Bash` call well past the six seconds, with a
-/// notification that is a plain timer Claude Code arms when the dialog goes up rather than a
-/// verdict, and no `permission_mode` of its own for anyone to read. It proves nothing about
-/// whether a person is needed. Every mode nobody has named here is treated the same way - the
-/// wait is still drawn, in the row and in the pane, it is just not interrupted over - so a mode
-/// added to [`UNATTENDED_MODES`] and forgotten here costs a toast that was never sent rather
-/// than one sent over a `cargo` build that approved itself.
-///
-/// `acceptEdits` is named here without being in [`UNATTENDED_MODES`]: it silences only the
-/// [`AUTO_ACCEPTED_EDIT_TOOLS`], and [`waiting_needs_a_person`] has already applied that tool
-/// gate by the time this list is read.
-pub const PROMISED_ANSWER_MODES: &[&str] = &["bypassPermissions", "dontAsk", "acceptEdits"];
 
 /// The tools whose permission prompt `acceptEdits` answers by itself.
 ///
@@ -577,7 +534,7 @@ pub struct HookEvent {
     /// `dontAsk`, `bypassPermissions`. Carried on every event.
     ///
     /// Read for one thing only: a mode that answers permission prompts by itself has nobody to
-    /// interrupt, so a wait reported under it is not worth a toast. See
+    /// interrupt, so its permission requests report busy. See
     /// [`waiting_needs_a_person`].
     #[serde(default)]
     pub permission_mode: Option<String>,
@@ -792,10 +749,13 @@ pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
         {
             Some(AgentState::Waiting)
         },
-        // An MCP server asking for input, said as the form goes up. The `Notification` that
-        // follows it is the same backstop `PermissionRequest` has.
+        // An MCP server asking for input, said as the form goes up.
         "Elicitation" => Some(AgentState::Waiting),
-        "PermissionRequest" => Some(AgentState::Waiting),
+        "PermissionRequest" => Some(if waiting_needs_a_person(event) {
+            AgentState::Waiting
+        } else {
+            AgentState::Busy
+        }),
         // Everything that is the agent doing something. `SubagentStart`/`SubagentStop` are a
         // worker beginning and ending under an agent that is working either way, and compaction
         // is work the user did not ask for but is waiting on all the same.
@@ -812,31 +772,9 @@ pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
     }
 }
 
-/// Whether a reported wait is one a person has to answer.
-///
-/// `false` only where the prompt is about to answer itself: the agent is momentarily blocked,
-/// and recording that is right, but interrupting somebody over it is not. Read only by
-/// whatever would interrupt — the state, the record and the row all take the agent at its word.
-///
-/// The gate is on the event *and* the mode, because a mode only ever answers a **permission
-/// prompt**. Of the five ways into [`AgentState::Waiting`], three are a person being addressed
-/// directly under any mode at all — the two [`WAITING_TOOLS`], which put a question or a plan
-/// in front of the user, and an `Elicitation`, which is an MCP server's own form. Silencing
-/// those because the session happens to be in `acceptEdits` leaves a pane blocked with nothing
-/// to say so.
-///
-/// A waiting `Notification` is never suppressed here either, but for a plainer reason: Claude
-/// Code builds it without a `permission_mode`, so there is no mode to read. Treating it as
-/// attended is what lets it fill a gap - a notification with no `PermissionRequest` before it
-/// is the only word of that prompt. Whether the one *behind* a silenced request says anything
-/// is not this function's question: the daemon's busy→waiting edge has already been used up by
-/// the request, and what decides whether that edge is held open for the backstop is
-/// [`suppression_is_a_guarantee`].
-///
-/// That leaves `PermissionRequest`, where the mode decides: everything under
-/// [`UNATTENDED_MODES`], and only the file-editing tools under `acceptEdits`. A request naming
-/// no tool is treated as attended, because a wait announced once too often costs a toast and
-/// one missed costs a blocked agent nobody is told about.
+/// Whether this event needs a person. Automatic permission approval is busy;
+/// explicit questions and elicitation always wait, regardless of approval mode.
+/// Missing or unknown modes, and unknown tools under `acceptEdits`, stay manual.
 pub fn waiting_needs_a_person(event: &HookEvent) -> bool {
     if event.hook_event_name != "PermissionRequest" {
         return true;
@@ -856,30 +794,7 @@ pub fn waiting_needs_a_person(event: &HookEvent) -> bool {
         .is_some_and(|tool| AUTO_ACCEPTED_EDIT_TOOLS.contains(&tool))
 }
 
-/// Whether a wait this event silenced was silenced on a promise rather than on the odds.
-///
-/// Only [`waiting_needs_a_person`] decides whether a wait is announced when it arrives. This
-/// decides what happens to the one signal that comes *after* a wait nobody was told about: the
-/// `Notification` about six seconds later. A prompt silenced because the mode answers it - the
-/// blanket allow and deny of `bypassPermissions` and `dontAsk`, the file-editing tools under
-/// `acceptEdits` - was silenced on a promise, so a notification means the promise did not hold
-/// and there is a person to tell. A prompt silenced under any other mode - `auto` today, and
-/// whatever is added next - was silenced on the odds, and its notification says nothing either
-/// way; see [`PROMISED_ANSWER_MODES`], which is the allowlist this reads.
-///
-/// `false` for anything that was not silenced in the first place, so a caller needs no second
-/// check: a wait that was announced has no held edge to owe anybody.
-pub fn suppression_is_a_guarantee(event: &HookEvent) -> bool {
-    if waiting_needs_a_person(event) {
-        return false;
-    }
-    event
-        .permission_mode
-        .as_deref()
-        .is_some_and(|mode| PROMISED_ANSWER_MODES.contains(&mode))
-}
-
-/// The few words a record carries for the tool a `PreToolUse` names.
+/// The tool hint for `PreToolUse` or an automatically approved `PermissionRequest`.
 ///
 /// The tool's own name, and one argument's worth of hint where the tool has an obvious one:
 /// which file, or which program. Everything else about `tool_input` is ignored rather than
@@ -887,10 +802,11 @@ pub fn suppression_is_a_guarantee(event: &HookEvent) -> bool {
 /// what little is taken is cut to [`HOOK_DETAIL_CHARS`] and stripped of anything that is not
 /// printable.
 ///
-/// `None` for any event that is not a tool starting, which is what clears the hint when the
-/// tool finishes.
+/// `None` for other events, which clears the hint when the tool finishes.
 pub fn hook_detail(event: &HookEvent) -> Option<String> {
-    if event.hook_event_name != "PreToolUse" {
+    if event.hook_event_name != "PreToolUse"
+        && (event.hook_event_name != "PermissionRequest" || waiting_needs_a_person(event))
+    {
         return None;
     }
     tool_summary(event)
@@ -1337,10 +1253,7 @@ mod tests {
             hook_state(&event("PermissionRequest")),
             Some(AgentState::Waiting)
         );
-        assert_eq!(
-            hook_state(&notification("permission_prompt")),
-            Some(AgentState::Waiting)
-        );
+        assert_eq!(hook_state(&notification("permission_prompt")), None);
         assert_eq!(
             hook_state(&notification("agent_needs_input")),
             Some(AgentState::Waiting)
@@ -1450,7 +1363,7 @@ mod tests {
         // few costs a blocked agent nobody hears about.
         assert!(waiting_needs_a_person(&request(None, Some("acceptEdits"))));
 
-        // The three waits that address a person directly, and the backstop. None of them is a
+        // Direct questions and elicitation notifications are always waits. None is a
         // permission prompt, so no mode answers any of them.
         for mode in ["acceptEdits", "bypassPermissions", "dontAsk", "auto"] {
             for tool in WAITING_TOOLS {
@@ -1469,85 +1382,17 @@ mod tests {
                 ..event("Elicitation")
             };
             assert!(waiting_needs_a_person(&elicitation), "{mode}");
-            // A notification is read as attended even when it names a mode, which Claude
-            // Code's never do: it is the only word of a prompt nothing else reported, and the
-            // one behind a silenced request is kept quiet by the daemon's edge, not here.
-            for kind in ["permission_prompt", "worker_permission_prompt"] {
-                let backstop = HookEvent {
+            for kind in WAITING_NOTIFICATIONS {
+                let notification = HookEvent {
                     permission_mode: Some(mode.to_owned()),
                     ..notification(kind)
                 };
-                assert!(
-                    waiting_needs_a_person(&backstop),
-                    "{kind} under {mode} has no request behind it to have been silenced"
-                );
+                assert_eq!(hook_state(&notification), Some(AgentState::Waiting));
+            }
+            for kind in ["permission_prompt", "worker_permission_prompt"] {
+                assert_eq!(hook_state(&notification(kind)), None);
             }
         }
-    }
-
-    /// And of the waits a mode does answer, only some are answered on a promise. That is what
-    /// decides whether the `Notification` six seconds later is worth anything.
-    #[test]
-    fn only_a_promised_answer_is_worth_a_backstop() {
-        let request = |tool: &str, mode: &str| HookEvent {
-            permission_mode: Some(mode.to_owned()),
-            tool_name: Some(tool.to_owned()),
-            ..event("PermissionRequest")
-        };
-        for mode in PROMISED_ANSWER_MODES {
-            // Naming a mode a promise says nothing unless it can silence a prompt in the first
-            // place: the blanket modes do it through `UNATTENDED_MODES`, and `acceptEdits`
-            // through the tool gate `waiting_needs_a_person` applies.
-            if *mode == "acceptEdits" {
-                for tool in AUTO_ACCEPTED_EDIT_TOOLS {
-                    assert!(
-                        suppression_is_a_guarantee(&request(tool, mode)),
-                        "{tool} under {mode} is answered, not judged"
-                    );
-                }
-            } else {
-                assert!(
-                    UNATTENDED_MODES.contains(mode),
-                    "{mode} promises an answer it has no prompt to give it to"
-                );
-                assert!(
-                    suppression_is_a_guarantee(&request("Bash", mode)),
-                    "{mode} answers every prompt it silences"
-                );
-            }
-        }
-
-        // And the direction the allowlist exists for: an unattended mode nobody named a promise
-        // is quiet rather than noisy, so a mode added there and forgotten here costs a toast
-        // never sent rather than one sent over a `Bash cargo` that approved itself a moment
-        // later. `auto` is the one today.
-        for mode in UNATTENDED_MODES
-            .iter()
-            .filter(|mode| !PROMISED_ANSWER_MODES.contains(*mode))
-        {
-            assert!(
-                !suppression_is_a_guarantee(&request("Bash", mode)),
-                "{mode} silences on the odds"
-            );
-        }
-        assert!(
-            UNATTENDED_MODES
-                .iter()
-                .any(|mode| !PROMISED_ANSWER_MODES.contains(mode)),
-            "that loop proves nothing if every unattended mode is a promise"
-        );
-
-        // Nothing that was announced in the first place is owed a backstop.
-        assert!(!suppression_is_a_guarantee(&request("Bash", "acceptEdits")));
-        assert!(!suppression_is_a_guarantee(&request("Bash", "default")));
-        assert!(!suppression_is_a_guarantee(&HookEvent {
-            permission_mode: Some("auto".to_owned()),
-            tool_name: Some("AskUserQuestion".to_owned()),
-            ..event("PreToolUse")
-        }));
-        assert!(!suppression_is_a_guarantee(&notification(
-            "permission_prompt"
-        )));
     }
 
     /// What a record says the agent is blocked on. Every source is text the agent or an MCP
@@ -1708,12 +1553,25 @@ mod tests {
             other => panic!("{other:?}"),
         };
 
-        // The mode is about to answer this one itself. The record still says `waiting` - the
-        // agent said so, and the row draws what the agent said - but nothing blinks at
-        // anybody over it.
+        // Automatic approval is busy on every surface.
         let accepted = reported(&request("Edit", "acceptEdits"));
-        assert_eq!(accepted.state, AgentState::Waiting);
+        assert_eq!(accepted.state, AgentState::Busy);
+        assert_eq!(accepted.waiting_on, None);
         assert!(!accepted.wait_needs_a_person);
+
+        for kind in ["claude", "codex"] {
+            for mode in [None, Some("default"), Some("plan"), Some("unknown-mode")] {
+                let event = HookEvent {
+                    permission_mode: mode.map(str::to_owned),
+                    ..request("Bash", "default")
+                };
+                let HookOutcome::Reported(info) = hook_outcome(kind, &event) else {
+                    panic!("manual permission must report");
+                };
+                assert_eq!(info.state, AgentState::Waiting);
+                assert!(info.wait_needs_a_person);
+            }
+        }
 
         // The same mode, a tool it does not answer.
         let blocked = reported(&request("Bash", "acceptEdits"));

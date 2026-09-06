@@ -265,25 +265,11 @@ struct State {
     ///
     /// Their feeds are read from those events and never rebuilt from the pane manifest: the
     /// event stream carries what a record cannot - a `Notification` arriving six seconds
-    /// after the `PermissionRequest` for the same prompt must not overwrite the more precise
+    /// after an `Elicitation` for the same prompt must not overwrite the more precise
     /// account of it - and a complete record has no way to express "keep what you had". The
     /// manifest road is for a pane that reports some other way: one hocus spawned, an
     /// `agent-report --state` script, a plugin speaking for an agent.
     event_fed: BTreeSet<u32>,
-    /// The panes now waiting on something nobody was told about.
-    ///
-    /// A `PermissionRequest` under a mode that answers it is drawn but not announced. That
-    /// prompt's only other signal is the `Notification` about six seconds later, and by then
-    /// the feed is already `Waiting`, so there is no busy→waiting edge left for it to cross.
-    ///
-    /// This is that edge, held open - but only for the suppressions that were a promise rather
-    /// than a guess, which is what `agents::suppression_is_a_guarantee` answers.
-    /// `bypassPermissions` and `dontAsk` answer every prompt they silence and `acceptEdits`
-    /// answers the file-editing ones, so a dialog still up six seconds later under any of them
-    /// is a promise that did not hold, and the backstop toasts on the question the request
-    /// itself worded. Under `auto` nothing is held: the classifier is routinely still deciding
-    /// a `Bash` call when that timer fires, so the notification is no evidence of anything.
-    suppressed_waits: BTreeSet<u32>,
     /// What the user last asked each hook-fed pane for, from its `UserPromptSubmit`.
     ///
     /// Kept so a summary can say what the run was *for*.
@@ -864,7 +850,6 @@ impl State {
             // not ours. The question the last turn answered goes with it either way.
             self.prompts.remove(&pane_id);
             self.event_fed.remove(&pane_id);
-            self.suppressed_waits.remove(&pane_id);
             if self.hooks.remove(&pane_id).is_some() {
                 self.publish();
             }
@@ -976,13 +961,8 @@ impl State {
             detail: agents::hook_detail(event),
             waiting_on: match phase {
                 agents::HookPhase::Waiting => {
-                    // The `Notification` that follows a `PermissionRequest` describes the
-                    // same prompt in worse words — "Claude needs your permission to use
-                    // Bash" where the request itself said `Bash cargo`. It is the backstop
-                    // for a prompt nothing else reported, so it fills a gap and never
-                    // overwrites: one wait keeps the first and most precise account of
-                    // itself. Everything else here is a first-class statement of what is
-                    // being asked, and does replace what came before it.
+                    // An elicitation reminder keeps the original question's wording.
+                    // Direct questions replace it.
                     let held = previous_wait.filter(|_| event.hook_event_name == "Notification");
                     held.or_else(|| agents::waiting_detail(event))
                 },
@@ -1017,61 +997,20 @@ impl State {
             self.rejoin_cwds();
             self.resolve_repositories();
         }
-        // The edge into a wait, not the state, and the edge on the *phase* alone.
-        //
-        // `PermissionRequest` puts the prompt up and the `Notification` for that same
-        // prompt follows about six seconds later — and the two word it differently, one
-        // naming the tool and the other writing the sentence Claude Code would have shown.
-        // So an agent blocked once must not interrupt twice, and comparing the two
-        // descriptions is exactly the comparison that would let it: they are two accounts
-        // of one prompt, not two prompts.
-        //
-        // Nothing is lost by that. Between two genuine questions the agent works — it acts
-        // on the first answer, and the `PostToolUse` for that is a `busy` — so a real
-        // second question crosses this edge on its own.
-        //
-        // The same edge is what keeps a prompt silenced under `auto` silent all the way
-        // through. A request under it is not announced (`waiting_needs_a_person`), and the
-        // notification behind it arrives with the feed already `Waiting`, so it has no edge to
-        // cross. That is deliberate rather than a gap: the notification is a plain timer Claude
-        // Code arms when the dialog goes up, and under `auto` the classifier is still deciding
-        // a `Bash` call well past it — so a notification that fired proves nothing about
-        // whether a person is needed, and it names no mode of its own for anyone to read. A
-        // prompt the classifier does refuse is still drawn; it is just not interrupted over. A
-        // notification with no request before it — a Claude Code without the
-        // `PermissionRequest` hook — enters the wait itself and is announced as before.
+        // Announce only actual transitions into waiting for user input.
         let entered_wait = phase == agents::HookPhase::Waiting
             && previous
                 .as_ref()
                 .is_none_or(|was| was.phase != agents::HookPhase::Waiting);
-        // The one thing that reopens a spent edge: a wait silenced under a mode that *promised*
-        // to answer it, and did not. See `suppressed_waits`. Taken out of the set here whether
-        // or not this event announces it, because either way the edge it was holding has now
-        // been used.
-        let held_edge = self.suppressed_waits.remove(&pane_id);
-        let announce = phase == agents::HookPhase::Waiting
-            && agents::waiting_needs_a_person(event)
-            && (entered_wait || held_edge);
         // Not over the very pane it describes: the user is looking at the question. The same
-        // rule the summary toast keeps — and the reason this is not part of `announce`, which
+        // rule the summary toast keeps — and the reason this is not part of `entered_wait`, which
         // is about the wait having been spoken for rather than about it being seen.
-        if announce && self.focused != Some(pane_id) {
+        if entered_wait && self.focused != Some(pane_id) {
             let kind = self.toast_kind(pane_id);
             toast(
                 pane_id,
                 &agents::waiting_toast(pane_id, kind.as_deref(), &feed),
             );
-        }
-        // A wait still standing that nobody has been told about, and that a mode promised to
-        // answer. The edge stays open for its backstop; anything that ends the wait takes it
-        // out above and leaves it out, and a wait silenced on the odds is never put in - see
-        // `suppressed_waits`.
-        if phase == agents::HookPhase::Waiting
-            && !announce
-            && (entered_wait || held_edge)
-            && agents::suppression_is_a_guarantee(event)
-        {
-            self.suppressed_waits.insert(pane_id);
         }
         if changed {
             self.publish();
@@ -1719,7 +1658,6 @@ impl State {
         // otherwise leave its id in both for the life of the daemon, and leave `event_fed`
         // disagreeing with `hooks` about which road the pane is read from.
         self.event_fed.retain(|id| live.contains(id));
-        self.suppressed_waits.retain(|id| live.contains(id));
         self.run_lookups.retain(|id| live.contains(id));
         // A pane that has come back to life is running a new process, and has to
         // earn its latch again rather than inherit the dead one's. `settle_latches`
@@ -1785,7 +1723,6 @@ impl State {
             if agent.state == AgentState::Exited {
                 self.hooks.remove(&pane.pane_id);
                 self.event_fed.remove(&pane.pane_id);
-                self.suppressed_waits.remove(&pane.pane_id);
                 continue;
             }
             // A pane whose events we hear is read from them; see `event_fed`.
@@ -2873,7 +2810,6 @@ impl State {
     fn forget_agent(&mut self, pane_id: u32) {
         self.hooks.remove(&pane_id);
         self.event_fed.remove(&pane_id);
-        self.suppressed_waits.remove(&pane_id);
         self.activity.remove(&pane_id);
         self.summaries.remove(&pane_id);
         self.summary_requests.remove(&pane_id);
@@ -3606,17 +3542,16 @@ mod tests {
     /// A pane whose events reach the daemon is read from them, not from the record they also
     /// write. The record is complete every time it is set and so has no way to say "keep the
     /// wording you had" — which is exactly what a `Notification` arriving six seconds after the
-    /// `PermissionRequest` for the same prompt needs it to say.
+    /// `Elicitation` for the same prompt needs it to say.
     #[test]
     fn a_pane_update_does_not_overwrite_what_a_pane_told_us_itself() {
         let request = wire::HookEvent {
-            tool_name: Some("Bash".to_owned()),
-            tool_input: Some(serde_json::json!({ "command": "rm -rf target" })),
-            ..hook("PermissionRequest")
+            message: Some("Which repository?".to_owned()),
+            ..hook("Elicitation")
         };
         let notification = wire::HookEvent {
-            notification_type: Some("permission_prompt".to_owned()),
-            message: Some("Claude needs your permission to use Bash".to_owned()),
+            notification_type: Some("elicitation_dialog".to_owned()),
+            message: Some("Select a repository".to_owned()),
             ..hook("Notification")
         };
         let mut state = State {
@@ -3625,11 +3560,14 @@ mod tests {
             ..State::default()
         };
         state.on_hook(7, &request);
-        assert_eq!(state.hooks[&7].waiting_on.as_deref(), Some("Bash rm"));
+        assert_eq!(
+            state.hooks[&7].waiting_on.as_deref(),
+            Some("Which repository?")
+        );
         state.on_hook(7, &notification);
         assert_eq!(
             state.hooks[&7].waiting_on.as_deref(),
-            Some("Bash rm"),
+            Some("Which repository?"),
             "the backstop fills a gap, it does not replace"
         );
 
@@ -3651,7 +3589,7 @@ mod tests {
         state.rebuild_panes();
         assert_eq!(
             state.hooks[&7].waiting_on.as_deref(),
-            Some("Bash rm"),
+            Some("Which repository?"),
             "a pane we hear from directly is read from its events"
         );
     }
@@ -6224,159 +6162,81 @@ mod tests {
         assert_eq!(cell(&state, 7), "waiting · Bash");
     }
 
-    /// A mode that answers permission prompts by itself has nobody to interrupt. The row
-    /// still draws what the agent said — only the toast is gated.
+    /// Automatic approval stays busy through reminders, and a direct question still waits.
     #[test]
-    fn a_wait_under_an_unattended_mode_is_drawn_but_not_announced() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        let event = wire::HookEvent {
-            permission_mode: Some("bypassPermissions".to_owned()),
-            ..tool_hook("PermissionRequest", "Bash", serde_json::json!({}))
-        };
-        let (toasts, _) = feed(&mut state, 7, &event, None);
-        assert!(toasts.is_empty());
-        assert_eq!(cell(&state, 7), "waiting · Bash");
-    }
-
-    /// …and stays silent through the notification behind it, too.
-    ///
-    /// `auto` is a classifier, not a blanket allow, and its request is silenced on the odds:
-    /// most of them really are answered. The `Notification` about six seconds later used to be
-    /// read as the proof that this one was not — but it is a plain timer Claude Code arms when
-    /// the dialog goes up, the classifier is routinely still deciding a `Bash` call when it
-    /// fires, and it names no mode of its own. So it crosses no edge and announces nothing; the
-    /// row keeps drawing the wait in the request's own words. A real question after it still
-    /// interrupts, because the agent working in between re-arms the edge.
-    #[test]
-    fn a_permission_prompt_the_mode_is_answering_stays_silent_through_its_backstop() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        let auto = |event: wire::HookEvent| wire::HookEvent {
-            permission_mode: Some("auto".to_owned()),
-            ..event
-        };
-        let (silent, _) = feed(
-            &mut state,
-            7,
-            &auto(tool_hook(
-                "PermissionRequest",
-                "Bash",
-                serde_json::json!({ "command": "rm -rf target" }),
-            )),
-            None,
-        );
-        assert!(silent.is_empty(), "the mode is expected to answer it");
-        assert_eq!(cell(&state, 7), "waiting · Bash rm");
-
-        // The notification carries no `permission_mode`: what keeps it quiet is that the feed
-        // is already waiting, not anything it says for itself.
-        let backstop = wire::HookEvent {
-            notification_type: Some("permission_prompt".to_owned()),
-            message: Some("Claude needs your permission to use Bash".to_owned()),
-            ..hook("Notification")
-        };
-        let (still_silent, _) = feed(&mut state, 7, &backstop, None);
-        assert!(
-            still_silent.is_empty(),
-            "a timer firing says nothing about whether the classifier has answered"
-        );
-        assert_eq!(
-            cell(&state, 7),
-            "waiting · Bash rm",
-            "the row keeps the request's own account of the prompt"
-        );
-
-        // Answered, and then a question addressed to a person: the `busy` in between re-armed
-        // the edge, and no mode answers an `AskUserQuestion`.
-        feed(&mut state, 7, &auto(hook("PostToolUse")), None);
-        let (asked, _) = feed(
-            &mut state,
-            7,
-            &auto(tool_hook(
-                "PreToolUse",
-                "AskUserQuestion",
-                serde_json::json!({ "questions": [{ "question": "Which crate?" }] }),
-            )),
-            None,
-        );
-        assert_eq!(
-            asked,
-            vec![(7, "agent waiting · 7 · claude◆\nWhich crate?".to_owned())],
-            "a real question after a silenced prompt still interrupts"
-        );
-    }
-
-    /// A mode that *promised* to answer, though, is held to it.
-    ///
-    /// `bypassPermissions` and `dontAsk` resolve every permission prompt and `acceptEdits`
-    /// resolves the file-editing ones, so a dialog still up six seconds later under one of them
-    /// is a promise that did not hold — a `deny` rule, a `PreToolUse` hook that asks anyway, an
-    /// edit outside the workspace. The request itself is still silenced on the way in, so the
-    /// edge is held open (`suppressed_waits`) and the backstop spends it, toasting the question
-    /// in the request's own words rather than the notification's vaguer ones.
-    #[test]
-    fn a_promised_answer_that_never_came_is_announced_by_its_backstop() {
-        for (mode, tool, input, said) in [
-            (
-                "acceptEdits",
-                "Write",
-                serde_json::json!({ "file_path": "/elsewhere/notes.md" }),
-                "Write notes.md",
-            ),
-            (
-                "bypassPermissions",
-                "Bash",
-                serde_json::json!({ "command": "cargo test" }),
-                "Bash cargo",
-            ),
+    fn automatic_permissions_stay_busy_until_a_person_is_asked() {
+        for (kind, question) in [
+            ("claude", "AskUserQuestion"),
+            ("codex", "request_user_input"),
         ] {
-            let mut state = State {
-                panes: Some(vec![pane(7, "claude", "/work")]),
-                ..State::default()
-            };
-            let under = |event: wire::HookEvent| wire::HookEvent {
-                permission_mode: Some(mode.to_owned()),
-                ..event
-            };
-            let request =
-                |input: serde_json::Value| under(tool_hook("PermissionRequest", tool, input));
-            let backstop = || wire::HookEvent {
-                notification_type: Some("permission_prompt".to_owned()),
-                message: Some(format!("Claude needs your permission to use {tool}")),
-                ..hook("Notification")
-            };
-
-            let (silent, _) = feed(&mut state, 7, &request(input.clone()), None);
-            assert!(silent.is_empty(), "{mode} is expected to answer it");
-            assert_eq!(cell(&state, 7), format!("waiting · {said}"));
-
-            let (toasts, _) = feed(&mut state, 7, &backstop(), None);
-            assert_eq!(
-                toasts,
-                vec![(7, format!("agent waiting · 7 · claude◆\n{said}"))],
-                "{mode} did not answer it after all, and the row's own words are the better ones"
-            );
-
-            // Answered, and then a second prompt the mode is expected to answer: the edge the
-            // first one held is spent, and nothing is owed for the second until its own
-            // backstop fires.
-            feed(&mut state, 7, &under(hook("PostToolUse")), None);
-            let (again, _) = feed(&mut state, 7, &request(input), None);
-            assert!(
-                again.is_empty(),
-                "{mode} is expected to answer this one too"
-            );
-            let (settled, _) = feed(&mut state, 7, &backstop(), None);
-            assert_eq!(
-                settled.len(),
-                1,
-                "and the second promise is held to the same account"
-            );
+            let feed =
+                |state: &mut State, pane_id, event: &wire::HookEvent, _: Option<&Endpoint>| {
+                    let mut toasts = Vec::new();
+                    state.on_hook_with(
+                        pane_id,
+                        kind,
+                        event,
+                        |pane_id, text| toasts.push((pane_id, text.to_owned())),
+                        |_, _| {},
+                    );
+                    (toasts, ())
+                };
+            for (mode, tool) in [
+                ("auto", "Bash"),
+                ("bypassPermissions", "Bash"),
+                ("dontAsk", "Bash"),
+                ("acceptEdits", "Edit"),
+            ] {
+                let mut state = State {
+                    panes: Some(vec![pane(7, kind, "/work")]),
+                    ..State::default()
+                };
+                let request = wire::HookEvent {
+                    permission_mode: Some(mode.to_owned()),
+                    ..tool_hook(
+                        "PermissionRequest",
+                        tool,
+                        serde_json::json!({"command": "git status", "file_path": "/work/main.rs"}),
+                    )
+                };
+                let (toasts, _) = feed(&mut state, 7, &request, None);
+                assert!(toasts.is_empty(), "{kind} {mode}");
+                let expected = if tool == "Bash" {
+                    "busy · Bash git"
+                } else {
+                    "busy · Edit main.rs"
+                };
+                assert_eq!(cell(&state, 7), expected);
+                assert_eq!(state.hooks[&7].waiting_on, None);
+                for notification in ["permission_prompt", "worker_permission_prompt"] {
+                    let reminder = wire::HookEvent {
+                        notification_type: Some(notification.to_owned()),
+                        ..hook("Notification")
+                    };
+                    let (toasts, _) = feed(&mut state, 7, &reminder, None);
+                    assert!(toasts.is_empty());
+                    assert_eq!(cell(&state, 7), expected);
+                }
+                feed(&mut state, 7, &hook("PostToolUse"), None);
+                assert_eq!(cell(&state, 7), "busy");
+                feed(&mut state, 7, &request, None);
+                let asking = wire::HookEvent {
+                    permission_mode: Some(mode.to_owned()),
+                    ..tool_hook(
+                        "PreToolUse",
+                        question,
+                        serde_json::json!({"questions": [{"question": "Which crate?"}]}),
+                    )
+                };
+                let (toasts, _) = feed(&mut state, 7, &asking, None);
+                assert_eq!(toasts.len(), 1, "{kind} {mode}");
+                assert_eq!(cell(&state, 7), "waiting · Which crate?");
+                feed(&mut state, 7, &hook("PostToolUse"), None);
+                assert_eq!(cell(&state, 7), "busy");
+                assert_eq!(state.hooks[&7].waiting_on, None);
+                feed(&mut state, 7, &hook("Stop"), None);
+                assert_eq!(cell(&state, 7), "idle");
+            }
         }
     }
 
