@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use zellij_types::internal_ids::ClientId;
 
+use zellij_types::pane_size::PaneGeom;
 use zellij_types::style::{Palette, Style};
-use zellij_utils::pane_size::PaneGeom;
 
 fn read_fixture() -> Vec<u8> {
     let mut path_to_file = std::path::PathBuf::new();

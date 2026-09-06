@@ -8,19 +8,21 @@ use crate::{os_input_output::ServerOsApi, panes::PaneId, thread_bus::ThreadSende
 use std::path::PathBuf;
 use zellij_runtime::channels::{unbounded, Receiver, SenderWithContext};
 use zellij_runtime::errors::prelude::*;
+use zellij_types::geometry::{Direction, Resize, ResizeStrategy};
+use zellij_types::geometry::{SplitDirection, SplitSize};
 use zellij_types::internal_ids::TerminalId;
-use zellij_utils::data::{Direction, NewPanePlacement, OverlayPlacement, Resize, ResizeStrategy};
-use zellij_utils::input::layout::{SplitDirection, SplitSize, TiledPaneLayout};
+use zellij_utils::data::{NewPanePlacement, OverlayPlacement};
+use zellij_utils::input::layout::TiledPaneLayout;
 
 use crate::os_input_output::AsyncReader;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use zellij_types::pane_size::{PaneGeom, Size, SizeInPixels, Viewport};
 use zellij_types::style::{Palette, Style};
 use zellij_utils::input::options::PaneFrameStyle;
 use zellij_utils::ipc::IpcReceiverWithContext;
-use zellij_utils::pane_size::{PaneGeom, Size, SizeInPixels, Viewport};
 use zellij_utils::{
     data::ModeInfo,
     input::command::{RunCommand, TerminalAction},

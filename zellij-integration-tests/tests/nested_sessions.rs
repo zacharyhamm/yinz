@@ -7,7 +7,7 @@ use zellij_integration_tests::{
     tab_bar_shows_no_lone_pane_id, wait_for_settled_composite, GridSnapshot,
     NestedDepthThreeHarness, NestedHarness, PROMPT, TERMINAL_SIZE,
 };
-use zellij_utils::data::Direction;
+use zellij_types::geometry::Direction;
 use zellij_utils::nested_session::NestedSessionMessage;
 
 const ARROW_UP: &[u8] = b"\x1b[A";

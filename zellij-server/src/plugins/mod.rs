@@ -49,11 +49,13 @@ use zellij_runtime::errors::prelude::*;
 use zellij_types::diagnostics::ContextType;
 use zellij_types::diagnostics::ErrorContext;
 use zellij_types::diagnostics::PluginContext;
+use zellij_types::geometry::FloatingPaneCoordinates;
+use zellij_types::pane_size::Size;
 use zellij_utils::{
     data::{
-        ClientInfo, CommandOrPlugin, ContextMenuContext, Event, EventType, FloatingPaneCoordinates,
-        HookPayload, InputMode, LayoutInfo, LayoutWithError, MessageToPlugin, Mouse,
-        OverlayPlacement, PermissionStatus, PermissionType, PipeMessage, PipeSource,
+        ClientInfo, CommandOrPlugin, ContextMenuContext, Event, EventType, HookPayload, InputMode,
+        LayoutInfo, LayoutWithError, MessageToPlugin, Mouse, OverlayPlacement, PermissionStatus,
+        PermissionType, PipeMessage, PipeSource,
     },
     input::{
         actions::Action,
@@ -62,7 +64,6 @@ use zellij_utils::{
         layout::{FloatingPaneLayout, Layout, Run, RunPlugin, RunPluginOrAlias, TiledPaneLayout},
         plugins::{PluginAliases, PluginConfig},
     },
-    pane_size::Size,
     session_serialization,
 };
 

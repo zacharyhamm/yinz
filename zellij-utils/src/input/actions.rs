@@ -6,11 +6,11 @@ use super::layout::{
     SwapFloatingLayout, SwapTiledLayout, TabLayoutInfo, TiledPaneLayout,
 };
 use crate::cli::CliAction;
+use crate::data::InputMode;
 use crate::data::{
-    AgentInfo, AgentSource, AgentState, CommandOrPlugin, Direction, LayoutInfo, NewPanePlacement,
-    OriginatingPlugin, PaneId, Resize, UnblockCondition, WarpPlacement, WarpedPane, WarpedTab,
+    CommandOrPlugin, LayoutInfo, NewPanePlacement, OriginatingPlugin, PaneId, UnblockCondition,
+    WarpPlacement, WarpedPane, WarpedTab,
 };
-use crate::data::{FloatingPaneCoordinates, InputMode};
 use crate::home::{find_default_config_dir, get_layout_dir};
 use crate::input::config::{Config, ConfigError, KdlError};
 use crate::input::options::{OnForceClose, PaneFrameStyle};
@@ -18,8 +18,13 @@ use miette::{NamedSource, Report};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
+use zellij_types::geometry::FloatingPaneCoordinates;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::mouse::MouseEvent;
+use zellij_types::{
+    agent::{AgentInfo, AgentSource, AgentState},
+    geometry::{Direction, Resize},
+};
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -1307,7 +1312,7 @@ impl Action {
                 // The same rules a layout's `firecracker_*` properties are held to,
                 // checked here for the same reason: a CLI error names the flag, a
                 // spawn error is a banner in a pane that already exists.
-                let target = super::command::PaneTarget::from_parts(
+                let target = zellij_types::command::PaneTarget::from_parts(
                     remote_host.as_deref(),
                     firecracker.as_deref(),
                     firecracker_image.as_deref(),
@@ -4757,8 +4762,8 @@ mod tests {
 
     mod props {
         use super::*;
-        use crate::data::{Direction, Resize};
         use hegel::generators;
+        use zellij_types::geometry::{Direction, Resize};
 
         fn cwd() -> Box<dyn Fn() -> PathBuf> {
             Box::new(|| PathBuf::from("/tmp"))

@@ -10,8 +10,8 @@ use super::*;
 use crate::route::{wait_for_action_completion, NotificationEnd};
 use crate::screen::agent_placement::{choose_tab, floor_of, projected_share, Candidate};
 use std::collections::BTreeMap;
+use zellij_types::pane_size::Viewport;
 use zellij_utils::data::{OriginatingPlugin, HOCUS_AGENT_PANE_CONTEXT};
-use zellij_utils::pane_size::Viewport;
 
 const SURFACE: Size = Size { cols: 80, rows: 20 };
 const FLOOR: Size = Size { cols: 40, rows: 10 };
@@ -715,7 +715,7 @@ fn a_tab_made_for_an_agent_pane_is_pending_until_its_layout_lands() {
 
 #[test]
 fn a_failed_layout_override_clears_the_pending_tab() {
-    use zellij_utils::input::layout::SplitSize;
+    use zellij_types::geometry::SplitSize;
 
     let mut screen = screen_with_floor();
     tab_with_panes(&mut screen, 0, 1, 1);

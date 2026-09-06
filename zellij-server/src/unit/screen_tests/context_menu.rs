@@ -8,10 +8,10 @@
 
 use super::*;
 use zellij_types::keys::{BareKey, KeyWithModifier};
+use zellij_types::pane_size::Viewport;
 use zellij_utils::data::{ContextMenuContext, ContextMenuItem};
 use zellij_utils::input::actions::Action;
 use zellij_utils::input::context_menu::ContextMenu;
-use zellij_utils::pane_size::Viewport;
 
 /// A small configured menu, so these tests do not depend on what the shipped default happens to
 /// contain. `ContextMenu::from_items` assigns the ids, exactly as parsing a config block does.

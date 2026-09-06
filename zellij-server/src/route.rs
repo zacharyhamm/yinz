@@ -26,11 +26,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 use zellij_runtime::{channels::SenderWithContext, envs, errors::prelude::*};
+use zellij_types::geometry::{Direction, ResizeStrategy};
 use zellij_types::keys::{BareKey, KeyModifier};
 use zellij_utils::{
     data::{
-        ConnectToSession, Direction, Event, InputMode, ListPanesResponse, ListTabsResponse,
-        NewPanePlacement, PaneListEntry, ResizeStrategy, TabInfo, UnblockCondition,
+        ConnectToSession, Event, InputMode, ListPanesResponse, ListTabsResponse, NewPanePlacement,
+        PaneListEntry, TabInfo, UnblockCondition,
     },
     input::{
         actions::{Action, SearchDirection, SearchOption},

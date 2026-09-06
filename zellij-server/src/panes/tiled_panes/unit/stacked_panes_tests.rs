@@ -4,9 +4,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use zellij_runtime::errors::prelude::*;
+use zellij_types::pane_size::Offset;
+use zellij_types::pane_size::{Dimension, PaneGeom};
 use zellij_utils::input::layout::Run;
-use zellij_utils::pane_size::Offset;
-use zellij_utils::pane_size::{Dimension, PaneGeom};
 
 use crate::ui::pane_boundaries_frame::FrameParams;
 use crate::{

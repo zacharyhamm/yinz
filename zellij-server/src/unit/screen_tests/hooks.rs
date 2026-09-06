@@ -11,10 +11,11 @@ use crate::plugins::HookFiring;
 use crate::screen::{agent_hook_edges, apply_pane_agent_report};
 use std::collections::BTreeMap;
 use std::path::Path;
+use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
 use zellij_types::keys::{BareKey, KeyWithModifier};
+use zellij_utils::data::HookPayload;
 use zellij_utils::data::OriginatingPlugin;
 use zellij_utils::data::HOCUS_AGENT_PANE_CONTEXT;
-use zellij_utils::data::{AgentInfo, AgentSource, AgentState, HookPayload};
 use zellij_utils::input::hooks::HookPoint;
 
 type Fired = (HookPoint, Option<PaneId>, HookFiring);
@@ -418,7 +419,7 @@ fn an_exiting_agent_pane_fires_the_agent_exit_hook() {
 fn a_firecracker_worktree_agent_exit_identifies_the_vm_to_the_hook() {
     let mut command = agent_command("/workspace");
     command.cwd = None;
-    command.target = zellij_utils::data::PaneTarget::firecracker(
+    command.target = zellij_types::command::PaneTarget::firecracker(
         "review",
         Some("rust-dev"),
         Some(Path::new("/work/.worktrees/topic")),

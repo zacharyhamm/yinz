@@ -31,13 +31,15 @@ use zellij_storage::data_access::DataAccess;
 
 use crate::plugins::queues::Queues;
 use zellij_runtime::errors::prelude::*;
+use zellij_types::pane_size::Size;
 use zellij_utils::{
     consts::ZELLIJ_TMP_DIR,
     data::InputMode,
-    input::command::TerminalAction,
-    input::keybinds::Keybinds,
-    input::plugins::{PluginAliases, PluginConfig, PluginRuntime},
-    pane_size::Size,
+    input::{
+        command::TerminalAction,
+        keybinds::Keybinds,
+        plugins::{PluginAliases, PluginConfig, PluginRuntime},
+    },
 };
 
 fn open_dir(path: &std::path::Path) -> std::io::Result<std::fs::File> {

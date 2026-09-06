@@ -2,7 +2,7 @@ pub use super::generated_api::api::command::{
     pane_target::Kind as ProtobufPaneTargetKind, Command as ProtobufCommand,
     FirecrackerTarget as ProtobufFirecrackerTarget, PaneTarget as ProtobufPaneTarget,
 };
-use crate::data::{CommandToRun, PaneTarget};
+use zellij_types::command::{CommandToRun, PaneTarget};
 
 use std::convert::TryFrom;
 use std::path::{Path, PathBuf};

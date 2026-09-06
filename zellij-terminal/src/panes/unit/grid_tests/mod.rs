@@ -11,10 +11,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use vte;
+use zellij_types::pane_size::SizeInPixels;
 use zellij_types::position::Position;
 use zellij_types::style::{Palette, Style};
 use zellij_utils::consts::SCROLL_BUFFER_SIZE;
-use zellij_utils::{input::options::DEFAULT_WORD_SEPARATORS, pane_size::SizeInPixels};
+use zellij_utils::input::options::DEFAULT_WORD_SEPARATORS;
 
 use std::fmt::Write;
 
@@ -83,7 +84,8 @@ fn viewport_position_of(grid: &Grid, needle: &str) -> Position {
 use crate::panes::grid::MouseTracking;
 use crate::panes::terminal_character::AnsiCode;
 use std::collections::BTreeMap;
-use zellij_utils::data::{Direction, HighlightLayer, HighlightStyle, RegexHighlight};
+use zellij_types::geometry::Direction;
+use zellij_utils::data::{HighlightLayer, HighlightStyle, RegexHighlight};
 
 #[test]
 fn keyboard_selection_remembers_copies_until_select_mode_finishes() {

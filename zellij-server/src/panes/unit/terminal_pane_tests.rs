@@ -12,11 +12,11 @@ use std::rc::Rc;
 use zellij_types::internal_ids::ClientId;
 use zellij_types::position::Position;
 use zellij_types::style::{Palette, Style};
-use zellij_utils::{
-    data::{AgentInfo, AgentSource, AgentState, InputMode},
-    input::command::RunCommand,
+use zellij_types::{
+    agent::{AgentInfo, AgentSource, AgentState},
     pane_size::{Offset, PaneGeom, SizeInPixels},
 };
+use zellij_utils::{data::InputMode, input::command::RunCommand};
 
 use std::fmt::Write;
 

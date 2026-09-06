@@ -19,15 +19,16 @@ use zellij_runtime::{
     errors::prelude::*,
 };
 use zellij_types::internal_ids::TerminalId;
+use zellij_types::pane_size::{Size, SizeInPixels, Viewport};
 use zellij_types::style::{Palette, Style};
 use zellij_utils::input::options::PaneFrameStyle;
 use zellij_utils::{
     data::ModeInfo,
-    input::command::{RunCommand, TerminalAction},
-    input::layout::RunPluginOrAlias,
-    input::layout::{FloatingPaneLayout, Layout, Run, TiledPaneLayout},
+    input::{
+        command::{RunCommand, TerminalAction},
+        layout::{FloatingPaneLayout, Layout, Run, RunPluginOrAlias, TiledPaneLayout},
+    },
     ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg},
-    pane_size::{Size, SizeInPixels, Viewport},
 };
 
 #[derive(Clone)]

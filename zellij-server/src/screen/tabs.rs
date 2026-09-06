@@ -9,7 +9,8 @@ use crate::route::NotificationEnd;
 use crate::tab::{AcceptedPane, ExtractedPanePlacement, Pane, SuppressedPanes, Tab};
 use crate::{ClientId, ServerInstruction};
 use std::collections::{HashMap, HashSet};
-use zellij_utils::data::{Direction, Event, ModeInfo};
+use zellij_types::geometry::Direction;
+use zellij_utils::data::{Event, ModeInfo};
 use zellij_utils::input::command::RunCommand;
 
 impl Screen {

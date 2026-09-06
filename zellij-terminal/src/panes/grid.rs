@@ -32,6 +32,7 @@ use std::{
 };
 
 use vte;
+use zellij_types::pane_size::SizeInPixels;
 use zellij_types::position::Position;
 use zellij_types::style::{Palette, Styling};
 use zellij_utils::{
@@ -39,7 +40,6 @@ use zellij_utils::{
     data::PaletteColor,
     input::options::DEFAULT_WORD_SEPARATORS,
     nested_session::{self, NestedSessionMessage},
-    pane_size::SizeInPixels,
 };
 
 const TABSTOP_WIDTH: usize = 8; // TODO: is this always right?
@@ -310,7 +310,8 @@ use crate::panes::terminal_character::{
 };
 use crate::panes::Selection;
 use crate::ui::components::UiComponentParser;
-use zellij_utils::data::{Direction, PaneContents};
+use zellij_types::geometry::Direction;
+use zellij_utils::data::PaneContents;
 
 fn get_top_non_canonical_rows(rows: &mut VecDeque<Row>) -> Vec<Row> {
     let mut index_of_last_non_canonical_row = None;

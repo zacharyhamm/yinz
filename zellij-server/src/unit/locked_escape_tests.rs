@@ -360,7 +360,7 @@ fn locked_escape_resize_does_not_resolve_or_extend_the_prefix() {
     assert!(matches!(
         prepare_input(
             ClientToServerMsg::TerminalResize {
-                new_size: zellij_utils::pane_size::Size { rows: 24, cols: 80 },
+                new_size: zellij_types::pane_size::Size { rows: 24, cols: 80 },
             },
             &session_data,
             &SenderWithContext::new(tx),

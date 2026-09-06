@@ -1,8 +1,9 @@
 //! Trigger a command
-pub use crate::data::{validate_firecracker_vm_name, PaneTarget, FIRECRACKER_HOST_PREFIX};
-use crate::data::{Direction, OriginatingPlugin};
+use crate::data::OriginatingPlugin;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use zellij_types::command::PaneTarget;
+use zellij_types::geometry::Direction;
 
 #[derive(Debug, Clone)]
 pub enum TerminalAction {

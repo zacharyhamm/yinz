@@ -1,4 +1,4 @@
-use crate::data::{Direction, InputMode, Resize, UnblockCondition};
+use crate::data::{InputMode, UnblockCondition};
 use crate::setup::Setup;
 use crate::{
     consts::{ZELLIJ_CONFIG_DIR_ENV, ZELLIJ_CONFIG_FILE_ENV},
@@ -12,6 +12,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use url::Url;
+use zellij_types::geometry::{Direction, Resize};
 
 const fn ansi(color: AnsiColor) -> Style {
     Style::new().fg_color(Some(Color::Ansi(color)))

@@ -25,9 +25,9 @@ use crate::pty_writer::PtyWriteInstruction;
 use crate::{plugins::PluginInstruction, pty::PtyInstruction};
 use std::env::set_var;
 use zellij_runtime::channels::{self, ChannelWithContext, Receiver};
+use zellij_types::pane_size::Size;
 use zellij_utils::input::permission::PermissionCache;
 use zellij_utils::input::plugins::PluginAliases;
-use zellij_utils::pane_size::Size;
 
 use crate::ClientId;
 use zellij_test_support::{default_timeout, Watched};

@@ -437,7 +437,7 @@ fn warped_pane_from_entry(
                     .skip(1)
                     .map(str::to_owned)
                     .collect(),
-                target: zellij_utils::data::PaneTarget::Ssh {
+                target: zellij_types::command::PaneTarget::Ssh {
                     host: host.to_owned(),
                 },
                 ..Default::default()

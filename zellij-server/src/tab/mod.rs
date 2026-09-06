@@ -28,17 +28,18 @@ use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
 use zellij_runtime::errors::prelude::*;
+use zellij_types::agent::AgentInfo;
+use zellij_types::geometry::{Direction, ResizeStrategy};
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::mouse::MouseEvent;
 use zellij_types::position::Position;
 use zellij_types::position::{Column, Line};
 use zellij_types::style::Style;
-use zellij_utils::data::AgentInfo;
 use zellij_utils::data::PaneContents;
 use zellij_utils::data::{
-    Direction, NewPanePlacement, OverlayKind, OverlayPlacement, PaneInfo, PermissionStatus,
-    PermissionType, PluginPermission, RegexHighlight, ResizeStrategy, StyledText,
+    NewPanePlacement, OverlayKind, OverlayPlacement, PaneInfo, PermissionStatus, PermissionType,
+    PluginPermission, RegexHighlight, StyledText,
 };
 use zellij_utils::input::command::RunCommand;
 use zellij_utils::input::options::DEFAULT_WORD_SEPARATORS;
@@ -84,18 +85,21 @@ use std::{
     str,
 };
 use zellij_types::style::{Palette, Styling};
+use zellij_types::{
+    geometry::{FloatingPaneCoordinates, PercentOrFixed, SplitDirection},
+    pane_size::{Dimension, Offset, PaneGeom, Size, SizeInPixels, Viewport},
+};
 use zellij_utils::{
-    data::{Event, FloatingPaneCoordinates, InputMode, ModeInfo, PaletteColor},
+    data::{Event, InputMode, ModeInfo, PaletteColor},
     input::{
         command::TerminalAction,
         layout::{
-            FloatingPaneLayout, PercentOrFixed, Run, RunPluginOrAlias, SplitDirection,
-            SwapFloatingLayout, SwapTiledLayout, TiledPaneLayout,
+            FloatingPaneLayout, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout,
+            TiledPaneLayout,
         },
         options::PaneFrameStyle,
     },
     nested_session::NestedSessionMessage,
-    pane_size::{Dimension, Offset, PaneGeom, Size, SizeInPixels, Viewport},
 };
 
 #[macro_export]

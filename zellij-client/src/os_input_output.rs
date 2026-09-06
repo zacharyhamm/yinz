@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use zellij_types::pane_size::Size;
 use zellij_types::style::default_palette;
-use zellij_utils::pane_size::Size;
 
 use crate::os_input_output_unix::{
     disable_mouse_support, enable_mouse_support, set_signal_keys, setup_ipc, AsyncSignalListener,

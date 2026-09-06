@@ -1,6 +1,6 @@
 use super::super::layout::*;
-use crate::input::command::PaneTarget;
 use insta::assert_snapshot;
+use zellij_types::command::PaneTarget;
 
 fn normalize_layout_debug(s: String) -> String {
     s
@@ -2105,8 +2105,8 @@ fn can_load_swap_layouts_from_a_different_file() {
 
 #[test]
 fn bundled_three_column_layouts_are_balanced() {
-    use crate::pane_size::{PaneGeom, Size};
     use std::path::Path;
+    use zellij_types::pane_size::{PaneGeom, Size};
 
     for (layout_name, ui_pane_count) in [
         ("default", 2),
@@ -2635,8 +2635,8 @@ fn layout_node_with_name_and_only_floating_panes() {
 
 #[test]
 fn floating_pane_coordinates_allows_zero_percent_for_x_y() {
-    use crate::data::FloatingPaneCoordinates;
-    use crate::input::layout::PercentOrFixed;
+    use zellij_types::geometry::FloatingPaneCoordinates;
+    use zellij_types::geometry::PercentOrFixed;
 
     let coords = FloatingPaneCoordinates::new(
         Some("0%".to_string()),
@@ -2657,8 +2657,8 @@ fn floating_pane_coordinates_allows_zero_percent_for_x_y() {
 
 #[test]
 fn floating_pane_coordinates_rejects_zero_percent_for_width() {
-    use crate::data::FloatingPaneCoordinates;
-    use crate::input::layout::PercentOrFixed;
+    use zellij_types::geometry::FloatingPaneCoordinates;
+    use zellij_types::geometry::PercentOrFixed;
 
     let coords = FloatingPaneCoordinates::new(
         Some("10%".to_string()),
@@ -2678,8 +2678,8 @@ fn floating_pane_coordinates_rejects_zero_percent_for_width() {
 
 #[test]
 fn floating_pane_coordinates_rejects_zero_percent_for_height() {
-    use crate::data::FloatingPaneCoordinates;
-    use crate::input::layout::PercentOrFixed;
+    use zellij_types::geometry::FloatingPaneCoordinates;
+    use zellij_types::geometry::PercentOrFixed;
 
     let coords = FloatingPaneCoordinates::new(
         Some("10%".to_string()),
@@ -2699,8 +2699,8 @@ fn floating_pane_coordinates_rejects_zero_percent_for_height() {
 
 #[test]
 fn floating_pane_coordinates_static_zero_works() {
-    use crate::data::FloatingPaneCoordinates;
-    use crate::input::layout::PercentOrFixed;
+    use zellij_types::geometry::FloatingPaneCoordinates;
+    use zellij_types::geometry::PercentOrFixed;
 
     let coords = FloatingPaneCoordinates::new(
         Some("0".to_string()),
@@ -2721,8 +2721,8 @@ fn floating_pane_coordinates_static_zero_works() {
 
 #[test]
 fn floating_pane_coordinates_one_percent_works() {
-    use crate::data::FloatingPaneCoordinates;
-    use crate::input::layout::PercentOrFixed;
+    use zellij_types::geometry::FloatingPaneCoordinates;
+    use zellij_types::geometry::PercentOrFixed;
 
     let coords = FloatingPaneCoordinates::new(
         Some("1%".to_string()),
@@ -2743,8 +2743,8 @@ fn floating_pane_coordinates_one_percent_works() {
 
 #[test]
 fn tiled_pane_still_rejects_zero_percent() {
-    use crate::input::layout::SplitSize;
     use std::str::FromStr;
+    use zellij_types::geometry::SplitSize;
 
     // Verify SplitSize::from_str still rejects 0%
     let result = SplitSize::from_str("0%");

@@ -192,23 +192,27 @@ use crate::plugin_api::plugin_data::{watch_mode_from_i32, ProtobufMutation, Prot
 
 use super::generated_api::api::event::AgentInfo as ProtobufAgentInfo;
 use crate::data::{
-    AgentInfo, AgentSpawnSpec, ConnectToSession, DataApplyResponse, DataCatalogResponse,
-    DataCountResponse, DataDefineResponse, DataEntityInfo, DataFetchResponse, DataUnwatchResponse,
-    DataWatchResponse, DeleteAllDeadSessionsResponse, DeleteDeadSessionResponse,
-    DeleteLayoutResponse, EditLayoutResponse, EnqueueQueueJobResponse, FloatingPaneCoordinates,
-    GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPaneGitProbeResponse, GetPanePidResponse,
-    GetPaneRunningCommandResponse, GetSessionListResponse, GitCheckout, HighlightLayer,
-    HighlightStyle, HttpVerb, InputMode, KillSessionsResponse, ListOrphanedPanesResponse,
-    MessageToPlugin, Mutation, NewPluginArgs, NotificationInfo,
-    OpenCommandPaneInGitCheckoutResponse, OpenCommandPaneOverlayResponse, OrphanedPane,
-    OverlayPlacement, PaneGitProbe, PaneId, PermissionType, PluginCommand, QueueSnapshot,
-    QueueStatusResponse, RecordingSummary, RegexHighlight, RenameLayoutResponse,
+    ConnectToSession, DataApplyResponse, DataCatalogResponse, DataCountResponse,
+    DataDefineResponse, DataEntityInfo, DataFetchResponse, DataUnwatchResponse, DataWatchResponse,
+    DeleteAllDeadSessionsResponse, DeleteDeadSessionResponse, DeleteLayoutResponse,
+    EditLayoutResponse, EnqueueQueueJobResponse, GetFocusedPaneInfoResponse, GetPaneCwdResponse,
+    GetPaneGitProbeResponse, GetPanePidResponse, GetPaneRunningCommandResponse,
+    GetSessionListResponse, HighlightLayer, HighlightStyle, HttpVerb, InputMode,
+    KillSessionsResponse, ListOrphanedPanesResponse, MessageToPlugin, Mutation, NewPluginArgs,
+    NotificationInfo, OpenCommandPaneInGitCheckoutResponse, OpenCommandPaneOverlayResponse,
+    OrphanedPane, OverlayPlacement, PaneGitProbe, PaneId, PermissionType, PluginCommand,
+    QueueSnapshot, QueueStatusResponse, RecordingSummary, RegexHighlight, RenameLayoutResponse,
     SaveLayoutResponse, SearchHit, SessionInfo, SessionListSnapshot, SpawnAgentResponse,
     SpawnedAgent, WarpPaneResponse, WarpPlacement,
 };
 use crate::input::actions::Action;
-use crate::input::layout::PercentOrFixed;
+use zellij_types::geometry::PercentOrFixed;
 use zellij_types::keys::KeyWithModifier;
+use zellij_types::{
+    agent::{AgentInfo, AgentSpawnSpec},
+    command::GitCheckout,
+    geometry::FloatingPaneCoordinates,
+};
 
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
@@ -6851,7 +6855,8 @@ impl From<SearchHit> for ProtobufSearchHit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::{CommandToRun, GitCheckout, PluginCommand};
+    use crate::data::PluginCommand;
+    use zellij_types::command::{CommandToRun, GitCheckout};
 
     #[test]
     fn default_keybindings_survive_the_wire() {
@@ -7412,10 +7417,11 @@ mod tests {
 
     mod props {
         use super::*;
-        use crate::data::{CommandType, ContextMenuItem, ResizeStrategy};
+        use crate::data::{CommandType, ContextMenuItem};
         use crate::plugin_api::action::tests::props::as_the_plugin_wire_carries_it as action_as_the_plugin_wire_carries_it;
         use crate::plugin_api::test_generators::plugin_command_of_kind;
         use strum::IntoEnumIterator;
+        use zellij_types::geometry::ResizeStrategy;
 
         /// `message Resize` has `resize_action` and `direction`, and no room for
         /// `invert_on_boundaries`; the decoder fills in `false`.

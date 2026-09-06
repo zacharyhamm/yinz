@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::pane_size::{Dimension, PaneGeom};
+use zellij_types::pane_size::{Dimension, PaneGeom};
 
 pub struct StackedPanes<'a> {
     panes: Rc<RefCell<HashMap<PaneId, &'a mut Box<dyn Pane>>>>,

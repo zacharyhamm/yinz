@@ -53,7 +53,7 @@ install` writes Claude Code hooks to `~/.claude/settings.json` and Codex hooks t
 inline as `--settings`, so it reports with nothing installed. Codex requires its installed hooks
 to be reviewed and trusted with `/hooks`.
 
-Entry points: `zellij-utils/src/data.rs` (`AgentInfo`), `zellij-utils/src/agent.rs` (hook
+Entry points: `zellij-types/src/agent.rs` (`AgentInfo`), `zellij-utils/src/agent.rs` (hook
 reading, the event list), `zellij-server/src/panes/terminal_pane.rs`, `screen/thread_main.rs`
 (`SetPaneAgent`), `src/hocus_hooks.rs`, `default-plugins/hocus-agentd/src/main.rs`.
 

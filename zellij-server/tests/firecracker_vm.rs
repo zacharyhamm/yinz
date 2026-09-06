@@ -23,7 +23,8 @@ use zellij_server::{
     },
 };
 use zellij_test_support::Watched;
-use zellij_utils::input::command::{PaneTarget, RunCommand};
+use zellij_types::command::PaneTarget;
+use zellij_utils::input::command::RunCommand;
 
 const TIMEOUT: Duration = Duration::from_secs(90);
 const IMAGE: &str = "zellij-dev";

@@ -72,13 +72,17 @@ use crate::route::NotificationEnd;
 use log::{debug, warn};
 use zellij_runtime::errors::prelude::*;
 use zellij_types::keys::KeyWithModifier;
+use zellij_types::pane_size::{Size, SizeInPixels};
 use zellij_types::position::Position;
 use zellij_types::style::{HostTerminalThemeMode, Styling, ThemeHue};
+use zellij_types::{
+    agent::{AgentInfo, AgentState},
+    geometry::{Direction, FloatingPaneCoordinates, ResizeStrategy},
+};
 use zellij_utils::data::{
-    AgentInfo, AgentState, ContextMenuContext, ContextMenuItem, Direction, EventType,
-    FloatingPaneCoordinates, HookPayload, LayoutInfo, LayoutWithError, NotificationInfo,
-    OverlayPlacement, PaneInfo, PluginTag, RemotePaneHandoff, ResizeStrategy, SessionInfo, TabInfo,
-    WarpedPane, WarpedTab, HOCUS_AGENT_PANE_CONTEXT,
+    ContextMenuContext, ContextMenuItem, EventType, HookPayload, LayoutInfo, LayoutWithError,
+    NotificationInfo, OverlayPlacement, PaneInfo, PluginTag, RemotePaneHandoff, SessionInfo,
+    TabInfo, WarpedPane, WarpedTab, HOCUS_AGENT_PANE_CONTEXT,
 };
 use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::input::context_menu::ContextMenu;
@@ -92,7 +96,6 @@ use zellij_utils::input::options::{
     Clipboard, HostNotificationProtocol, NestedSessionHandling, NotificationPosition,
     PaneFrameStyle,
 };
-use zellij_utils::pane_size::{Size, SizeInPixels};
 use zellij_utils::shared::clean_string_from_control_and_linebreak;
 
 use crate::background_jobs::BackgroundJob;
@@ -3036,9 +3039,9 @@ impl Screen {
         payload.insert(
             "agent_target".to_owned(),
             match &run_command.target {
-                zellij_utils::data::PaneTarget::Local => "local",
-                zellij_utils::data::PaneTarget::Ssh { .. } => "ssh",
-                zellij_utils::data::PaneTarget::Firecracker { .. } => "firecracker",
+                zellij_types::command::PaneTarget::Local => "local",
+                zellij_types::command::PaneTarget::Ssh { .. } => "ssh",
+                zellij_types::command::PaneTarget::Firecracker { .. } => "firecracker",
             }
             .to_owned(),
         );

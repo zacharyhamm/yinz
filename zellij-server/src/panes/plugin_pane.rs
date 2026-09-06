@@ -24,16 +24,17 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use vte;
 use zellij_runtime::{channels::SenderWithContext, errors::prelude::*};
+use zellij_types::geometry::Direction;
 use zellij_types::keys::{BareKey, KeyWithModifier};
+use zellij_types::pane_size::PaneGeom;
+use zellij_types::pane_size::{Offset, SizeInPixels};
 use zellij_types::position::Position;
 use zellij_types::style::{Palette, Style, Styling};
 use zellij_utils::data::PaneContents;
-use zellij_utils::data::{Direction, PermissionStatus, PermissionType, PluginPermission};
-use zellij_utils::pane_size::{Offset, SizeInPixels};
+use zellij_utils::data::{PermissionStatus, PermissionType, PluginPermission};
 use zellij_utils::{
     data::{Event, InputMode, Mouse, PaletteColor},
     input::layout::Run,
-    pane_size::PaneGeom,
 };
 
 macro_rules! style {
@@ -1183,7 +1184,7 @@ mod tests {
     use super::*;
     use zellij_runtime::channels;
     use zellij_tile::ui_components::{image_row, place_image_sequence, png_transmit_sequence};
-    use zellij_utils::pane_size::Dimension;
+    use zellij_types::pane_size::Dimension;
 
     fn test_plugin_pane(rows: usize, cols: usize, content_offset: Offset) -> PluginPane {
         test_plugin_pane_with_cell_size(rows, cols, content_offset, None)

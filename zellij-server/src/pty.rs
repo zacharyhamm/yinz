@@ -35,21 +35,21 @@ use tokio::task::JoinHandle;
 use zellij_runtime::errors::prelude::*;
 use zellij_types::diagnostics::ContextType;
 use zellij_types::diagnostics::PtyContext;
+use zellij_types::pane_size::Size;
+use zellij_types::{agent::AgentInfo, command::PaneTarget, geometry::FloatingPaneCoordinates};
 use zellij_utils::{
     data::{
-        AgentInfo, CommandOrPlugin, Event, FloatingPaneCoordinates, GetPaneCwdResponse,
-        GetPaneGitProbeResponse, GetPanePidResponse, GetPaneRunningCommandResponse,
-        NewPanePlacement, OriginatingPlugin, OverlayPlacement, PaneGitProbe, SessionInfo,
-        WarpPlacement, WarpedPane, WarpedTab,
+        CommandOrPlugin, Event, GetPaneCwdResponse, GetPaneGitProbeResponse, GetPanePidResponse,
+        GetPaneRunningCommandResponse, NewPanePlacement, OriginatingPlugin, OverlayPlacement,
+        PaneGitProbe, SessionInfo, WarpPlacement, WarpedPane, WarpedTab,
     },
     input::{
-        command::{OpenFilePayload, PaneTarget, RunCommand, TerminalAction},
+        command::{OpenFilePayload, RunCommand, TerminalAction},
         layout::{
             FloatingPaneLayout, Layout, Run, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout,
             TabLayoutInfo, TiledPaneLayout,
         },
     },
-    pane_size::Size,
     session_serialization,
 };
 

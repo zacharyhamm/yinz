@@ -27,11 +27,11 @@ use crate::{
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
+use zellij_types::pane_size::{PaneGeom, Size, SizeInPixels, Viewport};
 use zellij_types::style::{Palette, Style};
-use zellij_utils::{
-    input::layout::{FloatingPaneLayout, Run, RunPluginOrAlias, TiledPaneLayout},
-    input::options::PaneFrameStyle,
-    pane_size::{PaneGeom, Size, SizeInPixels, Viewport},
+use zellij_utils::input::{
+    layout::{FloatingPaneLayout, Run, RunPluginOrAlias, TiledPaneLayout},
+    options::PaneFrameStyle,
 };
 
 pub struct LayoutApplier<'a> {

@@ -4,8 +4,8 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use crate::data::FloatingPaneCoordinates;
-use crate::input::layout::{PercentOrFixed, SplitDirection, SplitSize};
+use crate::geometry::FloatingPaneCoordinates;
+use crate::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use crate::position::Position;
 
 /// Contains the position and size of a [`Pane`], or more generally of any terminal, measured
@@ -529,8 +529,8 @@ impl From<&Size> for PaneGeom {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::FloatingPaneCoordinates;
-    use crate::input::layout::PercentOrFixed;
+    use crate::geometry::FloatingPaneCoordinates;
+    use crate::geometry::PercentOrFixed;
     use hegel::generators::{self, Generator};
 
     /// Any `Dimension`, either constraint, unbounded `inner`.

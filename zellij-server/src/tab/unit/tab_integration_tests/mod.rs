@@ -16,12 +16,13 @@ use zellij_runtime::channels::Receiver;
 use zellij_runtime::envs::set_session_name;
 use zellij_runtime::errors::prelude::*;
 use zellij_types::diagnostics::ErrorContext;
-use zellij_utils::data::Direction;
-use zellij_utils::data::Resize;
-use zellij_utils::data::ResizeStrategy;
+use zellij_types::geometry::Direction;
+use zellij_types::geometry::PercentOrFixed;
+use zellij_types::geometry::Resize;
+use zellij_types::geometry::ResizeStrategy;
 use zellij_utils::input::layout::{
-    FloatingPaneLayout, Layout, PercentOrFixed, RunPluginOrAlias, SwapFloatingLayout,
-    SwapTiledLayout, TiledPaneLayout,
+    FloatingPaneLayout, Layout, RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout,
+    TiledPaneLayout,
 };
 
 use crate::os_input_output::AsyncReader;
@@ -31,13 +32,14 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use zellij_runtime::channels::{self, ChannelWithContext, SenderWithContext};
+use zellij_types::geometry::FloatingPaneCoordinates;
 use zellij_types::mouse::MouseEvent;
+use zellij_types::pane_size::{Size, SizeInPixels};
 use zellij_types::position::Position;
 use zellij_types::style::{Palette, Style};
 use zellij_utils::ipc::IpcReceiverWithContext;
-use zellij_utils::pane_size::{Size, SizeInPixels};
 use zellij_utils::{
-    data::{FloatingPaneCoordinates, InputMode, ModeInfo, NewPanePlacement, OverlayPlacement},
+    data::{InputMode, ModeInfo, NewPanePlacement, OverlayPlacement},
     input::command::{RunCommand, TerminalAction},
     ipc::{ClientToServerMsg, ServerToClientMsg},
 };

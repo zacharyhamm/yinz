@@ -1,4 +1,4 @@
-use zellij_utils::pane_size::{Offset, Viewport};
+use zellij_types::pane_size::{Offset, Viewport};
 
 use crate::output::CharacterChunk;
 use crate::panes::terminal_character::{TerminalCharacter, EMPTY_TERMINAL_CHARACTER, RESET_STYLES};

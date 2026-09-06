@@ -31,11 +31,12 @@ use url::Url;
 use wasmi::{Engine, Module};
 use zellij_runtime::downloader::Downloader;
 use zellij_storage::data_access::DataAccess;
+use zellij_types::geometry::FloatingPaneCoordinates;
 use zellij_types::style::HostTerminalThemeMode;
 use zellij_utils::consts::{ZELLIJ_CACHE_DIR, ZELLIJ_SESSION_CACHE_DIR, ZELLIJ_TMP_DIR};
 use zellij_utils::data::{
-    FloatingPaneCoordinates, InputMode, KeybindsVec, LayoutInfo, LayoutWithError, PaneContents,
-    PaneRenderReport, PermissionStatus, PermissionType, PipeMessage, PipeSource, QueueJobOutcome,
+    InputMode, KeybindsVec, LayoutInfo, LayoutWithError, PaneContents, PaneRenderReport,
+    PermissionStatus, PermissionType, PipeMessage, PipeSource, QueueJobOutcome,
 };
 use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::permission::PermissionCache;
@@ -47,6 +48,7 @@ use crate::{
     ServerInstruction,
 };
 use zellij_runtime::errors::prelude::*;
+use zellij_types::pane_size::Size;
 use zellij_utils::{
     data::{Event, EventType},
     input::{
@@ -54,7 +56,6 @@ use zellij_utils::{
         layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation, RunPluginOrAlias},
         plugins::{PluginAliases, PluginConfig},
     },
-    pane_size::Size,
 };
 
 fn make_plugin_url_path_safe(url: String) -> String {

@@ -25,9 +25,9 @@ use zellij_runtime::errors::prelude::*;
 use super::Screen;
 use crate::pty::ClientTabIndexOrPaneId;
 use crate::ClientId;
+use zellij_types::pane_size::{Size, Viewport};
 use zellij_utils::data::{NewPanePlacement, HOCUS_AGENT_PANE_CONTEXT};
 use zellij_utils::input::layout::Run;
-use zellij_utils::pane_size::{Size, Viewport};
 
 /// What `Screen::agent_pane_target` decided: where the pane goes, and whether a client has to
 /// be brought to it afterwards.

@@ -18,7 +18,8 @@ use crate::pty_host::remote::{
 // backend — needs to be able to name it.
 pub use crate::os_input_output_unix::AdoptedTerminal;
 use crate::pty_host::client::{AgentReportCb, ChildStateCb, ReleasedPane};
-use zellij_utils::data::{PaneTarget, RemotePaneHandoff};
+use zellij_types::command::PaneTarget;
+use zellij_utils::data::RemotePaneHandoff;
 
 use interprocess;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};

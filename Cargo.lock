@@ -4999,6 +4999,7 @@ version = "0.45.0"
 dependencies = [
  "colorsys",
  "hegeltest",
+ "log",
  "serde",
  "serde_json",
  "strip-ansi-escapes",

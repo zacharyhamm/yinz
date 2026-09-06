@@ -617,8 +617,10 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
 }
 
 // Basic type conversions
-impl From<crate::pane_size::Size> for crate::client_server_contract::client_server_contract::Size {
-    fn from(size: crate::pane_size::Size) -> Self {
+impl From<zellij_types::pane_size::Size>
+    for crate::client_server_contract::client_server_contract::Size
+{
+    fn from(size: zellij_types::pane_size::Size) -> Self {
         Self {
             cols: size.cols as u32,
             rows: size.rows as u32,
@@ -627,7 +629,7 @@ impl From<crate::pane_size::Size> for crate::client_server_contract::client_serv
 }
 
 impl TryFrom<crate::client_server_contract::client_server_contract::Size>
-    for crate::pane_size::Size
+    for zellij_types::pane_size::Size
 {
     type Error = anyhow::Error;
     fn try_from(size: crate::client_server_contract::client_server_contract::Size) -> Result<Self> {
@@ -667,14 +669,14 @@ impl TryFrom<crate::client_server_contract::client_server_contract::PixelDimensi
         pixel_dims: crate::client_server_contract::client_server_contract::PixelDimensions,
     ) -> Result<Self> {
         Ok(Self {
-            text_area_size: pixel_dims
-                .text_area_size
-                .map(|size| crate::pane_size::SizeInPixels {
+            text_area_size: pixel_dims.text_area_size.map(|size| {
+                zellij_types::pane_size::SizeInPixels {
                     width: size.width as usize,
                     height: size.height as usize,
-                }),
+                }
+            }),
             character_cell_size: pixel_dims.character_cell_size.map(|size| {
-                crate::pane_size::SizeInPixels {
+                zellij_types::pane_size::SizeInPixels {
                     width: size.width as usize,
                     height: size.height as usize,
                 }
@@ -1144,15 +1146,15 @@ fn remote_handoff_from_protobuf(
 }
 
 fn pane_target_to_protobuf(
-    target: &crate::data::PaneTarget,
+    target: &zellij_types::command::PaneTarget,
 ) -> crate::client_server_contract::client_server_contract::PaneTarget {
     use crate::client_server_contract::client_server_contract::{
         pane_target::Kind, FirecrackerTarget, PaneTarget,
     };
     let kind = match target {
-        crate::data::PaneTarget::Local => Kind::Local(true),
-        crate::data::PaneTarget::Ssh { host } => Kind::SshHost(host.clone()),
-        crate::data::PaneTarget::Firecracker {
+        zellij_types::command::PaneTarget::Local => Kind::Local(true),
+        zellij_types::command::PaneTarget::Ssh { host } => Kind::SshHost(host.clone()),
+        zellij_types::command::PaneTarget::Firecracker {
             vm,
             image,
             worktree,
@@ -1169,12 +1171,12 @@ fn pane_target_to_protobuf(
 
 fn pane_target_from_protobuf(
     target: Option<crate::client_server_contract::client_server_contract::PaneTarget>,
-) -> crate::data::PaneTarget {
+) -> zellij_types::command::PaneTarget {
     use crate::client_server_contract::client_server_contract::pane_target::Kind;
     match target.and_then(|target| target.kind) {
-        None | Some(Kind::Local(_)) => crate::data::PaneTarget::Local,
-        Some(Kind::SshHost(host)) => crate::data::PaneTarget::Ssh { host },
-        Some(Kind::Firecracker(firecracker)) => crate::data::PaneTarget::Firecracker {
+        None | Some(Kind::Local(_)) => zellij_types::command::PaneTarget::Local,
+        Some(Kind::SshHost(host)) => zellij_types::command::PaneTarget::Ssh { host },
+        Some(Kind::Firecracker(firecracker)) => zellij_types::command::PaneTarget::Firecracker {
             vm: firecracker.vm,
             image: firecracker.image,
             worktree: firecracker.worktree.map(std::path::PathBuf::from),
@@ -3769,11 +3771,11 @@ fn proto_i32_to_input_mode(i: i32) -> Result<InputMode> {
 }
 
 // Additional helper functions for Action conversion
-fn resize_to_proto_i32(resize: crate::data::Resize) -> i32 {
+fn resize_to_proto_i32(resize: zellij_types::geometry::Resize) -> i32 {
     use crate::client_server_contract::client_server_contract::ResizeType;
     match resize {
-        crate::data::Resize::Increase => ResizeType::Increase as i32,
-        crate::data::Resize::Decrease => ResizeType::Decrease as i32,
+        zellij_types::geometry::Resize::Increase => ResizeType::Increase as i32,
+        zellij_types::geometry::Resize::Decrease => ResizeType::Decrease as i32,
     }
 }
 
@@ -3794,10 +3796,10 @@ fn overlay_kind_from_proto_i32(kind: i32) -> crate::data::OverlayKind {
 }
 
 fn agent_state_to_proto(
-    state: crate::data::AgentState,
+    state: zellij_types::agent::AgentState,
 ) -> crate::client_server_contract::client_server_contract::AgentState {
     use crate::client_server_contract::client_server_contract::AgentState as ProtoAgentState;
-    use crate::data::AgentState;
+    use zellij_types::agent::AgentState;
     match state {
         AgentState::Busy => ProtoAgentState::Busy,
         AgentState::Waiting => ProtoAgentState::Waiting,
@@ -3806,9 +3808,9 @@ fn agent_state_to_proto(
     }
 }
 
-fn agent_state_from_proto(state: i32) -> Result<crate::data::AgentState> {
+fn agent_state_from_proto(state: i32) -> Result<zellij_types::agent::AgentState> {
     use crate::client_server_contract::client_server_contract::AgentState as ProtoAgentState;
-    use crate::data::AgentState;
+    use zellij_types::agent::AgentState;
     match ProtoAgentState::try_from(state) {
         Ok(ProtoAgentState::Busy) => Ok(AgentState::Busy),
         Ok(ProtoAgentState::Waiting) => Ok(AgentState::Waiting),
@@ -3855,12 +3857,12 @@ fn agent_event_from_proto(
 }
 
 fn agent_info_to_proto(
-    agent: crate::data::AgentInfo,
+    agent: zellij_types::agent::AgentInfo,
 ) -> crate::client_server_contract::client_server_contract::AgentInfo {
     use crate::client_server_contract::client_server_contract::{
         AgentInfo as ProtoAgentInfo, AgentSource as ProtoAgentSource, AgentState as ProtoAgentState,
     };
-    use crate::data::{AgentSource, AgentState};
+    use zellij_types::agent::{AgentSource, AgentState};
     let state = match agent.state {
         AgentState::Busy => ProtoAgentState::Busy,
         AgentState::Waiting => ProtoAgentState::Waiting,
@@ -3887,11 +3889,11 @@ fn agent_info_to_proto(
 
 fn agent_info_from_proto(
     proto: crate::client_server_contract::client_server_contract::AgentInfo,
-) -> Result<crate::data::AgentInfo> {
+) -> Result<zellij_types::agent::AgentInfo> {
     use crate::client_server_contract::client_server_contract::{
         AgentSource as ProtoAgentSource, AgentState as ProtoAgentState,
     };
-    use crate::data::{AgentSource, AgentState};
+    use zellij_types::agent::{AgentSource, AgentState};
     let state = match ProtoAgentState::try_from(proto.state) {
         Ok(ProtoAgentState::Busy) => AgentState::Busy,
         Ok(ProtoAgentState::Waiting) => AgentState::Waiting,
@@ -3905,7 +3907,7 @@ fn agent_info_from_proto(
         Ok(ProtoAgentSource::Registered) => AgentSource::Registered,
         _ => return Err(anyhow!("Unspecified agent source")),
     };
-    Ok(crate::data::AgentInfo {
+    Ok(zellij_types::agent::AgentInfo {
         kind: proto.kind,
         state,
         source,
@@ -3918,13 +3920,13 @@ fn agent_info_from_proto(
     })
 }
 
-fn direction_to_proto_i32(direction: crate::data::Direction) -> i32 {
+fn direction_to_proto_i32(direction: zellij_types::geometry::Direction) -> i32 {
     use crate::client_server_contract::client_server_contract::Direction as ProtoDirection;
     match direction {
-        crate::data::Direction::Left => ProtoDirection::Left as i32,
-        crate::data::Direction::Right => ProtoDirection::Right as i32,
-        crate::data::Direction::Up => ProtoDirection::Up as i32,
-        crate::data::Direction::Down => ProtoDirection::Down as i32,
+        zellij_types::geometry::Direction::Left => ProtoDirection::Left as i32,
+        zellij_types::geometry::Direction::Right => ProtoDirection::Right as i32,
+        zellij_types::geometry::Direction::Up => ProtoDirection::Up as i32,
+        zellij_types::geometry::Direction::Down => ProtoDirection::Down as i32,
     }
 }
 
@@ -3958,7 +3960,7 @@ fn unblock_condition_to_proto_i32(condition: crate::data::UnblockCondition) -> i
 
 // Reverse helper functions for Action conversion
 
-fn proto_i32_to_resize(resize: i32) -> Result<crate::data::Resize> {
+fn proto_i32_to_resize(resize: i32) -> Result<zellij_types::geometry::Resize> {
     use crate::client_server_contract::client_server_contract::ResizeType as ProtoResize;
     let proto_resize = match resize {
         x if x == ProtoResize::Increase as i32 => ProtoResize::Increase,
@@ -3966,13 +3968,13 @@ fn proto_i32_to_resize(resize: i32) -> Result<crate::data::Resize> {
         _ => return Err(anyhow!("Invalid ResizeType: {}", resize)),
     };
     match proto_resize {
-        ProtoResize::Increase => Ok(crate::data::Resize::Increase),
-        ProtoResize::Decrease => Ok(crate::data::Resize::Decrease),
+        ProtoResize::Increase => Ok(zellij_types::geometry::Resize::Increase),
+        ProtoResize::Decrease => Ok(zellij_types::geometry::Resize::Decrease),
         ProtoResize::Unspecified => Err(anyhow!("Unspecified ResizeType")),
     }
 }
 
-fn proto_i32_to_direction(direction: i32) -> Result<crate::data::Direction> {
+fn proto_i32_to_direction(direction: i32) -> Result<zellij_types::geometry::Direction> {
     use crate::client_server_contract::client_server_contract::Direction as ProtoDirection;
     let proto_direction = match direction {
         x if x == ProtoDirection::Left as i32 => ProtoDirection::Left,
@@ -3982,10 +3984,10 @@ fn proto_i32_to_direction(direction: i32) -> Result<crate::data::Direction> {
         _ => return Err(anyhow!("Invalid Direction: {}", direction)),
     };
     match proto_direction {
-        ProtoDirection::Left => Ok(crate::data::Direction::Left),
-        ProtoDirection::Right => Ok(crate::data::Direction::Right),
-        ProtoDirection::Up => Ok(crate::data::Direction::Up),
-        ProtoDirection::Down => Ok(crate::data::Direction::Down),
+        ProtoDirection::Left => Ok(zellij_types::geometry::Direction::Left),
+        ProtoDirection::Right => Ok(zellij_types::geometry::Direction::Right),
+        ProtoDirection::Up => Ok(zellij_types::geometry::Direction::Up),
+        ProtoDirection::Down => Ok(zellij_types::geometry::Direction::Down),
         ProtoDirection::Unspecified => Err(anyhow!("Unspecified direction")),
     }
 }
@@ -4142,15 +4144,15 @@ impl TryFrom<crate::client_server_contract::client_server_contract::PaneId>
 }
 
 // FloatingCoordinate conversion - SplitSize to FloatingCoordinate
-impl From<crate::input::layout::SplitSize>
+impl From<zellij_types::geometry::SplitSize>
     for crate::client_server_contract::client_server_contract::FloatingCoordinate
 {
-    fn from(size: crate::input::layout::SplitSize) -> Self {
+    fn from(size: zellij_types::geometry::SplitSize) -> Self {
         match size {
-            crate::input::layout::SplitSize::Percent(p) => Self {
+            zellij_types::geometry::SplitSize::Percent(p) => Self {
                 coordinate_type: Some(crate::client_server_contract::client_server_contract::floating_coordinate::CoordinateType::Percent(p as f32)),
             },
-            crate::input::layout::SplitSize::Fixed(f) => Self {
+            zellij_types::geometry::SplitSize::Fixed(f) => Self {
                 coordinate_type: Some(crate::client_server_contract::client_server_contract::floating_coordinate::CoordinateType::Fixed(f as u32)),
             },
         }
@@ -4159,42 +4161,7 @@ impl From<crate::input::layout::SplitSize>
 
 // Reverse FloatingCoordinate conversion
 impl TryFrom<crate::client_server_contract::client_server_contract::FloatingCoordinate>
-    for crate::input::layout::SplitSize
-{
-    type Error = anyhow::Error;
-    fn try_from(
-        coord: crate::client_server_contract::client_server_contract::FloatingCoordinate,
-    ) -> Result<Self> {
-        use crate::client_server_contract::client_server_contract::floating_coordinate::CoordinateType;
-        match coord
-            .coordinate_type
-            .ok_or_else(|| anyhow!("FloatingCoordinate missing coordinate_type"))?
-        {
-            CoordinateType::Percent(p) => Ok(crate::input::layout::SplitSize::Percent(p as usize)),
-            CoordinateType::Fixed(f) => Ok(crate::input::layout::SplitSize::Fixed(f as usize)),
-        }
-    }
-}
-
-// FloatingCoordinate conversion - PercentOrFixed to FloatingCoordinate
-impl From<crate::input::layout::PercentOrFixed>
-    for crate::client_server_contract::client_server_contract::FloatingCoordinate
-{
-    fn from(size: crate::input::layout::PercentOrFixed) -> Self {
-        match size {
-            crate::input::layout::PercentOrFixed::Percent(p) => Self {
-                coordinate_type: Some(crate::client_server_contract::client_server_contract::floating_coordinate::CoordinateType::Percent(p as f32)),
-            },
-            crate::input::layout::PercentOrFixed::Fixed(f) => Self {
-                coordinate_type: Some(crate::client_server_contract::client_server_contract::floating_coordinate::CoordinateType::Fixed(f as u32)),
-            },
-        }
-    }
-}
-
-// Reverse FloatingCoordinate conversion for PercentOrFixed
-impl TryFrom<crate::client_server_contract::client_server_contract::FloatingCoordinate>
-    for crate::input::layout::PercentOrFixed
+    for zellij_types::geometry::SplitSize
 {
     type Error = anyhow::Error;
     fn try_from(
@@ -4206,18 +4173,57 @@ impl TryFrom<crate::client_server_contract::client_server_contract::FloatingCoor
             .ok_or_else(|| anyhow!("FloatingCoordinate missing coordinate_type"))?
         {
             CoordinateType::Percent(p) => {
-                Ok(crate::input::layout::PercentOrFixed::Percent(p as usize))
+                Ok(zellij_types::geometry::SplitSize::Percent(p as usize))
             },
-            CoordinateType::Fixed(f) => Ok(crate::input::layout::PercentOrFixed::Fixed(f as usize)),
+            CoordinateType::Fixed(f) => Ok(zellij_types::geometry::SplitSize::Fixed(f as usize)),
+        }
+    }
+}
+
+// FloatingCoordinate conversion - PercentOrFixed to FloatingCoordinate
+impl From<zellij_types::geometry::PercentOrFixed>
+    for crate::client_server_contract::client_server_contract::FloatingCoordinate
+{
+    fn from(size: zellij_types::geometry::PercentOrFixed) -> Self {
+        match size {
+            zellij_types::geometry::PercentOrFixed::Percent(p) => Self {
+                coordinate_type: Some(crate::client_server_contract::client_server_contract::floating_coordinate::CoordinateType::Percent(p as f32)),
+            },
+            zellij_types::geometry::PercentOrFixed::Fixed(f) => Self {
+                coordinate_type: Some(crate::client_server_contract::client_server_contract::floating_coordinate::CoordinateType::Fixed(f as u32)),
+            },
+        }
+    }
+}
+
+// Reverse FloatingCoordinate conversion for PercentOrFixed
+impl TryFrom<crate::client_server_contract::client_server_contract::FloatingCoordinate>
+    for zellij_types::geometry::PercentOrFixed
+{
+    type Error = anyhow::Error;
+    fn try_from(
+        coord: crate::client_server_contract::client_server_contract::FloatingCoordinate,
+    ) -> Result<Self> {
+        use crate::client_server_contract::client_server_contract::floating_coordinate::CoordinateType;
+        match coord
+            .coordinate_type
+            .ok_or_else(|| anyhow!("FloatingCoordinate missing coordinate_type"))?
+        {
+            CoordinateType::Percent(p) => {
+                Ok(zellij_types::geometry::PercentOrFixed::Percent(p as usize))
+            },
+            CoordinateType::Fixed(f) => {
+                Ok(zellij_types::geometry::PercentOrFixed::Fixed(f as usize))
+            },
         }
     }
 }
 
 // FloatingPaneCoordinates conversion
-impl From<crate::data::FloatingPaneCoordinates>
+impl From<zellij_types::geometry::FloatingPaneCoordinates>
     for crate::client_server_contract::client_server_contract::FloatingPaneCoordinates
 {
-    fn from(coords: crate::data::FloatingPaneCoordinates) -> Self {
+    fn from(coords: zellij_types::geometry::FloatingPaneCoordinates) -> Self {
         Self {
             x: coords.x.map(|x| x.into()),
             y: coords.y.map(|y| y.into()),
@@ -4231,7 +4237,7 @@ impl From<crate::data::FloatingPaneCoordinates>
 
 // Reverse FloatingPaneCoordinates conversion
 impl TryFrom<crate::client_server_contract::client_server_contract::FloatingPaneCoordinates>
-    for crate::data::FloatingPaneCoordinates
+    for zellij_types::geometry::FloatingPaneCoordinates
 {
     type Error = anyhow::Error;
     fn try_from(
@@ -4507,25 +4513,27 @@ impl TryFrom<crate::client_server_contract::client_server_contract::OriginatingP
 }
 
 // SplitDirection conversion helper
-fn split_direction_to_proto_i32(direction: crate::input::layout::SplitDirection) -> i32 {
+fn split_direction_to_proto_i32(direction: zellij_types::geometry::SplitDirection) -> i32 {
     use crate::client_server_contract::client_server_contract::SplitDirection as ProtoSplitDirection;
     match direction {
-        crate::input::layout::SplitDirection::Horizontal => ProtoSplitDirection::Horizontal as i32,
-        crate::input::layout::SplitDirection::Vertical => ProtoSplitDirection::Vertical as i32,
+        zellij_types::geometry::SplitDirection::Horizontal => {
+            ProtoSplitDirection::Horizontal as i32
+        },
+        zellij_types::geometry::SplitDirection::Vertical => ProtoSplitDirection::Vertical as i32,
     }
 }
 
 // SplitSize conversion
-impl From<crate::input::layout::SplitSize>
+impl From<zellij_types::geometry::SplitSize>
     for crate::client_server_contract::client_server_contract::SplitSize
 {
-    fn from(size: crate::input::layout::SplitSize) -> Self {
+    fn from(size: zellij_types::geometry::SplitSize) -> Self {
         use crate::client_server_contract::client_server_contract::split_size::SizeType;
         match size {
-            crate::input::layout::SplitSize::Percent(p) => Self {
+            zellij_types::geometry::SplitSize::Percent(p) => Self {
                 size_type: Some(SizeType::Percent(p as u32)),
             },
-            crate::input::layout::SplitSize::Fixed(f) => Self {
+            zellij_types::geometry::SplitSize::Fixed(f) => Self {
                 size_type: Some(SizeType::Fixed(f as u32)),
             },
         }
@@ -4533,16 +4541,16 @@ impl From<crate::input::layout::SplitSize>
 }
 
 // PercentOrFixed conversion
-impl From<crate::input::layout::PercentOrFixed>
+impl From<zellij_types::geometry::PercentOrFixed>
     for crate::client_server_contract::client_server_contract::PercentOrFixed
 {
-    fn from(size: crate::input::layout::PercentOrFixed) -> Self {
+    fn from(size: zellij_types::geometry::PercentOrFixed) -> Self {
         use crate::client_server_contract::client_server_contract::percent_or_fixed::SizeType;
         match size {
-            crate::input::layout::PercentOrFixed::Percent(p) => Self {
+            zellij_types::geometry::PercentOrFixed::Percent(p) => Self {
                 size_type: Some(SizeType::Percent(p as u32)),
             },
-            crate::input::layout::PercentOrFixed::Fixed(f) => Self {
+            zellij_types::geometry::PercentOrFixed::Fixed(f) => Self {
                 size_type: Some(SizeType::Fixed(f as u32)),
             },
         }
@@ -4974,7 +4982,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Run>
 
 // PercentOrFixed reverse conversion
 impl TryFrom<crate::client_server_contract::client_server_contract::PercentOrFixed>
-    for crate::input::layout::PercentOrFixed
+    for zellij_types::geometry::PercentOrFixed
 {
     type Error = anyhow::Error;
 
@@ -4987,12 +4995,12 @@ impl TryFrom<crate::client_server_contract::client_server_contract::PercentOrFix
             .size_type
             .ok_or_else(|| anyhow!("PercentOrFixed missing size_type"))?;
         match size_type {
-            SizeType::Percent(percent) => Ok(crate::input::layout::PercentOrFixed::Percent(
+            SizeType::Percent(percent) => Ok(zellij_types::geometry::PercentOrFixed::Percent(
                 percent as usize,
             )),
-            SizeType::Fixed(fixed) => {
-                Ok(crate::input::layout::PercentOrFixed::Fixed(fixed as usize))
-            },
+            SizeType::Fixed(fixed) => Ok(zellij_types::geometry::PercentOrFixed::Fixed(
+                fixed as usize,
+            )),
         }
     }
 }
@@ -5081,7 +5089,8 @@ impl TryFrom<crate::client_server_contract::client_server_contract::TiledPaneLay
     fn try_from(
         layout: crate::client_server_contract::client_server_contract::TiledPaneLayout,
     ) -> Result<Self> {
-        use crate::input::layout::{SplitDirection, SplitSize, TiledPaneLayout};
+        use crate::input::layout::TiledPaneLayout;
+        use zellij_types::geometry::{SplitDirection, SplitSize};
 
         let children_split_direction = match layout.children_split_direction {
             x if x

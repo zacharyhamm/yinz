@@ -26,11 +26,12 @@
 
 use std::path::PathBuf;
 
-use crate::input::layout::{FloatingPaneLayout, PercentOrFixed, Run, TiledPaneLayout};
-use crate::pane_size::Size;
+use crate::input::layout::{FloatingPaneLayout, Run, TiledPaneLayout};
 use crate::session_serialization::{
     get_floating_panes_layout_from_panegeoms, tiled_layout_from_panegeoms_lossy, PaneLayoutManifest,
 };
+use zellij_types::geometry::PercentOrFixed;
+use zellij_types::pane_size::Size;
 
 /// A tab's arrangement, plus which pane belongs in each of its terminal slots.
 ///

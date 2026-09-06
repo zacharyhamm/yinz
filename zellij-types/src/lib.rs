@@ -18,3 +18,13 @@ pub mod style;
 pub mod pane_id;
 
 pub mod mouse;
+
+pub mod geometry;
+pub mod pane_size;
+
+pub mod agent;
+pub mod command;
+
+#[cfg(test)]
+#[path = "unit/model_contracts.rs"]
+mod model_contracts;

@@ -2,9 +2,10 @@ use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use zellij_types::internal_ids::{PluginId, TerminalId};
 
-use zellij_utils::data::FloatingPaneCoordinates;
-use zellij_utils::input::layout::{PercentOrFixed, RunPluginOrAlias};
-use zellij_utils::pane_size::Size;
+use zellij_types::geometry::FloatingPaneCoordinates;
+use zellij_types::geometry::PercentOrFixed;
+use zellij_types::pane_size::Size;
+use zellij_utils::input::layout::RunPluginOrAlias;
 
 use crate::{panes::PaneId, pty::PtyInstruction, thread_bus::ThreadSenders, ClientId};
 

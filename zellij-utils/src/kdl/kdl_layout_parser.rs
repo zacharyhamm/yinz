@@ -1,11 +1,14 @@
 use crate::input::{
-    command::{PaneTarget, RunCommand},
+    command::RunCommand,
     config::ConfigError,
     layout::{
-        FloatingPaneLayout, Layout, LayoutConstraint, PercentOrFixed, PluginUserConfiguration, Run,
-        RunPluginOrAlias, SplitDirection, SplitSize, SwapFloatingLayout, SwapTiledLayout,
-        TiledPaneLayout,
+        FloatingPaneLayout, Layout, LayoutConstraint, PluginUserConfiguration, Run,
+        RunPluginOrAlias, SwapFloatingLayout, SwapTiledLayout, TiledPaneLayout,
     },
+};
+use zellij_types::{
+    command::PaneTarget,
+    geometry::{PercentOrFixed, SplitDirection, SplitSize},
 };
 
 use kdl::*;

@@ -4,7 +4,7 @@ use crate::panes::sixel::PixelRect;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use zellij_utils::pane_size::SizeInPixels;
+use zellij_types::pane_size::SizeInPixels;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KittyImageChunk {

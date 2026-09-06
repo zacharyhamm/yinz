@@ -3,13 +3,13 @@ use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::{
-    input::command::PaneTarget,
-    input::layout::PluginUserConfiguration,
-    input::layout::{
-        FloatingPaneLayout, Layout, LayoutConstraint, PercentOrFixed, Run, RunPluginOrAlias,
-        SplitDirection, SplitSize, SwapFloatingLayout, SwapTiledLayout, TiledPaneLayout,
-    },
+use crate::input::layout::{
+    FloatingPaneLayout, Layout, LayoutConstraint, PluginUserConfiguration, Run, RunPluginOrAlias,
+    SwapFloatingLayout, SwapTiledLayout, TiledPaneLayout,
+};
+use zellij_types::{
+    command::PaneTarget,
+    geometry::{PercentOrFixed, SplitDirection, SplitSize},
     pane_size::{Constraint, PaneGeom},
 };
 
@@ -801,7 +801,7 @@ fn tiled_pane_layout_from_manifest(
             (
                 run,
                 Some(g.is_borderless),
-                g.geom.is_stacked() && g.geom.rows.inner > 1,
+                g.geom.is_stacked() && g.geom.rows.as_usize() > 1,
                 g.title.clone(),
                 Some(g.is_focused),
                 g.pane_contents.clone(),
@@ -1493,11 +1493,11 @@ fn get_split_sizes(constraints: &Vec<Constraint>) -> Vec<Option<SplitSize>> {
 mod tests {
 
     use super::*;
-    use crate::pane_size::Dimension;
     use expect_test::expect;
     use insta::assert_snapshot;
     use serde_json::Value;
     use std::collections::HashMap;
+    use zellij_types::pane_size::Dimension;
     const PANEGEOMS_JSON: &[&[&str]] = &[
         &[
             r#"{ "x": 0, "y": 1, "rows": { "constraint": "Percent(100.0)", "inner": 43 }, "cols": { "constraint": "Percent(100.0)", "inner": 211 }, "is_stacked": false }"#,

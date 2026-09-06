@@ -37,8 +37,8 @@ use std::{
 };
 use zellij_runtime::errors::prelude::*;
 use zellij_runtime::home::{xdg_config_dir, xdg_data_dir};
+use zellij_types::command::validate_firecracker_vm_name;
 use zellij_utils::consts::{ZELLIJ_CACHE_DIR, ZELLIJ_PROJ_DIR};
-use zellij_utils::input::command::validate_firecracker_vm_name;
 use zellij_utils::input::config::Config as ZellijConfig;
 
 const CONFIG_ENV: &str = "ZELLIJ_FIRECRACKER_CONFIG";

@@ -2,8 +2,8 @@ use crate::ipc::{
     send_protobuf_client_to_server, send_protobuf_server_to_client, ClientToServerMsg,
     IpcReceiverWithContext, IpcRecv, IpcSenderWithContext, IpcStream, ServerToClientMsg,
 };
-use crate::pane_size::Size;
 use interprocess::local_socket::{prelude::*, ListenerOptions};
+use zellij_types::pane_size::Size;
 
 use std::sync::atomic::{AtomicU32, Ordering};
 

@@ -8,9 +8,9 @@ use crate::{panes::PaneId, tab::Pane};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{HashMap, HashSet};
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::data::{Direction, Resize, ResizeStrategy};
-use zellij_utils::{
-    input::layout::SplitDirection,
+use zellij_types::geometry::{Direction, Resize, ResizeStrategy};
+use zellij_types::{
+    geometry::SplitDirection,
     pane_size::{Dimension, PaneGeom, Viewport},
 };
 

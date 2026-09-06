@@ -5,8 +5,8 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::{
-    input::layout::SplitDirection,
+use zellij_types::{
+    geometry::SplitDirection,
     pane_size::{Constraint, Dimension, PaneGeom},
 };
 

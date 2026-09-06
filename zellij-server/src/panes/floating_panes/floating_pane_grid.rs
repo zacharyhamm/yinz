@@ -7,8 +7,8 @@ use crate::{panes::PaneId, tab::Pane};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use zellij_runtime::errors::prelude::*;
-use zellij_utils::data::{Direction, ResizeStrategy};
-use zellij_utils::pane_size::{Dimension, PaneGeom, Size, Viewport};
+use zellij_types::geometry::{Direction, ResizeStrategy};
+use zellij_types::pane_size::{Dimension, PaneGeom, Size, Viewport};
 
 use std::cell::RefCell;
 use std::rc::Rc;

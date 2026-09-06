@@ -7,7 +7,7 @@ use crate::panes::PaneId;
 use crate::plugins::{PluginInstruction, PluginRenderAsset};
 use crate::{ClientId, ServerInstruction};
 use std::collections::HashMap;
-use zellij_utils::pane_size::Viewport;
+use zellij_types::pane_size::Viewport;
 
 impl Screen {
     pub fn render(&mut self, plugin_render_assets: Option<Vec<PluginRenderAsset>>) -> Result<()> {

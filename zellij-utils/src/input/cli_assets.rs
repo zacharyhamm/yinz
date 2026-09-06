@@ -1,6 +1,5 @@
 use crate::data::LayoutInfo;
 use crate::input::options::Options;
-use crate::pane_size::Size;
 use crate::{
     home::{find_default_config_dir, get_theme_dir},
     input::{config::Config, layout::Layout, theme::Themes},
@@ -9,6 +8,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use zellij_types::pane_size::Size;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct CliAssets {
