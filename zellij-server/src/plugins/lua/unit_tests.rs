@@ -21,655 +21,6 @@ use crate::plugins::plugin_limits::PluginResourceLimits;
 use crate::plugins::plugin_map::{PluginEnv, ResponseSink};
 use crate::thread_bus::ThreadSenders;
 
-#[test]
-fn agent_exit_conversation_forms_scroll_and_sanitize() {
-    let source = zellij_config::consts::builtin_lua_plugin("agent-exit")
-        .unwrap()
-        .replace(
-            "\nfunction M.load(config)",
-            "M.test_chat = { state=W, chat=C, choose=choose, edit=edit, append=append, form=form }\nfunction M.load(config)",
-        );
-    let plugin = load(&source).unwrap();
-    plugin
-        .lua
-        .globals()
-        .set("M", plugin.plugin.clone())
-        .unwrap();
-    plugin.lua.load(r#"
-local z, T = require('zellij'), M.test_chat
-z.show_cursor = function() end
-local C, W = T.chat, T.state
-local now = os.time()
-os.time = function() return now end
-local stamp = os.date('%Y-%m-%d %H:%M:%S', now):gsub('(%p)', '\\%1')
-local actions = 0
-z.close_self = function() actions = actions + 1 end
-z.close_terminal_pane = function() actions = actions + 1 end
-z.rerun_command_pane = function() actions = actions + 1 end
-local function key(k, mods) z.__update(M, {Key={bare_key=k, key_modifiers=mods or {}}}) end
-local function mouse(kind, row, col) z.__update(M, {Mouse={[kind]={row,col}}}) end
-local function contains(frame, text)
-  local codes = {}
-  for i=1,#text do codes[i] = tostring(text:byte(i)) end
-  return frame:find(table.concat(codes, ','), 1, true)
-end
-local function history() return table.concat(C.entries, '\n\n') end
-local chosen, draft
-W.active = true
-z.task(function()
-  chosen = T.choose('Repository inspection', {a='Review diff', b='Commit changes'}, '/repo/[topic]*')
-  draft = T.edit('Commit message', 'draft')
-  T.choose('Approve commit?', {y='Approve commit', n='Back'}, draft)
-  W.active = false
-end)
-M.render(24, 160)
-local count = #C.entries
-local original = C.entries[1]
-assert(original:find(stamp, 1, true), original)
-now = now + 60
-M.render(24, 160); M.render(24, 160)
-assert(#C.entries == count and C.entries[1] == original, 'render changed history')
-assert(C.page == 22 and not C.compact)
-assert(T.form():focused_id() == 'a')
-key('Tab'); assert(T.form():focused_id() == 'b')
-key('Tab', {'Shift'}); assert(T.form():focused_id() == 'a')
-key('Enter')
-assert(chosen == 'a' and history():find('Review diff', 1, true))
-M.render(24, 160)
-key('Home')
-z.__update(M, {PastedText='日本語 '})
-key('End'); key('Backspace')
-assert(T.form():value('draft') == '日本語 draf')
--- Preserve edits through narrow and one-row form viewports.
-M.render(3, 12)
-assert(C.compact and C.page == 0)
-assert(T.form():focused_id() == 'draft')
-assert(T.form():value('draft') == '日本語 draf')
-M.render(24, 160)
-assert(T.form():focused_id() == 'draft')
-key({Char='t'}); key({Char=' '})
-assert(T.form():value('draft') == '日本語 draft ')
-assert(draft == nil and W.active and actions == 0, 'typing submitted the draft')
-key('Enter')
-assert(draft == '日本語 draft ' and W.active and actions == 0)
-assert(history():find('Approve commit', 1, true))
-key('Esc')
-assert(not W.active and actions == 0, 'dismissal reached the held pane')
-
--- Narrow choices require a separate activation, including after resizing.
-W.active = true
-chosen = nil
-z.task(function() chosen = T.choose('Cleanup', {a='Keep both', b='Remove worktree'}) end)
-M.render(8, 16)
-assert(C.compact and C.page == 5)
-key('Down'); key('Enter')
-assert(chosen == nil, 'select committed an operation')
-local selected = C.keys[T.form():value('choice')]
-M.render(8, 160)
-assert(T.form():focused_id() == selected)
-M.render(2, 16)
-key('Tab')
-M.render(2, 16)
-assert(T.form():focused_id() == 'activate')
-key('Enter')
-assert(chosen == selected)
-
--- A mouse release can dismiss a prompt, but cannot activate the next form.
-z.task(function() T.choose('Done', {Enter='Return'}); W.active = false end)
-M.render(10, 160)
-mouse('LeftClick', 8, 1)
-assert(W.active)
-mouse('Release', 8, 1)
-assert(not W.active and actions == 0)
-
--- Full literal content is kept, including fence delimiters and hostile bytes.
-local hostile = '```\n# [link](https://example.test) **bold** <tag> | x |\n`````\n'
-  .. '\27[2J\0\127' .. utf8.char(0x9b) .. '末尾\255'
-T.append('Output', hostile .. '\nFull output: /tmp/[log]*\n[display truncated at 64 KiB]')
-assert(not history():find('\27', 1, true) and not history():find(utf8.char(0x9b), 1, true))
-assert(history():find('``````', 1, true) and history():find('**bold**', 1, true))
-local frame = M.render(100, 160)
-assert(contains(frame, '# [link](https://example.test) **bold** <tag> | x |'), frame)
-assert(contains(frame, 'Full output: /tmp/[log]*'), frame)
-assert(contains(frame, '[display truncated at 64 KiB]'), frame)
-for i=1,80 do T.append('Step ' .. i, 'Outcome ' .. i) end
-M.render(24, 80)
-assert(C.scroll == C.lines - C.page and C.follow)
-key('PageUp')
-local offset = C.scroll
-assert(offset > 0 and not C.follow)
-T.append('New outcome', 'Still reading earlier steps')
-M.render(24, 80)
-assert(C.scroll == offset and not C.follow)
-z.__update(M, {Mouse={ScrollUp=2}})
-assert(C.scroll == offset - 3)
-z.__update(M, {Mouse={ScrollDown=2}})
-assert(C.scroll == offset)
-for _=1,100 do key('PageDown') end
-T.append('Last outcome', 'Follow me')
-M.render(12, 30)
-assert(C.follow and C.scroll == C.lines - C.page)
-for _, size in ipairs({{24,80},{8,16},{3,8},{1,1},{0,0},{24,160}}) do
-  M.render(size[1],size[2])
-  assert(C.page >= 0 and C.scroll >= 0)
-end
--- Busy operations accept scrolling but no operation/restart/close activation.
-W.busy = true
-local before = actions
-key('Enter'); key('Esc'); z.__update(M, {PastedText='ignored'})
-mouse('LeftClick', 22, 1); mouse('Release', 22, 1)
-assert(actions == before)
-"#).exec().unwrap();
-}
-
-#[test]
-fn agent_exit_queries_skip_operation_logs_and_preserve_failures() {
-    use mlua::LuaSerdeExt;
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("checkout ' $;");
-    std::fs::create_dir(&root).unwrap();
-    assert!(std::process::Command::new("git")
-        .arg("init")
-        .arg(&root)
-        .output()
-        .unwrap()
-        .status
-        .success());
-    let logs = dir.path().join("logs");
-    let lock = root.join(".git/agent-exit.lock");
-    std::fs::create_dir(&logs).unwrap();
-    std::fs::create_dir(&lock).unwrap();
-    let source = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap().replace(
-        "\nfunction M.load(config)",
-        "M.test_queries = { state=W, chat=C, query=must_git, git=git, rebase=rebase_in_progress, raw=raw, config=config }\nfunction M.load(config)",
-    );
-    let plugin = load(&source).unwrap();
-    plugin
-        .lua
-        .globals()
-        .set(
-            "T",
-            plugin.plugin.get::<mlua::Table>("test_queries").unwrap(),
-        )
-        .unwrap();
-    plugin
-        .lua
-        .globals()
-        .set("root", root.to_str().unwrap())
-        .unwrap();
-    plugin
-        .lua
-        .globals()
-        .set("logs", logs.to_str().unwrap())
-        .unwrap();
-    plugin.lua.globals().set("__run", plugin.lua.create_function(|lua, value: mlua::Value| {
-        let argv: Vec<String> = lua.from_value(value)?;
-        let out = std::process::Command::new(&argv[0]).args(&argv[1..]).output().map_err(mlua::Error::external)?;
-        lua.to_value(&serde_json::json!({"exit_code":out.status.code(), "stdout":String::from_utf8_lossy(&out.stdout), "stderr":String::from_utf8_lossy(&out.stderr)}))
-    }).unwrap()).unwrap();
-    plugin.lua.load(r#"
-local z = require('zellij')
-local calls = {}
-local now = os.time()
-os.time = function() return now end
-local function last() return T.chat.entries[#T.chat.entries]:gsub('\\(%p)', '%1') end
-z.async.run_command = function(opts)
-  assert(last():find('running', 1, true), 'start must precede dispatch')
-  assert(not last():find('operation=$2', 1, true), 'internal wrapper leaked')
-  now = now + 3
-  table.insert(calls, opts.command)
-  return {done=true, value=__run(opts.command), on_settle={}}
-end
-z.task(function()
-T.state.root, T.state.tmp = root, logs
-T.state.gitdir, T.state.lock = root .. '/.git', root .. '/.git/agent-exit.lock'
-assert(T.git('not-a-git-command') ~= 0)
-assert(#T.chat.entries == 2, 'wrapped command logged twice')
-assert(last():find('Operation finished (status 1, 3s)', 1, true), last())
-assert(last():find('Full output:', 1, true))
-local diagnostic, log = T.state.diagnostic, T.state.log
-calls = {}
-assert(T.query('status', '--porcelain=v1') == '')
-assert(last():find('Command finished (status 0, 3s)', 1, true), last())
-assert(#calls == 1 and calls[1][1] == 'git' and calls[1][2] == '--no-optional-locks')
-local ok, err = pcall(T.query, 'rev-parse', '--verify', 'refs/heads/missing')
-assert(not ok and err:find('fatal:', 1, true))
-assert(last():find('Command finished (status 128, 3s)', 1, true) and last():find('fatal:', 1, true), last())
-assert(T.state.diagnostic == diagnostic and T.state.log == log and T.state.sequence == 1)
-for _, name in ipairs({'absent', 'rebase-merge', 'rebase-apply'}) do
-  if name ~= 'absent' then assert(__run({'mkdir', '--', T.state.gitdir .. '/' .. name}).exit_code == 0) end
-  calls = {}
-  assert(T.rebase() == (name ~= 'absent'))
-  assert(#calls == 1 and calls[1][1] == 'sh')
-  if name ~= 'absent' then assert(__run({'rmdir', '--', T.state.gitdir .. '/' .. name}).exit_code == 0) end
-end
-assert(T.state.diagnostic == diagnostic and T.state.sequence == 1)
-end)
--- An unresolved result leaves just its start visible until delivery.
-local pending, resolve = z.async.future()
-z.async.run_command = function() return pending end
-local count, done = #T.chat.entries, false
-z.task(function() T.raw({'git', 'status'}); done = true end)
-assert(not done and #T.chat.entries == count + 1 and last():find('Command running', 1, true))
-now = now + 7
-resolve({exit_code=2, stdout='', stderr='delayed failure'})
-z.__update({}, {Timer=0})
-assert(done and #T.chat.entries == count + 2)
-assert(last():find('status 2, 7s', 1, true) and last():find('delayed failure', 1, true))
-for _, success in ipairs({true, false}) do
-  z.project_config.read = function()
-    assert(last():find('Reading project configuration', 1, true))
-    now = now + 4
-    if not success then error('invalid configuration') end
-    return {config={}, source=''}
-  end
-  assert(T.config() == success)
-  assert(last():find((success and 'success' or 'failed') .. ', 4s', 1, true), last())
-end
-"#).exec().unwrap();
-    assert!(!lock.join("operation").exists());
-    assert_eq!(std::fs::read_dir(logs).unwrap().count(), 1);
-}
-
-#[test]
-fn agent_exit_documented_fork_waits_for_permissions() {
-    use zellij_types::data::PermissionStatus;
-    let docs = include_str!("../../../../docs/LUA_PLUGINS.md");
-    let wrapper = docs
-        .split("```lua\nlocal load = M.load\n")
-        .nth(1)
-        .unwrap()
-        .split("\n```")
-        .next()
-        .unwrap();
-    let wrapper = format!("local load = M.load\n{wrapper}");
-    let builtin = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap();
-    for line in wrapper.lines() {
-        assert!(
-            builtin.contains(&format!("-- {line}")),
-            "hook instructions differ: {line}"
-        );
-    }
-    for (cached, answer) in [
-        (false, PermissionStatus::Granted),
-        (true, PermissionStatus::Granted),
-        (false, PermissionStatus::Denied),
-    ] {
-        let mut env = test_env();
-        if cached {
-            env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
-        }
-        let source = format!("local zellij = require('zellij')\nlocal M = {{}}\nfunction M.load(config) M.initialized = config end\n{wrapper}\nreturn M");
-        let mut plugin = load_lua_plugin(&source, "fork.lua", env).unwrap();
-        plugin
-            .load(&BTreeMap::from([("marker".into(), "loaded".into())]))
-            .unwrap();
-        assert!(plugin
-            .plugin
-            .get::<Option<mlua::Table>>("initialized")
-            .unwrap()
-            .is_none());
-        let granted = answer == PermissionStatus::Granted;
-        plugin
-            .update(&Event::PermissionRequestResult(answer))
-            .unwrap();
-        let initialized = plugin
-            .plugin
-            .get::<Option<mlua::Table>>("initialized")
-            .unwrap();
-        assert_eq!(initialized.is_some(), granted);
-        if let Some(config) = initialized {
-            assert_eq!(config.get::<String>("marker").unwrap(), "loaded");
-        }
-    }
-}
-
-/// Real Git operations, with pane exits delivered while helper-ID writes await their results.
-#[test]
-fn agent_exit_workflow_merges_and_cleans_real_worktrees() {
-    use mlua::LuaSerdeExt;
-    use std::process::Command;
-    for (scenario, cleanup) in [
-        ("manual", "k"),
-        ("manual", "w"),
-        ("manual", "d"),
-        ("manual", "b"),
-        ("generated", "k"),
-        ("spawn_failed", "k"),
-        ("ci_repair", "k"),
-        ("ci_closed", "k"),
-        ("dirty_target", "k"),
-        ("target_moved", "k"),
-        ("head_changed", "k"),
-        ("commit_failed", "k"),
-        ("missing_ci", "k"),
-        ("recovery", "k"),
-        ("inferred_default", "k"),
-        ("missing_local_default", "k"),
-        ("cancel_default", "k"),
-        ("duplicate", "k"),
-        ("outstanding", "k"),
-        ("config_changed", "k"),
-        ("conflict_repair", "k"),
-        ("conflict_abort", "k"),
-    ] {
-        let dir = tempfile::tempdir().unwrap();
-        let primary = dir.path().join("primary");
-        let linked = dir.path().join("topic ' $; checkout");
-        let git = |cwd: &std::path::Path, args: &[&str]| {
-            let out = Command::new("git")
-                .arg("-C")
-                .arg(cwd)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                out.status.success(),
-                "{args:?}: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            String::from_utf8(out.stdout).unwrap()
-        };
-        std::fs::create_dir(&primary).unwrap();
-        git(&primary, &["init", "-b", "trunk"]);
-        git(&primary, &["config", "user.name", "Workflow Test"]);
-        git(
-            &primary,
-            &["config", "user.email", "workflow@example.invalid"],
-        );
-        std::fs::write(primary.join(".zellij.kdl"), "agent_exit { ci \"sh\" \"-c\" \"test ! -f fail && test -f 'new $; file'\"; default_branch \"trunk\"; }\n").unwrap();
-        if scenario == "missing_ci" {
-            std::fs::write(
-                primary.join(".zellij.kdl"),
-                "agent_exit { default_branch \"trunk\"; }\n",
-            )
-            .unwrap();
-        }
-        if matches!(
-            scenario,
-            "inferred_default" | "missing_local_default" | "cancel_default"
-        ) {
-            std::fs::write(
-                primary.join(".zellij.kdl"),
-                "agent_exit { ci \"sh\" \"-c\" \"test -f 'new $; file'\"; }\n",
-            )
-            .unwrap();
-        }
-        if scenario == "config_changed" {
-            std::fs::write(primary.join(".gitignore"), ".zellij.kdl\n").unwrap();
-        }
-        std::fs::write(primary.join("shared"), "base\n").unwrap();
-        git(&primary, &["add", "."]);
-        git(&primary, &["commit", "-m", "initial"]);
-        if matches!(
-            scenario,
-            "inferred_default" | "missing_local_default" | "cancel_default"
-        ) {
-            let remote = if scenario == "inferred_default" {
-                "refs/remotes/origin/trunk"
-            } else {
-                "refs/remotes/origin/main"
-            };
-            git(&primary, &["update-ref", remote, "HEAD"]);
-            git(
-                &primary,
-                &["symbolic-ref", "refs/remotes/origin/HEAD", remote],
-            );
-        }
-        git(
-            &primary,
-            &["worktree", "add", "-b", "topic", linked.to_str().unwrap()],
-        );
-        if scenario == "config_changed" {
-            std::fs::copy(primary.join(".zellij.kdl"), linked.join(".zellij.kdl")).unwrap();
-        }
-        std::fs::write(linked.join("new $; file"), "new content\n").unwrap();
-        if scenario == "ci_repair" {
-            std::fs::write(linked.join("fail"), "fail").unwrap();
-        }
-        if scenario == "commit_failed" {
-            git(&primary, &["config", "user.name", ""]);
-        }
-        if scenario.starts_with("conflict_") {
-            std::fs::write(primary.join("shared"), "target\n").unwrap();
-            git(&primary, &["commit", "-am", "target moves"]);
-            std::fs::write(linked.join("shared"), "topic\n").unwrap();
-        }
-
-        let builtin = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap();
-        assert!(builtin.contains("choose(\"Review and integrate changes.\""));
-        assert!(!builtin.contains("Agent exited. Review"));
-        let source = builtin.replace(
-                "\nfunction M.load(config)",
-                "M.test_workflow = { state = W, run = workflow, chat = C, form = form }\nfunction M.load(config)",
-            );
-        let plugin = load(&source).unwrap();
-        plugin
-            .lua
-            .globals()
-            .set(
-                "T",
-                plugin.plugin.get::<mlua::Table>("test_workflow").unwrap(),
-            )
-            .unwrap();
-        plugin
-            .lua
-            .globals()
-            .set("M", plugin.plugin.clone())
-            .unwrap();
-        plugin
-            .lua
-            .globals()
-            .set("checkout", linked.to_str().unwrap())
-            .unwrap();
-        plugin.lua.globals().set("cleanup", cleanup).unwrap();
-        plugin.lua.globals().set("scenario", scenario).unwrap();
-        plugin
-            .lua
-            .globals()
-            .set("primary", primary.to_str().unwrap())
-            .unwrap();
-        plugin
-            .lua
-            .globals()
-            .set("test_pid", std::process::id())
-            .unwrap();
-        plugin.lua.globals().set("__run", plugin.lua.create_function(|lua, value: mlua::Value| {
-            let argv: Vec<String> = lua.from_value(value)?;
-            let out = Command::new(&argv[0]).args(&argv[1..])
-                .env("GIT_EDITOR", "true").env("GIT_TERMINAL_PROMPT", "0").output()
-                .map_err(mlua::Error::external)?;
-            lua.to_value(&serde_json::json!({"exit_code":out.status.code(), "stdout":String::from_utf8_lossy(&out.stdout), "stderr":String::from_utf8_lossy(&out.stderr)}))
-        }).unwrap()).unwrap();
-        plugin
-            .lua
-            .globals()
-            .set(
-                "__config",
-                plugin
-                    .lua
-                    .create_function(|lua, root: String| {
-                        let snapshot = zellij_config::project_config::access(
-                            std::path::Path::new(&root),
-                            None,
-                        )
-                        .map_err(mlua::Error::external)?;
-                        super::to_lua_value(lua, &snapshot).map_err(mlua::Error::external)
-                    })
-                    .unwrap(),
-            )
-            .unwrap();
-        plugin
-            .lua
-            .load(
-                r#"
-local z = require('zellij')
-local function ready(value) return { done=true, value=value, on_settle={} } end
-z.subscribe = function() end
-local event = z.async.event
-local pending_exit, pending_write
-z.async.run_command = function(opts)
-  local result = __run(opts.command)
-  if pending_exit and opts.command[5] == T.state.lock .. '/helper' and opts.command[6] then
-    assert(result.exit_code == 0)
-    pending_write = true
-    return event('run_command_result')
-  end
-  return ready(result)
-end
-z.project_config.read = __config
-z.get_plugin_ids = function() return {plugin_id=41, zellij_pid=test_pid} end
-z.get_pane_info = function() return nil end
-local keys = {'r', 'Enter', 'c', 'f', 'i', 'x', 'Enter', 'y', 'y', 'y', cleanup}
-local expected_merge = true
-local expected_error
-if scenario == 'generated' then keys = {'g', 'Enter', 'c', 'Enter', 'y', 'y', 'y', cleanup}
-elseif scenario == 'missing_local_default' then keys = {'r', 'Enter', 'c', 'f', 'Enter', 'y', 't', 'r', 'u', 'n', 'k', 'Enter', 'y', 'y', cleanup}
-elseif scenario == 'cancel_default' then keys = {'r', 'Enter', 'n', 'Esc'}; expected_merge = false
-elseif scenario == 'spawn_failed' then keys = {'g', 'q'}; expected_merge = false
-elseif scenario == 'ci_repair' then keys = {'c', 'f', 'Enter', 'y', 'y', 's', 'c', 'r', 'Enter', 'y', 'y', 'y', cleanup}
-elseif scenario == 'ci_closed' then keys = {'c', 'f', 'Enter', 'y', 'y', 'q'}; expected_merge = false
-elseif scenario == 'dirty_target' or scenario == 'target_moved' or scenario == 'head_changed' or scenario == 'config_changed' then
-  keys = {'c', 'f', 'Enter', 'y', 'y', 'y', 'q'}; expected_merge = false
-elseif scenario == 'commit_failed' then keys = {'c', 'f', 'Enter', 'y', 'q'}; expected_merge = false
-elseif scenario == 'missing_ci' then keys = {'c', 'f', 'Enter', 'y', 'q'}; expected_merge = false
-elseif scenario == 'conflict_repair' then keys = {'c', 'f', 'Enter', 'y', 's', 'n', 'y', 'y', cleanup}
-elseif scenario == 'conflict_abort' then keys = {'c', 'f', 'Enter', 'y', 'a', 'q'}; expected_merge = false
-elseif scenario == 'recovery' or scenario == 'duplicate' or scenario == 'outstanding' then
-  local out = __run({'git', '-C', checkout, 'rev-parse', '--absolute-git-dir'})
-  local lock = out.stdout:gsub('\n$', '') .. '/agent-exit.lock'
-  assert(__run({'mkdir', lock}).exit_code == 0)
-  assert(__run({'sh', '-c', 'printf "%s\\n" "$2" > "$1/owner"', 'test', lock, test_pid .. ' 99 abandoned'}).exit_code == 0)
-  if scenario == 'duplicate' then
-    z.get_pane_info = function() return {exited=false} end
-    keys = {}; expected_merge = false; expected_error = 'Another workflow owns'
-  elseif scenario == 'outstanding' then
-    assert(__run({'sh', '-c', 'printf "%s\\n" "$2" > "$1/operation"', 'test', lock, tostring(test_pid)}).exit_code == 0)
-    keys = {}; expected_merge = false; expected_error = 'outstanding Git/CI operation'
-  else table.insert(keys, 1, 'y') end
-end
-z.async.future = function()
-  local key = table.remove(keys, 1)
-  assert(key, scenario .. ': unexpected prompt: ' .. tostring(T.state.title) .. '\n' .. tostring(T.state.detail))
-  if scenario == 'missing_local_default' or scenario == 'cancel_default' then
-    if key == 'Enter' and T.state.title:find('Review diff', 1, true) then
-      assert(T.state.detail:find('Default branch unresolved', 1, true))
-    elseif key == 't' or key == 'Esc' then
-      assert(T.state.title == 'Local default branch (no fetch)')
-    end
-  end
-  if scenario == 'spawn_failed' and key == 'q' then
-    assert(T.state.title == 'Operation failed' and T.state.detail == 'helper spawn failed')
-    assert(__run({'test', '!', '-e', T.state.lock .. '/helper'}).exit_code == 0)
-  end
-  local widget = T.form()
-  if T.chat.initial ~= nil then
-    while key ~= 'Enter' and key ~= 'Esc' do
-      widget:handle_key(key)
-      key = assert(table.remove(keys, 1))
-    end
-  end
-  return ready((key == 'Esc' or key == 'q') and 'cancel' or key), function() end
-end
-z.open_command_pane = function(opts)
-  local argv = {opts[1].path}
-  for _, arg in ipairs(opts[1].args) do table.insert(argv, arg) end
-  pane_result = __run(argv)
-  if scenario == 'ci_closed' then pane_result.closed = true
-  elseif scenario == 'dirty_target' then assert(__run({'sh', '-c', 'touch "$1/dirty"', 'test', primary}).exit_code == 0)
-  elseif scenario == 'target_moved' then assert(__run({'git', '-C', primary, 'commit', '--allow-empty', '-m', 'moved'}).exit_code == 0)
-  elseif scenario == 'config_changed' then assert(__run({'sh', '-c', 'printf "\\n" >> "$1/.zellij.kdl"', 'test', checkout}).exit_code == 0)
-  elseif scenario == 'head_changed' then assert(__run({'git', '-C', checkout, 'commit', '--allow-empty', '-m', 'changed'}).exit_code == 0) end
-  pending_exit = pane_result.closed and {PaneClosed={Terminal=55}} or
-    {CommandPaneExited={55, pane_result.exit_code, {}}}
-  return {Terminal=55}
-end
-z.agent.spawn = function(opts)
-  assert(opts.cwd == checkout and opts.source_directory == checkout)
-  assert(opts.kind == 'codex')
-  assert(opts.context.agent_workflow_run == T.state.run)
-  if scenario == 'spawn_failed' then error('helper spawn failed', 0) end
-  if opts.context.agent_workflow_role == 'message' then
-    local file = assert(opts.prompt:match('this file: ([^\n]+)'))
-    assert(__run({'sh', '-c', 'printf "%s" "generated message" > "$1"', 'test', file}).exit_code == 0)
-  else
-    assert(opts.context.agent_workflow_role == 'repair')
-    if scenario == 'ci_repair' then assert(__run({'rm', '--', checkout .. '/fail'}).exit_code == 0)
-    elseif scenario == 'conflict_repair' then
-      assert(__run({'sh', '-c', 'printf resolved > "$1/shared"', 'test', checkout}).exit_code == 0)
-      assert(__run({'git', '-C', checkout, 'add', 'shared'}).exit_code == 0)
-      assert(__run({'git', '-C', checkout, 'rebase', '--continue'}).exit_code == 0)
-    end
-  end
-  pending_exit = {CommandPaneExited={56, 0, {}}}
-  return {Terminal=56}
-end
-M.cwd = checkout
-M.kind = 'codex'
-local finished = false
-z.task(function()
-  if expected_error then
-    local ok, err = pcall(T.run)
-    assert(not ok and tostring(err):find(expected_error, 1, true), tostring(err))
-  else T.run() end
-  finished = true
-end)
-while pending_write do
-  local exited = pending_exit
-  pending_write, pending_exit = nil, nil
-  -- The exit is not replayed: it must settle a waiter before the marker write completes.
-  z.__update(M, exited)
-  z.__update(M, {RunCommandResult={0, {}, {}, {}}})
-end
-assert(finished, scenario .. ': workflow missed a pane exit: ' .. tostring(T.state.title))
-assert(#keys == 0, 'workflow stopped early: ' .. tostring(T.state.detail))
-assert((T.state.merged ~= nil) == expected_merge, scenario .. ': incorrect merge outcome: ' .. tostring(T.state.detail))
-assert(not T.state.owns, 'ownership was retained')
-if not expected_error then
-  assert(__run({'test', '!', '-e', T.state.gitdir .. '/agent-exit.lock'}).exit_code == 0,
-    scenario .. ': ownership lock was retained')
-end
-"#,
-            )
-            .exec()
-            .unwrap();
-        if ![
-            "manual",
-            "generated",
-            "ci_repair",
-            "recovery",
-            "inferred_default",
-            "missing_local_default",
-            "conflict_repair",
-        ]
-        .contains(&scenario)
-        {
-            assert!(
-                !primary.join("new $; file").exists(),
-                "{scenario}: merged without a valid gate"
-            );
-            continue;
-        }
-        assert_eq!(
-            std::fs::read_to_string(primary.join("new $; file")).unwrap(),
-            "new content\n"
-        );
-        assert_eq!(linked.exists(), matches!(cleanup, "k" | "d"));
-        let branches = git(&primary, &["branch", "--list", "topic"]);
-        assert_eq!(!branches.trim().is_empty(), matches!(cleanup, "k" | "w"));
-        if cleanup == "d" {
-            assert!(!Command::new("git")
-                .arg("-C")
-                .arg(&linked)
-                .args(["symbolic-ref", "HEAD"])
-                .output()
-                .unwrap()
-                .status
-                .success());
-        }
-    }
-}
-
 /// A `PluginEnv` with no wasm behind it and no channels wired up. Enough to load a Lua plugin and
 /// run its entrypoints; commands that talk to other threads silently fail, which is what
 /// `ThreadSenders::default()` does.
@@ -1671,527 +1022,6 @@ fn the_agent_commit_example_loads_and_stages_on_c() {
         .expect("staging should marshal");
     let rendered = String::from_utf8(plugin.render(12, 70).unwrap()).unwrap();
     assert!(rendered.contains("staging"), "got: {rendered}");
-}
-
-#[test]
-fn the_shipped_agent_exit_hook_loads_and_renders() {
-    // The builtin hook is compiled in rather than read from disk, so nothing else would notice
-    // a syntax error in it until an agent exited.
-    use crate::background_jobs::BackgroundJob;
-    use zellij_runtime::channels::SenderWithContext;
-    use zellij_types::diagnostics::ErrorContext;
-
-    let (to_background_jobs, background_jobs) =
-        zellij_runtime::channels::unbounded::<(BackgroundJob, ErrorContext)>();
-    let mut env = test_env();
-    env.senders.to_background_jobs = Some(SenderWithContext::new(to_background_jobs));
-    env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
-    let source = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap().replace(
-        "\nfunction M.load(config)",
-        "function M.test_focus(id) if not M.syncing and C.options[id] then form():focus(id); return true end return false end\nfunction M.load(config)",
-    );
-    let mut plugin = load_lua_plugin(&source, "agent-exit.lua", env).unwrap();
-    plugin
-        .load(&BTreeMap::from([
-            ("agent_pane_id".to_owned(), "7".to_owned()),
-            ("agent_cwd".to_owned(), "/work/.worktrees/topic".to_owned()),
-            ("agent_firecracker_vm".to_owned(), "review".to_owned()),
-            (
-                "agent_firecracker_worktree".to_owned(),
-                "/work/.worktrees/topic".to_owned(),
-            ),
-            ("agent_session".to_owned(), "work".to_owned()),
-            (
-                "agent_zellij_executable".to_owned(),
-                "/bin/zellij".to_owned(),
-            ),
-            (
-                "agent_zellij_config_file".to_owned(),
-                "/config/config.kdl".to_owned(),
-            ),
-            ("agent_zellij_config_dir".to_owned(), "/config".to_owned()),
-        ]))
-        .unwrap();
-    let press = |plugin: &mut super::LuaPlugin, id: char| {
-        plugin.render(60, 200).unwrap();
-        let focused: bool = plugin
-            .plugin
-            .get::<mlua::Function>("test_focus")
-            .unwrap()
-            .call(id.to_string())
-            .unwrap();
-        plugin
-            .update(&Event::Key(KeyWithModifier::new(if focused {
-                BareKey::Enter
-            } else {
-                BareKey::Char(id)
-            })))
-            .unwrap();
-    };
-    let config_env = BTreeMap::from([
-        (
-            "ZELLIJ_CONFIG_FILE".to_owned(),
-            "/config/config.kdl".to_owned(),
-        ),
-        ("ZELLIJ_CONFIG_DIR".to_owned(), "/config".to_owned()),
-    ]);
-    let next_command = || match background_jobs.recv().unwrap().0 {
-        BackgroundJob::RunCommand(_, _, command, args, env, cwd, context, Some(8192)) => {
-            assert_eq!(env, config_env);
-            assert_eq!(cwd, PathBuf::from("/"));
-            (command, args, context)
-        },
-        other => panic!("expected a Firecracker helper command, got {other:?}"),
-    };
-    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
-    assert!(
-        rendered.contains("Agent exited. Create another agent in the same directory?"),
-        "got: {rendered}"
-    );
-    assert!(
-        rendered.contains("Directory: /work/.worktrees/topic"),
-        "got: {rendered}"
-    );
-    assert!(rendered.contains("Checking VM worktree"), "got: {rendered}");
-
-    let (command, args, check_context) = next_command();
-    assert_eq!(command, "/bin/zellij");
-    assert_eq!(
-        args,
-        ["firecracker", "changes", "review", "--session", "work"]
-    );
-    plugin
-        .update(&Event::RunCommandResult(
-            Some(0),
-            b"2\n".to_vec(),
-            vec![],
-            check_context,
-        ))
-        .unwrap();
-    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
-    assert!(
-        rendered.contains("2 changed paths in the VM"),
-        "got: {rendered}"
-    );
-    assert!(
-        rendered.contains("Sync 2 VM paths") || rendered.contains("Operation running"),
-        "got: {rendered}"
-    );
-
-    press(&mut plugin, 's');
-    let (command, args, sync_context) = next_command();
-    assert_eq!(command, "/bin/zellij");
-    assert_eq!(args, ["firecracker", "sync", "review", "--session", "work"]);
-    plugin
-        .update(&Event::RunCommandResult(
-            Some(1),
-            vec![],
-            b"provider unavailable\n".to_vec(),
-            sync_context,
-        ))
-        .unwrap();
-    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
-    assert!(
-        rendered.contains("VM worktree could not be synced. See plugin log for details."),
-        "got: {rendered}"
-    );
-    assert!(
-        rendered.contains("Sync 2 VM paths") || rendered.contains("Operation running"),
-        "got: {rendered}"
-    );
-
-    press(&mut plugin, 's');
-    let (command, args, retry_context) = next_command();
-    assert_eq!(command, "/bin/zellij");
-    assert_eq!(args, ["firecracker", "sync", "review", "--session", "work"]);
-    plugin
-        .update(&Event::RunCommandResult(
-            Some(0),
-            vec![],
-            b"warning: kept guest copy\n".to_vec(),
-            retry_context,
-        ))
-        .unwrap();
-    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
-    assert!(
-        rendered.contains("VM worktree synced. warning: kept guest copy"),
-        "got: {rendered}"
-    );
-    assert!(
-        rendered.contains("Sync 2 VM paths") || rendered.contains("Operation running"),
-        "got: {rendered}"
-    );
-
-    press(&mut plugin, 's');
-    let (command, args, recheck_context) = next_command();
-    assert_eq!(command, "/bin/zellij");
-    assert_eq!(
-        args,
-        ["firecracker", "changes", "review", "--session", "work"]
-    );
-    assert!(
-        background_jobs.try_recv().is_err(),
-        "sync must remain locked until the recheck finishes"
-    );
-    plugin
-        .update(&Event::RunCommandResult(
-            Some(0),
-            b"1\n".to_vec(),
-            vec![],
-            recheck_context,
-        ))
-        .unwrap();
-    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
-    assert!(
-        rendered.contains("1 changed path remains"),
-        "got: {rendered}"
-    );
-    assert!(rendered.contains("Sync 1 VM paths"), "got: {rendered}");
-
-    press(&mut plugin, 's');
-    let (_, _, sync_context) = next_command();
-    plugin
-        .update(&Event::RunCommandResult(
-            Some(0),
-            vec![],
-            vec![],
-            sync_context,
-        ))
-        .unwrap();
-    let (_, _, recheck_context) = next_command();
-    plugin
-        .update(&Event::RunCommandResult(
-            Some(1),
-            vec![],
-            b"provider unavailable\n".to_vec(),
-            recheck_context,
-        ))
-        .unwrap();
-    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
-    assert!(
-        rendered.contains("VM changes could not be checked. See plugin log for details."),
-        "got: {rendered}"
-    );
-
-    assert!(!plugin.plugin.get::<bool>("syncing").unwrap());
-    press(&mut plugin, 's');
-    assert!(background_jobs.try_recv().is_err());
-    // A fresh count permits sync again; the failed recheck must have released the lock.
-    plugin
-        .update(&Event::RunCommandResult(
-            Some(0),
-            b"1\n".to_vec(),
-            vec![],
-            BTreeMap::from([("step".to_owned(), "check".to_owned())]),
-        ))
-        .unwrap();
-
-    press(&mut plugin, 's');
-    let (_, _, sync_context) = next_command();
-    plugin
-        .update(&Event::RunCommandResult(
-            Some(0),
-            vec![],
-            vec![],
-            sync_context,
-        ))
-        .unwrap();
-    let (_, _, recheck_context) = next_command();
-    plugin
-        .update(&Event::RunCommandResult(
-            Some(0),
-            b"0\n".to_vec(),
-            vec![],
-            recheck_context,
-        ))
-        .unwrap();
-    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
-    assert!(
-        rendered.contains("Sync conflicts require resolution"),
-        "got: {rendered}"
-    );
-    press(&mut plugin, 'r');
-    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
-    assert!(rendered.contains("kept guest copy"), "got: {rendered}");
-    press(&mut plugin, 'y');
-    let (_, _, context) = next_command();
-    plugin
-        .update(&Event::RunCommandResult(
-            Some(0),
-            b"0\n".to_vec(),
-            vec![],
-            context,
-        ))
-        .unwrap();
-    let rendered = component_text(&String::from_utf8(plugin.render(60, 200).unwrap()).unwrap());
-    assert!(
-        rendered.contains("Inspecting repository..."),
-        "got: {rendered}"
-    );
-}
-
-#[test]
-fn agent_exit_zero_guest_changes_start_the_workflow() {
-    let source = zellij_config::consts::builtin_lua_plugin("agent-exit")
-        .unwrap()
-        .replace(
-            "\nfunction M.load(config)",
-            "M.test_state = W; M.test_chat = C\nfunction M.load(config)",
-        );
-    let plugin = load(&source).unwrap();
-    plugin
-        .lua
-        .globals()
-        .set("M", plugin.plugin.clone())
-        .unwrap();
-    plugin.lua.load(r#"
-local z = require('zellij')
-z.show_cursor = function() end
-local starts, commands = 0, {}
-local now = os.time()
-os.time = function() return now end
-M.test_state.start = function() starts = starts + 1 end
-z.subscribe = function() end
-z.run_command = function(opts) table.insert(commands, opts) end
-M.load { agent_firecracker_vm='vm', agent_firecracker_worktree='/host/topic', agent_session='work' }
-assert(#commands == 1 and commands[1].context.step == 'check')
-for _, step in ipairs({'check', 'recheck'}) do
-  for _, case in ipairs({{0, '0\n', true}, {0, '2\n', false}, {0, 'bad', false}, {1, '0\n', false}}) do
-    for _, warnings in ipairs({false, true}) do
-      starts, commands = 0, {}
-      M.sync_warnings = warnings and 'kept guest copy' or nil
-      M.syncing = step == 'recheck'
-      M.started = now
-      now = now + 5
-      z.__update(M, {RunCommandResult={case[1], {case[2]:byte(1, -1)}, {}, {step=step}}})
-      local entry = M.test_chat.entries[#M.test_chat.entries]:gsub('\\(%p)', '%1')
-      if not (case[3] and warnings) then
-        assert(entry:find('status ' .. case[1] .. ', 5s', 1, true), entry)
-      end
-      assert(starts == (case[3] and not warnings and 1 or 0))
-      assert(not M.syncing)
-      if case[3] then
-        assert(not M.render(20, 120):find('<S> sync', 1, true))
-        z.__update(M, {Key={bare_key={Char='s'}, key_modifiers={}}})
-        assert(#commands == 0)
-        if warnings then assert(M.status:find('Sync conflicts require resolution', 1, true)) end
-      end
-    end
-  end
-end
-"#).exec().unwrap();
-}
-
-#[test]
-fn agent_exit_dialog_keys_do_not_reach_restart_or_close() {
-    let source = zellij_config::consts::builtin_lua_plugin("agent-exit")
-        .unwrap()
-        .replace(
-            "\nfunction M.load(config)",
-            "M.test_dialogs = { state = W, choose = choose, edit = edit, chat = C, form = form }\nfunction M.load(config)",
-        );
-    let plugin = load(&source).unwrap();
-    plugin
-        .lua
-        .globals()
-        .set("M", plugin.plugin.clone())
-        .unwrap();
-    plugin
-        .lua
-        .load(
-            r#"
-local z = require('zellij')
-z.show_cursor = function() end
-local T = M.test_dialogs
-local actions, commands = {}, {}
-z.subscribe = function() end
-z.rerun_command_pane = function(id) table.insert(actions, 'restart ' .. id) end
-z.close_terminal_pane = function(id) table.insert(actions, 'close ' .. id) end
-z.close_self = function() table.insert(actions, 'self') end
-z.run_command = function(opts) table.insert(commands, opts) end
-M.load { agent_pane_id = '7' }
-local function key(k)
-  M.render(20, 200)
-  if T.chat.options[k] and k ~= 'Esc' then T.form():focus(k); k = 'Enter' end
-  if k == 'q' then k = 'Esc' end
-  z.__update(M, {Key={bare_key=k, key_modifiers={}}})
-end
-for _, dismiss in ipairs({'Enter', 'Esc', 'q'}) do
-  for _, next_key in ipairs({'Enter', 'Esc'}) do
-    actions, commands = {}, {}
-    M.sync_warnings = 'kept guest copy'
-    key('r')
-    assert(T.state.active and T.state.title == 'Resolve sync conflicts before continuing')
-    key(dismiss)
-    assert(not T.state.active and #actions == 0 and #commands == 0)
-    assert(M.sync_warnings == 'kept guest copy')
-    key(next_key)
-    assert(#actions == 2 and actions[2] == 'self')
-    assert(actions[1] == (next_key == 'Enter' and 'restart 7' or 'close 7'))
-  end
-end
-actions, commands = {}, {}
-M.vm, M.session, M.zellij = 'review', 'work', 'zellij'
-key('r'); key('y')
-assert(not T.state.active and M.syncing and not M.sync_warnings and #actions == 0)
-assert(#commands == 1 and commands[1].context.step == 'recheck')
-M.syncing = false
--- Both dialog primitives can be the last await before a workflow returns.
-for _, dialog in ipairs({'choose', 'edit'}) do
-  for _, dismiss in ipairs({'Enter', 'Esc', 'q'}) do
-    if dialog == 'choose' or dismiss ~= 'q' then
-      T.state.active = true
-      z.task(function()
-        if dialog == 'choose' then T.choose('Workflow', {Enter='back'})
-        else T.edit('Draft', 'message') end
-        T.state.active = false
-      end)
-      key(dismiss)
-      assert(not T.state.active and #actions == 0, dialog .. ': ' .. dismiss)
-    end
-  end
-end
-"#,
-        )
-        .exec()
-        .unwrap();
-}
-
-#[test]
-fn agent_exit_handles_missing_metadata_and_unavailable_changes() {
-    let source = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap();
-    for cwd in [None, Some(""), Some("/guest")] {
-        for missing in [
-            None,
-            Some("agent_firecracker_vm"),
-            Some("agent_firecracker_worktree"),
-            Some("agent_session"),
-        ] {
-            for empty in [false, true] {
-                let mut plugin = load(source).unwrap();
-                plugin
-                    .lua
-                    .load(
-                        r#"
-                    commands, logs, actions = {}, {}, {}
-                    local z = require("zellij")
-                    z.run_command = function(command) table.insert(commands, command) end
-                    z.log = function(message) table.insert(logs, message) end
-                    z.rerun_command_pane = function(id) table.insert(actions, "restart " .. id) end
-                    z.close_terminal_pane = function(id) table.insert(actions, "close " .. id) end
-                    z.close_self = function() table.insert(actions, "self") end
-                "#,
-                    )
-                    .exec()
-                    .unwrap();
-                let mut config = BTreeMap::from([
-                    ("agent_pane_id".to_owned(), "7".to_owned()),
-                    ("agent_firecracker_vm".to_owned(), "review".to_owned()),
-                    (
-                        "agent_firecracker_worktree".to_owned(),
-                        "/host/topic".to_owned(),
-                    ),
-                    ("agent_session".to_owned(), "work".to_owned()),
-                    ("agent_zellij_executable".to_owned(), "".to_owned()),
-                    ("agent_zellij_config_file".to_owned(), "".to_owned()),
-                    ("agent_zellij_config_dir".to_owned(), "".to_owned()),
-                ]);
-                if let Some(cwd) = cwd {
-                    config.insert("agent_cwd".to_owned(), cwd.to_owned());
-                }
-                if let Some(key) = missing {
-                    if empty {
-                        config.insert(key.to_owned(), "".to_owned());
-                    } else {
-                        config.remove(key);
-                    }
-                }
-                plugin.load(&config).unwrap();
-                let rendered =
-                    component_text(&String::from_utf8(plugin.render(200, 200).unwrap()).unwrap());
-                let directory = if cwd == Some("/guest") {
-                    "/guest"
-                } else if missing == Some("agent_firecracker_worktree") {
-                    "unavailable"
-                } else {
-                    "/host/topic (host worktree)"
-                };
-                assert!(
-                    rendered.contains(&format!("Directory: {directory}")),
-                    "{rendered}"
-                );
-                if missing.is_some() {
-                    assert!(
-                        rendered.contains(
-                            "VM changes not checked: VM or worktree details are unavailable."
-                        ),
-                        "{rendered}"
-                    );
-                    plugin.lua.load("assert(#commands == 0)").exec().unwrap();
-                } else {
-                    plugin.lua.load(r#"
-                        assert(#commands == 1)
-                        assert(commands[1].cwd == "/")
-                        assert(table.concat(commands[1].command, " ") == "zellij firecracker changes review --session work")
-                        assert(next(commands[1].env_variables) == nil)
-                    "#).exec().unwrap();
-                    for (status, stdout, stderr) in [
-                        (None, "", "No such file or directory (os error 2)"),
-                        (Some(1), "", "failed to count changes: provider unavailable"),
-                        (Some(0), "garbage", ""),
-                        (Some(0), "-1", ""),
-                        (Some(0), "1.5", ""),
-                        (Some(0), "1e999", ""),
-                    ] {
-                        plugin
-                            .update(&Event::RunCommandResult(
-                                status,
-                                stdout.as_bytes().to_vec(),
-                                stderr.as_bytes().to_vec(),
-                                BTreeMap::from([("step".to_owned(), "check".to_owned())]),
-                            ))
-                            .unwrap();
-                        let rendered = component_text(
-                            &String::from_utf8(plugin.render(200, 200).unwrap()).unwrap(),
-                        );
-                        assert!(
-                            rendered.contains(
-                                "VM changes could not be checked. See plugin log for details."
-                            ),
-                            "{rendered}"
-                        );
-                        assert!(
-                            !rendered.contains("os error") && !rendered.contains("<S> sync"),
-                            "{rendered}"
-                        );
-                    }
-                    plugin.lua.load(r#"
-                        assert(#logs == 6)
-                        assert(logs[1]:find("VM check failed: vm=review session=work helper=zellij exit_status=nil", 1, true))
-                        assert(logs[1]:find("os error 2", 1, true))
-                        assert(logs[2]:find("provider unavailable", 1, true))
-                        assert(logs[3]:find('stdout="garbage"', 1, true))
-                    "#).exec().unwrap();
-                }
-                for key in [BareKey::Enter, BareKey::Esc] {
-                    plugin
-                        .update(&Event::Key(KeyWithModifier::new(key)))
-                        .unwrap();
-                }
-                plugin
-                    .lua
-                    .load(r#"assert(table.concat(actions, ",") == "restart 7,self,close 7,self")"#)
-                    .exec()
-                    .unwrap();
-            }
-        }
-    }
-    // An ordinary exit has no VM details and does not advertise a VM failure.
-    let mut plugin = load(source).unwrap();
-    plugin.load(&BTreeMap::new()).unwrap();
-    let rendered = component_text(&String::from_utf8(plugin.render(200, 200).unwrap()).unwrap());
-    assert!(rendered.contains("Directory: unavailable"));
-    assert!(!rendered.contains("VM changes"));
 }
 
 /// The agent-policy hook is headless: a syntax error in it would surface the first time an agent
@@ -3879,6 +2709,67 @@ fn an_absolute_path_outside_every_root_needs_full_hd_access() {
 }
 
 #[test]
+fn redirected_project_configuration_requires_authorization_for_both_checkouts() {
+    let dirs = FsDirs::new();
+    let control = tempfile::tempdir().unwrap();
+    let git = std::process::Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(dirs.host.path())
+        .output()
+        .unwrap();
+    assert!(git.status.success());
+    assert!(std::process::Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(control.path())
+        .output()
+        .unwrap()
+        .status
+        .success());
+    std::fs::create_dir(dirs.host.path().join(".zellij")).unwrap();
+    std::fs::create_dir(control.path().join(".zellij")).unwrap();
+    std::fs::write(
+        dirs.host.path().join(".zellij/.swamp-workflows.kdl"),
+        format!("agent_exit {{ control_checkout {:?}; }}", control.path()),
+    )
+    .unwrap();
+    let source = "agent_exit { workflow \"review\"; }";
+    std::fs::write(control.path().join(".zellij/.swamp-workflows.kdl"), source).unwrap();
+    let read = format!(
+        "return zellij.project_config.read({:?}).source",
+        dirs.host.path()
+    );
+    let denied = render_with_dirs(&read, &dirs, file_permissions()).unwrap_err();
+    assert!(format!("{denied:#}").contains("control checkout"));
+    let read_only = Some(
+        [PermissionType::ReadFiles, PermissionType::FullHdAccess]
+            .into_iter()
+            .collect(),
+    );
+    assert_eq!(
+        render_with_dirs(&read, &dirs, read_only.clone()).unwrap(),
+        source
+    );
+    let write = format!("return zellij.project_config.write({:?}, 'agent_exit {{ workflow \"other\"; }}', {:?}).source", dirs.host.path(), source);
+    assert!(render_with_dirs(&write, &dirs, read_only).is_err());
+    assert_eq!(
+        std::fs::read_to_string(control.path().join(".zellij/.swamp-workflows.kdl")).unwrap(),
+        source
+    );
+    let allowed = Some(
+        [
+            PermissionType::ReadFiles,
+            PermissionType::WriteFiles,
+            PermissionType::FullHdAccess,
+        ]
+        .into_iter()
+        .collect(),
+    );
+    assert!(render_with_dirs(&write, &dirs, allowed)
+        .unwrap()
+        .contains("other"));
+}
+
+#[test]
 fn renaming_out_of_the_plugins_folders_is_refused() {
     let dirs = FsDirs::new();
     std::fs::write(dirs.host.path().join("a.txt"), "x").unwrap();
@@ -4566,6 +3457,46 @@ fn every_reply_the_shim_reads_is_decoded() {
             );
         }
     }
+}
+
+#[test]
+fn spawn_reply_preserves_actual_checkout_and_lua_spawn_compatibility() {
+    use prost::Message;
+    use zellij_plugin_api::plugin_command::ProtobufSpawnAgentResponse;
+    use zellij_types::agent::SpawnedAgent;
+    use zellij_types::data::PaneId;
+    let reply = ProtobufSpawnAgentResponse::from(Ok(SpawnedAgent {
+        pane_id: PaneId::Terminal(TerminalId::new(7)),
+        branch: Some("topic-2".into()),
+        cwd: Some(PathBuf::from("/repo/.worktrees/topic-2")),
+    }))
+    .encode_to_vec();
+    assert_eq!(
+        decoded(
+            CommandType::SpawnAgent,
+            &reply,
+            "return v.pane_id.Terminal .. ':' .. v.branch .. ':' .. v.cwd"
+        ),
+        "7:topic-2:/repo/.worktrees/topic-2"
+    );
+    let plugin = load("return {}").unwrap();
+    plugin
+        .lua
+        .load(
+            r#"
+local z = require('zellij')
+local old = z.agent.spawn_details
+z.agent.spawn_details = function(opts)
+  assert(opts.kind == 'codex')
+  return {pane_id={Terminal=7}, branch='topic-2', cwd='/repo/.worktrees/topic-2'}
+end
+local pane = z.agent.spawn {kind='codex'}
+assert(pane.Terminal == 7 and pane.branch == nil and pane.pane_id == nil)
+z.agent.spawn_details = old
+"#,
+        )
+        .exec()
+        .unwrap();
 }
 
 /// Decode `bytes` as `command`'s reply and describe the result with a Lua expression over `v`.
@@ -7494,4 +6425,226 @@ assert(f:value('branch') == 'main' and f:focused_id() == 'name')
     let mut reloaded = load(&source).unwrap();
     reloaded.load(&BTreeMap::new()).unwrap();
     assert_eq!(reloaded.render(24, 60).unwrap(), initial);
+}
+
+#[test]
+fn swamp_exit_preserves_scrollback_and_does_not_launch_unconfigured_or_managed_work() {
+    let source = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap();
+    let plugin = load(source).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin
+        .lua
+        .load(
+            r#"
+local z=require('zellij')
+z.subscribe=function() end
+local closed, rerun, detached=0,0,0
+z.close_self=function() detached=detached+1 end
+z.close_terminal_pane=function() closed=closed+1 end
+z.rerun_command_pane=function() rerun=rerun+1 end
+z.project_config.read=function() return {config={}} end
+z.rpc.call=function() error('unconfigured exit must not dispatch') end
+M.load{agent_pane_id='7',agent_cwd='/work/topic'}
+assert(M.status:find('project%-setup'))
+M.update{name='key',key='Esc'}
+assert(detached==1 and closed==0 and rerun==0)
+M.load{agent_pane_id='7',swamp_owner='owned'}
+M.update{name='key',key='Enter'}
+assert(rerun==1 and detached==2 and closed==0)
+z.project_config.read=function(directory)
+  assert(directory=='/work/topic')
+  return {config={workflow='configured'}}
+end
+z.task=function(f) f() end
+z.await=function(value) return value end
+z.request_render=function() end
+z.message_to_plugin=function() end
+local expected_vm='original-vm'
+z.rpc.call=function(request)
+  assert(request.payload.directory=='/work/topic')
+  assert(request.payload.inputs.firecracker==expected_vm)
+  assert(request.payload.work=='exit-token')
+  return {}
+end
+M.load{agent_pane_id='7',agent_cwd='/guest',agent_firecracker_worktree='/work/topic',agent_firecracker_vm=expected_vm,agent_exit_token='exit-token'}
+assert(not M.busy)
+expected_vm=''
+M.load{agent_pane_id='7',agent_cwd='/work/topic',agent_exit_token='exit-token'}
+assert(not M.busy)
+"#,
+        )
+        .exec()
+        .unwrap();
+}
+
+#[test]
+fn swamp_bridge_claims_ownership_before_dispatch_and_never_infers_completion_from_idle() {
+    let source = zellij_config::consts::builtin_lua_plugin("swamp-bridge").unwrap();
+    let plugin = load(source).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin.lua.load(r#"
+local z=require('zellij')
+local rows, owners, panes, supervisors={}, {}, {}, {}
+local handler, next_pane, spawned, sent= nil,6,0,0
+z.server_session='session'; z.server_incarnation='incarnation';z.instance_id='instance'
+z.get_plugin_ids=function() return {host_id='host'} end
+z.subscribe=function() end
+z.data.define=function() end
+z.data.eq=function(_,uid) return uid end
+z.data.fetch=function(q) return rows[q.filter] and {rows[q.filter]} or {} end
+z.data.put=function(_,v,uid,rev) return {uid=uid,value=v.value,rev=rev} end
+z.data.apply=function(changes)
+  if changes.uid then changes={changes} end
+  for _,c in ipairs(changes) do assert(c.rev==(rows[c.uid] and rows[c.uid].rev or 0),'CAS conflict') end
+  for _,c in ipairs(changes) do rows[c.uid]={value=c.value,rev=c.rev+1} end
+end
+z.rpc.handle=function(_,h) handler=h end
+z.workflow_remote_panes=function() return {} end
+z.get_pane_info=function(pane)
+  if pane.Plugin then return {plugin_url='zellij:swamp-workflow'} end
+  return {target='Local'}
+end
+z.async.run_command=function(opts)
+  assert(opts.command[2]=='pty-host')
+  local result={}
+  for pane in pairs(panes) do result[#result+1]={terminal_id=pane,attached=true,session_name='session',host_id='supervisor-'..(supervisors[pane] or pane),child_pid=100+(supervisors[pane] or pane)} end
+  local a,r=z.async.future();r{exit_code=0,stdout=z.json.encode(result),stderr=''};return a
+end
+z.agent.spawn_details=function(opts)
+  spawned=spawned+1;next_pane=next_pane+1
+  owners[next_pane]=opts.context.swamp_owner;panes[next_pane]=true
+  -- SessionStart can arrive before spawn_details returns its pane identity.
+  z.__update(M,{AgentEvent={pane_id=next_pane,hook='SessionStart',raw=z.json.encode({_zellij_workflow_owner=owners[next_pane]})}})
+  return {pane_id={Terminal=next_pane},branch='topic',cwd='/work/topic'}
+end
+local function event(pane,hook,prompt)
+  z.__update(M,{AgentEvent={pane_id=pane,hook=hook,prompt=prompt,last_message='{"findings":[]}',raw=z.json.encode({_zellij_workflow_owner=owners[pane]})}})
+end
+z.agent.send=function(pane,prompt)
+  sent=sent+1
+  if prompt=='fast' then event(pane.Terminal,'UserPromptSubmit',prompt);event(pane.Terminal,'Stop') end
+end
+M.load{}
+local function call(a)
+  local answer,err
+  z.task(function() local ok,r=pcall(handler,a,{source={Plugin=1}}); if ok then answer=r else err=r end end)
+  return answer,err
+end
+local function spawn(work)
+  return {method='agent_spawn',work=work,key='agent',spec={kind='codex',cwd='/work/topic'}}
+end
+local a=assert(call(spawn('one')))
+assert(a.supervisor=='supervisor-7' and a.checkout=='/work/topic' and a.ready)
+assert(call(spawn('one')).pane==7 and spawned==1)
+local conflict=spawn('one');conflict.spec.cwd='/wrong'
+assert(select(2,call(conflict)))
+assert(call(spawn('two')).pane==8 and spawned==2)
+event(7,'SessionStart');event(8,'SessionStart')
+local function prompt(key,text) return {method='agent_prompt',work='one',key=key,agent='agent',prompt=text} end
+assert(call(prompt('fast','fast')).outcome=='completed' and sent==1)
+assert(call(prompt('fast','fast')).outcome=='completed' and sent==1)
+assert(call(prompt('slow','slow')).outcome=='pending')
+assert(select(2,call(prompt('overlap','overlap'))))
+event(7,'SessionStart');event(7,'Stop') -- not accepted, so a late ending is not completion
+assert(call{method='observe',work='one',key='slow'}.outcome=='pending')
+event(7,'UserPromptSubmit','slow');event(7,'StopFailure')
+assert(call{method='observe',work='one',key='slow'}.outcome=='failed')
+assert(call(prompt('exits','exits')).outcome=='pending')
+z.__update(M,{CommandPaneExited={7,0,{swamp_owner=owners[7],swamp_operation='agent'}}})
+assert(call{method='observe',work='one',key='exits'}.outcome=='process-exit')
+-- Pane IDs may change at restart; the supervisor and child remain the authority.
+panes[8]=nil;panes[18]=true;supervisors[18]=8;owners[18]=owners[8]
+local log_uid=z.json.encode({'host','session','two','agent'})
+local log_value=z.json.decode(rows[log_uid].value);log_value.log='terminal_8'
+rows[log_uid].value=z.json.encode(log_value)
+z.get_pane_scrollback=function(args)
+  assert(args.pane_id.Terminal==18,'Never read a reused pane number after adoption')
+  return {lines_above_viewport={},viewport={'verified log'},lines_below_viewport={}}
+end
+local observed_log=call{method='observe',work='two',key='agent'}
+assert(observed_log.output=='verified log' and observed_log.log=='terminal_18')
+assert(call{method='agent_inspect',work='two',key='inspect',agent='agent'}.pane==18)
+assert(call{method='reconcile',work='two',key='reconcile',operation='agent'}.pane==18)
+supervisors[18]=99
+assert(select(2,call{method='agent_inspect',work='two',key='inspect',agent='agent'}))
+-- Lost dispatch has no resource identity. Repeating the request returns its claim.
+z.agent.spawn_details=function() spawned=spawned+1;error('interrupted') end
+assert(select(2,call(spawn('lost'))))
+local lost=call(spawn('lost'))
+assert(not lost.pane and spawned==3)
+z.instance_id='reloaded'
+assert(call{method='observe',work='lost',key='agent'}.outcome=='unknown')
+-- Launch from a source worktree subdirectory, with a separate control checkout.
+local command_panes, resolved, child_pid=0,0,321
+local source_root='/work/topic \n' -- preserve path whitespace, including a trailing newline
+z.project_config.read=function(directory)
+  assert(directory==source_root..'/src')
+  return {root='/control',config={workflow='configured'}}
+end
+z.async.run_command=function(opts)
+  local stdout,exit_code,stderr='',0,''
+  if opts.command[1]=='git' then
+    assert(z.json.encode(opts.command)==z.json.encode{'git','rev-parse','--show-toplevel'})
+    assert(opts.cwd==source_root..'/src')
+    resolved=resolved+1
+    stdout=source_root..'\n'
+    if resolved==2 then exit_code=128;stderr='not a git repository' end
+  elseif opts.command[2]=='pty-host' then
+    stdout=z.json.encode{{terminal_id=30,attached=true,session_name='session',host_id='launch-supervisor',child_pid=child_pid}}
+  else
+    assert(opts.command[1]=='swamp' and opts.cwd=='/control')
+    if opts.command[3]=='history' then
+      assert(opts.command[4]=='search')
+      stdout=z.json.encode{results={}}
+    else assert(opts.command[3]=='validate' and opts.command[4]=='configured') end
+  end
+  local a,r=z.async.future();r{exit_code=exit_code,stdout=stdout,stderr=stderr};return a
+end
+local expected_checkout=source_root
+z.open_command_pane=function(opts)
+  command_panes=command_panes+1
+  local command=opts[1]
+  assert(command.path=='swamp' and command.cwd=='/control')
+  assert(command.args[1]=='workflow' and command.args[2]=='run' and command.args[3]=='configured')
+  local inputs=z.json.decode(command.args[6])
+  assert(inputs.checkout==expected_checkout and inputs.target=='/control')
+  return {Terminal=30}
+end
+local function launch(work,checkout)
+  return {method='workflow_run',work=work,key='launch',directory=source_root..'/src',inputs={checkout=checkout}}
+end
+local launched=assert(call(launch('workflow')))
+assert(launched.process==child_pid and launched.supervisor=='launch-supervisor' and launched.pane==30)
+assert(launched.checkout=='/control')
+assert(call(launch('workflow')).process==child_pid and command_panes==1 and resolved==1)
+assert(call{method='reconcile',work='workflow',key='reconcile',operation='launch'}.process==child_pid)
+child_pid=322
+local _,changed=call{method='reconcile',work='workflow',key='reconcile',operation='launch'}
+assert(tostring(changed):find('Supervisor process changed',1,true))
+local _,failed=call(launch('bad-root'))
+assert(tostring(failed):find('not a git repository',1,true) and command_panes==1)
+expected_checkout='/explicit/checkout/unchanged/ '
+assert(call(launch('explicit',expected_checkout)).pane==30 and resolved==2 and command_panes==2)
+-- Recover a Swamp run launched before its attachment step was delivered.
+local launch_uid=z.json.encode({'host','session','recovery','launch'})
+rows[launch_uid]={rev=1,value=z.json.encode{work='recovery',key='launch',outcome='unknown',request=z.json.encode{method='workflow_run'},checkout='/control'}}
+z.async.run_command=function(opts)
+  assert(opts.command[1]=='swamp' and opts.command[3]=='history' and opts.command[4]=='search')
+  local a,r=z.async.future();r{exit_code=0,stderr='',stdout=z.json.encode{results={{runId='recovered-run',workflowName='@hammz/zellij-agent-exit',inputs={session='session',launch='recovery'}}}}};return a
+end
+assert(call{method='reconcile',work='recovery',key='reconcile',operation='launch'}.outcome=='unknown')
+assert(rows[z.json.encode({'host','session','recovered-run','attachment'})])
+assert(spawned==3) -- reconciliation never launches a replacement
+-- A caller cannot proxy an unprivileged plugin through the builtin bridge.
+z.get_pane_info=function() return {plugin_url='file:untrusted.lua'} end
+assert(select(2,call{method='identity'}))
+"#).exec().unwrap();
 }

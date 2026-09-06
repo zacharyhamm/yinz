@@ -327,6 +327,10 @@ pub enum PtyHosts {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
+    /// Run and view project-owned Swamp workflows.
+    #[clap(subcommand)]
+    Workflow(Workflow),
+
     /// Change the behaviour of zellij
     #[clap(name = "options", value_parser)]
     Options(Box<CliOptions>),
@@ -377,6 +381,40 @@ pub enum Command {
     #[cfg(unix)]
     #[clap(subcommand, name = "pty-host")]
     PtyHosts(PtyHosts),
+}
+
+#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
+pub enum Workflow {
+    /// Launch a validated workflow in a supervised command pane.
+    Run {
+        name: String,
+        /// Reuse this token to reconcile an interrupted launch.
+        #[clap(long)]
+        launch: Option<String>,
+        /// Literal JSON workflow inputs.
+        #[clap(long, default_value = "{}")]
+        input: String,
+        #[clap(long)]
+        no_view: bool,
+    },
+    /// Attach a view to an existing run without restarting it.
+    Show {
+        run: String,
+        #[clap(long)]
+        json: bool,
+    },
+    /// Submit one answer to a pending question resource.
+    Answer {
+        run: String,
+        model: String,
+        question: String,
+        #[clap(allow_hyphen_values = true)]
+        answer: String,
+        #[clap(long)]
+        submission: Option<String>,
+    },
+    /// Cancel execution separately from closing its view. Resources are preserved.
+    Cancel { run: String },
 }
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]

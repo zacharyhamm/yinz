@@ -1,0 +1,15 @@
+manifestVersion: 1
+name: "@hammz/zellij"
+version: "2026.09.06.1"
+description: "Project-owned local agent work, review, questions and guarded integration"
+models:
+    - zellij.ts
+    - git_workflow.ts
+    - question.ts
+reports:
+    - workflow.ts
+workflows:
+    - workflow-zellij-agent-work.yaml
+    - workflow-zellij-review-integration.yaml
+    - workflow-zellij-question.yaml
+    - workflow-zellij-agent-exit.yaml

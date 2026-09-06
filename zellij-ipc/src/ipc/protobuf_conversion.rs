@@ -1263,6 +1263,7 @@ fn run_command_from_protobuf(
     cmd: crate::client_server_contract::client_server_contract::RunCommandAction,
 ) -> Option<zellij_types::input::command::RunCommand> {
     Some(zellij_types::input::command::RunCommand {
+        workflow_owner: None,
         command: std::path::PathBuf::from(cmd.command),
         args: cmd.args,
         cwd: cmd.cwd.map(std::path::PathBuf::from),
@@ -5185,6 +5186,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Run>
         match run_type {
             RunType::Command(cmd) => Ok(zellij_types::input::layout::Run::Command(
                 zellij_types::input::command::RunCommand {
+                    workflow_owner: None,
                     command: std::path::PathBuf::from(cmd.command),
                     args: cmd.args,
                     cwd: cmd.cwd.map(std::path::PathBuf::from),

@@ -242,7 +242,10 @@ async fn an_agent_report_control_frame_reaches_the_callback() {
     let mut reader = reader
         .on_exit(
             TerminalId::new(7),
-            RunCommand::default(),
+            RunCommand {
+                workflow_owner: Some("verified-remote-owner".into()),
+                ..Default::default()
+            },
             Box::new(|_, _, _| {}),
         )
         .on_agent_report(Arc::new(move |terminal_id, kind, json| {
@@ -268,7 +271,8 @@ async fn an_agent_report_control_frame_reaches_the_callback() {
         vec![(
             TerminalId::new(7),
             "claude".to_owned(),
-            r#"{"hook_event_name":"Stop"}"#.to_owned()
+            r#"{"_zellij_workflow_owner":"verified-remote-owner","hook_event_name":"Stop"}"#
+                .to_owned()
         )]
     );
 }

@@ -4680,6 +4680,7 @@ dependencies = [
  "suggest",
  "tempfile",
  "thiserror 2.0.19",
+ "uuid",
  "vte 0.15.0",
  "zellij-cli",
  "zellij-client",

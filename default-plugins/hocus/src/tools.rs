@@ -302,7 +302,7 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         // The authoring act: an LLM putting code into the user's config dir. It is inert until
         // something loads it, which is why the write is the prompt and the reload is not.
         "project_config_write" => {
-            "writes the proposed .zellij.kdl workflow settings; stale changes are refused"
+            "writes the proposed .zellij/.swamp-workflows.kdl workflow settings; stale changes are refused"
                 .to_owned()
         },
         "plugin_write" => {
@@ -1853,8 +1853,8 @@ pub fn specs() -> Value {
                 "required": ["query"],
             }),
         ),
-        tool("project_config_read", "Read active project .zellij.kdl source and settings.", json!({"type":"object","properties":{}})),
-        tool("project_config_write", "Confirm and write .zellij.kdl. expected is the exact previous source, null if absent. Does not execute CI.", json!({"type":"object","properties":{"source":{"type":"string"},"expected":{"type":["string","null"]}},"required":["source","expected"]})),
+        tool("project_config_read", "Read active project .zellij/.swamp-workflows.kdl source and settings.", json!({"type":"object","properties":{}})),
+        tool("project_config_write", "Confirm and write .zellij/.swamp-workflows.kdl. expected is the exact previous source, null if absent. Does not execute CI.", json!({"type":"object","properties":{"source":{"type":"string"},"expected":{"type":["string","null"]}},"required":["source","expected"]})),
         tool(
             "plugin_read",
             "Read user Lua plugin source: 300 lines from start_line=1 unless line_count is set. name may omit .lua. Use plugin_outline or plugin_search before you edit.",

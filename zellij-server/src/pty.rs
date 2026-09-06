@@ -992,6 +992,7 @@ pub enum PtyInstruction {
         pane_id: PaneId,
         response_channel: crossbeam::channel::Sender<GetPaneGitProbeResponse>,
     },
+    WorkflowRemotePanes(crossbeam::channel::Sender<Vec<serde_json::Value>>),
     UpdateAndReportCwds,
     NotifyCwdFromOsc7(TerminalId, PathBuf),
     Exit,
@@ -1684,6 +1685,15 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             } => {
                 let response = pty.get_pane_git_probe(pane_id);
                 let _ = response_channel.send(response);
+            },
+            PtyInstruction::WorkflowRemotePanes(reply) => {
+                let rows = pty
+                    .bus
+                    .os_input
+                    .as_ref()
+                    .map(|os| os.workflow_remote_panes())
+                    .unwrap_or_default();
+                let _ = reply.send(rows);
             },
             PtyInstruction::UpdateAndReportCwds => {
                 pty.update_and_report_cwds();
@@ -3411,6 +3421,21 @@ impl Pty {
             // originating plugin belongs to the session this pane came from, and
             // its plugin id would name something else entirely here. The
             // supervisor clears it from the command for the same reason.
+            // Portable workflow ownership is independent of those ids. The bridge
+            // verifies it against its durable claim before accepting this event.
+            if let (PaneId::Terminal(terminal_id), Some(owner)) =
+                (pane_id, command.workflow_owner())
+            {
+                let context = std::collections::BTreeMap::from([(
+                    "swamp_owner".to_owned(),
+                    owner.to_owned(),
+                )]);
+                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
+                    None,
+                    None,
+                    Event::CommandPaneExited(terminal_id, exit_status, context),
+                )]));
+            }
             if command.hold_on_close {
                 let _ = senders.send_to_screen(ScreenInstruction::HoldPane(
                     pane_id,

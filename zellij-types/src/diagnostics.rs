@@ -345,6 +345,7 @@ pub enum ScreenContext {
     strum_macros::VariantNames,
 )]
 pub enum PtyContext {
+    WorkflowRemotePanes,
     SpawnTerminal,
     SpawnResolved,
     OpenInPlaceEditor,

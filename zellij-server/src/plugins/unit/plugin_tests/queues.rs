@@ -723,3 +723,64 @@ pub fn a_wasm_plugin_can_enqueue_and_be_a_job() {
     let frame = harness.wait_for("QueueJobFinished");
     assert!(frame.contains("Succeeded"), "{frame}");
 }
+
+#[test]
+#[serial(plugin_tests)]
+fn first_cli_pipe_reaches_a_plugin_loaded_without_an_attached_ui() {
+    let harness = Harness::new(PermissionStatus::Granted);
+    let plugin = harness.write_plugin(
+        "detached.lua",
+        r#"
+        local z = require('zellij')
+        local M = {message='not delivered'}
+        function M.pipe(message)
+          M.message='received '..message.payload
+          return true
+        end
+        function M.render() return M.message end
+        return M
+    "#,
+    );
+    harness
+        .to_plugin
+        .send(PluginInstruction::RemoveClient(harness.client_id))
+        .unwrap();
+    harness
+        .to_plugin
+        .send(PluginInstruction::CliPipe {
+            pipe_id: "detached-first-pipe".into(),
+            name: "hello".into(),
+            payload: Some("initial delivery".into()),
+            plugin: Some(plugin.clone()),
+            args: None,
+            configuration: None,
+            floating: None,
+            pane_id_to_replace: None,
+            pane_title: None,
+            cwd: None,
+            skip_cache: false,
+            cli_client_id: harness.client_id,
+            source_pane_id: None,
+        })
+        .unwrap();
+    harness.wait_for("received initial delivery");
+    harness.write_plugin(
+        "detached.lua",
+        "return {render=function() return 'reload completed without UI' end}",
+    );
+    let run =
+        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(&plugin, &None, None, None)
+            .unwrap();
+    harness
+        .to_plugin
+        .send(PluginInstruction::Reload(
+            Some(false),
+            None,
+            run,
+            TabId::new(0),
+            Size { rows: 24, cols: 80 },
+            None,
+        ))
+        .unwrap();
+    harness.wait_for("reload completed without UI");
+}

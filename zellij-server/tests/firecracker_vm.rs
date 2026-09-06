@@ -77,6 +77,21 @@ fn provider() -> Provider {
 
 #[test]
 #[ignore = "requires /dev/kvm and a built Firecracker test image"]
+fn project_workflows_observe_and_sync_a_real_guest() {
+    let status = std::process::Command::new("python3")
+        .arg("extensions/tests/smoke.py")
+        .arg("--firecracker-only")
+        .current_dir(repo_root())
+        .status()
+        .expect("start the workflow acceptance runner");
+    assert!(
+        status.success(),
+        "the typed Firecracker workflow acceptance failed"
+    );
+}
+
+#[test]
+#[ignore = "requires /dev/kvm and a built Firecracker test image"]
 fn a_provider_boots_a_real_firecracker_remote_pane() {
     let provider = provider();
     let session = "firecracker-test";

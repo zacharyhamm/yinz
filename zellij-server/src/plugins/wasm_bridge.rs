@@ -1064,8 +1064,15 @@ impl WasmBridge {
 
         let plugin_executor = self.plugin_executor.clone();
 
-        let Some(first_client_id) = self.get_first_client_id() else {
-            log::error!("No connected clients, cannot reload plugin.");
+        let Some(first_client_id) = self.get_first_client_id().or_else(|| {
+            self.plugin_map
+                .lock()
+                .unwrap()
+                .owner_client_ids_of_plugin_id(plugin_id)
+                .into_iter()
+                .next()
+        }) else {
+            log::error!("No instance owner, cannot reload plugin.");
             return Ok(());
         };
         let Some(plugin_config) = self.plugin_config_of_plugin_id(plugin_id) else {
@@ -1911,13 +1918,20 @@ impl WasmBridge {
                     );
                 }
             }
-            let all_connected_clients: Vec<ClientId> = self
+            let mut all_connected_clients: Vec<ClientId> = self
                 .connected_clients
                 .lock()
                 .unwrap()
                 .iter()
                 .copied()
                 .collect();
+            // A CLI can load a plugin while every UI client is detached. Its fallback
+            // owner still has to hold the initial pipe until cached delivery completes.
+            if let Some(client_id) = message_cid {
+                if !all_connected_clients.contains(&client_id) {
+                    all_connected_clients.push(client_id);
+                }
+            }
             for (plugin_id, cached_events) in self.cached_events_for_pending_plugins.iter_mut() {
                 if message_pid.is_none() || message_pid.as_ref() == Some(plugin_id) {
                     cached_events.push(EventOrPipeMessage::PipeMessage(pipe_message.clone()));
@@ -2328,7 +2342,18 @@ impl WasmBridge {
             } else {
                 vec![]
             };
-            for client_id in &all_connected_clients {
+            // Detached plugin instances still execute. UI attachment only determines
+            // who renders the result, not whether a queued operation is delivered.
+            let instance_clients: Vec<ClientId> = self
+                .plugin_map
+                .lock()
+                .unwrap()
+                .running_plugins_and_subscriptions()
+                .iter()
+                .filter(|(id, _, _, _)| *id == plugin_id)
+                .map(|(_, client_id, _, _)| *client_id)
+                .collect();
+            for client_id in &instance_clients {
                 if let Some((running_plugin, subscriptions)) = self
                     .plugin_map
                     .lock()
@@ -2522,13 +2547,22 @@ impl WasmBridge {
         if self.cached_plugin_map.is_empty() {
             self.cached_plugin_map = self.plugin_map.lock().unwrap().clone_plugin_assets();
         }
-        match self.cached_plugin_map.get(plugin_location) {
+        let mut destinations: Vec<_> = match self.cached_plugin_map.get(plugin_location) {
             Some(at_this_location) => instances_of(at_this_location, plugin_configuration)
                 .iter()
                 .map(|(plugin_id, client_id)| (*plugin_id, Some(*client_id)))
                 .collect(),
             None => vec![],
+        };
+        // A restored layout can finish loading its bridge after the first CLI
+        // request loaded one. This service has one recipient, unlike view plugins.
+        if *plugin_location
+            == RunPluginLocation::Zellij(zellij_types::data::PluginTag::new("swamp-bridge"))
+        {
+            destinations.sort_unstable();
+            destinations.truncate(1);
         }
+        destinations
     }
     /// The plugins at `plugin_location` with `plugin_configuration` whose load is still in
     /// flight, so not yet in the plugin map. An event addressed to one of these is held in its

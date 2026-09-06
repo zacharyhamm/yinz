@@ -3049,6 +3049,11 @@ impl Screen {
         pane_is_agent: bool,
     ) {
         let originating_plugin = run_command.originating_plugin.as_ref();
+        // The command-exit event carries ownership to the bridge. Managed helpers never
+        // recursively start an exit workflow or replace their preserved command pane.
+        if run_command.workflow_owner().is_some() {
+            return;
+        }
         let context_says_agent = originating_plugin
             .is_some_and(|plugin| plugin.context.contains_key(HOCUS_AGENT_PANE_CONTEXT));
         if !(pane_is_agent || context_says_agent) {
@@ -3070,6 +3075,12 @@ impl Screen {
         // find that out.
         let mut payload = BTreeMap::new();
         payload.insert("agent_pane_id".to_owned(), terminal_pane_id.to_string());
+        // Persisted in the hook plugin's configuration: reloads attach, later exits get
+        // a new token even when the supervisor reuses the terminal pane.
+        payload.insert(
+            "agent_exit_token".to_owned(),
+            uuid::Uuid::new_v4().to_string(),
+        );
         if let Some(exit_status) = exit_status {
             payload.insert("agent_exit_code".to_owned(), exit_status.to_string());
         }
@@ -3128,8 +3139,8 @@ impl Screen {
                 "agent_firecracker_worktree".to_owned(),
                 worktree.display().to_string(),
             );
-            payload.insert("agent_session".to_owned(), self.session_name.to_string());
-            if let Ok(executable) = std::env::current_exe() {
+            payload.insert("agent_session".to_owned(), self.session_name.clone());
+            if let Some(executable) = crate::os_input_output_unix::server_binary() {
                 payload.insert(
                     "agent_zellij_executable".to_owned(),
                     executable.display().to_string(),

@@ -169,8 +169,8 @@ fn cut(section: &str) -> Cut {
         "commands" => Cut::Until("Pane workflows"),
         "commands_workflows" => Cut::Only("Pane workflows"),
         "permissions" => Cut::Only("Permissions"),
-        "hooks" => Cut::Until("Agent exit workflow"),
-        "hooks_workflow" => Cut::Only("Agent exit workflow"),
+        "hooks" => Cut::Until("Project-owned Swamp workflows"),
+        "hooks_workflow" => Cut::Only("Project-owned Swamp workflows"),
         "hooks_headless" => Cut::Only("Headless hooks"),
         "hooks_context_menu" => Cut::Only("The `context_menu` hook"),
         _ => Cut::Whole,
@@ -285,7 +285,7 @@ fn index() -> String {
             "permissions" => "every permission a plugin can request, and what each allows"
                 .to_owned(),
             "hooks" => "the guide's \"Hooks\", and the agent_exit one".to_owned(),
-            "hooks_workflow" => "agent-exit review, commit, CI and merge".to_owned(),
+            "hooks_workflow" => "project-owned Swamp launch, questions, evidence and recovery".to_owned(),
             "hooks_headless" => "hooks that run with no pane".to_owned(),
             "hooks_context_menu" => "the context_menu hook".to_owned(),
             other => match heading(other) {
