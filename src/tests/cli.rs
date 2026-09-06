@@ -1,4 +1,5 @@
 use clap::{CommandFactory, Parser};
+use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::{RecordingId, TerminalId};
 use zellij_types::units::{ElapsedMicros, UnixMicros};
 use {zellij_cli::args::CliArgs, zellij_cli::args::Command};
@@ -176,7 +177,7 @@ fn recordings_list_output_formats_header_and_rows() {
         RecordingStore::open(&dir_path, "my_session", true, UnixMicros::new(1_000_000)).unwrap();
     let meta = PaneMetadata {
         terminal_id: TerminalId::new(7),
-        tab_id: 0,
+        tab_id: TabId::new(0),
         tab_position: 0,
         tab_name: "my_tab".to_string(),
         title: "my_pane".to_string(),

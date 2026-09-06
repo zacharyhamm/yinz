@@ -14,6 +14,7 @@ use super::*;
 use crate::plugins::{coalesce_hovers, drain_reloads, drain_updates};
 use crate::ClientId;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 use zellij_types::keys::{BareKey, KeyWithModifier};
 use {zellij_types::data::Mouse, zellij_types::data::PermissionStatus};
 
@@ -180,7 +181,7 @@ impl Harness {
             false,
             Some("batching_test_plugin".to_owned()),
             run_plugin,
-            Some(1),
+            Some(TabId::new(1)),
             None,
             self.client_id,
             Size { cols: 80, rows: 20 },
@@ -607,7 +608,7 @@ fn reload_of(url: &str) -> PluginInstruction {
         None,
         zellij_runtime::plugin_location::run_plugin_or_alias_from_url(url, &None, None, None)
             .unwrap(),
-        1,
+        TabId::new(1),
         Size::default(),
         None,
     )
@@ -689,7 +690,7 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
                 None,
             )
             .unwrap(),
-            1,
+            TabId::new(1),
             Size::default(),
             None,
         ),
@@ -703,7 +704,7 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
                 None,
             )
             .unwrap(),
-            1,
+            TabId::new(1),
             Size::default(),
             None,
         ),
@@ -717,7 +718,7 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
                 None,
             )
             .unwrap(),
-            2, // another tab
+            TabId::new(2), // another tab
             Size::default(),
             None,
         ),
@@ -752,7 +753,7 @@ pub fn collapsed_reloads_hand_their_completion_handles_to_the_caller() {
         Some(false),
         None,
         run(),
-        1,
+        TabId::new(1),
         Size::default(),
         Some(crate::route::NotificationEnd::new(tx)),
     );
@@ -855,7 +856,7 @@ pub fn collapsed_reloads_of_an_unloaded_plugin_are_answered_by_the_add_plugin() 
             Some(false),
             None,
             run_plugin(),
-            1,
+            TabId::new(1),
             Size { rows: 20, cols: 80 },
             Some(NotificationEnd::new(tx)),
         ));

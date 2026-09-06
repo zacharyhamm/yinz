@@ -5,6 +5,7 @@ const PLUGIN_77: zellij_types::internal_ids::PluginId =
     zellij_types::internal_ids::PluginId::new(77);
 
 use super::*;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 fn kitty_query_replies_ok_when_capable_client_connected() {
@@ -13,7 +14,7 @@ fn kitty_query_replies_ok_when_capable_client_connected() {
         rows: 20,
     };
     let mut screen = create_new_screen(size, true, true);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.update_kitty_graphics_support(crate::ClientId::new(1), true);
     assert_eq!(
         screen
@@ -40,7 +41,7 @@ fn kitty_query_replies_enotsupported_when_no_capable_client() {
         rows: 20,
     };
     let mut screen = create_new_screen(size, true, true);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.update_kitty_graphics_support(crate::ClientId::new(1), false);
     assert_eq!(
         screen
@@ -68,7 +69,7 @@ fn kitty_query_is_ignored_when_the_protocol_is_disabled_in_the_config() {
         rows: 20,
     };
     let mut screen = create_new_screen_with_kitty_graphics(size, true, true, false);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.update_kitty_graphics_support(crate::ClientId::new(1), true);
     assert_eq!(
         screen
@@ -96,7 +97,7 @@ fn kitty_support_recomputed_on_client_detach() {
         rows: 20,
     };
     let mut screen = create_new_screen(size, true, true);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.add_client(crate::ClientId::new(2)).expect("TEST");
     screen.update_kitty_graphics_support(crate::ClientId::new(1), false);
     screen.update_kitty_graphics_support(crate::ClientId::new(2), true);
@@ -117,11 +118,11 @@ fn kitty_support_recomputed_on_client_detach() {
 fn plugins_receive_kitty_support_per_client() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_theme_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.add_client(crate::ClientId::new(2)).expect("TEST");
     add_pane_to_tab(
         &mut screen,
-        0,
+        TabId::new(0),
         PaneId::Plugin(crate::PluginId::new(77)),
         false,
     );
@@ -152,10 +153,10 @@ fn plugins_receive_kitty_support_per_client() {
 fn plugins_receive_kitty_support_after_a_client_id_is_reused() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_theme_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     add_pane_to_tab(
         &mut screen,
-        0,
+        TabId::new(0),
         PaneId::Plugin(crate::PluginId::new(77)),
         false,
     );
@@ -186,7 +187,7 @@ fn a_capability_reply_for_a_departed_client_is_ignored() {
         rows: 20,
     };
     let mut screen = create_new_screen(size, true, true);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.add_client(crate::ClientId::new(2)).expect("TEST");
     screen.update_kitty_graphics_support(crate::ClientId::new(1), false);
     screen.remove_client(crate::ClientId::new(2)).expect("TEST");
@@ -225,10 +226,10 @@ fn a_capability_reply_for_a_departed_client_is_ignored() {
 fn a_reused_client_id_does_not_inherit_the_previous_clients_kitty_capability() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_theme_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     add_pane_to_tab(
         &mut screen,
-        0,
+        TabId::new(0),
         PaneId::Plugin(crate::PluginId::new(77)),
         false,
     );
@@ -270,7 +271,7 @@ fn primary_da_advertises_sixel_when_capable_client_connected() {
         rows: 20,
     };
     let mut screen = create_new_screen(size, true, true);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.update_sixel_support(crate::ClientId::new(1), true);
     assert_eq!(
         screen
@@ -297,7 +298,7 @@ fn primary_da_omits_sixel_when_no_capable_client() {
         rows: 20,
     };
     let mut screen = create_new_screen(size, true, true);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.update_sixel_support(crate::ClientId::new(1), false);
     assert_eq!(
         screen
@@ -324,7 +325,7 @@ fn sixel_support_recomputed_on_client_detach() {
         rows: 20,
     };
     let mut screen = create_new_screen(size, true, true);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.add_client(crate::ClientId::new(2)).expect("TEST");
     screen.update_sixel_support(crate::ClientId::new(1), false);
     screen.update_sixel_support(crate::ClientId::new(2), true);

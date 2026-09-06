@@ -11,6 +11,7 @@
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
 use std::collections::{BTreeMap, BTreeSet};
+use zellij_tile::prelude::TabId;
 
 use hocus_proto::launch;
 use hocus_proto::location::Location;
@@ -2496,7 +2497,7 @@ impl PaneRef {
 
 #[derive(Debug, PartialEq)]
 pub enum MoveDestination {
-    ExistingId(usize),
+    ExistingId(TabId),
     New(Option<String>),
 }
 
@@ -2663,7 +2664,7 @@ fn adjacent_direction(first: &PanePosition, second: &PanePosition) -> Option<Pan
 pub struct Args {
     pub pane_id: Option<u32>,
     pub is_plugin: Option<bool>,
-    pub tab_id: Option<usize>,
+    pub tab_id: Option<TabId>,
     pub new_tab: bool,
     pub new_tab_name: Option<String>,
     pub panes: Vec<PaneRef>,
@@ -3092,14 +3093,14 @@ impl Args {
         }
     }
 
-    pub fn tab_target(&self) -> Result<usize, String> {
+    pub fn tab_target(&self) -> Result<TabId, String> {
         self.tab_id
             .ok_or_else(|| "tab_id is required; call list_session to get them".to_owned())
     }
 
     /// `focus` and `rename` take either a tab or a pane pair. `None` means the
     /// call named no tab at all, so the caller falls through to the pane path.
-    pub fn tab_or_pane_target(&self) -> Option<Result<usize, String>> {
+    pub fn tab_or_pane_target(&self) -> Option<Result<TabId, String>> {
         let tab_id = self.tab_id?;
         Some(if self.pane_id.is_some() || self.is_plugin.is_some() {
             Err("give exactly one of pane pair or tab_id".to_owned())
@@ -4085,7 +4086,7 @@ fn glob_for(pattern: &str) -> String {
 
 /// Zellij hands back the stable id of the tab the panes landed in, which is
 /// exactly what every Hocus tab tool takes, so it goes straight to the model.
-fn moved_panes_result(tab_id: Option<usize>) -> String {
+fn moved_panes_result(tab_id: Option<TabId>) -> String {
     match tab_id {
         Some(id) => format!("moved to tab_id {id}"),
         None => "zellij did not move the panes; call list_session and check the pane ids and the \
@@ -4098,7 +4099,7 @@ fn moved_panes_result(tab_id: Option<usize>) -> String {
 #[derive(Debug, Default, PartialEq)]
 pub struct SessionTabs {
     /// The stable `tab_id` of every tab, in display order.
-    pub tabs: Vec<usize>,
+    pub tabs: Vec<TabId>,
     /// Every pane in the session's tabs, tabs flattened.
     pub panes: Vec<PaneId>,
 }
@@ -4365,7 +4366,7 @@ mod host {
             }),
             "close_tab" => match args.tab_target() {
                 Ok(id) => {
-                    close_tab_with_id(id as u64);
+                    close_tab_with_id(id);
                     "closed".to_owned()
                 },
                 Err(error) => error,
@@ -4877,7 +4878,7 @@ mod host {
     fn focus(args: &Args) -> String {
         match args.tab_or_pane_target() {
             Some(Ok(id)) => {
-                go_to_tab_with_id(id as u64);
+                go_to_tab_with_id(id);
                 format!("focused tab {id}")
             },
             Some(Err(error)) => error,
@@ -4896,7 +4897,7 @@ mod host {
         };
         match args.tab_or_pane_target() {
             Some(Ok(id)) => {
-                rename_tab_with_id(id as u64, name);
+                rename_tab_with_id(id, name);
                 format!("renamed tab {id}")
             },
             Some(Err(error)) => error,

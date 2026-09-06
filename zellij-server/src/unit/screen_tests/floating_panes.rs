@@ -1,4 +1,5 @@
 use super::*;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 fn open_new_floating_pane_with_custom_coordinates() {
@@ -8,7 +9,7 @@ fn open_new_floating_pane_with_custom_coordinates() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(
@@ -44,7 +45,7 @@ fn open_new_floating_pane_with_custom_coordinates_exceeding_viewport() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(
@@ -80,7 +81,7 @@ fn floating_pane_auto_centers_horizontally_with_only_width() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(
@@ -116,7 +117,7 @@ fn floating_pane_auto_centers_vertically_with_only_height() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(
@@ -152,7 +153,7 @@ fn floating_pane_auto_centers_both_axes_with_only_size() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(
@@ -188,7 +189,7 @@ fn floating_pane_respects_explicit_coordinates_with_size() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(
@@ -224,7 +225,7 @@ fn floating_pane_centers_with_percentage_width() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(
@@ -265,7 +266,7 @@ fn floating_pane_centers_large_pane_safely() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
     active_tab
         .new_pane(

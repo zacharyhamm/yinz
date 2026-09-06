@@ -1,4 +1,5 @@
 use super::*;
+use zellij_tile::prelude::TabId;
 
 #[test]
 fn a_todo_tool_says_when_there_is_no_active_project() {
@@ -121,15 +122,18 @@ fn a_todo_list_follows_a_project_the_user_renames() {
 /// the deeper project's name away.
 #[test]
 fn a_todo_list_survives_a_root_that_absorbs_its_project() {
-    let mut state = state_with_tab(9);
-    poll(&mut state, vec![agent_in(3, "/work/hocus/src", 9)]);
+    let mut state = state_with_tab(TabId::new(9));
+    poll(
+        &mut state,
+        vec![agent_in(3, "/work/hocus/src", TabId::new(9))],
+    );
     todo(&mut state, "todo_add", r#"{"text":"ship the parser"}"#);
 
     poll(
         &mut state,
         vec![
-            agent_in(3, "/work/hocus/src", 9),
-            agent_in(4, "/work/hocus", 9),
+            agent_in(3, "/work/hocus/src", TabId::new(9)),
+            agent_in(4, "/work/hocus", TabId::new(9)),
         ],
     );
     assert_eq!(state.projects.keys().collect::<Vec<_>>(), vec!["hocus"]);

@@ -1,6 +1,7 @@
 use super::*;
 use hocus_proto::notes;
 use hocus_proto::panes::terminal_panes;
+use zellij_tile::prelude::TabId;
 
 fn state_with(messages: Vec<Message>, status: Status) -> State {
     State {
@@ -255,8 +256,8 @@ fn models_context() -> BTreeMap<String, String> {
 fn state_with_worktrees() -> State {
     let mut state = idle_state();
     state.set_panes(vec![
-        agent_in(3, "/work/hocus", 1),
-        agent_in(5, "/work/trees/topic", 2),
+        agent_in(3, "/work/hocus", TabId::new(1)),
+        agent_in(5, "/work/trees/topic", TabId::new(2)),
     ]);
     state.repositories = BTreeMap::from([
         (
@@ -280,8 +281,8 @@ fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
         payload: Some(
             serde_json::to_string(&PollReply {
                 panes: Some(vec![
-                    agent_in(3, "/work/hocus", 1),
-                    agent_in(5, "/work/trees/topic", 2),
+                    agent_in(3, "/work/hocus", TabId::new(1)),
+                    agent_in(5, "/work/trees/topic", TabId::new(2)),
                 ]),
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
@@ -355,7 +356,7 @@ fn schedule_call(arguments: &str) -> ToolCall {
 }
 
 /// An agent pane in a folder, in a tab, as a poll would report it.
-fn agent_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
+fn agent_in(pane_id: u32, cwd: &str, tab_id: TabId) -> agents::AgentPane {
     agents::AgentPane {
         pane_id,
         title: "codex".to_owned(),
@@ -373,7 +374,7 @@ fn agent_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
 
 /// An agent in a Firecracker VM, whose folder is a guest path in a copy of
 /// `worktree` — the folder on this machine its work is merged back into.
-fn vm_agent_in(pane_id: u32, worktree: &str, tab_id: usize) -> agents::AgentPane {
+fn vm_agent_in(pane_id: u32, worktree: &str, tab_id: TabId) -> agents::AgentPane {
     agents::AgentPane {
         host: Some("firecracker:review".to_owned()),
         firecracker_worktree: Some(worktree.to_owned()),
@@ -382,7 +383,7 @@ fn vm_agent_in(pane_id: u32, worktree: &str, tab_id: usize) -> agents::AgentPane
 }
 
 /// A plain shell, which names a tab but is nobody's agent.
-fn shell_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
+fn shell_in(pane_id: u32, cwd: &str, tab_id: TabId) -> agents::AgentPane {
     agents::AgentPane {
         title: "zsh".to_owned(),
         command: Some("zsh".to_owned()),
@@ -391,7 +392,7 @@ fn shell_in(pane_id: u32, cwd: &str, tab_id: usize) -> agents::AgentPane {
 }
 
 /// A state with one tab, active, that the poll can assign.
-fn state_with_tab(tab_id: usize) -> State {
+fn state_with_tab(tab_id: TabId) -> State {
     let mut state = idle_state();
     state.tabs = vec![TabInfo {
         active: true,
@@ -542,7 +543,7 @@ fn give_projects(state: &mut State, registry: projects::Registry) {
 /// A state whose active project is `hocus` at `/work/hocus`, assigned by
 /// hand, so the todo tools have somewhere to write.
 fn state_with_project() -> State {
-    let mut state = state_with_tab(9);
+    let mut state = state_with_tab(TabId::new(9));
     state.run_local(&agent_call(
         "project_assign",
         r#"{"name":"hocus","root":"/work/hocus"}"#,
@@ -634,7 +635,7 @@ fn manifest(panes: Vec<PaneInfo>) -> PaneManifest {
     }
 }
 
-fn tab_info(position: usize, tab_id: usize, name: &str) -> TabInfo {
+fn tab_info(position: usize, tab_id: TabId, name: &str) -> TabInfo {
     TabInfo {
         position,
         tab_id,
@@ -719,8 +720,8 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
         payload: Some(
             serde_json::to_string(&PollReply {
                 panes: Some(vec![
-                    agent_in(3, "/work/hocus", 1),
-                    agent_in(5, NESTED_WORKTREE, 2),
+                    agent_in(3, "/work/hocus", TabId::new(1)),
+                    agent_in(5, NESTED_WORKTREE, TabId::new(2)),
                 ]),
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),

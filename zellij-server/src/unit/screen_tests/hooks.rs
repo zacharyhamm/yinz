@@ -23,6 +23,7 @@ use zellij_types::data::HookPayload;
 use zellij_types::data::OriginatingPlugin;
 use zellij_types::data::HOCUS_AGENT_PANE_CONTEXT;
 use zellij_types::input::hooks::HookPoint;
+use zellij_types::internal_ids::TabId;
 use zellij_types::keys::{BareKey, KeyWithModifier};
 
 type Fired = (HookPoint, Option<PaneId>, HookFiring);
@@ -241,7 +242,7 @@ fn a_changed_agent_record_reports_pane_and_session_state() {
     let (mut screen, background_jobs) = screen_with_background_jobs(Size { cols: 80, rows: 20 });
     let (to_plugin, plugin_receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     drain_background_jobs(&background_jobs);
     plugin_receiver.try_iter().for_each(drop);
 
@@ -296,7 +297,7 @@ fn a_changed_agent_record_reports_pane_and_session_state() {
 #[test]
 fn a_report_that_names_no_run_keeps_the_panes() {
     let (mut screen, background_jobs) = screen_with_background_jobs(Size { cols: 80, rows: 20 });
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     drain_background_jobs(&background_jobs);
     let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let record_of = |screen: &Screen| {
@@ -372,7 +373,7 @@ fn agent_reports_wait_for_adopted_panes_and_tabs() {
                 vec![],
                 vec![(crate::TerminalId::new(42), serialized)],
                 HashMap::new(),
-                1,
+                TabId::new(1),
                 true,
                 crate::ClientId::new(10),
                 None,
@@ -992,7 +993,7 @@ fn the_edges_of_an_agent_record() {
 #[test]
 fn a_wait_a_person_must_answer_blinks_until_somebody_answers_it() {
     let (mut screen, background_jobs) = screen_with_background_jobs(Size { cols: 80, rows: 20 });
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     drain_background_jobs(&background_jobs);
     let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let blinking_since = |screen: &Screen| {

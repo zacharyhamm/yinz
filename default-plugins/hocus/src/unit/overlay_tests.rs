@@ -2,6 +2,7 @@
 //! the split), so it is tested as one.
 
 use super::*;
+use zellij_tile::prelude::TabId;
 
 fn config(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs
@@ -665,7 +666,7 @@ fn placed_state() -> State {
     };
     state.on_tabs(vec![TabInfo {
         position: 0,
-        tab_id: 0,
+        tab_id: TabId::new(0),
         active: true,
         display_area_rows: 50,
         display_area_columns: 200,
@@ -759,7 +760,7 @@ fn a_tab_update_retries_the_lists_placement() {
 
     state.on_tabs(vec![TabInfo {
         position: 0,
-        tab_id: 0,
+        tab_id: TabId::new(0),
         active: true,
         display_area_rows: 50,
         display_area_columns: 200,
@@ -789,7 +790,7 @@ fn a_resize_while_both_halves_are_hidden_is_still_placed() {
 
     state.on_tabs(vec![TabInfo {
         position: 0,
-        tab_id: 0,
+        tab_id: TabId::new(0),
         active: true,
         display_area_rows: 25,
         display_area_columns: 100,
@@ -1037,7 +1038,7 @@ fn two_clients_on_different_tabs_leave_the_panes_alone() {
         (0..4)
             .map(|position| TabInfo {
                 position,
-                tab_id: position,
+                tab_id: TabId::new(position),
                 active: position == active,
                 display_area_rows: 50,
                 display_area_columns: 200,
@@ -1102,7 +1103,7 @@ fn a_placement_that_could_not_land_is_made_again_when_the_pane_appears() {
     };
     let tabs = vec![TabInfo {
         position: 0,
-        tab_id: 0,
+        tab_id: TabId::new(0),
         active: true,
         display_area_rows: 50,
         display_area_columns: 200,
@@ -1150,7 +1151,7 @@ fn a_reveal_stays_on_the_tab_the_server_put_us_on() {
         client_tabs: BTreeMap::from([(ClientId::new(1), 0), (ClientId::new(2), 3)]),
         tabs: vec![TabInfo {
             position: 0,
-            tab_id: 0,
+            tab_id: TabId::new(0),
             active: true,
             ..TabInfo::default()
         }],
@@ -1366,7 +1367,7 @@ fn a_list_that_never_arrives_is_asked_for_again_on_the_next_reveal() {
 fn a_tab() -> TabInfo {
     TabInfo {
         position: 0,
-        tab_id: 0,
+        tab_id: TabId::new(0),
         active: true,
         display_area_rows: 50,
         display_area_columns: 200,
@@ -2101,7 +2102,7 @@ fn ctrl_o_does_nothing_when_every_corner_is_the_same_rectangle() {
     };
     state.on_tabs(vec![TabInfo {
         position: 0,
-        tab_id: 0,
+        tab_id: TabId::new(0),
         active: true,
         display_area_rows: 8,
         display_area_columns: 1,
@@ -3207,7 +3208,7 @@ fn a_dismissed_panel_does_not_follow_a_tab_switch() {
     state.on_tabs(vec![
         TabInfo {
             position: 0,
-            tab_id: 0,
+            tab_id: TabId::new(0),
             active: false,
             display_area_rows: 50,
             display_area_columns: 200,
@@ -3215,7 +3216,7 @@ fn a_dismissed_panel_does_not_follow_a_tab_switch() {
         },
         TabInfo {
             position: 1,
-            tab_id: 1,
+            tab_id: TabId::new(1),
             active: true,
             display_area_rows: 50,
             display_area_columns: 200,

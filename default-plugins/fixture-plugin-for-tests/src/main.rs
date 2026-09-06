@@ -724,7 +724,7 @@ impl ZellijPlugin for State {
                     )));
                 },
                 BareKey::Char('i') if key.has_only_modifiers(&[KeyModifier::Super]) => {
-                    toggle_floating_panes(Some(2));
+                    toggle_floating_panes(Some(TabId::new(2)));
                 },
                 BareKey::Char('a')
                     if key.has_only_modifiers(&[KeyModifier::Ctrl, KeyModifier::Shift]) =>
@@ -813,7 +813,7 @@ impl ZellijPlugin for State {
                     if key.has_only_modifiers(&[KeyModifier::Ctrl, KeyModifier::Shift]) =>
                 {
                     // Test dump_session_layout_for_tab()
-                    match dump_session_layout_for_tab(0) {
+                    match dump_session_layout_for_tab(TabId::new(0)) {
                         Ok((kdl, metadata)) => {
                             self.explicit_string_to_render = Some(format!(
                                 "Tab 0 layout: {} bytes, metadata: {:?}",
@@ -1079,7 +1079,7 @@ impl ZellijPlugin for State {
                             PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1)),
                             PaneId::Plugin(zellij_tile::prelude::PluginId::new(2)),
                         ],
-                        2,
+                        TabId::new(2),
                         should_change_focus_to_target_tab,
                     );
                 },

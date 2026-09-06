@@ -898,7 +898,7 @@ mod tests {
         .unwrap();
         let metadata = PaneMetadata {
             terminal_id: TerminalId::new(1),
-            tab_id: 0,
+            tab_id: zellij_types::internal_ids::TabId::new(0),
             tab_position: 0,
             tab_name: "tab".to_string(),
             title: "pane".to_string(),

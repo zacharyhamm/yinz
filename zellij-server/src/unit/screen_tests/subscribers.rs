@@ -4,12 +4,13 @@ const TERMINAL_1: zellij_types::internal_ids::TerminalId =
 
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 fn subscriber_receives_initial_delivery() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     screen.subscribe_to_pane_renders(
         crate::ClientId::new(100),
@@ -40,7 +41,7 @@ fn subscriber_receives_initial_delivery() {
 fn subscriber_receives_initial_with_scrollback() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     screen.subscribe_to_pane_renders(
         crate::ClientId::new(100),
@@ -71,7 +72,7 @@ fn subscriber_receives_initial_with_scrollback() {
 fn subscriber_no_update_on_unchanged_viewport() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     screen.subscribe_to_pane_renders(
         crate::ClientId::new(100),
@@ -110,7 +111,7 @@ fn subscriber_no_update_on_unchanged_viewport() {
 fn subscriber_receives_update_on_changed_viewport() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     screen.subscribe_to_pane_renders(
         crate::ClientId::new(100),
@@ -153,7 +154,7 @@ fn subscriber_receives_update_on_changed_viewport() {
 fn subscriber_error_for_nonexistent_pane() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     screen.subscribe_to_pane_renders(
         crate::ClientId::new(100),
@@ -190,8 +191,8 @@ fn subscriber_error_for_nonexistent_pane() {
 fn subscriber_state_registered_for_multiple_panes() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, _messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
 
     screen.subscribe_to_pane_renders(
         crate::ClientId::new(100),
@@ -220,7 +221,7 @@ fn subscriber_state_registered_for_multiple_panes() {
 fn multiple_subscribers_receive_updates() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     screen.subscribe_to_pane_renders(
         crate::ClientId::new(100),
@@ -260,7 +261,7 @@ fn multiple_subscribers_receive_updates() {
 fn subscriber_removed_on_remove_client() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, _messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     screen.subscribe_to_pane_renders(
         crate::ClientId::new(100),
@@ -284,7 +285,7 @@ fn subscriber_removed_on_remove_client() {
 fn subscriber_removed_when_all_panes_closed() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     screen.subscribe_to_pane_renders(
         crate::ClientId::new(100),
@@ -328,8 +329,8 @@ fn subscriber_removed_when_all_panes_closed() {
 fn subscriber_partial_close() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
 
     screen.subscribe_to_pane_renders(
         crate::ClientId::new(100),
@@ -381,8 +382,8 @@ fn subscriber_partial_close() {
 fn subscriber_full_close_sequence() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
 
     screen.subscribe_to_pane_renders(
         crate::ClientId::new(100),
@@ -429,7 +430,7 @@ fn subscriber_full_close_sequence() {
 fn delivery_path_a_and_b_produce_same_content() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     screen.subscribe_to_pane_renders(
         crate::ClientId::new(100),
@@ -528,8 +529,8 @@ fn delivery_path_a_and_b_produce_same_content() {
 fn close_tab_notifies_subscribers() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
 
     screen.subscribe_to_pane_renders(
         crate::ClientId::new(100),

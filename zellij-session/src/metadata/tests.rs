@@ -1,14 +1,18 @@
 use super::*;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 fn client_history_preserves_boundaries_and_rejects_narrowing() {
     for value in [0, u16::MAX] {
         let session = SessionInfo {
-            tab_history: BTreeMap::from([(ClientId::new(value), vec![0, 1])]),
+            tab_history: BTreeMap::from([(
+                ClientId::new(value),
+                vec![TabId::new(0), TabId::new(1)],
+            )]),
             pane_history: BTreeMap::from([(ClientId::new(value), vec![PaneId::default()])]),
             ..Default::default()
         };
-        let encoded = crate::metadata::session_info::to_string(&session);
+        let encoded = crate::metadata::session_info::to_string(&session).unwrap();
         let decoded =
             crate::metadata::session_info::from_string(&encoded, "another session").unwrap();
         assert_eq!(decoded.tab_history, session.tab_history);
@@ -25,7 +29,7 @@ fn client_history_preserves_boundaries_and_rejects_narrowing() {
 #[test]
 fn serialize_and_deserialize_session_info() {
     let session_info = SessionInfo::default();
-    let serialized = crate::metadata::session_info::to_string(&session_info);
+    let serialized = crate::metadata::session_info::to_string(&session_info).unwrap();
     let deserealized =
         crate::metadata::session_info::from_string(&serialized, "not this session").unwrap();
     assert_eq!(session_info, deserealized);
@@ -121,7 +125,7 @@ fn serialize_and_deserialize_session_info_with_data() {
                 display_area_columns: 10,
                 selectable_tiled_panes_count: 10,
                 selectable_floating_panes_count: 10,
-                tab_id: 0,
+                tab_id: TabId::new(0),
                 is_flashing_bell: false,
                 has_bell_notification: false,
             },
@@ -145,7 +149,7 @@ fn serialize_and_deserialize_session_info_with_data() {
                 display_area_columns: 10,
                 selectable_tiled_panes_count: 10,
                 selectable_floating_panes_count: 10,
-                tab_id: 1,
+                tab_id: TabId::new(1),
                 is_flashing_bell: false,
                 has_bell_notification: false,
             },
@@ -163,7 +167,7 @@ fn serialize_and_deserialize_session_info_with_data() {
         pane_history: Default::default(),
         creation_time: Duration::from_secs(300),
     };
-    let serialized = crate::metadata::session_info::to_string(&session_info);
+    let serialized = crate::metadata::session_info::to_string(&session_info).unwrap();
     let deserealized =
         crate::metadata::session_info::from_string(&serialized, "not this session").unwrap();
     assert_eq!(session_info, deserealized);
@@ -180,5 +184,34 @@ fn pane_identity_checks_kdl_range() {
             .parse()
             .unwrap();
         assert!(crate::metadata::pane_info::decode_from_kdl(&document).is_err());
+    }
+}
+
+#[test]
+fn tab_identity_checks_kdl_range() {
+    let mut session = SessionInfo {
+        tabs: vec![TabInfo::default()],
+        tab_history: BTreeMap::from([(ClientId::new(1), vec![TabId::new(0)])]),
+        ..Default::default()
+    };
+    let encoded = crate::metadata::session_info::to_string(&session).unwrap();
+    assert!(crate::metadata::session_info::from_string(
+        &encoded.replace("tab_id 0", "tab_id -1"),
+        ""
+    )
+    .is_err());
+    assert!(crate::metadata::session_info::from_string(
+        &encoded.replace("history 0", "history -1"),
+        ""
+    )
+    .is_err());
+    if usize::BITS > i64::BITS - 1 {
+        session.tabs[0].tab_id = TabId::new(usize::MAX);
+        assert!(crate::metadata::session_info::to_string(&session).is_err());
+        session.tabs.clear();
+        session
+            .tab_history
+            .insert(ClientId::new(1), vec![TabId::new(usize::MAX)]);
+        assert!(crate::metadata::session_info::to_string(&session).is_err());
     }
 }

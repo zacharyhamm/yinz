@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use unicode_width::UnicodeWidthStr;
+use zellij_tile::prelude::TabId;
 
 use crate::location::Location;
 use crate::markdown::{MdLine, MdStyle};
@@ -75,7 +76,7 @@ pub struct AgentPane {
     pub status: AgentStatus,
     /// The stable tab id and tab name this pane sits in. `None` for a session-global
     /// pane, which is in no tab.
-    pub tab: Option<(usize, String)>,
+    pub tab: Option<(TabId, String)>,
     /// The kind this pane was last seen *running*, kept while the pane lives.
     ///
     /// `command` is the foreground command, so it stops naming the agent the moment
@@ -2908,10 +2909,10 @@ pub fn tab_projects(
     panes: &[AgentPane],
     manual: &BTreeMap<u32, String>,
     owners: &BTreeMap<u32, String>,
-) -> BTreeMap<usize, String> {
+) -> BTreeMap<TabId, String> {
     // `None` is a tab that two projects disagree over. It stays in the map, so a
     // later agent of one project cannot make the tab agree again.
-    let mut found: BTreeMap<usize, Option<String>> = BTreeMap::new();
+    let mut found: BTreeMap<TabId, Option<String>> = BTreeMap::new();
     for pane in panes {
         if classify(pane, manual).is_none() {
             continue;
@@ -2954,8 +2955,8 @@ pub fn tab_projects(
 pub fn tab_project_labels(
     panes: &[AgentPane],
     owners: &BTreeMap<u32, String>,
-) -> BTreeMap<usize, Vec<String>> {
-    let mut found: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
+) -> BTreeMap<TabId, Vec<String>> {
+    let mut found: BTreeMap<TabId, BTreeSet<String>> = BTreeMap::new();
     for pane in panes {
         let (Some((tab_id, _)), Some(owner)) = (&pane.tab, owners.get(&pane.pane_id)) else {
             continue;
@@ -6260,7 +6261,7 @@ mod tests {
     #[test]
     fn mention_context_resolves_ids_and_kinds_and_skips_what_it_cannot() {
         let tabbed = AgentPane {
-            tab: Some((9, "work".to_owned())),
+            tab: Some((TabId::new(9), "work".to_owned())),
             ..pane(3, "codex", Some("codex"))
         };
         let panes = [tabbed, pane(5, "zsh", Some("zsh"))];
@@ -6313,7 +6314,7 @@ mod tests {
     #[test]
     fn strip_rows_name_the_pane_and_end_with_its_tab_when_it_has_one() {
         let tabbed = AgentPane {
-            tab: Some((9, "work".to_owned())),
+            tab: Some((TabId::new(9), "work".to_owned())),
             ..pane(3, "codex", Some("codex"))
         };
         let rows = strip_rows(
@@ -6342,7 +6343,7 @@ mod tests {
     #[test]
     fn list_json_carries_the_tab_when_the_pane_has_one() {
         let tabbed = AgentPane {
-            tab: Some((9, "work".to_owned())),
+            tab: Some((TabId::new(9), "work".to_owned())),
             ..pane(3, "codex", Some("codex"))
         };
         let json = list_json(
@@ -6394,7 +6395,7 @@ mod tests {
         );
     }
 
-    fn in_folder(pane_id: u32, kind: &str, cwd: &str, tab_id: usize) -> AgentPane {
+    fn in_folder(pane_id: u32, kind: &str, cwd: &str, tab_id: TabId) -> AgentPane {
         AgentPane {
             cwd: Some(cwd.to_owned()),
             tab: Some((tab_id, format!("tab {tab_id}"))),
@@ -6404,7 +6405,7 @@ mod tests {
 
     #[test]
     fn list_json_carries_the_folder_the_project_and_the_branch() {
-        let pane = in_folder(3, "codex", "/work/hocus/src", 9);
+        let pane = in_folder(3, "codex", "/work/hocus/src", TabId::new(9));
         let json = list_json(
             &[pane],
             &manual(&[]),
@@ -6425,9 +6426,9 @@ mod tests {
     #[test]
     fn strip_rows_group_agents_under_their_project() {
         let panes = vec![
-            in_folder(3, "codex", "/work/pocus", 1),
-            in_folder(4, "aider", "/elsewhere", 1),
-            in_folder(5, "codex", "/work/hocus", 2),
+            in_folder(3, "codex", "/work/pocus", TabId::new(1)),
+            in_folder(4, "aider", "/elsewhere", TabId::new(1)),
+            in_folder(5, "codex", "/work/hocus", TabId::new(2)),
         ];
         let rows = strip_rows(
             &panes,
@@ -6462,9 +6463,9 @@ mod tests {
     #[test]
     fn strip_rows_group_the_worktrees_of_one_project_by_branch() {
         let panes = vec![
-            in_folder(3, "codex", "/work/hocus", 1),
-            in_folder(4, "claude", "/work/trees/topic", 2),
-            in_folder(5, "aider", "/work/hocus", 1),
+            in_folder(3, "codex", "/work/hocus", TabId::new(1)),
+            in_folder(4, "claude", "/work/trees/topic", TabId::new(2)),
+            in_folder(5, "aider", "/work/hocus", TabId::new(1)),
         ];
         let rows = strip_rows(
             &panes,
@@ -6524,8 +6525,8 @@ mod tests {
     #[test]
     fn strip_rows_group_by_branch_without_a_project() {
         let panes = vec![
-            in_folder(3, "codex", "/work/one", 1),
-            in_folder(4, "codex", "/work/two", 2),
+            in_folder(3, "codex", "/work/one", TabId::new(1)),
+            in_folder(4, "codex", "/work/two", TabId::new(2)),
         ];
         let rows = strip_rows(
             &panes,
@@ -6557,8 +6558,13 @@ mod tests {
     #[test]
     fn an_agent_whose_branch_is_not_known_yet_waits_under_its_own_header() {
         let panes = vec![
-            in_folder(3, "codex", "/work/hocus", 1),
-            in_folder(4, "claude", "/work/hocus/.claude/worktrees/topic", 2),
+            in_folder(3, "codex", "/work/hocus", TabId::new(1)),
+            in_folder(
+                4,
+                "claude",
+                "/work/hocus/.claude/worktrees/topic",
+                TabId::new(2),
+            ),
         ];
         let rows = strip_rows(
             &panes,
@@ -6592,13 +6598,13 @@ mod tests {
         };
         let panes = vec![
             // Tab 1 agrees, even though pane 4 has no known project.
-            in_folder(3, "codex", "/work/hocus", 1),
-            in_folder(4, "aider", "/elsewhere", 1),
+            in_folder(3, "codex", "/work/hocus", TabId::new(1)),
+            in_folder(4, "aider", "/elsewhere", TabId::new(1)),
             // Tab 2 has two projects, so it agrees on nothing.
-            in_folder(5, "codex", "/work/hocus", 2),
-            in_folder(6, "aider", "/work/pocus", 2),
+            in_folder(5, "codex", "/work/hocus", TabId::new(2)),
+            in_folder(6, "aider", "/work/pocus", TabId::new(2)),
             // Tab 3 has a shell, not an agent, and pane 9 is in no tab at all.
-            in_folder(7, "zsh", "/work/hocus", 3),
+            in_folder(7, "zsh", "/work/hocus", TabId::new(3)),
             untabbed,
         ];
         let owners = owners(&[
@@ -6611,7 +6617,7 @@ mod tests {
 
         assert_eq!(
             tab_projects(&panes, &manual(&[]), &owners),
-            BTreeMap::from([(1, "hocus".to_owned())]),
+            BTreeMap::from([(TabId::new(1), "hocus".to_owned())]),
         );
     }
 
@@ -6623,15 +6629,15 @@ mod tests {
         };
         let panes = vec![
             // One project, named once however many agents are on it.
-            in_folder(3, "codex", "/work/hocus", 1),
-            in_folder(4, "aider", "/work/hocus", 1),
+            in_folder(3, "codex", "/work/hocus", TabId::new(1)),
+            in_folder(4, "aider", "/work/hocus", TabId::new(1)),
             // Two projects, sorted rather than left in pane order.
-            in_folder(5, "codex", "/work/pocus", 2),
-            in_folder(6, "aider", "/work/hocus", 2),
+            in_folder(5, "codex", "/work/pocus", TabId::new(2)),
+            in_folder(6, "aider", "/work/hocus", TabId::new(2)),
             // A shell names its tab as readily as an agent does — which is the
             // whole point, since the ordinary session has no agent in it. Pane 9
             // is in no tab at all, and still names nothing.
-            in_folder(7, "zsh", "/work/hocus", 3),
+            in_folder(7, "zsh", "/work/hocus", TabId::new(3)),
             untabbed,
         ];
         let owners = owners(&[
@@ -6646,9 +6652,9 @@ mod tests {
         assert_eq!(
             tab_project_labels(&panes, &owners),
             BTreeMap::from([
-                (1, vec!["hocus".to_owned()]),
-                (2, vec!["hocus".to_owned(), "pocus".to_owned()]),
-                (3, vec!["hocus".to_owned()]),
+                (TabId::new(1), vec!["hocus".to_owned()]),
+                (TabId::new(2), vec!["hocus".to_owned(), "pocus".to_owned()]),
+                (TabId::new(3), vec!["hocus".to_owned()]),
             ]),
         );
     }
@@ -6658,12 +6664,12 @@ mod tests {
     /// the tab is, and a shell answers that.
     #[test]
     fn only_the_label_counts_a_shell_the_assignment_does_not() {
-        let panes = vec![in_folder(7, "zsh", "/work/hocus", 3)];
+        let panes = vec![in_folder(7, "zsh", "/work/hocus", TabId::new(3))];
         let owners = owners(&[(7, "hocus")]);
 
         assert_eq!(
             tab_project_labels(&panes, &owners),
-            BTreeMap::from([(3, vec!["hocus".to_owned()])]),
+            BTreeMap::from([(TabId::new(3), vec!["hocus".to_owned()])]),
         );
         assert!(tab_projects(&panes, &manual(&[]), &owners).is_empty());
     }
@@ -6688,7 +6694,7 @@ mod tests {
 
     #[test]
     fn a_tab_whose_agents_have_no_project_is_left_out() {
-        let panes = vec![in_folder(3, "codex", "/elsewhere", 1)];
+        let panes = vec![in_folder(3, "codex", "/elsewhere", TabId::new(1))];
 
         assert!(tab_project_labels(&panes, &owners(&[])).is_empty());
     }
@@ -6698,9 +6704,9 @@ mod tests {
         // Pane 7 agrees with pane 5, but pane 6 already broke the tab. Order
         // must not be able to heal it.
         let panes = vec![
-            in_folder(5, "codex", "/work/hocus", 1),
-            in_folder(6, "aider", "/work/pocus", 1),
-            in_folder(7, "codex", "/work/hocus", 1),
+            in_folder(5, "codex", "/work/hocus", TabId::new(1)),
+            in_folder(6, "aider", "/work/pocus", TabId::new(1)),
+            in_folder(7, "codex", "/work/hocus", TabId::new(1)),
         ];
         let owners = owners(&[(5, "hocus"), (6, "pocus"), (7, "hocus")]);
 

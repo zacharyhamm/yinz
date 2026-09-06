@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 // ==========================================
 // Category 3: MockScreen end-to-end CLI tests
@@ -550,7 +551,9 @@ pub fn send_cli_close_tab_with_tab_id() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.new_tab(TiledPaneLayout::default());
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let cli_action = CliAction::CloseTab { tab_id: Some(1) };
+    let cli_action = CliAction::CloseTab {
+        tab_id: Some(TabId::new(1)),
+    };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -579,7 +582,7 @@ pub fn send_cli_rename_tab_with_tab_id() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     let cli_action = CliAction::RenameTab {
         name: "targeted-tab".to_string(),
-        tab_id: Some(1),
+        tab_id: Some(TabId::new(1)),
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -607,7 +610,9 @@ pub fn send_cli_undo_rename_tab_with_tab_id() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.new_tab(TiledPaneLayout::default());
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let cli_action = CliAction::UndoRenameTab { tab_id: Some(0) };
+    let cli_action = CliAction::UndoRenameTab {
+        tab_id: Some(TabId::new(0)),
+    };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -632,7 +637,9 @@ pub fn send_cli_toggle_active_sync_tab_with_tab_id() {
         server_receiver
     );
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let cli_action = CliAction::ToggleActiveSyncTab { tab_id: Some(0) };
+    let cli_action = CliAction::ToggleActiveSyncTab {
+        tab_id: Some(TabId::new(0)),
+    };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -657,7 +664,9 @@ pub fn send_cli_toggle_floating_panes_with_tab_id() {
         server_receiver
     );
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let cli_action = CliAction::ToggleFloatingPanes { tab_id: Some(0) };
+    let cli_action = CliAction::ToggleFloatingPanes {
+        tab_id: Some(TabId::new(0)),
+    };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -682,7 +691,9 @@ pub fn send_cli_previous_swap_layout_with_tab_id() {
         server_receiver
     );
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let cli_action = CliAction::PreviousSwapLayout { tab_id: Some(0) };
+    let cli_action = CliAction::PreviousSwapLayout {
+        tab_id: Some(TabId::new(0)),
+    };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -707,7 +718,9 @@ pub fn send_cli_next_swap_layout_with_tab_id() {
         server_receiver
     );
     std::thread::sleep(std::time::Duration::from_millis(100));
-    let cli_action = CliAction::NextSwapLayout { tab_id: Some(0) };
+    let cli_action = CliAction::NextSwapLayout {
+        tab_id: Some(TabId::new(0)),
+    };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![server_thread, screen_thread]);
@@ -736,7 +749,7 @@ pub fn send_cli_move_tab_with_tab_id() {
     std::thread::sleep(std::time::Duration::from_millis(100));
     let cli_action = CliAction::MoveTab {
         direction: Direction::Right,
-        tab_id: Some(0),
+        tab_id: Some(TabId::new(0)),
     };
     send_cli_action_to_server(&session_metadata, cli_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -755,14 +768,22 @@ pub fn move_tab_by_id_verifies_screen_state() {
         rows: 20,
     };
     let mut screen = create_new_screen(size, true, true);
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
-    new_tab(&mut screen, 3, 2);
-    let original_pos_0 = screen.get_tab_by_id(0).unwrap().position;
-    let original_pos_1 = screen.get_tab_by_id(1).unwrap().position;
-    screen.move_tab_by_id(0, Direction::Right).expect("TEST");
-    assert_eq!(screen.get_tab_by_id(0).unwrap().position, original_pos_1);
-    assert_eq!(screen.get_tab_by_id(1).unwrap().position, original_pos_0);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    new_tab(&mut screen, 3, TabId::new(2));
+    let original_pos_0 = screen.get_tab_by_id(TabId::new(0)).unwrap().position;
+    let original_pos_1 = screen.get_tab_by_id(TabId::new(1)).unwrap().position;
+    screen
+        .move_tab_by_id(TabId::new(0), Direction::Right)
+        .expect("TEST");
+    assert_eq!(
+        screen.get_tab_by_id(TabId::new(0)).unwrap().position,
+        original_pos_1
+    );
+    assert_eq!(
+        screen.get_tab_by_id(TabId::new(1)).unwrap().position,
+        original_pos_0
+    );
 }
 
 // ==========================================
@@ -925,7 +946,7 @@ pub fn send_cli_edit_scrollback_with_pane_id_and_ansi() {
 fn subscriber_ansi_flag_preserved_in_subscription() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, _messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     screen.subscribe_to_pane_renders(
         crate::ClientId::new(100),
@@ -966,7 +987,7 @@ fn subscriber_ansi_flag_preserved_in_subscription() {
 fn subscriber_ansi_and_plain_receive_different_content() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, messages) = create_new_screen_with_message_capture(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     // Subscribe plain and ansi subscribers
     screen.subscribe_to_pane_renders(

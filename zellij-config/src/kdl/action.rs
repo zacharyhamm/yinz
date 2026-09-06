@@ -1,4 +1,5 @@
 use super::*;
+use zellij_types::internal_ids::TabId;
 
 #[allow(clippy::result_large_err)]
 pub fn new_from_bytes(
@@ -398,14 +399,14 @@ pub fn to_kdl(value: &Action) -> Option<KdlNode> {
         Action::ShowFloatingPanes { tab_id } => {
             let mut node = KdlNode::new("ShowFloatingPanes");
             if let Some(id) = tab_id {
-                node.push(KdlValue::Base10(*id as i64));
+                node.push(KdlValue::Base10(i64::try_from(id.get()).ok()?));
             }
             Some(node)
         },
         Action::HideFloatingPanes { tab_id } => {
             let mut node = KdlNode::new("HideFloatingPanes");
             if let Some(id) = tab_id {
-                node.push(KdlValue::Base10(*id as i64));
+                node.push(KdlValue::Base10(i64::try_from(id.get()).ok()?));
             }
             Some(node)
         },
@@ -1087,14 +1088,30 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
             let tab_id = action_arguments
                 .first()
                 .and_then(|v| v.value().as_i64())
-                .map(|n| n as usize);
+                .map(TabId::try_from)
+                .transpose()
+                .map_err(|_| {
+                    ConfigError::new_kdl_error(
+                        "Tab id is out of range".to_owned(),
+                        kdl_action.span().offset(),
+                        kdl_action.span().len(),
+                    )
+                })?;
             Ok(Action::ShowFloatingPanes { tab_id })
         },
         "HideFloatingPanes" => {
             let tab_id = action_arguments
                 .first()
                 .and_then(|v| v.value().as_i64())
-                .map(|n| n as usize);
+                .map(TabId::try_from)
+                .transpose()
+                .map_err(|_| {
+                    ConfigError::new_kdl_error(
+                        "Tab id is out of range".to_owned(),
+                        kdl_action.span().offset(),
+                        kdl_action.span().len(),
+                    )
+                })?;
             Ok(Action::HideFloatingPanes { tab_id })
         },
         "CloseFocus" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
@@ -1429,7 +1446,7 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                 let name = tab_name.or(name);
 
                 let tab_layout_info = TabLayoutInfo {
-                    tab_index: 0,
+                    tab_index: TabId::new(0),
                     tab_name: name,
                     tiled_layout: layout,
                     floating_layouts: floating_panes_layout,
@@ -1447,7 +1464,7 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                 let (layout, floating_panes_layout) = layout.new_tab();
 
                 let tab_layout_info = TabLayoutInfo {
-                    tab_index: 0,
+                    tab_index: TabId::new(0),
                     tab_name: name,
                     tiled_layout: layout,
                     floating_layouts: floating_panes_layout,

@@ -38,6 +38,7 @@ use zellij_runtime::home::{absolute_lexical, default_layout_dir, default_user_pl
 use zellij_storage::plugin_data_store;
 use zellij_types::agent::SpawnedAgent;
 use zellij_types::data::EnqueueQueueJobResponse;
+use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::{PluginId, TerminalId};
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::{
@@ -4159,7 +4160,7 @@ fn new_tab_unfocused(env: &mut PluginEnv, name: Option<String>, cwd: Option<Stri
         .non_fatal();
 }
 
-fn new_tiled_pane_in_tab(env: &mut PluginEnv, tab_position: usize) {
+fn new_tiled_pane_in_tab(env: &mut PluginEnv, tab_position: TabId) {
     let error_msg = || format!("failed to open new tiled pane in tab {}", tab_position);
     let default_shell = env.default_shell.clone().unwrap_or_else(|| {
         TerminalAction::RunCommand(RunCommand {
@@ -4494,7 +4495,7 @@ fn toggle_pane_embed_or_eject(env: &PluginEnv) {
     apply_action!(action, error_msg, env);
 }
 
-fn toggle_floating_panes(env: &PluginEnv, tab_id: Option<u64>) {
+fn toggle_floating_panes(env: &PluginEnv, tab_id: Option<TabId>) {
     let error_msg = || format!("failed to toggle floating panes in plugin {}", env.name());
     let action = match tab_id {
         Some(id) => Action::ToggleFloatingPanesByTabId { id },
@@ -4861,7 +4862,7 @@ fn warp_pane_from_session(
     write_warp_response(env, result);
 }
 
-fn warp_tab_to_session(env: &mut PluginEnv, tab_index: usize, to_session: String) {
+fn warp_tab_to_session(env: &mut PluginEnv, tab_index: TabId, to_session: String) {
     let result = crate::warp::warp_tab_to_session(
         &env.senders,
         env.client_id,
@@ -4875,7 +4876,7 @@ fn warp_tab_to_session(env: &mut PluginEnv, tab_index: usize, to_session: String
     write_warp_response(env, result);
 }
 
-fn warp_tab_from_session(env: &mut PluginEnv, tab_index: usize, from_session: String) {
+fn warp_tab_from_session(env: &mut PluginEnv, tab_index: TabId, from_session: String) {
     let result = crate::warp::warp_tab_from_session(
         &crate::warp::current_session_name(),
         &from_session,
@@ -5362,7 +5363,7 @@ fn watch_filesystem(env: &PluginEnv) {
 }
 
 // note this removes the requesting plugin
-fn dump_session_layout(env: &mut PluginEnv, tab_index: Option<usize>) {
+fn dump_session_layout(env: &mut PluginEnv, tab_index: Option<TabId>) {
     use crate::plugins::DumpSessionLayoutResponse;
 
     // Create oneshot channel for response
@@ -5463,7 +5464,7 @@ fn save_session(env: &mut PluginEnv) {
     let _ = wasi_write_object(env, &response.encode_to_vec());
 }
 
-fn show_floating_panes(env: &mut PluginEnv, tab_id: Option<usize>) {
+fn show_floating_panes(env: &mut PluginEnv, tab_id: Option<TabId>) {
     use show_floating_panes_response::Result as ShowResult;
     let (completion_tx, completion_rx) = oneshot::channel();
     let send_result = env
@@ -5494,7 +5495,7 @@ fn show_floating_panes(env: &mut PluginEnv, tab_id: Option<usize>) {
     let _ = wasi_write_object(env, &response.encode_to_vec());
 }
 
-fn hide_floating_panes(env: &mut PluginEnv, tab_id: Option<usize>) {
+fn hide_floating_panes(env: &mut PluginEnv, tab_id: Option<TabId>) {
     use hide_floating_panes_response::Result as HideResult;
     let (completion_tx, completion_rx) = oneshot::channel();
     let send_result = env
@@ -5650,7 +5651,7 @@ fn get_pane_info(env: &mut PluginEnv, pane_id: zellij_types::data::PaneId) {
     let _ = wasi_write_object(env, &response.encode_to_vec());
 }
 
-fn get_tab_info(env: &mut PluginEnv, tab_id: usize) {
+fn get_tab_info(env: &mut PluginEnv, tab_id: TabId) {
     use crossbeam::channel::RecvTimeoutError;
     use std::time::Duration;
 
@@ -7242,8 +7243,7 @@ fn break_panes_to_tab_with_index(
     wasi_write_object(env, &response.encode_to_vec()).non_fatal();
 }
 
-fn switch_tab_to_id(env: &PluginEnv, tab_id: u64) {
-    let tab_id = tab_id as usize;
+fn switch_tab_to_id(env: &PluginEnv, tab_id: TabId) {
     env.senders
         .send_to_screen(ScreenInstruction::GoToTabWithId(
             tab_id,
@@ -7260,8 +7260,7 @@ fn switch_tab_to_id(env: &PluginEnv, tab_id: u64) {
         .non_fatal();
 }
 
-fn go_to_tab_with_id(env: &PluginEnv, tab_id: u64) {
-    let tab_id = tab_id as usize;
+fn go_to_tab_with_id(env: &PluginEnv, tab_id: TabId) {
     env.senders
         .send_to_screen(ScreenInstruction::GoToTabWithId(
             tab_id,
@@ -7272,26 +7271,20 @@ fn go_to_tab_with_id(env: &PluginEnv, tab_id: u64) {
         .non_fatal();
 }
 
-fn close_tab_with_id(env: &PluginEnv, tab_id: u64) {
-    let tab_id = tab_id as usize;
+fn close_tab_with_id(env: &PluginEnv, tab_id: TabId) {
     let _ = env
         .senders
         .send_to_screen(ScreenInstruction::CloseTabWithId(tab_id, None));
 }
 
-fn set_tab_projects(env: &PluginEnv, tab_projects: BTreeMap<u64, String>) {
-    let tab_projects = tab_projects
-        .into_iter()
-        .map(|(tab_id, project)| (tab_id as usize, project))
-        .collect();
+fn set_tab_projects(env: &PluginEnv, tab_projects: BTreeMap<TabId, String>) {
     env.senders
         .send_to_screen(ScreenInstruction::SetTabProjects(tab_projects))
         .context("Failed to set tab projects")
         .non_fatal();
 }
 
-fn rename_tab_with_id(env: &PluginEnv, tab_id: u64, new_name: &str) {
-    let tab_id = tab_id as usize;
+fn rename_tab_with_id(env: &PluginEnv, tab_id: TabId, new_name: &str) {
     let rename_tab_action =
         ScreenInstruction::RenameTabWithId(tab_id, new_name.as_bytes().to_vec(), None);
     env.senders
@@ -7304,10 +7297,8 @@ fn break_panes_to_tab_with_id(
     env: &mut PluginEnv,
     pane_ids: Vec<PaneId>,
     should_change_focus_to_target_tab: bool,
-    tab_id: u64,
+    tab_id: TabId,
 ) {
-    let tab_id = tab_id as usize;
-
     // Create completion channel to receive tab ID
     let (tx, rx) = tokio::sync::oneshot::channel();
     let completion_tx = Some(NotificationEnd::new(tx));
@@ -7565,7 +7556,7 @@ fn override_layout(
         .iter()
         .enumerate()
         .map(|(index, (tab_name, tiled, floating))| TabLayoutInfo {
-            tab_index: index,
+            tab_index: TabId::new(index),
             tab_name: tab_name.clone(),
             tiled_layout: tiled.clone(),
             floating_layouts: floating.clone(),
@@ -7578,7 +7569,7 @@ fn override_layout(
     let tabs = if tabs.is_empty() {
         let (tiled, floating) = layout.new_tab();
         vec![TabLayoutInfo {
-            tab_index: 0,
+            tab_index: TabId::new(0),
             tab_name: None,
             tiled_layout: tiled,
             floating_layouts: floating,

@@ -6,6 +6,7 @@ use crate::input::layout::{
     FloatingPaneLayout, Run, RunPlugin, RunPluginLocation, RunPluginOrAlias, TiledPaneLayout,
 };
 pub use crate::input::options::PaneFrameStyle;
+use crate::internal_ids::TabId;
 // The data store's types are part of the plugin API, so they belong in the prelude alongside
 // everything else here. They live in their own module because the engine behind them cannot build
 // for wasm and these types must.
@@ -923,7 +924,7 @@ pub struct SessionInfo {
     pub is_current_session: bool,
     pub available_layouts: Vec<LayoutInfo>,
     pub plugins: BTreeMap<crate::internal_ids::PluginId, PluginInfo>,
-    pub tab_history: BTreeMap<ClientId, Vec<usize>>,
+    pub tab_history: BTreeMap<ClientId, Vec<TabId>>,
     pub pane_history: BTreeMap<ClientId, Vec<PaneId>>,
     pub creation_time: Duration,
 }
@@ -1199,7 +1200,7 @@ pub struct TabInfo {
     /// The number of selectable (eg. not the UI bars) floating panes currently in this tab
     pub selectable_floating_panes_count: usize,
     /// The stable identifier for this tab
-    pub tab_id: usize,
+    pub tab_id: TabId,
     /// Whether this tab has an active (persistent) bell notification
     pub has_bell_notification: bool,
     /// Whether this tab is currently flashing its bell (transient 400ms state)
@@ -1310,7 +1311,7 @@ impl PaneInfo {
 pub struct PaneListEntry {
     #[serde(flatten)]
     pub pane_info: PaneInfo,
-    pub tab_id: usize,
+    pub tab_id: TabId,
     pub tab_position: usize,
     pub tab_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1692,7 +1693,7 @@ pub enum ListOrphanedPanesResponse {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GetFocusedPaneInfoResponse {
-    Ok { tab_index: usize, pane_id: PaneId },
+    Ok { tab_index: TabId, pane_id: PaneId },
     Err(String),
 }
 
@@ -2534,10 +2535,10 @@ pub enum PluginCommand {
         cwd: Option<String>,
     },
     NewTiledPaneInTab {
-        tab_position: usize,
+        tab_position: TabId,
     },
     ToggleFloatingPanes {
-        tab_id: Option<u64>,
+        tab_id: Option<TabId>,
     },
     NewPane,
     GoToNextTab,
@@ -2680,7 +2681,7 @@ pub enum PluginCommand {
         permissions: Vec<PermissionType>,
     },
     DumpSessionLayout {
-        tab_index: Option<usize>,
+        tab_index: Option<TabId>,
     },
     CloseSelf,
     NewTabsWithLayoutInfo(LayoutInfo),
@@ -2742,17 +2743,17 @@ pub enum PluginCommand {
     // the new tab
     BreakPanesToTabWithIndex(Vec<PaneId>, usize, bool), // usize - tab_index, bool -
     // should_change_focus_to_new_tab
-    SwitchTabToId(u64),           // u64 - tab_id
-    GoToTabWithId(u64),           // u64 - tab_id
-    CloseTabWithId(u64),          // u64 - tab_id
-    RenameTabWithId(u64, String), // u64 - tab_id, String - new name
+    SwitchTabToId(TabId),           // stable tab id
+    GoToTabWithId(TabId),           // stable tab id
+    CloseTabWithId(TabId),          // stable tab id
+    RenameTabWithId(TabId, String), // stable tab id, String - new name
     /// The project each tab is working on, keyed by tab id.
     ///
     /// Advisory rather than a rename: the server shows these to fill in tabs the
     /// user has not named, and never writes them to the tab. Sent as the whole
     /// map, so a tab left out of it has no project.
-    SetTabProjects(BTreeMap<u64, String>),
-    BreakPanesToTabWithId(Vec<PaneId>, u64, bool), // u64 - tab_id, bool -
+    SetTabProjects(BTreeMap<TabId, String>),
+    BreakPanesToTabWithId(Vec<PaneId>, TabId, bool), // stable tab id, bool -
     // should_change_focus_to_target_tab
     ReloadPlugin(crate::internal_ids::PluginId), // u32 - plugin pane id
     LoadNewPlugin {
@@ -2860,7 +2861,7 @@ pub enum PluginCommand {
     SaveSession,
     CurrentSessionLastSavedTime,
     GetPaneInfo(PaneId),
-    GetTabInfo(usize), // tab_id
+    GetTabInfo(TabId), // tab_id
     GetSessionEnvironmentVariables,
     /// The KDL configuration block declared for one plugin alias, by alias name.
     ///
@@ -2880,10 +2881,10 @@ pub enum PluginCommand {
     OpenTerminalPaneInPlaceOfPaneId(PaneId, FileToOpen, bool),
     OpenEditPaneInPlaceOfPaneId(PaneId, FileToOpen, bool, Context),
     HideFloatingPanes {
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     ShowFloatingPanes {
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     SetPaneColor(PaneId, Option<String>, Option<String>), // (pane_id, fg, bg)
     SetPaneRegexHighlights(PaneId, Vec<RegexHighlight>),
@@ -2931,12 +2932,12 @@ pub enum PluginCommand {
     /// response back, and blocks until the tab has landed or the move has been
     /// undone.
     WarpTabToSession {
-        tab_index: usize,
+        tab_index: TabId,
         to_session: String,
     },
     /// Ask another session for one of its tabs. Sends a response back.
     WarpTabFromSession {
-        tab_index: usize,
+        tab_index: TabId,
         from_session: String,
     },
     /// Panes whose session died but whose process is still running. Sends a
@@ -3219,18 +3220,18 @@ pub enum DataUnwatchResponse {
 // Response type for plugin API methods that open a pane in a new tab
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OpenPaneInNewTabResponse {
-    pub tab_id: Option<usize>,
+    pub tab_id: Option<TabId>,
     pub pane_id: Option<PaneId>,
 }
 
 // Response types for plugin API methods that create tabs
-pub type NewTabResponse = Option<usize>;
-pub type NewTabUnfocusedResponse = Option<usize>;
-pub type NewTabsResponse = Vec<usize>;
-pub type FocusOrCreateTabResponse = Option<usize>;
-pub type BreakPanesToNewTabResponse = Option<usize>;
-pub type BreakPanesToTabWithIndexResponse = Option<usize>;
-pub type BreakPanesToTabWithIdResponse = Option<usize>;
+pub type NewTabResponse = Option<TabId>;
+pub type NewTabUnfocusedResponse = Option<TabId>;
+pub type NewTabsResponse = Vec<TabId>;
+pub type FocusOrCreateTabResponse = Option<TabId>;
+pub type BreakPanesToNewTabResponse = Option<TabId>;
+pub type BreakPanesToTabWithIndexResponse = Option<TabId>;
+pub type BreakPanesToTabWithIdResponse = Option<TabId>;
 
 // Response types for plugin API methods that create panes
 pub type OpenFileResponse = Option<PaneId>;

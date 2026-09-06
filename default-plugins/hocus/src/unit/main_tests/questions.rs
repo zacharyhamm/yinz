@@ -1,4 +1,5 @@
 use super::*;
+use zellij_tile::prelude::TabId;
 
 #[test]
 fn a_question_asked_of_an_idle_hocus_goes_out_at_once() {
@@ -128,7 +129,7 @@ fn a_mention_in_a_queued_question_resolves_when_it_goes_out() {
     state.pipe(ask("is @codex done?"));
 
     // The agent only shows up after the question was queued.
-    state.set_panes(vec![agent_in(3, "/work/hocus", 1)]);
+    state.set_panes(vec![agent_in(3, "/work/hocus", TabId::new(1))]);
     state.manual_kinds.insert(3, "codex".to_owned());
 
     state.stream = None;

@@ -5,6 +5,7 @@ use miette::{NamedSource, Report};
 use uuid::Uuid;
 use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
 use zellij_types::geometry::FloatingPaneCoordinates;
+use zellij_types::internal_ids::TabId;
 use zellij_types::keys::KeyWithModifier;
 use {
     zellij_config::config::Config, zellij_config::config::ConfigError,
@@ -250,10 +251,7 @@ pub fn actions_from_cli(
             None => Ok(vec![Action::MovePaneBackwards]),
         },
         CliAction::MoveTab { direction, tab_id } => match tab_id {
-            Some(id) => Ok(vec![Action::MoveTabByTabId {
-                id: id as u64,
-                direction,
-            }]),
+            Some(id) => Ok(vec![Action::MoveTabByTabId { id, direction }]),
             None => Ok(vec![Action::MoveTab { direction }]),
         },
         CliAction::Clear { pane_id } => match pane_id {
@@ -413,7 +411,7 @@ pub fn actions_from_cli(
         CliAction::TogglePaneFrames => Ok(vec![Action::TogglePaneFrames]),
         CliAction::SetPaneFrameStyle { style } => Ok(vec![Action::SetPaneFrameStyle(style)]),
         CliAction::ToggleActiveSyncTab { tab_id } => match tab_id {
-            Some(id) => Ok(vec![Action::ToggleActiveSyncTabByTabId { id: id as u64 }]),
+            Some(id) => Ok(vec![Action::ToggleActiveSyncTabByTabId { id }]),
             None => Ok(vec![Action::ToggleActiveSyncTab]),
         },
         CliAction::NewPane {
@@ -784,7 +782,7 @@ pub fn actions_from_cli(
             None => Ok(vec![Action::TogglePaneEmbedOrFloating]),
         },
         CliAction::ToggleFloatingPanes { tab_id } => match tab_id {
-            Some(id) => Ok(vec![Action::ToggleFloatingPanesByTabId { id: id as u64 }]),
+            Some(id) => Ok(vec![Action::ToggleFloatingPanesByTabId { id }]),
             None => Ok(vec![Action::ToggleFloatingPanes]),
         },
         CliAction::ShowFloatingPanes { tab_id } => Ok(vec![Action::ShowFloatingPanes { tab_id }]),
@@ -829,16 +827,13 @@ pub fn actions_from_cli(
         CliAction::GoToNextTab => Ok(vec![Action::GoToNextTab]),
         CliAction::GoToPreviousTab => Ok(vec![Action::GoToPreviousTab]),
         CliAction::CloseTab { tab_id } => match tab_id {
-            Some(id) => Ok(vec![Action::CloseTabById { id: id as u64 }]),
+            Some(id) => Ok(vec![Action::CloseTabById { id }]),
             None => Ok(vec![Action::CloseTab]),
         },
         CliAction::GoToTab { index } => Ok(vec![Action::GoToTab { index }]),
         CliAction::GoToTabName { name, create } => Ok(vec![Action::GoToTabName { name, create }]),
         CliAction::RenameTab { name, tab_id } => match tab_id {
-            Some(id) => Ok(vec![Action::RenameTabById {
-                id: id as u64,
-                name,
-            }]),
+            Some(id) => Ok(vec![Action::RenameTabById { id, name }]),
             None => Ok(vec![
                 Action::TabNameInput { input: vec![0] },
                 Action::TabNameInput {
@@ -847,12 +842,19 @@ pub fn actions_from_cli(
             ]),
         },
         CliAction::UndoRenameTab { tab_id } => match tab_id {
-            Some(id) => Ok(vec![Action::UndoRenameTabByTabId { id: id as u64 }]),
+            Some(id) => Ok(vec![Action::UndoRenameTabByTabId { id }]),
             None => Ok(vec![Action::UndoRenameTab]),
         },
-        CliAction::GoToTabById { id } => Ok(vec![Action::GoToTabById { id }]),
-        CliAction::CloseTabById { id } => Ok(vec![Action::CloseTabById { id }]),
-        CliAction::RenameTabById { id, name } => Ok(vec![Action::RenameTabById { id, name }]),
+        CliAction::GoToTabById { id } => Ok(vec![Action::GoToTabById {
+            id: TabId::try_from(id).map_err(|_| "Tab id is out of range")?,
+        }]),
+        CliAction::CloseTabById { id } => Ok(vec![Action::CloseTabById {
+            id: TabId::try_from(id).map_err(|_| "Tab id is out of range")?,
+        }]),
+        CliAction::RenameTabById { id, name } => Ok(vec![Action::RenameTabById {
+            id: TabId::try_from(id).map_err(|_| "Tab id is out of range")?,
+            name,
+        }]),
         CliAction::NewTab {
             name,
             layout,
@@ -1154,11 +1156,11 @@ pub fn actions_from_cli(
             }
         },
         CliAction::PreviousSwapLayout { tab_id } => match tab_id {
-            Some(id) => Ok(vec![Action::PreviousSwapLayoutByTabId { id: id as u64 }]),
+            Some(id) => Ok(vec![Action::PreviousSwapLayoutByTabId { id }]),
             None => Ok(vec![Action::PreviousSwapLayout]),
         },
         CliAction::NextSwapLayout { tab_id } => match tab_id {
-            Some(id) => Ok(vec![Action::NextSwapLayoutByTabId { id: id as u64 }]),
+            Some(id) => Ok(vec![Action::NextSwapLayoutByTabId { id }]),
             None => Ok(vec![Action::NextSwapLayout]),
         },
         CliAction::OverrideLayout {
@@ -1236,7 +1238,7 @@ pub fn actions_from_cli(
                 .iter()
                 .enumerate()
                 .map(|(index, (tab_name, tiled, floating))| TabLayoutInfo {
-                    tab_index: index,
+                    tab_index: TabId::new(index),
                     tab_name: tab_name.clone(),
                     tiled_layout: tiled.clone(),
                     floating_layouts: floating.clone(),
@@ -1249,7 +1251,7 @@ pub fn actions_from_cli(
             let tabs = if tabs.is_empty() {
                 let (tiled, floating) = layout.new_tab();
                 vec![TabLayoutInfo {
-                    tab_index: 0,
+                    tab_index: TabId::new(0),
                     tab_name: None,
                     tiled_layout: tiled,
                     floating_layouts: floating,
@@ -2174,7 +2176,9 @@ mod tests {
     // 20. CloseTab
     #[test]
     fn test_close_tab_with_tab_id() {
-        let cli_action = CliAction::CloseTab { tab_id: Some(5) };
+        let cli_action = CliAction::CloseTab {
+            tab_id: Some(TabId::new(5)),
+        };
         let result =
             crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
         assert!(result.is_ok());
@@ -2182,7 +2186,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::CloseTabById { id } => {
-                assert_eq!(*id, 5u64);
+                assert_eq!(*id, TabId::new(5));
             },
             _ => panic!("Expected CloseTabById action"),
         }
@@ -2240,7 +2244,7 @@ mod tests {
     fn test_rename_tab_with_tab_id() {
         let cli_action = CliAction::RenameTab {
             name: "my-tab".to_string(),
-            tab_id: Some(3),
+            tab_id: Some(TabId::new(3)),
         };
         let result =
             crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -2249,7 +2253,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::RenameTabById { id, name } => {
-                assert_eq!(*id, 3u64);
+                assert_eq!(*id, TabId::new(3));
                 assert_eq!(name, "my-tab");
             },
             _ => panic!("Expected RenameTabById action"),
@@ -2274,7 +2278,9 @@ mod tests {
     // 22. UndoRenameTab
     #[test]
     fn test_undo_rename_tab_with_tab_id() {
-        let cli_action = CliAction::UndoRenameTab { tab_id: Some(7) };
+        let cli_action = CliAction::UndoRenameTab {
+            tab_id: Some(TabId::new(7)),
+        };
         let result =
             crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
         assert!(result.is_ok());
@@ -2282,7 +2288,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::UndoRenameTabByTabId { id } => {
-                assert_eq!(*id, 7u64);
+                assert_eq!(*id, TabId::new(7));
             },
             _ => panic!("Expected UndoRenameTabByTabId action"),
         }
@@ -2302,7 +2308,9 @@ mod tests {
     // 23. ToggleActiveSyncTab
     #[test]
     fn test_toggle_active_sync_tab_with_tab_id() {
-        let cli_action = CliAction::ToggleActiveSyncTab { tab_id: Some(2) };
+        let cli_action = CliAction::ToggleActiveSyncTab {
+            tab_id: Some(TabId::new(2)),
+        };
         let result =
             crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
         assert!(result.is_ok());
@@ -2310,7 +2318,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::ToggleActiveSyncTabByTabId { id } => {
-                assert_eq!(*id, 2u64);
+                assert_eq!(*id, TabId::new(2));
             },
             _ => panic!("Expected ToggleActiveSyncTabByTabId action"),
         }
@@ -2330,7 +2338,9 @@ mod tests {
     // 24. ToggleFloatingPanes
     #[test]
     fn test_toggle_floating_panes_with_tab_id() {
-        let cli_action = CliAction::ToggleFloatingPanes { tab_id: Some(4) };
+        let cli_action = CliAction::ToggleFloatingPanes {
+            tab_id: Some(TabId::new(4)),
+        };
         let result =
             crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
         assert!(result.is_ok());
@@ -2338,7 +2348,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::ToggleFloatingPanesByTabId { id } => {
-                assert_eq!(*id, 4u64);
+                assert_eq!(*id, TabId::new(4));
             },
             _ => panic!("Expected ToggleFloatingPanesByTabId action"),
         }
@@ -2358,7 +2368,9 @@ mod tests {
     // 25. PreviousSwapLayout
     #[test]
     fn test_previous_swap_layout_with_tab_id() {
-        let cli_action = CliAction::PreviousSwapLayout { tab_id: Some(6) };
+        let cli_action = CliAction::PreviousSwapLayout {
+            tab_id: Some(TabId::new(6)),
+        };
         let result =
             crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
         assert!(result.is_ok());
@@ -2366,7 +2378,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::PreviousSwapLayoutByTabId { id } => {
-                assert_eq!(*id, 6u64);
+                assert_eq!(*id, TabId::new(6));
             },
             _ => panic!("Expected PreviousSwapLayoutByTabId action"),
         }
@@ -2386,7 +2398,9 @@ mod tests {
     // 26. NextSwapLayout
     #[test]
     fn test_next_swap_layout_with_tab_id() {
-        let cli_action = CliAction::NextSwapLayout { tab_id: Some(8) };
+        let cli_action = CliAction::NextSwapLayout {
+            tab_id: Some(TabId::new(8)),
+        };
         let result =
             crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
         assert!(result.is_ok());
@@ -2394,7 +2408,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::NextSwapLayoutByTabId { id } => {
-                assert_eq!(*id, 8u64);
+                assert_eq!(*id, TabId::new(8));
             },
             _ => panic!("Expected NextSwapLayoutByTabId action"),
         }
@@ -2416,7 +2430,7 @@ mod tests {
     fn test_move_tab_with_tab_id() {
         let cli_action = CliAction::MoveTab {
             direction: Direction::Right,
-            tab_id: Some(10),
+            tab_id: Some(TabId::new(10)),
         };
         let result =
             crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -2425,7 +2439,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::MoveTabByTabId { id, direction } => {
-                assert_eq!(*id, 10u64);
+                assert_eq!(*id, TabId::new(10));
                 assert!(matches!(direction, Direction::Right));
             },
             _ => panic!("Expected MoveTabByTabId action"),
@@ -3020,7 +3034,7 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            tab_id: Some(3),
+            tab_id: Some(TabId::new(3)),
         };
         let result =
             crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -3029,7 +3043,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::NewTiledPane { tab_id, .. } => {
-                assert_eq!(*tab_id, Some(3));
+                assert_eq!(*tab_id, Some(TabId::new(3)));
             },
             _ => panic!("Expected NewTiledPane action"),
         }
@@ -3224,7 +3238,7 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            tab_id: Some(5),
+            tab_id: Some(TabId::new(5)),
         };
         let result =
             crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -3233,7 +3247,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::NewFloatingPane { tab_id, .. } => {
-                assert_eq!(*tab_id, Some(5));
+                assert_eq!(*tab_id, Some(TabId::new(5)));
             },
             _ => panic!("Expected NewFloatingPane action"),
         }
@@ -3275,7 +3289,7 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            tab_id: Some(1),
+            tab_id: Some(TabId::new(1)),
         };
         let result =
             crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -3284,7 +3298,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::NewStackedPane { tab_id, .. } => {
-                assert_eq!(*tab_id, Some(1));
+                assert_eq!(*tab_id, Some(TabId::new(1)));
             },
             _ => panic!("Expected NewStackedPane action"),
         }
@@ -3762,7 +3776,7 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            tab_id: Some(2),
+            tab_id: Some(TabId::new(2)),
         };
         let result =
             crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -3771,7 +3785,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::NewBlockingPane { tab_id, .. } => {
-                assert_eq!(*tab_id, Some(2));
+                assert_eq!(*tab_id, Some(TabId::new(2)));
             },
             _ => panic!("Expected NewBlockingPane action"),
         }
@@ -3797,7 +3811,7 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            tab_id: Some(4),
+            tab_id: Some(TabId::new(4)),
         };
         let result =
             crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -3806,7 +3820,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::EditFile { tab_id, .. } => {
-                assert_eq!(*tab_id, Some(4));
+                assert_eq!(*tab_id, Some(TabId::new(4)));
             },
             _ => panic!("Expected EditFile action"),
         }
@@ -3883,7 +3897,7 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            tab_id: Some(2),
+            tab_id: Some(TabId::new(2)),
         };
         let result =
             crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -3892,7 +3906,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::NewTiledPluginPane { tab_id, .. } => {
-                assert_eq!(*tab_id, Some(2));
+                assert_eq!(*tab_id, Some(TabId::new(2)));
             },
             _ => panic!("Expected NewTiledPluginPane action"),
         }
@@ -3934,7 +3948,7 @@ mod tests {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            tab_id: Some(1),
+            tab_id: Some(TabId::new(1)),
         };
         let result =
             crate::actions::actions_from_cli(cli_action, Box::new(|| PathBuf::from("/tmp")), None);
@@ -3943,7 +3957,7 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::NewFloatingPluginPane { tab_id, .. } => {
-                assert_eq!(*tab_id, Some(1));
+                assert_eq!(*tab_id, Some(TabId::new(1)));
             },
             _ => panic!("Expected NewFloatingPluginPane action"),
         }

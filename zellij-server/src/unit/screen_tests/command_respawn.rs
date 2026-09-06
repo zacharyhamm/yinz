@@ -7,6 +7,7 @@
 use super::*;
 use std::collections::BTreeMap;
 use zellij_types::data::OriginatingPlugin;
+use zellij_types::internal_ids::TabId;
 
 fn step_command(cmd: &str, step: &str) -> RunCommand {
     RunCommand {
@@ -180,7 +181,7 @@ fn a_stashed_replacement_survives_a_cross_tab_pane_move() {
         vec![],
         vec![],
         HashMap::new(),
-        second_tab_index,
+        TabId::new(second_tab_index),
         true,
         client_id,
         None,
@@ -236,15 +237,19 @@ fn a_stashed_replacement_survives_a_cross_tab_pane_move() {
 #[test]
 fn a_suppressed_pane_replacement_survives_its_tab_closing() {
     let mut screen = screen_with_a_pane_replaced_in_place();
-    screen.tabs.get_mut(&0).unwrap().restore_pending_respawn(
-        PaneId::Terminal(crate::TerminalId::new(1)),
-        (step_command("step2", "2"), true),
-    );
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .restore_pending_respawn(
+            PaneId::Terminal(crate::TerminalId::new(1)),
+            (step_command("step2", "2"), true),
+        );
 
-    screen.close_tab_by_id(0).unwrap();
+    screen.close_tab_by_id(TabId::new(0)).unwrap();
     let (_, replacement, keep_scrollback) = screen
         .tabs
-        .get_mut(&1)
+        .get_mut(&TabId::new(1))
         .unwrap()
         .hold_pane(
             PaneId::Terminal(crate::TerminalId::new(1)),
@@ -262,18 +267,22 @@ fn a_suppressed_pane_replacement_survives_its_tab_closing() {
 fn an_overlay_pane_replacement_survives_its_tab_closing() {
     let size = Size { cols: 80, rows: 20 };
     let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
-    open_floating_pane(&mut screen, 0, 7, "overlay", true);
-    screen.tabs.get_mut(&0).unwrap().restore_pending_respawn(
-        PaneId::Terminal(crate::TerminalId::new(7)),
-        (step_command("step2", "2"), true),
-    );
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    open_floating_pane(&mut screen, TabId::new(0), 7, "overlay", true);
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .restore_pending_respawn(
+            PaneId::Terminal(crate::TerminalId::new(7)),
+            (step_command("step2", "2"), true),
+        );
 
-    screen.close_tab_by_id(0).unwrap();
+    screen.close_tab_by_id(TabId::new(0)).unwrap();
     let (_, replacement, keep_scrollback) = screen
         .tabs
-        .get_mut(&1)
+        .get_mut(&TabId::new(1))
         .unwrap()
         .hold_pane(
             PaneId::Terminal(crate::TerminalId::new(7)),
@@ -328,7 +337,7 @@ fn session_reports(jobs: &[BackgroundJob]) -> usize {
 fn only_a_changed_pane_host_is_broadcast() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, background_jobs) = screen_with_background_jobs(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     let _ = drain_background_jobs(&background_jobs);
 
     screen

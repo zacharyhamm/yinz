@@ -13,6 +13,7 @@ use zellij_types::data::*;
 pub use zellij_types::geometry::PercentOrFixed;
 use zellij_types::geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy};
 use zellij_types::input::actions::Action;
+use zellij_types::internal_ids::TabId;
 use {
     zellij_plugin_api::generated_api::api::plugin_command::hide_floating_panes_response,
     zellij_plugin_api::generated_api::api::plugin_command::save_session_response,
@@ -335,14 +336,14 @@ pub fn get_plugin_alias_configuration(alias: &str) -> BTreeMap<String, String> {
 }
 
 /// Returns the focused pane ID and tab index for the client associated with this plugin.
-pub fn get_focused_pane_info() -> Result<(usize, PaneId), String> {
+pub fn get_focused_pane_info() -> Result<(TabId, PaneId), String> {
     let plugin_command = PluginCommand::GetFocusedPaneInfo;
     let protobuf_response: ProtobufGetFocusedPaneInfoResponse =
         command_response(plugin_command, "GetFocusedPaneInfo")?;
 
     match protobuf_response.result {
         Some(get_focused_pane_info_response::Result::FocusedPaneInfo(info)) => {
-            let tab_index = info.focused_tab_index as usize;
+            let tab_index = TabId::new(info.focused_tab_index as usize);
             match info.focused_pane_id {
                 Some(pb_pane_id) => match pb_pane_id.try_into() {
                     Ok(pane_id) => Ok((tab_index, pane_id)),
@@ -431,7 +432,7 @@ pub fn get_pane_info(pane_id: PaneId) -> Option<PaneInfo> {
 ///     None => println!("Tab not found"),
 /// }
 /// ```
-pub fn get_tab_info(tab_id: usize) -> Option<TabInfo> {
+pub fn get_tab_info(tab_id: TabId) -> Option<TabInfo> {
     let plugin_command = PluginCommand::GetTabInfo(tab_id);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1223,7 +1224,7 @@ pub fn switch_to_input_mode(mode: &InputMode) {
 /// Provide a stringified [`layout`](https://zellij.dev/documentation/layouts.html) to be applied to the current session. If the layout has multiple tabs, they will all be opened.
 /// Requires `ChangeApplicationState` plus the permission for every command, editor or plugin pane
 /// the layout starts.
-pub fn new_tabs_with_layout(layout: &str) -> Vec<usize> {
+pub fn new_tabs_with_layout(layout: &str) -> Vec<TabId> {
     let plugin_command = PluginCommand::NewTabsWithLayout(layout.to_owned());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1237,7 +1238,7 @@ pub fn new_tabs_with_layout(layout: &str) -> Vec<usize> {
 /// File layouts are confined to the layout directory and require `OpenFiles`, `RunCommands` and
 /// `OpenTerminalsOrPlugins`; URL layouts additionally require `WebAccess`. Stringified and
 /// built-in layouts require only the capabilities they actually start.
-pub fn new_tabs_with_layout_info<L: AsRef<LayoutInfo>>(layout_info: L) -> Vec<usize> {
+pub fn new_tabs_with_layout_info<L: AsRef<LayoutInfo>>(layout_info: L) -> Vec<TabId> {
     let plugin_command = PluginCommand::NewTabsWithLayoutInfo(layout_info.as_ref().clone());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1248,7 +1249,7 @@ pub fn new_tabs_with_layout_info<L: AsRef<LayoutInfo>>(layout_info: L) -> Vec<us
 }
 
 /// Open a new tab with the default layout
-pub fn new_tab<S>(name: Option<S>, cwd: Option<S>) -> Option<usize>
+pub fn new_tab<S>(name: Option<S>, cwd: Option<S>) -> Option<TabId>
 where
     S: AsRef<str> + ToString,
 {
@@ -1263,7 +1264,7 @@ where
     NewTabResponse::try_from(response).unwrap()
 }
 
-pub fn new_tab_unfocused<S>(name: Option<S>, cwd: Option<S>) -> Option<usize>
+pub fn new_tab_unfocused<S>(name: Option<S>, cwd: Option<S>) -> Option<TabId>
 where
     S: AsRef<str> + ToString,
 {
@@ -1279,7 +1280,7 @@ where
     NewTabUnfocusedResponse::try_from(response).unwrap()
 }
 
-pub fn new_tiled_pane_in_tab(tab_position: usize) -> Option<PaneId> {
+pub fn new_tiled_pane_in_tab(tab_position: TabId) -> Option<PaneId> {
     let plugin_command = PluginCommand::NewTiledPaneInTab { tab_position };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1295,7 +1296,7 @@ pub fn new_tiled_pane_in_tab(tab_position: usize) -> Option<PaneId> {
 pub fn open_command_pane_in_new_tab(
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
-) -> (Option<usize>, Option<PaneId>) {
+) -> (Option<TabId>, Option<PaneId>) {
     let plugin_command = PluginCommand::OpenCommandPaneInNewTab(command_to_run, context);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1314,7 +1315,7 @@ pub fn open_plugin_pane_in_new_tab(
     plugin_url: impl ToString,
     configuration: BTreeMap<String, String>,
     context: BTreeMap<String, String>,
-) -> (Option<usize>, Option<PaneId>) {
+) -> (Option<TabId>, Option<PaneId>) {
     let plugin_command = PluginCommand::OpenPluginPaneInNewTab {
         plugin_url: plugin_url.to_string(),
         configuration,
@@ -1359,7 +1360,7 @@ pub fn open_plugin_pane_floating(
 pub fn open_editor_pane_in_new_tab(
     file_to_open: FileToOpen,
     context: BTreeMap<String, String>,
-) -> (Option<usize>, Option<PaneId>) {
+) -> (Option<TabId>, Option<PaneId>) {
     let plugin_command = PluginCommand::OpenEditorPaneInNewTab(file_to_open, context);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1651,7 +1652,7 @@ pub fn new_pane() {
     unsafe { host_run_plugin_command() };
 }
 
-pub fn toggle_floating_panes(tab_id: Option<u64>) {
+pub fn toggle_floating_panes(tab_id: Option<TabId>) {
     let plugin_command = PluginCommand::ToggleFloatingPanes { tab_id };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1714,7 +1715,7 @@ pub fn go_to_tab_name(tab_name: &str) {
 }
 
 /// Change focus to the tab with the specified name or create it if it does not exist
-pub fn focus_or_create_tab(tab_name: &str) -> Option<usize> {
+pub fn focus_or_create_tab(tab_name: &str) -> Option<TabId> {
     let plugin_command = PluginCommand::FocusOrCreateTab(tab_name.to_owned());
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -1840,7 +1841,7 @@ where
 }
 
 /// Changes the name (the title that appears in the UI) of the tab with the specified id.
-pub fn rename_tab_with_id<S>(tab_id: u64, new_name: S)
+pub fn rename_tab_with_id<S>(tab_id: TabId, new_name: S)
 where
     S: AsRef<str> + ToString,
 {
@@ -1856,7 +1857,7 @@ where
 /// tab the user named keeps that name. Two tabs on the same project are told
 /// apart with a `#1`/`#2` suffix. The map is the whole truth each time it is
 /// sent, so a tab left out of it goes back to its own name.
-pub fn set_tab_projects(tab_projects: BTreeMap<u64, String>) {
+pub fn set_tab_projects(tab_projects: BTreeMap<TabId, String>) {
     let plugin_command = PluginCommand::SetTabProjects(tab_projects);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -2120,7 +2121,7 @@ pub fn warp_pane_from_session(
 ///
 /// # Permissions Required
 /// * `ChangeApplicationState`
-pub fn warp_tab_to_session(tab_index: usize, to_session: &str) -> Result<String, String> {
+pub fn warp_tab_to_session(tab_index: TabId, to_session: &str) -> Result<String, String> {
     warp_request(PluginCommand::WarpTabToSession {
         tab_index,
         to_session: to_session.to_owned(),
@@ -2135,7 +2136,7 @@ pub fn warp_tab_to_session(tab_index: usize, to_session: &str) -> Result<String,
 ///
 /// # Permissions Required
 /// * `ChangeApplicationState`
-pub fn warp_tab_from_session(tab_index: usize, from_session: &str) -> Result<String, String> {
+pub fn warp_tab_from_session(tab_index: TabId, from_session: &str) -> Result<String, String> {
     warp_request(PluginCommand::WarpTabFromSession {
         tab_index,
         from_session: from_session.to_owned(),
@@ -2498,13 +2499,13 @@ pub fn dump_session_layout() -> Result<(String, Option<LayoutMetadata>), String>
 /// Get the serialized layout for a specific tab in KDL format synchronously
 /// note: this removes the requesting plugin from the dumped layout
 pub fn dump_session_layout_for_tab(
-    tab_index: usize,
+    tab_index: TabId,
 ) -> Result<(String, Option<LayoutMetadata>), String> {
     dump_session_layout_impl(Some(tab_index))
 }
 
 fn dump_session_layout_impl(
-    tab_index: Option<usize>,
+    tab_index: Option<TabId>,
 ) -> Result<(String, Option<LayoutMetadata>), String> {
     let plugin_command = PluginCommand::DumpSessionLayout { tab_index };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -3450,7 +3451,7 @@ pub fn close_tab_with_index(tab_index: usize) {
 /// Unlike `close_tab_with_index`, this function identifies the tab by its stable
 /// `tab_id` rather than its display position, which may change as tabs are moved
 /// or closed. The tab_id can be obtained from `TabInfo.tab_id`.
-pub fn close_tab_with_id(tab_id: u64) {
+pub fn close_tab_with_id(tab_id: TabId) {
     let plugin_command = PluginCommand::CloseTabWithId(tab_id);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -3462,7 +3463,7 @@ pub fn close_tab_with_id(tab_id: u64) {
 /// Unlike `go_to_tab`, this function identifies the tab by its stable `tab_id`
 /// rather than its display position, which may change as tabs are moved or
 /// closed. The tab_id can be obtained from `TabInfo.tab_id`.
-pub fn go_to_tab_with_id(tab_id: u64) {
+pub fn go_to_tab_with_id(tab_id: TabId) {
     let plugin_command = PluginCommand::GoToTabWithId(tab_id);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -3509,7 +3510,7 @@ pub fn break_panes_to_new_tab(
     pane_ids: &[PaneId],
     new_tab_name: Option<String>,
     should_change_focus_to_new_tab: bool,
-) -> Option<usize> {
+) -> Option<TabId> {
     let plugin_command = PluginCommand::BreakPanesToNewTab(
         pane_ids.to_vec(),
         new_tab_name,
@@ -3529,7 +3530,7 @@ pub fn break_panes_to_tab_with_index(
     pane_ids: &[PaneId],
     tab_index: usize,
     should_change_focus_to_new_tab: bool,
-) -> Option<usize> {
+) -> Option<TabId> {
     let plugin_command = PluginCommand::BreakPanesToTabWithIndex(
         pane_ids.to_vec(),
         tab_index,
@@ -3548,12 +3549,12 @@ pub fn break_panes_to_tab_with_index(
 /// Move the pane ids to the tab with the specified id
 pub fn break_panes_to_tab_with_id(
     pane_ids: &[PaneId],
-    tab_id: usize,
+    tab_id: TabId,
     should_change_focus_to_target_tab: bool,
-) -> Option<usize> {
+) -> Option<TabId> {
     let plugin_command = PluginCommand::BreakPanesToTabWithId(
         pane_ids.to_vec(),
-        tab_id as u64,
+        tab_id,
         should_change_focus_to_target_tab,
     );
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
@@ -4063,7 +4064,7 @@ pub fn run_action(action: Action, context: BTreeMap<String, String>) {
 /// Returns `Ok(true)` if the floating panes were made visible (state changed),
 /// `Ok(false)` if the floating panes were already visible (no change),
 /// or `Err(String)` if the specified tab was not found.
-pub fn show_floating_panes(tab_id: Option<usize>) -> Result<bool, String> {
+pub fn show_floating_panes(tab_id: Option<TabId>) -> Result<bool, String> {
     let plugin_command = PluginCommand::ShowFloatingPanes { tab_id };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -4086,7 +4087,7 @@ pub fn show_floating_panes(tab_id: Option<usize>) -> Result<bool, String> {
 /// Returns `Ok(true)` if the floating panes were hidden (state changed),
 /// `Ok(false)` if the floating panes were already hidden (no change),
 /// or `Err(String)` if the specified tab was not found.
-pub fn hide_floating_panes(tab_id: Option<usize>) -> Result<bool, String> {
+pub fn hide_floating_panes(tab_id: Option<TabId>) -> Result<bool, String> {
     let plugin_command = PluginCommand::HideFloatingPanes { tab_id };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
@@ -4361,14 +4362,14 @@ mod tests {
 
         respond(ProtobufGetFocusedPaneInfoResponse::from(
             GetFocusedPaneInfoResponse::Ok {
-                tab_index: 7,
+                tab_index: TabId::new(7),
                 pane_id: PaneId::Plugin(zellij_types::internal_ids::PluginId::new(42)),
             },
         ));
         assert_eq!(
             get_focused_pane_info(),
             Ok((
-                7,
+                TabId::new(7),
                 PaneId::Plugin(zellij_types::internal_ids::PluginId::new(42))
             ))
         );

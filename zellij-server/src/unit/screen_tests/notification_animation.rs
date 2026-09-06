@@ -10,13 +10,14 @@ use crate::ui::damage::CellRect;
 use crate::ui::notification::{notification_height, notification_lines, notification_width};
 use std::time::{Duration, Instant};
 use zellij_types::animation::Tween;
+use zellij_types::internal_ids::TabId;
 use zellij_types::pane_size::Viewport;
 
 const TEXT: &str = "build finished";
 
 fn screen_with_a_settled_toast(size: Size, now: Instant) -> Screen {
     let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     let mut notification = Notification::new(0, TEXT.to_owned(), None, now);
     notification.reveal = Tween::settled(1.0);
     notification.y_offset = Tween::settled(0.0);
@@ -25,7 +26,7 @@ fn screen_with_a_settled_toast(size: Size, now: Instant) -> Screen {
 }
 
 /// Every column the toasts cover, across all the damage rects, on the row they share.
-fn damaged_columns(damage: &[(Option<usize>, Vec<CellRect>)]) -> Vec<usize> {
+fn damaged_columns(damage: &[(Option<TabId>, Vec<CellRect>)]) -> Vec<usize> {
     let mut columns: Vec<usize> = damage
         .iter()
         .flat_map(|(_, rects)| rects)
@@ -93,7 +94,7 @@ fn a_toast_sliding_in_never_asks_for_a_repaint() {
     let size = Size { cols: 80, rows: 20 };
     let start = Instant::now();
     let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     let surface = screen.surface_size();
     screen
         .notifications
@@ -191,7 +192,7 @@ fn animations_stop_being_live_once_everything_has_settled() {
     let size = Size { cols: 80, rows: 20 };
     let start = Instant::now();
     let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen
         .notifications
         .push(Notification::new(0, TEXT.to_owned(), None, start));

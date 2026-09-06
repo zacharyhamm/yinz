@@ -7,6 +7,7 @@
 
 use crate::agents;
 use std::collections::{BTreeMap, BTreeSet};
+use zellij_tile::prelude::TabId;
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
 /// The terminal panes of a manifest, as the agent module wants them.
@@ -18,7 +19,7 @@ use zellij_tile::prelude::{PaneManifest, TabInfo};
 pub fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::AgentPane> {
     // The manifest is keyed by tab *position*, not tab id — same join as
     // tools::list_session.
-    let by_position: BTreeMap<usize, (usize, &str)> = tabs
+    let by_position: BTreeMap<usize, (TabId, &str)> = tabs
         .iter()
         .map(|tab| (tab.position, (tab.tab_id, tab.name.as_str())))
         .collect();
@@ -200,7 +201,7 @@ mod tests {
     fn tab(position: usize, active: bool, floating_visible: bool) -> TabInfo {
         TabInfo {
             position,
-            tab_id: position + 100,
+            tab_id: TabId::new(position + 100),
             active,
             are_floating_panes_visible: floating_visible,
             ..TabInfo::default()

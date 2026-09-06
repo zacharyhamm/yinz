@@ -22,6 +22,7 @@
 //! worse.
 
 use std::time::{Duration, Instant};
+use zellij_types::internal_ids::TabId;
 
 use zellij_runtime::{envs, errors::prelude::*};
 use {
@@ -367,7 +368,7 @@ pub fn warp_pane_from_session(
 pub fn warp_tab_to_session(
     senders: &ThreadSenders,
     client_id: ClientId,
-    tab_index: Option<usize>,
+    tab_index: Option<TabId>,
     current_session: &str,
     to_session: &str,
     timeout: Duration,
@@ -469,7 +470,7 @@ pub fn adopt_tab_here(
 pub fn warp_tab_from_session(
     current_session: &str,
     from_session: &str,
-    tab_index: usize,
+    tab_index: TabId,
     timeout: Duration,
 ) -> std::result::Result<String, String> {
     let started_at = std::time::Instant::now();

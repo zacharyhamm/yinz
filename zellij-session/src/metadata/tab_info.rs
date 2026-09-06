@@ -1,4 +1,5 @@
 use super::*;
+use zellij_types::internal_ids::TabId;
 
 pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
     macro_rules! int_node {
@@ -80,7 +81,8 @@ pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
         optional_int_node!("selectable_tiled_panes_count", usize).unwrap_or(0);
     let selectable_floating_panes_count =
         optional_int_node!("selectable_floating_panes_count", usize).unwrap_or(0);
-    let tab_id = optional_int_node!("tab_id", usize).unwrap_or(0);
+    let tab_id = TabId::try_from(optional_int_node!("tab_id", i64).unwrap_or(0))
+        .map_err(|_| "tab_id is outside usize range")?;
     Ok(TabInfo {
         position,
         name,
@@ -103,7 +105,7 @@ pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
         is_flashing_bell: false,
     })
 }
-pub fn encode_to_kdl(value: &TabInfo) -> KdlDocument {
+pub fn encode_to_kdl(value: &TabInfo) -> anyhow::Result<KdlDocument> {
     let mut kdl_doucment = KdlDocument::new();
 
     let mut position = KdlNode::new("position");
@@ -179,8 +181,8 @@ pub fn encode_to_kdl(value: &TabInfo) -> KdlDocument {
         .push(selectable_floating_panes_count);
 
     let mut tab_id = KdlNode::new("tab_id");
-    tab_id.push(value.tab_id as i64);
+    tab_id.push(i64::try_from(value.tab_id.get())?);
     kdl_doucment.nodes_mut().push(tab_id);
 
-    kdl_doucment
+    Ok(kdl_doucment)
 }

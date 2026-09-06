@@ -21,6 +21,7 @@
 //! the floor absorbs.
 
 use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TabId;
 
 use super::Screen;
 use crate::pty::ClientTabIndexOrPaneId;
@@ -85,14 +86,14 @@ pub(super) fn floor_of(min_size: Size) -> Option<usize> {
 /// would give the newcomer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Candidate {
-    pub tab_id: usize,
+    pub tab_id: TabId,
     pub position: usize,
     pub share: usize,
 }
 
 /// The roomiest candidate whose share clears `floor`. Ties go to the lowest position, so the
 /// same tabs give the same answer every time.
-pub(super) fn choose_tab(candidates: &[Candidate], floor: usize) -> Option<usize> {
+pub(super) fn choose_tab(candidates: &[Candidate], floor: usize) -> Option<TabId> {
     candidates
         .iter()
         .filter(|candidate| candidate.share >= floor)
@@ -109,7 +110,7 @@ impl Screen {
     /// `ClientId` arm in `thread_main` resolves it: this client's active tab if it is attached,
     /// else the first attached client's, else the first tab there is. A `zellij run` or a warp
     /// request is a client of its own with no screen, which is why the fallbacks exist.
-    pub(super) fn tab_a_client_is_looking_at(&self, client_id: ClientId) -> Option<usize> {
+    pub(super) fn tab_a_client_is_looking_at(&self, client_id: ClientId) -> Option<TabId> {
         self.connected_client_to_act_for(client_id)
             .and_then(|client_id| self.active_tab_ids.get(&client_id).copied())
             .or_else(|| self.tabs.keys().next().copied())
@@ -126,7 +127,7 @@ impl Screen {
     }
 
     /// The share a tab would give one more tiled pane.
-    fn projected_share_of_tab(&self, tab_id: usize) -> Option<usize> {
+    fn projected_share_of_tab(&self, tab_id: TabId) -> Option<usize> {
         let tab = self.tabs.get(&tab_id)?;
         Some(projected_share(
             tab.get_viewport(),

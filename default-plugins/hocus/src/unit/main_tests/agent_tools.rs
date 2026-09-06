@@ -1,4 +1,5 @@
 use super::*;
+use zellij_tile::prelude::TabId;
 
 /// A plugin pane is not an agent, a suppressed one is not on screen, and a held
 /// one still is - the three cases the snapshot has to tell apart.
@@ -19,7 +20,7 @@ fn a_snapshot_keeps_the_terminal_panes_that_are_agents() {
     };
     let manifest = manifest(vec![plugin, suppressed, held]);
 
-    let panes = terminal_panes(&manifest, &[tab_info(0, 9, "work")]);
+    let panes = terminal_panes(&manifest, &[tab_info(0, TabId::new(9), "work")]);
     assert_eq!(
         panes.iter().map(|pane| pane.pane_id).collect::<Vec<_>>(),
         vec![3],
@@ -29,7 +30,7 @@ fn a_snapshot_keeps_the_terminal_panes_that_are_agents() {
         agents::AgentStatus::Held,
         "held beats exited"
     );
-    assert_eq!(panes[0].tab, Some((9, "work".to_owned())));
+    assert_eq!(panes[0].tab, Some((TabId::new(9), "work".to_owned())));
 }
 
 #[test]

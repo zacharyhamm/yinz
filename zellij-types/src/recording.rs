@@ -1,3 +1,4 @@
+use crate::internal_ids::TabId;
 use crate::internal_ids::{RecordingId, TerminalId};
 use crate::units::{ElapsedMicros, UnixMicros};
 use serde::{Deserialize, Serialize};
@@ -91,7 +92,7 @@ impl RecordedEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PaneMetadata {
     pub terminal_id: TerminalId,
-    pub tab_id: usize,
+    pub tab_id: TabId,
     pub tab_position: usize,
     pub tab_name: String,
     pub title: String,

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TerminalId;
 
 use strum::IntoEnumIterator;
@@ -513,7 +514,7 @@ fn test_env() -> PluginEnv {
         data_access: Arc::new(DataAccess::sqlite(&PathBuf::from("."))),
         queues: Default::default(),
         plugin_own_cache_dir: PathBuf::from("."),
-        tab_index: Some(0),
+        tab_index: Some(TabId::new(0)),
         path_to_default_shell: PathBuf::from("."),
         default_shell: None,
         plugin_cwd: PathBuf::from("."),

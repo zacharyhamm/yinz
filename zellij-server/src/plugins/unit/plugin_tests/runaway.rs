@@ -18,6 +18,7 @@ use super::*;
 use crate::plugins::plugin_map::CANCELLED_BY_HOST;
 use crate::ClientId;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 /// A fake screen thread that grants every permission a plugin asks for and logs everything
 /// else, until `done` is set. Not driven by a count of some instruction: what these tests wait
@@ -121,7 +122,7 @@ impl RunawayHarness {
             false,
             Some("runaway".to_owned()),
             run_plugin,
-            Some(1),
+            Some(TabId::new(1)),
             None,
             client_id,
             size,

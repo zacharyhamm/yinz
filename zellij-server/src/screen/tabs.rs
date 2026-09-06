@@ -1,4 +1,5 @@
 use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TabId;
 
 use super::Screen;
 use crate::background_jobs::BackgroundJob;
@@ -14,23 +15,23 @@ use zellij_types::input::command::RunCommand;
 use {zellij_types::data::Event, zellij_types::data::ModeInfo};
 
 impl Screen {
-    pub(super) fn get_new_tab_id(&self) -> usize {
+    pub(super) fn get_new_tab_id(&self) -> TabId {
         if let Some(id) = self.tabs.keys().last() {
-            *id + 1
+            TabId::new(id.get() + 1)
         } else {
-            0
+            TabId::new(0)
         }
     }
 
     /// Gets a tab by its stable ID (BTreeMap key).
     ///
     /// Use this when you have a tab ID from active_tab_ids, tab_history, or tab.id.
-    pub(super) fn get_tab_by_id(&self, id: usize) -> Option<&Tab> {
+    pub(super) fn get_tab_by_id(&self, id: TabId) -> Option<&Tab> {
         self.tabs.get(&id)
     }
 
     /// Gets a mutable tab by its stable ID (BTreeMap key).
-    pub(super) fn get_tab_by_id_mut(&mut self, id: usize) -> Option<&mut Tab> {
+    pub(super) fn get_tab_by_id_mut(&mut self, id: TabId) -> Option<&mut Tab> {
         self.tabs.get_mut(&id)
     }
 
@@ -55,7 +56,7 @@ impl Screen {
     }
 
     /// The stable id of the tab holding `pane_id`.
-    pub(super) fn tab_id_containing_pane(&self, pane_id: PaneId) -> Option<usize> {
+    pub(super) fn tab_id_containing_pane(&self, pane_id: PaneId) -> Option<TabId> {
         self.tab_containing_pane(pane_id).map(|tab| tab.id)
     }
 
@@ -117,7 +118,7 @@ impl Screen {
     /// Gets the stable ID of the tab at the given display position.
     ///
     /// Use this to convert position → ID for BTreeMap lookups.
-    pub(super) fn get_tab_id_at_position(&self, position: usize) -> Option<usize> {
+    pub(super) fn get_tab_id_at_position(&self, position: usize) -> Option<TabId> {
         self.tabs
             .values()
             .find(|t| t.position == position)
@@ -127,7 +128,7 @@ impl Screen {
     /// Gets the display position of the tab with the given ID.
     ///
     /// Use this to convert ID → position for user-facing operations.
-    pub(super) fn get_tab_position_by_id(&self, id: usize) -> Option<usize> {
+    pub(super) fn get_tab_position_by_id(&self, id: TabId) -> Option<usize> {
         self.tabs.get(&id).map(|t| t.position)
     }
 
@@ -294,8 +295,8 @@ impl Screen {
 
     fn move_clients_between_tabs(
         &mut self,
-        source_tab_index: usize,
-        destination_tab_index: usize,
+        source_tab_index: TabId,
+        destination_tab_index: TabId,
         update_mode_infos: bool,
         clients_to_move: Option<Vec<ClientId>>,
     ) -> Result<()> {
@@ -332,7 +333,7 @@ impl Screen {
         Ok(())
     }
 
-    pub(super) fn update_client_tab_focus(&mut self, client_id: ClientId, new_tab_index: usize) {
+    pub(super) fn update_client_tab_focus(&mut self, client_id: ClientId, new_tab_index: TabId) {
         match self.active_tab_ids.remove(&client_id) {
             Some(old_active_index) => {
                 self.active_tab_ids.insert(client_id, new_tab_index);
@@ -358,7 +359,7 @@ impl Screen {
     /// which is right: the pane belongs to that tab. But the tab being entered renders diff-based,
     /// so if nothing in it changed it emits nothing and the pane stays on the host terminal over a
     /// tab it is not in.
-    fn repaint_after_leaving_tab(&mut self, left_tab_id: usize, entered_tab_id: usize) {
+    fn repaint_after_leaving_tab(&mut self, left_tab_id: TabId, entered_tab_id: TabId) {
         if !self
             .tabs
             .get(&left_tab_id)
@@ -586,7 +587,7 @@ impl Screen {
         self.switch_active_tab_name(name, client_id)
     }
 
-    pub(super) fn close_tab_by_id(&mut self, tab_id: usize) -> Result<()> {
+    pub(super) fn close_tab_by_id(&mut self, tab_id: TabId) -> Result<()> {
         let err_context = || format!("failed to close tab at index {tab_id:?}");
 
         let mut tab_to_close = self.tabs.remove(&tab_id).with_context(err_context)?;
@@ -690,7 +691,7 @@ impl Screen {
                 overlay_respawns,
                 overlay_client,
             );
-            let visible_tab_indices: HashSet<usize> =
+            let visible_tab_indices: HashSet<TabId> =
                 self.active_tab_ids.values().copied().collect();
             for t in self.tabs.values_mut() {
                 if visible_tab_indices.contains(&t.id) {

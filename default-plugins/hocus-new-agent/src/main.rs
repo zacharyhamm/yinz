@@ -1092,7 +1092,7 @@ mod tests {
             firecracker_image: None,
             firecracker_worktree: None,
             status: agents::AgentStatus::Running,
-            tab: Some((1, "work".to_owned())),
+            tab: Some((zellij_tile::prelude::TabId::new(1), "work".to_owned())),
             detected: Some(kind.to_owned()),
             agent: None,
         }
@@ -1831,7 +1831,7 @@ mod tests {
             firecracker_image: None,
             firecracker_worktree: None,
             status: agents::AgentStatus::Running,
-            tab: Some((1, "work".to_owned())),
+            tab: Some((zellij_tile::prelude::TabId::new(1), "work".to_owned())),
             detected: Some("cursor".to_owned()),
             agent: None,
         };

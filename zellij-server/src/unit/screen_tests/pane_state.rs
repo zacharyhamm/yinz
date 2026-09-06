@@ -5,13 +5,14 @@
 
 use super::*;
 use zellij_types::internal_ids::PluginId;
+use zellij_types::internal_ids::TabId;
 
 /// `CwdChanged` announces a move once. The manifest says where every pane is
 /// every time, which is what puts right a plugin that was not listening yet.
 #[test]
 fn a_pane_manifest_carries_the_pane_cwd() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.terminal_cwds.insert(
         crate::TerminalId::new(1),
         std::path::PathBuf::from("/work/hocus"),
@@ -49,7 +50,12 @@ fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
         ..Default::default()
     };
     screen
-        .new_tab(0, (vec![], vec![]), None, Some(crate::ClientId::new(1)))
+        .new_tab(
+            TabId::new(0),
+            (vec![], vec![]),
+            None,
+            Some(crate::ClientId::new(1)),
+        )
         .unwrap();
     screen
         .apply_layout(
@@ -61,7 +67,7 @@ fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
             vec![(crate::TerminalId::new(1), None)],
             vec![],
             HashMap::new(),
-            0,
+            TabId::new(0),
             true,
             crate::ClientId::new(1),
             None,
@@ -94,7 +100,7 @@ fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
 #[test]
 fn a_plugin_pane_has_no_cwd() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.terminal_cwds.insert(
         crate::TerminalId::new(1),
         std::path::PathBuf::from("/work/hocus"),
@@ -151,7 +157,7 @@ fn recorder_pane_metadata() {
         metadata[0].terminal_id,
         zellij_types::internal_ids::TerminalId::new(5)
     );
-    assert_eq!(metadata[0].tab_id, 0);
+    assert_eq!(metadata[0].tab_id, TabId::new(0));
     assert_eq!(metadata[0].tab_position, 0);
     assert_eq!(metadata[0].tab_name, "my tab");
     assert_eq!(metadata[0].title, "my terminal");

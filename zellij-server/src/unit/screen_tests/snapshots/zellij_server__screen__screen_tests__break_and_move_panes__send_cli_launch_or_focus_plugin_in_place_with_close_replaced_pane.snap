@@ -1,6 +1,6 @@
 ---
 source: zellij-server/src/screen/../unit/screen_tests/break_and_move_panes.rs
-assertion_line: 1177
+assertion_line: 1182
 expression: "format!(\"{:#?}\", fill_plugin_cwd_instruction)"
 ---
 Some(
@@ -24,7 +24,9 @@ Some(
                 relative_path: None,
             },
         ),
-        0,
+        TabId(
+            0,
+        ),
         None,
         ClientId(
             1,

@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 /// Blocks until `plugin_id` has rendered at least once, which is the observable signal that the
 /// plugin finished loading.
@@ -132,7 +133,7 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         false,
         Some("plugin_a".to_owned()),
         run_plugin_a,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -156,7 +157,7 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         false,
         Some("plugin_b".to_owned()),
         run_plugin_b,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -346,7 +347,7 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         false,
         Some("test_plugin".to_owned()),
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,

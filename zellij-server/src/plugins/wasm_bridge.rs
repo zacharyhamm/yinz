@@ -10,6 +10,7 @@ use crate::plugins::pipes::{
 };
 use crate::plugins::plugin_loader::PluginLoader;
 use crate::plugins::plugin_map::{AtomicEvent, PluginEnv, PluginMap, RunningPlugin, Subscriptions};
+use zellij_types::internal_ids::TabId;
 
 use crate::plugins::plugin_worker::MessageToWorker;
 use crate::plugins::queues::{CancelResult, FinishedJob, QueuedJob, Queues};
@@ -116,7 +117,7 @@ pub struct LoadingContext {
     pub plugin_own_data_dir: PathBuf,
     pub plugin_own_cache_dir: PathBuf,
     pub plugin_config: PluginConfig,
-    pub tab_index: Option<usize>,
+    pub tab_index: Option<TabId>,
     pub path_to_default_shell: PathBuf,
     pub session_env_vars: std::collections::BTreeMap<String, String>,
     pub plugin_aliases: Arc<Mutex<PluginAliases>>,
@@ -140,7 +141,7 @@ impl LoadingContext {
         plugin_config: PluginConfig,
         plugin_id: PluginId,
         client_id: ClientId,
-        tab_index: Option<usize>,
+        tab_index: Option<TabId>,
         size: Size,
     ) -> Self {
         let plugin_own_data_dir = ZELLIJ_SESSION_CACHE_DIR
@@ -356,7 +357,7 @@ impl WasmBridge {
     pub fn load_plugin(
         &mut self,
         run: &Option<RunPlugin>,
-        tab_index: Option<usize>,
+        tab_index: Option<TabId>,
         size: Size,
         cwd: Option<PathBuf>,
         skip_cache: bool,
@@ -2581,7 +2582,7 @@ impl WasmBridge {
                 r.env().plugin.clone()
             })
     }
-    fn tab_index_of_plugin_id(&self, plugin_id: PluginId) -> Option<usize> {
+    fn tab_index_of_plugin_id(&self, plugin_id: PluginId) -> Option<TabId> {
         self.plugin_map
             .lock()
             .unwrap()

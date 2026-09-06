@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 #[serial(plugin_tests)]
@@ -43,7 +44,7 @@ pub fn generate_random_name_permission_denied() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -143,7 +144,7 @@ pub fn save_layout_permission_denied() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -255,7 +256,7 @@ pub fn plugin_receives_config_change_event() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin.clone(),
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -376,7 +377,7 @@ pub fn plugin_does_not_receive_event_when_config_unchanged() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin.clone(),
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -491,7 +492,7 @@ pub fn get_session_environment_variables_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,

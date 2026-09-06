@@ -10,6 +10,7 @@ use zellij_types::command::PaneTarget;
 use zellij_types::data::ClientId;
 use zellij_types::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use zellij_types::input::cli_assets::CliAssets;
+use zellij_types::internal_ids::TabId;
 use zellij_types::keys::{BareKey, KeyModifier, KeyWithModifier};
 use zellij_types::mouse::{MouseEvent, MouseEventType};
 use zellij_types::pane_size::{Size, SizeInPixels};
@@ -1161,7 +1162,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::WarpTab {
-            tab_index: Some(2),
+            tab_index: Some(TabId::new(2)),
             to_session: "other".to_owned(),
         },
         terminal_id: None,
@@ -1171,7 +1172,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::WarpTabFrom {
             from_session: "other".to_owned(),
-            tab_index: 2,
+            tab_index: TabId::new(2),
         },
         terminal_id: None,
         client_id: None,
@@ -3225,7 +3226,7 @@ fn test_client_messages() {
             near_current_pane: false,
             no_focus: false,
             borderless: None,
-            tab_id: Some(3),
+            tab_id: Some(TabId::new(3)),
         },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
@@ -3238,7 +3239,7 @@ fn test_client_messages() {
             placement: NewPanePlacement::Floating(None),
             near_current_pane: false,
             no_focus: false,
-            tab_id: Some(5),
+            tab_id: Some(TabId::new(5)),
         },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
@@ -3250,7 +3251,7 @@ fn test_client_messages() {
             pane_name: None,
             near_current_pane: false,
             no_focus: false,
-            tab_id: Some(2),
+            tab_id: Some(TabId::new(2)),
         },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
@@ -3267,7 +3268,7 @@ fn test_client_messages() {
             unblock_condition: None,
             near_current_pane: false,
             no_focus: false,
-            tab_id: Some(1),
+            tab_id: Some(TabId::new(1)),
         },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
@@ -3306,7 +3307,7 @@ fn test_client_messages() {
             placement: NewPanePlacement::Floating(None),
             near_current_pane: false,
             no_focus: false,
-            tab_id: Some(4),
+            tab_id: Some(TabId::new(4)),
         },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
@@ -3320,7 +3321,7 @@ fn test_client_messages() {
             no_focus: false,
             pane_id_to_replace: None,
             close_replaced_pane: false,
-            tab_id: Some(7),
+            tab_id: Some(TabId::new(7)),
         },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
@@ -3334,7 +3335,7 @@ fn test_client_messages() {
             should_open_in_place: false,
             close_replaced_pane: false,
             skip_cache: false,
-            tab_id: Some(2),
+            tab_id: Some(TabId::new(2)),
         },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
@@ -3349,7 +3350,7 @@ fn test_client_messages() {
             skip_cache: false,
             cwd: None,
             no_focus: false,
-            tab_id: Some(6),
+            tab_id: Some(TabId::new(6)),
         },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
@@ -3362,7 +3363,7 @@ fn test_client_messages() {
             skip_cache: false,
             cwd: None,
             no_focus: false,
-            tab_id: Some(1),
+            tab_id: Some(TabId::new(1)),
         },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
@@ -3376,7 +3377,7 @@ fn test_client_messages() {
             cwd: None,
             placement: NewPanePlacement::Floating(None),
             no_focus: false,
-            tab_id: Some(3),
+            tab_id: Some(TabId::new(3)),
         },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
@@ -3389,7 +3390,7 @@ fn test_client_messages() {
             skip_cache: false,
             close_replaced_pane: false,
             no_focus: false,
-            tab_id: Some(2),
+            tab_id: Some(TabId::new(2)),
         },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
@@ -4279,38 +4280,38 @@ fn test_client_messages() {
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
-        action: Action::UndoRenameTabByTabId { id: 5 },
+        action: Action::UndoRenameTabByTabId { id: TabId::new(5) },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
-        action: Action::ToggleActiveSyncTabByTabId { id: 2 },
+        action: Action::ToggleActiveSyncTabByTabId { id: TabId::new(2) },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
-        action: Action::ToggleFloatingPanesByTabId { id: 0 },
+        action: Action::ToggleFloatingPanesByTabId { id: TabId::new(0) },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
-        action: Action::PreviousSwapLayoutByTabId { id: 1 },
+        action: Action::PreviousSwapLayoutByTabId { id: TabId::new(1) },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
-        action: Action::NextSwapLayoutByTabId { id: 3 },
+        action: Action::NextSwapLayoutByTabId { id: TabId::new(3) },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::MoveTabByTabId {
-            id: 1,
+            id: TabId::new(1),
             direction: Direction::Left,
         },
         terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),

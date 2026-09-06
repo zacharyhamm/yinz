@@ -33,6 +33,7 @@ use zellij_types::data::PaneContents;
 use zellij_types::geometry::{Direction, ResizeStrategy};
 use zellij_types::input::command::RunCommand;
 use zellij_types::input::options::DEFAULT_WORD_SEPARATORS;
+use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TerminalId;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::mouse::MouseEvent;
@@ -285,7 +286,7 @@ enum BufferedTabInstruction {
 }
 
 pub(crate) struct Tab {
-    pub id: usize,
+    pub id: TabId,
     pub position: usize,
     pub name: String,
     pub prev_name: String,
@@ -1131,7 +1132,7 @@ impl Tab {
     // FIXME: Still too many arguments for clippy to be happy...
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        id: usize,
+        id: TabId,
         position: usize,
         name: String,
         display_area: Size,
@@ -1171,7 +1172,7 @@ impl Tab {
         context_menu_on_right_click: bool,
     ) -> Self {
         let default_name = if name.is_empty() {
-            format!("Tab #{}", id + 1)
+            format!("Tab #{}", id.get() + 1)
         } else {
             String::new()
         };

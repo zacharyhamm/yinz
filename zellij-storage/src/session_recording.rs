@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use zellij_types::internal_ids::{RecordingId, TerminalId};
 use zellij_types::units::{ElapsedMicros, UnixMicros};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::data_access::{RecordingBackend, RecordingSession};
 
@@ -151,6 +151,8 @@ impl SqliteRecordingSession {
     ) -> Result<()> {
         let tx = self.connection.transaction()?;
         for pane in panes {
+            let tab_id = i64::try_from(pane.tab_id.get())
+                .context("Recording tab id exceeds SQLite's signed integer range")?;
             let existing: Option<(i64, i64, i64, String)> = {
                 let mut stmt = tx.prepare(
                     "SELECT id, initial_cols, initial_rows, tab_name FROM recording_panes WHERE session_id = ?1 AND terminal_id = ?2",
@@ -189,7 +191,7 @@ impl SqliteRecordingSession {
                         tx.execute(
                             "UPDATE recording_panes SET tab_id = ?1, tab_position = ?2, tab_name = ?3, title = ?4, initial_cols = ?5, initial_rows = ?6 WHERE id = ?7",
                             rusqlite::params![
-                                pane.tab_id as i64,
+                                tab_id,
                                 pane.tab_position as i64,
                                 pane.tab_name,
                                 pane.title,
@@ -205,7 +207,7 @@ impl SqliteRecordingSession {
                 tx.execute(
                     "UPDATE recording_panes SET tab_id = ?1, tab_position = ?2, tab_name = ?3, title = ?4 WHERE id = ?5",
                     rusqlite::params![
-                        pane.tab_id as i64,
+                        tab_id,
                         pane.tab_position as i64,
                         pane.tab_name,
                         pane.title,
@@ -218,7 +220,7 @@ impl SqliteRecordingSession {
                     rusqlite::params![
                         self.session_id,
                         pane.terminal_id.get() as i64,
-                        pane.tab_id as i64,
+                        tab_id,
                         pane.tab_position as i64,
                         pane.tab_name,
                         pane.title,
@@ -419,6 +421,37 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn an_out_of_range_tab_id_rolls_back_the_recording_batch() -> Result<()> {
+        let dir = tempdir()?;
+        let mut session =
+            SqliteRecordingSession::open(dir.path(), "tabs", false, UnixMicros::new(0))?;
+        let valid = PaneMetadata {
+            terminal_id: TerminalId::new(1),
+            tab_id: zellij_types::internal_ids::TabId::new(0),
+            tab_position: 0,
+            tab_name: "work".to_owned(),
+            title: "shell".to_owned(),
+            cols: 80,
+            rows: 24,
+        };
+        let invalid = PaneMetadata {
+            terminal_id: TerminalId::new(2),
+            tab_id: zellij_types::internal_ids::TabId::new(usize::MAX),
+            ..valid.clone()
+        };
+        assert!(session
+            .update_panes(&[valid, invalid], ElapsedMicros::new(0))
+            .is_err());
+        let count: i64 =
+            session
+                .connection
+                .query_row("SELECT COUNT(*) FROM recording_panes", [], |row| row.get(0))?;
+        assert_eq!(count, 0);
+        Ok(())
+    }
+
+    #[test]
     fn stores_pane_events() -> Result<()> {
         let dir = tempdir()?;
         let mut store = RecordingStore::open(
@@ -429,7 +462,7 @@ mod tests {
         )?;
         let metadata = PaneMetadata {
             terminal_id: TerminalId::new(7),
-            tab_id: 1,
+            tab_id: zellij_types::internal_ids::TabId::new(1),
             tab_position: 0,
             tab_name: "tab".to_string(),
             title: "pane".to_string(),
@@ -476,7 +509,7 @@ mod tests {
         let mut store = RecordingStore::open(dir.path(), "test", false, UnixMicros::new(1_000))?;
         let metadata = |terminal_id: u32| PaneMetadata {
             terminal_id: TerminalId::new(terminal_id),
-            tab_id: 0,
+            tab_id: zellij_types::internal_ids::TabId::new(0),
             tab_position: terminal_id as usize,
             tab_name: "tab".to_string(),
             title: "title".to_string(),
@@ -534,7 +567,7 @@ mod tests {
                 RecordingStore::open(dir.path(), "persist", false, UnixMicros::new(1_000))?;
             let metadata = PaneMetadata {
                 terminal_id: TerminalId::new(5),
-                tab_id: 0,
+                tab_id: zellij_types::internal_ids::TabId::new(0),
                 tab_position: 0,
                 tab_name: "tab".to_string(),
                 title: "title".to_string(),
@@ -576,7 +609,7 @@ mod tests {
         let mut store = RecordingStore::open(dir.path(), "test", false, UnixMicros::new(1_000))?;
         let meta1 = PaneMetadata {
             terminal_id: TerminalId::new(9),
-            tab_id: 0,
+            tab_id: zellij_types::internal_ids::TabId::new(0),
             tab_position: 0,
             tab_name: "a".to_string(),
             title: "t".to_string(),
@@ -587,7 +620,7 @@ mod tests {
         // update with different size, should not change initial
         let meta2 = PaneMetadata {
             terminal_id: TerminalId::new(9),
-            tab_id: 0,
+            tab_id: zellij_types::internal_ids::TabId::new(0),
             tab_position: 0,
             tab_name: "b".to_string(),
             title: "t2".to_string(),
@@ -1180,7 +1213,7 @@ mod search_tests {
             .update_panes(
                 &[PaneMetadata {
                     terminal_id: TerminalId::new(1),
-                    tab_id: 0,
+                    tab_id: zellij_types::internal_ids::TabId::new(0),
                     tab_position: 0,
                     tab_name: "my_tab".to_string(),
                     title: "my_pane".to_string(),
@@ -1428,7 +1461,7 @@ mod list_tests {
                 &[
                     PaneMetadata {
                         terminal_id: TerminalId::new(1),
-                        tab_id: 10,
+                        tab_id: zellij_types::internal_ids::TabId::new(10),
                         tab_position: 1,
                         tab_name: "tab1".to_string(),
                         title: "pane1".to_string(),
@@ -1437,7 +1470,7 @@ mod list_tests {
                     },
                     PaneMetadata {
                         terminal_id: TerminalId::new(2),
-                        tab_id: 10,
+                        tab_id: zellij_types::internal_ids::TabId::new(10),
                         tab_position: 0,
                         tab_name: "tab0".to_string(),
                         title: "pane2".to_string(),
@@ -1461,7 +1494,7 @@ mod list_tests {
             store.update_panes(
                 &[PaneMetadata {
                     terminal_id: TerminalId::new(3),
-                    tab_id: 20,
+                    tab_id: zellij_types::internal_ids::TabId::new(20),
                     tab_position: 0,
                     tab_name: "tabA".to_string(),
                     title: "paneA".to_string(),
@@ -1498,7 +1531,7 @@ mod list_tests {
         )?;
         let metadata = PaneMetadata {
             terminal_id: TerminalId::new(1),
-            tab_id: 1,
+            tab_id: zellij_types::internal_ids::TabId::new(1),
             tab_position: 0,
             tab_name: "tab".to_string(),
             title: "pane".to_string(),
@@ -1561,7 +1594,7 @@ mod list_tests {
         store.update_panes(
             &[PaneMetadata {
                 terminal_id: TerminalId::new(1),
-                tab_id: 0,
+                tab_id: zellij_types::internal_ids::TabId::new(0),
                 tab_position: 0,
                 tab_name: "a".to_string(),
                 title: "b".to_string(),
@@ -1582,7 +1615,7 @@ mod list_tests {
         store.update_panes(
             &[PaneMetadata {
                 terminal_id: TerminalId::new(1),
-                tab_id: 0,
+                tab_id: zellij_types::internal_ids::TabId::new(0),
                 tab_position: 0,
                 tab_name: "tab".to_string(),
                 title: "pane".to_string(),
@@ -1625,7 +1658,7 @@ mod list_tests {
         store.update_panes(
             &[PaneMetadata {
                 terminal_id: TerminalId::new(1),
-                tab_id: 0,
+                tab_id: zellij_types::internal_ids::TabId::new(0),
                 tab_position: 0,
                 tab_name: "t".to_string(),
                 title: "p".to_string(),
@@ -1677,7 +1710,7 @@ mod list_tests {
         store.update_panes(
             &[PaneMetadata {
                 terminal_id: TerminalId::new(1),
-                tab_id: 0,
+                tab_id: zellij_types::internal_ids::TabId::new(0),
                 tab_position: 0,
                 tab_name: "t".to_string(),
                 title: "p".to_string(),
@@ -1714,7 +1747,7 @@ mod list_tests {
         store.update_panes(
             &[PaneMetadata {
                 terminal_id: TerminalId::new(1),
-                tab_id: 0,
+                tab_id: zellij_types::internal_ids::TabId::new(0),
                 tab_position: 0,
                 tab_name: "t".to_string(),
                 title: "p".to_string(),

@@ -1,4 +1,5 @@
 use super::*;
+use zellij_tile::prelude::TabId;
 
 // -- projects -----------------------------------------------------------
 
@@ -7,7 +8,7 @@ fn project_assignment_remembers_the_root_and_uses_the_active_tab() {
     let mut state = idle_state();
     state.tabs = vec![TabInfo {
         active: true,
-        tab_id: 9,
+        tab_id: TabId::new(9),
         ..TabInfo::default()
     }];
     let result = state.run_local(&agent_call(
@@ -17,24 +18,24 @@ fn project_assignment_remembers_the_root_and_uses_the_active_tab() {
 
     assert_eq!(result, Some("assigned tab 9 to project hocus".to_owned()));
     assert_eq!(state.projects["hocus"].root, "/work/hocus");
-    assert_eq!(state.tab_projects[&9], "hocus");
+    assert_eq!(state.tab_projects[&TabId::new(9)], "hocus");
     assert_eq!(state.active_project.as_deref(), Some("hocus"));
 }
 
 #[test]
 fn an_unassigned_active_tab_clears_the_project_context() {
     let mut state = idle_state();
-    state.tab_projects.insert(9, "hocus".to_owned());
+    state.tab_projects.insert(TabId::new(9), "hocus".to_owned());
     state.on_tabs(vec![TabInfo {
         active: true,
-        tab_id: 9,
+        tab_id: TabId::new(9),
         ..TabInfo::default()
     }]);
     assert_eq!(state.active_project.as_deref(), Some("hocus"));
 
     state.on_tabs(vec![TabInfo {
         active: true,
-        tab_id: 10,
+        tab_id: TabId::new(10),
         ..TabInfo::default()
     }]);
     assert!(state.active_project.is_none());
@@ -187,8 +188,8 @@ fn a_nested_worktree_keeps_the_project_of_the_repository_above_it() {
 fn nested_worktree_agents_group_under_their_own_branches() {
     let mut state = idle_state();
     state.set_panes(vec![
-        agent_in(3, "/work/hocus", 1),
-        agent_in(5, NESTED_WORKTREE, 2),
+        agent_in(3, "/work/hocus", TabId::new(1)),
+        agent_in(5, NESTED_WORKTREE, TabId::new(2)),
     ]);
     state.projects.insert(
         "hocus".to_owned(),
@@ -306,31 +307,34 @@ fn two_projects_on_one_remote_fall_back_to_the_containing_root() {
 /// later poll absorbs, and must follow it rather than name nothing.
 #[test]
 fn absorbed_project_moves_its_tab() {
-    let mut state = state_with_tab(9);
-    poll(&mut state, vec![agent_in(3, "/work/hocus/src", 9)]);
+    let mut state = state_with_tab(TabId::new(9));
+    poll(
+        &mut state,
+        vec![agent_in(3, "/work/hocus/src", TabId::new(9))],
+    );
     assert_eq!(state.active_project.as_deref(), Some("src"));
 
     poll(
         &mut state,
         vec![
-            agent_in(3, "/work/hocus/src", 9),
-            agent_in(4, "/work/hocus", 9),
+            agent_in(3, "/work/hocus/src", TabId::new(9)),
+            agent_in(4, "/work/hocus", TabId::new(9)),
         ],
     );
 
     assert_eq!(state.projects.keys().collect::<Vec<_>>(), vec!["hocus"]);
-    assert_eq!(state.auto_tab_projects[&9], "hocus");
+    assert_eq!(state.auto_tab_projects[&TabId::new(9)], "hocus");
     assert_eq!(state.active_project.as_deref(), Some("hocus"));
 }
 
 #[test]
 fn forgetting_a_project_clears_what_named_it() {
-    let mut state = state_with_tab(9);
+    let mut state = state_with_tab(TabId::new(9));
     state.run_local(&agent_call(
         "project_assign",
         r#"{"name":"hocus","root":"/work/hocus"}"#,
     ));
-    assert_eq!(state.tab_projects[&9], "hocus");
+    assert_eq!(state.tab_projects[&TabId::new(9)], "hocus");
 
     let result = state.run_local(&agent_call("project_forget", r#"{"name":"hocus"}"#));
 
@@ -354,8 +358,8 @@ fn forgetting_an_unknown_project_says_what_to_call() {
 /// sees an agent in the checkout makes it again. The answer says so.
 #[test]
 fn forgetting_a_discovered_project_says_a_poll_makes_it_again() {
-    let mut state = state_with_tab(9);
-    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+    let mut state = state_with_tab(TabId::new(9));
+    poll(&mut state, vec![agent_in(3, "/work/hocus", TabId::new(9))]);
 
     let result = state
         .run_local(&agent_call("project_forget", r#"{"name":"hocus"}"#))
@@ -364,7 +368,7 @@ fn forgetting_a_discovered_project_says_a_poll_makes_it_again() {
     assert!(state.projects.is_empty());
     assert!(state.auto_tab_projects.is_empty());
 
-    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+    poll(&mut state, vec![agent_in(3, "/work/hocus", TabId::new(9))]);
     assert_eq!(state.projects["hocus"].root, "/work/hocus");
 }
 
@@ -389,8 +393,11 @@ fn forgetting_a_project_waits_for_a_confirmation() {
 
 #[test]
 fn an_agent_list_names_the_folder_and_the_project() {
-    let mut state = state_with_tab(9);
-    poll(&mut state, vec![agent_in(3, "/work/hocus/src", 9)]);
+    let mut state = state_with_tab(TabId::new(9));
+    poll(
+        &mut state,
+        vec![agent_in(3, "/work/hocus/src", TabId::new(9))],
+    );
 
     let list = state.run_local(&agent_call("agent_list", "{}")).unwrap();
     let list: serde_json::Value = serde_json::from_str(&list).unwrap();
@@ -434,7 +441,7 @@ fn a_project_tab_uses_the_stable_id_from_zellij() {
     let mut state = idle_state();
     let result = state.register_opened_project("hocus", r#"{"opened":true,"tab_id":47}"#);
     assert_eq!(result, r#"{"opened":true,"tab_id":47}"#);
-    assert_eq!(state.tab_projects[&47], "hocus");
+    assert_eq!(state.tab_projects[&TabId::new(47)], "hocus");
     assert_eq!(state.active_project.as_deref(), Some("hocus"));
 }
 
@@ -562,7 +569,7 @@ fn two_agents_in_the_same_path_on_different_machines_keep_their_own_branches() {
 /// tells the host a tab's name any more.
 #[test]
 fn a_hand_made_assignment_is_relayed_to_the_daemon() {
-    let mut state = state_with_tab(9);
+    let mut state = state_with_tab(TabId::new(9));
     assert!(state.sent_tab_projects.is_empty());
 
     state.run_local(&agent_call(
@@ -570,25 +577,25 @@ fn a_hand_made_assignment_is_relayed_to_the_daemon() {
         r#"{"name":"named","root":"/work/named"}"#,
     ));
     // The relay is sent from the poll, so it cannot be forgotten by a caller.
-    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+    poll(&mut state, vec![agent_in(3, "/work/hocus", TabId::new(9))]);
 
-    assert_eq!(state.sent_tab_projects[&9], "named");
+    assert_eq!(state.sent_tab_projects[&TabId::new(9)], "named");
 }
 
 /// And withdrawing it takes the name back off, rather than leaving the daemon
 /// holding an assignment nothing renews.
 #[test]
 fn forgetting_the_project_withdraws_the_relayed_assignment() {
-    let mut state = state_with_tab(9);
+    let mut state = state_with_tab(TabId::new(9));
     state.run_local(&agent_call(
         "project_assign",
         r#"{"name":"named","root":"/work/named"}"#,
     ));
-    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
-    assert_eq!(state.sent_tab_projects[&9], "named");
+    poll(&mut state, vec![agent_in(3, "/work/hocus", TabId::new(9))]);
+    assert_eq!(state.sent_tab_projects[&TabId::new(9)], "named");
 
     state.run_local(&agent_call("project_forget", r#"{"name":"named"}"#));
-    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+    poll(&mut state, vec![agent_in(3, "/work/hocus", TabId::new(9))]);
 
     assert!(state.sent_tab_projects.is_empty());
 }

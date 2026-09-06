@@ -2,6 +2,7 @@
 use super::{command::RunCommand, plugins::PluginAliases};
 use crate::data::{OverlayPlacement, PluginTag};
 use crate::geometry::{PercentOrFixed, SplitDirection, SplitSize};
+use crate::internal_ids::TabId;
 use crate::pane_size::{Dimension, PaneGeom};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -681,7 +682,7 @@ pub struct Layout {
 /// Layout configuration for a single tab in multi-tab override
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TabLayoutInfo {
-    pub tab_index: usize,
+    pub tab_index: TabId,
     pub tab_name: Option<String>,
     pub tiled_layout: TiledPaneLayout,
     pub floating_layouts: Vec<FloatingPaneLayout>,

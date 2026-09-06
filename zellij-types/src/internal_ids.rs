@@ -216,9 +216,96 @@ impl TryFrom<usize> for ClientId {
     }
 }
 
+macro_rules! unsigned_identity {
+    ($(#[$doc:meta])* $name:ident($raw:ty)) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[serde(transparent)]
+        #[repr(transparent)]
+        pub struct $name($raw);
+        impl $name {
+            pub const fn new(value: $raw) -> Self { Self(value) }
+            pub const fn get(self) -> $raw { self.0 }
+        }
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
+        }
+        impl std::str::FromStr for $name {
+            type Err = std::num::ParseIntError;
+            fn from_str(value: &str) -> Result<Self, Self::Err> { value.parse().map(Self::new) }
+        }
+        impl TryFrom<u64> for $name {
+            type Error = std::num::TryFromIntError;
+            fn try_from(value: u64) -> Result<Self, Self::Error> { <$raw>::try_from(value).map(Self::new) }
+        }
+        impl TryFrom<i64> for $name {
+            type Error = std::num::TryFromIntError;
+            fn try_from(value: i64) -> Result<Self, Self::Error> { <$raw>::try_from(value).map(Self::new) }
+        }
+    };
+}
+
+unsigned_identity!(
+    /// A stable tab identity. Moving a tab does not change this value.
+    ///
+    /// ```compile_fail
+    /// use zellij_types::internal_ids::{TabId, TabPosition};
+    /// let _: TabId = TabPosition::new(0);
+    /// ```
+    TabId(usize)
+);
+unsigned_identity!(
+    /// A zero-based tab position in the current display order.
+    ///
+    /// ```compile_fail
+    /// use zellij_types::internal_ids::{TabPosition, TabNumber};
+    /// let _: TabPosition = TabNumber::new(1);
+    /// ```
+    TabPosition(usize)
+);
+unsigned_identity!(
+    /// A one-based tab number used by CLI actions and legacy plugin commands.
+    /// Zero retains its legacy meaning: the first tab, like one.
+    TabNumber(u32)
+);
+
+impl TabNumber {
+    pub fn position(self) -> TabPosition {
+        TabPosition::new(self.get().saturating_sub(1) as usize)
+    }
+}
+impl TryFrom<TabPosition> for TabNumber {
+    type Error = &'static str;
+    fn try_from(position: TabPosition) -> Result<Self, Self::Error> {
+        position
+            .get()
+            .checked_add(1)
+            .and_then(|value| u32::try_from(value).ok())
+            .map(Self::new)
+            .ok_or("Tab position is outside the one-based tab number range")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_identities_preserve_values_and_check_conversion() {
+        let id = TabId::new(42);
+        assert_eq!(serde_json::to_string(&id).unwrap(), "42");
+        assert_eq!(serde_json::from_str::<TabId>("42").unwrap(), id);
+        let keyed = std::collections::BTreeMap::from([(id, "work")]);
+        assert_eq!(serde_json::to_string(&keyed).unwrap(), r#"{"42":"work"}"#);
+        assert!(TabId::try_from(-1_i64).is_err());
+        assert_eq!(TabNumber::new(0).position(), TabPosition::new(0));
+        assert_eq!(TabNumber::new(1).position(), TabPosition::new(0));
+        assert_eq!(
+            TabNumber::try_from(TabPosition::new(3)),
+            Ok(TabNumber::new(4))
+        );
+        assert!(TabNumber::try_from(TabPosition::new(usize::MAX)).is_err());
+    }
 
     #[test]
     fn ids_display_as_plain_numbers() {

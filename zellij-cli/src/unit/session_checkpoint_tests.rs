@@ -18,7 +18,7 @@ fn server_startup_loads_the_checkpoint_after_a_session_rename() {
     let renamed = root.path().join("renamed");
     write_checkpoint(
         &old,
-        &zellij_session::metadata::session_info::to_string(&SessionInfo::default()),
+        &zellij_session::metadata::session_info::to_string(&SessionInfo::default()).unwrap(),
         &layout("restored"),
     )
     .unwrap();

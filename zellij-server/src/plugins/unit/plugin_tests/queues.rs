@@ -11,6 +11,7 @@ use super::*;
 use crate::panes::PaneId;
 use crate::ClientId;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 use zellij_types::keys::{BareKey, KeyWithModifier};
 use {zellij_types::data::MessageToPlugin, zellij_types::data::PermissionStatus};
 
@@ -253,7 +254,7 @@ impl Harness {
             false,
             Some("queue_test_plugin".to_owned()),
             run_plugin,
-            Some(1),
+            Some(TabId::new(1)),
             None,
             self.client_id,
             Size { cols: 80, rows: 20 },

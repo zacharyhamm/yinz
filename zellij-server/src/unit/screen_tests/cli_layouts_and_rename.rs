@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 pub fn send_cli_new_tab_action_with_layout_string() {
@@ -166,17 +167,17 @@ pub fn send_cli_new_pane_action_with_tab_id() {
         near_current_pane: false,
         no_focus: false,
         borderless: Some(false),
-        tab_id: Some(0),
+        tab_id: Some(TabId::new(0)),
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
     mock_screen.teardown(vec![pty_thread, screen_thread]);
     let pty_instructions = received_pty_instructions.lock();
-    // Verify that the PTY instruction uses TabIndex(0) instead of ClientId
+    // Verify that the PTY instruction uses TabIndex(TabId(0)) instead of ClientId
     let pty_debug = format!("{:?}", *pty_instructions);
     assert!(
-        pty_debug.contains("TabIndex(0)"),
-        "Expected TabIndex(0) in PTY instructions, got: {}",
+        pty_debug.contains("TabIndex(TabId(0))"),
+        "Expected TabIndex(TabId(0)) in PTY instructions, got: {}",
         pty_debug
     );
 }
@@ -237,7 +238,7 @@ pub fn send_cli_new_floating_pane_action_with_tab_id() {
         near_current_pane: false,
         no_focus: false,
         borderless: None,
-        tab_id: Some(0),
+        tab_id: Some(TabId::new(0)),
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -245,8 +246,8 @@ pub fn send_cli_new_floating_pane_action_with_tab_id() {
     let pty_instructions = received_pty_instructions.lock();
     let pty_debug = format!("{:?}", *pty_instructions);
     assert!(
-        pty_debug.contains("TabIndex(0)"),
-        "Expected TabIndex(0) in PTY instructions for floating pane, got: {}",
+        pty_debug.contains("TabIndex(TabId(0))"),
+        "Expected TabIndex(TabId(0)) in PTY instructions for floating pane, got: {}",
         pty_debug
     );
 }
@@ -291,7 +292,7 @@ pub fn send_cli_edit_action_with_tab_id() {
         near_current_pane: false,
         no_focus: false,
         borderless: None,
-        tab_id: Some(0),
+        tab_id: Some(TabId::new(0)),
     };
     send_cli_action_to_server(&session_metadata, cli_edit_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -299,8 +300,8 @@ pub fn send_cli_edit_action_with_tab_id() {
     let pty_instructions = received_pty_instructions.lock();
     let pty_debug = format!("{:?}", *pty_instructions);
     assert!(
-        pty_debug.contains("TabIndex(0)"),
-        "Expected TabIndex(0) in PTY instructions for edit, got: {}",
+        pty_debug.contains("TabIndex(TabId(0))"),
+        "Expected TabIndex(TabId(0)) in PTY instructions for edit, got: {}",
         pty_debug
     );
 }
@@ -361,7 +362,7 @@ pub fn send_cli_new_pane_action_with_tab_id_and_direction() {
         near_current_pane: false,
         no_focus: false,
         borderless: Some(false),
-        tab_id: Some(0),
+        tab_id: Some(TabId::new(0)),
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -369,8 +370,8 @@ pub fn send_cli_new_pane_action_with_tab_id_and_direction() {
     let pty_instructions = received_pty_instructions.lock();
     let pty_debug = format!("{:?}", *pty_instructions);
     assert!(
-        pty_debug.contains("TabIndex(0)"),
-        "Expected TabIndex(0) in PTY instructions with direction, got: {}",
+        pty_debug.contains("TabIndex(TabId(0))"),
+        "Expected TabIndex(TabId(0)) in PTY instructions with direction, got: {}",
         pty_debug
     );
 }
@@ -431,7 +432,7 @@ pub fn send_cli_new_pane_action_with_tab_id_and_stacked() {
         near_current_pane: false,
         no_focus: false,
         borderless: None,
-        tab_id: Some(0),
+        tab_id: Some(TabId::new(0)),
     };
     send_cli_action_to_server(&session_metadata, cli_new_pane_action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -439,8 +440,8 @@ pub fn send_cli_new_pane_action_with_tab_id_and_stacked() {
     let pty_instructions = received_pty_instructions.lock();
     let pty_debug = format!("{:?}", *pty_instructions);
     assert!(
-        pty_debug.contains("TabIndex(0)"),
-        "Expected TabIndex(0) in PTY instructions with stacked, got: {}",
+        pty_debug.contains("TabIndex(TabId(0))"),
+        "Expected TabIndex(TabId(0)) in PTY instructions with stacked, got: {}",
         pty_debug
     );
 }
@@ -453,7 +454,7 @@ fn cli_rename_active_pane_via_screen_replaces_name() {
     };
     let mut screen = create_new_screen(size, true, true);
     let client_id = ClientId::new(1);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     // First give the pane a name
     let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
@@ -483,7 +484,7 @@ fn cli_rename_active_pane_single_char_via_screen() {
     };
     let mut screen = create_new_screen(size, true, true);
     let client_id = ClientId::new(1);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     if let Ok(tab) = screen.get_active_tab_mut(client_id) {
@@ -515,7 +516,7 @@ fn cli_rename_focused_pane_single_char_via_rename_active_pane() {
     };
     let mut screen = create_new_screen(size, true, true);
     let client_id = ClientId::new(1);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     if let Ok(tab) = screen.get_active_tab_mut(client_id) {

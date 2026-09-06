@@ -1,4 +1,5 @@
 use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TabId;
 
 use super::Screen;
 use zellij_types::pane_size::{Size, Viewport};
@@ -7,13 +8,13 @@ impl Screen {
     /// Every tab shares the smallest interactive client bounds, regardless of which tab each
     /// client is viewing. Watchers and fit-disabled mobile clients are already handled by
     /// `session_size`.
-    pub(super) fn tab_surface_size(&self, _tab_id: usize) -> Option<Size> {
+    pub(super) fn tab_surface_size(&self, _tab_id: TabId) -> Option<Size> {
         self.session_size()
     }
 
     /// How much of a watcher's viewport the followed client's frame covers, so
     /// `serialize_with_size` clears only what is beyond it.
-    pub(super) fn followed_frame_size(&self, tab_id: usize) -> Option<Size> {
+    pub(super) fn followed_frame_size(&self, tab_id: TabId) -> Option<Size> {
         if !self.tabs.contains_key(&tab_id) {
             return None;
         }
@@ -42,7 +43,7 @@ impl Screen {
     /// Lay tab `tab_id` out over the shared session surface.
     ///
     /// With no interactive client there is no size to derive, so the tab keeps its last layout.
-    pub(super) fn reflow_tab(&mut self, tab_id: usize) -> Result<()> {
+    pub(super) fn reflow_tab(&mut self, tab_id: TabId) -> Result<()> {
         let Some(tab_size) = self.tab_surface_size(tab_id) else {
             return Ok(());
         };
@@ -57,7 +58,7 @@ impl Screen {
 
     /// The whole session surface tab `tab_id` sits on. A tab is laid out over the entire surface,
     /// so this is its display area at the screen origin.
-    pub(super) fn session_surface_for_tab(&self, tab_id: usize) -> Option<Viewport> {
+    pub(super) fn session_surface_for_tab(&self, tab_id: TabId) -> Option<Viewport> {
         let tab = self.tabs.get(&tab_id)?;
         let size = self
             .tab_surface_size(tab_id)
