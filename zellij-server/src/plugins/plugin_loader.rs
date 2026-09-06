@@ -21,6 +21,7 @@ use wasmi_wasi::sync::WasiCtxBuilder;
 use wasmi_wasi::wasi_common::pipe::{ReadPipe, WritePipe};
 use wasmi_wasi::Dir;
 use wasmi_wasi::WasiCtx;
+use zellij_types::internal_ids::TabId;
 
 use crate::{
     logging_pipe::LoggingPipe, thread_bus::ThreadSenders,
@@ -98,7 +99,7 @@ pub struct PluginLoader<'a> {
     plugin_own_data_dir: PathBuf,
     plugin_own_cache_dir: PathBuf,
     plugin_config: PluginConfig,
-    tab_index: Option<usize>,
+    tab_index: Option<TabId>,
     path_to_default_shell: PathBuf,
     session_env_vars: std::collections::BTreeMap<String, String>,
     plugin_aliases: Arc<Mutex<PluginAliases>>,

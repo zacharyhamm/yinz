@@ -12,6 +12,7 @@ use crate::data::{
 };
 use crate::geometry::FloatingPaneCoordinates;
 use crate::input::options::{OnForceClose, PaneFrameStyle};
+use crate::internal_ids::TabId;
 use crate::keys::KeyWithModifier;
 use crate::mouse::MouseEvent;
 use crate::{
@@ -259,7 +260,7 @@ pub enum Action {
         unblock_condition: Option<UnblockCondition>,
         near_current_pane: bool,
         no_focus: bool,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Open the file in a new pane using the default editor
     /// Returns: Created pane ID (format: terminal_<id>)
@@ -274,7 +275,7 @@ pub enum Action {
         placement: NewPanePlacement,
         near_current_pane: bool,
         no_focus: bool,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Open a new floating pane
     /// Returns: Created pane ID (format: terminal_<id> or plugin_<id>)
@@ -287,7 +288,7 @@ pub enum Action {
         placement: NewPanePlacement,
         near_current_pane: bool,
         no_focus: bool,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Open a new tiled (embedded, non-floating) pane
     /// Returns: Created pane ID (format: terminal_<id> or plugin_<id>)
@@ -298,7 +299,7 @@ pub enum Action {
         near_current_pane: bool,
         no_focus: bool,
         borderless: Option<bool>,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Open a new pane in place of the focused one, suppressing it instead
     /// Returns: Created pane ID (format: terminal_<id> or plugin_<id>)
@@ -309,7 +310,7 @@ pub enum Action {
         no_focus: bool,
         pane_id_to_replace: Option<PaneId>,
         close_replaced_pane: bool,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Returns: Created pane ID (format: terminal_<id> or plugin_<id>)
     NewStackedPane {
@@ -317,7 +318,7 @@ pub enum Action {
         pane_name: Option<String>,
         near_current_pane: bool,
         no_focus: bool,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Embed focused pane in tab if floating or float focused pane if embedded
     TogglePaneEmbedOrFloating,
@@ -325,15 +326,15 @@ pub enum Action {
     ToggleFloatingPanes,
     /// Show all floating panes in the specified tab (or active tab if tab_id is None)
     ShowFloatingPanes {
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Hide all floating panes in the specified tab (or active tab if tab_id is None)
     HideFloatingPanes {
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Check if floating panes are visible in the specified tab (or active tab if tab_id is None)
     AreFloatingPanesVisible {
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Close the focus pane.
     CloseFocus,
@@ -448,7 +449,7 @@ pub enum Action {
     WarpTab {
         /// `None` means whichever tab is focused. This is a tab *id* rather than
         /// a position, matching `Screen::tabs`.
-        tab_index: Option<usize>,
+        tab_index: Option<TabId>,
         to_session: String,
     },
     /// Take a whole tab over from a session warping it here.
@@ -468,7 +469,7 @@ pub enum Action {
     /// cannot, so it needs the receiving server to do it.
     WarpTabFrom {
         from_session: String,
-        tab_index: usize,
+        tab_index: TabId,
     },
     /// Returns: Plugin pane ID (format: plugin_<id>) when creating or focusing plugin
     LaunchOrFocusPlugin {
@@ -478,7 +479,7 @@ pub enum Action {
         should_open_in_place: bool,
         close_replaced_pane: bool,
         skip_cache: bool,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Returns: Plugin pane ID (format: plugin_<id>)
     LaunchPlugin {
@@ -489,7 +490,7 @@ pub enum Action {
         skip_cache: bool,
         cwd: Option<PathBuf>,
         no_focus: bool,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     MouseEvent {
         event: MouseEvent,
@@ -535,7 +536,7 @@ pub enum Action {
         skip_cache: bool,
         cwd: Option<PathBuf>,
         no_focus: bool,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Returns: Created pane ID (format: plugin_<id>)
     NewFloatingPluginPane {
@@ -546,7 +547,7 @@ pub enum Action {
         /// See `NewFloatingPane::placement`.
         placement: NewPanePlacement,
         no_focus: bool,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Returns: Created pane ID (format: plugin_<id>)
     NewInPlacePluginPane {
@@ -555,7 +556,7 @@ pub enum Action {
         skip_cache: bool,
         close_replaced_pane: bool,
         no_focus: bool,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     StartOrReloadPlugin {
         plugin: RunPluginOrAlias,
@@ -589,13 +590,13 @@ pub enum Action {
         name: Vec<u8>,
     },
     GoToTabById {
-        id: u64,
+        id: TabId,
     },
     CloseTabById {
-        id: u64,
+        id: TabId,
     },
     RenameTabById {
-        id: u64,
+        id: TabId,
         name: String,
     },
     BreakPane,
@@ -751,22 +752,22 @@ pub enum Action {
     },
     // Tab-targeting CLI-only variants
     UndoRenameTabByTabId {
-        id: u64,
+        id: TabId,
     },
     ToggleActiveSyncTabByTabId {
-        id: u64,
+        id: TabId,
     },
     ToggleFloatingPanesByTabId {
-        id: u64,
+        id: TabId,
     },
     PreviousSwapLayoutByTabId {
-        id: u64,
+        id: TabId,
     },
     NextSwapLayoutByTabId {
-        id: u64,
+        id: TabId,
     },
     MoveTabByTabId {
-        id: u64,
+        id: TabId,
         direction: Direction,
     },
 }

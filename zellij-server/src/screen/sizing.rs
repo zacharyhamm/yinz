@@ -1,4 +1,5 @@
 use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TabId;
 
 use super::Screen;
 use crate::ClientId;
@@ -77,7 +78,7 @@ impl Screen {
             .unwrap_or_else(|| self.size_for_client(Some(client_id)))
     }
 
-    pub fn recompute_tab_size(&mut self, tab_id: usize) -> Result<()> {
+    pub fn recompute_tab_size(&mut self, tab_id: TabId) -> Result<()> {
         self.reflow_tab(tab_id)
             .with_context(|| format!("failed to recompute size for tab {tab_id}"))
     }

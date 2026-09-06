@@ -1,4 +1,5 @@
 use super::*;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 fn open_new_tab() {
@@ -8,8 +9,8 @@ fn open_new_tab() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
 
     assert_eq!(screen.tabs.len(), 2, "Screen now has two tabs");
     assert_eq!(
@@ -30,8 +31,8 @@ pub fn switch_to_prev_tab() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 1);
-    new_tab(&mut screen, 2, 2);
+    new_tab(&mut screen, 1, TabId::new(1));
+    new_tab(&mut screen, 2, TabId::new(2));
     screen
         .switch_tab_prev(None, true, crate::ClientId::new(1))
         .expect("TEST");
@@ -54,8 +55,8 @@ pub fn switch_to_next_tab() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 1);
-    new_tab(&mut screen, 2, 2);
+    new_tab(&mut screen, 1, TabId::new(1));
+    new_tab(&mut screen, 2, TabId::new(2));
     screen
         .switch_tab_prev(None, true, crate::ClientId::new(1))
         .expect("TEST");
@@ -81,8 +82,8 @@ pub fn switch_to_tab_name() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 1);
-    new_tab(&mut screen, 2, 2);
+    new_tab(&mut screen, 1, TabId::new(1));
+    new_tab(&mut screen, 2, TabId::new(2));
 
     assert!(
         !screen
@@ -112,8 +113,8 @@ pub fn close_tab() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 1);
-    new_tab(&mut screen, 2, 2);
+    new_tab(&mut screen, 1, TabId::new(1));
+    new_tab(&mut screen, 2, TabId::new(2));
     screen.close_tab(crate::ClientId::new(1)).expect("TEST");
 
     assert_eq!(screen.tabs.len(), 1, "Only one tab left");
@@ -135,9 +136,9 @@ pub fn close_the_middle_tab() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 1);
-    new_tab(&mut screen, 2, 2);
-    new_tab(&mut screen, 3, 3);
+    new_tab(&mut screen, 1, TabId::new(1));
+    new_tab(&mut screen, 2, TabId::new(2));
+    new_tab(&mut screen, 3, TabId::new(3));
     screen
         .switch_tab_prev(None, true, crate::ClientId::new(1))
         .expect("TEST");
@@ -162,9 +163,9 @@ fn move_focus_left_at_left_screen_edge_changes_tab() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 1);
-    new_tab(&mut screen, 2, 2);
-    new_tab(&mut screen, 3, 3);
+    new_tab(&mut screen, 1, TabId::new(1));
+    new_tab(&mut screen, 2, TabId::new(2));
+    new_tab(&mut screen, 3, TabId::new(3));
     screen
         .switch_tab_prev(None, true, crate::ClientId::new(1))
         .expect("TEST");
@@ -185,8 +186,8 @@ fn move_focus_left_at_left_screen_edge_changes_tab() {
 #[test]
 fn basic_move_of_active_tab_to_left() {
     let mut screen = create_fixed_size_screen();
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
     assert_eq!(
         screen
             .get_active_tab(crate::ClientId::new(1))
@@ -212,7 +213,7 @@ fn basic_move_of_active_tab_to_left() {
 #[test]
 fn move_of_active_tab_to_left_when_there_is_only_one_tab() {
     let mut screen = create_fixed_size_screen();
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     assert_eq!(
         screen
             .get_active_tab(crate::ClientId::new(1))
@@ -238,9 +239,9 @@ fn move_of_active_tab_to_left_when_there_is_only_one_tab() {
 #[test]
 fn move_of_active_tab_to_left_multiple_times() {
     let mut screen = create_fixed_size_screen();
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
-    new_tab(&mut screen, 3, 2);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    new_tab(&mut screen, 3, TabId::new(2));
     assert_eq!(
         screen
             .get_active_tab(crate::ClientId::new(1))
@@ -269,9 +270,9 @@ fn move_of_active_tab_to_left_multiple_times() {
 #[test]
 fn wrapping_move_of_active_tab_to_left() {
     let mut screen = create_fixed_size_screen();
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
-    new_tab(&mut screen, 3, 2);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    new_tab(&mut screen, 3, TabId::new(2));
     screen
         .move_focus_left_or_previous_tab(crate::ClientId::new(1))
         .expect("TEST");
@@ -303,8 +304,8 @@ fn wrapping_move_of_active_tab_to_left() {
 #[test]
 fn basic_move_of_active_tab_to_right() {
     let mut screen = create_fixed_size_screen();
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
     screen
         .move_focus_left_or_previous_tab(crate::ClientId::new(1))
         .expect("TEST");
@@ -333,7 +334,7 @@ fn basic_move_of_active_tab_to_right() {
 #[test]
 fn move_of_active_tab_to_right_when_there_is_only_one_tab() {
     let mut screen = create_fixed_size_screen();
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     assert_eq!(
         screen
             .get_active_tab(crate::ClientId::new(1))
@@ -359,9 +360,9 @@ fn move_of_active_tab_to_right_when_there_is_only_one_tab() {
 #[test]
 fn move_of_active_tab_to_right_multiple_times() {
     let mut screen = create_fixed_size_screen();
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
-    new_tab(&mut screen, 3, 2);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    new_tab(&mut screen, 3, TabId::new(2));
     screen
         .move_focus_left_or_previous_tab(crate::ClientId::new(1))
         .expect("TEST");
@@ -396,9 +397,9 @@ fn move_of_active_tab_to_right_multiple_times() {
 #[test]
 fn wrapping_move_of_active_tab_to_right() {
     let mut screen = create_fixed_size_screen();
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
-    new_tab(&mut screen, 3, 2);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    new_tab(&mut screen, 3, TabId::new(2));
     assert_eq!(
         screen
             .get_active_tab(crate::ClientId::new(1))
@@ -426,25 +427,25 @@ fn tab_id_remains_stable_after_switch() {
     // Test that tab IDs remain stable when switching tabs, only positions change
     let mut screen = create_fixed_size_screen();
 
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
-    new_tab(&mut screen, 3, 2);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    new_tab(&mut screen, 3, TabId::new(2));
 
     // Verify initial state: IDs should be 0, 1, 2
-    let initial_tab_ids: Vec<usize> = screen.tabs.keys().copied().collect();
+    let initial_tab_ids: Vec<TabId> = screen.tabs.keys().copied().collect();
     assert_eq!(
         initial_tab_ids,
-        vec![0, 1, 2],
+        [0, 1, 2].map(TabId::new),
         "Initial tab IDs should be 0, 1, 2"
     );
 
     // Verify initial positions match IDs
-    assert_eq!(screen.tabs.get(&0).unwrap().id, 0);
-    assert_eq!(screen.tabs.get(&0).unwrap().position, 0);
-    assert_eq!(screen.tabs.get(&1).unwrap().id, 1);
-    assert_eq!(screen.tabs.get(&1).unwrap().position, 1);
-    assert_eq!(screen.tabs.get(&2).unwrap().id, 2);
-    assert_eq!(screen.tabs.get(&2).unwrap().position, 2);
+    assert_eq!(screen.tabs.get(&TabId::new(0)).unwrap().id, TabId::new(0));
+    assert_eq!(screen.tabs.get(&TabId::new(0)).unwrap().position, 0);
+    assert_eq!(screen.tabs.get(&TabId::new(1)).unwrap().id, TabId::new(1));
+    assert_eq!(screen.tabs.get(&TabId::new(1)).unwrap().position, 1);
+    assert_eq!(screen.tabs.get(&TabId::new(2)).unwrap().id, TabId::new(2));
+    assert_eq!(screen.tabs.get(&TabId::new(2)).unwrap().position, 2);
 
     // Move active tab (position 2, ID 2) to right, which wraps to position 0 and rotates the
     // others right by one (IDs stay stable, only positions change)
@@ -453,59 +454,71 @@ fn tab_id_remains_stable_after_switch() {
         .expect("TEST");
 
     // Verify BTreeMap keys (IDs) remain unchanged
-    let after_switch_tab_ids: Vec<usize> = screen.tabs.keys().copied().collect();
+    let after_switch_tab_ids: Vec<TabId> = screen.tabs.keys().copied().collect();
     assert_eq!(
         after_switch_tab_ids,
-        vec![0, 1, 2],
+        [0, 1, 2].map(TabId::new),
         "Tab IDs in BTreeMap should remain 0, 1, 2 after switch"
     );
 
     // Verify IDs remain stable but positions rotate
     // Tab 0: was at position 0, rotated to position 1
     assert_eq!(
-        screen.tabs.get(&0).unwrap().id,
-        0,
+        screen.tabs.get(&TabId::new(0)).unwrap().id,
+        TabId::new(0),
         "Tab with ID 0 should still have ID 0"
     );
     assert_eq!(
-        screen.tabs.get(&0).unwrap().position,
+        screen.tabs.get(&TabId::new(0)).unwrap().position,
         1,
         "Tab with ID 0 should now be at position 1"
     );
 
     // Tab 1: was at position 1, rotated to position 2
     assert_eq!(
-        screen.tabs.get(&1).unwrap().id,
-        1,
+        screen.tabs.get(&TabId::new(1)).unwrap().id,
+        TabId::new(1),
         "Tab with ID 1 should still have ID 1"
     );
     assert_eq!(
-        screen.tabs.get(&1).unwrap().position,
+        screen.tabs.get(&TabId::new(1)).unwrap().position,
         2,
         "Tab with ID 1 should now be at position 2"
     );
 
     // Tab 2: was at position 2, rotated over the edge to position 0
     assert_eq!(
-        screen.tabs.get(&2).unwrap().id,
-        2,
+        screen.tabs.get(&TabId::new(2)).unwrap().id,
+        TabId::new(2),
         "Tab with ID 2 should still have ID 2"
     );
     assert_eq!(
-        screen.tabs.get(&2).unwrap().position,
+        screen.tabs.get(&TabId::new(2)).unwrap().position,
         0,
         "Tab with ID 2 should now be at position 0"
     );
 
     // Verify that lookup by position works correctly after the rotation
     let tab_at_pos_0 = screen.tabs.values().find(|t| t.position == 0).unwrap();
-    assert_eq!(tab_at_pos_0.id, 2, "Tab at position 0 should have ID 2");
+    assert_eq!(
+        tab_at_pos_0.id,
+        TabId::new(2),
+        "Tab at position 0 should have ID 2"
+    );
 
     let tab_at_pos_1 = screen.tabs.values().find(|t| t.position == 1).unwrap();
-    assert_eq!(tab_at_pos_1.id, 0, "Tab at position 1 should have ID 0");
+    assert_eq!(
+        tab_at_pos_1.id,
+        TabId::new(0),
+        "Tab at position 1 should have ID 0"
+    );
 
     let tab_at_pos_2 = screen.tabs.values().find(|t| t.position == 2).unwrap();
-    assert_eq!(tab_at_pos_2.id, 1, "Tab at position 2 should have ID 1");
+    assert_eq!(
+        tab_at_pos_2.id,
+        TabId::new(1),
+        "Tab at position 2 should have ID 1"
+    );
 }
 
 #[test]
@@ -516,9 +529,9 @@ fn move_focus_right_at_right_screen_edge_changes_tab() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 1);
-    new_tab(&mut screen, 2, 2);
-    new_tab(&mut screen, 3, 3);
+    new_tab(&mut screen, 1, TabId::new(1));
+    new_tab(&mut screen, 2, TabId::new(2));
+    new_tab(&mut screen, 3, TabId::new(3));
     screen
         .switch_tab_prev(None, true, crate::ClientId::new(1))
         .expect("TEST");
@@ -544,8 +557,8 @@ pub fn toggle_to_previous_tab_simple() {
     };
     let mut screen = create_new_screen(position_and_size, true, true);
 
-    new_tab(&mut screen, 1, 1);
-    new_tab(&mut screen, 2, 2);
+    new_tab(&mut screen, 1, TabId::new(1));
+    new_tab(&mut screen, 2, TabId::new(2));
     screen.go_to_tab(1, crate::ClientId::new(1)).expect("TEST");
     screen.go_to_tab(2, crate::ClientId::new(1)).expect("TEST");
 
@@ -578,13 +591,13 @@ pub fn toggle_to_previous_tab_create_tabs_only() {
     };
     let mut screen = create_new_screen(position_and_size, true, true);
 
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
-    new_tab(&mut screen, 3, 2);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    new_tab(&mut screen, 3, TabId::new(2));
 
     assert_eq!(
         screen.tab_history.get(&ClientId::new(1)).unwrap(),
-        &[0, 1],
+        &[0, 1].map(TabId::new),
         "Tab history is invalid"
     );
 
@@ -599,7 +612,7 @@ pub fn toggle_to_previous_tab_create_tabs_only() {
     );
     assert_eq!(
         screen.tab_history.get(&ClientId::new(1)).unwrap(),
-        &[0, 2],
+        &[0, 2].map(TabId::new),
         "Tab history is invalid"
     );
 
@@ -614,7 +627,7 @@ pub fn toggle_to_previous_tab_create_tabs_only() {
     );
     assert_eq!(
         screen.tab_history.get(&ClientId::new(1)).unwrap(),
-        &[0, 1],
+        &[0, 1].map(TabId::new),
         "Tab history is invalid"
     );
 
@@ -637,14 +650,14 @@ pub fn toggle_to_previous_tab_delete() {
     };
     let mut screen = create_new_screen(position_and_size, true, true);
 
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
-    new_tab(&mut screen, 3, 2);
-    new_tab(&mut screen, 4, 3);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    new_tab(&mut screen, 3, TabId::new(2));
+    new_tab(&mut screen, 4, TabId::new(3));
 
     assert_eq!(
         screen.tab_history.get(&ClientId::new(1)).unwrap(),
-        &[0, 1, 2],
+        &[0, 1, 2].map(TabId::new),
         "Tab history is invalid"
     );
     assert_eq!(
@@ -659,7 +672,7 @@ pub fn toggle_to_previous_tab_delete() {
     screen.toggle_tab(crate::ClientId::new(1)).expect("TEST");
     assert_eq!(
         screen.tab_history.get(&ClientId::new(1)).unwrap(),
-        &[0, 1, 3],
+        &[0, 1, 3].map(TabId::new),
         "Tab history is invalid"
     );
     assert_eq!(
@@ -674,7 +687,7 @@ pub fn toggle_to_previous_tab_delete() {
     screen.toggle_tab(crate::ClientId::new(1)).expect("TEST");
     assert_eq!(
         screen.tab_history.get(&ClientId::new(1)).unwrap(),
-        &[0, 1, 2],
+        &[0, 1, 2].map(TabId::new),
         "Tab history is invalid"
     );
     assert_eq!(
@@ -691,7 +704,7 @@ pub fn toggle_to_previous_tab_delete() {
         .expect("TEST");
     assert_eq!(
         screen.tab_history.get(&ClientId::new(1)).unwrap(),
-        &[0, 1, 3],
+        &[0, 1, 3].map(TabId::new),
         "Tab history is invalid"
     );
     assert_eq!(
@@ -707,7 +720,7 @@ pub fn toggle_to_previous_tab_delete() {
         .expect("TEST");
     assert_eq!(
         screen.tab_history.get(&ClientId::new(1)).unwrap(),
-        &[0, 3, 2],
+        &[0, 3, 2].map(TabId::new),
         "Tab history is invalid"
     );
     assert_eq!(
@@ -722,7 +735,7 @@ pub fn toggle_to_previous_tab_delete() {
     screen.close_tab(crate::ClientId::new(1)).expect("TEST");
     assert_eq!(
         screen.tab_history.get(&ClientId::new(1)).unwrap(),
-        &[0, 3],
+        &[0, 3].map(TabId::new),
         "Tab history is invalid"
     );
     assert_eq!(
@@ -745,7 +758,7 @@ pub fn toggle_to_previous_tab_delete() {
     );
     assert_eq!(
         screen.tab_history.get(&ClientId::new(1)).unwrap(),
-        &[0, 2],
+        &[0, 2].map(TabId::new),
         "Tab history is invalid"
     );
 }
@@ -758,7 +771,7 @@ fn switch_to_tab_with_fullscreen() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 1);
+    new_tab(&mut screen, 1, TabId::new(1));
     {
         let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
         active_tab
@@ -775,7 +788,7 @@ fn switch_to_tab_with_fullscreen() {
             .unwrap();
         active_tab.toggle_active_pane_fullscreen(crate::ClientId::new(1));
     }
-    new_tab(&mut screen, 2, 2);
+    new_tab(&mut screen, 2, TabId::new(2));
 
     screen
         .switch_tab_prev(None, true, crate::ClientId::new(1))
@@ -953,7 +966,7 @@ fn attach_after_first_tab_closed() {
     };
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     {
         let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
         active_tab
@@ -970,9 +983,9 @@ fn attach_after_first_tab_closed() {
             .unwrap();
         active_tab.toggle_active_pane_fullscreen(crate::ClientId::new(1));
     }
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 2, TabId::new(1));
 
-    screen.close_tab_by_id(0).expect("TEST");
+    screen.close_tab_by_id(TabId::new(0)).expect("TEST");
     screen.remove_client(crate::ClientId::new(1)).expect("TEST");
     screen.add_client(crate::ClientId::new(1)).expect("TEST");
 }
@@ -982,12 +995,12 @@ fn layout_metadata_lists_tabs_in_position_order() {
     // Tabs are keyed by creation id, but a user who reorders them expects a
     // dumped or resurrected layout to come back in the order they arranged.
     let mut screen = create_fixed_size_screen();
-    new_tab(&mut screen, 1, 0);
-    screen.tabs.get_mut(&0).expect("TEST").name = "first".to_string();
-    new_tab(&mut screen, 2, 1);
-    screen.tabs.get_mut(&1).expect("TEST").name = "second".to_string();
-    new_tab(&mut screen, 3, 2);
-    screen.tabs.get_mut(&2).expect("TEST").name = "third".to_string();
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.tabs.get_mut(&TabId::new(0)).expect("TEST").name = "first".to_string();
+    new_tab(&mut screen, 2, TabId::new(1));
+    screen.tabs.get_mut(&TabId::new(1)).expect("TEST").name = "second".to_string();
+    new_tab(&mut screen, 3, TabId::new(2));
+    screen.tabs.get_mut(&TabId::new(2)).expect("TEST").name = "third".to_string();
 
     // the active tab is the third one; moving it left makes the positions
     // first, third, second while the ids stay 0, 1, 2

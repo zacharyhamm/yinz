@@ -8,6 +8,7 @@ use crate::ui::notification::{notification_height, notification_width};
 use std::time::Instant;
 use zellij_test_support::Watched;
 use zellij_types::animation::Tween;
+use zellij_types::internal_ids::TabId;
 
 /// A toast that has finished arriving and is sitting still, which is what every hit-test below
 /// wants: the animation is not under test here, the geometry is.
@@ -26,11 +27,11 @@ fn clicking_a_pane_notification_focuses_its_pane_and_dismisses_it() {
     let (pty_writer_tx, pty_writer_rx) =
         channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
     screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
     screen
         .tabs
-        .get_mut(&0)
+        .get_mut(&TabId::new(0))
         .unwrap()
         .handle_pty_bytes(
             crate::TerminalId::new(1),
@@ -78,7 +79,7 @@ fn clicking_a_stale_pane_notification_dismisses_it_without_moving_focus() {
     let size = Size { cols: 80, rows: 20 };
     let client_id = ClientId::new(1);
     let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     let focused_before = screen.get_active_pane_id(&client_id);
 
     let text = "gone";
@@ -104,8 +105,8 @@ fn clicking_overlapping_pane_notifications_uses_paint_order() {
     let size = Size { cols: 80, rows: 20 };
     let client_id = ClientId::new(1);
     let mut screen = create_non_mirrored_screen(size);
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
     screen.go_to_tab(2, client_id).expect("TEST");
 
     let text = "agent idle";
@@ -226,8 +227,8 @@ fn group_panes_with_mouse() {
     let client_id = ClientId::new(1);
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
     screen.handle_mouse_event(
         MouseEvent::new_left_press_with_alt_event(Position::new(2, 80)),
         client_id,
@@ -268,7 +269,7 @@ fn mouse_focus_clears_bell_on_focused_pane() {
     let client_id = ClientId::new(1);
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     {
@@ -329,7 +330,7 @@ fn nested_guest_fullscreen_moves_from_one_pane_to_another() {
     let client_id = ClientId::new(1);
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     let pane_one = PaneId::Terminal(crate::TerminalId::new(1));
     let pane_two = PaneId::Terminal(crate::TerminalId::new(2));
     {
@@ -395,8 +396,8 @@ fn group_panes_with_keyboard() {
     let client_id = ClientId::new(1);
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
     let _ = screen.toggle_pane_in_group(client_id);
 
     assert_eq!(
@@ -431,7 +432,7 @@ fn group_panes_following_focus() {
     let client_id = ClientId::new(1);
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     {
         let active_tab = screen.get_active_tab_mut(client_id).unwrap();
@@ -495,7 +496,7 @@ fn break_group_with_mouse() {
     let client_id = ClientId::new(1);
     let mut screen = create_new_screen(size, true, true);
 
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     {
         let active_tab = screen.get_active_tab_mut(client_id).unwrap();
@@ -570,7 +571,7 @@ fn a_plugin_pane_with_mouse_selection_hears_the_whole_click() {
     let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let mut screen = create_non_mirrored_screen(size);
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     let dialog = Run::Plugin(
         zellij_runtime::plugin_location::run_plugin_or_alias_from_url(

@@ -27,6 +27,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
 };
+use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TerminalId;
 
 use crate::pty_host::client::{ChildRunState, ReleasedPane};
@@ -60,8 +61,8 @@ pub type TabIndex = u32;
 pub enum ClientTabIndexOrPaneId {
     ClientId(ClientId),
     ClientIdNoFocus(ClientId),
-    TabIndex(usize),
-    TabIndexNoFocus(usize),
+    TabIndex(TabId),
+    TabIndexNoFocus(TabId),
     PaneId(PaneId),
     /// Beside `PaneId`, or - when no tab holds it - in the tab `ClientId` is looking at.
     ///
@@ -410,7 +411,7 @@ pub struct PendingLayoutSpawn {
     adopted_panes: Option<AdoptedTabTerminals>,
     run_instructions: Vec<Option<Run>>,
     floating_run_instructions: Vec<Option<Run>>,
-    tab_index: usize,
+    tab_index: TabId,
     block_on_first_terminal: bool,
     should_change_focus_to_new_tab: bool,
     client_id: ClientId,
@@ -816,7 +817,7 @@ pub enum PtyInstruction {
         Option<TerminalAction>,
         Option<TiledPaneLayout>,
         Vec<FloatingPaneLayout>,
-        usize,                                    // tab_index
+        TabId,                                    // tab_index
         HashMap<RunPluginOrAlias, Vec<PluginId>>, // plugin_ids
         Option<Vec<CommandOrPlugin>>,             // initial_panes
         bool,                                     // block_on_first_terminal
@@ -865,7 +866,7 @@ pub enum PtyInstruction {
     /// waits on before serializing the tab: N separate replies would mean N
     /// chances to serialize a tab that is only half released.
     ReleaseTerminalsForWarp {
-        tab_index: usize,
+        tab_index: TabId,
         terminal_ids: Vec<TerminalId>,
         /// The moment the warp's caller stops waiting for an answer.
         ///
@@ -904,7 +905,7 @@ pub enum PtyInstruction {
     /// first, so it is always here by the time the tab comes back round, and it
     /// is keyed so that a tab the user opens in the meantime cannot take it.
     ClaimAdoptedTab {
-        tab_index: usize,
+        tab_index: TabId,
         terminals: AdoptedTabTerminals,
     },
     ReRunCommandInPane(PaneId, RunCommand, Option<NotificationEnd>),
@@ -940,7 +941,7 @@ pub enum PtyInstruction {
         bool,           // close_replaced_pane
         Option<String>, // pane title
         RunPluginOrAlias,
-        usize,          // tab index
+        TabId,          // tab index
         Option<PaneId>, // pane id to replace if this is to be opened "in-place"
         ClientId,
         Size,
@@ -1024,7 +1025,7 @@ pub(crate) struct Pty {
     /// Screen claims an entry before sending that `NewTab`, so it is always here
     /// by the time the tab comes round: the claim is enqueued first, and the
     /// plugin thread cannot forward a `NewTab` it has not yet been sent.
-    adopted_tabs: HashMap<usize, AdoptedTabTerminals>,
+    adopted_tabs: HashMap<TabId, AdoptedTabTerminals>,
     /// Threads resolving and starting remote panes, so `Drop` need not wait
     /// for a boot; reaped as new ones start.
     spawn_workers: Vec<std::thread::JoinHandle<()>>,
@@ -2317,7 +2318,7 @@ impl Pty {
         default_shell: Option<TerminalAction>,
         plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
         initial_panes: Option<Vec<CommandOrPlugin>>,
-        tab_index: usize,
+        tab_index: TabId,
         block_on_first_terminal: bool,
         should_change_focus_to_new_tab: bool,
         client_id: ClientId,
@@ -2745,7 +2746,7 @@ impl Pty {
         floating_panes_layout: Vec<FloatingPaneLayout>,
         default_shell: Option<TerminalAction>,
         plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
-        tab_index: usize,
+        tab_index: TabId,
         tab_name: Option<String>,
         client_id: ClientId,
         swap_tiled_layouts: Option<Vec<SwapTiledLayout>>,
@@ -3691,7 +3692,7 @@ impl Pty {
         close_replaced_pane: bool,  // close_replaced_pane
         pane_title: Option<String>, // pane title
         mut run: RunPluginOrAlias,
-        tab_index: usize,                   // tab index
+        tab_index: TabId,                   // tab index
         pane_id_to_replace: Option<PaneId>, // pane id to replace if this is to be opened "in-place"
         client_id: ClientId,
         size: Size,

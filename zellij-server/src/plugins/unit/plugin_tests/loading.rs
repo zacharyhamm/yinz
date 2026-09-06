@@ -1,6 +1,7 @@
 use super::*;
 use zellij_test_support::Watched;
 use zellij_types::internal_ids::PluginId;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 #[serial(plugin_tests)]
@@ -45,7 +46,7 @@ pub fn load_new_plugin_from_hd() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -124,7 +125,7 @@ pub fn shared_plugin_has_one_instance_serving_all_clients() {
         false, // close_replaced_pane
         Some("test_plugin".to_owned()),
         run_plugin,
-        Some(1), // tab index
+        Some(TabId::new(1)), // tab index
         None,
         first_client_id,
         size,
@@ -226,7 +227,7 @@ pub fn load_new_plugin_with_plugin_alias() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -303,7 +304,7 @@ pub fn plugin_workers() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -383,7 +384,7 @@ pub fn plugin_workers_persist_state() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -473,7 +474,7 @@ pub fn can_subscribe_to_hd_events() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,

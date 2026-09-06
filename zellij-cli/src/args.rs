@@ -8,6 +8,7 @@ use url::Url;
 use zellij_types::geometry::{Direction, Resize};
 use zellij_types::input::options::Options;
 use zellij_types::internal_ids::RecordingId;
+use zellij_types::internal_ids::TabId;
 use {
     zellij_runtime::consts::ZELLIJ_CONFIG_DIR_ENV, zellij_runtime::consts::ZELLIJ_CONFIG_FILE_ENV,
     zellij_types::input::layout::PluginUserConfiguration,
@@ -669,7 +670,7 @@ pub enum Sessions {
             conflicts_with("near_current_pane"),
             conflicts_with("in_place")
         )]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Load a plugin
     /// Returns: Created pane ID (format: plugin_<id>)
@@ -731,7 +732,7 @@ pub enum Sessions {
         borderless: Option<bool>,
         /// Target a specific tab by ID
         #[clap(long, value_parser, conflicts_with("in_place"))]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Edit file with default $EDITOR / $VISUAL
     /// Returns: Created pane ID (format: terminal_<id>)
@@ -803,7 +804,7 @@ pub enum Sessions {
             conflicts_with("near_current_pane"),
             conflicts_with("in_place")
         )]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Send data to one or more plugins, launch them if they are not running.
     #[clap(override_usage(
@@ -920,7 +921,7 @@ pub enum CliAction {
         /// The tab to move. Defaults to the focused tab, and is required with
         /// --from-session.
         #[clap(long)]
-        tab_index: Option<usize>,
+        tab_index: Option<TabId>,
     },
     /// Change focus to the last focused frame
     FocusLastPane,
@@ -1061,7 +1062,7 @@ pub enum CliAction {
     ToggleActiveSyncTab {
         /// Target a specific tab by ID
         #[clap(short, long, value_parser)]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Open a new pane in the specified direction [right|down]
     /// If no direction is specified, will try to use the biggest available space.
@@ -1212,7 +1213,7 @@ pub enum CliAction {
             conflicts_with("near_current_pane"),
             conflicts_with("in_place")
         )]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Open the specified file in a new zellij pane with your default EDITOR
     /// Returns: Created pane ID (format: terminal_<id>)
@@ -1283,7 +1284,7 @@ pub enum CliAction {
             conflicts_with("near_current_pane"),
             conflicts_with("in_place")
         )]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Switch input mode of all connected clients [locked|pane|tab|resize|move|search|session]
     SwitchMode {
@@ -1299,21 +1300,21 @@ pub enum CliAction {
     ToggleFloatingPanes {
         /// Target a specific tab by ID
         #[clap(short, long, value_parser)]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Show all floating panes in the specified tab (or active tab if tab_id is not provided).
     ///
     /// Returns exit code 0 if state was changed, 2 if already visible, 1 if tab not found.
     ShowFloatingPanes {
         #[clap(short, long, value_parser)]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Hide all floating panes in the specified tab (or active tab if tab_id is not provided).
     ///
     /// Returns exit code 0 if state was changed, 2 if already hidden, 1 if tab not found.
     HideFloatingPanes {
         #[clap(short, long, value_parser)]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Check if floating panes are visible in the specified tab (or active tab).
     ///
@@ -1321,7 +1322,7 @@ pub enum CliAction {
     /// Prints "false" to stdout and exits 1 if not visible.
     AreFloatingPanesVisible {
         #[clap(short, long, value_parser)]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Close the focused pane.
     ClosePane {
@@ -1350,7 +1351,7 @@ pub enum CliAction {
     CloseTab {
         /// Target a specific tab by ID
         #[clap(short, long, value_parser)]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Go to tab with index [index]
     GoToTab {
@@ -1370,13 +1371,13 @@ pub enum CliAction {
         name: String,
         /// Target a specific tab by ID
         #[clap(short, long, value_parser)]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Remove a previously set tab name
     UndoRenameTab {
         /// Target a specific tab by ID
         #[clap(short, long, value_parser)]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Go to tab with stable ID
     GoToTabById {
@@ -1469,17 +1470,17 @@ pub enum CliAction {
         direction: Direction,
         /// Target a specific tab by ID
         #[clap(short, long, value_parser)]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     PreviousSwapLayout {
         /// Target a specific tab by ID
         #[clap(short, long, value_parser)]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     NextSwapLayout {
         /// Target a specific tab by ID
         #[clap(short, long, value_parser)]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Override the layout of the active tab
     OverrideLayout {
@@ -1537,7 +1538,7 @@ pub enum CliAction {
         skip_plugin_cache: bool,
         /// Target a specific tab by ID
         #[clap(long, value_parser, conflicts_with("in_place"))]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     /// Returns: Plugin pane ID (format: plugin_<id>)
     LaunchPlugin {
@@ -1560,7 +1561,7 @@ pub enum CliAction {
         no_focus: bool,
         /// Target a specific tab by ID
         #[clap(long, value_parser, conflicts_with("in_place"))]
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
     },
     RenameSession {
         name: String,

@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use strum::IntoEnumIterator;
 use zellij_types::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use zellij_types::input::options::PaneFrameStyle;
+use zellij_types::internal_ids::TabId;
 use zellij_types::keys::{BareKey, KeyModifier, KeyWithModifier};
 use zellij_types::mouse::{MouseEvent, MouseEventType};
 use zellij_types::{
@@ -681,7 +682,7 @@ pub(crate) fn swap_floating_layouts(tc: &hegel::TestCase) -> SwapFloatingLayout 
 /// that a tab with an empty name has no name.
 pub(crate) fn tab_layout_infos(tc: &hegel::TestCase) -> TabLayoutInfo {
     TabLayoutInfo {
-        tab_index: usize_as_u32(tc),
+        tab_index: TabId::new(usize_as_u32(tc)),
         tab_name: booleans(tc).then(|| tc.draw(generators::text().min_size(1).max_size(8))),
         tiled_layout: tiled_pane_layouts(tc),
         floating_layouts: up_to(tc, 2, floating_pane_layouts),
@@ -858,7 +859,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             unblock_condition: booleans(tc).then(|| unblock_conditions(tc)),
             near_current_pane: booleans(tc),
             no_focus: booleans(tc),
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         ActionKind::EditFile => Action::EditFile {
             payload: open_file_payloads(tc),
@@ -870,7 +871,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             placement: new_pane_placements(tc),
             near_current_pane: booleans(tc),
             no_focus: booleans(tc),
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         ActionKind::NewFloatingPane => Action::NewFloatingPane {
             command: optional_run_command_actions(tc),
@@ -878,7 +879,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             placement: new_pane_placements(tc),
             near_current_pane: booleans(tc),
             no_focus: booleans(tc),
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         ActionKind::NewTiledPane => Action::NewTiledPane {
             direction: optional_directions(tc),
@@ -887,7 +888,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             near_current_pane: booleans(tc),
             no_focus: booleans(tc),
             borderless: optional_booleans(tc),
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         ActionKind::NewInPlacePane => Action::NewInPlacePane {
             command: optional_run_command_actions(tc),
@@ -896,25 +897,25 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             no_focus: booleans(tc),
             pane_id_to_replace: booleans(tc).then(|| pane_id(tc)),
             close_replaced_pane: booleans(tc),
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         ActionKind::NewStackedPane => Action::NewStackedPane {
             command: optional_run_command_actions(tc),
             pane_name: optional_strings(tc),
             near_current_pane: booleans(tc),
             no_focus: booleans(tc),
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         ActionKind::TogglePaneEmbedOrFloating => Action::TogglePaneEmbedOrFloating,
         ActionKind::ToggleFloatingPanes => Action::ToggleFloatingPanes,
         ActionKind::ShowFloatingPanes => Action::ShowFloatingPanes {
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         ActionKind::HideFloatingPanes => Action::HideFloatingPanes {
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         ActionKind::AreFloatingPanesVisible => Action::AreFloatingPanesVisible {
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         ActionKind::CloseFocus => Action::CloseFocus,
         ActionKind::PaneNameInput => Action::PaneNameInput { input: bytes(tc) },
@@ -989,7 +990,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             placement: warp_placements(tc),
         },
         ActionKind::WarpTab => Action::WarpTab {
-            tab_index: optional_usize_as_u32(tc),
+            tab_index: optional_usize_as_u32(tc).map(TabId::new),
             to_session: strings(tc),
         },
         ActionKind::AdoptTab => Action::AdoptTab {
@@ -997,7 +998,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         },
         ActionKind::WarpTabFrom => Action::WarpTabFrom {
             from_session: strings(tc),
-            tab_index: usize_as_u32(tc),
+            tab_index: TabId::new(usize_as_u32(tc)),
         },
         ActionKind::LaunchOrFocusPlugin => Action::LaunchOrFocusPlugin {
             plugin: run_plugins_or_aliases(tc),
@@ -1006,7 +1007,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             should_open_in_place: booleans(tc),
             close_replaced_pane: booleans(tc),
             skip_cache: booleans(tc),
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         ActionKind::LaunchPlugin => Action::LaunchPlugin {
             plugin: run_plugins_or_aliases(tc),
@@ -1016,7 +1017,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             skip_cache: booleans(tc),
             cwd: optional_paths(tc),
             no_focus: booleans(tc),
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         ActionKind::MouseEvent => Action::MouseEvent {
             event: mouse_events(tc),
@@ -1050,7 +1051,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             skip_cache: booleans(tc),
             cwd: optional_paths(tc),
             no_focus: booleans(tc),
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         ActionKind::NewFloatingPluginPane => Action::NewFloatingPluginPane {
             plugin: run_plugins_or_aliases(tc),
@@ -1059,7 +1060,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             cwd: optional_paths(tc),
             placement: new_pane_placements(tc),
             no_focus: booleans(tc),
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         ActionKind::NewInPlacePluginPane => Action::NewInPlacePluginPane {
             plugin: run_plugins_or_aliases(tc),
@@ -1067,7 +1068,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             skip_cache: booleans(tc),
             close_replaced_pane: booleans(tc),
             no_focus: booleans(tc),
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         ActionKind::StartOrReloadPlugin => Action::StartOrReloadPlugin {
             plugin: run_plugins_or_aliases(tc),
@@ -1113,13 +1114,13 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             name: bytes(tc),
         },
         ActionKind::GoToTabById => Action::GoToTabById {
-            id: tc.draw(generators::integers::<u64>()),
+            id: TabId::try_from(tc.draw(generators::integers::<u64>())).unwrap(),
         },
         ActionKind::CloseTabById => Action::CloseTabById {
-            id: tc.draw(generators::integers::<u64>()),
+            id: TabId::try_from(tc.draw(generators::integers::<u64>())).unwrap(),
         },
         ActionKind::RenameTabById => Action::RenameTabById {
-            id: tc.draw(generators::integers::<u64>()),
+            id: TabId::try_from(tc.draw(generators::integers::<u64>())).unwrap(),
             name: strings(tc),
         },
         ActionKind::BreakPane => Action::BreakPane,
@@ -1270,22 +1271,22 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             pane_id: pane_id(tc),
         },
         ActionKind::UndoRenameTabByTabId => Action::UndoRenameTabByTabId {
-            id: tc.draw(generators::integers::<u64>()),
+            id: TabId::try_from(tc.draw(generators::integers::<u64>())).unwrap(),
         },
         ActionKind::ToggleActiveSyncTabByTabId => Action::ToggleActiveSyncTabByTabId {
-            id: tc.draw(generators::integers::<u64>()),
+            id: TabId::try_from(tc.draw(generators::integers::<u64>())).unwrap(),
         },
         ActionKind::ToggleFloatingPanesByTabId => Action::ToggleFloatingPanesByTabId {
-            id: tc.draw(generators::integers::<u64>()),
+            id: TabId::try_from(tc.draw(generators::integers::<u64>())).unwrap(),
         },
         ActionKind::PreviousSwapLayoutByTabId => Action::PreviousSwapLayoutByTabId {
-            id: tc.draw(generators::integers::<u64>()),
+            id: TabId::try_from(tc.draw(generators::integers::<u64>())).unwrap(),
         },
         ActionKind::NextSwapLayoutByTabId => Action::NextSwapLayoutByTabId {
-            id: tc.draw(generators::integers::<u64>()),
+            id: TabId::try_from(tc.draw(generators::integers::<u64>())).unwrap(),
         },
         ActionKind::MoveTabByTabId => Action::MoveTabByTabId {
-            id: tc.draw(generators::integers::<u64>()),
+            id: TabId::try_from(tc.draw(generators::integers::<u64>())).unwrap(),
             direction: directions(tc),
         },
     }
@@ -1547,10 +1548,15 @@ fn keys_to_unbind(tc: &hegel::TestCase) -> Vec<(InputMode, KeyWithModifier)> {
     up_to(tc, 2, |tc| (input_modes(tc), keys_with_modifier(tc)))
 }
 
-fn tab_projects(tc: &hegel::TestCase) -> BTreeMap<u64, String> {
-    up_to(tc, 3, |tc| (u64s(tc), strings(tc)))
-        .into_iter()
-        .collect()
+fn tab_projects(tc: &hegel::TestCase) -> BTreeMap<TabId, String> {
+    up_to(tc, 3, |tc| {
+        (
+            TabId::new(tc.draw(generators::integers::<usize>())),
+            strings(tc),
+        )
+    })
+    .into_iter()
+    .collect()
 }
 
 /// A `PluginCommand` of the given kind with a freshly drawn payload.
@@ -1655,10 +1661,14 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         },
         // `NewTiledPaneInTabPayload.tab_position` is a `uint32`.
         CommandType::NewTiledPaneInTab => PluginCommand::NewTiledPaneInTab {
-            tab_position: usize_as_u32(tc),
+            tab_position: TabId::new(usize_as_u32(tc)),
         },
         CommandType::ToggleFloatingPanes => PluginCommand::ToggleFloatingPanes {
-            tab_id: booleans(tc).then(|| u64s(tc)),
+            tab_id: booleans(tc)
+                .then(|| u64s(tc))
+                .map(TabId::try_from)
+                .transpose()
+                .unwrap(),
         },
         CommandType::NewPane => PluginCommand::NewPane,
         CommandType::GoToNextTab => PluginCommand::GoToNextTab,
@@ -1801,7 +1811,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         },
         // `DumpSessionLayoutPayload.tab_index` is an `optional uint32`.
         CommandType::DumpSessionLayout => PluginCommand::DumpSessionLayout {
-            tab_index: optional_usize_as_u32(tc),
+            tab_index: optional_usize_as_u32(tc).map(TabId::new),
         },
         CommandType::CloseSelf => PluginCommand::CloseSelf,
         CommandType::NewTabsWithLayoutInfo => {
@@ -1876,14 +1886,24 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::BreakPanesToTabWithIndex => {
             PluginCommand::BreakPanesToTabWithIndex(pane_ids(tc), usize_as_u32(tc), booleans(tc))
         },
-        CommandType::SwitchTabToId => PluginCommand::SwitchTabToId(u64s(tc)),
-        CommandType::GoToTabWithId => PluginCommand::GoToTabWithId(u64s(tc)),
-        CommandType::CloseTabWithId => PluginCommand::CloseTabWithId(u64s(tc)),
-        CommandType::RenameTabWithId => PluginCommand::RenameTabWithId(u64s(tc), strings(tc)),
-        CommandType::SetTabProjects => PluginCommand::SetTabProjects(tab_projects(tc)),
-        CommandType::BreakPanesToTabWithId => {
-            PluginCommand::BreakPanesToTabWithId(pane_ids(tc), u64s(tc), booleans(tc))
+        CommandType::SwitchTabToId => {
+            PluginCommand::SwitchTabToId(TabId::try_from(u64s(tc)).unwrap())
         },
+        CommandType::GoToTabWithId => {
+            PluginCommand::GoToTabWithId(TabId::try_from(u64s(tc)).unwrap())
+        },
+        CommandType::CloseTabWithId => {
+            PluginCommand::CloseTabWithId(TabId::try_from(u64s(tc)).unwrap())
+        },
+        CommandType::RenameTabWithId => {
+            PluginCommand::RenameTabWithId(TabId::try_from(u64s(tc)).unwrap(), strings(tc))
+        },
+        CommandType::SetTabProjects => PluginCommand::SetTabProjects(tab_projects(tc)),
+        CommandType::BreakPanesToTabWithId => PluginCommand::BreakPanesToTabWithId(
+            pane_ids(tc),
+            TabId::try_from(u64s(tc)).unwrap(),
+            booleans(tc),
+        ),
         CommandType::ReloadPlugin => {
             PluginCommand::ReloadPlugin(zellij_types::internal_ids::PluginId::new(u32s(tc)))
         },
@@ -2023,7 +2043,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::GetPaneInfo => PluginCommand::GetPaneInfo(pane_id(tc)),
         // `GetTabInfoPayload.tab_id` is a `uint64`, which holds any `usize`.
         CommandType::GetTabInfo => {
-            PluginCommand::GetTabInfo(tc.draw(generators::integers::<usize>()))
+            PluginCommand::GetTabInfo(TabId::new(tc.draw(generators::integers::<usize>())))
         },
         CommandType::GetSessionEnvironmentVariables => {
             PluginCommand::GetSessionEnvironmentVariables
@@ -2066,10 +2086,10 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         // `HideFloatingPanesPayload.tab_id` and `ShowFloatingPanesPayload.tab_id` are
         // `optional uint32`.
         CommandType::HideFloatingPanes => PluginCommand::HideFloatingPanes {
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         CommandType::ShowFloatingPanes => PluginCommand::ShowFloatingPanes {
-            tab_id: optional_usize_as_u32(tc),
+            tab_id: optional_usize_as_u32(tc).map(TabId::new),
         },
         CommandType::SetPaneColor => {
             PluginCommand::SetPaneColor(pane_id(tc), optional_strings(tc), optional_strings(tc))
@@ -2117,11 +2137,11 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         // `WarpTabToSessionPayload.tab_index` and `WarpTabFromSessionPayload.tab_index` are
         // `uint32`.
         CommandType::WarpTabToSession => PluginCommand::WarpTabToSession {
-            tab_index: usize_as_u32(tc),
+            tab_index: TabId::new(usize_as_u32(tc)),
             to_session: strings(tc),
         },
         CommandType::WarpTabFromSession => PluginCommand::WarpTabFromSession {
-            tab_index: usize_as_u32(tc),
+            tab_index: TabId::new(usize_as_u32(tc)),
             from_session: strings(tc),
         },
         CommandType::ListOrphanedPanes => PluginCommand::ListOrphanedPanes,

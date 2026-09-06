@@ -22,6 +22,7 @@
 use mlua::{Lua, Value as LuaValue};
 use prost::Message;
 use serde::Serialize;
+use zellij_types::internal_ids::TabId;
 
 use zellij_plugin_api::event::ProtobufPaneScrollbackResponse;
 use zellij_runtime::errors::prelude::*;
@@ -200,7 +201,7 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
                     value(
                         lua,
                         FocusedPane {
-                            tab_index: info.focused_tab_index as usize,
+                            tab_index: TabId::new(info.focused_tab_index as usize),
                             pane_id,
                         },
                     )
@@ -618,7 +619,7 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
                 value(
                     lua,
                     PaneInNewTab {
-                        tab_id: r.tab_id.map(|id| id as usize),
+                        tab_id: r.tab_id.map(TabId::try_from).transpose()?,
                         pane_id,
                     },
                 )
@@ -708,7 +709,7 @@ struct FsEntry {
 /// The two halves of `GetFocusedPaneInfo`, which protobuf keeps apart and a plugin wants together.
 #[derive(Serialize)]
 struct FocusedPane {
-    tab_index: usize,
+    tab_index: TabId,
     pane_id: PaneId,
 }
 
@@ -722,7 +723,7 @@ struct SessionLayout {
 /// The `(tab_id, pane_id)` pair the shim returns for the `*InNewTab` family, with names.
 #[derive(Serialize)]
 struct PaneInNewTab {
-    tab_id: Option<usize>,
+    tab_id: Option<TabId>,
     pane_id: Option<PaneId>,
 }
 

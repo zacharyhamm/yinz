@@ -1,5 +1,6 @@
 use super::*;
 use hocus_proto::store::Backend;
+use zellij_tile::prelude::TabId;
 
 /// The strip rows hocus pushes to the agents pane: agents grouped under the
 /// project and branch headers, computed from the snapshot it holds.
@@ -64,8 +65,8 @@ fn a_snapshot_rebuilds_the_strip() {
 
 #[test]
 fn project_changes_push_the_strip_immediately() {
-    let mut state = state_with_tab(9);
-    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+    let mut state = state_with_tab(TabId::new(9));
+    poll(&mut state, vec![agent_in(3, "/work/hocus", TabId::new(9))]);
     assert!(matches!(
         &state.last_strip.rows[0],
         agents::StripRow::Project(name) if name == "hocus"
@@ -93,8 +94,11 @@ fn project_changes_push_the_strip_immediately() {
 /// could only ever say the first of those.
 #[test]
 fn the_strip_carries_the_focused_pane_agent_or_not() {
-    let mut state = state_with_tab(9);
-    let panes = vec![agent_in(3, "/work/hocus", 9), agent_in(7, "/work/hocus", 9)];
+    let mut state = state_with_tab(TabId::new(9));
+    let panes = vec![
+        agent_in(3, "/work/hocus", TabId::new(9)),
+        agent_in(7, "/work/hocus", TabId::new(9)),
+    ];
 
     poll_focused(&mut state, panes.clone(), Some(7));
     assert_eq!(state.last_strip.focused, Some(7));
@@ -435,8 +439,11 @@ fn selection(plugin_id: zellij_tile::prelude::PluginId, pane_id: Option<u32>) ->
 /// rows - which would have left the cursor behind.
 #[test]
 fn walking_between_agents_pushes_a_strip_of_identical_rows() {
-    let mut state = state_with_tab(9);
-    let panes = vec![agent_in(3, "/work/hocus", 9), agent_in(7, "/work/hocus", 9)];
+    let mut state = state_with_tab(TabId::new(9));
+    let panes = vec![
+        agent_in(3, "/work/hocus", TabId::new(9)),
+        agent_in(7, "/work/hocus", TabId::new(9)),
+    ];
     poll_focused(&mut state, panes.clone(), Some(3));
     let rows = state.last_strip.rows.clone();
 

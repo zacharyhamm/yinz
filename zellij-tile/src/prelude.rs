@@ -11,5 +11,7 @@ pub use zellij_types::pane_size::Size;
 pub use zellij_types::style::*;
 pub use zellij_types::{agent::*, command::*, geometry::*};
 
-pub use zellij_types::internal_ids::{ClientId, PluginId, RecordingId, TerminalId};
+pub use zellij_types::internal_ids::{
+    ClientId, PluginId, RecordingId, TabId, TabNumber, TabPosition, TerminalId,
+};
 pub use zellij_types::units::{ElapsedMicros, UnixMicros};

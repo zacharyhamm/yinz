@@ -11,6 +11,7 @@ use crate::ui::notification::EXIT_DURATION;
 use std::time::{Duration, Instant};
 use zellij_types::animation::{Tween, FRAME_PERIOD};
 use zellij_types::internal_ids::PluginId;
+use zellij_types::internal_ids::TabId;
 
 const TEXT: &str = "build finished";
 
@@ -19,7 +20,7 @@ fn screen_with_a_settled_toast(
     now: Instant,
 ) -> (Screen, Receiver<(BackgroundJob, ErrorContext)>) {
     let (mut screen, background_jobs) = screen_with_background_jobs(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     let mut notification = Notification::new(0, TEXT.to_owned(), None, now);
     notification.reveal = Tween::settled(1.0);
     notification.y_offset = Tween::settled(0.0);
@@ -140,7 +141,7 @@ fn a_plugin_load_cannot_slow_the_clock_under_a_moving_toast() {
     let size = Size { cols: 80, rows: 20 };
     let start = Instant::now();
     let (mut screen, _background_jobs) = screen_with_background_jobs(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen
         .notifications
         .push(Notification::new(0, TEXT.to_owned(), None, start));
@@ -176,7 +177,7 @@ fn quiet_ticks_put_nothing_but_the_frame_on_the_bus() {
     let size = Size { cols: 80, rows: 20 };
     let start = Instant::now();
     let (mut screen, background_jobs) = screen_with_background_jobs(size);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     screen
         .animating_plugin_loads

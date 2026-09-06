@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 #[serial(plugin_tests)]
@@ -41,7 +42,7 @@ pub fn set_pane_regex_highlights_via_plugin() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -130,7 +131,7 @@ pub fn clear_pane_highlights_via_plugin() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -210,7 +211,7 @@ pub fn highlight_clicked_event_delivered_to_plugin() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,

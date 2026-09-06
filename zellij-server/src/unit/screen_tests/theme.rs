@@ -5,17 +5,18 @@ const PLUGIN_77: zellij_types::internal_ids::PluginId =
     zellij_types::internal_ids::PluginId::new(77);
 
 use super::*;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 fn reconfigure_sends_a_plugin_pane_the_updated_client_mode_info_once() {
     let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen
         .mode_info
         .insert(crate::ClientId::new(1), ModeInfo::default());
     add_pane_to_tab(
         &mut screen,
-        0,
+        TabId::new(0),
         PaneId::Plugin(crate::PluginId::new(77)),
         false,
     );
@@ -76,10 +77,10 @@ fn reconfigure_sends_a_plugin_pane_the_updated_client_mode_info_once() {
 #[test]
 fn group_marking_updates_a_plugin_pane_s_mode_info_once() {
     let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     add_pane_to_tab(
         &mut screen,
-        0,
+        TabId::new(0),
         PaneId::Plugin(crate::PluginId::new(77)),
         false,
     );

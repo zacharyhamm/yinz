@@ -24,6 +24,7 @@ mod tool_loop;
 mod tools;
 mod transitions;
 pub use transitions::{Confirmation, PromptKind};
+use zellij_tile::prelude::TabId;
 pub mod ui;
 mod wand;
 mod worker;
@@ -636,20 +637,20 @@ pub struct State {
     ///
     /// Only what the user assigned. The poll writes `auto_tab_projects`, so an
     /// assignment the user made can never be overwritten.
-    tab_projects: BTreeMap<usize, String>,
+    tab_projects: BTreeMap<TabId, String>,
     /// Tab id to project name, as the poll worked it out from the agents in the
     /// tab. Rebuilt on every poll. `tab_projects` wins over this map.
-    auto_tab_projects: BTreeMap<usize, String>,
+    auto_tab_projects: BTreeMap<TabId, String>,
     /// `tab_projects` as the daemon last heard it, so an unchanged map costs no
     /// message. See `send_tab_assignments`.
-    sent_tab_projects: BTreeMap<usize, String>,
+    sent_tab_projects: BTreeMap<TabId, String>,
     /// What each tab is called after the project in it, as last told to the host.
     ///
     /// Not the same map as the two above: a tab whose agents are in two projects
     /// is named after both, where an *assignment* has to pick one and so picks
     /// neither. Kept so the host is only told when the answer changes — this is
     /// recomputed on every poll and the answer is usually the same one.
-    tab_project_labels: BTreeMap<usize, String>,
+    tab_project_labels: BTreeMap<TabId, String>,
     /// The tabs as of the last `TabUpdate`.
     ///
     /// The host sends one per client, so with every client served by this one

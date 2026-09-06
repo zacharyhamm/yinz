@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use zellij_types::internal_ids::TabId;
 #[cfg(test)]
 use zellij_types::internal_ids::{PluginId, TerminalId};
 
@@ -179,7 +180,7 @@ impl PaneGroups {
                 false, // close_replaced_pane
                 pane_title,
                 run_plugin,
-                tab_index,
+                TabId::new(tab_index),
                 None,
                 *client_id,
                 size,

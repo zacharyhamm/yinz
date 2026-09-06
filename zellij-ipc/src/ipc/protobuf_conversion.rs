@@ -1,5 +1,6 @@
 #![allow(clippy::unnecessary_fallible_conversions)]
 use std::str::FromStr;
+use zellij_types::internal_ids::TabId;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -1645,7 +1646,10 @@ impl TryFrom<zellij_types::input::actions::Action>
                 start_suppressed,
                 placement: Some(placement.into()),
                 near_current_pane,
-                tab_id: tab_id.map(|t| t as u32),
+                tab_id: tab_id
+                    .map(|t| u32::try_from(t.get()))
+                    .transpose()
+                    .context("tab_id is outside u32 range")?,
                 no_focus,
             }),
             zellij_types::input::actions::Action::NewFloatingPane {
@@ -1660,7 +1664,10 @@ impl TryFrom<zellij_types::input::actions::Action>
                 pane_name,
                 placement: Some(placement.into()),
                 near_current_pane,
-                tab_id: tab_id.map(|t| t as u32),
+                tab_id: tab_id
+                    .map(|t| u32::try_from(t.get()))
+                    .transpose()
+                    .context("tab_id is outside u32 range")?,
                 no_focus,
             }),
             zellij_types::input::actions::Action::NewTiledPane {
@@ -1677,7 +1684,10 @@ impl TryFrom<zellij_types::input::actions::Action>
                 pane_name,
                 near_current_pane,
                 borderless,
-                tab_id: tab_id.map(|t| t as u32),
+                tab_id: tab_id
+                    .map(|t| u32::try_from(t.get()))
+                    .transpose()
+                    .context("tab_id is outside u32 range")?,
                 no_focus,
             }),
             zellij_types::input::actions::Action::NewInPlacePane {
@@ -1694,7 +1704,10 @@ impl TryFrom<zellij_types::input::actions::Action>
                 near_current_pane,
                 pane_id_to_replace: pane_id_to_replace.and_then(|p| p.try_into().ok()),
                 close_replaced_pane,
-                tab_id: tab_id.map(|t| t as u32),
+                tab_id: tab_id
+                    .map(|t| u32::try_from(t.get()))
+                    .transpose()
+                    .context("tab_id is outside u32 range")?,
                 no_focus,
             }),
             zellij_types::input::actions::Action::NewStackedPane {
@@ -1707,7 +1720,10 @@ impl TryFrom<zellij_types::input::actions::Action>
                 command: command.map(|c| c.into()),
                 pane_name,
                 near_current_pane,
-                tab_id: tab_id.map(|t| t as u32),
+                tab_id: tab_id
+                    .map(|t| u32::try_from(t.get()))
+                    .transpose()
+                    .context("tab_id is outside u32 range")?,
                 no_focus,
             }),
             zellij_types::input::actions::Action::NewBlockingPane {
@@ -1724,7 +1740,10 @@ impl TryFrom<zellij_types::input::actions::Action>
                 command: command.map(|c| c.into()),
                 unblock_condition: unblock_condition.map(unblock_condition_to_proto_i32),
                 near_current_pane,
-                tab_id: tab_id.map(|t| t as u32),
+                tab_id: tab_id
+                    .map(|t| u32::try_from(t.get()))
+                    .transpose()
+                    .context("tab_id is outside u32 range")?,
                 no_focus,
             }),
             zellij_types::input::actions::Action::TogglePaneEmbedOrFloating => {
@@ -1735,17 +1754,26 @@ impl TryFrom<zellij_types::input::actions::Action>
             },
             zellij_types::input::actions::Action::ShowFloatingPanes { tab_id } => {
                 ActionType::ShowFloatingPanes(ShowFloatingPanesAction {
-                    tab_id: tab_id.map(|id| id as u32),
+                    tab_id: tab_id
+                        .map(|id| u32::try_from(id.get()))
+                        .transpose()
+                        .context("tab_id is outside u32 range")?,
                 })
             },
             zellij_types::input::actions::Action::HideFloatingPanes { tab_id } => {
                 ActionType::HideFloatingPanes(HideFloatingPanesAction {
-                    tab_id: tab_id.map(|id| id as u32),
+                    tab_id: tab_id
+                        .map(|id| u32::try_from(id.get()))
+                        .transpose()
+                        .context("tab_id is outside u32 range")?,
                 })
             },
             zellij_types::input::actions::Action::AreFloatingPanesVisible { tab_id } => {
                 ActionType::AreFloatingPanesVisible(AreFloatingPanesVisibleAction {
-                    tab_id: tab_id.map(|id| id as u32),
+                    tab_id: tab_id
+                        .map(|id| u32::try_from(id.get()))
+                        .transpose()
+                        .context("tab_id is outside u32 range")?,
                 })
             },
             zellij_types::input::actions::Action::CloseFocus => {
@@ -1882,14 +1910,17 @@ impl TryFrom<zellij_types::input::actions::Action>
                 to_session,
             } => ActionType::WarpTab(WarpTabAction {
                 to_session: to_session.clone(),
-                tab_index: tab_index.map(|i| i as u32),
+                tab_index: tab_index
+                    .map(|i| u32::try_from(i.get()))
+                    .transpose()
+                    .context("tab_id is outside u32 range")?,
             }),
             zellij_types::input::actions::Action::WarpTabFrom {
                 from_session,
                 tab_index,
             } => ActionType::WarpTabFrom(WarpTabFromAction {
                 from_session: from_session.clone(),
-                tab_index: tab_index as u32,
+                tab_index: u32::try_from(tab_index.get()).context("tab_id is outside u32 range")?,
             }),
             zellij_types::input::actions::Action::AdoptTab { payload } => {
                 ActionType::AdoptTab(AdoptTabAction {
@@ -1928,7 +1959,10 @@ impl TryFrom<zellij_types::input::actions::Action>
                 should_open_in_place,
                 close_replaced_pane,
                 skip_cache,
-                tab_id: tab_id.map(|t| t as u32),
+                tab_id: tab_id
+                    .map(|t| u32::try_from(t.get()))
+                    .transpose()
+                    .context("tab_id is outside u32 range")?,
             }),
             zellij_types::input::actions::Action::LaunchPlugin {
                 plugin,
@@ -1946,7 +1980,10 @@ impl TryFrom<zellij_types::input::actions::Action>
                 close_replaced_pane,
                 skip_cache,
                 cwd: cwd.map(|p| p.to_string_lossy().to_string()),
-                tab_id: tab_id.map(|t| t as u32),
+                tab_id: tab_id
+                    .map(|t| u32::try_from(t.get()))
+                    .transpose()
+                    .context("tab_id is outside u32 range")?,
                 no_focus,
             }),
             zellij_types::input::actions::Action::MouseEvent { event } => {
@@ -1992,7 +2029,10 @@ impl TryFrom<zellij_types::input::actions::Action>
                 retain_existing_plugin_panes,
                 apply_only_to_active_tab,
             } => ActionType::OverrideLayout(OverrideLayoutAction {
-                tabs: tabs.into_iter().map(|t| t.into()).collect(),
+                tabs: tabs
+                    .into_iter()
+                    .map(|t| t.try_into())
+                    .collect::<Result<_, _>>()?,
                 retain_existing_terminal_panes,
                 retain_existing_plugin_panes,
                 apply_only_to_active_tab,
@@ -2013,7 +2053,10 @@ impl TryFrom<zellij_types::input::actions::Action>
                 pane_name,
                 skip_cache,
                 cwd: cwd.map(|p| p.to_string_lossy().to_string()),
-                tab_id: tab_id.map(|t| t as u32),
+                tab_id: tab_id
+                    .map(|t| u32::try_from(t.get()))
+                    .transpose()
+                    .context("tab_id is outside u32 range")?,
                 no_focus,
             }),
             zellij_types::input::actions::Action::NewFloatingPluginPane {
@@ -2031,7 +2074,10 @@ impl TryFrom<zellij_types::input::actions::Action>
                 skip_cache,
                 cwd: cwd.map(|p| p.to_string_lossy().to_string()),
                 placement: Some(placement.into()),
-                tab_id: tab_id.map(|t| t as u32),
+                tab_id: tab_id
+                    .map(|t| u32::try_from(t.get()))
+                    .transpose()
+                    .context("tab_id is outside u32 range")?,
                 no_focus,
             }),
             zellij_types::input::actions::Action::NewInPlacePluginPane {
@@ -2047,7 +2093,10 @@ impl TryFrom<zellij_types::input::actions::Action>
                 pane_name,
                 skip_cache,
                 close_replaced_pane,
-                tab_id: tab_id.map(|t| t as u32),
+                tab_id: tab_id
+                    .map(|t| u32::try_from(t.get()))
+                    .transpose()
+                    .context("tab_id is outside u32 range")?,
                 no_focus,
             }),
             zellij_types::input::actions::Action::StartOrReloadPlugin { plugin } => {
@@ -2102,13 +2151,20 @@ impl TryFrom<zellij_types::input::actions::Action>
                 })
             },
             zellij_types::input::actions::Action::GoToTabById { id } => {
-                ActionType::GoToTabById(GoToTabByIdAction { id })
+                ActionType::GoToTabById(GoToTabByIdAction {
+                    id: id.get() as u64,
+                })
             },
             zellij_types::input::actions::Action::CloseTabById { id } => {
-                ActionType::CloseTabById(CloseTabByIdAction { id })
+                ActionType::CloseTabById(CloseTabByIdAction {
+                    id: id.get() as u64,
+                })
             },
             zellij_types::input::actions::Action::RenameTabById { id, name } => {
-                ActionType::RenameTabById(RenameTabByIdAction { id, name })
+                ActionType::RenameTabById(RenameTabByIdAction {
+                    id: id.get() as u64,
+                    name,
+                })
             },
             zellij_types::input::actions::Action::BreakPane => {
                 ActionType::BreakPane(BreakPaneAction {})
@@ -2405,23 +2461,33 @@ impl TryFrom<zellij_types::input::actions::Action>
             },
             // Tab-targeting CLI-only variants
             zellij_types::input::actions::Action::UndoRenameTabByTabId { id } => {
-                ActionType::UndoRenameTabByTabId(UndoRenameTabByTabIdAction { id })
+                ActionType::UndoRenameTabByTabId(UndoRenameTabByTabIdAction {
+                    id: id.get() as u64,
+                })
             },
             zellij_types::input::actions::Action::ToggleActiveSyncTabByTabId { id } => {
-                ActionType::ToggleActiveSyncTabByTabId(ToggleActiveSyncTabByTabIdAction { id })
+                ActionType::ToggleActiveSyncTabByTabId(ToggleActiveSyncTabByTabIdAction {
+                    id: id.get() as u64,
+                })
             },
             zellij_types::input::actions::Action::ToggleFloatingPanesByTabId { id } => {
-                ActionType::ToggleFloatingPanesByTabId(ToggleFloatingPanesByTabIdAction { id })
+                ActionType::ToggleFloatingPanesByTabId(ToggleFloatingPanesByTabIdAction {
+                    id: id.get() as u64,
+                })
             },
             zellij_types::input::actions::Action::PreviousSwapLayoutByTabId { id } => {
-                ActionType::PreviousSwapLayoutByTabId(PreviousSwapLayoutByTabIdAction { id })
+                ActionType::PreviousSwapLayoutByTabId(PreviousSwapLayoutByTabIdAction {
+                    id: id.get() as u64,
+                })
             },
             zellij_types::input::actions::Action::NextSwapLayoutByTabId { id } => {
-                ActionType::NextSwapLayoutByTabId(NextSwapLayoutByTabIdAction { id })
+                ActionType::NextSwapLayoutByTabId(NextSwapLayoutByTabIdAction {
+                    id: id.get() as u64,
+                })
             },
             zellij_types::input::actions::Action::MoveTabByTabId { id, direction } => {
                 ActionType::MoveTabByTabId(MoveTabByTabIdAction {
-                    id,
+                    id: id.get() as u64,
                     direction: direction_to_proto_i32(direction),
                 })
             },
@@ -2655,7 +2721,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         .try_into()?,
                     near_current_pane: edit_file_action.near_current_pane,
                     no_focus: edit_file_action.no_focus,
-                    tab_id: edit_file_action.tab_id.map(|t| t as usize),
+                    tab_id: edit_file_action.tab_id.map(|t| TabId::new(t as usize)),
                 })
             },
             ActionType::NewFloatingPane(new_floating_action) => {
@@ -2671,7 +2737,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         .try_into()?,
                     near_current_pane: new_floating_action.near_current_pane,
                     no_focus: new_floating_action.no_focus,
-                    tab_id: new_floating_action.tab_id.map(|t| t as usize),
+                    tab_id: new_floating_action.tab_id.map(|t| TabId::new(t as usize)),
                 })
             },
             ActionType::NewTiledPane(new_tiled_action) => {
@@ -2685,7 +2751,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     near_current_pane: new_tiled_action.near_current_pane,
                     no_focus: new_tiled_action.no_focus,
                     borderless: new_tiled_action.borderless,
-                    tab_id: new_tiled_action.tab_id.map(|t| t as usize),
+                    tab_id: new_tiled_action.tab_id.map(|t| TabId::new(t as usize)),
                 })
             },
             ActionType::NewInPlacePane(new_in_place_action) => {
@@ -2701,7 +2767,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         .pane_id_to_replace
                         .and_then(|p| p.try_into().ok()),
                     close_replaced_pane: new_in_place_action.close_replaced_pane,
-                    tab_id: new_in_place_action.tab_id.map(|t| t as usize),
+                    tab_id: new_in_place_action.tab_id.map(|t| TabId::new(t as usize)),
                 })
             },
             ActionType::NewStackedPane(new_stacked_action) => {
@@ -2713,7 +2779,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     pane_name: new_stacked_action.pane_name,
                     near_current_pane: new_stacked_action.near_current_pane,
                     no_focus: new_stacked_action.no_focus,
-                    tab_id: new_stacked_action.tab_id.map(|t| t as usize),
+                    tab_id: new_stacked_action.tab_id.map(|t| TabId::new(t as usize)),
                 })
             },
             ActionType::NewBlockingPane(new_blocking_action) => {
@@ -2733,7 +2799,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         .transpose()?,
                     near_current_pane: new_blocking_action.near_current_pane,
                     no_focus: new_blocking_action.no_focus,
-                    tab_id: new_blocking_action.tab_id.map(|t| t as usize),
+                    tab_id: new_blocking_action.tab_id.map(|t| TabId::new(t as usize)),
                 })
             },
             ActionType::TogglePaneEmbedOrFloating(_) => {
@@ -2744,17 +2810,17 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::ShowFloatingPanes(a) => {
                 Ok(zellij_types::input::actions::Action::ShowFloatingPanes {
-                    tab_id: a.tab_id.map(|id| id as usize),
+                    tab_id: a.tab_id.map(|id| TabId::new(id as usize)),
                 })
             },
             ActionType::HideFloatingPanes(a) => {
                 Ok(zellij_types::input::actions::Action::HideFloatingPanes {
-                    tab_id: a.tab_id.map(|id| id as usize),
+                    tab_id: a.tab_id.map(|id| TabId::new(id as usize)),
                 })
             },
             ActionType::AreFloatingPanesVisible(a) => Ok(
                 zellij_types::input::actions::Action::AreFloatingPanesVisible {
-                    tab_id: a.tab_id.map(|id| id as usize),
+                    tab_id: a.tab_id.map(|id| TabId::new(id as usize)),
                 },
             ),
             ActionType::CloseFocus(_) => Ok(zellij_types::input::actions::Action::CloseFocus),
@@ -2915,13 +2981,14 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             ActionType::WarpTab(warp_tab_action) => {
                 Ok(zellij_types::input::actions::Action::WarpTab {
                     to_session: warp_tab_action.to_session.clone(),
-                    tab_index: warp_tab_action.tab_index.map(|i| i as usize),
+                    tab_index: warp_tab_action.tab_index.map(|i| TabId::new(i as usize)),
                 })
             },
             ActionType::WarpTabFrom(warp_tab_from_action) => {
                 Ok(zellij_types::input::actions::Action::WarpTabFrom {
                     from_session: warp_tab_from_action.from_session.clone(),
-                    tab_index: warp_tab_from_action.tab_index as usize,
+                    tab_index: TabId::try_from(u64::from(warp_tab_from_action.tab_index))
+                        .context("tab_id is outside usize range")?,
                 })
             },
             ActionType::AdoptTab(adopt_tab_action) => {
@@ -2962,7 +3029,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     should_open_in_place: launch_plugin_action.should_open_in_place,
                     close_replaced_pane: launch_plugin_action.close_replaced_pane,
                     skip_cache: launch_plugin_action.skip_cache,
-                    tab_id: launch_plugin_action.tab_id.map(|t| t as usize),
+                    tab_id: launch_plugin_action.tab_id.map(|t| TabId::new(t as usize)),
                 })
             },
             ActionType::LaunchPlugin(launch_plugin_action) => {
@@ -2977,7 +3044,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     skip_cache: launch_plugin_action.skip_cache,
                     cwd: launch_plugin_action.cwd.map(PathBuf::from),
                     no_focus: launch_plugin_action.no_focus,
-                    tab_id: launch_plugin_action.tab_id.map(|t| t as usize),
+                    tab_id: launch_plugin_action.tab_id.map(|t| TabId::new(t as usize)),
                 })
             },
             ActionType::MouseEvent(mouse_event_action) => {
@@ -3054,7 +3121,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     skip_cache: new_tiled_plugin_action.skip_cache,
                     cwd: new_tiled_plugin_action.cwd.map(PathBuf::from),
                     no_focus: new_tiled_plugin_action.no_focus,
-                    tab_id: new_tiled_plugin_action.tab_id.map(|t| t as usize),
+                    tab_id: new_tiled_plugin_action
+                        .tab_id
+                        .map(|t| TabId::new(t as usize)),
                 })
             },
             ActionType::NewFloatingPluginPane(new_floating_plugin_action) => Ok(
@@ -3071,7 +3140,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         .ok_or_else(|| anyhow!("NewFloatingPluginPane missing placement"))?
                         .try_into()?,
                     no_focus: new_floating_plugin_action.no_focus,
-                    tab_id: new_floating_plugin_action.tab_id.map(|t| t as usize),
+                    tab_id: new_floating_plugin_action
+                        .tab_id
+                        .map(|t| TabId::new(t as usize)),
                 },
             ),
             ActionType::NewInPlacePluginPane(new_in_place_plugin_action) => {
@@ -3084,7 +3155,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     skip_cache: new_in_place_plugin_action.skip_cache,
                     close_replaced_pane: new_in_place_plugin_action.close_replaced_pane,
                     no_focus: new_in_place_plugin_action.no_focus,
-                    tab_id: new_in_place_plugin_action.tab_id.map(|t| t as usize),
+                    tab_id: new_in_place_plugin_action
+                        .tab_id
+                        .map(|t| TabId::new(t as usize)),
                 })
             },
             ActionType::StartOrReloadPlugin(start_plugin_action) => {
@@ -3153,17 +3226,20 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::GoToTabById(go_to_tab_by_id_action) => {
                 Ok(zellij_types::input::actions::Action::GoToTabById {
-                    id: go_to_tab_by_id_action.id,
+                    id: TabId::try_from(go_to_tab_by_id_action.id)
+                        .context("tab_id is outside usize range")?,
                 })
             },
             ActionType::CloseTabById(close_tab_by_id_action) => {
                 Ok(zellij_types::input::actions::Action::CloseTabById {
-                    id: close_tab_by_id_action.id,
+                    id: TabId::try_from(close_tab_by_id_action.id)
+                        .context("tab_id is outside usize range")?,
                 })
             },
             ActionType::RenameTabById(rename_tab_by_id_action) => {
                 Ok(zellij_types::input::actions::Action::RenameTabById {
-                    id: rename_tab_by_id_action.id,
+                    id: TabId::try_from(rename_tab_by_id_action.id)
+                        .context("tab_id is outside usize range")?,
                     name: rename_tab_by_id_action.name,
                 })
             },
@@ -3526,24 +3602,34 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             // Tab-targeting CLI-only variants
             ActionType::UndoRenameTabByTabId(a) => {
-                Ok(zellij_types::input::actions::Action::UndoRenameTabByTabId { id: a.id })
+                Ok(zellij_types::input::actions::Action::UndoRenameTabByTabId {
+                    id: TabId::try_from(a.id).context("tab_id is outside usize range")?,
+                })
             },
-            ActionType::ToggleActiveSyncTabByTabId(a) => {
-                Ok(zellij_types::input::actions::Action::ToggleActiveSyncTabByTabId { id: a.id })
-            },
-            ActionType::ToggleFloatingPanesByTabId(a) => {
-                Ok(zellij_types::input::actions::Action::ToggleFloatingPanesByTabId { id: a.id })
-            },
-            ActionType::PreviousSwapLayoutByTabId(a) => {
-                Ok(zellij_types::input::actions::Action::PreviousSwapLayoutByTabId { id: a.id })
-            },
-            ActionType::NextSwapLayoutByTabId(a) => {
-                Ok(zellij_types::input::actions::Action::NextSwapLayoutByTabId { id: a.id })
-            },
+            ActionType::ToggleActiveSyncTabByTabId(a) => Ok(
+                zellij_types::input::actions::Action::ToggleActiveSyncTabByTabId {
+                    id: TabId::try_from(a.id).context("tab_id is outside usize range")?,
+                },
+            ),
+            ActionType::ToggleFloatingPanesByTabId(a) => Ok(
+                zellij_types::input::actions::Action::ToggleFloatingPanesByTabId {
+                    id: TabId::try_from(a.id).context("tab_id is outside usize range")?,
+                },
+            ),
+            ActionType::PreviousSwapLayoutByTabId(a) => Ok(
+                zellij_types::input::actions::Action::PreviousSwapLayoutByTabId {
+                    id: TabId::try_from(a.id).context("tab_id is outside usize range")?,
+                },
+            ),
+            ActionType::NextSwapLayoutByTabId(a) => Ok(
+                zellij_types::input::actions::Action::NextSwapLayoutByTabId {
+                    id: TabId::try_from(a.id).context("tab_id is outside usize range")?,
+                },
+            ),
             ActionType::MoveTabByTabId(a) => {
                 let direction = proto_i32_to_direction(a.direction)?;
                 Ok(zellij_types::input::actions::Action::MoveTabByTabId {
-                    id: a.id,
+                    id: TabId::try_from(a.id).context("tab_id is outside usize range")?,
                     direction,
                 })
             },
@@ -4721,12 +4807,14 @@ impl From<zellij_types::input::layout::Run>
 }
 
 // TabLayoutInfo conversion
-impl From<zellij_types::input::layout::TabLayoutInfo>
+impl TryFrom<zellij_types::input::layout::TabLayoutInfo>
     for crate::client_server_contract::client_server_contract::TabLayoutInfo
 {
-    fn from(tab_info: zellij_types::input::layout::TabLayoutInfo) -> Self {
-        Self {
-            tab_index: tab_info.tab_index as u32,
+    type Error = anyhow::Error;
+    fn try_from(tab_info: zellij_types::input::layout::TabLayoutInfo) -> Result<Self> {
+        Ok(Self {
+            tab_index: u32::try_from(tab_info.tab_index.get())
+                .context("tab_id is outside u32 range")?,
             tab_name: tab_info.tab_name,
             tiled_layout: Some(tab_info.tiled_layout.into()),
             floating_layouts: tab_info
@@ -4746,7 +4834,7 @@ impl From<zellij_types::input::layout::TabLayoutInfo>
                 .into_iter()
                 .map(|l| l.into())
                 .collect(),
-        }
+        })
     }
 }
 
@@ -4759,7 +4847,8 @@ impl TryFrom<crate::client_server_contract::client_server_contract::TabLayoutInf
         protobuf_tab: crate::client_server_contract::client_server_contract::TabLayoutInfo,
     ) -> Result<Self> {
         Ok(zellij_types::input::layout::TabLayoutInfo {
-            tab_index: protobuf_tab.tab_index as usize,
+            tab_index: TabId::try_from(u64::from(protobuf_tab.tab_index))
+                .context("tab_id is outside usize range")?,
             tab_name: protobuf_tab.tab_name.filter(|s| !s.is_empty()),
             tiled_layout: protobuf_tab
                 .tiled_layout

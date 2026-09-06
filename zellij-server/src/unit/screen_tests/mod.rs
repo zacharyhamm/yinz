@@ -10,6 +10,7 @@ use crate::{
     ClientId, ServerInstruction, SessionMetaData, ThreadSenders,
 };
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TerminalId;
 
 use insta::assert_snapshot;
@@ -516,7 +517,7 @@ struct MockScreen {
     pub config: Config,
     default_layout: Box<Layout>,
     advanced_mouse_actions: bool,
-    last_opened_tab_index: Option<usize>,
+    last_opened_tab_index: Option<TabId>,
 }
 
 impl MockScreen {
@@ -590,7 +591,7 @@ impl MockScreen {
         }
         let default_shell = None;
         let tab_name = None;
-        let tab_index = self.last_opened_tab_index.map(|l| l + 1).unwrap_or(0);
+        let tab_index = TabId::new(self.last_opened_tab_index.map(|l| l.get() + 1).unwrap_or(0));
         let should_change_focus_to_new_tab = true;
         std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async
                                                                    // render
@@ -694,7 +695,7 @@ impl MockScreen {
         }
         let default_shell = None;
         let tab_name = None;
-        let tab_index = self.last_opened_tab_index.map(|l| l + 1).unwrap_or(0);
+        let tab_index = TabId::new(self.last_opened_tab_index.map(|l| l.get() + 1).unwrap_or(0));
         let should_change_focus_to_new_tab = true;
         let _ = self.to_screen.send(ScreenInstruction::NewTab(
             None,
@@ -731,7 +732,7 @@ impl MockScreen {
         let plugin_ids = HashMap::new();
         let default_shell = None;
         let tab_name = None;
-        let tab_index = self.last_opened_tab_index.map(|l| l + 1).unwrap_or(0);
+        let tab_index = TabId::new(self.last_opened_tab_index.map(|l| l.get() + 1).unwrap_or(0));
         for i in 0..pane_count {
             pane_ids.push((TerminalId::new(i as u32), None));
         }
@@ -756,7 +757,7 @@ impl MockScreen {
             vec![], // floating panes ids
             vec![], // adopted agents
             plugin_ids,
-            0,
+            TabId::new(0),
             true,
             self.main_client_id,
             None,
@@ -793,7 +794,7 @@ impl MockScreen {
         plugin_ids.insert(run_plugin, plugin_pane_ids);
         let default_shell = None;
         let tab_name = None;
-        let tab_index = self.last_opened_tab_index.map(|l| l + 1).unwrap_or(0);
+        let tab_index = TabId::new(self.last_opened_tab_index.map(|l| l.get() + 1).unwrap_or(0));
         let should_change_focus_to_new_tab = true;
         let _ = self.to_screen.send(ScreenInstruction::NewTab(
             None,
@@ -1034,7 +1035,7 @@ macro_rules! log_actions_in_thread {
     };
 }
 
-fn new_tab(screen: &mut Screen, pid: u32, tab_index: usize) {
+fn new_tab(screen: &mut Screen, pid: u32, tab_index: TabId) {
     let client_id = ClientId::new(1);
     let new_terminal_ids = vec![(TerminalId::new(pid), None)];
     let new_plugin_ids = HashMap::new();
@@ -1600,7 +1601,7 @@ fn guest_announce_message() -> zellij_ipc::nested_session::NestedSessionMessage 
 /// against the whole surface, as an overlay plugin places itself.
 fn open_floating_pane(
     screen: &mut Screen,
-    tab_index: usize,
+    tab_index: TabId,
     pane_id: u32,
     contents: &str,
     overlay: bool,
@@ -1899,11 +1900,11 @@ fn adopted_pane_new_pane(
 /// to its last pane.
 fn screen_with_a_scrollback_editor_open() -> Screen {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
     screen
         .tabs
-        .get_mut(&0)
+        .get_mut(&TabId::new(0))
         .expect("TEST")
         .replace_pane_with_editor_pane(
             PaneId::Terminal(crate::TerminalId::new(9)),
@@ -1918,11 +1919,11 @@ fn screen_with_a_scrollback_editor_open() -> Screen {
 /// to exist.
 fn screen_with_a_pane_replaced_in_place() -> Screen {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
     screen
         .tabs
-        .get_mut(&0)
+        .get_mut(&TabId::new(0))
         .expect("TEST")
         .suppress_pane_and_replace_with_pid(
             PaneId::Terminal(crate::TerminalId::new(1)),
@@ -2001,12 +2002,12 @@ fn released_remote_pane_for_warp(
 /// visible and 1 and 2 parked in `suppressed_panes` under their own ids.
 fn screen_with_a_stack_list() -> Screen {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     // terminal 9, so that a member left behind in this tab cannot be mistaken
     // for a pane that was always here
-    new_tab(&mut screen, 9, 1);
+    new_tab(&mut screen, 9, TabId::new(1));
     *screen.stacked_pane_list.borrow_mut() = true;
-    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
     for pane_id in [
         PaneId::Terminal(crate::TerminalId::new(2)),
         PaneId::Terminal(crate::TerminalId::new(3)),
@@ -2037,9 +2038,9 @@ fn screen_with_a_stack_list() -> Screen {
 /// running, so the members are the only panes there are.
 fn screen_with_only_a_stack_list() -> Screen {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     *screen.stacked_pane_list.borrow_mut() = true;
-    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
     for pane_id in [
         PaneId::Terminal(crate::TerminalId::new(2)),
         PaneId::Terminal(crate::TerminalId::new(3)),
@@ -2067,7 +2068,7 @@ fn screen_with_only_a_stack_list() -> Screen {
 /// hidden, and it is standing in for pane 3 all at once.
 fn screen_with_an_editor_on_a_hidden_stack_list_member() -> Screen {
     let mut screen = screen_with_a_stack_list();
-    let tab = screen.tabs.get_mut(&0).expect("TEST");
+    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
     tab.replace_pane_with_editor_pane(
         PaneId::Terminal(crate::TerminalId::new(8)),
         PaneId::Terminal(crate::TerminalId::new(3)),
@@ -2103,18 +2104,18 @@ fn screen_with_diverged_tab_ids() -> Screen {
         true,
     );
     for tab_id in 0..4 {
-        new_tab(&mut screen, tab_id as u32 + 1, tab_id);
+        new_tab(&mut screen, tab_id as u32 + 1, TabId::new(tab_id));
     }
-    screen.close_tab_by_id(0).expect("TEST");
-    screen.close_tab_by_id(1).expect("TEST");
+    screen.close_tab_by_id(TabId::new(0)).expect("TEST");
+    screen.close_tab_by_id(TabId::new(1)).expect("TEST");
 
     assert_eq!(
-        screen.tabs.get(&2).map(|t| t.position),
+        screen.tabs.get(&TabId::new(2)).map(|t| t.position),
         Some(0),
         "Pre-condition: tab id 2 sits at position 0"
     );
     assert_eq!(
-        screen.tabs.get(&3).map(|t| t.position),
+        screen.tabs.get(&TabId::new(3)).map(|t| t.position),
         Some(1),
         "Pre-condition: tab id 3 sits at position 1"
     );
@@ -2122,7 +2123,7 @@ fn screen_with_diverged_tab_ids() -> Screen {
 }
 
 /// Adds a pane to a tab by id, so a test does not depend on which tab is focused.
-fn add_pane_to_tab(screen: &mut Screen, tab_id: usize, pane_id: PaneId, floating: bool) {
+fn add_pane_to_tab(screen: &mut Screen, tab_id: TabId, pane_id: PaneId, floating: bool) {
     let placement = if floating {
         NewPanePlacement::Floating(None)
     } else {

@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 #[serial(plugin_tests)]
@@ -43,7 +44,7 @@ pub fn toggle_active_tab_sync_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -119,7 +120,7 @@ pub fn close_focused_tab_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -195,7 +196,7 @@ pub fn undo_rename_tab_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -271,7 +272,7 @@ pub fn previous_swap_layout_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -347,7 +348,7 @@ pub fn next_swap_layout_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -423,7 +424,7 @@ pub fn go_to_tab_name_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -499,7 +500,7 @@ pub fn focus_or_create_tab_plugin_command() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -575,7 +576,7 @@ pub fn go_to_tab() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,

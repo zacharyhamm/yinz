@@ -1,4 +1,5 @@
 use super::*;
+use zellij_types::internal_ids::TabId;
 
 pub fn from_string(
     raw_session_info: &str,
@@ -80,7 +81,10 @@ pub fn from_string(
                 {
                     for entry in history_entries {
                         if let Some(entry) = entry.value().as_i64() {
-                            history.push(entry as usize);
+                            history.push(
+                                TabId::try_from(entry)
+                                    .map_err(|_| "tab_id is outside usize range")?,
+                            );
                         }
                     }
                 }
@@ -159,7 +163,7 @@ pub fn from_string(
     })
 }
 #[allow(clippy::inherent_to_string)]
-pub fn to_string(value: &SessionInfo) -> String {
+pub fn to_string(value: &SessionInfo) -> anyhow::Result<String> {
     let mut kdl_document = KdlDocument::new();
 
     let mut name = KdlNode::new("name");
@@ -172,7 +176,7 @@ pub fn to_string(value: &SessionInfo) -> String {
     let mut tab_children = KdlDocument::new();
     for tab_info in &value.tabs {
         let mut tab = KdlNode::new("tab");
-        let kdl_tab_info = tab_info::encode_to_kdl(tab_info);
+        let kdl_tab_info = tab_info::encode_to_kdl(tab_info)?;
         tab.set_children(kdl_tab_info);
         tab_children.nodes_mut().push(tab);
     }
@@ -207,7 +211,7 @@ pub fn to_string(value: &SessionInfo) -> String {
         client_document.nodes_mut().push(id);
         let mut history = KdlNode::new("history");
         for entry in client_tab_history {
-            history.push(*entry as i64);
+            history.push(i64::try_from(entry.get())?);
         }
         client_document.nodes_mut().push(history);
         client_node.set_children(client_document);
@@ -257,5 +261,5 @@ pub fn to_string(value: &SessionInfo) -> String {
     kdl_document.nodes_mut().push(creation_time_node);
 
     kdl_document.fmt();
-    kdl_document.to_string()
+    Ok(kdl_document.to_string())
 }

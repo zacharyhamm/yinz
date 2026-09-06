@@ -1,12 +1,13 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 /// A plugin that has a pane is still the anchor: "near me" means beside it, and the fallback
 /// must not quietly take over the case it was not written for.
 #[test]
 fn a_placement_near_a_pane_that_exists_resolves_to_that_pane() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     assert_eq!(
         screen.resolve_pane_placement(ClientTabIndexOrPaneId::PaneIdOrClient(
@@ -22,7 +23,7 @@ fn a_placement_near_a_pane_that_exists_resolves_to_that_pane() {
 #[test]
 fn a_placement_near_a_pane_that_does_not_exist_falls_back_to_the_client() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     assert_eq!(
         screen.resolve_pane_placement(ClientTabIndexOrPaneId::PaneIdOrClient(
@@ -38,13 +39,13 @@ fn a_placement_near_a_pane_that_does_not_exist_falls_back_to_the_client() {
 #[test]
 fn other_placements_pass_through_untouched() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     for target in [
         ClientTabIndexOrPaneId::ClientId(crate::ClientId::new(1)),
         ClientTabIndexOrPaneId::ClientIdNoFocus(crate::ClientId::new(1)),
-        ClientTabIndexOrPaneId::TabIndex(0),
-        ClientTabIndexOrPaneId::TabIndexNoFocus(0),
+        ClientTabIndexOrPaneId::TabIndex(TabId::new(0)),
+        ClientTabIndexOrPaneId::TabIndexNoFocus(TabId::new(0)),
         ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(crate::PluginId::new(999))),
     ] {
         assert_eq!(screen.resolve_pane_placement(target), target);

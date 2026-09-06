@@ -1,4 +1,5 @@
 use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TerminalId;
 
 use super::{GuestModalOutcome, HoldForCommand, InitialTitle, TabOverrideResult};
@@ -82,17 +83,17 @@ pub enum ScreenInstruction {
     ToggleFloatingPanes(ClientId, Option<TerminalAction>, Option<NotificationEnd>),
     ShowFloatingPanes {
         client_id: ClientId,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
         completion: Option<NotificationEnd>,
     },
     HideFloatingPanes {
         client_id: ClientId,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
         completion: Option<NotificationEnd>,
     },
     AreFloatingPanesVisible {
         client_id: ClientId,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
         completion: Option<NotificationEnd>,
     },
     /// A synchronous "does the open menu want this key" check, sent from `route.rs` before mode
@@ -145,7 +146,7 @@ pub enum ScreenInstruction {
     SaveSession(ClientId, Option<NotificationEnd>),
     DumpLayoutToPlugin {
         plugin_id: PluginId,
-        tab_index: Option<usize>,
+        tab_index: Option<TabId>,
         response_channel: crossbeam::channel::Sender<DumpSessionLayoutResponse>,
     },
     GetFocusedPaneInfo {
@@ -157,7 +158,7 @@ pub enum ScreenInstruction {
         response_channel: crossbeam::channel::Sender<Option<PaneInfo>>,
     },
     GetTabInfo {
-        tab_id: usize,
+        tab_id: TabId,
         response_channel: crossbeam::channel::Sender<Option<TabInfo>>,
     },
     EditScrollback(ClientId, bool, Option<NotificationEnd>),
@@ -243,7 +244,7 @@ pub enum ScreenInstruction {
     ),
     /// Apply layout to tab with given stable ID.
     ///
-    /// The sixth parameter (usize) is a stable identifier (not position) from the
+    /// The tab ID parameter (TabId) is a stable identifier (not position) from the
     /// NewTab → ApplyLayout async flow that passes IDs between threads.
     ApplyLayout(
         TiledPaneLayout,
@@ -252,7 +253,7 @@ pub enum ScreenInstruction {
         Vec<(TerminalId, HoldForCommand)>, // new floating pane pids
         Vec<(TerminalId, AgentInfo)>,      // transferred agent records for adopted terminals
         HashMap<RunPluginOrAlias, Vec<PluginId>>,
-        usize, // tab_id - stable identifier from NewTab instruction
+        TabId, // tab_id - stable identifier from NewTab instruction
         bool,  // should change focus to new tab
         ClientId,
         Option<NotificationEnd>,               // regular completion signal
@@ -275,13 +276,13 @@ pub enum ScreenInstruction {
     UndoRenameTab(ClientId, Option<NotificationEnd>),
     MoveTabLeft(ClientId, Option<NotificationEnd>),
     MoveTabRight(ClientId, Option<NotificationEnd>),
-    GoToTabWithId(usize, Option<ClientId>, Option<NotificationEnd>),
-    CloseTabWithId(usize, Option<NotificationEnd>),
-    RenameTabWithId(usize, Vec<u8>, Option<NotificationEnd>),
-    SetTabProjects(BTreeMap<usize, String>),
+    GoToTabWithId(TabId, Option<ClientId>, Option<NotificationEnd>),
+    CloseTabWithId(TabId, Option<NotificationEnd>),
+    RenameTabWithId(TabId, Vec<u8>, Option<NotificationEnd>),
+    SetTabProjects(BTreeMap<TabId, String>),
     BreakPanesToTabWithId {
         pane_ids: Vec<PaneId>,
-        tab_id: usize,
+        tab_id: TabId,
         should_change_focus_to_target_tab: bool,
         client_id: ClientId,
         completion_tx: Option<NotificationEnd>,
@@ -382,7 +383,7 @@ pub enum ScreenInstruction {
     SearchToggleWrap(ClientId, Option<NotificationEnd>),
     AddRedPaneFrameColorOverride(Vec<PaneId>, Option<String>), // Option<String> => optional error text
     ClearPaneFrameColorOverride(Vec<PaneId>),
-    SetTabBellFlash(usize, bool), // tab_id, is_flashing
+    SetTabBellFlash(TabId, bool), // tab_id, is_flashing
     /// The host terminal of `ClientId` gained (`true`) or lost (`false`) keyboard focus.
     HostTerminalFocusChanged(ClientId, bool),
     /// The whitelisted environment of a client's host terminal (`HOST_TERMINAL_ENV_VARS`), from
@@ -421,7 +422,7 @@ pub enum ScreenInstruction {
         Option<PathBuf>,
         ClientId,
         Option<NotificationEnd>,
-        Option<usize>, // tab_id
+        Option<TabId>, // tab_id
         bool,
     ), // Option<String> is
     // optional pane title, bool is skip cache, Option<PathBuf> is an optional cwd
@@ -434,7 +435,7 @@ pub enum ScreenInstruction {
         NewPanePlacement,
         ClientId,
         Option<NotificationEnd>,
-        Option<usize>, // tab_id
+        Option<TabId>, // tab_id
         bool,
     ), // Option<String> is an
     // optional pane title, bool
@@ -447,7 +448,7 @@ pub enum ScreenInstruction {
         bool,
         ClientId,
         Option<NotificationEnd>,
-        Option<usize>, // tab_id
+        Option<TabId>, // tab_id
         bool,
     ), // Option<String> is an
     // optional pane title, first bool is skip cache, second bool is close_replaced_pane
@@ -458,7 +459,7 @@ pub enum ScreenInstruction {
         bool,         // close_replaced_pane
         RunPluginOrAlias,
         Option<String>, // pane title
-        Option<usize>,  // tab index
+        Option<TabId>,  // tab index
         PluginId,       // plugin id
         Option<PaneId>,
         Option<PathBuf>, // cwd
@@ -489,7 +490,7 @@ pub enum ScreenInstruction {
         bool,
         ClientId,
         Option<NotificationEnd>,
-        Option<usize>, // tab_id
+        Option<TabId>, // tab_id
     ), // bools are: should_float, move_to_focused_tab, should_open_in_place, close_replaced_pane, Option<PaneId> is the pane id to replace, bool following it is skip_cache
     LaunchPlugin(
         RunPluginOrAlias,
@@ -501,7 +502,7 @@ pub enum ScreenInstruction {
         Option<PathBuf>,
         ClientId,
         Option<NotificationEnd>,
-        Option<usize>, // tab_id
+        Option<TabId>, // tab_id
         bool,
         // stated by the launcher rather than derived from the plugin's own configuration
         Option<OverlayPlacement>,
@@ -562,7 +563,7 @@ pub enum ScreenInstruction {
     /// session. The tab analogue of `WarpPane`, with the same rule: every
     /// refusal happens here, before a single supervisor is released.
     WarpTab {
-        tab_index: Option<usize>,
+        tab_index: Option<TabId>,
         client_id: ClientId,
         response_channel: crossbeam::channel::Sender<Result<Box<WarpedTab>, String>>,
         /// The moment the caller stops waiting for `response_channel`.
@@ -577,7 +578,7 @@ pub enum ScreenInstruction {
     /// tab happens here for the same reason it does for a single pane: by now
     /// the reader tasks are gone, so all their output is queued ahead of this.
     TabReleasedForWarp {
-        tab_index: usize,
+        tab_index: TabId,
         released: Vec<(TerminalId, Result<ReleasedPane, String>)>,
     },
     /// The pty thread has taken a tab's supervisors over and this session now
@@ -860,12 +861,12 @@ pub enum ScreenInstruction {
     UndoRenamePaneWithPaneId(PaneId, Option<NotificationEnd>),
     TogglePanePinnedWithPaneId(PaneId, Option<NotificationEnd>),
     // Tab-targeting CLI variants
-    UndoRenameTabWithTabId(usize, Option<NotificationEnd>),
-    ToggleActiveSyncTabWithTabId(usize, Option<NotificationEnd>),
-    ToggleFloatingPanesWithTabId(usize, Option<TerminalAction>, Option<NotificationEnd>),
-    PreviousSwapLayoutWithTabId(usize, Option<NotificationEnd>),
-    NextSwapLayoutWithTabId(usize, Option<NotificationEnd>),
-    MoveTabWithTabId(usize, Direction, Option<NotificationEnd>),
+    UndoRenameTabWithTabId(TabId, Option<NotificationEnd>),
+    ToggleActiveSyncTabWithTabId(TabId, Option<NotificationEnd>),
+    ToggleFloatingPanesWithTabId(TabId, Option<TerminalAction>, Option<NotificationEnd>),
+    PreviousSwapLayoutWithTabId(TabId, Option<NotificationEnd>),
+    NextSwapLayoutWithTabId(TabId, Option<NotificationEnd>),
+    MoveTabWithTabId(TabId, Direction, Option<NotificationEnd>),
     FocusHostSession(ClientId, Option<NotificationEnd>),
     FocusGuestSession(ClientId, Option<NotificationEnd>),
     ToggleHostFullscreen(ClientId, Option<NotificationEnd>),

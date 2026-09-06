@@ -8,6 +8,7 @@
 //! pane instead of an error message.
 
 use super::*;
+use zellij_types::internal_ids::TabId;
 
 use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 use std::path::PathBuf;
@@ -275,7 +276,7 @@ fn warping_a_tab_to_the_current_session_is_refused_before_anything_is_asked_of_s
     let result = warp_tab_to_session(
         &harness.senders,
         crate::ClientId::new(1),
-        Some(0),
+        Some(TabId::new(0)),
         "here",
         "here",
         TEST_TIMEOUT,
@@ -301,7 +302,7 @@ fn an_unreachable_target_releases_no_part_of_a_tab() {
     let result = warp_tab_to_session(
         &harness.senders,
         crate::ClientId::new(1),
-        Some(0),
+        Some(TabId::new(0)),
         "here",
         &unreachable_session("tab-unreachable"),
         TEST_TIMEOUT,
@@ -320,7 +321,7 @@ fn an_unreachable_target_releases_no_part_of_a_tab() {
 
 #[test]
 fn bringing_a_tab_from_the_current_session_is_refused() {
-    let result = warp_tab_from_session("here", "here", 0, TEST_TIMEOUT);
+    let result = warp_tab_from_session("here", "here", TabId::new(0), TEST_TIMEOUT);
 
     assert_eq!(result, Err("'here' is this session".to_owned()));
 }
@@ -329,7 +330,12 @@ fn bringing_a_tab_from_the_current_session_is_refused() {
 fn bringing_a_tab_into_a_nameless_session_is_refused() {
     // A session with no name has no address to give the source, so asking would
     // send a tab to nowhere.
-    let result = warp_tab_from_session("", &unreachable_session("nameless-tab"), 0, TEST_TIMEOUT);
+    let result = warp_tab_from_session(
+        "",
+        &unreachable_session("nameless-tab"),
+        TabId::new(0),
+        TEST_TIMEOUT,
+    );
 
     assert_eq!(
         result,
@@ -341,7 +347,7 @@ fn bringing_a_tab_into_a_nameless_session_is_refused() {
 fn bringing_a_tab_from_an_unreachable_session_reports_which_one() {
     let missing = unreachable_session("tab-source");
 
-    let result = warp_tab_from_session("here", &missing, 0, TEST_TIMEOUT);
+    let result = warp_tab_from_session("here", &missing, TabId::new(0), TEST_TIMEOUT);
 
     let error = result.expect_err("a session that is not running has no tab to give");
     assert!(

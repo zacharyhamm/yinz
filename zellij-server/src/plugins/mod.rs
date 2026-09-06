@@ -5,6 +5,7 @@
 #![allow(clippy::manual_inspect)]
 #![allow(clippy::useless_format)]
 #![allow(clippy::redundant_pattern_matching)]
+use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TerminalId;
 mod lua;
 pub use lua::check_lua_plugin;
@@ -91,7 +92,7 @@ pub enum PluginInstruction {
         bool,           // close_replaced_pane
         Option<String>, // pane title
         RunPluginOrAlias,
-        Option<usize>,  // tab index
+        Option<TabId>,  // tab index
         Option<PaneId>, // pane id to replace if this is to be opened "in-place"
         ClientId,
         Size,
@@ -139,7 +140,7 @@ pub enum PluginInstruction {
         Option<bool>,   // should float
         Option<String>, // pane title
         RunPluginOrAlias,
-        usize, // tab index
+        TabId, // tab index
         Size,
         Option<NotificationEnd>,
     ),
@@ -154,7 +155,7 @@ pub enum PluginInstruction {
         Option<TerminalAction>,
         Option<TiledPaneLayout>,
         Vec<FloatingPaneLayout>,
-        usize,                        // tab_id
+        TabId,                        // tab_id
         Option<Vec<CommandOrPlugin>>, // initial_panes
         bool,                         // block_on_first_terminal
         bool,                         // should change focus to new tab

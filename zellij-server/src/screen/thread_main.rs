@@ -1,4 +1,5 @@
 use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TabId;
 
 use super::agent_placement::AgentPlacement;
 use super::warp_ops::{PANE_WARP_SCREEN_RESERVE, TAB_WARP_SCREEN_RESERVE};
@@ -2743,10 +2744,10 @@ pub(crate) fn screen_thread_main(
                 completion_tx,
             ) => {
                 // 1. Determine which tabs to close (exist but not in layout)
-                let existing_tab_indices: HashSet<usize> = screen.tabs.keys().copied().collect();
-                let layout_tab_indices: HashSet<usize> =
+                let existing_tab_indices: HashSet<TabId> = screen.tabs.keys().copied().collect();
+                let layout_tab_indices: HashSet<TabId> =
                     tab_layouts.iter().map(|tl| tl.tab_index).collect();
-                let tabs_to_close: Vec<usize> = existing_tab_indices
+                let tabs_to_close: Vec<TabId> = existing_tab_indices
                     .difference(&layout_tab_indices)
                     .copied()
                     .collect();
@@ -2967,8 +2968,13 @@ pub(crate) fn screen_thread_main(
                 explicit_tab_id,
                 no_focus,
             ) => {
-                let tab_index = explicit_tab_id
-                    .unwrap_or_else(|| *screen.active_tab_ids.values().next().unwrap_or(&1));
+                let tab_index = explicit_tab_id.unwrap_or_else(|| {
+                    *screen
+                        .active_tab_ids
+                        .values()
+                        .next()
+                        .unwrap_or(&TabId::new(1))
+                });
                 let size = Size::default();
                 let should_float = Some(false);
                 let should_be_opened_in_place = false;
@@ -3093,7 +3099,12 @@ pub(crate) fn screen_thread_main(
                 }
             },
             ScreenInstruction::StartOrReloadPluginPane(run_plugin, pane_title, completion_tx) => {
-                let tab_index = screen.active_tab_ids.values().next().unwrap_or(&1);
+                let tab_index = screen
+                    .active_tab_ids
+                    .values()
+                    .next()
+                    .copied()
+                    .unwrap_or(TabId::new(1));
                 let size = Size::default();
                 let should_float = Some(false);
 
@@ -3104,7 +3115,7 @@ pub(crate) fn screen_thread_main(
                         should_float,
                         pane_title,
                         run_plugin,
-                        *tab_index,
+                        tab_index,
                         size,
                         completion_tx,
                     ))?;
@@ -3697,7 +3708,7 @@ pub(crate) fn screen_thread_main(
                 // name with it. Tabs we have never heard of are kept: a plugin can
                 // know about a tab before we have finished making it, and the next
                 // pass drops whatever is genuinely gone.
-                let tab_projects: HashMap<usize, String> = tab_projects.into_iter().collect();
+                let tab_projects: HashMap<TabId, String> = tab_projects.into_iter().collect();
                 if tab_projects != screen.tab_projects {
                     screen.tab_projects = tab_projects;
                     if screen.update_plugin_tab_names() {

@@ -12,6 +12,7 @@ use std::{
 };
 use wasmi::{Instance, Store};
 use wasmi_wasi::WasiCtx;
+use zellij_types::internal_ids::TabId;
 
 use crate::{thread_bus::ThreadSenders, ClientId};
 
@@ -414,7 +415,7 @@ pub struct PluginEnv {
     /// The WASI context backing a wasm plugin's filesystem and stdio. `None` for runtimes that
     /// have no WASI layer at all, such as Lua.
     pub wasi_ctx: Option<WasiCtx>,
-    pub tab_index: Option<usize>,
+    pub tab_index: Option<TabId>,
     /// The client this instance is currently acting on behalf of. For a shared plugin (one
     /// instance for the whole session) this is set to the client whose event is being handled, so
     /// that host commands act on the right client. Use `owner_client_id` for anything keyed in

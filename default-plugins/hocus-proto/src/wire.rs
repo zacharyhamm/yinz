@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use zellij_tile::prelude::TabId;
 
 use crate::agents;
 use crate::location::Location;
@@ -194,7 +195,7 @@ pub struct PollRequest {
     /// is already between them, already holds `manual_kinds` for exactly this
     /// reason, and already echoes what it holds to every subscriber.
     #[serde(default)]
-    pub tab_projects: BTreeMap<usize, String>,
+    pub tab_projects: BTreeMap<TabId, String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -228,7 +229,7 @@ pub struct PollReply {
     /// Relayed rather than derived: only hocus knows what the user assigned, and
     /// only the store publishes tab names, so this is the leg between them.
     #[serde(default)]
-    pub tab_projects: BTreeMap<usize, String>,
+    pub tab_projects: BTreeMap<TabId, String>,
     /// The terminal pane the user is looking at, if it is one.
     ///
     /// Here rather than on `AgentPane` because it is a fact about the session, not

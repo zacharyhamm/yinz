@@ -23,6 +23,7 @@ use zellij_types::command::PaneTarget;
 use zellij_types::data::Event;
 use zellij_types::diagnostics::ErrorContext;
 use zellij_types::input::command::RunCommand;
+use zellij_types::internal_ids::TabId;
 use zellij_types::style::Palette;
 use {
     zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcReceiverWithContext,
@@ -1152,7 +1153,7 @@ fn a_firecracker_layout_appears_before_preflight_finishes() {
         Some(TerminalAction::RunCommand(command)),
         HashMap::new(),
         None,
-        0,
+        TabId::new(0),
         false,
         true,
         crate::ClientId::new(1),
@@ -1235,7 +1236,7 @@ fn a_firecracker_layout_override_appears_before_transport() {
         default_shell: None,
         tabs: vec![(
             TabLayoutInfo {
-                tab_index: 0,
+                tab_index: TabId::new(0),
                 tab_name: None,
                 tiled_layout: TiledPaneLayout {
                     run: Some(Run::Command(command)),
@@ -1684,7 +1685,7 @@ fn a_failing_layout_pane_clears_its_reserved_remote_panes() {
         Some(TerminalAction::RunCommand(RunCommand::default())),
         HashMap::new(),
         None,
-        0,
+        TabId::new(0),
         false,
         true,
         crate::ClientId::new(1),
@@ -1741,7 +1742,7 @@ fn a_failing_layout_closes_the_panes_it_already_spawned() {
         Some(TerminalAction::RunCommand(RunCommand::default())),
         HashMap::new(),
         None,
-        0,
+        TabId::new(0),
         false,
         true,
         crate::ClientId::new(1),
@@ -1803,7 +1804,7 @@ fn a_failing_layout_override_closes_the_panes_it_already_spawned() {
         vec![],
         Some(TerminalAction::RunCommand(RunCommand::default())),
         HashMap::new(),
-        0,
+        TabId::new(0),
         None,
         crate::ClientId::new(1),
         None,

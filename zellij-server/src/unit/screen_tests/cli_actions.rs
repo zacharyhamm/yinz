@@ -1,5 +1,9 @@
+#[cfg(test)]
+const TAB_0: TabId = TabId::new(0);
+
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 // Following are tests for sending CLI actions
 // these tests are only partially relevant to Screen
@@ -1259,7 +1263,7 @@ pub fn web_new_pane_in_tab_action_targets_requested_tab() {
         near_current_pane: false,
         no_focus: false,
         borderless: None,
-        tab_id: Some(0),
+        tab_id: Some(TabId::new(0)),
     };
     route_arbitrary_action_to_server(&session_metadata, action, client_id);
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1269,7 +1273,7 @@ pub fn web_new_pane_in_tab_action_targets_requested_tab() {
         PtyInstruction::SpawnTerminal(_, _, _, _, client_tab_index_or_pane_id, ..) => {
             matches!(
                 client_tab_index_or_pane_id,
-                ClientTabIndexOrPaneId::TabIndex(0)
+                ClientTabIndexOrPaneId::TabIndex(TAB_0)
             )
         },
         _ => false,

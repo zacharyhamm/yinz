@@ -4,6 +4,7 @@ use super::*;
 use crate::notifications::NotificationProtocol;
 use crate::panes::grid::PendingNotification;
 use zellij_types::input::options::HostNotificationProtocol;
+use zellij_types::internal_ids::TabId;
 
 fn collect_forwarded_notifications(server_receiver: &ServerReceiver) -> String {
     let mut output = String::new();
@@ -27,7 +28,7 @@ fn screen_with_a_client_for_notifications(
     };
     let (mut screen, _tty_stdin_bytes, server_receiver) =
         create_new_screen_with_capture(size, true, true, true, true);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.set_host_notification_protocol(host_notification_protocol);
     screen.set_client_host_terminal_env(crate::ClientId::new(1), host_terminal_env);
     while server_receiver.try_recv().is_ok() {}
@@ -240,7 +241,7 @@ fn each_client_is_spoken_to_in_the_protocol_of_its_own_host() {
     };
     let (mut screen, _tty_stdin_bytes, server_receiver) =
         create_new_screen_with_capture(size, true, true, true, true);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.set_client_size(crate::ClientId::new(2), size);
     screen.add_client(crate::ClientId::new(2)).unwrap();
     screen.set_client_host_terminal_env(crate::ClientId::new(1), kitty_env());
@@ -275,7 +276,7 @@ fn a_client_that_never_reported_its_host_env_gets_the_configured_protocol() {
     };
     let (mut screen, _tty_stdin_bytes, _server_receiver) =
         create_new_screen_with_capture(size, true, true, true, true);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     assert_eq!(
         screen.notification_protocol_for_client(&ClientId::new(1)),
@@ -299,7 +300,7 @@ fn a_departing_client_leaves_no_host_notification_state_behind() {
     };
     let (mut screen, _tty_stdin_bytes, _server_receiver) =
         create_new_screen_with_capture(size, true, true, true, true);
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.set_client_size(crate::ClientId::new(2), size);
     screen.add_client(crate::ClientId::new(2)).unwrap();
     screen.set_client_host_terminal_env(crate::ClientId::new(2), kitty_env());

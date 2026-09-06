@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
+use zellij_types::internal_ids::TabId;
 
 use crate::global_async_runtime::get_tokio_runtime;
 use crate::thread_bus::ThreadSenders;
@@ -56,7 +57,7 @@ const ACTION_COMPLETION_TIMEOUT: Duration = Duration::from_secs(1);
 pub struct ActionCompletionResult {
     pub exit_status: Option<i32>,
     pub affected_pane_id: Option<PaneId>,
-    pub affected_tab_id: Option<usize>,
+    pub affected_tab_id: Option<TabId>,
     pub error_message: Option<String>,
     pub stdout_message: Option<String>,
 }
@@ -132,7 +133,7 @@ pub struct NotificationEnd {
     exit_status: Option<i32>,
     unblock_condition: Option<UnblockCondition>,
     affected_pane_id: Option<PaneId>, // optional payload of the pane id affected by this action
-    affected_tab_id: Option<usize>,   // optional payload of the tab id affected by this action
+    affected_tab_id: Option<TabId>,   // optional payload of the tab id affected by this action
     error_message: Option<String>,
     stdout_message: Option<String>,
     /// Handles answered together with this one, with its payload: see `join`.
@@ -212,7 +213,7 @@ impl NotificationEnd {
         self.affected_pane_id = Some(pane_id);
     }
 
-    pub fn set_affected_tab_id(&mut self, tab_id: usize) {
+    pub fn set_affected_tab_id(&mut self, tab_id: TabId) {
         self.affected_tab_id = Some(tab_id);
     }
 
@@ -298,7 +299,7 @@ pub(crate) fn actions_leave_clipboard_message(actions: &[Action]) -> bool {
 fn new_pane_routing(
     no_focus: bool,
     near_current_pane: bool,
-    tab_id: Option<usize>,
+    tab_id: Option<TabId>,
     pane_id: Option<PaneId>,
     client_id: ClientId,
 ) -> ClientTabIndexOrPaneId {
@@ -1291,7 +1292,7 @@ pub(crate) fn route_action(
         Action::GoToTabById { id } => {
             senders
                 .send_to_screen(ScreenInstruction::GoToTabWithId(
-                    id as usize,
+                    id,
                     Some(client_id),
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -1300,7 +1301,7 @@ pub(crate) fn route_action(
         Action::CloseTabById { id } => {
             senders
                 .send_to_screen(ScreenInstruction::CloseTabWithId(
-                    id as usize,
+                    id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -1308,7 +1309,7 @@ pub(crate) fn route_action(
         Action::RenameTabById { id, name } => {
             senders
                 .send_to_screen(ScreenInstruction::RenameTabWithId(
-                    id as usize,
+                    id,
                     name.into_bytes(),
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2388,7 +2389,7 @@ pub(crate) fn route_action(
         Action::UndoRenameTabByTabId { id } => {
             senders
                 .send_to_screen(ScreenInstruction::UndoRenameTabWithTabId(
-                    id as usize,
+                    id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2396,7 +2397,7 @@ pub(crate) fn route_action(
         Action::ToggleActiveSyncTabByTabId { id } => {
             senders
                 .send_to_screen(ScreenInstruction::ToggleActiveSyncTabWithTabId(
-                    id as usize,
+                    id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2404,7 +2405,7 @@ pub(crate) fn route_action(
         Action::ToggleFloatingPanesByTabId { id } => {
             senders
                 .send_to_screen(ScreenInstruction::ToggleFloatingPanesWithTabId(
-                    id as usize,
+                    id,
                     default_shell.clone(),
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2413,7 +2414,7 @@ pub(crate) fn route_action(
         Action::PreviousSwapLayoutByTabId { id } => {
             senders
                 .send_to_screen(ScreenInstruction::PreviousSwapLayoutWithTabId(
-                    id as usize,
+                    id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2421,7 +2422,7 @@ pub(crate) fn route_action(
         Action::NextSwapLayoutByTabId { id } => {
             senders
                 .send_to_screen(ScreenInstruction::NextSwapLayoutWithTabId(
-                    id as usize,
+                    id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2429,7 +2430,7 @@ pub(crate) fn route_action(
         Action::MoveTabByTabId { id, direction } => {
             senders
                 .send_to_screen(ScreenInstruction::MoveTabWithTabId(
-                    id as usize,
+                    id,
                     direction,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -4088,12 +4089,12 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         let mut notification_end = NotificationEnd::new(tx);
 
-        notification_end.set_affected_tab_id(42);
+        notification_end.set_affected_tab_id(TabId::new(42));
 
         drop(notification_end);
 
         let result = rx.blocking_recv().unwrap();
-        assert_eq!(result.affected_tab_id, Some(42));
+        assert_eq!(result.affected_tab_id, Some(TabId::new(42)));
     }
 
     #[test]
@@ -4112,12 +4113,12 @@ mod tests {
         let result = ActionCompletionResult {
             exit_status: None,
             affected_pane_id: None,
-            affected_tab_id: Some(123),
+            affected_tab_id: Some(TabId::new(123)),
             error_message: None,
             stdout_message: None,
         };
 
-        assert_eq!(result.affected_tab_id, Some(123));
+        assert_eq!(result.affected_tab_id, Some(TabId::new(123)));
     }
 
     #[test]
@@ -4126,7 +4127,7 @@ mod tests {
         let mut notification_end = NotificationEnd::new(tx);
 
         notification_end.set_affected_pane_id(PaneId::Terminal(crate::TerminalId::new(10)));
-        notification_end.set_affected_tab_id(5);
+        notification_end.set_affected_tab_id(TabId::new(5));
 
         drop(notification_end);
 
@@ -4135,19 +4136,19 @@ mod tests {
             result.affected_pane_id,
             Some(PaneId::Terminal(crate::TerminalId::new(10)))
         );
-        assert_eq!(result.affected_tab_id, Some(5));
+        assert_eq!(result.affected_tab_id, Some(TabId::new(5)));
     }
 
     #[test]
     fn test_notification_end_clone_does_not_copy_channel() {
         let (tx, _rx) = oneshot::channel();
         let mut notification_end = NotificationEnd::new(tx);
-        notification_end.set_affected_tab_id(99);
+        notification_end.set_affected_tab_id(TabId::new(99));
 
         let cloned = notification_end.clone();
 
         // Verify the clone has the same data
-        assert_eq!(cloned.affected_tab_id, Some(99));
+        assert_eq!(cloned.affected_tab_id, Some(TabId::new(99)));
         // But channel should be None (as per the Clone implementation comment)
         assert!(cloned.channel.is_none());
     }

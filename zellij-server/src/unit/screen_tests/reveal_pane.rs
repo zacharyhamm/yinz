@@ -6,12 +6,13 @@
 //! A reveal therefore never switches tabs - these pin that.
 
 use super::*;
+use zellij_types::internal_ids::TabId;
 
 /// Two tabs with a terminal in each. `client_id` 1 starts on tab 0.
 fn screen_with_two_tabs() -> Screen {
     let mut screen = create_non_mirrored_screen(Size { cols: 40, rows: 10 });
-    new_tab(&mut screen, 1, 0);
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
     // `new_tab` leaves the client on the tab it just made; the reveal is only
     // interesting from somewhere else.
     screen.go_to_tab(1, crate::ClientId::new(1)).expect("TEST");

@@ -1,4 +1,5 @@
 use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TerminalId;
 
 use super::{PreparedTabWarp, Screen, ScreenInstruction, WarpAddress};
@@ -309,9 +310,9 @@ impl Screen {
     /// tab owns that number as an id, which diverges the moment a tab closes.
     pub(super) fn check_tab_can_be_warped(
         &mut self,
-        tab_index: Option<usize>,
+        tab_index: Option<TabId>,
         client_id: ClientId,
-    ) -> Result<(usize, Vec<TerminalId>, PreparedTabWarp), String> {
+    ) -> Result<(TabId, Vec<TerminalId>, PreparedTabWarp), String> {
         let tab_index = match tab_index {
             Some(tab_index) => tab_index,
             None => self
@@ -458,7 +459,7 @@ impl Screen {
     /// SIGHUP every child; taking the panes out first leaves it nothing to kill.
     pub(super) fn take_released_tab_for_warp(
         &mut self,
-        tab_index: usize,
+        tab_index: TabId,
         released: Vec<(TerminalId, Result<ReleasedPane, String>)>,
         prepared: PreparedTabWarp,
     ) -> Result<Box<WarpedTab>, String> {
@@ -540,7 +541,7 @@ impl Screen {
     /// `close_tab_by_id` already knows to re-home both. The suppressed panes that do have to go are the
     /// hidden members of the tab's stack lists — they are travelling, and being
     /// re-homed would leave them in another tab with their supervisors handed away.
-    pub(super) fn empty_and_close_tab(&mut self, tab_index: usize) {
+    pub(super) fn empty_and_close_tab(&mut self, tab_index: TabId) {
         let mut emptied = vec![];
         if let Some(tab) = self.tabs.get_mut(&tab_index) {
             // Hidden stack-list members first: closing a list's *visible* member
@@ -711,7 +712,7 @@ impl Screen {
         invoked_with: Option<Run>,
         client_id: ClientId,
         should_change_focus_to_new_tab: bool,
-    ) -> Result<usize> {
+    ) -> Result<TabId> {
         let err_context = || "failed to open a tab for an adopted pane".to_string();
         let default_layout = self.default_layout.clone();
         let tab_index = self.get_new_tab_id();

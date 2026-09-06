@@ -10,6 +10,7 @@ use super::*;
 use crate::route::{wait_for_action_completion, NotificationEnd};
 use crate::screen::agent_placement::{choose_tab, floor_of, projected_share, Candidate};
 use std::collections::BTreeMap;
+use zellij_types::internal_ids::TabId;
 use zellij_types::pane_size::Viewport;
 use {zellij_types::data::OriginatingPlugin, zellij_types::data::HOCUS_AGENT_PANE_CONTEXT};
 
@@ -51,7 +52,7 @@ fn screen_with_floor() -> Screen {
 }
 
 /// A tab holding `count` tiled panes, numbered from `first_pid`.
-fn tab_with_panes(screen: &mut Screen, tab_id: usize, first_pid: u32, count: u32) {
+fn tab_with_panes(screen: &mut Screen, tab_id: TabId, first_pid: u32, count: u32) {
     new_tab(screen, first_pid, tab_id);
     for pid in first_pid + 1..first_pid + count {
         add_pane_to_tab(
@@ -84,7 +85,7 @@ fn plugin_capture(screen: &mut Screen) -> Receiver<(PluginInstruction, ErrorCont
 /// the run instructions its layout is told to leave alone.
 fn new_tabs_asked_for(
     receiver: &Receiver<(PluginInstruction, ErrorContext)>,
-) -> Vec<(usize, bool, Vec<Option<Run>>)> {
+) -> Vec<(TabId, bool, Vec<Option<Run>>)> {
     new_tabs_asked_for_by_client(receiver)
         .into_iter()
         .map(|(tab_id, focus, _, ignored)| (tab_id, focus, ignored))
@@ -94,7 +95,7 @@ fn new_tabs_asked_for(
 /// As `new_tabs_asked_for`, with the client the tab was made for.
 fn new_tabs_asked_for_by_client(
     receiver: &Receiver<(PluginInstruction, ErrorContext)>,
-) -> Vec<(usize, bool, ClientId, Vec<Option<Run>>)> {
+) -> Vec<(TabId, bool, ClientId, Vec<Option<Run>>)> {
     receiver
         .try_iter()
         .filter_map(|(instruction, _)| match instruction {
@@ -147,23 +148,23 @@ fn projected_areas_saturate() {
 fn the_roomiest_qualifying_tab_wins_and_a_tie_goes_to_the_lower_position() {
     let candidates = [
         Candidate {
-            tab_id: 7,
+            tab_id: TabId::new(7),
             position: 2,
             share: 800,
         },
         Candidate {
-            tab_id: 3,
+            tab_id: TabId::new(3),
             position: 1,
             share: 800,
         },
         Candidate {
-            tab_id: 5,
+            tab_id: TabId::new(5),
             position: 0,
             share: 533,
         },
     ];
-    assert_eq!(choose_tab(&candidates, 400), Some(3));
-    assert_eq!(choose_tab(&candidates, 600), Some(3));
+    assert_eq!(choose_tab(&candidates, 400), Some(TabId::new(3)));
+    assert_eq!(choose_tab(&candidates, 600), Some(TabId::new(3)));
     assert_eq!(choose_tab(&candidates, 801), None);
     assert_eq!(choose_tab(&[], 1), None);
 }
@@ -171,7 +172,7 @@ fn the_roomiest_qualifying_tab_wins_and_a_tie_goes_to_the_lower_position() {
 #[test]
 fn an_agent_stays_in_the_focused_tab_while_its_share_clears_the_floor() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 3);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 3);
     let target = ClientTabIndexOrPaneId::ClientId(CLIENT);
     let (placed, focus, _) = target_of(&mut screen, Some(run("claude")), tiled(), target);
     assert_eq!(placed, target);
@@ -182,9 +183,9 @@ fn an_agent_stays_in_the_focused_tab_while_its_share_clears_the_floor() {
 #[test]
 fn an_agent_moves_to_the_roomiest_other_tab_when_the_focused_tab_is_crowded() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 4);
-    tab_with_panes(&mut screen, 1, 10, 2);
-    tab_with_panes(&mut screen, 2, 20, 1);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 4);
+    tab_with_panes(&mut screen, TabId::new(1), 10, 2);
+    tab_with_panes(&mut screen, TabId::new(2), 20, 1);
     screen.go_to_tab(1, CLIENT).expect("TEST");
     let (placed, focus, _) = target_of(
         &mut screen,
@@ -192,7 +193,7 @@ fn an_agent_moves_to_the_roomiest_other_tab_when_the_focused_tab_is_crowded() {
         tiled(),
         ClientTabIndexOrPaneId::ClientId(CLIENT),
     );
-    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndex(2));
+    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndex(TabId::new(2)));
     assert_eq!(
         focus,
         Some(CLIENT),
@@ -204,8 +205,8 @@ fn an_agent_moves_to_the_roomiest_other_tab_when_the_focused_tab_is_crowded() {
 #[test]
 fn a_spawn_that_did_not_want_focus_is_moved_without_it() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 4);
-    tab_with_panes(&mut screen, 1, 10, 1);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 4);
+    tab_with_panes(&mut screen, TabId::new(1), 10, 1);
     screen.go_to_tab(1, CLIENT).expect("TEST");
     let (placed, focus, _) = target_of(
         &mut screen,
@@ -213,15 +214,18 @@ fn a_spawn_that_did_not_want_focus_is_moved_without_it() {
         tiled(),
         ClientTabIndexOrPaneId::ClientIdNoFocus(CLIENT),
     );
-    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndexNoFocus(1));
+    assert_eq!(
+        placed,
+        ClientTabIndexOrPaneId::TabIndexNoFocus(TabId::new(1))
+    );
     assert_eq!(focus, None);
 }
 
 #[test]
 fn an_agent_opens_a_new_tab_when_every_tab_is_crowded() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 4);
-    tab_with_panes(&mut screen, 1, 10, 4);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 4);
+    tab_with_panes(&mut screen, TabId::new(1), 10, 4);
     screen.go_to_tab(1, CLIENT).expect("TEST");
     let plugin_receiver = plugin_capture(&mut screen);
     let invoked_with = Some(run("claude"));
@@ -231,22 +235,25 @@ fn an_agent_opens_a_new_tab_when_every_tab_is_crowded() {
         tiled(),
         ClientTabIndexOrPaneId::ClientId(CLIENT),
     );
-    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndex(2));
+    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndex(TabId::new(2)));
     assert_eq!(focus, None, "the layout landing moves the client");
     assert!(
-        screen.tabs.get(&2).is_some_and(|tab| tab.is_pending()),
+        screen
+            .tabs
+            .get(&TabId::new(2))
+            .is_some_and(|tab| tab.is_pending()),
         "the tab exists and waits for its layout"
     );
     assert!(
         screen
             .tabs
-            .get(&2)
+            .get(&TabId::new(2))
             .is_some_and(|tab| !tab.has_no_connected_clients()),
         "the client is seated in the tab it follows the pane to"
     );
     assert_eq!(
         new_tabs_asked_for(&plugin_receiver),
-        vec![(2, true, vec![invoked_with])],
+        vec![(TabId::new(2), true, vec![invoked_with])],
         "one tab, the client following, and a layout that will not add a shell for the pane"
     );
 }
@@ -254,7 +261,7 @@ fn an_agent_opens_a_new_tab_when_every_tab_is_crowded() {
 #[test]
 fn a_tab_made_for_an_unfocused_spawn_does_not_take_the_client_along() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 4);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 4);
     let plugin_receiver = plugin_capture(&mut screen);
     let (placed, focus, _) = target_of(
         &mut screen,
@@ -262,14 +269,17 @@ fn a_tab_made_for_an_unfocused_spawn_does_not_take_the_client_along() {
         tiled(),
         ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(crate::TerminalId::new(1))),
     );
-    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndexNoFocus(1));
+    assert_eq!(
+        placed,
+        ClientTabIndexOrPaneId::TabIndexNoFocus(TabId::new(1))
+    );
     assert_eq!(focus, None);
     assert_eq!(
         new_tabs_asked_for(&plugin_receiver)
             .into_iter()
             .map(|(tab_id, follows, _)| (tab_id, follows))
             .collect::<Vec<_>>(),
-        vec![(1, false)]
+        vec![(TabId::new(1), false)]
     );
     // The client stays where it was, and only there: `apply_layout` moves a client out of
     // its tab on a focus change alone, so seating it in the new tab as well would leave it
@@ -277,18 +287,18 @@ fn a_tab_made_for_an_unfocused_spawn_does_not_take_the_client_along() {
     assert!(
         screen
             .tabs
-            .get(&1)
+            .get(&TabId::new(1))
             .is_some_and(|tab| tab.has_no_connected_clients()),
         "the new tab has no client in it"
     );
     assert!(
         screen
             .tabs
-            .get(&0)
+            .get(&TabId::new(0))
             .is_some_and(|tab| !tab.has_no_connected_clients()),
         "the client is still in the tab it was looking at"
     );
-    assert_eq!(screen.active_tab_ids.get(&CLIENT), Some(&0));
+    assert_eq!(screen.active_tab_ids.get(&CLIENT), Some(&TabId::new(0)));
 }
 
 /// `zellij run -- claude` is a client of its own with no screen. The tab it is crowding, and
@@ -297,8 +307,8 @@ fn a_tab_made_for_an_unfocused_spawn_does_not_take_the_client_along() {
 #[test]
 fn a_spawn_from_a_client_with_no_screen_acts_for_the_attached_one() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 4);
-    tab_with_panes(&mut screen, 1, 10, 1);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 4);
+    tab_with_panes(&mut screen, TabId::new(1), 10, 1);
     screen.go_to_tab(1, CLIENT).expect("TEST");
     let cli_client: ClientId = crate::ClientId::new(42);
     assert!(!screen.active_tab_ids.contains_key(&cli_client));
@@ -308,7 +318,7 @@ fn a_spawn_from_a_client_with_no_screen_acts_for_the_attached_one() {
         tiled(),
         ClientTabIndexOrPaneId::ClientId(cli_client),
     );
-    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndex(1));
+    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndex(TabId::new(1)));
     assert_eq!(
         focus,
         Some(CLIENT),
@@ -316,23 +326,23 @@ fn a_spawn_from_a_client_with_no_screen_acts_for_the_attached_one() {
     );
 
     // And a tab made for the pane is made for the attached client too.
-    tab_with_panes(&mut screen, 2, 20, 4);
+    tab_with_panes(&mut screen, TabId::new(2), 20, 4);
     screen.go_to_tab(1, CLIENT).expect("TEST");
     add_pane_to_tab(
         &mut screen,
-        1,
+        TabId::new(1),
         PaneId::Terminal(crate::TerminalId::new(11)),
         false,
     );
     add_pane_to_tab(
         &mut screen,
-        1,
+        TabId::new(1),
         PaneId::Terminal(crate::TerminalId::new(12)),
         false,
     );
     add_pane_to_tab(
         &mut screen,
-        1,
+        TabId::new(1),
         PaneId::Terminal(crate::TerminalId::new(13)),
         false,
     );
@@ -343,24 +353,24 @@ fn a_spawn_from_a_client_with_no_screen_acts_for_the_attached_one() {
         tiled(),
         ClientTabIndexOrPaneId::ClientId(cli_client),
     );
-    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndex(3));
+    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndex(TabId::new(3)));
     assert_eq!(focus, None);
     assert_eq!(
         new_tabs_asked_for_by_client(&plugin_receiver)
             .into_iter()
             .map(|(tab_id, follows, client, _)| (tab_id, follows, client))
             .collect::<Vec<_>>(),
-        vec![(3, true, CLIENT)]
+        vec![(TabId::new(3), true, CLIENT)]
     );
 }
 
 #[test]
 fn a_pending_tab_is_not_a_candidate() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 4);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 4);
     // A tab whose layout has not landed: empty, and not to be trusted about it.
     screen
-        .new_tab(1, (vec![], vec![]), None, Some(CLIENT))
+        .new_tab(TabId::new(1), (vec![], vec![]), None, Some(CLIENT))
         .expect("TEST");
     let _plugin_receiver = plugin_capture(&mut screen);
     let (placed, _, _) = target_of(
@@ -371,7 +381,7 @@ fn a_pending_tab_is_not_a_candidate() {
     );
     assert_eq!(
         placed,
-        ClientTabIndexOrPaneId::TabIndex(2),
+        ClientTabIndexOrPaneId::TabIndex(TabId::new(2)),
         "a tab of its own, not the pending one"
     );
 }
@@ -379,16 +389,16 @@ fn a_pending_tab_is_not_a_candidate() {
 #[test]
 fn a_fullscreen_tab_is_not_a_candidate() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 4);
-    tab_with_panes(&mut screen, 1, 10, 2);
-    tab_with_panes(&mut screen, 2, 20, 3);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 4);
+    tab_with_panes(&mut screen, TabId::new(1), 10, 2);
+    tab_with_panes(&mut screen, TabId::new(2), 20, 3);
     screen.go_to_tab(1, CLIENT).expect("TEST");
     screen
         .tabs
-        .get_mut(&1)
+        .get_mut(&TabId::new(1))
         .expect("TEST")
         .toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(10)));
-    assert!(screen.tabs[&1].is_fullscreen_active());
+    assert!(screen.tabs[&TabId::new(1)].is_fullscreen_active());
     screen.go_to_tab(0, CLIENT).expect("TEST");
     let (placed, _, _) = target_of(
         &mut screen,
@@ -396,13 +406,13 @@ fn a_fullscreen_tab_is_not_a_candidate() {
         tiled(),
         ClientTabIndexOrPaneId::ClientId(CLIENT),
     );
-    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndex(2));
+    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndex(TabId::new(2)));
 }
 
 #[test]
 fn a_plain_shell_is_never_moved() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 4);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 4);
     for invoked_with in [None, Some(run("zsh")), Some(run("git"))] {
         let target = ClientTabIndexOrPaneId::ClientId(CLIENT);
         let (placed, _, _) = target_of(&mut screen, invoked_with, tiled(), target);
@@ -416,7 +426,7 @@ fn a_plain_shell_is_never_moved() {
 #[test]
 fn an_agent_name_among_an_interpreters_arguments_does_not_move_the_pane() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 4);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 4);
     for (command, args) in [
         ("python3", &["gemini_test.py", "--api", "gemini"][..]),
         ("uv", &["--directory", "/work/claude", "run", "pytest"]),
@@ -436,10 +446,10 @@ fn an_agent_name_among_an_interpreters_arguments_does_not_move_the_pane() {
 #[test]
 fn an_explicit_tab_direction_or_layer_is_honoured() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 4);
-    tab_with_panes(&mut screen, 1, 10, 1);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 4);
+    tab_with_panes(&mut screen, TabId::new(1), 10, 1);
     screen.go_to_tab(1, CLIENT).expect("TEST");
-    let by_tab = ClientTabIndexOrPaneId::TabIndex(0);
+    let by_tab = ClientTabIndexOrPaneId::TabIndex(TabId::new(0));
     let (placed, _, _) = target_of(&mut screen, Some(run("claude")), tiled(), by_tab);
     assert_eq!(placed, by_tab, "--tab-id names the tab");
 
@@ -466,8 +476,8 @@ fn an_explicit_tab_direction_or_layer_is_honoured() {
 #[test]
 fn a_pane_with_no_preference_tiles_where_it_is_sent_unless_the_floating_layer_is_up() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 4);
-    tab_with_panes(&mut screen, 1, 10, 1);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 4);
+    tab_with_panes(&mut screen, TabId::new(1), 10, 1);
     screen.go_to_tab(1, CLIENT).expect("TEST");
     let no_preference = NewPanePlacement::NoPreference { borderless: None };
     let focused = ClientTabIndexOrPaneId::ClientId(CLIENT);
@@ -477,7 +487,7 @@ fn a_pane_with_no_preference_tiles_where_it_is_sent_unless_the_floating_layer_is
         no_preference.clone(),
         focused,
     );
-    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndex(1));
+    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndex(TabId::new(1)));
     assert_eq!(
         rewritten,
         tiled(),
@@ -486,12 +496,16 @@ fn a_pane_with_no_preference_tiles_where_it_is_sent_unless_the_floating_layer_is
 
     add_pane_to_tab(
         &mut screen,
-        0,
+        TabId::new(0),
         PaneId::Terminal(crate::TerminalId::new(50)),
         true,
     );
-    screen.tabs.get_mut(&0).expect("TEST").show_floating_panes();
-    assert!(screen.tabs[&0].are_floating_panes_visible());
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .expect("TEST")
+        .show_floating_panes();
+    assert!(screen.tabs[&TabId::new(0)].are_floating_panes_visible());
     let (placed, _, kept) = target_of(
         &mut screen,
         Some(run("claude")),
@@ -508,16 +522,16 @@ fn a_pane_with_no_preference_tiles_where_it_is_sent_unless_the_floating_layer_is
 #[test]
 fn floating_panes_do_not_count_toward_the_share() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 3);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 3);
     add_pane_to_tab(
         &mut screen,
-        0,
+        TabId::new(0),
         PaneId::Terminal(crate::TerminalId::new(50)),
         true,
     );
     add_pane_to_tab(
         &mut screen,
-        0,
+        TabId::new(0),
         PaneId::Terminal(crate::TerminalId::new(51)),
         true,
     );
@@ -538,7 +552,7 @@ fn a_zero_floor_disables_the_rule() {
     ] {
         let mut screen = screen_with_floor();
         screen.agent_pane_min_size = floor;
-        tab_with_panes(&mut screen, 0, 1, 4);
+        tab_with_panes(&mut screen, TabId::new(0), 1, 4);
         let target = ClientTabIndexOrPaneId::ClientId(CLIENT);
         let (placed, _, _) = target_of(&mut screen, Some(run("claude")), tiled(), target);
         assert_eq!(placed, target, "{floor:?}");
@@ -549,8 +563,8 @@ fn a_zero_floor_disables_the_rule() {
 #[test]
 fn a_pane_a_plugin_marked_as_an_agent_is_placed_like_a_named_agent() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 4);
-    tab_with_panes(&mut screen, 1, 10, 1);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 4);
+    tab_with_panes(&mut screen, TabId::new(1), 10, 1);
     let near_plugin_pane =
         ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(crate::TerminalId::new(1)));
     let (placed, focus, _) = target_of(
@@ -559,7 +573,10 @@ fn a_pane_a_plugin_marked_as_an_agent_is_placed_like_a_named_agent() {
         tiled(),
         near_plugin_pane,
     );
-    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndexNoFocus(1));
+    assert_eq!(
+        placed,
+        ClientTabIndexOrPaneId::TabIndexNoFocus(TabId::new(1))
+    );
     assert_eq!(focus, None, "the plugin focuses its pane itself");
 
     let (placed, _, _) = target_of(
@@ -584,7 +601,7 @@ fn a_pane_a_plugin_marked_as_an_agent_is_placed_like_a_named_agent() {
 #[test]
 fn a_suppressed_pane_is_parked_where_it_was_asked_for() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 4);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 4);
     let target = ClientTabIndexOrPaneId::ClientId(CLIENT);
     let mut placement = tiled();
     let placed =
@@ -633,9 +650,9 @@ fn through_the_screen_thread_an_agent_spawn_gets_a_tab_of_its_own_from_the_confi
     mock_screen.teardown(vec![screen_thread]);
     let made: Vec<_> = new_tabs_asked_for(&plugin_receiver)
         .into_iter()
-        .filter(|(tab_id, _, _)| *tab_id == 1)
+        .filter(|(tab_id, _, _)| *tab_id == TabId::new(1))
         .collect();
-    assert_eq!(made, vec![(1, true, vec![invoked_with])]);
+    assert_eq!(made, vec![(TabId::new(1), true, vec![invoked_with])]);
 }
 
 #[test]
@@ -652,7 +669,7 @@ fn through_the_screen_thread_a_zero_floor_leaves_the_spawn_where_it_was_asked_fo
     assert!(
         new_tabs_asked_for(&plugin_receiver)
             .iter()
-            .all(|(tab_id, _, _)| *tab_id == 0),
+            .all(|(tab_id, _, _)| *tab_id == TabId::new(0)),
         "only the tab the test started with"
     );
 }
@@ -675,10 +692,10 @@ fn through_the_screen_thread_a_pane_opened_near_a_plugin_gets_its_tab_without_th
     mock_screen.teardown(vec![screen_thread]);
     let made: Vec<_> = new_tabs_asked_for(&plugin_receiver)
         .into_iter()
-        .filter(|(tab_id, _, _)| *tab_id == 2)
+        .filter(|(tab_id, _, _)| *tab_id == TabId::new(2))
         .map(|(tab_id, follows, _)| (tab_id, follows))
         .collect();
-    assert_eq!(made, vec![(2, false)]);
+    assert_eq!(made, vec![(TabId::new(2), false)]);
 }
 
 /// A tab made for an agent pane is pending until its layout lands, and the screen knows it
@@ -687,7 +704,7 @@ fn through_the_screen_thread_a_pane_opened_near_a_plugin_gets_its_tab_without_th
 #[test]
 fn a_tab_made_for_an_agent_pane_is_pending_until_its_layout_lands() {
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 4);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 4);
     assert!(!screen.has_pending_tabs());
     let _plugin_receiver = plugin_capture(&mut screen);
     let (placed, _, _) = target_of(
@@ -696,7 +713,7 @@ fn a_tab_made_for_an_agent_pane_is_pending_until_its_layout_lands() {
         tiled(),
         ClientTabIndexOrPaneId::ClientId(CLIENT),
     );
-    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndex(1));
+    assert_eq!(placed, ClientTabIndexOrPaneId::TabIndex(TabId::new(1)));
     assert!(screen.has_pending_tabs(), "the tab waits for its layout");
     screen
         .apply_layout(
@@ -705,7 +722,7 @@ fn a_tab_made_for_an_agent_pane_is_pending_until_its_layout_lands() {
             vec![],
             vec![],
             HashMap::new(),
-            1,
+            TabId::new(1),
             true,
             CLIENT,
             None,
@@ -719,9 +736,9 @@ fn a_failed_layout_override_clears_the_pending_tab() {
     use zellij_types::geometry::SplitSize;
 
     let mut screen = screen_with_floor();
-    tab_with_panes(&mut screen, 0, 1, 1);
+    tab_with_panes(&mut screen, TabId::new(0), 1, 1);
     screen
-        .new_tab(1, (vec![], vec![]), None, Some(CLIENT))
+        .new_tab(TabId::new(1), (vec![], vec![]), None, Some(CLIENT))
         .expect("TEST");
     assert!(screen.has_pending_tabs());
 
@@ -740,7 +757,7 @@ fn a_failed_layout_override_clears_the_pending_tab() {
             .is_err());
     }
 
-    let tab = screen.tabs.get_mut(&1).expect("TEST");
+    let tab = screen.tabs.get_mut(&TabId::new(1)).expect("TEST");
     assert!(tab.is_pending());
     tab.override_layout(
         layout,
@@ -826,7 +843,7 @@ fn through_the_screen_thread_a_focus_on_the_new_pane_waits_for_the_tab_layout() 
             vec![],
             vec![],
             HashMap::new(),
-            2,
+            TabId::new(2),
             false,
             mock_screen.main_client_id,
             None,

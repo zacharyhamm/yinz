@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 
 #[test]
 #[serial(plugin_tests)]
@@ -52,7 +53,7 @@ pub fn send_configuration_to_plugins() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -125,7 +126,7 @@ pub fn request_plugin_permissions() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin,
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -222,7 +223,7 @@ pub fn granted_permission_request_result() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin.clone(),
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,
@@ -319,7 +320,7 @@ pub fn denied_permission_request_result() {
         false, // close_replaced_pane
         plugin_title,
         run_plugin.clone(),
-        Some(tab_index),
+        Some(TabId::new(tab_index)),
         None,
         client_id,
         size,

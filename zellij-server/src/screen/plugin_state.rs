@@ -1,6 +1,7 @@
 use unicode_width::UnicodeWidthStr;
 use zellij_runtime::errors::prelude::*;
 use zellij_tile_utils::ellipsize;
+use zellij_types::internal_ids::TabId;
 use zellij_types::pane_id::PaneId;
 
 use super::Screen;
@@ -283,7 +284,7 @@ impl Screen {
     /// to what is left, so the finished string fits the cap the bars apply anyway
     /// (`MAX_TAB_NAME_WIDTH`) and they have nothing to take off the end - which is where
     /// the exit marker lives, and the part a reader could not put back.
-    pub(super) fn plugin_tab_names(&self) -> HashMap<usize, String> {
+    pub(super) fn plugin_tab_names(&self) -> HashMap<TabId, String> {
         // Positions, because the `#1`/`#2` a collision earns are read off the tab
         // bar left to right. Ids would number by age instead, which is invisible.
         let mut by_position: Vec<&Tab> = self.tabs.values().collect();

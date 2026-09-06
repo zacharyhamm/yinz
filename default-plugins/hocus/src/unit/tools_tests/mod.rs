@@ -1,4 +1,5 @@
 use super::*;
+use zellij_tile::prelude::TabId;
 
 fn argv(name: &str, arguments: &str) -> Result<Vec<String>, String> {
     slack_argv(name, &Args::parse(arguments).unwrap())
@@ -51,7 +52,7 @@ fn positioned_pane(id: u32, x: usize, y: usize, columns: usize, rows: usize) -> 
 /// two cannot pass by accident.
 fn diverged_session() -> SessionTabs {
     SessionTabs {
-        tabs: vec![2, 3],
+        tabs: vec![TabId::new(2), TabId::new(3)],
         panes: vec![
             PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2)),
             PaneId::Terminal(zellij_tile::prelude::TerminalId::new(4)),

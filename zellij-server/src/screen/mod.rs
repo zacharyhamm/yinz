@@ -52,9 +52,9 @@
 //!
 //! # Key Data Structures
 //!
-//! - `tabs: BTreeMap<usize, Tab>`: Keyed by tab.id (stable identifier)
-//! - `active_tab_ids: BTreeMap<ClientId, usize>`: Maps clients to active tab ID
-//! - `tab_history: BTreeMap<ClientId, Vec<usize>>`: History of tab IDs per client
+//! - `tabs: BTreeMap<TabId, Tab>`: Keyed by tab.id (stable identifier)
+//! - `active_tab_ids: BTreeMap<ClientId, TabId>`: Maps clients to active tab ID
+//! - `tab_history: BTreeMap<ClientId, Vec<TabId>>`: History of tab IDs per client
 
 use crate::ui::loading_indication::DOT_PERIOD;
 use crate::ui::notification::{ENTER_DURATION, ENTER_EASING};
@@ -65,6 +65,7 @@ use std::rc::Rc;
 use std::str;
 use std::time::{Duration, Instant};
 use zellij_types::animation::{Tween, BLINK_TICK, FRAME_PERIOD};
+use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TerminalId;
 
 use crate::route::NotificationEnd;
@@ -400,7 +401,7 @@ type HoldForCommand = Option<RunCommand>;
 /// Result of overriding a single tab's layout
 #[derive(Debug, Clone)]
 pub struct TabOverrideResult {
-    pub tab_index: usize,
+    pub tab_index: TabId,
     pub tab_name: Option<String>,
     pub tiled_layout: TiledPaneLayout,
     pub floating_layouts: Vec<FloatingPaneLayout>,
@@ -624,7 +625,7 @@ pub(crate) struct WarpAddress {
 pub(crate) struct BreakPanesToTabOutcome {
     /// `None` when there is no tab with the requested id. Nothing was extracted and the
     /// session is unchanged.
-    pub destination_tab_id: Option<usize>,
+    pub destination_tab_id: Option<TabId>,
     /// Panes extracted from another tab and now in the destination.
     pub moved: Vec<PaneId>,
     /// Panes that were already in the destination and were left alone.
@@ -652,7 +653,7 @@ impl BreakPanesToTabOutcome {
             && !(self.moved.is_empty() && self.already_in_destination.is_empty())
     }
     /// The value the plugin API reports back: `Some(tab_id)` only on a real move.
-    pub fn affected_tab_id(&self) -> Option<usize> {
+    pub fn affected_tab_id(&self) -> Option<TabId> {
         if self.succeeded() {
             self.destination_tab_id
         } else {
@@ -677,7 +678,7 @@ pub(crate) struct Screen {
     /// An optional maximal amount of panes allowed per [`Tab`] in this [`Screen`] instance.
     max_panes: Option<usize>,
     /// A map between this [`Screen`]'s tabs and their ID/key.
-    tabs: BTreeMap<usize, Tab>,
+    tabs: BTreeMap<TabId, Tab>,
     /// Where each terminal pane's process is, as pty last reported it. Stamped
     /// onto every pane manifest so a plugin that missed the announcement — or
     /// loaded after it — is put right by the next update rather than never.
@@ -691,14 +692,14 @@ pub(crate) struct Screen {
     /// The name each tab last showed a plugin, so a change to one that no other
     /// event reports — a lone pane retitling itself, a project arriving, a
     /// collision forming or clearing — still redraws the tab bar.
-    last_plugin_tab_names: HashMap<usize, String>,
+    last_plugin_tab_names: HashMap<TabId, String>,
     /// The project each tab is working on, as the last `SetTabProjects` had it.
     ///
     /// Only a plugin knows what a project is, so this is told to us rather than
     /// worked out. Held raw — without the `#1`/`#2` a collision earns — because
     /// the suffixes depend on tab order, which changes without anyone sending us
     /// anything.
-    tab_projects: HashMap<usize, String>,
+    tab_projects: HashMap<TabId, String>,
     pixel_dimensions: PixelDimensions,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     stacked_resize: Rc<RefCell<bool>>,
@@ -712,7 +713,7 @@ pub(crate) struct Screen {
     terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
     connected_clients: Rc<RefCell<HashSet<ClientId>>>,
     /// The indices of this [`Screen`]'s active [`Tab`]s.
-    active_tab_ids: BTreeMap<ClientId, usize>,
+    active_tab_ids: BTreeMap<ClientId, TabId>,
     client_sizes: HashMap<ClientId, Size>,
     /// The surface every tab was last laid out over, for when no client contributes a size at all:
     /// before the first client reports one, and after every client has detached - a
@@ -748,8 +749,8 @@ pub(crate) struct Screen {
     /// so `sync_animation_clock` is a no-op on the overwhelming majority of ticks rather than a
     /// message on the bus sixty times a second.
     animation_clock: Option<Duration>,
-    global_last_active_tab_id: usize,
-    tab_history: BTreeMap<ClientId, Vec<usize>>,
+    global_last_active_tab_id: TabId,
+    tab_history: BTreeMap<ClientId, Vec<TabId>>,
     pane_history: BTreeMap<ClientId, Vec<PaneId>>,
     mode_info: BTreeMap<ClientId, ModeInfo>,
     default_mode_info: ModeInfo, // TODO: restructure ModeInfo to prevent this duplication
@@ -818,7 +819,7 @@ pub(crate) struct Screen {
     /// serialization finished, which is exactly what the reserve exists to rule
     /// out.
     pending_tab_warps: HashMap<
-        usize,
+        TabId,
         (
             crossbeam::channel::Sender<Result<Box<WarpedTab>, String>>,
             PreparedTabWarp,
@@ -1320,7 +1321,7 @@ impl Screen {
             blinking_agent_panes: HashSet::new(),
             animating_plugin_loads: HashSet::new(),
             animation_clock: None,
-            global_last_active_tab_id: 0,
+            global_last_active_tab_id: TabId::new(0),
             tabs: BTreeMap::new(),
             terminal_cwds: HashMap::new(),
             terminal_hosts: HashMap::new(),
@@ -1477,7 +1478,7 @@ impl Screen {
     }
 
     /// Returns a mutable reference to this [`Screen`]'s tabs.
-    pub fn get_tabs_mut(&mut self) -> &mut BTreeMap<usize, Tab> {
+    pub fn get_tabs_mut(&mut self) -> &mut BTreeMap<TabId, Tab> {
         &mut self.tabs
     }
 
@@ -1531,8 +1532,8 @@ impl Screen {
     fn resolve_tab_and_client(
         &self,
         requested_client_id: ClientId,
-        explicit_tab_id: Option<usize>,
-    ) -> Option<(usize, ClientId)> {
+        explicit_tab_id: Option<TabId>,
+    ) -> Option<(TabId, ClientId)> {
         let client_id = self
             .active_tab_ids
             .contains_key(&requested_client_id)
@@ -1579,7 +1580,7 @@ impl Screen {
     /// Clear bell notification for the currently focused pane of the given client.
     /// Also cancels any running flash jobs if applicable.
     pub fn clear_bell_for_focused_pane(&mut self, client_id: ClientId) {
-        let tab_id_and_pane_id: Option<(usize, PaneId)> =
+        let tab_id_and_pane_id: Option<(TabId, PaneId)> =
             self.get_active_tab_mut(client_id).ok().and_then(|tab| {
                 tab.get_active_pane_id(client_id)
                     .map(|pane_id| (tab.id, pane_id))
@@ -1609,7 +1610,7 @@ impl Screen {
 
     /// Clear bell notification for a specific pane ID in the given client's active tab.
     pub fn clear_bell_for_pane_id(&mut self, pane_id: PaneId, client_id: ClientId) {
-        let tab_id: Option<usize> = self.get_active_tab_mut(client_id).ok().map(|tab| tab.id);
+        let tab_id: Option<TabId> = self.get_active_tab_mut(client_id).ok().map(|tab| tab.id);
         if let Some(tab_id) = tab_id {
             if let Some(tab) = self.tabs.get_mut(&tab_id) {
                 if tab.panes_with_pending_bell.contains(&pane_id) {
@@ -1634,7 +1635,7 @@ impl Screen {
     pub fn show_floating_panes_in_tab(
         &mut self,
         client_id: ClientId,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
         completion: Option<NotificationEnd>,
     ) -> Result<()> {
         let tab = match tab_id {
@@ -1658,7 +1659,7 @@ impl Screen {
     pub fn hide_floating_panes_in_tab(
         &mut self,
         client_id: ClientId,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
         completion: Option<NotificationEnd>,
     ) -> Result<()> {
         let tab = match tab_id {
@@ -1682,7 +1683,7 @@ impl Screen {
     pub fn are_floating_panes_visible_in_tab(
         &self,
         client_id: ClientId,
-        tab_id: Option<usize>,
+        tab_id: Option<TabId>,
         completion: Option<NotificationEnd>,
     ) -> Result<()> {
         let tab = match tab_id {
@@ -1715,7 +1716,7 @@ impl Screen {
     /// Creates a new [`Tab`] in this [`Screen`]
     pub fn new_tab(
         &mut self,
-        tab_id: usize,
+        tab_id: TabId,
         swap_layouts: (Vec<SwapTiledLayout>, Vec<SwapFloatingLayout>),
         tab_name: Option<String>,
         client_id: Option<ClientId>,
@@ -1803,7 +1804,7 @@ impl Screen {
         new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
         new_floating_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
         new_plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
-        tab_id: usize,
+        tab_id: TabId,
         should_change_client_focus: bool,
         client_id: ClientId,
         blocking_terminal: Option<(TerminalId, NotificationEnd)>,
@@ -1955,8 +1956,8 @@ impl Screen {
             *first_active_tab_index
         } else if self.tabs.contains_key(&self.global_last_active_tab_id) {
             self.global_last_active_tab_id
-        } else if self.tabs.contains_key(&0) {
-            0
+        } else if self.tabs.contains_key(&TabId::new(0)) {
+            TabId::new(0)
         } else if let Some(tab_index) = self.tabs.keys().next() {
             tab_index.to_owned()
         } else {
@@ -2372,7 +2373,7 @@ impl Screen {
         Ok(())
     }
 
-    pub fn move_tab_by_id(&mut self, tab_id: usize, direction: Direction) -> Result<()> {
+    pub fn move_tab_by_id(&mut self, tab_id: TabId, direction: Direction) -> Result<()> {
         if self.tabs.len() < 2 {
             return Ok(());
         }
@@ -3897,7 +3898,7 @@ impl Screen {
         // linked as a panel are placed as that panel (`Tab::change_overlay_coordinates_batch`),
         // which they cannot be one pane at a time. An id on no tab is silently skipped, as it
         // always was - a plugin placing a pane that is not on a tab yet is the common case.
-        let mut per_tab: BTreeMap<usize, Vec<(PaneId, FloatingPaneCoordinates)>> = BTreeMap::new();
+        let mut per_tab: BTreeMap<TabId, Vec<(PaneId, FloatingPaneCoordinates)>> = BTreeMap::new();
         for (pane_id, coordinates) in pane_ids_and_coordinates {
             if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
                 per_tab
@@ -4027,7 +4028,7 @@ impl Screen {
     fn get_layout_metadata(
         &self,
         default_shell: Option<PathBuf>,
-        tab_index: Option<usize>,
+        tab_index: Option<TabId>,
     ) -> SessionLayoutMetadata {
         let mut session_layout_metadata = SessionLayoutMetadata::new(self.default_layout.clone());
         if let Some(default_shell) = default_shell {
@@ -4078,7 +4079,7 @@ impl Screen {
     /// in the background, whereas a warp is something the user asked for by name.
     fn tab_panes_for_layout(
         &self,
-        tab_index: usize,
+        tab_index: TabId,
         tab: &Tab,
         with_contents: bool,
     ) -> (
@@ -4539,7 +4540,7 @@ impl Screen {
         None
     }
 
-    fn get_tab_info(&self, tab_id: usize) -> Option<TabInfo> {
+    fn get_tab_info(&self, tab_id: TabId) -> Option<TabInfo> {
         // Look up tab by its stable ID
         self.tabs.get(&tab_id).map(|tab| {
             let all_focused_clients: Vec<ClientId> = self

@@ -1,5 +1,6 @@
 use super::*;
 use zellij_test_support::Watched;
+use zellij_types::internal_ids::TabId;
 use zellij_types::style::HostTerminalThemeMode;
 
 /// The rendered output of every `PluginBytes` asset in `instructions`.
@@ -92,7 +93,7 @@ pub fn a_plugin_subscribing_after_the_broadcast_is_told_the_current_host_theme_m
         false,
         Some("test_plugin".to_owned()),
         run_plugin,
-        Some(1),
+        Some(TabId::new(1)),
         None,
         client_id,
         size,

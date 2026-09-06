@@ -17,6 +17,7 @@ use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use zellij_tile::prelude::TabId;
 use zellij_tile::prelude::*;
 
 const ACTIVITY_SECONDS: f64 = 5.0;
@@ -112,7 +113,7 @@ struct State {
     /// The tab-to-project assignments the user made in hocus, held only to pass
     /// on. Nothing here reads them: the store names the tabs, and this is the
     /// only route from the pane that makes them to the plugin that uses them.
-    tab_projects: BTreeMap<usize, String>,
+    tab_projects: BTreeMap<TabId, String>,
     /// The event-fed terminal-pane snapshot. `None` means nothing has told us
     /// about a pane yet.
     panes: Option<Vec<agents::AgentPane>>,
@@ -3300,7 +3301,7 @@ mod tests {
         sent
     }
 
-    fn in_tab(mut pane: agents::AgentPane, tab_id: usize) -> agents::AgentPane {
+    fn in_tab(mut pane: agents::AgentPane, tab_id: TabId) -> agents::AgentPane {
         pane.tab = Some((tab_id, format!("tab {tab_id}")));
         pane
     }
@@ -3320,12 +3321,12 @@ mod tests {
         State {
             focused: Some(7),
             panes: Some(vec![
-                in_tab(pane(7, "claude", topic), 0),
-                in_tab(pane(8, "claude", topic), 0),
-                in_tab(pane(9, "claude", twin), 0),
-                in_tab(pane(10, "claude", primary), 0),
-                in_tab(pane(11, "zsh", topic), 0),
-                in_tab(pane(12, "claude", topic), 1),
+                in_tab(pane(7, "claude", topic), TabId::new(0)),
+                in_tab(pane(8, "claude", topic), TabId::new(0)),
+                in_tab(pane(9, "claude", twin), TabId::new(0)),
+                in_tab(pane(10, "claude", primary), TabId::new(0)),
+                in_tab(pane(11, "zsh", topic), TabId::new(0)),
+                in_tab(pane(12, "claude", topic), TabId::new(1)),
             ]),
             repositories: BTreeMap::from([
                 (
@@ -5669,7 +5670,7 @@ mod tests {
     fn a_hand_made_tab_assignment_is_carried_through_to_the_snapshot() {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
-            tab_projects: BTreeMap::from([(4, "hocus".to_owned())]),
+            tab_projects: BTreeMap::from([(TabId::new(4), "hocus".to_owned())]),
             ..State::default()
         };
 
@@ -5680,7 +5681,7 @@ mod tests {
                 .expect("parses");
         assert_eq!(
             published.tab_projects,
-            BTreeMap::from([(4, "hocus".to_owned())])
+            BTreeMap::from([(TabId::new(4), "hocus".to_owned())])
         );
     }
 

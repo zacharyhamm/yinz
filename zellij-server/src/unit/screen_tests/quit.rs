@@ -5,6 +5,7 @@ const CLIENT_2: zellij_types::internal_ids::ClientId = zellij_types::internal_id
 
 use super::*;
 use crate::screen::PluginId;
+use zellij_types::internal_ids::TabId;
 use {zellij_types::data::OverlayKind, zellij_types::data::OverlayPlacement};
 
 type ScreenReceiver = Receiver<(ScreenInstruction, ErrorContext)>;
@@ -27,7 +28,7 @@ const HOCUS_PLUGIN_ID: PluginId = crate::PluginId::new(7);
 fn screen_with_a_single_pane() -> (Screen, ScreenReceiver) {
     let size = Size { cols: 80, rows: 24 };
     let mut screen = create_new_screen(size, true, true);
-    new_tab(&mut screen, 1, 1);
+    new_tab(&mut screen, 1, TabId::new(1));
     // The sweep that decides an emptied tab's fate only runs for regular clients, so the screen
     // needs one attached for any of this to happen at all.
     screen.add_client(crate::ClientId::new(1)).expect("TEST");

@@ -9,6 +9,7 @@
 use super::*;
 use zellij_types::input::actions::Action;
 use zellij_types::input::context_menu::ContextMenu;
+use zellij_types::internal_ids::TabId;
 use zellij_types::keys::{BareKey, KeyWithModifier};
 use zellij_types::pane_size::Viewport;
 use {zellij_types::data::ContextMenuContext, zellij_types::data::ContextMenuItem};
@@ -34,7 +35,7 @@ fn menu_items() -> Vec<ContextMenuItem> {
 /// A screen with one tab and the small menu above configured.
 fn screen_with_menu_configured() -> Screen {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.context_menu = configured_menu();
     screen
 }
@@ -724,7 +725,7 @@ fn a_right_press_asks_the_plugin_thread_what_the_menu_should_say() {
 
     let mut screen = create_non_mirrored_screen(size);
     screen.bus.senders.to_plugin = bus.senders.to_plugin.clone();
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     // The option is off by default; the whole feature is opt-in.
     screen.context_menu_on_right_click = true;
     for tab in screen.tabs.values_mut() {
@@ -766,7 +767,7 @@ fn a_right_press_with_the_option_off_asks_nobody_anything() {
 
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
     screen.bus.senders.to_plugin = bus.senders.to_plugin.clone();
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
 
     screen.handle_mouse_event(
         MouseEvent::new_right_press_event(Position::new(3, 6)),
@@ -789,7 +790,7 @@ fn a_right_press_with_the_option_off_asks_nobody_anything() {
 #[test]
 fn a_selected_items_context_reaches_only_the_plugin_that_offered_it() {
     let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
-    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 1, TabId::new(0));
     screen.context_menu = configured_menu();
     let client_id = ClientId::new(1);
 
@@ -1037,7 +1038,7 @@ fn a_reload_replaces_the_configured_menu() {
 fn a_menu_dies_with_the_tab_holding_its_pane() {
     let client_id = ClientId::new(1);
     let mut screen = screen_with_menu_configured();
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 2, TabId::new(1));
     let request_id = screen.open_context_menu(
         click_context(PaneId::Terminal(crate::TerminalId::new(2)), (10, 5)),
         client_id,
@@ -1050,7 +1051,7 @@ fn a_menu_dies_with_the_tab_holding_its_pane() {
     );
     assert!(screen.context_menu_is_open(client_id));
 
-    screen.close_tab_by_id(1).unwrap();
+    screen.close_tab_by_id(TabId::new(1)).unwrap();
 
     assert!(
         !screen.context_menu_is_open(client_id),
@@ -1063,7 +1064,7 @@ fn a_menu_dies_with_the_tab_holding_its_pane() {
 fn closing_a_tab_leaves_other_tabs_menus_alone() {
     let client_id = ClientId::new(1);
     let mut screen = screen_with_menu_configured();
-    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 2, TabId::new(1));
     let request_id = screen.open_context_menu(
         click_context(PaneId::Terminal(crate::TerminalId::new(1)), (10, 5)),
         client_id,
@@ -1075,7 +1076,7 @@ fn closing_a_tab_leaves_other_tabs_menus_alone() {
         client_id,
     );
 
-    screen.close_tab_by_id(1).unwrap();
+    screen.close_tab_by_id(TabId::new(1)).unwrap();
 
     assert!(screen.context_menu_is_open(client_id));
 }

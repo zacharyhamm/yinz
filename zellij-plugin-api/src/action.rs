@@ -87,6 +87,7 @@ use zellij_types::geometry::SplitSize;
 use zellij_types::geometry::{Direction, FloatingPaneCoordinates, ResizeStrategy};
 use zellij_types::geometry::{PercentOrFixed, SplitDirection};
 use zellij_types::input::actions::Action;
+use zellij_types::internal_ids::TabId;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::mouse::{MouseEvent, MouseEventType};
 use {
@@ -502,7 +503,11 @@ impl TryFrom<ProtobufAction> for Action {
             Some(ProtobufActionName::ShowFloatingPanes) => match protobuf_action.optional_payload {
                 Some(OptionalPayload::ShowFloatingPanesPayload(payload)) => {
                     Ok(Action::ShowFloatingPanes {
-                        tab_id: payload.tab_id.map(|id| id as usize),
+                        tab_id: payload
+                            .tab_id
+                            .map(|id| TabId::try_from(u64::from(id)))
+                            .transpose()
+                            .map_err(|_| "tab_id is outside usize range")?,
                     })
                 },
                 None => Ok(Action::ShowFloatingPanes { tab_id: None }),
@@ -511,7 +516,11 @@ impl TryFrom<ProtobufAction> for Action {
             Some(ProtobufActionName::HideFloatingPanes) => match protobuf_action.optional_payload {
                 Some(OptionalPayload::HideFloatingPanesPayload(payload)) => {
                     Ok(Action::HideFloatingPanes {
-                        tab_id: payload.tab_id.map(|id| id as usize),
+                        tab_id: payload
+                            .tab_id
+                            .map(|id| TabId::try_from(u64::from(id)))
+                            .transpose()
+                            .map_err(|_| "tab_id is outside usize range")?,
                     })
                 },
                 None => Ok(Action::HideFloatingPanes { tab_id: None }),
@@ -521,7 +530,11 @@ impl TryFrom<ProtobufAction> for Action {
                 match protobuf_action.optional_payload {
                     Some(OptionalPayload::AreFloatingPanesVisiblePayload(payload)) => {
                         Ok(Action::AreFloatingPanesVisible {
-                            tab_id: payload.tab_id.map(|id| id as usize),
+                            tab_id: payload
+                                .tab_id
+                                .map(|id| TabId::try_from(u64::from(id)))
+                                .transpose()
+                                .map_err(|_| "tab_id is outside usize range")?,
                         })
                     },
                     None => Ok(Action::AreFloatingPanesVisible { tab_id: None }),
@@ -1199,16 +1212,21 @@ impl TryFrom<ProtobufAction> for Action {
                 _ => Err("Wrong payload for Action::SetPaneBorderless"),
             },
             Some(ProtobufActionName::GoToTabById) => match protobuf_action.optional_payload {
-                Some(OptionalPayload::GoToTabByIdPayload(id)) => Ok(Action::GoToTabById { id }),
+                Some(OptionalPayload::GoToTabByIdPayload(id)) => Ok(Action::GoToTabById {
+                    id: TabId::try_from(id).map_err(|_| "tab_id is outside usize range")?,
+                }),
                 _ => Err("Wrong payload for Action::GoToTabById"),
             },
             Some(ProtobufActionName::CloseTabById) => match protobuf_action.optional_payload {
-                Some(OptionalPayload::CloseTabByIdPayload(id)) => Ok(Action::CloseTabById { id }),
+                Some(OptionalPayload::CloseTabByIdPayload(id)) => Ok(Action::CloseTabById {
+                    id: TabId::try_from(id).map_err(|_| "tab_id is outside usize range")?,
+                }),
                 _ => Err("Wrong payload for Action::CloseTabById"),
             },
             Some(ProtobufActionName::RenameTabById) => match protobuf_action.optional_payload {
                 Some(OptionalPayload::RenameTabByIdPayload(payload)) => Ok(Action::RenameTabById {
-                    id: payload.tab_id,
+                    id: TabId::try_from(payload.tab_id)
+                        .map_err(|_| "tab_id is outside usize range")?,
                     name: payload.name,
                 }),
                 _ => Err("Wrong payload for Action::RenameTabById"),
@@ -1283,16 +1301,16 @@ impl TryFrom<Action> for ProtobufAction {
             },
             Action::GoToTabById { id } => Ok(ProtobufAction {
                 name: ProtobufActionName::GoToTabById as i32,
-                optional_payload: Some(OptionalPayload::GoToTabByIdPayload(id)),
+                optional_payload: Some(OptionalPayload::GoToTabByIdPayload(id.get() as u64)),
             }),
             Action::CloseTabById { id } => Ok(ProtobufAction {
                 name: ProtobufActionName::CloseTabById as i32,
-                optional_payload: Some(OptionalPayload::CloseTabByIdPayload(id)),
+                optional_payload: Some(OptionalPayload::CloseTabByIdPayload(id.get() as u64)),
             }),
             Action::RenameTabById { id, name } => Ok(ProtobufAction {
                 name: ProtobufActionName::RenameTabById as i32,
                 optional_payload: Some(OptionalPayload::RenameTabByIdPayload(TabIdAndName {
-                    tab_id: id,
+                    tab_id: id.get() as u64,
                     name,
                 })),
             }),
@@ -1630,7 +1648,7 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::ShowFloatingPanes as i32,
                 optional_payload: Some(OptionalPayload::ShowFloatingPanesPayload(
                     ShowFloatingPanesPayload {
-                        tab_id: tab_id.map(|id| id as u32),
+                        tab_id: tab_id.map(|id| u32::try_from(id.get())).transpose().map_err(|_| "tab_id is outside u32 range")?,
                     },
                 )),
             }),
@@ -1638,7 +1656,7 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::HideFloatingPanes as i32,
                 optional_payload: Some(OptionalPayload::HideFloatingPanesPayload(
                     HideFloatingPanesPayload {
-                        tab_id: tab_id.map(|id| id as u32),
+                        tab_id: tab_id.map(|id| u32::try_from(id.get())).transpose().map_err(|_| "tab_id is outside u32 range")?,
                     },
                 )),
             }),
@@ -1646,7 +1664,7 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::AreFloatingPanesVisible as i32,
                 optional_payload: Some(OptionalPayload::AreFloatingPanesVisiblePayload(
                     AreFloatingPanesVisiblePayload {
-                        tab_id: tab_id.map(|id| id as u32),
+                        tab_id: tab_id.map(|id| u32::try_from(id.get())).transpose().map_err(|_| "tab_id is outside u32 range")?,
                     },
                 )),
             }),
@@ -3225,7 +3243,8 @@ impl TryFrom<ProtobufTabLayoutInfo> for TabLayoutInfo {
 
     fn try_from(protobuf_tab: ProtobufTabLayoutInfo) -> Result<Self, Self::Error> {
         Ok(TabLayoutInfo {
-            tab_index: protobuf_tab.tab_index as usize,
+            tab_index: TabId::try_from(u64::from(protobuf_tab.tab_index))
+                .map_err(|_| "tab_id is outside usize range")?,
             tab_name: protobuf_tab.tab_name.filter(|s| !s.is_empty()),
             tiled_layout: protobuf_tab
                 .tiled_layout
@@ -3267,7 +3286,8 @@ impl TryFrom<TabLayoutInfo> for ProtobufTabLayoutInfo {
 
     fn try_from(tab_info: TabLayoutInfo) -> Result<Self, Self::Error> {
         Ok(ProtobufTabLayoutInfo {
-            tab_index: tab_info.tab_index as u32,
+            tab_index: u32::try_from(tab_info.tab_index.get())
+                .map_err(|_| "tab_id is outside u32 range")?,
             tab_name: tab_info.tab_name,
             tiled_layout: Some(tab_info.tiled_layout.try_into()?),
             floating_layouts: tab_info

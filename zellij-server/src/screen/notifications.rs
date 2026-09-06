@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
+use zellij_types::internal_ids::TabId;
 
 use zellij_runtime::errors::prelude::*;
 
@@ -208,7 +209,7 @@ impl Screen {
         &mut self,
         now: Instant,
         surface: Size,
-    ) -> Vec<(Option<usize>, Vec<CellRect>)> {
+    ) -> Vec<(Option<TabId>, Vec<CellRect>)> {
         // Almost every frame in a session's life has no toast anywhere near it. Bail before
         // touching the client list or solving any geometry, but only once the *last* frame had no
         // toasts either - the frame after the final one still has damage to repair.
@@ -226,7 +227,7 @@ impl Screen {
             return vec![];
         }
 
-        let mut clients_by_tab: BTreeMap<Option<usize>, Vec<ClientId>> = BTreeMap::new();
+        let mut clients_by_tab: BTreeMap<Option<TabId>, Vec<ClientId>> = BTreeMap::new();
         for client_id in regular_client_ids {
             clients_by_tab
                 .entry(self.active_tab_ids.get(&client_id).copied())

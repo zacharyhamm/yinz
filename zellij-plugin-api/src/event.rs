@@ -54,6 +54,7 @@ pub use super::generated_api::api::{
     style::Style as ProtobufStyle,
 };
 use crate::plugin_data::ProtobufRows as ProtobufDataRows;
+use zellij_types::internal_ids::TabId;
 use zellij_types::keys::{KeyModifier, KeyWithModifier};
 use zellij_types::style::{HostTerminalThemeMode, Style};
 #[allow(hidden_glob_reexports)]
@@ -1636,8 +1637,8 @@ impl TryFrom<SessionInfo> for ProtobufSessionManifest {
             tab_history: session_info
                 .tab_history
                 .into_iter()
-                .map(ProtobufClientTabHistory::from)
-                .collect(),
+                .map(ProtobufClientTabHistory::try_from)
+                .collect::<Result<_, _>>()?,
             pane_history: session_info
                 .pane_history
                 .into_iter()
@@ -1648,12 +1649,17 @@ impl TryFrom<SessionInfo> for ProtobufSessionManifest {
     }
 }
 
-impl From<(ClientId, Vec<usize>)> for ProtobufClientTabHistory {
-    fn from((client_id, tab_history): (ClientId, Vec<usize>)) -> ProtobufClientTabHistory {
-        ProtobufClientTabHistory {
+impl TryFrom<(ClientId, Vec<TabId>)> for ProtobufClientTabHistory {
+    type Error = &'static str;
+    fn try_from((client_id, tab_history): (ClientId, Vec<TabId>)) -> Result<Self, Self::Error> {
+        Ok(ProtobufClientTabHistory {
             client_id: u32::from(client_id.get()),
-            tab_history: tab_history.into_iter().map(|t| t as u32).collect(),
-        }
+            tab_history: tab_history
+                .into_iter()
+                .map(|t| u32::try_from(t.get()))
+                .collect::<Result<_, _>>()
+                .map_err(|_| "tab_id is outside u32 range")?,
+        })
     }
 }
 
@@ -1722,7 +1728,7 @@ impl TryFrom<ProtobufSessionManifest> for SessionInfo {
             let tab_history_for_client = client_tab_history
                 .tab_history
                 .iter()
-                .map(|t| *t as usize)
+                .map(|t| TabId::new(*t as usize))
                 .collect();
             tab_history.insert(
                 ClientId::try_from(client_id).map_err(|_| "client_id is outside u16 range")?,
@@ -2361,7 +2367,8 @@ impl TryFrom<ProtobufTabInfo> for TabInfo {
             selectable_tiled_panes_count: protobuf_tab_info.selectable_tiled_panes_count as usize,
             selectable_floating_panes_count: protobuf_tab_info.selectable_floating_panes_count
                 as usize,
-            tab_id: protobuf_tab_info.tab_id as usize,
+            tab_id: TabId::try_from(u64::from(protobuf_tab_info.tab_id))
+                .map_err(|_| "tab_id is outside usize range")?,
             has_bell_notification: protobuf_tab_info.has_bell_notification,
             is_flashing_bell: protobuf_tab_info.is_flashing_bell,
         })
@@ -2392,7 +2399,8 @@ impl TryFrom<TabInfo> for ProtobufTabInfo {
             display_area_columns: tab_info.display_area_columns as u32,
             selectable_tiled_panes_count: tab_info.selectable_tiled_panes_count as u32,
             selectable_floating_panes_count: tab_info.selectable_floating_panes_count as u32,
-            tab_id: tab_info.tab_id as u32,
+            tab_id: u32::try_from(tab_info.tab_id.get())
+                .map_err(|_| "tab_id is outside u32 range")?,
             has_bell_notification: tab_info.has_bell_notification,
             is_flashing_bell: tab_info.is_flashing_bell,
         })
@@ -3035,7 +3043,7 @@ fn serialize_tab_update_event_with_non_default_values() {
             display_area_columns: 10,
             selectable_tiled_panes_count: 10,
             selectable_floating_panes_count: 10,
-            tab_id: 0,
+            tab_id: TabId::new(0),
             has_bell_notification: false,
             is_flashing_bell: false,
             // deliberately larger than the display area, and different on each axis: the two pairs
@@ -3059,7 +3067,7 @@ fn serialize_tab_update_event_with_non_default_values() {
             display_area_columns: 10,
             selectable_tiled_panes_count: 10,
             selectable_floating_panes_count: 10,
-            tab_id: 1,
+            tab_id: TabId::new(1),
             has_bell_notification: false,
             is_flashing_bell: false,
         },
@@ -3246,7 +3254,7 @@ fn serialize_session_update_event_with_non_default_values() {
             display_area_columns: 10,
             selectable_tiled_panes_count: 10,
             selectable_floating_panes_count: 10,
-            tab_id: 0,
+            tab_id: TabId::new(0),
             has_bell_notification: false,
             is_flashing_bell: false,
             // deliberately larger than the display area, and different on each axis: the two pairs
@@ -3270,7 +3278,7 @@ fn serialize_session_update_event_with_non_default_values() {
             display_area_columns: 10,
             selectable_tiled_panes_count: 10,
             selectable_floating_panes_count: 10,
-            tab_id: 1,
+            tab_id: TabId::new(1),
             has_bell_notification: false,
             is_flashing_bell: false,
         },
@@ -3363,8 +3371,14 @@ fn serialize_session_update_event_with_non_default_values() {
         },
     );
     let mut tab_history = BTreeMap::new();
-    tab_history.insert(ClientId::new(1), vec![1, 2, 3]);
-    tab_history.insert(ClientId::new(2), vec![1, 2, 3]);
+    tab_history.insert(
+        ClientId::new(1),
+        [1, 2, 3].into_iter().map(TabId::new).collect(),
+    );
+    tab_history.insert(
+        ClientId::new(2),
+        [1, 2, 3].into_iter().map(TabId::new).collect(),
+    );
     let session_info_1 = SessionInfo {
         name: "session 1".to_owned(),
         tabs: tab_infos,
@@ -3906,6 +3920,21 @@ impl TryFrom<ContextMenuContext> for ProtobufContextMenuContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn tab_id_overflow_is_rejected_at_the_protobuf_boundary() {
+        let tab = TabInfo {
+            tab_id: TabId::new(usize::MAX),
+            ..Default::default()
+        };
+        assert!(ProtobufTabInfo::try_from(tab).is_err());
+        assert!(ProtobufClientTabHistory::try_from((
+            ClientId::new(1),
+            vec![TabId::new(usize::MAX)]
+        ))
+        .is_err());
+    }
 
     #[test]
     fn web_request_stream_chunk_round_trips_through_protobuf() {

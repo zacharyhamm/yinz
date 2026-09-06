@@ -187,6 +187,7 @@ pub use super::generated_api::api::{
     plugin_permission::PermissionType as ProtobufPermissionType,
     resize::ResizeAction as ProtobufResizeAction,
 };
+use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::{RecordingId, TerminalId};
 use zellij_types::units::{ElapsedMicros, UnixMicros};
 
@@ -617,6 +618,12 @@ impl From<GetFocusedPaneInfoResponse> for ProtobufGetFocusedPaneInfoResponse {
     fn from(response: GetFocusedPaneInfoResponse) -> Self {
         match response {
             GetFocusedPaneInfoResponse::Ok { tab_index, pane_id } => {
+                let Ok(tab_index) = u32::try_from(tab_index.get()) else {
+                    return GetFocusedPaneInfoResponse::Err(
+                        "tab_id is outside u32 range".to_owned(),
+                    )
+                    .into();
+                };
                 let protobuf_pane_id = ProtobufPaneId {
                     pane_type: match pane_id {
                         PaneId::Terminal(_) => ProtobufPaneType::Terminal as i32,
@@ -630,7 +637,7 @@ impl From<GetFocusedPaneInfoResponse> for ProtobufGetFocusedPaneInfoResponse {
                 ProtobufGetFocusedPaneInfoResponse {
                     result: Some(get_focused_pane_info_response::Result::FocusedPaneInfo(
                         FocusedPaneInfo {
-                            focused_tab_index: tab_index as u32,
+                            focused_tab_index: tab_index,
                             focused_pane_id: Some(protobuf_pane_id),
                         },
                     )),
@@ -1120,7 +1127,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::NewTiledPaneInTab) => match protobuf_plugin_command.payload {
                 Some(Payload::NewTiledPaneInTabPayload(payload)) => {
                     Ok(PluginCommand::NewTiledPaneInTab {
-                        tab_position: payload.tab_position as usize,
+                        tab_position: TabId::new(payload.tab_position as usize),
                     })
                 },
                 _ => Err("Mismatched payload for NewTiledPaneInTab"),
@@ -1128,7 +1135,11 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::ToggleFloatingPanes) => match protobuf_plugin_command.payload {
                 Some(Payload::ToggleFloatingPanesPayload(payload)) => {
                     Ok(PluginCommand::ToggleFloatingPanes {
-                        tab_id: payload.tab_id,
+                        tab_id: payload
+                            .tab_id
+                            .map(TabId::try_from)
+                            .transpose()
+                            .map_err(|_| "tab_id is outside usize range")?,
                     })
                 },
                 _ => Ok(PluginCommand::ToggleFloatingPanes { tab_id: None }),
@@ -1834,7 +1845,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::DumpSessionLayout) => match protobuf_plugin_command.payload {
                 Some(Payload::DumpSessionLayoutPayload(payload)) => {
                     Ok(PluginCommand::DumpSessionLayout {
-                        tab_index: payload.tab_index.map(|i| i as usize),
+                        tab_index: payload.tab_index.map(|i| TabId::new(i as usize)),
                     })
                 },
                 None => Ok(PluginCommand::DumpSessionLayout { tab_index: None }),
@@ -2276,27 +2287,31 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 _ => Err("Mismatched payload for BreakPanesToTabWithIndex"),
             },
             Some(CommandName::SwitchTabToId) => match protobuf_plugin_command.payload {
-                Some(Payload::SwitchTabToIdPayload(payload)) => {
-                    Ok(PluginCommand::SwitchTabToId(payload.tab_id))
-                },
+                Some(Payload::SwitchTabToIdPayload(payload)) => Ok(PluginCommand::SwitchTabToId(
+                    TabId::try_from(payload.tab_id).map_err(|_| "tab_id is outside usize range")?,
+                )),
                 _ => Err("Mismatched payload for SwitchTabToId"),
             },
             Some(CommandName::GoToTabWithId) => match protobuf_plugin_command.payload {
-                Some(Payload::GoToTabWithIdPayload(payload)) => {
-                    Ok(PluginCommand::GoToTabWithId(payload.tab_id))
-                },
+                Some(Payload::GoToTabWithIdPayload(payload)) => Ok(PluginCommand::GoToTabWithId(
+                    TabId::try_from(payload.tab_id).map_err(|_| "tab_id is outside usize range")?,
+                )),
                 _ => Err("Mismatched payload for GoToTabWithId"),
             },
             Some(CommandName::CloseTabWithId) => match protobuf_plugin_command.payload {
-                Some(Payload::CloseTabWithIdPayload(payload)) => {
-                    Ok(PluginCommand::CloseTabWithId(payload.tab_id))
-                },
+                Some(Payload::CloseTabWithIdPayload(payload)) => Ok(PluginCommand::CloseTabWithId(
+                    TabId::try_from(payload.tab_id).map_err(|_| "tab_id is outside usize range")?,
+                )),
                 _ => Err("Mismatched payload for CloseTabWithId"),
             },
             Some(CommandName::RenameTabWithId) => match protobuf_plugin_command.payload {
-                Some(Payload::RenameTabWithIdPayload(payload)) => Ok(
-                    PluginCommand::RenameTabWithId(payload.tab_id, payload.new_name),
-                ),
+                Some(Payload::RenameTabWithIdPayload(payload)) => {
+                    Ok(PluginCommand::RenameTabWithId(
+                        TabId::try_from(payload.tab_id)
+                            .map_err(|_| "tab_id is outside usize range")?,
+                        payload.new_name,
+                    ))
+                },
                 _ => Err("Mismatched payload for RenameTabWithId"),
             },
             Some(CommandName::SetTabProjects) => match protobuf_plugin_command.payload {
@@ -2304,8 +2319,11 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     payload
                         .tab_projects
                         .into_iter()
-                        .map(|tab_project| (tab_project.tab_id, tab_project.project))
-                        .collect(),
+                        .map(|tab_project| {
+                            TabId::try_from(tab_project.tab_id).map(|id| (id, tab_project.project))
+                        })
+                        .collect::<Result<_, _>>()
+                        .map_err(|_| "tab_id is outside usize range")?,
                 )),
                 _ => Err("Mismatched payload for SetTabProjects"),
             },
@@ -2317,7 +2335,8 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                             .into_iter()
                             .filter_map(|p_id| p_id.try_into().ok())
                             .collect(),
-                        payload.tab_id,
+                        TabId::try_from(payload.tab_id)
+                            .map_err(|_| "tab_id is outside usize range")?,
                         payload.should_change_focus_to_target_tab,
                     ))
                 },
@@ -2925,7 +2944,8 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::GetTabInfo) => match protobuf_plugin_command.payload {
                 Some(Payload::GetTabInfoPayload(get_tab_info_payload)) => {
-                    let tab_id = get_tab_info_payload.tab_id as usize;
+                    let tab_id = TabId::try_from(get_tab_info_payload.tab_id)
+                        .map_err(|_| "tab_id is outside usize range")?;
                     Ok(PluginCommand::GetTabInfo(tab_id))
                 },
                 _ => Err("Malformed payload for GetTabInfo"),
@@ -3072,7 +3092,11 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::HideFloatingPanes) => match protobuf_plugin_command.payload {
                 Some(Payload::HideFloatingPanesPayload(payload)) => {
                     Ok(PluginCommand::HideFloatingPanes {
-                        tab_id: payload.tab_id.map(|id| id as usize),
+                        tab_id: payload
+                            .tab_id
+                            .map(|id| TabId::try_from(u64::from(id)))
+                            .transpose()
+                            .map_err(|_| "tab_id is outside usize range")?,
                     })
                 },
                 None => Ok(PluginCommand::HideFloatingPanes { tab_id: None }),
@@ -3081,7 +3105,11 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::ShowFloatingPanes) => match protobuf_plugin_command.payload {
                 Some(Payload::ShowFloatingPanesPayload(payload)) => {
                     Ok(PluginCommand::ShowFloatingPanes {
-                        tab_id: payload.tab_id.map(|id| id as usize),
+                        tab_id: payload
+                            .tab_id
+                            .map(|id| TabId::try_from(u64::from(id)))
+                            .transpose()
+                            .map_err(|_| "tab_id is outside usize range")?,
                     })
                 },
                 None => Ok(PluginCommand::ShowFloatingPanes { tab_id: None }),
@@ -3260,7 +3288,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::WarpTabToSession) => match protobuf_plugin_command.payload {
                 Some(Payload::WarpTabToSessionPayload(payload)) => {
                     Ok(PluginCommand::WarpTabToSession {
-                        tab_index: payload.tab_index as usize,
+                        tab_index: TabId::new(payload.tab_index as usize),
                         to_session: payload.to_session,
                     })
                 },
@@ -3269,7 +3297,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::WarpTabFromSession) => match protobuf_plugin_command.payload {
                 Some(Payload::WarpTabFromSessionPayload(payload)) => {
                     Ok(PluginCommand::WarpTabFromSession {
-                        tab_index: payload.tab_index as usize,
+                        tab_index: TabId::new(payload.tab_index as usize),
                         from_session: payload.from_session,
                     })
                 },
@@ -3682,14 +3710,17 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::NewTiledPaneInTab as i32,
                 payload: Some(Payload::NewTiledPaneInTabPayload(
                     NewTiledPaneInTabPayload {
-                        tab_position: tab_position as u32,
+                        tab_position: u32::try_from(tab_position.get())
+                            .map_err(|_| "tab_id is outside u32 range")?,
                     },
                 )),
             }),
             PluginCommand::ToggleFloatingPanes { tab_id } => Ok(ProtobufPluginCommand {
                 name: CommandName::ToggleFloatingPanes as i32,
                 payload: Some(Payload::ToggleFloatingPanesPayload(
-                    ToggleFloatingPanesPayload { tab_id },
+                    ToggleFloatingPanesPayload {
+                        tab_id: tab_id.map(|id| id.get() as u64),
+                    },
                 )),
             }),
             PluginCommand::NewPane => Ok(ProtobufPluginCommand {
@@ -4254,11 +4285,15 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             }),
             PluginCommand::DumpSessionLayout { tab_index } => Ok(ProtobufPluginCommand {
                 name: CommandName::DumpSessionLayout as i32,
-                payload: tab_index.map(|idx| {
-                    Payload::DumpSessionLayoutPayload(DumpSessionLayoutPayload {
-                        tab_index: Some(idx as u32),
-                    })
-                }),
+                payload: tab_index
+                    .map(|idx| u32::try_from(idx.get()))
+                    .transpose()
+                    .map_err(|_| "tab_id is outside u32 range")?
+                    .map(|idx| {
+                        Payload::DumpSessionLayoutPayload(DumpSessionLayoutPayload {
+                            tab_index: Some(idx),
+                        })
+                    }),
             }),
             PluginCommand::CloseSelf => Ok(ProtobufPluginCommand {
                 name: CommandName::CloseSelf as i32,
@@ -4582,7 +4617,8 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::CloseTabWithIndex as i32,
                 payload: Some(Payload::CloseTabWithIndexPayload(
                     CloseTabWithIndexPayload {
-                        tab_index: tab_index as u32,
+                        tab_index: u32::try_from(tab_index)
+                            .map_err(|_| "tab_position is outside u32 range")?,
                     },
                 )),
             }),
@@ -4615,7 +4651,8 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                             .into_iter()
                             .filter_map(|p_id| p_id.try_into().ok())
                             .collect(),
-                        tab_index: tab_index as u32,
+                        tab_index: u32::try_from(tab_index)
+                            .map_err(|_| "tab_position is outside u32 range")?,
                         should_change_focus_to_target_tab,
                     },
                 )),
@@ -4623,25 +4660,25 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::SwitchTabToId(tab_id) => Ok(ProtobufPluginCommand {
                 name: CommandName::SwitchTabToId as i32,
                 payload: Some(Payload::SwitchTabToIdPayload(SwitchTabToIdPayload {
-                    tab_id,
+                    tab_id: tab_id.get() as u64,
                 })),
             }),
             PluginCommand::GoToTabWithId(tab_id) => Ok(ProtobufPluginCommand {
                 name: CommandName::GoToTabWithId as i32,
                 payload: Some(Payload::GoToTabWithIdPayload(GoToTabWithIdPayload {
-                    tab_id,
+                    tab_id: tab_id.get() as u64,
                 })),
             }),
             PluginCommand::CloseTabWithId(tab_id) => Ok(ProtobufPluginCommand {
                 name: CommandName::CloseTabWithId as i32,
                 payload: Some(Payload::CloseTabWithIdPayload(CloseTabWithIdPayload {
-                    tab_id,
+                    tab_id: tab_id.get() as u64,
                 })),
             }),
             PluginCommand::RenameTabWithId(tab_id, new_name) => Ok(ProtobufPluginCommand {
                 name: CommandName::RenameTabWithId as i32,
                 payload: Some(Payload::RenameTabWithIdPayload(RenameTabWithIdPayload {
-                    tab_id,
+                    tab_id: tab_id.get() as u64,
                     new_name,
                 })),
             }),
@@ -4650,7 +4687,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 payload: Some(Payload::SetTabProjectsPayload(SetTabProjectsPayload {
                     tab_projects: tab_projects
                         .into_iter()
-                        .map(|(tab_id, project)| TabProject { tab_id, project })
+                        .map(|(tab_id, project)| TabProject {
+                            tab_id: tab_id.get() as u64,
+                            project,
+                        })
                         .collect(),
                 })),
             }),
@@ -4666,7 +4706,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                             .into_iter()
                             .filter_map(|p_id| p_id.try_into().ok())
                             .collect(),
-                        tab_id,
+                        tab_id: tab_id.get() as u64,
                         should_change_focus_to_target_tab,
                     },
                 )),
@@ -5216,7 +5256,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::GetTabInfo(tab_id) => Ok(ProtobufPluginCommand {
                 name: CommandName::GetTabInfo as i32,
                 payload: Some(Payload::GetTabInfoPayload(GetTabInfoPayload {
-                    tab_id: tab_id as u64,
+                    tab_id: tab_id.get() as u64,
                 })),
             }),
             PluginCommand::GetSessionEnvironmentVariables => {
@@ -5345,7 +5385,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::HideFloatingPanes as i32,
                 payload: Some(Payload::HideFloatingPanesPayload(
                     ProtobufHideFloatingPanesPayload {
-                        tab_id: tab_id.map(|id| id as u32),
+                        tab_id: tab_id
+                            .map(|id| u32::try_from(id.get()))
+                            .transpose()
+                            .map_err(|_| "tab_id is outside u32 range")?,
                     },
                 )),
             }),
@@ -5353,7 +5396,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::ShowFloatingPanes as i32,
                 payload: Some(Payload::ShowFloatingPanesPayload(
                     ProtobufShowFloatingPanesPayload {
-                        tab_id: tab_id.map(|id| id as u32),
+                        tab_id: tab_id
+                            .map(|id| u32::try_from(id.get()))
+                            .transpose()
+                            .map_err(|_| "tab_id is outside u32 range")?,
                     },
                 )),
             }),
@@ -5529,7 +5575,8 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             } => Ok(ProtobufPluginCommand {
                 name: CommandName::WarpTabToSession as i32,
                 payload: Some(Payload::WarpTabToSessionPayload(WarpTabToSessionPayload {
-                    tab_index: tab_index as u32,
+                    tab_index: u32::try_from(tab_index.get())
+                        .map_err(|_| "tab_id is outside u32 range")?,
                     to_session,
                 })),
             }),
@@ -5540,7 +5587,8 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::WarpTabFromSession as i32,
                 payload: Some(Payload::WarpTabFromSessionPayload(
                     WarpTabFromSessionPayload {
-                        tab_index: tab_index as u32,
+                        tab_index: u32::try_from(tab_index.get())
+                            .map_err(|_| "tab_id is outside u32 range")?,
                         from_session,
                     },
                 )),
@@ -6031,7 +6079,9 @@ impl TryFrom<ProtobufNewTabResponse> for NewTabResponse {
     type Error = &'static str;
     fn try_from(protobuf: ProtobufNewTabResponse) -> Result<Self, Self::Error> {
         match protobuf.result {
-            Some(new_tab_response::Result::TabId(id)) => Ok(Some(id as usize)),
+            Some(new_tab_response::Result::TabId(id)) => Ok(Some(
+                TabId::try_from(id).map_err(|_| "tab_id is outside usize range")?,
+            )),
             Some(new_tab_response::Result::None(_)) | None => Ok(None),
         }
     }
@@ -6041,7 +6091,7 @@ impl From<NewTabResponse> for ProtobufNewTabResponse {
     fn from(response: NewTabResponse) -> Self {
         match response {
             Some(tab_id) => ProtobufNewTabResponse {
-                result: Some(new_tab_response::Result::TabId(tab_id as u64)),
+                result: Some(new_tab_response::Result::TabId(tab_id.get() as u64)),
             },
             None => ProtobufNewTabResponse {
                 result: Some(new_tab_response::Result::None(true)),
@@ -6054,7 +6104,9 @@ impl TryFrom<ProtobufNewTabUnfocusedResponse> for NewTabUnfocusedResponse {
     type Error = &'static str;
     fn try_from(protobuf: ProtobufNewTabUnfocusedResponse) -> Result<Self, Self::Error> {
         match protobuf.result {
-            Some(new_tab_unfocused_response::Result::TabId(id)) => Ok(Some(id as usize)),
+            Some(new_tab_unfocused_response::Result::TabId(id)) => Ok(Some(
+                TabId::try_from(id).map_err(|_| "tab_id is outside usize range")?,
+            )),
             Some(new_tab_unfocused_response::Result::None(_)) | None => Ok(None),
         }
     }
@@ -6064,7 +6116,9 @@ impl From<NewTabUnfocusedResponse> for ProtobufNewTabUnfocusedResponse {
     fn from(response: NewTabUnfocusedResponse) -> Self {
         match response {
             Some(tab_id) => ProtobufNewTabUnfocusedResponse {
-                result: Some(new_tab_unfocused_response::Result::TabId(tab_id as u64)),
+                result: Some(new_tab_unfocused_response::Result::TabId(
+                    tab_id.get() as u64
+                )),
             },
             None => ProtobufNewTabUnfocusedResponse {
                 result: Some(new_tab_unfocused_response::Result::None(true)),
@@ -6094,14 +6148,19 @@ impl From<NewTiledPaneInTabResponse> for ProtobufNewTiledPaneInTabResponse {
 impl TryFrom<ProtobufNewTabsResponse> for NewTabsResponse {
     type Error = &'static str;
     fn try_from(protobuf: ProtobufNewTabsResponse) -> Result<Self, Self::Error> {
-        Ok(protobuf.tab_ids.into_iter().map(|id| id as usize).collect())
+        protobuf
+            .tab_ids
+            .into_iter()
+            .map(TabId::try_from)
+            .collect::<Result<_, _>>()
+            .map_err(|_| "tab_id is outside usize range")
     }
 }
 
 impl From<NewTabsResponse> for ProtobufNewTabsResponse {
     fn from(response: NewTabsResponse) -> Self {
         ProtobufNewTabsResponse {
-            tab_ids: response.into_iter().map(|id| id as u64).collect(),
+            tab_ids: response.into_iter().map(|id| id.get() as u64).collect(),
         }
     }
 }
@@ -6110,7 +6169,9 @@ impl TryFrom<ProtobufFocusOrCreateTabResponse> for FocusOrCreateTabResponse {
     type Error = &'static str;
     fn try_from(protobuf: ProtobufFocusOrCreateTabResponse) -> Result<Self, Self::Error> {
         match protobuf.result {
-            Some(focus_or_create_tab_response::Result::TabId(id)) => Ok(Some(id as usize)),
+            Some(focus_or_create_tab_response::Result::TabId(id)) => Ok(Some(
+                TabId::try_from(id).map_err(|_| "tab_id is outside usize range")?,
+            )),
             Some(focus_or_create_tab_response::Result::None(_)) | None => Ok(None),
         }
     }
@@ -6120,7 +6181,9 @@ impl From<FocusOrCreateTabResponse> for ProtobufFocusOrCreateTabResponse {
     fn from(response: FocusOrCreateTabResponse) -> Self {
         match response {
             Some(tab_id) => ProtobufFocusOrCreateTabResponse {
-                result: Some(focus_or_create_tab_response::Result::TabId(tab_id as u64)),
+                result: Some(focus_or_create_tab_response::Result::TabId(
+                    tab_id.get() as u64
+                )),
             },
             None => ProtobufFocusOrCreateTabResponse {
                 result: Some(focus_or_create_tab_response::Result::None(true)),
@@ -6133,7 +6196,9 @@ impl TryFrom<ProtobufBreakPanesToNewTabResponse> for BreakPanesToNewTabResponse 
     type Error = &'static str;
     fn try_from(protobuf: ProtobufBreakPanesToNewTabResponse) -> Result<Self, Self::Error> {
         match protobuf.result {
-            Some(break_panes_to_new_tab_response::Result::TabId(id)) => Ok(Some(id as usize)),
+            Some(break_panes_to_new_tab_response::Result::TabId(id)) => Ok(Some(
+                TabId::try_from(id).map_err(|_| "tab_id is outside usize range")?,
+            )),
             Some(break_panes_to_new_tab_response::Result::None(_)) | None => Ok(None),
         }
     }
@@ -6144,7 +6209,7 @@ impl From<BreakPanesToNewTabResponse> for ProtobufBreakPanesToNewTabResponse {
         match response {
             Some(tab_id) => ProtobufBreakPanesToNewTabResponse {
                 result: Some(break_panes_to_new_tab_response::Result::TabId(
-                    tab_id as u64,
+                    tab_id.get() as u64
                 )),
             },
             None => ProtobufBreakPanesToNewTabResponse {
@@ -6158,9 +6223,9 @@ impl TryFrom<ProtobufBreakPanesToTabWithIndexResponse> for BreakPanesToTabWithIn
     type Error = &'static str;
     fn try_from(protobuf: ProtobufBreakPanesToTabWithIndexResponse) -> Result<Self, Self::Error> {
         match protobuf.result {
-            Some(break_panes_to_tab_with_index_response::Result::TabId(id)) => {
-                Ok(Some(id as usize))
-            },
+            Some(break_panes_to_tab_with_index_response::Result::TabId(id)) => Ok(Some(
+                TabId::try_from(id).map_err(|_| "tab_id is outside usize range")?,
+            )),
             Some(break_panes_to_tab_with_index_response::Result::None(_)) | None => Ok(None),
         }
     }
@@ -6171,7 +6236,7 @@ impl From<BreakPanesToTabWithIndexResponse> for ProtobufBreakPanesToTabWithIndex
         match response {
             Some(tab_id) => ProtobufBreakPanesToTabWithIndexResponse {
                 result: Some(break_panes_to_tab_with_index_response::Result::TabId(
-                    tab_id as u64,
+                    tab_id.get() as u64,
                 )),
             },
             None => ProtobufBreakPanesToTabWithIndexResponse {
@@ -6185,7 +6250,9 @@ impl TryFrom<ProtobufBreakPanesToTabWithIdResponse> for BreakPanesToTabWithIdRes
     type Error = &'static str;
     fn try_from(protobuf: ProtobufBreakPanesToTabWithIdResponse) -> Result<Self, Self::Error> {
         match protobuf.result {
-            Some(break_panes_to_tab_with_id_response::Result::TabId(id)) => Ok(Some(id as usize)),
+            Some(break_panes_to_tab_with_id_response::Result::TabId(id)) => Ok(Some(
+                TabId::try_from(id).map_err(|_| "tab_id is outside usize range")?,
+            )),
             Some(break_panes_to_tab_with_id_response::Result::None(_)) | None => Ok(None),
         }
     }
@@ -6196,7 +6263,7 @@ impl From<BreakPanesToTabWithIdResponse> for ProtobufBreakPanesToTabWithIdRespon
         match response {
             Some(tab_id) => ProtobufBreakPanesToTabWithIdResponse {
                 result: Some(break_panes_to_tab_with_id_response::Result::TabId(
-                    tab_id as u64,
+                    tab_id.get() as u64,
                 )),
             },
             None => ProtobufBreakPanesToTabWithIdResponse {
@@ -6719,7 +6786,11 @@ impl From<OpenCommandPaneBackgroundResponse> for ProtobufOpenCommandPaneBackgrou
 impl TryFrom<ProtobufOpenPaneInNewTabResponse> for OpenPaneInNewTabResponse {
     type Error = &'static str;
     fn try_from(protobuf: ProtobufOpenPaneInNewTabResponse) -> Result<Self, Self::Error> {
-        let tab_id = protobuf.tab_id.map(|id| id as usize);
+        let tab_id = protobuf
+            .tab_id
+            .map(TabId::try_from)
+            .transpose()
+            .map_err(|_| "tab_id is outside usize range")?;
         let pane_id = match protobuf.pane_id {
             Some(pane_id) => Some(pane_id.try_into()?),
             None => None,
@@ -6731,7 +6802,7 @@ impl TryFrom<ProtobufOpenPaneInNewTabResponse> for OpenPaneInNewTabResponse {
 impl From<OpenPaneInNewTabResponse> for ProtobufOpenPaneInNewTabResponse {
     fn from(response: OpenPaneInNewTabResponse) -> Self {
         ProtobufOpenPaneInNewTabResponse {
-            tab_id: response.tab_id.map(|id| id as u64),
+            tab_id: response.tab_id.map(|id| id.get() as u64),
             pane_id: response.pane_id.map(|p| p.try_into().unwrap()),
         }
     }
@@ -7157,11 +7228,15 @@ mod tests {
 
     #[test]
     fn toggle_floating_panes_with_tab_id_protobuf_round_trip() {
-        let original = PluginCommand::ToggleFloatingPanes { tab_id: Some(2) };
+        let original = PluginCommand::ToggleFloatingPanes {
+            tab_id: Some(TabId::new(2)),
+        };
         let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
         let decoded: PluginCommand = protobuf.try_into().expect("decode");
         match decoded {
-            PluginCommand::ToggleFloatingPanes { tab_id } => assert_eq!(tab_id, Some(2)),
+            PluginCommand::ToggleFloatingPanes { tab_id } => {
+                assert_eq!(tab_id, Some(TabId::new(2)))
+            },
             other => panic!("expected ToggleFloatingPanes, got {:?}", other),
         }
     }

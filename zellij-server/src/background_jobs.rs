@@ -181,8 +181,8 @@ pub enum BackgroundJob {
     },
     FlashPaneBell(Vec<PaneId>),
     StopFlashPaneBell(Vec<PaneId>),
-    FlashTabBell(usize),     // usize = tab_id
-    StopFlashTabBell(usize), // usize = tab_id
+    FlashTabBell(zellij_types::internal_ids::TabId), // usize = tab_id
+    StopFlashTabBell(zellij_types::internal_ids::TabId), // usize = tab_id
     StartNestedGuestPing(PaneId),
     StopNestedGuestPing(PaneId),
     Exit,
@@ -279,7 +279,8 @@ pub(crate) fn background_jobs_main(
     let pending_command_output_flash_clear: Arc<Mutex<HashMap<PaneId, Instant>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let mut flashing_pane_bells: HashMap<PaneId, Arc<AtomicBool>> = HashMap::new();
-    let mut flashing_tab_bells: HashMap<usize, Arc<AtomicBool>> = HashMap::new();
+    let mut flashing_tab_bells: HashMap<zellij_types::internal_ids::TabId, Arc<AtomicBool>> =
+        HashMap::new();
     let mut nested_guest_pings: HashMap<PaneId, Arc<AtomicBool>> = HashMap::new();
     let mut active_streams: HashMap<StreamKey, ActiveWebRequestStream> = HashMap::new();
     let mut next_stream_generation = 0u64;
@@ -1333,7 +1334,8 @@ pub fn write_session_state_to_disk(
 ) -> Result<()> {
     zellij_runtime::session_checkpoint::write_checkpoint(
         &session_info_folder_for_session(&current_session_name),
-        &zellij_session::metadata::session_info::to_string(&current_session_info),
+        &zellij_session::metadata::session_info::to_string(&current_session_info)
+            .context("Failed to encode session metadata")?,
         &current_session_layout,
     )
 }
@@ -1444,7 +1446,7 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(
             folder.join("session-metadata.kdl"),
-            zellij_session::metadata::session_info::to_string(info),
+            zellij_session::metadata::session_info::to_string(info).unwrap(),
         )
         .unwrap();
     }
@@ -1465,7 +1467,8 @@ mod tests {
                 &info_dir.path().join(name),
                 &zellij_session::metadata::session_info::to_string(&SessionInfo::new(
                     name.to_owned(),
-                )),
+                ))
+                .unwrap(),
                 &("layout {}".to_owned(), BTreeMap::new()),
             )
             .unwrap();

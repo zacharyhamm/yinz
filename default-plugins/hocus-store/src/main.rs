@@ -35,6 +35,7 @@ use hocus_proto::store::{Backend, Host};
 use hocus_proto::wire::{self, Mutation, PollReply, Query};
 use hocus_proto::{agents, notes, projects, store, todos};
 use std::collections::BTreeMap;
+use zellij_tile::prelude::TabId;
 use zellij_tile::prelude::*;
 
 const RETRY_SECONDS: f64 = 5.0;
@@ -48,7 +49,7 @@ struct State {
     /// call. The daemon already drops a snapshot identical to the last one, but
     /// two different snapshots routinely name the tabs the same way — a pane
     /// going busy changes the snapshot and nothing about where the panes are.
-    published_tab_names: BTreeMap<usize, String>,
+    published_tab_names: BTreeMap<TabId, String>,
 }
 
 register_plugin!(State);
@@ -187,7 +188,7 @@ impl State {
         // reading it here would close the loop. As it is the loop opens and shuts
         // once: naming a tab changes the next snapshot, which derives the same map
         // from the same ids, which publishes nothing.
-        let mut names: BTreeMap<usize, String> = agents::tab_project_labels(panes, &owners)
+        let mut names: BTreeMap<TabId, String> = agents::tab_project_labels(panes, &owners)
             .into_iter()
             .filter_map(|(tab_id, found)| Some((tab_id, agents::tab_project_label(&found)?)))
             .collect();
@@ -212,7 +213,7 @@ impl State {
         set_tab_projects(
             self.published_tab_names
                 .iter()
-                .map(|(tab_id, project)| (*tab_id as u64, project.clone()))
+                .map(|(tab_id, project)| (*tab_id, project.clone()))
                 .collect(),
         );
     }
@@ -470,7 +471,7 @@ mod tests {
     }
 
     /// A pane sitting in a tab, which is what it takes to name one.
-    fn pane_on_tab(pane_id: u32, command: &str, cwd: &str, tab_id: usize) -> agents::AgentPane {
+    fn pane_on_tab(pane_id: u32, command: &str, cwd: &str, tab_id: TabId) -> agents::AgentPane {
         agents::AgentPane {
             tab: Some((tab_id, format!("Tab #{}", tab_id))),
             ..pane_in(pane_id, command, Some(command), cwd)
@@ -481,7 +482,7 @@ mod tests {
     /// whatever the user assigned by hand.
     fn snapshot_of_panes(
         panes: Vec<agents::AgentPane>,
-        assigned: BTreeMap<usize, String>,
+        assigned: BTreeMap<TabId, String>,
     ) -> String {
         let repositories = panes
             .iter()
@@ -519,12 +520,12 @@ mod tests {
         let state = apply(
             &backend,
             &snapshot_of_panes(
-                vec![pane_on_tab(3, "zsh", "/work/hocus", 1)],
+                vec![pane_on_tab(3, "zsh", "/work/hocus", TabId::new(1))],
                 BTreeMap::new(),
             ),
         );
 
-        assert_eq!(state.published_tab_names[&1], "hocus");
+        assert_eq!(state.published_tab_names[&TabId::new(1)], "hocus");
         assert!(
             project_names(&backend).is_empty(),
             "naming a tab is not a reason to remember the folder for good",
@@ -541,15 +542,16 @@ mod tests {
             &backend,
             &snapshot_of_panes(
                 vec![
-                    pane_on_tab(3, "zsh", "/work/pocus", 1),
-                    pane_on_tab(4, "zsh", "/work/hocus", 1),
+                    pane_on_tab(3, "zsh", "/work/pocus", TabId::new(1)),
+                    pane_on_tab(4, "zsh", "/work/hocus", TabId::new(1)),
                 ],
                 BTreeMap::new(),
             ),
         );
 
         assert_eq!(
-            state.published_tab_names[&1], "hocus + pocus",
+            state.published_tab_names[&TabId::new(1)],
+            "hocus + pocus",
             "sorted, so the name does not shuffle when the panes come back in another order",
         );
     }
@@ -597,17 +599,18 @@ mod tests {
             )])
             .expect("registered");
         let snapshot = snapshot_of_panes(
-            vec![pane_on_tab(3, "zsh", "/work/hocus", 1)],
+            vec![pane_on_tab(3, "zsh", "/work/hocus", TabId::new(1))],
             BTreeMap::new(),
         );
         let mut state = State::default();
         state.on_snapshot(&backend, &snapshot);
-        assert_eq!(state.published_tab_names[&1], "the-workspace");
+        assert_eq!(state.published_tab_names[&TabId::new(1)], "the-workspace");
 
         state.on_snapshot(&Unreachable, &snapshot);
 
         assert_eq!(
-            state.published_tab_names[&1], "the-workspace",
+            state.published_tab_names[&TabId::new(1)],
+            "the-workspace",
             "a failed fetch is not an empty registry"
         );
     }
@@ -619,7 +622,7 @@ mod tests {
         state.on_snapshot(
             &Unreachable,
             &snapshot_of_panes(
-                vec![pane_on_tab(3, "zsh", "/work/hocus", 1)],
+                vec![pane_on_tab(3, "zsh", "/work/hocus", TabId::new(1))],
                 BTreeMap::new(),
             ),
         );
@@ -628,7 +631,7 @@ mod tests {
         state.retry_snapshot(&Unreachable);
         assert!(state.retry_snapshot);
         state.retry_snapshot(&backend);
-        assert_eq!(state.published_tab_names[&1], "hocus");
+        assert_eq!(state.published_tab_names[&TabId::new(1)], "hocus");
         assert!(!state.retry_snapshot);
     }
 
@@ -639,12 +642,15 @@ mod tests {
         for folder in ["/work/old", "/work/current"] {
             state.on_snapshot(
                 &Unreachable,
-                &snapshot_of_panes(vec![pane_on_tab(3, "zsh", folder, 1)], BTreeMap::new()),
+                &snapshot_of_panes(
+                    vec![pane_on_tab(3, "zsh", folder, TabId::new(1))],
+                    BTreeMap::new(),
+                ),
             );
         }
         state.on_snapshot(&Unreachable, "invalid");
         state.retry_snapshot(&backend);
-        assert_eq!(state.published_tab_names[&1], "current");
+        assert_eq!(state.published_tab_names[&TabId::new(1)], "current");
         assert!(!state.retry_snapshot);
     }
 
@@ -662,12 +668,12 @@ mod tests {
         let state = apply(
             &backend,
             &snapshot_of_panes(
-                vec![pane_on_tab(3, "zsh", "/work/hocus", 1)],
+                vec![pane_on_tab(3, "zsh", "/work/hocus", TabId::new(1))],
                 BTreeMap::new(),
             ),
         );
 
-        assert_eq!(state.published_tab_names[&1], "the-workspace");
+        assert_eq!(state.published_tab_names[&TabId::new(1)], "the-workspace");
     }
 
     #[test]
@@ -701,13 +707,13 @@ mod tests {
             &backend,
             &snapshot_of_panes(
                 vec![
-                    pane_on_tab(3, "zsh", "/work/hocus", 1),
-                    pane_on_tab(4, "zsh", "/work/hocus", 2),
+                    pane_on_tab(3, "zsh", "/work/hocus", TabId::new(1)),
+                    pane_on_tab(4, "zsh", "/work/hocus", TabId::new(2)),
                 ],
-                BTreeMap::from([(2, "manual".to_owned())]),
+                BTreeMap::from([(TabId::new(2), "manual".to_owned())]),
             ),
         );
-        assert_eq!(state.published_tab_names[&1], "hocus");
+        assert_eq!(state.published_tab_names[&TabId::new(1)], "hocus");
         backend
             .apply(vec![
                 projects::delete_mutation("hocus"),
@@ -720,12 +726,12 @@ mod tests {
             .fetch(&FetchRequest::entity("project"))
             .expect("rows");
         state.update(changed(rows.clone(), watch.watch_id + 1));
-        assert_eq!(state.published_tab_names[&1], "hocus");
+        assert_eq!(state.published_tab_names[&TabId::new(1)], "hocus");
         state.update(changed(rows.clone(), watch.watch_id));
-        assert_eq!(state.published_tab_names[&1], "renamed");
-        assert_eq!(state.published_tab_names[&2], "manual");
+        assert_eq!(state.published_tab_names[&TabId::new(1)], "renamed");
+        assert_eq!(state.published_tab_names[&TabId::new(2)], "manual");
         state.update(changed(rows.clone(), watch.watch_id));
-        assert_eq!(state.published_tab_names[&1], "renamed");
+        assert_eq!(state.published_tab_names[&TabId::new(1)], "renamed");
 
         // Invalid payloads and partial replies must not replace the last full pane snapshot.
         state.on_snapshot(&backend, "invalid");
@@ -755,7 +761,7 @@ mod tests {
     fn a_plain_folder_names_no_tab() {
         let backend = backend();
         let payload = snapshot_with(
-            pane_on_tab(3, "zsh", "/home/me/Downloads", 1),
+            pane_on_tab(3, "zsh", "/home/me/Downloads", TabId::new(1)),
             projects::Repository::folder("/home/me/Downloads"),
             BTreeMap::new(),
         );
@@ -775,12 +781,12 @@ mod tests {
         let state = apply(
             &backend,
             &snapshot_of_panes(
-                vec![pane_on_tab(3, "zsh", "/work/hocus", 1)],
-                BTreeMap::from([(1, "notes".to_owned())]),
+                vec![pane_on_tab(3, "zsh", "/work/hocus", TabId::new(1))],
+                BTreeMap::from([(TabId::new(1), "notes".to_owned())]),
             ),
         );
 
-        assert_eq!(state.published_tab_names[&1], "notes");
+        assert_eq!(state.published_tab_names[&TabId::new(1)], "notes");
     }
 
     /// A tab whose panes have all gone simply has no entry in the next map, and
@@ -793,11 +799,11 @@ mod tests {
         state.on_snapshot(
             &backend,
             &snapshot_of_panes(
-                vec![pane_on_tab(3, "zsh", "/work/hocus", 1)],
+                vec![pane_on_tab(3, "zsh", "/work/hocus", TabId::new(1))],
                 BTreeMap::new(),
             ),
         );
-        assert_eq!(state.published_tab_names[&1], "hocus");
+        assert_eq!(state.published_tab_names[&TabId::new(1)], "hocus");
 
         state.on_snapshot(&backend, &snapshot_of_panes(Vec::new(), BTreeMap::new()));
 

@@ -6,6 +6,7 @@ use hocus_proto::notes;
 use hocus_proto::run_history;
 use hocus_proto::store::Backend;
 use std::collections::BTreeMap;
+use zellij_tile::prelude::TabId;
 use zellij_tile::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -1610,8 +1611,8 @@ impl State {
             .projects
             .values()
             .map(|project| {
-                let ids = |assigned: &BTreeMap<usize, String>| {
-                    let mut ids: Vec<usize> = assigned
+                let ids = |assigned: &BTreeMap<TabId, String>| {
+                    let mut ids: Vec<TabId> = assigned
                         .iter()
                         .filter_map(|(id, name)| (name == &project.name).then_some(*id))
                         .collect();
@@ -1720,12 +1721,13 @@ impl State {
     pub(crate) fn register_opened_project(&mut self, name: &str, result: &str) -> String {
         let tab_id = serde_json::from_str::<serde_json::Value>(result)
             .ok()
-            .and_then(|value| value["tab_id"].as_u64());
+            .and_then(|value| value["tab_id"].as_u64())
+            .and_then(|id| TabId::try_from(id).ok());
         let Some(tab_id) = tab_id else {
             return result.to_owned();
         };
-        self.tab_projects.insert(tab_id as usize, name.to_owned());
-        self.auto_tab_projects.remove(&(tab_id as usize));
+        self.tab_projects.insert(tab_id, name.to_owned());
+        self.auto_tab_projects.remove(&tab_id);
         self.active_project = Some(name.to_owned());
         self.sync_project_skills();
         result.to_owned()
@@ -2187,7 +2189,7 @@ impl State {
     }
 
     /// The project of a tab: what the user assigned, then what the poll found.
-    pub(crate) fn tab_project(&self, tab_id: usize) -> Option<&str> {
+    pub(crate) fn tab_project(&self, tab_id: TabId) -> Option<&str> {
         self.tab_projects
             .get(&tab_id)
             .or_else(|| self.auto_tab_projects.get(&tab_id))
@@ -2210,7 +2212,7 @@ impl State {
     }
 
     /// The tab of the agent pane the user last had focused.
-    fn focused_tab(&self) -> Option<usize> {
+    fn focused_tab(&self) -> Option<TabId> {
         let pane_id = self.last_focused_agent?;
         let pane = self.panes.iter().find(|pane| pane.pane_id == pane_id)?;
         pane.tab.as_ref().map(|(tab_id, _)| *tab_id)
@@ -2389,7 +2391,7 @@ impl State {
     fn refresh_tab_project_labels(&mut self) {
         let owners = self.pane_project_labels();
         let detected = agents::tab_project_labels(&self.panes, &owners);
-        let mut labels: BTreeMap<usize, String> = detected
+        let mut labels: BTreeMap<TabId, String> = detected
             .into_iter()
             .filter_map(|(tab_id, projects)| Some((tab_id, agents::tab_project_label(&projects)?)))
             .collect();

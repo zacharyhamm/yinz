@@ -1,9 +1,10 @@
 use super::*;
+use zellij_tile::prelude::TabId;
 
 #[test]
 fn an_agent_folder_becomes_a_project_on_the_poll() {
-    let mut state = state_with_tab(9);
-    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+    let mut state = state_with_tab(TabId::new(9));
+    poll(&mut state, vec![agent_in(3, "/work/hocus", TabId::new(9))]);
 
     assert_eq!(state.projects["hocus"].root, "/work/hocus");
     assert!(state.projects["hocus"].discovered);
@@ -12,8 +13,12 @@ fn an_agent_folder_becomes_a_project_on_the_poll() {
 /// A folder Git does not claim is not a project, and gets no tab.
 #[test]
 fn an_agent_outside_a_repository_becomes_no_project() {
-    let mut state = state_with_tab(9);
-    poll_with(&mut state, vec![agent_in(3, "/work/notes", 9)], folder);
+    let mut state = state_with_tab(TabId::new(9));
+    poll_with(
+        &mut state,
+        vec![agent_in(3, "/work/notes", TabId::new(9))],
+        folder,
+    );
 
     assert!(state.projects.is_empty());
     assert!(state.auto_tab_projects.is_empty());
@@ -24,14 +29,14 @@ fn an_agent_outside_a_repository_becomes_no_project() {
 /// checkout is not working on a project.
 #[test]
 fn an_agent_outside_a_repository_joins_no_project_it_sits_under() {
-    let mut state = state_with_tab(9);
+    let mut state = state_with_tab(TabId::new(9));
     state.projects.insert(
         "hocus".to_owned(),
         projects::validate("hocus", "/work/hocus").unwrap(),
     );
     poll_with(
         &mut state,
-        vec![agent_in(3, "/work/hocus/notes", 9)],
+        vec![agent_in(3, "/work/hocus/notes", TabId::new(9))],
         folder,
     );
 
@@ -41,53 +46,59 @@ fn an_agent_outside_a_repository_joins_no_project_it_sits_under() {
 
 #[test]
 fn a_tab_is_labelled_with_the_project_its_agents_are_in() {
-    let mut state = state_with_tab(9);
+    let mut state = state_with_tab(TabId::new(9));
     poll(
         &mut state,
-        vec![agent_in(3, "/work/hocus", 9), agent_in(4, "/work/hocus", 9)],
+        vec![
+            agent_in(3, "/work/hocus", TabId::new(9)),
+            agent_in(4, "/work/hocus", TabId::new(9)),
+        ],
     );
 
-    assert_eq!(state.tab_project_labels[&9], "hocus");
+    assert_eq!(state.tab_project_labels[&TabId::new(9)], "hocus");
 }
 
 /// The label names both, where the *assignment* names neither: a tab is a place
 /// to work rather than a thing one project owns.
 #[test]
 fn a_tab_with_two_projects_is_labelled_with_both() {
-    let mut state = state_with_tab(9);
+    let mut state = state_with_tab(TabId::new(9));
     poll(
         &mut state,
-        vec![agent_in(3, "/work/pocus", 9), agent_in(4, "/work/hocus", 9)],
+        vec![
+            agent_in(3, "/work/pocus", TabId::new(9)),
+            agent_in(4, "/work/hocus", TabId::new(9)),
+        ],
     );
 
-    assert_eq!(state.tab_project_labels[&9], "hocus + pocus");
+    assert_eq!(state.tab_project_labels[&TabId::new(9)], "hocus + pocus");
     assert!(
-        !state.auto_tab_projects.contains_key(&9),
+        !state.auto_tab_projects.contains_key(&TabId::new(9)),
         "two projects still assign nothing"
     );
 }
 
 #[test]
 fn a_tab_the_user_assigned_is_labelled_with_that_project() {
-    let mut state = state_with_tab(9);
+    let mut state = state_with_tab(TabId::new(9));
     state.run_local(&agent_call(
         "project_assign",
         r#"{"name":"named","root":"/work/named"}"#,
     ));
-    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+    poll(&mut state, vec![agent_in(3, "/work/hocus", TabId::new(9))]);
 
-    assert_eq!(state.tab_project_labels[&9], "named");
+    assert_eq!(state.tab_project_labels[&TabId::new(9)], "named");
 }
 
 #[test]
 fn a_tab_that_closed_loses_its_label() {
-    let mut state = state_with_tab(9);
-    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
-    assert_eq!(state.tab_project_labels[&9], "hocus");
+    let mut state = state_with_tab(TabId::new(9));
+    poll(&mut state, vec![agent_in(3, "/work/hocus", TabId::new(9))]);
+    assert_eq!(state.tab_project_labels[&TabId::new(9)], "hocus");
 
     state.on_tabs(vec![TabInfo {
         active: true,
-        tab_id: 10,
+        tab_id: TabId::new(10),
         ..TabInfo::default()
     }]);
 
@@ -96,8 +107,8 @@ fn a_tab_that_closed_loses_its_label() {
 
 #[test]
 fn a_shell_folder_becomes_no_project() {
-    let mut state = state_with_tab(9);
-    poll(&mut state, vec![shell_in(4, "/work/other", 9)]);
+    let mut state = state_with_tab(TabId::new(9));
+    poll(&mut state, vec![shell_in(4, "/work/other", TabId::new(9))]);
 
     assert!(state.projects.is_empty());
 }
@@ -107,10 +118,10 @@ fn a_shell_folder_becomes_no_project() {
 /// what keeps every `cd` from filling the registry.
 #[test]
 fn a_shell_names_its_tab_without_becoming_a_project() {
-    let mut state = state_with_tab(9);
-    poll(&mut state, vec![shell_in(4, "/work/hocus", 9)]);
+    let mut state = state_with_tab(TabId::new(9));
+    poll(&mut state, vec![shell_in(4, "/work/hocus", TabId::new(9))]);
 
-    assert_eq!(state.tab_project_labels[&9], "hocus");
+    assert_eq!(state.tab_project_labels[&TabId::new(9)], "hocus");
     assert!(state.projects.is_empty(), "no folder was remembered");
     assert!(
         state.auto_tab_projects.is_empty(),
@@ -123,10 +134,13 @@ fn a_shell_names_its_tab_without_becoming_a_project() {
 /// which outlives the session, cannot.
 #[test]
 fn an_unregistered_checkout_names_its_tab_after_the_repository() {
-    let mut state = state_with_tab(9);
-    poll(&mut state, vec![shell_in(4, "/somewhere/zellij", 9)]);
+    let mut state = state_with_tab(TabId::new(9));
+    poll(
+        &mut state,
+        vec![shell_in(4, "/somewhere/zellij", TabId::new(9))],
+    );
 
-    assert_eq!(state.tab_project_labels[&9], "zellij");
+    assert_eq!(state.tab_project_labels[&TabId::new(9)], "zellij");
     assert!(state.projects.is_empty());
 }
 
@@ -134,10 +148,10 @@ fn an_unregistered_checkout_names_its_tab_after_the_repository() {
 /// directory would rename the tab after it.
 #[test]
 fn a_plain_folder_names_no_tab() {
-    let mut state = state_with_tab(9);
+    let mut state = state_with_tab(TabId::new(9));
     poll_with(
         &mut state,
-        vec![shell_in(4, "/home/me/Downloads", 9)],
+        vec![shell_in(4, "/home/me/Downloads", TabId::new(9))],
         folder,
     );
 
@@ -146,13 +160,16 @@ fn a_plain_folder_names_no_tab() {
 
 #[test]
 fn a_tab_whose_agents_share_a_project_is_assigned_automatically() {
-    let mut state = state_with_tab(9);
+    let mut state = state_with_tab(TabId::new(9));
     poll(
         &mut state,
-        vec![agent_in(3, "/work/hocus", 9), agent_in(4, "/work/hocus", 9)],
+        vec![
+            agent_in(3, "/work/hocus", TabId::new(9)),
+            agent_in(4, "/work/hocus", TabId::new(9)),
+        ],
     );
 
-    assert_eq!(state.auto_tab_projects[&9], "hocus");
+    assert_eq!(state.auto_tab_projects[&TabId::new(9)], "hocus");
     assert!(
         state.tab_projects.is_empty(),
         "nothing was assigned by hand"
@@ -162,12 +179,12 @@ fn a_tab_whose_agents_share_a_project_is_assigned_automatically() {
 
 #[test]
 fn a_tab_with_agents_from_two_projects_gets_no_assignment() {
-    let mut state = state_with_tab(9);
+    let mut state = state_with_tab(TabId::new(9));
     poll(
         &mut state,
         vec![
-            agent_in(3, "/work/hocus", 9),
-            agent_in(4, "/other/pocus", 9),
+            agent_in(3, "/work/hocus", TabId::new(9)),
+            agent_in(4, "/other/pocus", TabId::new(9)),
         ],
     );
 
@@ -180,10 +197,13 @@ fn a_tab_with_agents_from_two_projects_gets_no_assignment() {
 /// project — the same answer an agent sitting in the worktree would give.
 #[test]
 fn a_tab_of_firecracker_agents_takes_the_project_their_vms_mirror() {
-    let mut state = state_with_tab(9);
-    poll(&mut state, vec![vm_agent_in(3, "/work/hocus", 9)]);
+    let mut state = state_with_tab(TabId::new(9));
+    poll(
+        &mut state,
+        vec![vm_agent_in(3, "/work/hocus", TabId::new(9))],
+    );
 
-    assert_eq!(state.auto_tab_projects[&9], "hocus");
+    assert_eq!(state.auto_tab_projects[&TabId::new(9)], "hocus");
     assert_eq!(state.active_project.as_deref(), Some("hocus"));
 }
 
@@ -192,12 +212,12 @@ fn a_tab_of_firecracker_agents_takes_the_project_their_vms_mirror() {
 /// contributed nothing and the local one won alone.
 #[test]
 fn a_tab_mixing_a_local_agent_and_a_firecracker_agent_elsewhere_gets_no_assignment() {
-    let mut state = state_with_tab(9);
+    let mut state = state_with_tab(TabId::new(9));
     poll(
         &mut state,
         vec![
-            agent_in(3, "/work/hocus", 9),
-            vm_agent_in(4, "/other/pocus", 9),
+            agent_in(3, "/work/hocus", TabId::new(9)),
+            vm_agent_in(4, "/other/pocus", TabId::new(9)),
         ],
     );
 
@@ -208,14 +228,14 @@ fn a_tab_mixing_a_local_agent_and_a_firecracker_agent_elsewhere_gets_no_assignme
 
 #[test]
 fn an_explicit_assignment_wins_over_the_automatic_one() {
-    let mut state = state_with_tab(9);
+    let mut state = state_with_tab(TabId::new(9));
     state.run_local(&agent_call(
         "project_assign",
         r#"{"name":"named","root":"/work/named"}"#,
     ));
-    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+    poll(&mut state, vec![agent_in(3, "/work/hocus", TabId::new(9))]);
 
-    assert_eq!(state.tab_project(9), Some("named"));
+    assert_eq!(state.tab_project(TabId::new(9)), Some("named"));
     assert_eq!(state.active_project.as_deref(), Some("named"));
     assert!(
         state.auto_tab_projects.is_empty(),
@@ -228,7 +248,11 @@ fn an_explicit_assignment_wins_over_the_automatic_one() {
 #[test]
 fn the_focused_agent_names_the_project_with_no_tabs_at_all() {
     let mut state = idle_state();
-    poll_focused(&mut state, vec![agent_in(3, "/work/hocus", 9)], Some(3));
+    poll_focused(
+        &mut state,
+        vec![agent_in(3, "/work/hocus", TabId::new(9))],
+        Some(3),
+    );
 
     assert!(state.tabs.is_empty(), "no TabUpdate ever arrived");
     assert_eq!(state.active_project.as_deref(), Some("hocus"));
@@ -238,8 +262,8 @@ fn the_focused_agent_names_the_project_with_no_tabs_at_all() {
 fn focusing_another_agent_moves_the_active_project() {
     let mut state = idle_state();
     let panes = vec![
-        agent_in(3, "/work/hocus", 9),
-        agent_in(4, "/other/pocus", 9),
+        agent_in(3, "/work/hocus", TabId::new(9)),
+        agent_in(4, "/other/pocus", TabId::new(9)),
     ];
     poll_focused(&mut state, panes.clone(), Some(3));
     assert_eq!(state.active_project.as_deref(), Some("hocus"));
@@ -256,9 +280,9 @@ fn focus_on_a_pane_with_no_agent_leaves_the_project_alone() {
     let shell = agents::AgentPane {
         title: "zsh".to_owned(),
         command: Some("zsh".to_owned()),
-        ..agent_in(4, "/work/hocus", 9)
+        ..agent_in(4, "/work/hocus", TabId::new(9))
     };
-    let panes = vec![agent_in(3, "/work/hocus", 9), shell];
+    let panes = vec![agent_in(3, "/work/hocus", TabId::new(9)), shell];
     poll_focused(&mut state, panes.clone(), Some(3));
     assert_eq!(state.active_project.as_deref(), Some("hocus"));
 
@@ -275,11 +299,19 @@ fn focus_on_a_pane_with_no_agent_leaves_the_project_alone() {
 
 #[test]
 fn the_focused_agent_closing_drops_back_to_the_tab() {
-    let mut state = state_with_tab(9);
-    poll_focused(&mut state, vec![agent_in(3, "/work/hocus", 9)], Some(3));
+    let mut state = state_with_tab(TabId::new(9));
+    poll_focused(
+        &mut state,
+        vec![agent_in(3, "/work/hocus", TabId::new(9))],
+        Some(3),
+    );
     assert_eq!(state.last_focused_agent, Some(3));
 
-    poll_focused(&mut state, vec![agent_in(4, "/other/pocus", 9)], None);
+    poll_focused(
+        &mut state,
+        vec![agent_in(4, "/other/pocus", TabId::new(9))],
+        None,
+    );
     assert_eq!(state.last_focused_agent, None);
     assert_eq!(state.active_project.as_deref(), Some("pocus"), "by tab");
 }
@@ -288,25 +320,29 @@ fn the_focused_agent_closing_drops_back_to_the_tab() {
 /// what was worked out from a checkout.
 #[test]
 fn an_explicit_assignment_wins_over_the_focused_agents_folder() {
-    let mut state = state_with_tab(9);
+    let mut state = state_with_tab(TabId::new(9));
     state.run_local(&agent_call(
         "project_assign",
         r#"{"name":"named","root":"/work/named"}"#,
     ));
-    poll_focused(&mut state, vec![agent_in(3, "/work/hocus", 9)], Some(3));
+    poll_focused(
+        &mut state,
+        vec![agent_in(3, "/work/hocus", TabId::new(9))],
+        Some(3),
+    );
 
     assert_eq!(state.active_project.as_deref(), Some("named"));
 }
 
 #[test]
 fn a_closed_tab_drops_its_automatic_assignment() {
-    let mut state = state_with_tab(9);
-    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
-    assert_eq!(state.auto_tab_projects[&9], "hocus");
+    let mut state = state_with_tab(TabId::new(9));
+    poll(&mut state, vec![agent_in(3, "/work/hocus", TabId::new(9))]);
+    assert_eq!(state.auto_tab_projects[&TabId::new(9)], "hocus");
 
     state.on_tabs(vec![TabInfo {
         active: true,
-        tab_id: 10,
+        tab_id: TabId::new(10),
         ..TabInfo::default()
     }]);
     assert!(state.auto_tab_projects.is_empty());
@@ -315,8 +351,8 @@ fn a_closed_tab_drops_its_automatic_assignment() {
 
 #[test]
 fn naming_a_discovered_project_leaves_one_project_on_the_root() {
-    let mut state = state_with_tab(9);
-    poll(&mut state, vec![agent_in(3, "/work/hocus", 9)]);
+    let mut state = state_with_tab(TabId::new(9));
+    poll(&mut state, vec![agent_in(3, "/work/hocus", TabId::new(9))]);
     assert_eq!(state.active_project.as_deref(), Some("hocus"));
 
     let result = state.run_local(&agent_call(
@@ -342,7 +378,7 @@ fn poll_reply_round_trips_through_json() {
             title: "claude".to_owned(),
             command: Some("claude --resume".to_owned()),
             status: agents::AgentStatus::Running,
-            tab: Some((2, "work".to_owned())),
+            tab: Some((TabId::new(2), "work".to_owned())),
             cwd: Some("/tmp/work".to_owned()),
             host: None,
             firecracker_image: None,
