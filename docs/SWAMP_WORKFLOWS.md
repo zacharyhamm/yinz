@@ -151,6 +151,58 @@ file and add `workflow`. Invalid configuration remains readable for correction, 
 workflow launch refuses it. Hocus `/project-setup` reads the previous source and writes
 with an expected-source check. It cannot overwrite a concurrent edit.
 
+## Hocus completions
+
+The `@hammz/zellij` model's `hocus_complete` method requests one model turn from the
+session's running Hocus daemon. It uses the model's `session`, `binary`, and
+`timeoutMs` settings (30 seconds by default), plus workflow cancellation.
+Configure the provider and credentials in Hocus. The method makes no automatic retries.
+Cancellation stops the waiting CLI process. A provider request already sent by the
+daemon can continue.
+
+The inputs match `CompletionRequest`:
+
+| Input | Meaning |
+| --- | --- |
+| `messages` | Required array of up to 200 messages with role `system`, `user`, `assistant`, or `tool` |
+| Message fields | `content` defaults to empty, `tool_calls` defaults to `[]`, and tool messages require `tool_call_id` |
+| `request_id` | Optional correlation string, empty by default |
+| `system` | Optional system prompt prepended to the messages |
+| `model` | Optional model override, subject to Hocus's pinned completion model |
+| `tools` | Up to 64 provider tool specifications, empty by default |
+| `tool_choice` | Optional JSON value passed to Hocus |
+| `temperature`, `max_tokens` | Optional sampling and output limits |
+
+Tool calls have `id`, `name`, and `arguments`. Arguments remain the raw JSON string
+from the model. A request must contain a message or a system prompt. Its serialized
+payload must fit within 64000 UTF-8 bytes.
+
+For a model named `zellij-session`, use this task in a workflow step:
+
+```yaml
+task:
+  type: model_method
+  modelIdOrName: zellij-session
+  methodName: hocus_complete
+  inputs:
+    messages:
+      - role: user
+        content: Explain this test failure in one sentence.
+```
+
+After the step succeeds, reference
+`${{ data.latest("zellij-session", "completion").attributes.content }}` in a dependent
+step. The same resource includes `session`, `request_id`, `tool_calls`, `model`,
+`finish_reason`, `usage`, and an empty `error`. Unreported usage is `null`.
+Reported usage contains `prompt_tokens`, `completion_tokens`, and `total_tokens`.
+Retention is seven days and ten versions, matching the CLI result resources.
+
+Command errors, malformed replies, mismatched request IDs, cancellation, and nonempty
+reply errors fail the method without saving a completion. The workflow executes any
+returned tools and sends the next round with the assistant calls and tool results.
+Use separate model instances for concurrent completion steps to avoid overwriting the
+latest output reference.
+
 ## Verification
 
 After reviewing and acknowledging local extension changes, run:

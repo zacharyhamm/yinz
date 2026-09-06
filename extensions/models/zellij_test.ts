@@ -9,6 +9,7 @@ Deno.test("Zellij methods preserve argv, validate snapshots, and fail without wr
         data: Record<string, unknown>;
     }[] = [];
     let responses: { code: number; stdout: string; stderr: string }[] = [];
+    let onOutput = () => {};
     const encoder = new TextEncoder();
     function equal(actual: unknown, expected: unknown) {
         if (JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -61,6 +62,7 @@ Deno.test("Zellij methods preserve argv, validate snapshots, and fail without wr
             };
         }
         output() {
+            onOutput();
             const response = responses.shift();
             if (!response) throw new Error("Unexpected command");
             return Promise.resolve({
@@ -111,6 +113,182 @@ Deno.test("Zellij methods preserve argv, validate snapshots, and fail without wr
             "--literal",
         ]);
         equal(writes.pop()?.name, "pipe");
+
+        const completion = model.methods.hocus_complete;
+        const toolCall = {
+            id: "call-1",
+            name: "lookup",
+            arguments: "{bad json",
+        };
+        const input = {
+            request_id: "round-2",
+            messages: [
+                { role: "assistant" as const, tool_calls: [toolCall] },
+                {
+                    role: "tool" as const,
+                    tool_call_id: "call-1",
+                    content: "--literal $(text)",
+                },
+            ],
+            system: "Be brief",
+            model: "configured-override",
+            tools: [{
+                type: "function",
+                function: { name: "lookup", parameters: { type: "object" } },
+            }],
+            tool_choice: { type: "function", function: { name: "lookup" } },
+            temperature: 0.5,
+            max_tokens: 123,
+        };
+        for (
+            const reply of [
+                {
+                    request_id: "round-2",
+                    content: "answer",
+                    model: "actual-model",
+                    finish_reason: "stop",
+                    error: "",
+                    usage: {
+                        prompt_tokens: 3,
+                        completion_tokens: 2,
+                        total_tokens: 5,
+                    },
+                    tool_calls: [],
+                },
+                {
+                    request_id: "round-2",
+                    content: "",
+                    model: "actual-model",
+                    finish_reason: "tool_calls",
+                    error: "",
+                    usage: null,
+                    tool_calls: [toolCall],
+                },
+                { request_id: "round-2", content: "no usage" },
+            ]
+        ) {
+            responses = [{
+                code: 0,
+                stdout: JSON.stringify(reply) + "\n",
+                stderr: "",
+            }];
+            equal(await completion.execute(input, context), {
+                dataHandles: [{ name: "completion" }],
+            });
+            const argv = calls.pop()!;
+            equal(argv.slice(0, -1), [
+                "--session",
+                "example-session",
+                "pipe",
+                "--name",
+                "hocus_complete",
+                "--",
+            ]);
+            equal(JSON.parse(argv.at(-1)!), completion.arguments.parse(input));
+            const saved = writes.pop()!;
+            equal({
+                ...saved,
+                data: model.resources.completion.schema.parse(saved.data),
+            }, {
+                spec: "completion",
+                name: "completion",
+                data: model.resources.completion.schema.parse({
+                    session: "example-session",
+                    ...reply,
+                }),
+            });
+        }
+        for (
+            const invalid of [
+                {},
+                { messages: [] },
+                { messages: [{ role: "invalid" }] },
+                { messages: [{ role: "tool" }] },
+                { messages: [{ role: "user", content: 1 }] },
+                {
+                    messages: [{
+                        role: "user",
+                        tool_calls: [{ name: "missing id" }],
+                    }],
+                },
+                { messages: [{ role: "user" }], max_tokens: -1 },
+                { messages: [{ role: "user" }], temperature: Infinity },
+                { messages: Array(201).fill({ role: "user" }) },
+                { messages: [{ role: "user" }], tools: Array(65).fill({}) },
+                { messages: [{ role: "user", content: "é".repeat(32000) }] },
+            ]
+        ) {
+            const count = calls.length;
+            let failed = false;
+            try {
+                await completion.execute(
+                    invalid as Parameters<typeof completion.execute>[0],
+                    context,
+                );
+            } catch {
+                failed = true;
+            }
+            equal(failed, true);
+            equal(calls.length, count);
+            equal(writes.length, 0);
+        }
+        for (
+            const response of [
+                { code: 1, stdout: "", stderr: "session not found" },
+                ...[
+                    "not json",
+                    "{}",
+                    "null",
+                    JSON.stringify({ request_id: "wrong" }),
+                    ...[
+                        { content: 1 },
+                        { tool_calls: [{}] },
+                        { usage: { total_tokens: -1 } },
+                        { error: "provider rate limit" },
+                        { error: "cancelled" },
+                    ].map((fields) =>
+                        JSON.stringify({ request_id: "round-2", ...fields })
+                    ),
+                ].map((stdout) => ({ code: 0, stdout, stderr: "" })),
+            ]
+        ) {
+            responses = [response];
+            let failed = false;
+            try {
+                await completion.execute(input, context);
+            } catch {
+                failed = true;
+            }
+            equal(failed, true);
+            equal(writes.length, 0);
+        }
+        for (const during of [false, true]) {
+            const controller = new AbortController();
+            const count = calls.length;
+            if (during) onOutput = () => controller.abort();
+            else controller.abort();
+            responses = [{
+                code: 0,
+                stdout: JSON.stringify({
+                    request_id: "round-2",
+                    content: "late",
+                }),
+                stderr: "",
+            }];
+            let failed = false;
+            try {
+                await completion.execute(input, {
+                    ...context,
+                    signal: controller.signal,
+                });
+            } catch {
+                failed = true;
+            }
+            onOutput = () => {};
+            equal(failed, true);
+            equal(calls.length, count + (during ? 1 : 0));
+            equal(writes.length, 0);
+        }
 
         const pane = {
             id: 42,

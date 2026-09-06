@@ -18,6 +18,47 @@ const PipeArgs = z.object({
     args: z.string().optional(),
     configuration: z.string().optional(),
 });
+const ToolCall = z.object({
+    id: z.string(),
+    name: z.string(),
+    arguments: z.string().default(""),
+});
+const CompletionArgs = z.object({
+    request_id: z.string().default(""),
+    messages: z.array(
+        z.object({
+            role: z.enum(["system", "user", "assistant", "tool"]),
+            content: z.string().default(""),
+            tool_calls: z.array(ToolCall).default([]),
+            tool_call_id: z.string().nullish(),
+        }).refine((message) =>
+            message.role !== "tool" ||
+            message.tool_call_id != null, "A tool message needs tool_call_id"),
+    )
+        .max(200),
+    system: z.string().nullish(),
+    model: z.string().nullish(),
+    tools: z.array(z.json()).max(64).default([]),
+    tool_choice: z.json().optional(),
+    temperature: z.number().nullish(),
+    max_tokens: z.number().int().min(0).max(4294967295).nullish(),
+}).refine(
+    (request) => request.messages.length > 0 || request.system != null,
+    "A completion needs at least one message",
+);
+const CompletionReply = z.object({
+    request_id: z.string(),
+    content: z.string().default(""),
+    tool_calls: z.array(ToolCall).default([]),
+    finish_reason: z.string().default(""),
+    usage: z.object({
+        prompt_tokens: z.number().int().nonnegative().default(0),
+        completion_tokens: z.number().int().nonnegative().default(0),
+        total_tokens: z.number().int().nonnegative().default(0),
+    }).nullable().default(null),
+    model: z.string().default(""),
+    error: z.string().default(""),
+});
 const Pane = z.object({
     id: z.number().int().nonnegative(),
     is_plugin: z.boolean(),
@@ -127,9 +168,57 @@ export const model = {
             lifetime: "7d",
             garbageCollection: 10,
         },
+        completion: {
+            description:
+                "One Hocus completion with its session and reported usage",
+            schema: CompletionReply.extend({ session: z.string() }),
+            lifetime: "7d",
+            garbageCollection: 10,
+        },
     },
     methods: {
         ...methods,
+        hocus_complete: {
+            description:
+                "Request one Hocus model turn; the workflow runs any tools",
+            arguments: CompletionArgs,
+            execute: async (
+                args: z.input<typeof CompletionArgs>,
+                context: Context,
+            ) => {
+                const request = CompletionArgs.parse(args);
+                const payload = JSON.stringify(request);
+                if (new TextEncoder().encode(payload).length > 64000) {
+                    throw new Error(
+                        "A completion request is at most 64000 bytes",
+                    );
+                }
+                const result = await command(context, [
+                    "pipe",
+                    "--name",
+                    "hocus_complete",
+                    "--",
+                    payload,
+                ]);
+                const reply = CompletionReply.parse(JSON.parse(result.stdout));
+                if (reply.request_id !== request.request_id) {
+                    throw new Error(
+                        "Hocus completion request_id does not match",
+                    );
+                }
+                if (reply.error !== "") throw new Error(reply.error);
+                context.signal.throwIfAborted();
+                return {
+                    dataHandles: [
+                        await context.writeResource(
+                            "completion",
+                            "completion",
+                            { session: result.session, ...reply },
+                        ),
+                    ],
+                };
+            },
+        },
         inspect: {
             description: "Read panes and tabs from the named session",
             arguments: z.object({}),
