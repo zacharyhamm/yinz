@@ -9,6 +9,7 @@ use super::*;
 use hocus_proto::agents::{AgentRun, RunEntry, RunEntryKind, RunOutcome};
 use hocus_proto::run_history;
 use hocus_proto::store::Backend;
+use zellij_tile::prelude::HostId;
 
 fn entry(revision: u64, kind: RunEntryKind, text: &str) -> RunEntry {
     RunEntry {
@@ -77,7 +78,7 @@ fn stored_run(
         id: id.to_owned(),
         pane_id: 7,
         zellij_session_name: session.to_owned(),
-        host_id: "test-host".to_owned(),
+        host_id: HostId::new("test-host"),
         session_id: id.to_owned(),
         kind: kind.to_owned(),
         cwd: Some(cwd.to_owned()),

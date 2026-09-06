@@ -1,6 +1,7 @@
 pub use super::generated_api::api::plugin_ids::{
     PluginIds as ProtobufPluginIds, ZellijVersion as ProtobufZellijVersion,
 };
+use zellij_types::internal_ids::HostId;
 use zellij_types::internal_ids::ProcessId;
 use {zellij_types::data::ClientId, zellij_types::data::PluginIds};
 
@@ -19,7 +20,7 @@ impl TryFrom<ProtobufPluginIds> for PluginIds {
             client_id: ClientId::try_from(protobuf_plugin_ids.client_id)
                 .map_err(|_| "client_id is outside u16 range")?,
             hostname: protobuf_plugin_ids.hostname,
-            host_id: protobuf_plugin_ids.host_id,
+            host_id: HostId::new(protobuf_plugin_ids.host_id),
         })
     }
 }
@@ -33,7 +34,7 @@ impl TryFrom<PluginIds> for ProtobufPluginIds {
             initial_cwd: plugin_ids.initial_cwd.display().to_string(),
             client_id: u32::from(plugin_ids.client_id.get()),
             hostname: plugin_ids.hostname,
-            host_id: plugin_ids.host_id,
+            host_id: plugin_ids.host_id.into_string(),
         })
     }
 }
@@ -64,6 +65,23 @@ mod tests {
         ClientId,
         std::collections::BTreeMap<String, String>,
     ) -> zellij_types::data::OriginatingPlugin = zellij_types::data::OriginatingPlugin::new;
+
+    #[test]
+    fn installation_identity_preserves_fixed_wire_bytes() {
+        let bytes = b"\x32\x06host-a";
+        let wire = ProtobufPluginIds::decode(bytes.as_slice()).unwrap();
+        let ids = PluginIds::try_from(wire).unwrap();
+        assert_eq!(ids.host_id, HostId::new("host-a"));
+        assert_eq!(serde_json::to_value(&ids).unwrap()["host_id"], "host-a");
+        assert_eq!(
+            ProtobufPluginIds::try_from(ids).unwrap().encode_to_vec(),
+            bytes
+        );
+        assert!(PluginIds::try_from(ProtobufPluginIds::default())
+            .unwrap()
+            .host_id
+            .is_empty());
+    }
 
     #[test]
     fn process_identity_preserves_fixed_legacy_wire_bits() {

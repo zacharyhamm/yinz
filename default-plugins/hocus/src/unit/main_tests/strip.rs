@@ -1,5 +1,6 @@
 use super::*;
 use hocus_proto::store::Backend;
+use zellij_tile::prelude::HostId;
 use zellij_tile::prelude::TabId;
 
 /// The strip rows hocus pushes to the agents pane: agents grouped under the
@@ -184,7 +185,7 @@ fn completed_runs_are_nested_under_the_archive_and_page_on_demand() {
 /// One archive header, as `load_more_agent_runs` puts them in `archived_runs`.
 fn header(session_id: &str, host: Option<&str>) -> agents::AgentRunHeader {
     agents::AgentRunHeader {
-        id: agents::run_id("claude", 3, session_id, 10, "test-host"),
+        id: agents::run_id("claude", 3, session_id, 10, &HostId::new("test-host")),
         pane_id: 3,
         session_id: session_id.to_owned(),
         kind: "claude".to_owned(),
@@ -206,10 +207,10 @@ fn header(session_id: &str, host: Option<&str>) -> agents::AgentRunHeader {
 /// temporary store, so nothing here stands in for the daemon.
 fn seed_run(state: &State, session_id: &str, host: Option<&str>, ended: bool) {
     let run = agents::AgentRun {
-        id: agents::run_id("claude", 3, session_id, 10, "test-host"),
+        id: agents::run_id("claude", 3, session_id, 10, &HostId::new("test-host")),
         pane_id: 3,
         zellij_session_name: "main".to_owned(),
-        host_id: "test-host".to_owned(),
+        host_id: HostId::new("test-host"),
         session_id: session_id.to_owned(),
         kind: "claude".to_owned(),
         cwd: Some("/work/hocus".to_owned()),
@@ -261,7 +262,13 @@ fn a_run_that_cannot_be_resumed_says_why() {
     // and there is nothing in that to resume.
     seed_run(&state, "", None, true);
     let refused = state
-        .resume_plan(&agents::run_id("claude", 3, "", 10, "test-host"))
+        .resume_plan(&agents::run_id(
+            "claude",
+            3,
+            "",
+            10,
+            &HostId::new("test-host"),
+        ))
         .unwrap_err();
     assert!(refused.contains("no session id"), "{refused}");
 

@@ -1,4 +1,5 @@
 use super::*;
+use zellij_types::internal_ids::HostId;
 
 #[allow(clippy::result_large_err)]
 pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
@@ -202,7 +203,7 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
                     entry
                 ));
             }
-            Some(value.to_owned())
+            Some(HostId::new(value))
         },
         None => None,
     };
@@ -1451,7 +1452,7 @@ fn plugin_data_schema_to_kdl(value: &Options) -> Option<KdlNode> {
 fn host_id_to_kdl(value: &Options) -> Option<KdlNode> {
     value.host_id.as_ref().map(|host_id| {
         let mut node = KdlNode::new("host_id");
-        node.push(host_id.clone());
+        node.push(host_id.as_str());
         node
     })
 }

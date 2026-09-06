@@ -438,7 +438,10 @@ fn plugin_data_options_kdl_roundtrip() {
 fn host_id_kdl_roundtrip() {
     let document: KdlDocument = "host_id \"build-box-1\"".parse().unwrap();
     let options = crate::kdl::options::from_kdl(&document).unwrap();
-    assert_eq!(options.host_id.as_deref(), Some("build-box-1"));
+    assert_eq!(
+        options.host_id.as_ref().map(|id| id.as_str()),
+        Some("build-box-1")
+    );
 
     let serialized = crate::kdl::options::to_kdl(&options, false);
     let mut fake_document = KdlDocument::new();

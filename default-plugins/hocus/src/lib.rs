@@ -25,6 +25,7 @@ mod tools;
 mod transitions;
 pub use transitions::{Confirmation, PromptKind};
 use zellij_tile::prelude::DataWatchId;
+use zellij_tile::prelude::HostId;
 use zellij_tile::prelude::TabId;
 use zellij_tile::prelude::TabPosition;
 pub mod ui;
@@ -578,7 +579,7 @@ pub struct State {
     zellij_session_name: String,
     /// The machine this hocus runs on, read once at load. With `zellij_session_name` it is what
     /// owns this session's rows in the shared store — see `agents::rows::Owner`.
-    host_id: String,
+    host_id: HostId,
     /// Whether `restore_pane_rows` has run. It waits for the session name, so it cannot ride
     /// on `restore_persisted`'s single call at load.
     restored_pane_rows: bool,
@@ -990,7 +991,7 @@ impl Default for State {
             repositories: BTreeMap::new(),
             manual_kinds: BTreeMap::new(),
             zellij_session_name: String::new(),
-            host_id: String::new(),
+            host_id: HostId::default(),
             restored_pane_rows: false,
             pending_agent_panes: BTreeSet::new(),
             activity: BTreeMap::new(),

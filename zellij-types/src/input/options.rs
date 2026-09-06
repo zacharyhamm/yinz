@@ -1,5 +1,6 @@
 //! Handles cli and configuration options
 use crate::data::InputMode;
+use crate::internal_ids::HostId;
 use crate::style::ThemeHue;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -363,7 +364,7 @@ pub struct Options {
     /// Config-file only, like `plugin_data_url`: changing it mid-session would orphan every row
     /// the session had already written.
     #[serde(default)]
-    pub host_id: Option<String>,
+    pub host_id: Option<HostId>,
 
     /// Whether pane viewports are serialized along with the session, default is false
     #[serde(default)]

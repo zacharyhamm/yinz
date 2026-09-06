@@ -1,4 +1,5 @@
 use super::*;
+use zellij_tile::prelude::HostId;
 use zellij_tile::prelude::TabId;
 
 /// A plugin pane is not an agent, a suppressed one is not on screen, and a held
@@ -637,7 +638,7 @@ fn a_registered_kind_survives_open_store() {
     // restores them when the first one names the session.
     let mut restarted = State {
         zellij_session_name: "test-session".to_owned(),
-        host_id: "test-host".to_owned(),
+        host_id: HostId::new("test-host"),
         ..State::default()
     };
     restarted
