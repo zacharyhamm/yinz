@@ -1,11 +1,11 @@
 ---
 source: zellij-server/src/plugins/./unit/plugin_tests/run_and_pipe_commands.rs
-assertion_line: 877
+assertion_line: 878
 expression: "format!(\"{:#?}\", switch_session_event)"
 ---
 Some(
     SwitchSession(
-        ConnectToSession {
+        SessionConnection {
             name: Some(
                 "my_other_new_session_with_cwd",
             ),
