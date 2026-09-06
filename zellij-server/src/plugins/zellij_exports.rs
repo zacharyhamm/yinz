@@ -4262,11 +4262,10 @@ fn switch_session(
     env: &PluginEnv,
     session_name: Option<String>,
     tab_position: Option<usize>,
-    pane_id: Option<(u32, bool)>,
+    pane_id: Option<zellij_types::pane_id::PaneId>,
     layout: Option<LayoutInfo>,
     cwd: Option<PathBuf>,
 ) -> Result<()> {
-    // pane_id is (id, is_plugin)
     let err_context = || "Failed to switch session".to_string();
     if let Some(layout) = layout.as_ref() {
         ensure_layout_info_permissions(env, layout)?;

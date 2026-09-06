@@ -1,6 +1,6 @@
 use super::test_framework::*;
 use crate::ipc::{
-    ClientToServerMsg, ColorRegister, ExitReason, PaneReference, PixelDimensions, ServerToClientMsg,
+    ClientToServerMsg, ColorRegister, ExitReason, PixelDimensions, ServerToClientMsg,
 };
 use prost::Message;
 use std::collections::{BTreeMap, BTreeSet};
@@ -999,18 +999,12 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
         cli_assets: CliAssets::default(),
         tab_position_to_focus: None,
-        pane_to_focus: Some(PaneReference {
-            pane_id: 0,
-            is_plugin: false,
-        }),
+        pane_to_focus: Some(PaneId::from_legacy(0, false)),
     });
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
         cli_assets: CliAssets::default(),
         tab_position_to_focus: None,
-        pane_to_focus: Some(PaneReference {
-            pane_id: 100,
-            is_plugin: true,
-        }),
+        pane_to_focus: Some(PaneId::from_legacy(100, true)),
     });
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
         cli_assets: CliAssets {
@@ -4468,7 +4462,7 @@ fn test_server_messages() {
         connect_to_session: ConnectToSession {
             name: Some("new_session_name".to_owned()),
             tab_position: Some(5),
-            pane_id: Some((5, true)),
+            pane_id: Some(PaneId::from_legacy(5, true)),
             layout: Some(LayoutInfo::BuiltIn("compact".to_owned())),
             cwd: Some(PathBuf::from("/path/to/cwd")),
         }
@@ -4477,7 +4471,7 @@ fn test_server_messages() {
         connect_to_session: ConnectToSession {
             name: Some("new_session_name".to_owned()),
             tab_position: Some(5),
-            pane_id: Some((5, true)),
+            pane_id: Some(PaneId::from_legacy(5, true)),
             layout: Some(LayoutInfo::File(
                 "/path/to/my/file.kdl".to_owned(),
                 LayoutMetadata {
@@ -4493,7 +4487,7 @@ fn test_server_messages() {
         connect_to_session: ConnectToSession {
             name: Some("new_session_name".to_owned()),
             tab_position: Some(5),
-            pane_id: Some((5, true)),
+            pane_id: Some(PaneId::from_legacy(5, true)),
             layout: Some(LayoutInfo::Url("https://example.com/layout.kdl".to_owned())),
             cwd: Some(PathBuf::from("/path/to/cwd")),
         }
@@ -4502,7 +4496,7 @@ fn test_server_messages() {
         connect_to_session: ConnectToSession {
             name: Some("new_session_name".to_owned()),
             tab_position: Some(5),
-            pane_id: Some((5, true)),
+            pane_id: Some(PaneId::from_legacy(5, true)),
             layout: Some(LayoutInfo::Stringified(
                 "layout { pane; pane; pane; }".to_owned()
             )),
@@ -4761,5 +4755,30 @@ fn pane_ids_preserve_ipc_bytes() {
             PaneId::try_from(IpcPaneId::decode(bytes.as_slice()).unwrap()).unwrap(),
             pane
         );
+    }
+}
+
+#[test]
+fn attach_pane_reference_keeps_its_json_object() {
+    for (is_plugin, id) in [(false, 0), (true, u32::MAX)] {
+        let pane = PaneId::from_legacy(id, is_plugin);
+        let message = ClientToServerMsg::AttachClient {
+            cli_assets: CliAssets::default(),
+            tab_position_to_focus: None,
+            pane_to_focus: Some(pane),
+        };
+        let json = serde_json::to_value(&message).unwrap();
+        assert_eq!(
+            json["AttachClient"]["pane_to_focus"],
+            serde_json::json!({
+                "pane_id": id, "is_plugin": is_plugin,
+            })
+        );
+        match serde_json::from_value::<ClientToServerMsg>(json).unwrap() {
+            ClientToServerMsg::AttachClient { pane_to_focus, .. } => {
+                assert_eq!(pane_to_focus, Some(pane))
+            },
+            _ => unreachable!(),
+        }
     }
 }

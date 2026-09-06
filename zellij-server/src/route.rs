@@ -7,7 +7,7 @@
 #![allow(clippy::borrowed_box)]
 #![allow(clippy::redundant_closure)]
 #![allow(clippy::option_as_ref_deref)]
-use crate::{PluginId, TerminalId};
+use crate::TerminalId;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
@@ -3088,7 +3088,7 @@ pub(crate) fn route_thread_main(
                             let attach_client_instruction = ServerInstruction::AttachClient(
                                 cli_assets,
                                 tab_position_to_focus,
-                                pane_id_to_focus.map(|p| if p.is_plugin { PaneId::Plugin(PluginId::new(p.pane_id)) } else { PaneId::Terminal(TerminalId::new(p.pane_id)) }),
+                                pane_id_to_focus,
                                 client_id,
                             );
                             to_server

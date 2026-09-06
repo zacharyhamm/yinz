@@ -152,10 +152,7 @@ impl<'a> TiledPaneGrid<'a> {
                 .pane_is_flexible(direction.into(), pane_id)
                 .unwrap_or(false)
             {
-                let pane_ids = match pane_id {
-                    PaneId::Terminal(id) => vec![(id.get(), true)],
-                    PaneId::Plugin(id) => vec![(id.get(), false)],
-                };
+                let pane_ids = vec![*pane_id];
                 return Err(ZellijError::CantResizeFixedPanes { pane_ids })
                     .with_context(err_context);
             }
@@ -169,13 +166,7 @@ impl<'a> TiledPaneGrid<'a> {
                 .copied()
                 .collect();
             if !fixed_panes.is_empty() {
-                let mut pane_ids = vec![];
-                for fixed_pane in fixed_panes {
-                    match fixed_pane {
-                        PaneId::Terminal(id) => pane_ids.push((id.get(), true)),
-                        PaneId::Plugin(id) => pane_ids.push((id.get(), false)),
-                    };
-                }
+                let pane_ids = fixed_panes;
                 return Err(ZellijError::CantResizeFixedPanes { pane_ids })
                     .with_context(err_context);
             }

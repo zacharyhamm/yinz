@@ -373,7 +373,7 @@ pub fn start_client(
     config_options: Options, // CLI options merged into (getting priority over) saved config options
     info: ClientInfo,
     tab_position_to_focus: Option<usize>,
-    pane_id_to_focus: Option<(u32, bool)>, // (pane_id, is_plugin)
+    pane_id_to_focus: Option<zellij_types::pane_id::PaneId>,
     is_a_reconnect: bool,
     start_detached_and_exit: bool,
 ) -> Option<ConnectToSession> {

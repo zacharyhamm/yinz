@@ -1512,7 +1512,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::SwitchSession) => match protobuf_plugin_command.payload {
                 Some(Payload::SwitchSessionPayload(payload)) => {
                     let pane_id = match (payload.pane_id, payload.pane_id_is_plugin) {
-                        (Some(pane_id), Some(is_plugin)) => Some((pane_id, is_plugin)),
+                        (Some(pane_id), Some(is_plugin)) => Some(PaneId::from_legacy(pane_id, is_plugin)),
                         (None, None) => None,
                         _ => {
                             return Err("Malformed payload for SwitchSession, 'pane_id' and 'is_plugin' must be included together or not at all")
@@ -3966,8 +3966,8 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 payload: Some(Payload::SwitchSessionPayload(SwitchSessionPayload {
                     name: switch_to_session.name,
                     tab_position: switch_to_session.tab_position.map(|t| t as u32),
-                    pane_id: switch_to_session.pane_id.map(|p| p.0),
-                    pane_id_is_plugin: switch_to_session.pane_id.map(|p| p.1),
+                    pane_id: switch_to_session.pane_id.map(|p| p.legacy_parts().0),
+                    pane_id_is_plugin: switch_to_session.pane_id.map(|p| p.legacy_parts().1),
                     layout: switch_to_session.layout.and_then(|l| l.try_into().ok()),
                     cwd: switch_to_session.cwd.map(|c| c.display().to_string()),
                 })),

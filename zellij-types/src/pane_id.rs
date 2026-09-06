@@ -21,6 +21,68 @@ pub enum PaneId {
     Plugin(PluginId),
 }
 
+impl PaneId {
+    /// Decode the legacy numeric identity and plugin flag at a protocol boundary.
+    pub const fn from_legacy(id: u32, is_plugin: bool) -> Self {
+        if is_plugin {
+            Self::Plugin(PluginId::new(id))
+        } else {
+            Self::Terminal(TerminalId::new(id))
+        }
+    }
+
+    /// Encode the legacy numeric identity and plugin flag at a protocol boundary.
+    pub const fn legacy_parts(self) -> (u32, bool) {
+        match self {
+            Self::Terminal(id) => (id.get(), false),
+            Self::Plugin(id) => (id.get(), true),
+        }
+    }
+}
+
+/// Serde adapter for existing optional `(number, is_plugin)` selectors.
+pub mod legacy_tuple {
+    use super::*;
+    pub fn serialize<S: serde::Serializer>(
+        pane: &Option<PaneId>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        pane.map(PaneId::legacy_parts).serialize(serializer)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<PaneId>, D::Error> {
+        Option::<(u32, bool)>::deserialize(deserializer)
+            .map(|pane| pane.map(|(id, is_plugin)| PaneId::from_legacy(id, is_plugin)))
+    }
+}
+
+/// Serde adapter for the existing IPC pane reference object.
+pub mod legacy_reference {
+    use super::*;
+    #[derive(Serialize, Deserialize)]
+    struct Reference {
+        pane_id: u32,
+        is_plugin: bool,
+    }
+    pub fn serialize<S: serde::Serializer>(
+        pane: &Option<PaneId>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        pane.map(|pane| {
+            let (pane_id, is_plugin) = pane.legacy_parts();
+            Reference { pane_id, is_plugin }
+        })
+        .serialize(serializer)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<PaneId>, D::Error> {
+        Option::<Reference>::deserialize(deserializer)
+            .map(|pane| pane.map(|pane| PaneId::from_legacy(pane.pane_id, pane.is_plugin)))
+    }
+}
+
 impl Default for PaneId {
     fn default() -> Self {
         PaneId::Terminal(TerminalId::new(0))

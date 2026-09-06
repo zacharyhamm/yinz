@@ -60,10 +60,9 @@ use {
     crate::client_server_contract::client_server_contract::UnblockInputThreadMsg,
     crate::client_server_contract::client_server_contract::WarpPlacement as ProtobufWarpPlacement,
     crate::ipc::ClientToServerMsg, crate::ipc::ColorRegister, crate::ipc::ExitReason,
-    crate::ipc::PaneReference, crate::ipc::PixelDimensions, crate::ipc::ServerToClientMsg,
-    zellij_runtime::errors::prelude::*, zellij_types::data::ClientId,
-    zellij_types::data::HostTerminalThemeMode, zellij_types::data::InputMode,
-    zellij_types::data::PaneId,
+    crate::ipc::PixelDimensions, crate::ipc::ServerToClientMsg, zellij_runtime::errors::prelude::*,
+    zellij_types::data::ClientId, zellij_types::data::HostTerminalThemeMode,
+    zellij_types::data::InputMode, zellij_types::data::PaneId,
 };
 
 /// Converts `ClientToServerMsg` to its protobuf representation.
@@ -732,26 +731,16 @@ impl TryFrom<crate::client_server_contract::client_server_contract::PixelDimensi
     }
 }
 
-impl From<PaneReference> for crate::client_server_contract::client_server_contract::PaneReference {
-    fn from(pane_ref: PaneReference) -> Self {
-        Self {
-            pane_id: pane_ref.pane_id,
-            is_plugin: pane_ref.is_plugin,
-        }
+impl From<PaneId> for crate::client_server_contract::client_server_contract::PaneReference {
+    fn from(pane: PaneId) -> Self {
+        let (pane_id, is_plugin) = pane.legacy_parts();
+        Self { pane_id, is_plugin }
     }
 }
 
-impl TryFrom<crate::client_server_contract::client_server_contract::PaneReference>
-    for PaneReference
-{
-    type Error = anyhow::Error;
-    fn try_from(
-        pane_ref: crate::client_server_contract::client_server_contract::PaneReference,
-    ) -> Result<Self> {
-        Ok(Self {
-            pane_id: pane_ref.pane_id,
-            is_plugin: pane_ref.is_plugin,
-        })
+impl From<crate::client_server_contract::client_server_contract::PaneReference> for PaneId {
+    fn from(pane: crate::client_server_contract::client_server_contract::PaneReference) -> Self {
+        Self::from_legacy(pane.pane_id, pane.is_plugin)
     }
 }
 
@@ -1860,9 +1849,9 @@ impl TryFrom<zellij_types::input::actions::Action>
             } => ActionType::SwitchSession(SwitchSessionAction {
                 name: name.clone(),
                 tab_position: tab_position.map(|p| p as u32),
-                pane_id: pane_id.map(|(id, is_plugin)| PaneIdWithPlugin {
-                    pane_id: id,
-                    is_plugin,
+                pane_id: pane_id.map(|pane| {
+                    let (pane_id, is_plugin) = pane.legacy_parts();
+                    PaneIdWithPlugin { pane_id, is_plugin }
                 }),
                 layout: layout.as_ref().map(|l| l.clone().into()),
                 cwd: cwd.as_ref().map(|p| p.to_string_lossy().to_string()),
@@ -2884,7 +2873,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                     pane_id: switch_session_action
                         .pane_id
                         .as_ref()
-                        .map(|p| (p.pane_id, p.is_plugin)),
+                        .map(|p| PaneId::from_legacy(p.pane_id, p.is_plugin)),
                     layout: switch_session_action
                         .layout
                         .map(|l| l.try_into())
@@ -3635,7 +3624,8 @@ impl From<zellij_types::data::ConnectToSession>
         Self {
             name: connect.name,
             tab_position: connect.tab_position.map(|p| p as u32),
-            pane_id: connect.pane_id.map(|(id, is_plugin)| {
+            pane_id: connect.pane_id.map(|pane| {
+                let (id, is_plugin) = pane.legacy_parts();
                 crate::client_server_contract::client_server_contract::PaneIdWithPlugin {
                     pane_id: id,
                     is_plugin,
@@ -3657,7 +3647,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::ConnectToSes
         Ok(Self {
             name: connect.name,
             tab_position: connect.tab_position.map(|p| p as usize),
-            pane_id: connect.pane_id.map(|p| (p.pane_id, p.is_plugin)),
+            pane_id: connect
+                .pane_id
+                .map(|p| PaneId::from_legacy(p.pane_id, p.is_plugin)),
             layout: connect.layout.map(|l| l.try_into()).transpose()?,
             cwd: connect.cwd.map(PathBuf::from),
         })

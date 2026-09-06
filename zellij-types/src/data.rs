@@ -2016,7 +2016,8 @@ impl MessageToPlugin {
 pub struct ConnectToSession {
     pub name: Option<String>,
     pub tab_position: Option<usize>,
-    pub pane_id: Option<(u32, bool)>, // (id, is_plugin)
+    #[serde(default, with = "crate::pane_id::legacy_tuple")]
+    pub pane_id: Option<PaneId>,
     pub layout: Option<LayoutInfo>,
     pub cwd: Option<PathBuf>,
 }

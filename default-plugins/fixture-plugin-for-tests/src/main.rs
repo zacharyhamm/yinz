@@ -316,18 +316,32 @@ impl ZellijPlugin for State {
                 BareKey::Char('t') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                     let should_float_if_hidden = false;
                     let should_be_in_place_if_hidden = false;
-                    focus_terminal_pane(zellij_tile::prelude::TerminalId::new(1), should_float_if_hidden, should_be_in_place_if_hidden);
+                    focus_terminal_pane(
+                        zellij_tile::prelude::TerminalId::new(1),
+                        should_float_if_hidden,
+                        should_be_in_place_if_hidden,
+                    );
                 },
                 BareKey::Char('u') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                     let should_float_if_hidden = false;
                     let should_be_in_place_if_hidden = false;
-                    focus_plugin_pane(zellij_tile::prelude::PluginId::new(1), should_float_if_hidden, should_be_in_place_if_hidden);
+                    focus_plugin_pane(
+                        zellij_tile::prelude::PluginId::new(1),
+                        should_float_if_hidden,
+                        should_be_in_place_if_hidden,
+                    );
                 },
                 BareKey::Char('v') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
-                    rename_terminal_pane(zellij_tile::prelude::TerminalId::new(1), "new terminal_pane_name");
+                    rename_terminal_pane(
+                        zellij_tile::prelude::TerminalId::new(1),
+                        "new terminal_pane_name",
+                    );
                 },
                 BareKey::Char('w') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
-                    rename_plugin_pane(zellij_tile::prelude::PluginId::new(1), "new plugin_pane_name");
+                    rename_plugin_pane(
+                        zellij_tile::prelude::PluginId::new(1),
+                        "new plugin_pane_name",
+                    );
                 },
                 BareKey::Char('x') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                     rename_tab(0, "new tab name");

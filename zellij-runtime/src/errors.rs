@@ -244,11 +244,10 @@ open an issue on GitHub:
         source: anyhow::Error,
     },
 
-    // this is a temporary hack until we're able to merge custom errors from within the various
-    // crates themselves without having to move their payload types here
     #[error("Cannot resize fixed panes")]
-    CantResizeFixedPanes { pane_ids: Vec<(u32, bool)> }, // bool: 0 => terminal_pane, 1 =>
-    // plugin_pane
+    CantResizeFixedPanes {
+        pane_ids: Vec<zellij_types::pane_id::PaneId>,
+    },
     #[error("Pane size remains unchanged")]
     PaneSizeUnchanged,
     /// The solved layout was refused before anything moved: a pane stack came out shorter than

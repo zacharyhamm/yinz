@@ -5998,17 +5998,9 @@ impl Tab {
                 },
                 Err(err) => match err.downcast_ref::<ZellijError>() {
                     Some(ZellijError::CantResizeFixedPanes { pane_ids }) => {
-                        let mut pane_ids_to_error = vec![];
-                        for (id, is_terminal) in pane_ids {
-                            if *is_terminal {
-                                pane_ids_to_error.push(PaneId::Terminal(TerminalId::new(*id)));
-                            } else {
-                                pane_ids_to_error.push(PaneId::Plugin(PluginId::new(*id)));
-                            };
-                        }
                         self.senders
                             .send_to_background_jobs(BackgroundJob::DisplayPaneError(
-                                pane_ids_to_error,
+                                pane_ids.clone(),
                                 "FIXED!".into(),
                             ))
                             .with_context(err_context)?;
@@ -8880,17 +8872,9 @@ impl Tab {
                 Ok(_) => {},
                 Err(err) => match err.downcast_ref::<ZellijError>() {
                     Some(ZellijError::CantResizeFixedPanes { pane_ids }) => {
-                        let mut pane_ids_to_error = vec![];
-                        for (id, is_terminal) in pane_ids {
-                            if *is_terminal {
-                                pane_ids_to_error.push(PaneId::Terminal(TerminalId::new(*id)));
-                            } else {
-                                pane_ids_to_error.push(PaneId::Plugin(PluginId::new(*id)));
-                            };
-                        }
                         self.senders
                             .send_to_background_jobs(BackgroundJob::DisplayPaneError(
-                                pane_ids_to_error,
+                                pane_ids.clone(),
                                 "FIXED!".into(),
                             ))
                             .with_context(err_context)?;
