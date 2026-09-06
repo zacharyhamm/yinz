@@ -378,6 +378,8 @@ fn watcher_client_functionality() {
                 && grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("WATCHER_DONE")
                 && grid_snapshot.contains("│")
+                // The tab bar can first replay its old single-pane label.
+                && tab_bar_shows_no_lone_pane_id(grid_snapshot)
         },
     );
     assert_snapshot!(normalized(&main_snapshot));

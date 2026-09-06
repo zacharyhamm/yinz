@@ -158,7 +158,10 @@ fn a_lua_harness_spawns_an_agent_waits_on_it_prompts_it_and_sees_it_exit() {
     assert_eq!(exit_code, 0, "{reported}");
     wait_for_log_line("waiting pane=");
     let typed = agent_pty.wait_for_stdin("the prompt reaches the agent's pty", |bytes| {
-        bytes.windows(2).any(|pair| pair == b"go")
+        // Paste and Enter are separate writes; observe both before asserting.
+        bytes
+            .windows(b"\x1b[200~go\x1b[201~\r".len())
+            .any(|part| part == b"\x1b[200~go\x1b[201~\r")
     });
     let typed = String::from_utf8_lossy(&typed);
     assert!(
