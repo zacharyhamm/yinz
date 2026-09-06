@@ -424,7 +424,11 @@ pub struct PendingLayoutSpawn {
 pub struct PendingLayoutOverride {
     cwd: Option<PathBuf>,
     default_shell: Option<TerminalAction>,
-    tabs: Vec<(TabLayoutInfo, HashMap<RunPluginOrAlias, Vec<PluginId>>)>,
+    tabs: Vec<(
+        TabId,
+        TabLayoutInfo,
+        HashMap<RunPluginOrAlias, Vec<PluginId>>,
+    )>,
     retain_existing_terminal_panes: bool,
     retain_existing_plugin_panes: bool,
     client_id: ClientId,
@@ -827,11 +831,15 @@ pub enum PtyInstruction {
         Option<NotificationEnd>, // completion signal
     ), // the String is the tab name
     OverrideLayout(
-        Option<PathBuf>,                                                // CWD
-        Option<TerminalAction>,                                         // Default Shell
-        Vec<(TabLayoutInfo, HashMap<RunPluginOrAlias, Vec<PluginId>>)>, // (layout, plugin_ids) per tab
-        bool, // retain_existing_terminal_panes
-        bool, // retain_existing_plugin_panes
+        Option<PathBuf>,        // CWD
+        Option<TerminalAction>, // Default Shell
+        Vec<(
+            TabId,
+            TabLayoutInfo,
+            HashMap<RunPluginOrAlias, Vec<PluginId>>,
+        )>, // (resolved ID, layout, plugin_ids) per tab
+        bool,                   // retain_existing_terminal_panes
+        bool,                   // retain_existing_plugin_panes
         ClientId,
         Option<NotificationEnd>,
     ),
@@ -2673,8 +2681,7 @@ impl Pty {
         let err_context = || "failed to override layout";
         let mut all_tab_results = vec![];
         let mut deferred_spawns = vec![];
-        for (tab, plugin_ids) in pending.tabs {
-            let tab_index = tab.tab_index;
+        for (tab_index, tab, plugin_ids) in pending.tabs {
             match self.spawn_terminals_for_layout_override(
                 pending.cwd.clone(),
                 tab.tiled_layout,

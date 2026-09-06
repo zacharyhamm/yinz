@@ -89,6 +89,7 @@ use zellij_types::geometry::{PercentOrFixed, SplitDirection};
 use zellij_types::input::actions::Action;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::mouse::{MouseEvent, MouseEventType};
 use {
@@ -3246,8 +3247,8 @@ impl TryFrom<ProtobufTabLayoutInfo> for TabLayoutInfo {
 
     fn try_from(protobuf_tab: ProtobufTabLayoutInfo) -> Result<Self, Self::Error> {
         Ok(TabLayoutInfo {
-            tab_index: TabId::try_from(u64::from(protobuf_tab.tab_index))
-                .map_err(|_| "tab_id is outside usize range")?,
+            tab_index: TabPosition::try_from(u64::from(protobuf_tab.tab_index))
+                .map_err(|_| "tab position is outside usize range")?,
             tab_name: protobuf_tab.tab_name.filter(|s| !s.is_empty()),
             tiled_layout: protobuf_tab
                 .tiled_layout
@@ -3290,7 +3291,7 @@ impl TryFrom<TabLayoutInfo> for ProtobufTabLayoutInfo {
     fn try_from(tab_info: TabLayoutInfo) -> Result<Self, Self::Error> {
         Ok(ProtobufTabLayoutInfo {
             tab_index: u32::try_from(tab_info.tab_index.get())
-                .map_err(|_| "tab_id is outside u32 range")?,
+                .map_err(|_| "tab position is outside u32 range")?,
             tab_name: tab_info.tab_name,
             tiled_layout: Some(tab_info.tiled_layout.try_into()?),
             floating_layouts: tab_info

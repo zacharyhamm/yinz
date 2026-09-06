@@ -164,11 +164,11 @@ pub enum PluginInstruction {
         Option<NotificationEnd>, // completion signal
     ),
     OverrideLayout(
-        Option<PathBuf>,        // cwd
-        Option<TerminalAction>, // default_shell
-        Vec<TabLayoutInfo>,     // layouts for each tab
-        bool,                   // retain_existing_terminal_panes
-        bool,                   // retain_existing_plugin_panes
+        Option<PathBuf>,             // cwd
+        Option<TerminalAction>,      // default_shell
+        Vec<(TabId, TabLayoutInfo)>, // resolved ID and layout for each tab
+        bool,                        // retain_existing_terminal_panes
+        bool,                        // retain_existing_plugin_panes
         ClientId,
         Option<NotificationEnd>,
     ),
@@ -845,7 +845,7 @@ pub(crate) fn plugin_thread_main(
                 // 2. Process each tab layout
                 let mut tab_layouts_with_plugin_ids = Vec::new();
 
-                for mut tab_layout_info in tab_layouts {
+                for (tab_id, mut tab_layout_info) in tab_layouts {
                     // Populate plugin aliases in layouts
                     tab_layout_info
                         .tiled_layout
@@ -884,7 +884,7 @@ pub(crate) fn plugin_thread_main(
 
                             match wasm_bridge.load_plugin(
                                 &run_plugin,
-                                Some(tab_layout_info.tab_index),
+                                Some(tab_id),
                                 size,
                                 cwd,
                                 skip_cache,
@@ -904,7 +904,7 @@ pub(crate) fn plugin_thread_main(
                     }
 
                     // Pair this tab's layout with its plugin IDs
-                    tab_layouts_with_plugin_ids.push((tab_layout_info, plugin_ids));
+                    tab_layouts_with_plugin_ids.push((tab_id, tab_layout_info, plugin_ids));
                 }
 
                 // 3. Send to pty thread with all tab layouts and their plugin IDs

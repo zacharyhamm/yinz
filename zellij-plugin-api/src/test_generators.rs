@@ -689,7 +689,7 @@ pub(crate) fn swap_floating_layouts(tc: &hegel::TestCase) -> SwapFloatingLayout 
 /// that a tab with an empty name has no name.
 pub(crate) fn tab_layout_infos(tc: &hegel::TestCase) -> TabLayoutInfo {
     TabLayoutInfo {
-        tab_index: TabId::new(usize_as_u32(tc)),
+        tab_index: TabPosition::new(usize_as_u32(tc)),
         tab_name: booleans(tc).then(|| tc.draw(generators::text().min_size(1).max_size(8))),
         tiled_layout: tiled_pane_layouts(tc),
         floating_layouts: up_to(tc, 2, floating_pane_layouts),

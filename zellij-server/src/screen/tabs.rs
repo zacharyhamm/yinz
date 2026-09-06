@@ -3,7 +3,7 @@ use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
 
-use super::Screen;
+use super::{find_already_running_panes, Screen};
 use crate::background_jobs::BackgroundJob;
 use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
@@ -12,11 +12,108 @@ use crate::route::NotificationEnd;
 use crate::tab::{AcceptedPane, ExtractedPanePlacement, Pane, SuppressedPanes, Tab};
 use crate::{ClientId, ServerInstruction};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use zellij_types::geometry::Direction;
-use zellij_types::input::command::RunCommand;
+use zellij_types::input::command::{RunCommand, TerminalAction};
+use zellij_types::input::layout::TabLayoutInfo;
 use {zellij_types::data::Event, zellij_types::data::ModeInfo};
 
 impl Screen {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn override_layout(
+        &mut self,
+        cwd: Option<PathBuf>,
+        default_shell: Option<TerminalAction>,
+        mut tab_layouts: Vec<TabLayoutInfo>,
+        retain_existing_terminal_panes: bool,
+        retain_existing_plugin_panes: bool,
+        apply_only_to_focused_tab: bool,
+        client_id: ClientId,
+        completion_tx: Option<NotificationEnd>,
+    ) -> Result<()> {
+        let focused_tab_id = if apply_only_to_focused_tab {
+            if tab_layouts.is_empty() {
+                log::error!("No tab layouts found, cannot override.");
+                return Ok(());
+            }
+            tab_layouts.truncate(1);
+            match self.get_active_tab(client_id) {
+                Ok(tab) => Some(tab.id),
+                Err(e) => {
+                    log::error!("Failed to override layout of active tab: {}", e);
+                    return Ok(());
+                },
+            }
+        } else {
+            None
+        };
+
+        // Resolve all positions before creating or closing tabs changes their positions.
+        let tab_layouts: Vec<_> = tab_layouts
+            .into_iter()
+            .map(|layout| {
+                let id = focused_tab_id.or_else(|| self.get_tab_id_at_position(layout.tab_index));
+                (id, layout)
+            })
+            .collect();
+        let mut tabs_to_close: HashSet<TabId> = self.tabs.keys().copied().collect();
+        let mut processed_tab_layouts = Vec::new();
+        for (tab_id, mut layout) in tab_layouts {
+            let tab_id = match tab_id {
+                Some(id) => id,
+                None => {
+                    // Reserve the ID before asynchronous plugin and PTY work starts.
+                    let id = self.get_new_tab_id();
+                    self.new_tab(
+                        id,
+                        (
+                            layout.swap_tiled_layouts.clone().unwrap_or_default(),
+                            layout.swap_floating_layouts.clone().unwrap_or_default(),
+                        ),
+                        layout.tab_name.clone(),
+                        None,
+                    )?;
+                    id
+                },
+            };
+            tabs_to_close.remove(&tab_id);
+            let tab = self
+                .tabs
+                .get_mut(&tab_id)
+                .context("override tab is missing")?;
+            if let Some(name) = layout.tab_name.take() {
+                tab.name = name;
+            }
+            let (tiled_to_ignore, floating_indices) =
+                find_already_running_panes(&layout.tiled_layout, &layout.floating_layouts, tab);
+            for run_instruction in tiled_to_ignore {
+                layout.tiled_layout.ignore_run_instruction(run_instruction);
+            }
+            for idx in floating_indices {
+                layout.floating_layouts[idx].already_running = true;
+            }
+            processed_tab_layouts.push((tab_id, layout));
+        }
+
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::OverrideLayout(
+                cwd,
+                default_shell,
+                processed_tab_layouts,
+                retain_existing_terminal_panes,
+                retain_existing_plugin_panes,
+                client_id,
+                completion_tx,
+            ))?;
+        if !apply_only_to_focused_tab {
+            for tab_id in tabs_to_close {
+                self.close_tab_by_id(tab_id)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn get_new_tab_id(&self) -> TabId {
         if let Some(id) = self.tabs.keys().last() {
             TabId::new(id.get() + 1)

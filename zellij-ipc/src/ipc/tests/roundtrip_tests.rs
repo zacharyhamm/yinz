@@ -4788,3 +4788,60 @@ fn attach_pane_reference_keeps_its_json_object() {
         }
     }
 }
+
+#[test]
+fn override_layout_positions_survive_ipc_and_plugin_action_round_trips() {
+    use crate::client_server_contract::client_server_contract::Action as IpcAction;
+    use zellij_plugin_api::action::ProtobufAction as PluginAction;
+    use zellij_types::input::layout::TabLayoutInfo;
+    use zellij_types::internal_ids::TabPosition;
+
+    let tabs: Vec<_> = [0, 7, u32::MAX as usize]
+        .into_iter()
+        .map(|position| TabLayoutInfo {
+            tab_index: TabPosition::new(position),
+            tab_name: Some(format!("tab-{position}")),
+            tiled_layout: TiledPaneLayout {
+                borderless: Some(false),
+                ..Default::default()
+            },
+            floating_layouts: vec![],
+            swap_tiled_layouts: None,
+            swap_floating_layouts: None,
+        })
+        .collect();
+    let action = Action::OverrideLayout {
+        tabs: tabs.clone(),
+        retain_existing_terminal_panes: true,
+        retain_existing_plugin_panes: true,
+        apply_only_to_active_tab: false,
+    };
+    let ipc: IpcAction = action.clone().try_into().unwrap();
+    let ipc: Action = IpcAction::decode(ipc.encode_to_vec().as_slice())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let plugin: PluginAction = action.try_into().unwrap();
+    let plugin: Action = PluginAction::decode(plugin.encode_to_vec().as_slice())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    for decoded in [ipc, plugin] {
+        // Action equality does not compare OverrideLayout's payload.
+        match decoded {
+            Action::OverrideLayout {
+                tabs: decoded_tabs,
+                retain_existing_terminal_panes: true,
+                retain_existing_plugin_panes: true,
+                apply_only_to_active_tab: false,
+            } => assert_eq!(decoded_tabs, tabs),
+            other => panic!("unexpected override action: {other:?}"),
+        }
+    }
+    let json = serde_json::to_value(&tabs).unwrap();
+    assert_eq!(json[1]["tab_index"], 7);
+    assert_eq!(
+        serde_json::from_value::<Vec<TabLayoutInfo>>(json).unwrap(),
+        tabs
+    );
+}

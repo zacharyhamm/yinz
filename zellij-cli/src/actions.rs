@@ -6,6 +6,7 @@ use uuid::Uuid;
 use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
 use zellij_types::geometry::FloatingPaneCoordinates;
 use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::TabPosition;
 use zellij_types::keys::KeyWithModifier;
 use {
     zellij_config::config::Config, zellij_config::config::ConfigError,
@@ -1238,7 +1239,7 @@ pub fn actions_from_cli(
                 .iter()
                 .enumerate()
                 .map(|(index, (tab_name, tiled, floating))| TabLayoutInfo {
-                    tab_index: TabId::new(index),
+                    tab_index: TabPosition::new(index),
                     tab_name: tab_name.clone(),
                     tiled_layout: tiled.clone(),
                     floating_layouts: floating.clone(),
@@ -1251,7 +1252,7 @@ pub fn actions_from_cli(
             let tabs = if tabs.is_empty() {
                 let (tiled, floating) = layout.new_tab();
                 vec![TabLayoutInfo {
-                    tab_index: TabId::new(0),
+                    tab_index: TabPosition::new(0),
                     tab_name: None,
                     tiled_layout: tiled,
                     floating_layouts: floating,

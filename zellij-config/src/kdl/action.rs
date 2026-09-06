@@ -1,6 +1,7 @@
 use super::*;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabNumber;
+use zellij_types::internal_ids::TabPosition;
 
 #[allow(clippy::result_large_err)]
 pub fn new_from_bytes(
@@ -1457,7 +1458,7 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                 let name = tab_name.or(name);
 
                 let tab_layout_info = TabLayoutInfo {
-                    tab_index: TabId::new(0),
+                    tab_index: TabPosition::new(0),
                     tab_name: name,
                     tiled_layout: layout,
                     floating_layouts: floating_panes_layout,
@@ -1475,7 +1476,7 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                 let (layout, floating_panes_layout) = layout.new_tab();
 
                 let tab_layout_info = TabLayoutInfo {
-                    tab_index: TabId::new(0),
+                    tab_index: TabPosition::new(0),
                     tab_name: name,
                     tiled_layout: layout,
                     floating_layouts: floating_panes_layout,
