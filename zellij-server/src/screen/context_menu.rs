@@ -40,7 +40,7 @@ use crate::background_jobs::BackgroundJob;
 use crate::output::Output;
 use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
-use crate::route::route_action;
+use crate::route::{actions_leave_clipboard_message, route_action};
 use crate::ui::context_menu::{
     context_menu_chunks, context_menu_contains, context_menu_item_at, context_menu_layout,
     next_selectable, ContextMenuLayout,
@@ -579,6 +579,11 @@ impl Screen {
         let spawned = thread::Builder::new()
             .name("context_menu_actions".to_string())
             .spawn(move || {
+                // A menu item's actions are a batch like a key's, and "Copy" is a stock item: the
+                // action that copies must not also tell the plugins it was input, or the status
+                // bar drops the message the copy just put up. See
+                // `route::actions_leave_clipboard_message`.
+                let leaves_clipboard_message = actions_leave_clipboard_message(&actions);
                 for action in actions {
                     let name = action.to_string();
                     // A no-op when the pane is already focused, which is the ordinary case - see
@@ -615,6 +620,7 @@ impl Screen {
                         None,
                         default_mode,
                         None,
+                        leaves_clipboard_message,
                     ) {
                         log::error!("context menu action '{name}' failed: {e:?}");
                         // Stop at the first failure: the actions of one item are a sequence, and

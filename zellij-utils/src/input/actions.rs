@@ -2658,6 +2658,18 @@ impl Action {
         }
         false
     }
+    /// Whether this action puts text on the clipboard, and so must leave the status bar's "text
+    /// copied" hint standing rather than clearing it with an `InputReceived`. This is the keyboard
+    /// counterpart of `MouseEffect::leave_clipboard_message`: a key bound to `Copy` alongside
+    /// anything else (`bind "Enter" { Copy; SwitchToMode "Normal"; }`) would otherwise have the
+    /// trailing action wipe the message the copy just produced.
+    pub fn leaves_clipboard_message(&self) -> bool {
+        match self {
+            Action::Copy | Action::CopyLastCommandOutput => true,
+            Action::SkipConfirm { action } => action.leaves_clipboard_message(),
+            _ => false,
+        }
+    }
 }
 
 fn suggest_key_fix(key_str: &str) -> String {
@@ -2701,6 +2713,25 @@ mod tests {
     use crate::data::BareKey;
     use crate::data::KeyModifier;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn actions_that_leave_a_clipboard_message() {
+        assert!(Action::Copy.leaves_clipboard_message());
+        assert!(Action::CopyLastCommandOutput.leaves_clipboard_message());
+        // wrapping one does not change what it does to the clipboard
+        assert!(Action::SkipConfirm {
+            action: Box::new(Action::Copy),
+        }
+        .leaves_clipboard_message());
+        assert!(!Action::SwitchToMode {
+            input_mode: InputMode::Normal,
+        }
+        .leaves_clipboard_message());
+        assert!(!Action::SkipConfirm {
+            action: Box::new(Action::Quit),
+        }
+        .leaves_clipboard_message());
+    }
 
     #[test]
     fn test_send_keys_single_key() {

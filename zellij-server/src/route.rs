@@ -283,6 +283,20 @@ fn actions_dismiss_context_menu(actions: &[Action]) -> bool {
         .any(|action| !matches!(action, Action::Write { .. } | Action::WriteChars { .. }))
 }
 
+/// Whether a key's resolved actions copy text, and so must not tell the plugins about the input.
+///
+/// The status bar shows "Text copied to..." from a `CopyToClipboard` and drops it again on the next
+/// `InputReceived`, so the keystroke that *caused* the copy must not send one - the same rule the
+/// mouse path keeps with `MouseEffect::leave_clipboard_message`. It has to be decided for the whole
+/// batch rather than per action, because the copy is routed to completion before the rest of the
+/// key's actions are: `bind "Enter" { Copy; SwitchToMode "Normal"; }` sets the message with the
+/// first action and would clear it with the second.
+pub(crate) fn actions_leave_clipboard_message(actions: &[Action]) -> bool {
+    actions
+        .iter()
+        .any(|action| action.leaves_clipboard_message())
+}
+
 fn new_pane_routing(
     no_focus: bool,
     near_current_pane: bool,
@@ -315,14 +329,17 @@ pub(crate) fn route_action(
     mut seen_cli_pipes: Option<&mut HashSet<String>>,
     default_mode: InputMode,
     os_input: Option<Box<dyn ServerOsApi>>,
+    leaves_clipboard_message: bool,
 ) -> Result<(bool, Option<ActionCompletionResult>)> {
     let mut should_break = false;
     let err_context = || format!("failed to route action for client {client_id}");
     let action_name = action.to_string();
 
-    if !action.is_mouse_action() {
+    if !action.is_mouse_action() && !leaves_clipboard_message {
         // mouse actions should only send InputReceived to plugins
         // if they do not result in text being marked, this is handled in Tab
+        // - and a key whose actions copy text is silent for the same reason, see
+        // `actions_leave_clipboard_message`
         senders
             .send_to_plugin(PluginInstruction::Update(vec![(
                 None,
@@ -2837,6 +2854,8 @@ pub(crate) fn route_thread_main(
                                     }
                                 }
                                 if !menu_handled_key {
+                                    let leaves_clipboard_message =
+                                        actions_leave_clipboard_message(&actions);
                                     for action in actions {
                                         // Send user input to plugin thread for logging
                                         let _ =
@@ -2857,6 +2876,7 @@ pub(crate) fn route_thread_main(
                                             Some(&mut seen_cli_pipes),
                                             client_input_mode,
                                             Some(os_input.clone()),
+                                            leaves_clipboard_message,
                                         ) {
                                             Ok(route_action_should_break) => {
                                                 if route_action_should_break.0 {
@@ -2911,6 +2931,11 @@ pub(crate) fn route_thread_main(
                                 });
                             }
 
+                            // A CLI copy is one action rather than a key's batch, so its own
+                            // `InputReceived` would precede the copy rather than clear it - but
+                            // the rule is about the request that copies, not about how it arrived.
+                            let action_leaves_clipboard_message = action.leaves_clipboard_message();
+
                             // The read guard ends as a temporary in this expression so
                             // `route_action` runs without holding `session_data.read()` —
                             // see the doc comment on `route_action` for why this matters.
@@ -2936,6 +2961,7 @@ pub(crate) fn route_thread_main(
                                     Some(&mut seen_cli_pipes),
                                     client_input_mode,
                                     Some(os_input.clone()),
+                                    action_leaves_clipboard_message,
                                 ) {
                                     Ok(route_action_should_break) => {
                                         if route_action_should_break.0 {
@@ -3910,6 +3936,82 @@ mod tests {
         assert!(
             actions_dismiss_context_menu(&[write, Action::GoToNextTab]),
             "one non-writing action in the sequence is enough"
+        );
+    }
+
+    /// The bug this guards: `bind "Enter" { Copy; SwitchToMode "Normal"; }` set the status bar's
+    /// "Text copied to..." message with the first action and cleared it with the second's
+    /// `InputReceived`, so a keyboard selection copied silently while a mouse one did not.
+    #[test]
+    fn a_key_whose_batch_copies_leaves_the_clipboard_message_alone() {
+        assert!(actions_leave_clipboard_message(&[Action::Copy]));
+        assert!(
+            actions_leave_clipboard_message(&[
+                Action::Copy,
+                Action::SwitchToMode {
+                    input_mode: InputMode::Normal
+                },
+            ]),
+            "the trailing mode switch is part of the keystroke that copied"
+        );
+        assert!(actions_leave_clipboard_message(&[
+            Action::CopyLastCommandOutput,
+            Action::SwitchToMode {
+                input_mode: InputMode::Locked
+            },
+        ]));
+        assert!(!actions_leave_clipboard_message(&[
+            Action::SwitchToMode {
+                input_mode: InputMode::Normal
+            },
+            Action::GoToNextTab,
+        ]));
+    }
+
+    /// The other half of the same bug: the batch decision only helps if `route_action` honours
+    /// it, and the `InputReceived` it would otherwise send is what clears the message.
+    #[test]
+    fn a_suppressed_action_tells_the_plugins_nothing_about_the_input() {
+        let route = |leaves_clipboard_message| {
+            let (tx, rx) = zellij_utils::channels::unbounded();
+            let senders = ThreadSenders {
+                to_plugin: Some(SenderWithContext::new(tx)),
+                should_silently_fail: true,
+                ..Default::default()
+            };
+            let _ = route_action(
+                Action::SwitchToMode {
+                    input_mode: InputMode::Normal,
+                },
+                ClientId(1),
+                None,
+                None,
+                senders,
+                None,
+                None,
+                InputMode::Normal,
+                None,
+                leaves_clipboard_message,
+            );
+            let mut events = Vec::new();
+            while let Ok((instruction, _ctx)) = rx.try_recv() {
+                if let PluginInstruction::Update(updates) = instruction {
+                    events.extend(updates.into_iter().map(|(_, _, event)| event));
+                }
+            }
+            events
+        };
+        assert!(
+            route(false)
+                .iter()
+                .any(|event| matches!(event, Event::InputReceived)),
+            "an ordinary action still reports the input"
+        );
+        assert!(
+            !route(true)
+                .iter()
+                .any(|event| matches!(event, Event::InputReceived)),
+            "an action belonging to a keystroke that copied stays silent"
         );
     }
 
