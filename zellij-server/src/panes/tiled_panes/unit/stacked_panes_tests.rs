@@ -3,7 +3,7 @@ use insta::assert_snapshot;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 use zellij_utils::input::layout::Run;
 use zellij_utils::pane_size::Offset;
 use zellij_utils::pane_size::{Dimension, PaneGeom};

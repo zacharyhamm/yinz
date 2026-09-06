@@ -10,7 +10,8 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use zellij_utils::{consts::ZELLIJ_SOCK_DIR, errors::prelude::*, input::command::RunCommand};
+use zellij_runtime::errors::prelude::*;
+use zellij_utils::{consts::ZELLIJ_SOCK_DIR, input::command::RunCommand};
 
 /// Bumped whenever the message set changes incompatibly. A supervisor outlives
 /// the server that spawned it, so a later zellij may well find itself talking to
@@ -342,7 +343,7 @@ pub fn new_host_id() -> HostId {
     uuid.simple().to_string()[..12].to_string()
 }
 
-pub use zellij_utils::termios::WireTermios;
+pub use zellij_runtime::termios::WireTermios;
 
 #[cfg(test)]
 #[path = "../unit/pty_host_protocol_tests.rs"]

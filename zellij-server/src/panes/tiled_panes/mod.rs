@@ -34,9 +34,10 @@ use crate::{
     ClientId,
 };
 use stacked_panes::StackedPanes;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::style::{Style, Styling};
 use zellij_utils::{
-    data::{Direction, ModeInfo, PaneInfo, Resize, ResizeStrategy, Style, Styling},
-    errors::prelude::*,
+    data::{Direction, ModeInfo, PaneInfo, Resize, ResizeStrategy},
     input::{
         command::RunCommand,
         layout::{Run, RunPluginOrAlias, SplitDirection},

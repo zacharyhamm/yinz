@@ -538,8 +538,8 @@ fn a_peer_that_accepts_and_never_answers_times_out_as_idle() {
 /// client can ever find it again.
 #[test]
 fn a_probe_timeout_is_an_unresponsive_server_not_an_absent_one() {
-    use crate::errors::ErrorContext;
     use crate::sessions::{classify_probe_reply, SessionProbe};
+    use zellij_types::diagnostics::ErrorContext;
 
     assert_eq!(
         classify_probe_reply(IpcRecv::Msg(

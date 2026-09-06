@@ -18,11 +18,11 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::rc::Rc;
 use unicode_width::UnicodeWidthChar;
-use zellij_utils::data::{
-    HighlightLayer, HighlightStyle, HostTerminalThemeMode, RegexHighlight, Style,
-};
-use zellij_utils::errors::prelude::*;
-use zellij_utils::internal_ids::{PluginId, TerminalId};
+use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::{PluginId, TerminalId};
+use zellij_types::mouse::{MouseEvent, MouseEventType};
+use zellij_types::style::{HostTerminalThemeMode, Style};
+use zellij_utils::data::{HighlightLayer, HighlightStyle, RegexHighlight};
 
 use std::{
     cmp::Ordering,
@@ -32,14 +32,14 @@ use std::{
 };
 
 use vte;
+use zellij_types::position::Position;
+use zellij_types::style::{Palette, Styling};
 use zellij_utils::{
     consts::{DEFAULT_SCROLL_BUFFER_SIZE, SCROLL_BUFFER_SIZE},
-    data::{Palette, PaletteColor, Styling},
-    input::mouse::{MouseEvent, MouseEventType},
+    data::PaletteColor,
     input::options::DEFAULT_WORD_SEPARATORS,
     nested_session::{self, NestedSessionMessage},
     pane_size::SizeInPixels,
-    position::Position,
 };
 
 const TABSTOP_WIDTH: usize = 8; // TODO: is this always right?

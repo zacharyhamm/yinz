@@ -16,7 +16,7 @@ use nix::{
     fcntl::{fcntl, FcntlArg, FdFlag},
     sys::socket::{recvmsg, sendmsg, ControlMessage, ControlMessageOwned, MsgFlags},
 };
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 
 /// Payload byte carrying the descriptor. The value is arbitrary; `sendmsg` needs
 /// at least one byte for the ancillary data to have somewhere to attach.

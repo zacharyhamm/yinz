@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 #[cfg(test)]
-use zellij_utils::internal_ids::{PluginId, TerminalId};
+use zellij_types::internal_ids::{PluginId, TerminalId};
 
 use zellij_utils::data::FloatingPaneCoordinates;
 use zellij_utils::input::layout::{PercentOrFixed, RunPluginOrAlias};

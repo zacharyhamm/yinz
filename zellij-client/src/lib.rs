@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use zellij_utils::errors::FatalError;
+use zellij_runtime::errors::FatalError;
 
 use crate::terminal_escapes::{
     announce_nested, claim_terminal, say_bye, write_seqs, ClientTeardown, CLEAR_SCREEN,
@@ -41,16 +41,20 @@ use crate::{
     command_is_executing::CommandIsExecuting, input_handler::input_loop,
     os_input_output::ClientOsApi, stdin_handler::stdin_loop,
 };
+use zellij_runtime::channels;
+use zellij_runtime::channels::ChannelWithContext;
+use zellij_runtime::channels::SenderWithContext;
+use zellij_runtime::envs;
+use zellij_runtime::errors::ErrorInstruction;
+use zellij_runtime::vendored::termwiz::input::InputEvent;
+use zellij_types::diagnostics::ClientContext;
+use zellij_types::keys::{KeyModifier, KeyWithModifier};
 use zellij_utils::cli::CliArgs;
 use zellij_utils::{
-    channels::{self, ChannelWithContext, SenderWithContext},
     consts::{set_permissions, ZELLIJ_SOCK_DIR},
-    data::{ClientId, ConnectToSession, KeyModifier, KeyWithModifier, LayoutInfo},
-    envs,
-    errors::{ClientContext, ErrorInstruction},
+    data::{ClientId, ConnectToSession, LayoutInfo},
     input::{config::Config, options::Options},
     ipc::{ClientToServerMsg, ExitReason, ServerToClientMsg},
-    vendored::termwiz::input::InputEvent,
 };
 
 /// Instructions related to the client-side application
@@ -269,7 +273,7 @@ pub fn spawn_server(socket_path: &Path, debug: bool) -> io::Result<()> {
 fn spawn_server_with_termios(
     socket_path: &Path,
     debug: bool,
-    termios: Option<&Option<zellij_utils::termios::WireTermios>>,
+    termios: Option<&Option<zellij_runtime::termios::WireTermios>>,
 ) -> io::Result<()> {
     let mut cmd = server_command(socket_path, debug, termios)?;
     let status = {
@@ -291,7 +295,7 @@ fn spawn_server_with_termios(
 fn server_command(
     socket_path: &Path,
     debug: bool,
-    termios: Option<&Option<zellij_utils::termios::WireTermios>>,
+    termios: Option<&Option<zellij_runtime::termios::WireTermios>>,
 ) -> io::Result<Command> {
     let mut cmd = Command::new(current_exe()?);
     cmd.arg("--server").arg(socket_path);
@@ -431,7 +435,7 @@ pub fn start_client(
         );
     }
     envs::set_zellij("0".to_string());
-    config.env.set_vars();
+    zellij_runtime::envs::set_vars(&config.env);
 
     let full_screen_ws = os_input.get_terminal_size();
 
@@ -518,7 +522,7 @@ pub fn start_client(
 
     if os_input.should_install_panic_hook() {
         std::panic::set_hook({
-            use zellij_utils::errors::handle_panic;
+            use zellij_runtime::errors::handle_panic;
             let send_client_instructions = send_client_instructions.clone();
             let os_input = os_input.clone();
             Box::new(move |info| {
@@ -683,7 +687,7 @@ pub fn start_server_detached(
     info: ClientInfo,
 ) {
     envs::set_zellij("0".to_string());
-    config.env.set_vars();
+    zellij_runtime::envs::set_vars(&config.env);
 
     // Only a session that does not exist yet can be started detached;
     // attaching needs a controlling terminal to attach to.

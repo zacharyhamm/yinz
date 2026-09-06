@@ -128,7 +128,7 @@ fn cli_recordings_search_missing_query_fails() {
 
 #[test]
 fn recordings_search_output_formats_header_and_rows() {
-    use zellij_utils::session_recording::SearchHit;
+    use zellij_storage::session_recording::SearchHit;
 
     assert_eq!(crate::commands::format_search_results(&[]), "No matches.\n");
 
@@ -160,7 +160,7 @@ fn recordings_search_output_formats_header_and_rows() {
 #[test]
 fn recordings_list_output_formats_header_and_rows() {
     use std::fs;
-    use zellij_utils::session_recording::{PaneMetadata, RecordingStore};
+    use zellij_storage::session_recording::{PaneMetadata, RecordingStore};
 
     // create temp recording database with one pane (unique per test invocation to avoid pid collision)
     let dir_path = std::env::temp_dir().join(format!(
@@ -181,7 +181,7 @@ fn recordings_list_output_formats_header_and_rows() {
         rows: 24,
     };
     store.update_panes(&[meta], 0).unwrap();
-    let summaries = zellij_utils::session_recording::list_recordings(&dir_path).unwrap();
+    let summaries = zellij_storage::session_recording::list_recordings(&dir_path).unwrap();
     assert_eq!(summaries.len(), 1);
     // call formatting helper (does not exist yet, should fail)
     let output = crate::commands::format_recordings_list(&summaries);
@@ -217,7 +217,7 @@ fn recordings_list_output_formats_header_and_rows() {
 
 #[test]
 fn recordings_state_strings() {
-    use zellij_utils::session_recording::RecordingSummary;
+    use zellij_storage::session_recording::RecordingSummary;
 
     let running = RecordingSummary {
         id: 1,
@@ -509,4 +509,19 @@ fn server_termios_requires_server() {
         .unwrap()
         .server_termios
         .is_none());
+}
+
+#[test]
+fn explicit_theme_hue_keeps_cli_choices() {
+    use zellij_types::style::ThemeHue;
+    for (value, expected) in [("light", ThemeHue::Light), ("dark", ThemeHue::Dark)] {
+        let args = try_parse_cli(["zellij", "options", "--explicit-theme-hue", value]).unwrap();
+        let Some(Command::Options(options)) = args.command else {
+            panic!("expected options command");
+        };
+        assert_eq!(options.explicit_theme_hue, Some(expected));
+    }
+    for invalid in ["LIGHT", "Dark", "unknown"] {
+        assert!(try_parse_cli(["zellij", "options", "--explicit-theme-hue", invalid]).is_err());
+    }
 }

@@ -760,11 +760,11 @@ fn test_apply_layout_with_plugin_panes() {
 
     new_plugin_ids.insert(
         tab_bar_plugin,
-        vec![zellij_utils::internal_ids::PluginId(100)],
+        vec![zellij_types::internal_ids::PluginId(100)],
     );
     new_plugin_ids.insert(
         status_bar_plugin,
-        vec![zellij_utils::internal_ids::PluginId(101)],
+        vec![zellij_types::internal_ids::PluginId(101)],
     );
 
     let size = Size {
@@ -875,11 +875,11 @@ fn test_apply_layout_with_mixed_plugin_and_terminal_panes() {
 
     new_plugin_ids.insert(
         filebrowser_plugin,
-        vec![zellij_utils::internal_ids::PluginId(102)],
+        vec![zellij_types::internal_ids::PluginId(102)],
     );
     new_plugin_ids.insert(
         compact_bar_plugin,
-        vec![zellij_utils::internal_ids::PluginId(103)],
+        vec![zellij_types::internal_ids::PluginId(103)],
     );
 
     let size = Size {

@@ -1,12 +1,9 @@
 mod kdl_layout_parser;
 use crate::data::ContextMenuItem;
 use crate::data::{
-    BareKey, Direction, FloatingPaneCoordinates, InputMode, KeyWithModifier, LayoutInfo,
-    LayoutMetadata, MultiplayerColors, NewPanePlacement, Palette, PaletteColor, PaneId, PaneInfo,
-    PaneManifest, PermissionType, Resize, SessionInfo, StyleDeclaration, Styling, TabInfo,
-    ThemeHue, DEFAULT_STYLES,
+    Direction, FloatingPaneCoordinates, InputMode, LayoutInfo, LayoutMetadata, NewPanePlacement,
+    PaletteColor, PaneId, PaneInfo, PaneManifest, PermissionType, Resize, SessionInfo, TabInfo,
 };
-use crate::envs::EnvironmentVariables;
 use crate::home::{find_default_config_dir, get_layout_dir};
 use crate::input::config::{Config, ConfigError, KdlError};
 use crate::input::context_menu::ContextMenu;
@@ -27,6 +24,11 @@ use kdl_layout_parser::KdlLayoutParser;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use strum::IntoEnumIterator;
 use uuid::Uuid;
+use zellij_types::envs::EnvironmentVariables;
+use zellij_types::keys::KeyWithModifier;
+use zellij_types::style::{
+    MultiplayerColors, Palette, StyleDeclaration, Styling, ThemeHue, DEFAULT_STYLES,
+};
 
 use miette::NamedSource;
 
@@ -1458,116 +1460,125 @@ impl Action {
     }
 }
 
-impl TryFrom<(&str, &KdlDocument)> for PaletteColor {
-    type Error = ConfigError;
-
-    fn try_from(
-        (color_name, theme_colors): (&str, &KdlDocument),
-    ) -> Result<PaletteColor, Self::Error> {
-        let color = theme_colors
-            .get(color_name)
-            .ok_or(ConfigError::new_kdl_error(
-                format!("Missing theme color: {}", color_name),
-                theme_colors.span().offset(),
-                theme_colors.span().len(),
-            ))?;
-        let entry_count = entry_count!(color);
-        let is_rgb = || entry_count == 3;
-        // `#fff` or `#ffffff`. A malformed body (`#é1`, `#12`, `#ggg`) is `None` and
-        // falls through to the `Err` arm the parse already models rather than
-        // panicking on a mid-char slice — see `parse_hex_rgb`.
-        let hex_rgb = || match kdl_first_entry_as_string!(color) {
-            Some(s) if entry_count == 1 && s.starts_with('#') => crate::shared::parse_hex_rgb(s),
-            _ => None,
-        };
-        let is_eight_bit = || kdl_first_entry_as_i64!(color).is_some() && entry_count == 1;
-        if is_rgb() {
-            let mut channels = kdl_entries_as_i64!(color);
-            let r = channels.next().unwrap().ok_or(ConfigError::new_kdl_error(
-                "invalid rgb color".to_string(),
-                color.span().offset(),
-                color.span().len(),
-            ))? as u8;
-            let g = channels.next().unwrap().ok_or(ConfigError::new_kdl_error(
-                "invalid rgb color".to_string(),
-                color.span().offset(),
-                color.span().len(),
-            ))? as u8;
-            let b = channels.next().unwrap().ok_or(ConfigError::new_kdl_error(
-                "invalid rgb color".to_string(),
-                color.span().offset(),
-                color.span().len(),
-            ))? as u8;
-            Ok(PaletteColor::Rgb((r, g, b)))
-        } else if let Some(rgb) = hex_rgb() {
-            Ok(PaletteColor::Rgb(rgb))
-        } else if is_eight_bit() {
-            let n = kdl_first_entry_as_i64!(color).ok_or(ConfigError::new_kdl_error(
-                "Failed to parse color".into(),
-                color.span().offset(),
-                color.span().len(),
-            ))?;
-            Ok(PaletteColor::EightBit(n as u8))
-        } else {
-            Err(ConfigError::new_kdl_error(
-                "Failed to parse color".into(),
-                color.span().offset(),
-                color.span().len(),
-            ))
-        }
+// Keep the parser's existing diagnostic payload and error propagation.
+#[allow(clippy::result_large_err)]
+pub fn palette_color_from_kdl(
+    color_name: &str,
+    theme_colors: &KdlDocument,
+) -> Result<PaletteColor, ConfigError> {
+    let color = theme_colors
+        .get(color_name)
+        .ok_or(ConfigError::new_kdl_error(
+            format!("Missing theme color: {}", color_name),
+            theme_colors.span().offset(),
+            theme_colors.span().len(),
+        ))?;
+    let entry_count = entry_count!(color);
+    let is_rgb = || entry_count == 3;
+    // `#fff` or `#ffffff`. A malformed body (`#é1`, `#12`, `#ggg`) is `None` and
+    // falls through to the `Err` arm the parse already models rather than
+    // panicking on a mid-char slice — see `parse_hex_rgb`.
+    let hex_rgb = || match kdl_first_entry_as_string!(color) {
+        Some(s) if entry_count == 1 && s.starts_with('#') => crate::shared::parse_hex_rgb(s),
+        _ => None,
+    };
+    let is_eight_bit = || kdl_first_entry_as_i64!(color).is_some() && entry_count == 1;
+    if is_rgb() {
+        let mut channels = kdl_entries_as_i64!(color);
+        let r = channels.next().unwrap().ok_or(ConfigError::new_kdl_error(
+            "invalid rgb color".to_string(),
+            color.span().offset(),
+            color.span().len(),
+        ))? as u8;
+        let g = channels.next().unwrap().ok_or(ConfigError::new_kdl_error(
+            "invalid rgb color".to_string(),
+            color.span().offset(),
+            color.span().len(),
+        ))? as u8;
+        let b = channels.next().unwrap().ok_or(ConfigError::new_kdl_error(
+            "invalid rgb color".to_string(),
+            color.span().offset(),
+            color.span().len(),
+        ))? as u8;
+        Ok(PaletteColor::Rgb((r, g, b)))
+    } else if let Some(rgb) = hex_rgb() {
+        Ok(PaletteColor::Rgb(rgb))
+    } else if is_eight_bit() {
+        let n = kdl_first_entry_as_i64!(color).ok_or(ConfigError::new_kdl_error(
+            "Failed to parse color".into(),
+            color.span().offset(),
+            color.span().len(),
+        ))?;
+        Ok(PaletteColor::EightBit(n as u8))
+    } else {
+        Err(ConfigError::new_kdl_error(
+            "Failed to parse color".into(),
+            color.span().offset(),
+            color.span().len(),
+        ))
     }
 }
 
-impl PaletteColor {
-    pub fn to_kdl(&self, color_name: &str) -> KdlNode {
-        let mut node = KdlNode::new(color_name);
-        match self {
-            PaletteColor::Rgb((r, g, b)) => {
-                node.push(KdlValue::Base10(*r as i64));
-                node.push(KdlValue::Base10(*g as i64));
-                node.push(KdlValue::Base10(*b as i64));
-            },
-            PaletteColor::EightBit(color_index) => {
-                node.push(KdlValue::Base10(*color_index as i64));
-            },
-        }
-        node
+pub fn palette_color_to_kdl(color: &PaletteColor, color_name: &str) -> KdlNode {
+    let mut node = KdlNode::new(color_name);
+    match color {
+        PaletteColor::Rgb((r, g, b)) => {
+            node.push(KdlValue::Base10(*r as i64));
+            node.push(KdlValue::Base10(*g as i64));
+            node.push(KdlValue::Base10(*b as i64));
+        },
+        PaletteColor::EightBit(color_index) => {
+            node.push(KdlValue::Base10(*color_index as i64));
+        },
     }
+    node
 }
 
-impl StyleDeclaration {
-    pub fn to_kdl(&self, declaration_name: &str) -> KdlNode {
-        let mut node = KdlNode::new(declaration_name);
-        let mut doc = KdlDocument::new();
+pub fn style_declaration_to_kdl(style: &StyleDeclaration, declaration_name: &str) -> KdlNode {
+    let mut node = KdlNode::new(declaration_name);
+    let mut doc = KdlDocument::new();
 
-        doc.nodes_mut().push(self.base.to_kdl("base"));
-        doc.nodes_mut().push(self.background.to_kdl("background"));
-        doc.nodes_mut().push(self.emphasis_0.to_kdl("emphasis_0"));
-        doc.nodes_mut().push(self.emphasis_1.to_kdl("emphasis_1"));
-        doc.nodes_mut().push(self.emphasis_2.to_kdl("emphasis_2"));
-        doc.nodes_mut().push(self.emphasis_3.to_kdl("emphasis_3"));
-        node.set_children(doc);
-        node
-    }
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.base, "base"));
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.background, "background"));
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.emphasis_0, "emphasis_0"));
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.emphasis_1, "emphasis_1"));
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.emphasis_2, "emphasis_2"));
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.emphasis_3, "emphasis_3"));
+    node.set_children(doc);
+    node
 }
 
-impl MultiplayerColors {
-    pub fn to_kdl(&self) -> KdlNode {
-        let mut node = KdlNode::new("multiplayer_user_colors");
-        let mut doc = KdlDocument::new();
-        doc.nodes_mut().push(self.player_1.to_kdl("player_1"));
-        doc.nodes_mut().push(self.player_2.to_kdl("player_2"));
-        doc.nodes_mut().push(self.player_3.to_kdl("player_3"));
-        doc.nodes_mut().push(self.player_4.to_kdl("player_4"));
-        doc.nodes_mut().push(self.player_5.to_kdl("player_5"));
-        doc.nodes_mut().push(self.player_6.to_kdl("player_6"));
-        doc.nodes_mut().push(self.player_7.to_kdl("player_7"));
-        doc.nodes_mut().push(self.player_8.to_kdl("player_8"));
-        doc.nodes_mut().push(self.player_9.to_kdl("player_9"));
-        doc.nodes_mut().push(self.player_10.to_kdl("player_10"));
-        node.set_children(doc);
-        node
-    }
+pub fn multiplayer_colors_to_kdl(style: &MultiplayerColors) -> KdlNode {
+    let mut node = KdlNode::new("multiplayer_user_colors");
+    let mut doc = KdlDocument::new();
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.player_1, "player_1"));
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.player_2, "player_2"));
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.player_3, "player_3"));
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.player_4, "player_4"));
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.player_5, "player_5"));
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.player_6, "player_6"));
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.player_7, "player_7"));
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.player_8, "player_8"));
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.player_9, "player_9"));
+    doc.nodes_mut()
+        .push(palette_color_to_kdl(&style.player_10, "player_10"));
+    node.set_children(doc);
+    node
 }
 
 impl TryFrom<(&KdlNode, &Options)> for Action {
@@ -2120,7 +2131,7 @@ impl TryFrom<(&KdlNode, &Options)> for Action {
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "firecracker_image"));
                 let firecracker_worktree = command_metadata
                     .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "firecracker_worktree"))
-                    .map(crate::input::expand_path)
+                    .map(zellij_runtime::shared::expand_path)
                     .transpose()
                     .map_err(|error| {
                         ConfigError::new_kdl_error(
@@ -2937,7 +2948,7 @@ impl Options {
         let firecracker_provider =
             match kdl_property_first_arg_as_string_or_error!(kdl_options, "firecracker_provider") {
                 Some((value, entry)) => {
-                    let path = crate::input::expand_path(value).map_err(|error| {
+                    let path = zellij_runtime::shared::expand_path(value).map_err(|error| {
                         kdl_parsing_error!(format!("firecracker_provider: {error}"), entry)
                     })?;
                     if !path.is_absolute() {
@@ -5363,48 +5374,48 @@ fn kdl_layout_error(kdl_error: kdl::KdlError, file_name: String, raw_layout: &st
     ConfigError::KdlError(kdl_error)
 }
 
-impl EnvironmentVariables {
-    #[allow(clippy::result_large_err)]
-    pub fn from_kdl(kdl_env_variables: &KdlNode) -> Result<Self, ConfigError> {
-        let mut env: HashMap<String, String> = HashMap::new();
-        for env_var in kdl_children_nodes_or_error!(kdl_env_variables, "empty env variable block") {
-            let env_var_name = kdl_name!(env_var);
-            let env_var_str_value = kdl_first_entry_as_string!(env_var).map(|s| s.to_string());
-            let env_var_int_value = kdl_first_entry_as_i64!(env_var).map(|s| s.to_string());
-            let env_var_value =
-                env_var_str_value
-                    .or(env_var_int_value)
-                    .ok_or(ConfigError::new_kdl_error(
-                        format!("Failed to parse env var: {:?}", env_var_name),
-                        env_var.span().offset(),
-                        env_var.span().len(),
-                    ))?;
-            env.insert(env_var_name.into(), env_var_value);
-        }
-        Ok(EnvironmentVariables::from_data(env))
+#[allow(clippy::result_large_err)]
+pub fn environment_variables_from_kdl(
+    kdl_env_variables: &KdlNode,
+) -> Result<EnvironmentVariables, ConfigError> {
+    let mut env: HashMap<String, String> = HashMap::new();
+    for env_var in kdl_children_nodes_or_error!(kdl_env_variables, "empty env variable block") {
+        let env_var_name = kdl_name!(env_var);
+        let env_var_str_value = kdl_first_entry_as_string!(env_var).map(|s| s.to_string());
+        let env_var_int_value = kdl_first_entry_as_i64!(env_var).map(|s| s.to_string());
+        let env_var_value =
+            env_var_str_value
+                .or(env_var_int_value)
+                .ok_or(ConfigError::new_kdl_error(
+                    format!("Failed to parse env var: {:?}", env_var_name),
+                    env_var.span().offset(),
+                    env_var.span().len(),
+                ))?;
+        env.insert(env_var_name.into(), env_var_value);
     }
-    pub fn to_kdl(&self) -> Option<KdlNode> {
-        let mut has_env_vars = false;
-        let mut env = KdlNode::new("env");
-        let mut env_vars = KdlDocument::new();
+    Ok(EnvironmentVariables::from_data(env))
+}
+pub fn environment_variables_to_kdl(variables: &EnvironmentVariables) -> Option<KdlNode> {
+    let mut has_env_vars = false;
+    let mut env = KdlNode::new("env");
+    let mut env_vars = KdlDocument::new();
 
-        let mut stable_sorted = BTreeMap::new();
-        for (env_var_name, env_var_value) in self.inner() {
-            stable_sorted.insert(env_var_name, env_var_value);
-        }
-        for (env_key, env_value) in stable_sorted {
-            has_env_vars = true;
-            let mut variable_key = KdlNode::new(env_key.to_owned());
-            variable_key.push(env_value.to_owned());
-            env_vars.nodes_mut().push(variable_key);
-        }
+    let mut stable_sorted = BTreeMap::new();
+    for (env_var_name, env_var_value) in variables.inner() {
+        stable_sorted.insert(env_var_name, env_var_value);
+    }
+    for (env_key, env_value) in stable_sorted {
+        has_env_vars = true;
+        let mut variable_key = KdlNode::new(env_key.to_owned());
+        variable_key.push(env_value.to_owned());
+        env_vars.nodes_mut().push(variable_key);
+    }
 
-        if has_env_vars {
-            env.set_children(env_vars);
-            Some(env)
-        } else {
-            None
-        }
+    if has_env_vars {
+        env.set_children(env_vars);
+        Some(env)
+    } else {
+        None
     }
 }
 
@@ -5635,7 +5646,7 @@ impl Keybinds {
         let mut mode_keybinds = KdlDocument::new();
         for keybind in keybinds {
             let mut keybind_node = KdlNode::new("bind");
-            keybind_node.push(keybind.0.to_kdl());
+            keybind_node.push(keybind.0.to_keybind_string());
             let mut actions = KdlDocument::new();
             let mut actions_have_children = false;
             for action in keybind.1 {
@@ -5703,54 +5714,6 @@ impl Keybinds {
         }
         keybinds_node.set_children(keybinds_children);
         keybinds_node
-    }
-}
-
-impl KeyWithModifier {
-    pub fn to_kdl(&self) -> String {
-        if self.key_modifiers.is_empty() {
-            self.bare_key.to_kdl()
-        } else {
-            format!(
-                "{} {}",
-                self.key_modifiers
-                    .iter()
-                    .map(|m| m.to_string())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                self.bare_key.to_kdl()
-            )
-        }
-    }
-}
-
-impl BareKey {
-    pub fn to_kdl(&self) -> String {
-        match self {
-            BareKey::PageDown => "PageDown".to_string(),
-            BareKey::PageUp => "PageUp".to_string(),
-            BareKey::Left => "left".to_string(),
-            BareKey::Down => "down".to_string(),
-            BareKey::Up => "up".to_string(),
-            BareKey::Right => "right".to_string(),
-            BareKey::Home => "home".to_string(),
-            BareKey::End => "end".to_string(),
-            BareKey::Backspace => "backspace".to_string(),
-            BareKey::Delete => "del".to_string(),
-            BareKey::Insert => "insert".to_string(),
-            BareKey::F(index) => format!("F{}", index),
-            BareKey::Char(' ') => "space".to_string(),
-            BareKey::Char(character) => format!("{}", character),
-            BareKey::Tab => "tab".to_string(),
-            BareKey::Esc => "esc".to_string(),
-            BareKey::Enter => "enter".to_string(),
-            BareKey::CapsLock => "capslock".to_string(),
-            BareKey::ScrollLock => "scrolllock".to_string(),
-            BareKey::NumLock => "numlock".to_string(),
-            BareKey::PrintScreen => "printscreen".to_string(),
-            BareKey::Pause => "pause".to_string(),
-            BareKey::Menu => "menu".to_string(),
-        }
     }
 }
 
@@ -5823,7 +5786,7 @@ impl Config {
             config.ui = config.ui.merge(config_ui);
         }
         if let Some(env_config) = single_top_level_block(&kdl_config, "env")? {
-            let config_env = EnvironmentVariables::from_kdl(env_config)?;
+            let config_env = environment_variables_from_kdl(env_config)?;
             config.env = config.env.merge(config_env);
         }
         Ok(config)
@@ -5858,7 +5821,7 @@ impl Config {
             document.nodes_mut().push(ui_config);
         }
 
-        if let Some(env) = self.env.to_kdl() {
+        if let Some(env) = environment_variables_to_kdl(&self.env) {
             document.nodes_mut().push(env);
         }
 
@@ -6281,12 +6244,13 @@ impl Themes {
                     format!("Missing colors for {}", style_descriptor)
                 );
                 Ok(Some(StyleDeclaration {
-                    base: PaletteColor::try_from(("base", colors))?,
-                    background: PaletteColor::try_from(("background", colors)).unwrap_or_default(),
-                    emphasis_0: PaletteColor::try_from(("emphasis_0", colors))?,
-                    emphasis_1: PaletteColor::try_from(("emphasis_1", colors))?,
-                    emphasis_2: PaletteColor::try_from(("emphasis_2", colors))?,
-                    emphasis_3: PaletteColor::try_from(("emphasis_3", colors))?,
+                    base: crate::kdl::palette_color_from_kdl("base", colors)?,
+                    background: crate::kdl::palette_color_from_kdl("background", colors)
+                        .unwrap_or_default(),
+                    emphasis_0: crate::kdl::palette_color_from_kdl("emphasis_0", colors)?,
+                    emphasis_1: crate::kdl::palette_color_from_kdl("emphasis_1", colors)?,
+                    emphasis_2: crate::kdl::palette_color_from_kdl("emphasis_2", colors)?,
+                    emphasis_3: crate::kdl::palette_color_from_kdl("emphasis_3", colors)?,
                 }))
             },
             None => Ok(None),
@@ -6303,25 +6267,25 @@ impl Themes {
                     format!("Missing colors for {}", "multiplayer_user_colors")
                 );
                 Ok(MultiplayerColors {
-                    player_1: PaletteColor::try_from(("player_1", colors))
+                    player_1: crate::kdl::palette_color_from_kdl("player_1", colors)
                         .unwrap_or(DEFAULT_STYLES.multiplayer_user_colors.player_1),
-                    player_2: PaletteColor::try_from(("player_2", colors))
+                    player_2: crate::kdl::palette_color_from_kdl("player_2", colors)
                         .unwrap_or(DEFAULT_STYLES.multiplayer_user_colors.player_2),
-                    player_3: PaletteColor::try_from(("player_3", colors))
+                    player_3: crate::kdl::palette_color_from_kdl("player_3", colors)
                         .unwrap_or(DEFAULT_STYLES.multiplayer_user_colors.player_3),
-                    player_4: PaletteColor::try_from(("player_4", colors))
+                    player_4: crate::kdl::palette_color_from_kdl("player_4", colors)
                         .unwrap_or(DEFAULT_STYLES.multiplayer_user_colors.player_4),
-                    player_5: PaletteColor::try_from(("player_5", colors))
+                    player_5: crate::kdl::palette_color_from_kdl("player_5", colors)
                         .unwrap_or(DEFAULT_STYLES.multiplayer_user_colors.player_5),
-                    player_6: PaletteColor::try_from(("player_6", colors))
+                    player_6: crate::kdl::palette_color_from_kdl("player_6", colors)
                         .unwrap_or(DEFAULT_STYLES.multiplayer_user_colors.player_6),
-                    player_7: PaletteColor::try_from(("player_7", colors))
+                    player_7: crate::kdl::palette_color_from_kdl("player_7", colors)
                         .unwrap_or(DEFAULT_STYLES.multiplayer_user_colors.player_7),
-                    player_8: PaletteColor::try_from(("player_8", colors))
+                    player_8: crate::kdl::palette_color_from_kdl("player_8", colors)
                         .unwrap_or(DEFAULT_STYLES.multiplayer_user_colors.player_8),
-                    player_9: PaletteColor::try_from(("player_9", colors))
+                    player_9: crate::kdl::palette_color_from_kdl("player_9", colors)
                         .unwrap_or(DEFAULT_STYLES.multiplayer_user_colors.player_9),
-                    player_10: PaletteColor::try_from(("player_10", colors))
+                    player_10: crate::kdl::palette_color_from_kdl("player_10", colors)
                         .unwrap_or(DEFAULT_STYLES.multiplayer_user_colors.player_10),
                 })
             },
@@ -6349,17 +6313,17 @@ impl Themes {
             {
                 // Older palette based theme definition
                 let palette = Palette {
-                    fg: PaletteColor::try_from(("fg", theme_colors))?,
-                    bg: PaletteColor::try_from(("bg", theme_colors))?,
-                    red: PaletteColor::try_from(("red", theme_colors))?,
-                    green: PaletteColor::try_from(("green", theme_colors))?,
-                    yellow: PaletteColor::try_from(("yellow", theme_colors))?,
-                    blue: PaletteColor::try_from(("blue", theme_colors))?,
-                    magenta: PaletteColor::try_from(("magenta", theme_colors))?,
-                    orange: PaletteColor::try_from(("orange", theme_colors))?,
-                    cyan: PaletteColor::try_from(("cyan", theme_colors))?,
-                    black: PaletteColor::try_from(("black", theme_colors))?,
-                    white: PaletteColor::try_from(("white", theme_colors))?,
+                    fg: crate::kdl::palette_color_from_kdl("fg", theme_colors)?,
+                    bg: crate::kdl::palette_color_from_kdl("bg", theme_colors)?,
+                    red: crate::kdl::palette_color_from_kdl("red", theme_colors)?,
+                    green: crate::kdl::palette_color_from_kdl("green", theme_colors)?,
+                    yellow: crate::kdl::palette_color_from_kdl("yellow", theme_colors)?,
+                    blue: crate::kdl::palette_color_from_kdl("blue", theme_colors)?,
+                    magenta: crate::kdl::palette_color_from_kdl("magenta", theme_colors)?,
+                    orange: crate::kdl::palette_color_from_kdl("orange", theme_colors)?,
+                    cyan: crate::kdl::palette_color_from_kdl("cyan", theme_colors)?,
+                    black: crate::kdl::palette_color_from_kdl("black", theme_colors)?,
+                    white: crate::kdl::palette_color_from_kdl("white", theme_colors)?,
                     ..Default::default()
                 };
                 Theme {
@@ -6517,61 +6481,99 @@ impl Themes {
 
             current_theme_node_children
                 .nodes_mut()
-                .push(theme.palette.text_unselected.to_kdl("text_unselected"));
+                .push(style_declaration_to_kdl(
+                    &theme.palette.text_unselected,
+                    "text_unselected",
+                ));
             current_theme_node_children
                 .nodes_mut()
-                .push(theme.palette.text_selected.to_kdl("text_selected"));
+                .push(style_declaration_to_kdl(
+                    &theme.palette.text_selected,
+                    "text_selected",
+                ));
             current_theme_node_children
                 .nodes_mut()
-                .push(theme.palette.ribbon_selected.to_kdl("ribbon_selected"));
+                .push(style_declaration_to_kdl(
+                    &theme.palette.ribbon_selected,
+                    "ribbon_selected",
+                ));
             current_theme_node_children
                 .nodes_mut()
-                .push(theme.palette.ribbon_unselected.to_kdl("ribbon_unselected"));
+                .push(style_declaration_to_kdl(
+                    &theme.palette.ribbon_unselected,
+                    "ribbon_unselected",
+                ));
             current_theme_node_children
                 .nodes_mut()
-                .push(theme.palette.table_title.to_kdl("table_title"));
-            current_theme_node_children.nodes_mut().push(
-                theme
-                    .palette
-                    .table_cell_selected
-                    .to_kdl("table_cell_selected"),
-            );
-            current_theme_node_children.nodes_mut().push(
-                theme
-                    .palette
-                    .table_cell_unselected
-                    .to_kdl("table_cell_unselected"),
-            );
+                .push(style_declaration_to_kdl(
+                    &theme.palette.table_title,
+                    "table_title",
+                ));
             current_theme_node_children
                 .nodes_mut()
-                .push(theme.palette.list_selected.to_kdl("list_selected"));
+                .push(style_declaration_to_kdl(
+                    &theme.palette.table_cell_selected,
+                    "table_cell_selected",
+                ));
             current_theme_node_children
                 .nodes_mut()
-                .push(theme.palette.list_unselected.to_kdl("list_unselected"));
+                .push(style_declaration_to_kdl(
+                    &theme.palette.table_cell_unselected,
+                    "table_cell_unselected",
+                ));
             current_theme_node_children
                 .nodes_mut()
-                .push(theme.palette.frame_selected.to_kdl("frame_selected"));
+                .push(style_declaration_to_kdl(
+                    &theme.palette.list_selected,
+                    "list_selected",
+                ));
+            current_theme_node_children
+                .nodes_mut()
+                .push(style_declaration_to_kdl(
+                    &theme.palette.list_unselected,
+                    "list_unselected",
+                ));
+            current_theme_node_children
+                .nodes_mut()
+                .push(style_declaration_to_kdl(
+                    &theme.palette.frame_selected,
+                    "frame_selected",
+                ));
 
             match theme.palette.frame_unselected {
                 None => {},
                 Some(frame_unselected_style) => {
                     current_theme_node_children
                         .nodes_mut()
-                        .push(frame_unselected_style.to_kdl("frame_unselected"));
+                        .push(style_declaration_to_kdl(
+                            &frame_unselected_style,
+                            "frame_unselected",
+                        ));
                 },
             }
             current_theme_node_children
                 .nodes_mut()
-                .push(theme.palette.frame_highlight.to_kdl("frame_highlight"));
+                .push(style_declaration_to_kdl(
+                    &theme.palette.frame_highlight,
+                    "frame_highlight",
+                ));
             current_theme_node_children
                 .nodes_mut()
-                .push(theme.palette.exit_code_success.to_kdl("exit_code_success"));
+                .push(style_declaration_to_kdl(
+                    &theme.palette.exit_code_success,
+                    "exit_code_success",
+                ));
             current_theme_node_children
                 .nodes_mut()
-                .push(theme.palette.exit_code_error.to_kdl("exit_code_error"));
+                .push(style_declaration_to_kdl(
+                    &theme.palette.exit_code_error,
+                    "exit_code_error",
+                ));
             current_theme_node_children
                 .nodes_mut()
-                .push(theme.palette.multiplayer_user_colors.to_kdl());
+                .push(multiplayer_colors_to_kdl(
+                    &theme.palette.multiplayer_user_colors,
+                ));
             current_theme_node.set_children(current_theme_node_children);
             themes.nodes_mut().push(current_theme_node);
         }
@@ -6746,8 +6748,12 @@ impl SessionInfo {
                                         .map(|i| i as u32);
                                     if let (Some(pane_type), Some(id)) = (pane_type, id) {
                                         let pane_id = match pane_type {
-                                            "terminal" => Some(PaneId::Terminal(id)),
-                                            "plugin" => Some(PaneId::Plugin(id)),
+                                            "terminal" => Some(PaneId::Terminal(
+                                                zellij_types::internal_ids::TerminalId(id),
+                                            )),
+                                            "plugin" => Some(PaneId::Plugin(
+                                                zellij_types::internal_ids::PluginId(id),
+                                            )),
                                             _ => None,
                                         };
                                         if let Some(pane_id) = pane_id {
@@ -6852,11 +6858,11 @@ impl SessionInfo {
                 match pane_id {
                     PaneId::Terminal(id) => {
                         pane_id_node.push(KdlEntry::new_prop("type", "terminal"));
-                        pane_id_node.push(*id as i64);
+                        pane_id_node.push(i64::from(id.get()));
                     },
                     PaneId::Plugin(id) => {
                         pane_id_node.push(KdlEntry::new_prop("type", "plugin"));
-                        pane_id_node.push(*id as i64);
+                        pane_id_node.push(i64::from(id.get()));
                     },
                 }
                 history.ensure_children().nodes_mut().push(pane_id_node);

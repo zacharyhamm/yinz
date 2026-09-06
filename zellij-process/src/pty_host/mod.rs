@@ -25,8 +25,8 @@ pub use host::{run_pty_host, serve, ServeConfig};
 
 pub(crate) fn ensure_secure_dir(
     path: &std::path::Path,
-) -> zellij_utils::errors::prelude::Result<()> {
-    use zellij_utils::errors::prelude::*;
+) -> zellij_runtime::errors::prelude::Result<()> {
+    use zellij_runtime::errors::prelude::*;
 
     std::fs::create_dir_all(path)
         .with_context(|| format!("failed to create {}", path.display()))?;
@@ -34,7 +34,7 @@ pub(crate) fn ensure_secure_dir(
         .with_context(|| format!("failed to secure {}", path.display()))
 }
 
-fn secure_socket(path: &std::path::Path, mode: u32) -> zellij_utils::errors::prelude::Result<()> {
+fn secure_socket(path: &std::path::Path, mode: u32) -> zellij_runtime::errors::prelude::Result<()> {
     secure_socket_with(path, mode, zellij_utils::shared::set_permissions)
 }
 
@@ -42,8 +42,8 @@ fn secure_socket_with(
     path: &std::path::Path,
     mode: u32,
     set_permissions: impl FnOnce(&std::path::Path, u32) -> std::io::Result<()>,
-) -> zellij_utils::errors::prelude::Result<()> {
-    use zellij_utils::errors::prelude::*;
+) -> zellij_runtime::errors::prelude::Result<()> {
+    use zellij_runtime::errors::prelude::*;
 
     if let Err(error) = set_permissions(path, mode) {
         std::fs::remove_file(path).with_context(|| {

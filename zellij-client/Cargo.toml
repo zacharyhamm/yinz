@@ -13,6 +13,8 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+zellij-types = { workspace = true }
+zellij-runtime = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 crossterm = { workspace = true, features = ["events", "bracketed-paste"] }

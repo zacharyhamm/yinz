@@ -26,8 +26,8 @@ pub use loader::{check_lua_plugin, load_lua_plugin};
 use std::cell::RefCell;
 
 use mlua::{Lua, Table, Value as LuaValue};
+use zellij_runtime::errors::prelude::*;
 use zellij_utils::data::{CommandType, Event, PermissionStatus, PipeMessage};
-use zellij_utils::errors::prelude::*;
 
 use crate::plugins::plugin_map::{PluginEnv, ResponseSink};
 use crate::plugins::zellij_exports::{

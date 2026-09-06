@@ -8,8 +8,8 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use zellij_runtime::errors::prelude::*;
 use zellij_utils::data::{RemotePaneHandoff, WarpedPane};
-use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::RunCommand;
 
 use super::client;
@@ -241,7 +241,7 @@ pub fn kill(host_id: &str) -> Result<()> {
 /// thing that can give the pane a home.
 pub fn adopt_request(host_id: &str, session: Option<String>) -> Result<(String, WarpedPane)> {
     let payload = adopt_payload(host_id)?;
-    let session = match session.or_else(|| zellij_utils::envs::get_session_name().ok()) {
+    let session = match session.or_else(|| zellij_runtime::envs::get_session_name().ok()) {
         Some(session) => session,
         None => {
             return Err(anyhow!(
@@ -367,7 +367,7 @@ pub fn remote_adopt_request(
     session: Option<String>,
 ) -> Result<(String, WarpedPane)> {
     let payload = remote_adopt_payload(host, pane_token)?;
-    let session = match session.or_else(|| zellij_utils::envs::get_session_name().ok()) {
+    let session = match session.or_else(|| zellij_runtime::envs::get_session_name().ok()) {
         Some(session) => session,
         None => {
             return Err(anyhow!(

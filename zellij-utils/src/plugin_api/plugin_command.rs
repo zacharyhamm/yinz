@@ -198,8 +198,8 @@ use crate::data::{
     DeleteLayoutResponse, EditLayoutResponse, EnqueueQueueJobResponse, FloatingPaneCoordinates,
     GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPaneGitProbeResponse, GetPanePidResponse,
     GetPaneRunningCommandResponse, GetSessionListResponse, GitCheckout, HighlightLayer,
-    HighlightStyle, HttpVerb, InputMode, KeyWithModifier, KillSessionsResponse,
-    ListOrphanedPanesResponse, MessageToPlugin, Mutation, NewPluginArgs, NotificationInfo,
+    HighlightStyle, HttpVerb, InputMode, KillSessionsResponse, ListOrphanedPanesResponse,
+    MessageToPlugin, Mutation, NewPluginArgs, NotificationInfo,
     OpenCommandPaneInGitCheckoutResponse, OpenCommandPaneOverlayResponse, OrphanedPane,
     OverlayPlacement, PaneGitProbe, PaneId, PermissionType, PluginCommand, QueueSnapshot,
     QueueStatusResponse, RecordingSummary, RegexHighlight, RenameLayoutResponse,
@@ -208,6 +208,7 @@ use crate::data::{
 };
 use crate::input::actions::Action;
 use crate::input::layout::PercentOrFixed;
+use zellij_types::keys::KeyWithModifier;
 
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
@@ -349,8 +350,12 @@ impl TryFrom<ProtobufPaneId> for PaneId {
     type Error = &'static str;
     fn try_from(protobuf_pane_id: ProtobufPaneId) -> Result<Self, &'static str> {
         match ProtobufPaneType::try_from(protobuf_pane_id.pane_type).ok() {
-            Some(ProtobufPaneType::Terminal) => Ok(PaneId::Terminal(protobuf_pane_id.id)),
-            Some(ProtobufPaneType::Plugin) => Ok(PaneId::Plugin(protobuf_pane_id.id)),
+            Some(ProtobufPaneType::Terminal) => Ok(PaneId::Terminal(
+                zellij_types::internal_ids::TerminalId(protobuf_pane_id.id),
+            )),
+            Some(ProtobufPaneType::Plugin) => Ok(PaneId::Plugin(
+                zellij_types::internal_ids::PluginId(protobuf_pane_id.id),
+            )),
             None => Err("Failed to convert PaneId"),
         }
     }
@@ -362,11 +367,11 @@ impl TryFrom<PaneId> for ProtobufPaneId {
         match pane_id {
             PaneId::Terminal(id) => Ok(ProtobufPaneId {
                 pane_type: ProtobufPaneType::Terminal as i32,
-                id,
+                id: id.get(),
             }),
             PaneId::Plugin(id) => Ok(ProtobufPaneId {
                 pane_type: ProtobufPaneType::Plugin as i32,
-                id,
+                id: id.get(),
             }),
         }
     }
@@ -594,7 +599,8 @@ impl From<GetFocusedPaneInfoResponse> for ProtobufGetFocusedPaneInfoResponse {
                         PaneId::Plugin(_) => ProtobufPaneType::Plugin as i32,
                     },
                     id: match pane_id {
-                        PaneId::Terminal(id) | PaneId::Plugin(id) => id,
+                        PaneId::Terminal(id) => id.get(),
+                        PaneId::Plugin(id) => id.get(),
                     },
                 };
                 ProtobufGetFocusedPaneInfoResponse {
@@ -6929,7 +6935,11 @@ mod tests {
 
     #[test]
     fn notifications_with_and_without_panes_survive_the_wire() {
-        for pane_id in [None, Some(PaneId::Terminal(7)), Some(PaneId::Plugin(3))] {
+        for pane_id in [
+            None,
+            Some(PaneId::Terminal(zellij_types::internal_ids::TerminalId(7))),
+            Some(PaneId::Plugin(zellij_types::internal_ids::PluginId(3))),
+        ] {
             let protobuf: ProtobufPluginCommand = PluginCommand::Notify("done".to_owned(), pane_id)
                 .try_into()
                 .expect("encode");
@@ -6975,8 +6985,14 @@ mod tests {
     #[test]
     fn reveal_pane_with_id_protobuf_round_trip() {
         for (pane_id, label) in [
-            (PaneId::Terminal(7), Some("hocus: send_input?".to_owned())),
-            (PaneId::Plugin(3), None),
+            (
+                PaneId::Terminal(zellij_types::internal_ids::TerminalId(7)),
+                Some("hocus: send_input?".to_owned()),
+            ),
+            (
+                PaneId::Plugin(zellij_types::internal_ids::PluginId(3)),
+                None,
+            ),
         ] {
             let original = PluginCommand::RevealPaneWithId(pane_id, label.clone());
             let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
@@ -7019,9 +7035,18 @@ mod tests {
     #[test]
     fn set_pane_title_prefix_protobuf_round_trip() {
         for (pane_id, prefix) in [
-            (PaneId::Terminal(7), Some("zellij:topic".to_owned())),
-            (PaneId::Terminal(7), Some(String::new())),
-            (PaneId::Plugin(3), None),
+            (
+                PaneId::Terminal(zellij_types::internal_ids::TerminalId(7)),
+                Some("zellij:topic".to_owned()),
+            ),
+            (
+                PaneId::Terminal(zellij_types::internal_ids::TerminalId(7)),
+                Some(String::new()),
+            ),
+            (
+                PaneId::Plugin(zellij_types::internal_ids::PluginId(3)),
+                None,
+            ),
         ] {
             let original = PluginCommand::SetPaneTitlePrefix {
                 pane_id,
@@ -7239,7 +7264,7 @@ mod tests {
     fn warp_pane_to_session_protobuf_round_trip() {
         for placement in EVERY_PLACEMENT {
             let original = PluginCommand::WarpPaneToSession {
-                pane_id: PaneId::Terminal(7),
+                pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(7)),
                 to_session: "other".to_owned(),
                 placement,
             };
@@ -7251,7 +7276,10 @@ mod tests {
                     to_session,
                     placement: decoded_placement,
                 } => {
-                    assert_eq!(pane_id, PaneId::Terminal(7));
+                    assert_eq!(
+                        pane_id,
+                        PaneId::Terminal(zellij_types::internal_ids::TerminalId(7))
+                    );
                     assert_eq!(to_session, "other");
                     assert_eq!(decoded_placement, placement);
                 },
@@ -7264,7 +7292,7 @@ mod tests {
     fn warp_pane_from_session_protobuf_round_trip() {
         for placement in EVERY_PLACEMENT {
             let original = PluginCommand::WarpPaneFromSession {
-                pane_id: PaneId::Terminal(11),
+                pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(11)),
                 from_session: "other".to_owned(),
                 placement,
             };
@@ -7276,7 +7304,10 @@ mod tests {
                     from_session,
                     placement: decoded_placement,
                 } => {
-                    assert_eq!(pane_id, PaneId::Terminal(11));
+                    assert_eq!(
+                        pane_id,
+                        PaneId::Terminal(zellij_types::internal_ids::TerminalId(11))
+                    );
                     assert_eq!(from_session, "other");
                     assert_eq!(decoded_placement, placement);
                 },

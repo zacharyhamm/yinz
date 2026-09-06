@@ -7,8 +7,9 @@ use insta::assert_snapshot;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use zellij_utils::data::{Palette, Style};
-use zellij_utils::internal_ids::ClientId;
+use zellij_types::internal_ids::ClientId;
+
+use zellij_types::style::{Palette, Style};
 use zellij_utils::pane_size::PaneGeom;
 
 fn read_fixture() -> Vec<u8> {

@@ -131,7 +131,7 @@ fn pane_creation_characterization() {
                             assert!(!plugin_messages.iter().any(|msg| matches!(
                                 msg,
                                 PluginInstruction::Resize(
-                                    zellij_utils::internal_ids::PluginId(2),
+                                    zellij_types::internal_ids::PluginId(2),
                                     ..
                                 )
                             )));

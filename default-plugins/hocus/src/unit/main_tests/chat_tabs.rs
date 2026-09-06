@@ -102,7 +102,7 @@ fn shift_tab_at_the_bar_steps_back_to_the_agent_list() {
     assert!(state.on_key(shift_tab()));
     assert_eq!(
         state.ring_focus_calls,
-        [(PaneId::Plugin(7), "history")],
+        [(PaneId::Plugin(zellij_tile::prelude::PluginId(7)), "history")],
         "the keyboard went to the list, landing in its history half"
     );
     assert_eq!(state.chat_tab_focus, None, "and this half is off its stop");

@@ -14,7 +14,6 @@ use crate::plugins::plugin_map::{PluginEnv, ResponseSink};
 use crate::plugins::wasm_bridge::handle_plugin_crash;
 use crate::pty::{ClientTabIndexOrPaneId, PtyInstruction};
 use crate::route::{route_action, wait_for_action_completion, NotificationEnd};
-use crate::ClientId;
 use crate::ServerInstruction;
 use log::warn;
 use serde::Serialize;
@@ -33,6 +32,10 @@ use std::{
 use tokio::sync::oneshot;
 use url::Url;
 use wasmi::{Caller, Linker};
+use zellij_runtime::home::{absolute_lexical, default_layout_dir, default_user_plugin_dir};
+use zellij_storage::plugin_data_store;
+use zellij_types::internal_ids::{PluginId, TerminalId};
+use zellij_types::keys::KeyWithModifier;
 use zellij_utils::consts::ipc_connect;
 use zellij_utils::data::EnqueueQueueJobResponse;
 use zellij_utils::data::{
@@ -47,30 +50,26 @@ use zellij_utils::data::{
     DeleteLayoutResponse, EditLayoutResponse, Event, FileMetadata, FloatingPaneCoordinates,
     FocusOrCreateTabResponse, GetFocusedPaneInfoResponse, GetPaneCwdResponse,
     GetPaneGitProbeResponse, GetPanePidResponse, GetPaneRunningCommandResponse, GitCheckout,
-    HttpVerb, KeyWithModifier, KillSessionsResponse, LayoutInfo, LayoutMetadata,
-    LayoutParsingError, ListOrphanedPanesResponse, MessageToPlugin, NewPanePlacement,
-    NewTabResponse, NewTabUnfocusedResponse, NewTiledPaneInTabResponse,
-    OpenCommandPaneBackgroundResponse, OpenCommandPaneFloatingNearPluginResponse,
-    OpenCommandPaneFloatingResponse, OpenCommandPaneInGitCheckoutResponse,
-    OpenCommandPaneInPlaceOfPaneIdResponse, OpenCommandPaneInPlaceOfPluginResponse,
-    OpenCommandPaneInPlaceResponse, OpenCommandPaneNearPluginResponse,
-    OpenCommandPaneOverlayResponse, OpenCommandPaneResponse, OpenEditPaneInPlaceOfPaneIdResponse,
-    OpenFileFloatingNearPluginResponse, OpenFileFloatingResponse, OpenFileInPlaceOfPluginResponse,
-    OpenFileInPlaceResponse, OpenFileNearPluginResponse, OpenFileResponse,
-    OpenPaneInNewTabResponse, OpenPluginPaneFloatingResponse,
-    OpenTerminalFloatingNearPluginResponse, OpenTerminalFloatingResponse,
-    OpenTerminalInPlaceOfPluginResponse, OpenTerminalInPlaceResponse,
+    HttpVerb, KillSessionsResponse, LayoutInfo, LayoutMetadata, LayoutParsingError,
+    ListOrphanedPanesResponse, MessageToPlugin, NewPanePlacement, NewTabResponse,
+    NewTabUnfocusedResponse, NewTiledPaneInTabResponse, OpenCommandPaneBackgroundResponse,
+    OpenCommandPaneFloatingNearPluginResponse, OpenCommandPaneFloatingResponse,
+    OpenCommandPaneInGitCheckoutResponse, OpenCommandPaneInPlaceOfPaneIdResponse,
+    OpenCommandPaneInPlaceOfPluginResponse, OpenCommandPaneInPlaceResponse,
+    OpenCommandPaneNearPluginResponse, OpenCommandPaneOverlayResponse, OpenCommandPaneResponse,
+    OpenEditPaneInPlaceOfPaneIdResponse, OpenFileFloatingNearPluginResponse,
+    OpenFileFloatingResponse, OpenFileInPlaceOfPluginResponse, OpenFileInPlaceResponse,
+    OpenFileNearPluginResponse, OpenFileResponse, OpenPaneInNewTabResponse,
+    OpenPluginPaneFloatingResponse, OpenTerminalFloatingNearPluginResponse,
+    OpenTerminalFloatingResponse, OpenTerminalInPlaceOfPluginResponse, OpenTerminalInPlaceResponse,
     OpenTerminalNearPluginResponse, OpenTerminalPaneInPlaceOfPaneIdResponse, OpenTerminalResponse,
     OriginatingPlugin, OrphanedPane, OverlayPlacement, PaneFrameStyle, PaneScrollbackResponse,
     PermissionStatus, PermissionType, PluginPermission, RegexHighlight, RenameLayoutResponse,
     SaveLayoutResponse, SpawnAgentResponse, SpawnedAgent, TabMetadata, WarpPaneResponse,
     WarpPlacement, HOCUS_AGENT_PANE_CONTEXT,
 };
-use zellij_utils::home::{absolute_lexical, default_layout_dir, default_user_plugin_dir};
 use zellij_utils::input::permission::PermissionCache;
-use zellij_utils::internal_ids::{PluginId, TerminalId};
 use zellij_utils::ipc::{ClientToServerMsg, IpcSenderWithContext};
-use zellij_utils::plugin_data_store;
 use zellij_utils::sessions::{
     generate_random_name as generate_random_name_impl, validate_session_name,
 };
@@ -79,13 +78,13 @@ use crate::{panes::PaneId, screen::ScreenInstruction};
 use kdl::KdlDocument;
 
 use prost::Message;
+use zellij_runtime::errors::prelude::*;
 use zellij_utils::{
     consts::{VERSION, ZELLIJ_SESSION_INFO_CACHE_DIR, ZELLIJ_SOCK_DIR, ZELLIJ_TMP_DIR},
     data::{
         CommandOrPlugin, CommandToRun, Direction, EventType, FileToOpen, InputMode, PluginCommand,
         PluginIds, PluginMessage, Resize, ResizeStrategy,
     },
-    errors::prelude::*,
     input::{
         actions::Action,
         command::{OpenFilePayload, RunCommand, RunCommandAction, TerminalAction},
@@ -1192,7 +1191,7 @@ fn get_plugin_ids(env: &mut PluginEnv) {
         initial_cwd: env.plugin_cwd.clone(),
         client_id: env.client_id.0,
         hostname: host_display_name(),
-        host_id: zellij_utils::host_identity::host_id(),
+        host_id: zellij_runtime::host_identity::host_id(),
     };
     ProtobufPluginIds::try_from(ids)
         .map_err(|e| anyhow!("Failed to serialized plugin ids: {}", e))
@@ -5058,8 +5057,8 @@ fn data_watch(env: &mut PluginEnv, request: FetchRequest, mode: WatchMode) {
     let response = match resolve_fetch_namespace(env, &request).and_then(|namespace| {
         env.data_access.plugin_data().register_watch(
             &namespace,
-            env.plugin_id.0,
-            env.client_id.0,
+            env.plugin_id,
+            env.client_id,
             request.clone(),
             mode,
         )
@@ -5087,7 +5086,7 @@ fn data_unwatch(env: &mut PluginEnv, watch_id: u64) {
     let response = match env
         .data_access
         .plugin_data()
-        .unregister_watch(env.plugin_id.0, watch_id)
+        .unregister_watch(env.plugin_id, watch_id)
     {
         Ok(()) => DataUnwatchResponse::Ok,
         Err(e) => DataUnwatchResponse::Err(e.to_string()),
@@ -5126,8 +5125,8 @@ fn notify_watchers(env: &PluginEnv, namespace: &str, touched_entities: &BTreeSet
         };
         env.senders
             .send_to_plugin(PluginInstruction::Update(vec![(
-                Some(PluginId(change.plugin_id)),
-                Some(ClientId(change.client_id)),
+                Some(change.plugin_id),
+                Some(change.client_id),
                 event,
             )]))
             .with_context(|| "failed to deliver a data store change".to_string())

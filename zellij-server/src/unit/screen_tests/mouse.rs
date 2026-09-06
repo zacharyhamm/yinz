@@ -3,7 +3,7 @@ use crate::screen::Notification;
 use crate::ui::notification::{notification_height, notification_width};
 use std::time::Instant;
 use zellij_test_support::Watched;
-use zellij_utils::animation::Tween;
+use zellij_types::animation::Tween;
 
 /// A toast that has finished arriving and is sitting still, which is what every hit-test below
 /// wants: the animation is not under test here, the geometry is.
@@ -111,7 +111,7 @@ fn clicking_overlapping_pane_notifications_uses_paint_order() {
         -(notification_height(1) as f32),
         0.0,
         std::time::Duration::from_millis(220),
-        zellij_utils::animation::Easing::EaseOut,
+        zellij_types::animation::Easing::EaseOut,
         Instant::now(),
     );
     screen.notifications.extend([newer, older]);

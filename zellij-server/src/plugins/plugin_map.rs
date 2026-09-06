@@ -17,13 +17,15 @@ use crate::{thread_bus::ThreadSenders, ClientId};
 
 use prost::Message;
 use tokio::sync::mpsc::UnboundedSender;
-use zellij_utils::data_access::DataAccess;
+use zellij_storage::data_access::DataAccess;
 use zellij_utils::plugin_api::action::ProtobufPluginConfiguration;
 use zellij_utils::plugin_api::event::ProtobufEvent;
 use zellij_utils::plugin_api::pipe_message::ProtobufPipeMessage;
 
 use crate::plugins::queues::Queues;
 use crate::plugins::wasm_bridge::WasmBridge;
+use zellij_runtime::errors::prelude::*;
+use zellij_utils::data::{Event, PermissionType, PipeMessage};
 use zellij_utils::{
     data::EventType,
     data::InputMode,
@@ -31,10 +33,6 @@ use zellij_utils::{
     input::keybinds::Keybinds,
     input::layout::{PluginUserConfiguration, RunPlugin, RunPluginLocation},
     input::plugins::{PluginAliases, PluginConfig},
-};
-use zellij_utils::{
-    data::{Event, PermissionType, PipeMessage},
-    errors::prelude::*,
 };
 
 // the idea here is to provide atomicity when adding/removing plugins from the map (eg. when a new

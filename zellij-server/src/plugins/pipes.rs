@@ -4,7 +4,7 @@ use crate::plugins::wasm_bridge::{render_plugin_for_clients, PluginRenderAsset};
 use std::collections::{HashMap, HashSet};
 use zellij_utils::data::{PipeMessage, PipeSource};
 
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 
 use crate::{thread_bus::ThreadSenders, ClientId};
 

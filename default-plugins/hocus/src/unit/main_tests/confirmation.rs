@@ -260,7 +260,10 @@ fn confirming_a_pane_tool_singles_out_that_pane() {
     state.on_chunk("hocus-1", b"", true, None);
 
     assert!(matches!(state.status, Status::ConfirmingTool));
-    assert_eq!(state.spotlight, Some(PaneId::Terminal(7)));
+    assert_eq!(
+        state.spotlight,
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(7)))
+    );
 }
 
 /// A confirmation with nothing to point at is still a confirmation. `slack_post`
@@ -293,7 +296,7 @@ fn answering_takes_the_mark_back_off() {
         state.on_chunk("hocus-1", b"", true, None);
         assert_eq!(
             state.spotlight,
-            Some(PaneId::Terminal(3)),
+            Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(3))),
             "{answer}: the mark goes up to begin with"
         );
 
@@ -316,11 +319,17 @@ fn the_mark_travels_with_a_parked_chat() {
     let parked = state.take_chat();
 
     assert_eq!(state.spotlight, None, "the foreground keeps nothing");
-    assert_eq!(parked.spotlight, Some(PaneId::Terminal(5)));
+    assert_eq!(
+        parked.spotlight,
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(5)))
+    );
 
     state.put_chat(parked);
 
-    assert_eq!(state.spotlight, Some(PaneId::Terminal(5)));
+    assert_eq!(
+        state.spotlight,
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(5)))
+    );
 }
 
 /// Aborting answers every outstanding call, so the transcript stays valid if

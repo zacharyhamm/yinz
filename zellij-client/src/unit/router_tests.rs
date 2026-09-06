@@ -8,7 +8,7 @@
 use super::super::router::route;
 use crate::test_support::FakeClientOsApi;
 use crate::ClientInstruction;
-use zellij_utils::channels::{self, SenderWithContext};
+use zellij_runtime::channels::{self, SenderWithContext};
 use zellij_utils::ipc::{ExitReason, ServerToClientMsg};
 
 fn run_router(os_input: FakeClientOsApi) -> Vec<ClientInstruction> {

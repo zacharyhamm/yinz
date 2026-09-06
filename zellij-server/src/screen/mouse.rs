@@ -1,12 +1,12 @@
 use std::time::Instant;
 
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 
 use super::Screen;
 use crate::plugins::PluginInstruction;
 use crate::ClientId;
+use zellij_types::mouse::{MouseEvent, MouseEventType};
 use zellij_utils::data::{Event, EventType};
-use zellij_utils::input::mouse::{MouseEvent, MouseEventType};
 
 impl Screen {
     /// Copy this client's selection.

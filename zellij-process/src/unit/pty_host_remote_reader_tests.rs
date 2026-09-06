@@ -315,12 +315,12 @@ impl Reconnector for TestReconnector {
         _host: &str,
         _pane_token: &str,
         received: u64,
-    ) -> zellij_utils::errors::prelude::Result<Reconnected> {
+    ) -> zellij_runtime::errors::prelude::Result<Reconnected> {
         {
             let mut fails = self.fail_first.lock().unwrap();
             if *fails > 0 {
                 *fails -= 1;
-                return Err(zellij_utils::errors::prelude::anyhow!("still down"));
+                return Err(zellij_runtime::errors::prelude::anyhow!("still down"));
             }
         }
         self.seen.lock().unwrap().push(received);

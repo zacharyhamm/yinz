@@ -64,20 +64,22 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::str;
 use std::time::{Duration, Instant};
-use zellij_utils::animation::{Tween, BLINK_TICK, FRAME_PERIOD};
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::animation::{Tween, BLINK_TICK, FRAME_PERIOD};
+use zellij_types::internal_ids::TerminalId;
 
 use crate::route::NotificationEnd;
 
 use log::{debug, warn};
+use zellij_runtime::errors::prelude::*;
+use zellij_types::keys::KeyWithModifier;
+use zellij_types::position::Position;
+use zellij_types::style::{HostTerminalThemeMode, Styling, ThemeHue};
 use zellij_utils::data::{
     AgentInfo, AgentState, ContextMenuContext, ContextMenuItem, Direction, EventType,
-    FloatingPaneCoordinates, HookPayload, HostTerminalThemeMode, KeyWithModifier, LayoutInfo,
-    LayoutWithError, NotificationInfo, OverlayPlacement, PaneInfo, PluginTag, RemotePaneHandoff,
-    ResizeStrategy, SessionInfo, Styling, TabInfo, ThemeHue, WarpedPane, WarpedTab,
-    HOCUS_AGENT_PANE_CONTEXT,
+    FloatingPaneCoordinates, HookPayload, LayoutInfo, LayoutWithError, NotificationInfo,
+    OverlayPlacement, PaneInfo, PluginTag, RemotePaneHandoff, ResizeStrategy, SessionInfo, TabInfo,
+    WarpedPane, WarpedTab, HOCUS_AGENT_PANE_CONTEXT,
 };
-use zellij_utils::errors::prelude::*;
 use zellij_utils::input::command::{RunCommand, TerminalAction};
 use zellij_utils::input::context_menu::ContextMenu;
 use zellij_utils::input::hooks::HookPoint;
@@ -91,7 +93,6 @@ use zellij_utils::input::options::{
     PaneFrameStyle,
 };
 use zellij_utils::pane_size::{Size, SizeInPixels};
-use zellij_utils::position::Position;
 use zellij_utils::shared::clean_string_from_control_and_linebreak;
 
 use crate::background_jobs::BackgroundJob;
@@ -117,8 +118,9 @@ use crate::{
     ui::loading_indication::LoadingIndication,
     ClientId, ServerInstruction,
 };
+use zellij_types::style::{Palette, Style};
 use zellij_utils::{
-    data::{Event, InputMode, ModeInfo, Palette, Style},
+    data::{Event, InputMode, ModeInfo},
     ipc::{ClientAttributes, PixelDimensions},
 };
 

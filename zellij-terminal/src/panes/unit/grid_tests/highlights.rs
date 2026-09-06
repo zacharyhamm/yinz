@@ -1,5 +1,5 @@
 use super::*;
-use zellij_utils::internal_ids::PluginId;
+use zellij_types::internal_ids::PluginId;
 
 #[test]
 fn set_plugin_regex_highlights_basic_match() {

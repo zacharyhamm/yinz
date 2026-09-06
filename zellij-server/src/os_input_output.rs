@@ -1,7 +1,8 @@
 #![allow(clippy::result_large_err)]
 #![allow(clippy::type_complexity)]
 use crate::{panes::PaneId, ClientId};
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
+use zellij_types::style::default_palette;
 
 use interprocess::local_socket::Stream as LocalSocketStream;
 
@@ -22,15 +23,14 @@ use zellij_utils::data::{PaneTarget, RemotePaneHandoff};
 use interprocess;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tempfile::tempfile;
+use zellij_runtime::errors::prelude::*;
 use zellij_utils::{
     data::Palette,
-    errors::prelude::*,
     input::command::{RunCommand, TerminalAction},
     ipc::{
         ClientToServerMsg, ExitReason, IpcReceiverWithContext, IpcSenderWithContext,
         ServerToClientMsg,
     },
-    shared::default_palette,
 };
 
 use std::{
@@ -1769,12 +1769,12 @@ pub fn get_server_os_input_from_termios_arg(
 }
 
 pub fn get_server_os_input_with_termios(
-    termios: Option<zellij_utils::termios::WireTermios>,
+    termios: Option<zellij_runtime::termios::WireTermios>,
 ) -> Result<ServerOsInputOutput, std::io::Error> {
     server_os_input_with_backend(PtyBackendImpl::with_termios(
         termios
             .as_ref()
-            .map(zellij_utils::termios::WireTermios::to_termios),
+            .map(zellij_runtime::termios::WireTermios::to_termios),
     )?)
 }
 

@@ -573,7 +573,7 @@ fn test_override_tiled_exact_match_preservation_plugins() {
     let tab_bar_plugin = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
     initial_plugin_ids.insert(
         tab_bar_plugin.clone(),
-        vec![zellij_utils::internal_ids::PluginId(100)],
+        vec![zellij_types::internal_ids::PluginId(100)],
     );
 
     let size = Size {

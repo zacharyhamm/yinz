@@ -11,13 +11,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use vte;
+use zellij_types::position::Position;
+use zellij_types::style::{Palette, Style};
 use zellij_utils::consts::SCROLL_BUFFER_SIZE;
-use zellij_utils::{
-    data::{Palette, Style},
-    input::options::DEFAULT_WORD_SEPARATORS,
-    pane_size::SizeInPixels,
-    position::Position,
-};
+use zellij_utils::{input::options::DEFAULT_WORD_SEPARATORS, pane_size::SizeInPixels};
 
 use std::fmt::Write;
 
@@ -1106,7 +1103,7 @@ fn search_match_ending_on_a_full_tail_row_below_a_wide_char_wrap_stays_on_that_r
 
 #[test]
 fn wheel_reports_share_encoding_and_preserve_modifiers() {
-    use zellij_utils::input::mouse::MouseEvent;
+    use zellij_types::mouse::MouseEvent;
 
     let position = Position::new(4, 6);
     for encoding in ["", "\u{1b}[?1005h", "\u{1b}[?1006h"] {

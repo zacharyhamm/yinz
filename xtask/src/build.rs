@@ -16,6 +16,8 @@ const PLUGIN_INPUT_DIRS: &[&str] = &[
     "zellij-tile-markdown/src",
     "zellij-tile-utils/src",
     "zellij-utils/src",
+    "zellij-types/src",
+    "zellij-runtime/src",
     "zellij-utils/assets",
 ];
 
@@ -29,6 +31,8 @@ const PLUGIN_INPUT_FILES: &[&str] = &[
     "zellij-tile-markdown/Cargo.toml",
     "zellij-tile-utils/Cargo.toml",
     "zellij-utils/Cargo.toml",
+    "zellij-types/Cargo.toml",
+    "zellij-runtime/Cargo.toml",
 ];
 
 /// Build members of the zellij workspace.

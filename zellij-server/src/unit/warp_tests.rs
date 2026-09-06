@@ -11,8 +11,8 @@ use super::*;
 
 use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 use std::path::PathBuf;
-use zellij_utils::channels::{unbounded, SenderWithContext};
-use zellij_utils::errors::ErrorContext;
+use zellij_runtime::channels::{unbounded, SenderWithContext};
+use zellij_types::diagnostics::ErrorContext;
 
 /// A short budget for the timeout paths. Long enough that a loaded CI machine
 /// will not trip it by accident, short enough that the suite stays quick.
@@ -20,8 +20,8 @@ const TEST_TIMEOUT: Duration = Duration::from_millis(200);
 
 struct Harness {
     senders: ThreadSenders,
-    screen: zellij_utils::channels::Receiver<(ScreenInstruction, ErrorContext)>,
-    pty: zellij_utils::channels::Receiver<(PtyInstruction, ErrorContext)>,
+    screen: zellij_runtime::channels::Receiver<(ScreenInstruction, ErrorContext)>,
+    pty: zellij_runtime::channels::Receiver<(PtyInstruction, ErrorContext)>,
 }
 
 fn harness() -> Harness {

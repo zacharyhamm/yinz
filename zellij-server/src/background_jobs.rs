@@ -3,8 +3,10 @@ use zellij_utils::consts::{
 };
 
 use std::str::FromStr;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::diagnostics::BackgroundJobContext;
+use zellij_types::diagnostics::ContextType;
 use zellij_utils::data::{Event, HttpVerb, LayoutInfo, SessionInfo};
-use zellij_utils::errors::{prelude::*, BackgroundJobContext, ContextType};
 use zellij_utils::input::layout::RunPlugin;
 use zellij_utils::ipc::MAX_IPC_FRAME_LEN;
 
@@ -341,7 +343,7 @@ pub(crate) fn background_jobs_main(
 
     loop {
         let (event, mut err_ctx) = bus.recv().with_context(err_context)?;
-        err_ctx.add_call(ContextType::BackgroundJob((&event).into()));
+        zellij_runtime::errors::add_call(&mut err_ctx, ContextType::BackgroundJob((&event).into()));
         let job = event.clone();
         match event {
             BackgroundJob::DisplayPaneError(pane_ids, text) => {
@@ -1325,7 +1327,7 @@ pub fn write_session_state_to_disk(
     current_session_info: SessionInfo,
     current_session_layout: (String, BTreeMap<String, String>),
 ) -> Result<()> {
-    zellij_utils::session_checkpoint::write_checkpoint(
+    zellij_runtime::session_checkpoint::write_checkpoint(
         &session_info_folder_for_session(&current_session_name),
         &current_session_info.to_string(),
         &current_session_layout,
@@ -1392,7 +1394,7 @@ fn find_resurrectable_sessions(
                         return None;
                     }
                     let checkpoint =
-                        zellij_utils::session_checkpoint::SessionCheckpoint::read(&folder_name)
+                        zellij_runtime::session_checkpoint::SessionCheckpoint::read(&folder_name)
                             .to_log()
                             .ok()?;
                     let layout_file_name = checkpoint.layout_path();
@@ -1457,7 +1459,7 @@ mod tests {
         let info_dir = tempdir().unwrap();
         let _listener = make_socket(sock_dir.path(), "live");
         for name in ["live", "dead"] {
-            zellij_utils::session_checkpoint::write_checkpoint(
+            zellij_runtime::session_checkpoint::write_checkpoint(
                 &info_dir.path().join(name),
                 &SessionInfo::new(name.to_owned()).to_string(),
                 &("layout {}".to_owned(), BTreeMap::new()),
@@ -1564,8 +1566,8 @@ mod web_request_stream_tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    use zellij_utils::channels::{unbounded, Receiver, SenderWithContext};
-    use zellij_utils::errors::ErrorContext;
+    use zellij_runtime::channels::{unbounded, Receiver, SenderWithContext};
+    use zellij_types::diagnostics::ErrorContext;
 
     const PLUGIN_ID: PluginId = PluginId(1);
     const CLIENT_ID: ClientId = ClientId(2);

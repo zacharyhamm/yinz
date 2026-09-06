@@ -1,10 +1,10 @@
 use super::test_framework::*;
 use crate::data::PaneTarget;
 use crate::data::{
-    AgentInfo, AgentSource, AgentState, BareKey, CommandOrPlugin, ConnectToSession, Direction,
-    FloatingPaneCoordinates, HostTerminalThemeMode, InputMode, KeyModifier, KeyWithModifier,
-    LayoutInfo, LayoutMetadata, NewPanePlacement, OriginatingPlugin, PaneId, PluginTag,
-    RemotePaneHandoff, Resize, UnblockCondition, WarpPlacement, WarpedPane, WarpedTab,
+    AgentInfo, AgentSource, AgentState, CommandOrPlugin, ConnectToSession, Direction,
+    FloatingPaneCoordinates, InputMode, LayoutInfo, LayoutMetadata, NewPanePlacement,
+    OriginatingPlugin, PaneId, PluginTag, RemotePaneHandoff, Resize, UnblockCondition,
+    WarpPlacement, WarpedPane, WarpedTab,
 };
 use crate::input::actions::{Action, SearchDirection, SearchOption};
 use crate::input::cli_assets::CliAssets;
@@ -14,7 +14,6 @@ use crate::input::layout::{
     Run, RunPlugin, RunPluginLocation, RunPluginOrAlias, SplitDirection, SplitSize,
     TiledPaneLayout,
 };
-use crate::input::mouse::{MouseEvent, MouseEventType};
 use crate::input::options::{
     Clipboard, HostNotificationProtocol, NestedSessionHandling, NotificationPosition, OnForceClose,
     Options, PaneFrameStyle,
@@ -27,6 +26,9 @@ use crate::position::Position;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use strum::VariantNames;
+use zellij_types::keys::{BareKey, KeyModifier, KeyWithModifier};
+use zellij_types::mouse::{MouseEvent, MouseEventType};
+use zellij_types::style::HostTerminalThemeMode;
 
 const ROUNDTRIP_TEST_STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -171,7 +173,7 @@ fn test_client_messages() {
         ] {
             test_client_roundtrip!(ClientToServerMsg::AgentReport(AgentReport {
                 report_id: "00000000-0000-4000-8000-000000000001".into(),
-                pane_id: PaneId::Terminal(7),
+                pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(7)),
                 state: state.clone(),
                 event,
                 trace: true,
@@ -1000,7 +1002,7 @@ fn test_client_messages() {
         });
         test_client_roundtrip!(ClientToServerMsg::Action {
             action: Action::WarpPane {
-                pane_id: Some(PaneId::Terminal(3)),
+                pane_id: Some(PaneId::Terminal(zellij_types::internal_ids::TerminalId(3))),
                 to_session: "other".to_owned(),
                 placement,
             },
@@ -1406,7 +1408,7 @@ fn test_client_messages() {
         action: Action::DumpScreen {
             file_path: Some("/path/to/file".to_owned()),
             include_scrollback: true,
-            pane_id: Some(PaneId::Terminal(5)),
+            pane_id: Some(PaneId::Terminal(zellij_types::internal_ids::TerminalId(5))),
             ansi: false,
         },
         terminal_id: Some(1),
@@ -3549,10 +3551,10 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::StackPanes {
             pane_ids: vec![
-                PaneId::Terminal(0),
-                PaneId::Plugin(1),
-                PaneId::Terminal(2),
-                PaneId::Plugin(3)
+                PaneId::Terminal(zellij_types::internal_ids::TerminalId(0)),
+                PaneId::Plugin(zellij_types::internal_ids::PluginId(1)),
+                PaneId::Terminal(zellij_types::internal_ids::TerminalId(2)),
+                PaneId::Plugin(zellij_types::internal_ids::PluginId(3))
             ],
         },
         terminal_id: Some(1),
@@ -3561,7 +3563,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ChangeFloatingPaneCoordinates {
-            pane_id: PaneId::Terminal(0),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(0)),
             coordinates: FloatingPaneCoordinates::new(
                 None,
                 None,
@@ -3578,7 +3580,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ChangeFloatingPaneCoordinates {
-            pane_id: PaneId::Terminal(0),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(0)),
             coordinates: FloatingPaneCoordinates::new(
                 None,
                 None,
@@ -3607,7 +3609,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::SetPaneAgent {
-            pane_id: PaneId::Terminal(3),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(3)),
             agent: Some(AgentInfo {
                 kind: "claude".to_owned(),
                 state: AgentState::Waiting,
@@ -3635,7 +3637,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::SetPaneAgent {
-            pane_id: PaneId::Terminal(3),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(3)),
             agent: None,
         },
         terminal_id: None,
@@ -3644,7 +3646,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::SetPaneColor {
-            pane_id: PaneId::Terminal(0),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(0)),
             fg: Some("#00e000".to_owned()),
             bg: Some("#001a3a".to_owned()),
         },
@@ -3654,7 +3656,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::SetPaneColor {
-            pane_id: PaneId::Plugin(2),
+            pane_id: PaneId::Plugin(zellij_types::internal_ids::PluginId(2)),
             fg: None,
             bg: None,
         },
@@ -3969,23 +3971,26 @@ fn test_client_messages() {
         modifiers: [KeyModifier::Alt, KeyModifier::Ctrl].into_iter().collect(),
     });
     test_client_roundtrip!(ClientToServerMsg::SubscribeToPaneRenders {
-        pane_ids: vec![PaneId::Terminal(1), PaneId::Plugin(2)],
+        pane_ids: vec![
+            PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+            PaneId::Plugin(zellij_types::internal_ids::PluginId(2))
+        ],
         scrollback: Some(100),
         ansi: false,
     });
     test_client_roundtrip!(ClientToServerMsg::SubscribeToPaneRenders {
-        pane_ids: vec![PaneId::Terminal(0)],
+        pane_ids: vec![PaneId::Terminal(zellij_types::internal_ids::TerminalId(0))],
         scrollback: None,
         ansi: false,
     });
     test_client_roundtrip!(ClientToServerMsg::SubscribeToPaneRenders {
-        pane_ids: vec![PaneId::Terminal(1)],
+        pane_ids: vec![PaneId::Terminal(zellij_types::internal_ids::TerminalId(1))],
         scrollback: Some(0),
         ansi: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ScrollUpByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -3993,7 +3998,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ScrollUpByPaneId {
-            pane_id: PaneId::Plugin(5),
+            pane_id: PaneId::Plugin(zellij_types::internal_ids::PluginId(5)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4001,7 +4006,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ScrollDownByPaneId {
-            pane_id: PaneId::Terminal(2),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(2)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4009,7 +4014,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ScrollToTopByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4017,7 +4022,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ScrollToBottomByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4025,7 +4030,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::PageScrollUpByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4033,7 +4038,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::PageScrollDownByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4041,7 +4046,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::HalfPageScrollUpByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4049,7 +4054,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::HalfPageScrollDownByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4057,7 +4062,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ResizeByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
             resize: Resize::Increase,
             direction: Some(Direction::Left),
         },
@@ -4067,7 +4072,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ResizeByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
             resize: Resize::Decrease,
             direction: None,
         },
@@ -4077,7 +4082,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::MovePaneByPaneId {
-            pane_id: PaneId::Terminal(3),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(3)),
             direction: Some(Direction::Up),
         },
         terminal_id: Some(1),
@@ -4086,7 +4091,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::MovePaneByPaneId {
-            pane_id: PaneId::Terminal(3),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(3)),
             direction: None,
         },
         terminal_id: Some(1),
@@ -4095,7 +4100,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::MovePaneBackwardsByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4103,7 +4108,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ClearScreenByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4111,7 +4116,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::EditScrollbackByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
             ansi: false,
         },
         terminal_id: Some(1),
@@ -4137,7 +4142,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::EditScrollbackByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
             ansi: true,
         },
         terminal_id: Some(1),
@@ -4146,7 +4151,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ToggleFocusFullscreenByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4154,7 +4159,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ToggleFocusNoUiFullscreenByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4162,7 +4167,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::TogglePaneEmbedOrFloatingByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4170,7 +4175,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::CloseFocusByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4178,7 +4183,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::RenamePaneByPaneId {
-            pane_id: Some(PaneId::Terminal(1)),
+            pane_id: Some(PaneId::Terminal(zellij_types::internal_ids::TerminalId(1))),
             name: "test-name".as_bytes().to_vec(),
         },
         terminal_id: Some(1),
@@ -4187,7 +4192,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::UndoRenamePaneByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4195,7 +4200,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::TogglePanePinnedByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4203,7 +4208,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::FocusPaneByPaneId {
-            pane_id: PaneId::Terminal(1),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         },
         terminal_id: Some(1),
         client_id: Some(100),
@@ -4443,28 +4448,28 @@ fn test_server_messages() {
         event_json: String::new(),
     });
     test_server_roundtrip!(ServerToClientMsg::PaneRenderUpdate {
-        pane_id: PaneId::Terminal(1),
+        pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
         viewport: vec!["hello".to_string(), "world".to_string()],
         scrollback: Some(vec!["line1".to_string()]),
         is_initial: true,
     });
     test_server_roundtrip!(ServerToClientMsg::PaneRenderUpdate {
-        pane_id: PaneId::Plugin(2),
+        pane_id: PaneId::Plugin(zellij_types::internal_ids::PluginId(2)),
         viewport: vec!["viewport line".to_string()],
         scrollback: None,
         is_initial: false,
     });
     test_server_roundtrip!(ServerToClientMsg::PaneRenderUpdate {
-        pane_id: PaneId::Terminal(0),
+        pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(0)),
         viewport: vec![],
         scrollback: Some(vec![]),
         is_initial: true,
     });
     test_server_roundtrip!(ServerToClientMsg::SubscribedPaneClosed {
-        pane_id: PaneId::Terminal(1),
+        pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
     });
     test_server_roundtrip!(ServerToClientMsg::SubscribedPaneClosed {
-        pane_id: PaneId::Plugin(3),
+        pane_id: PaneId::Plugin(zellij_types::internal_ids::PluginId(3)),
     });
     test_server_roundtrip!(ServerToClientMsg::ForwardQueryToHost {
         token: 0,
@@ -4500,7 +4505,7 @@ fn set_pane_color_wire_roundtrip() {
 
     let original = ClientToServerMsg::Action {
         action: Action::SetPaneColor {
-            pane_id: PaneId::Terminal(0),
+            pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(0)),
             fg: Some("#00e000".to_owned()),
             bg: Some("#001a3a".to_owned()),
         },

@@ -1,4 +1,5 @@
 use super::*;
+use zellij_types::keys::BareKey;
 
 mod config_options;
 mod duplicate_blocks;

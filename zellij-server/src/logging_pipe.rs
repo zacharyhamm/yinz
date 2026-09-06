@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, io::Write};
 
 use log::{debug, error};
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 
 use serde::{Deserialize, Serialize};
 

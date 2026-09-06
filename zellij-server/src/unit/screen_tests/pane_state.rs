@@ -4,7 +4,7 @@
 //! of what is asserted here was ever about it.
 
 use super::*;
-use zellij_utils::internal_ids::PluginId;
+use zellij_types::internal_ids::PluginId;
 
 /// `CwdChanged` announces a move once. The manifest says where every pane is
 /// every time, which is what puts right a plugin that was not listening yet.

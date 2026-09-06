@@ -25,15 +25,13 @@ use crate::{
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
+use zellij_runtime::{channels::SenderWithContext, envs, errors::prelude::*};
+use zellij_types::keys::{BareKey, KeyModifier};
 use zellij_utils::{
-    channels::SenderWithContext,
     data::{
-        BareKey, ConnectToSession, Direction, Event, InputMode, KeyModifier, ListPanesResponse,
-        ListTabsResponse, NewPanePlacement, PaneListEntry, ResizeStrategy, TabInfo,
-        UnblockCondition,
+        ConnectToSession, Direction, Event, InputMode, ListPanesResponse, ListTabsResponse,
+        NewPanePlacement, PaneListEntry, ResizeStrategy, TabInfo, UnblockCondition,
     },
-    envs,
-    errors::prelude::*,
     input::{
         actions::{Action, SearchDirection, SearchOption},
         command::TerminalAction,
@@ -407,7 +405,7 @@ pub(crate) fn route_action(
             senders
                 .send_to_screen(ScreenInstruction::WriteToPaneId(
                     bytes,
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -420,7 +418,7 @@ pub(crate) fn route_action(
             senders
                 .send_to_screen(ScreenInstruction::WriteToPaneId(
                     bytes,
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -433,7 +431,7 @@ pub(crate) fn route_action(
             senders
                 .send_to_screen(ScreenInstruction::Paste(
                     bytes,
-                    pane_id.map(|p| p.into()),
+                    pane_id,
                     client_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -454,7 +452,7 @@ pub(crate) fn route_action(
         Action::SetPaneAgent { pane_id, agent } => {
             senders
                 .send_to_screen(ScreenInstruction::SetPaneAgent(
-                    pane_id.into(),
+                    pane_id,
                     agent,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -477,7 +475,7 @@ pub(crate) fn route_action(
         Action::SetPaneColor { pane_id, fg, bg } => {
             senders
                 .send_to_screen(ScreenInstruction::SetPaneColor(
-                    pane_id.into(),
+                    pane_id,
                     fg,
                     bg,
                     Some(NotificationEnd::new(completion_tx)),
@@ -530,7 +528,7 @@ pub(crate) fn route_action(
         Action::FocusPaneByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::FocusPaneWithId(
-                    pane_id.into(),
+                    pane_id,
                     true,  // should_float_if_hidden
                     false, // should_be_in_place_if_hidden
                     client_id,
@@ -623,7 +621,7 @@ pub(crate) fn route_action(
                     file_path,
                     client_id,
                     include_scrollback,
-                    pane_id.map(|p| p.into()),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                     cli_client_id,
                     ansi,
@@ -882,10 +880,10 @@ pub(crate) fn route_action(
                 NewPanePlacement::Stacked {
                     pane_id_to_stack_under,
                     ..
-                } => pane_id_to_stack_under.map(|p| p.into()).or(pane_id),
+                } => pane_id_to_stack_under.or(pane_id),
                 NewPanePlacement::InPlace {
                     pane_id_to_replace, ..
-                } => pane_id_to_replace.map(|p| p.into()).or(pane_id),
+                } => pane_id_to_replace.or(pane_id),
                 _ => pane_id,
             };
 
@@ -1002,8 +1000,7 @@ pub(crate) fn route_action(
             let run_cmd = run_command
                 .map(|cmd| TerminalAction::RunCommand(cmd.into()))
                 .or_else(|| default_shell.clone());
-            let explicit_pane_id_to_replace: Option<PaneId> = pane_id_to_replace
-                .and_then(|pane_id_to_replace| pane_id_to_replace.try_into().ok());
+            let explicit_pane_id_to_replace: Option<PaneId> = pane_id_to_replace;
             let pane_id = explicit_pane_id_to_replace.or(pane_id);
             let client_tab_index_or_paneid = if let Some(tab_id) = tab_id {
                 if no_focus {
@@ -1057,7 +1054,7 @@ pub(crate) fn route_action(
                 let pane_id = pane_id.unwrap();
                 (
                     NewPanePlacement::Stacked {
-                        pane_id_to_stack_under: Some(pane_id.into()),
+                        pane_id_to_stack_under: Some(pane_id),
                         borderless: None,
                     },
                     ClientTabIndexOrPaneId::PaneId(pane_id),
@@ -1393,7 +1390,7 @@ pub(crate) fn route_action(
             match crate::warp::warp_pane_to_session(
                 &senders,
                 client_id,
-                pane_id.map(|pane_id| pane_id.into()),
+                pane_id,
                 &crate::warp::current_session_name(),
                 &to_session,
                 placement,
@@ -2130,7 +2127,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::StackPanes(
-                    pane_ids_to_stack.iter().map(|p| PaneId::from(*p)).collect(),
+                    pane_ids_to_stack,
                     client_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2142,7 +2139,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::ChangeFloatingPanesCoordinates(
-                    vec![(pane_id.into(), coordinates)],
+                    vec![(pane_id, coordinates)],
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2150,7 +2147,7 @@ pub(crate) fn route_action(
         Action::TogglePaneBorderless { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::TogglePaneBorderless(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2161,7 +2158,7 @@ pub(crate) fn route_action(
         } => {
             senders
                 .send_to_screen(ScreenInstruction::SetPaneBorderless(
-                    pane_id.into(),
+                    pane_id,
                     borderless,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2214,7 +2211,7 @@ pub(crate) fn route_action(
         Action::ScrollUpByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::ScrollUpWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2222,7 +2219,7 @@ pub(crate) fn route_action(
         Action::ScrollDownByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::ScrollDownWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2230,7 +2227,7 @@ pub(crate) fn route_action(
         Action::ScrollToTopByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::ScrollToTopWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2238,7 +2235,7 @@ pub(crate) fn route_action(
         Action::ScrollToBottomByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::ScrollToBottomWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2246,7 +2243,7 @@ pub(crate) fn route_action(
         Action::PageScrollUpByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::PageScrollUpWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2254,7 +2251,7 @@ pub(crate) fn route_action(
         Action::PageScrollDownByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::PageScrollDownWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2262,7 +2259,7 @@ pub(crate) fn route_action(
         Action::HalfPageScrollUpByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::HalfPageScrollUpWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2270,7 +2267,7 @@ pub(crate) fn route_action(
         Action::HalfPageScrollDownByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::HalfPageScrollDownWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2283,7 +2280,7 @@ pub(crate) fn route_action(
             let resize_strategy = ResizeStrategy::new(resize, direction);
             senders
                 .send_to_screen(ScreenInstruction::ResizeWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     resize_strategy,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2292,7 +2289,7 @@ pub(crate) fn route_action(
         Action::MovePaneByPaneId { pane_id, direction } => {
             senders
                 .send_to_screen(ScreenInstruction::MovePaneWithPaneIdCli(
-                    pane_id.into(),
+                    pane_id,
                     direction,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2301,7 +2298,7 @@ pub(crate) fn route_action(
         Action::MovePaneBackwardsByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::MovePaneBackwardsWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2309,7 +2306,7 @@ pub(crate) fn route_action(
         Action::ClearScreenByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::ClearScreenWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2317,7 +2314,7 @@ pub(crate) fn route_action(
         Action::EditScrollbackByPaneId { pane_id, ansi } => {
             senders
                 .send_to_screen(ScreenInstruction::EditScrollbackWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     ansi,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2326,7 +2323,7 @@ pub(crate) fn route_action(
         Action::ToggleFocusFullscreenByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::ToggleFullscreenWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2334,7 +2331,7 @@ pub(crate) fn route_action(
         Action::ToggleFocusNoUiFullscreenByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::ToggleNoUiFullscreenWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2342,7 +2339,7 @@ pub(crate) fn route_action(
         Action::TogglePaneEmbedOrFloatingByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::TogglePaneEmbedOrFloatingWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2350,7 +2347,7 @@ pub(crate) fn route_action(
         Action::CloseFocusByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::CloseFocusWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2358,7 +2355,7 @@ pub(crate) fn route_action(
         Action::RenamePaneByPaneId { pane_id, name } => {
             let instruction = match pane_id {
                 Some(pane_id) => ScreenInstruction::RenamePaneWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     name,
                     Some(NotificationEnd::new(completion_tx)),
                 ),
@@ -2375,7 +2372,7 @@ pub(crate) fn route_action(
         Action::UndoRenamePaneByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::UndoRenamePaneWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2383,7 +2380,7 @@ pub(crate) fn route_action(
         Action::TogglePanePinnedByPaneId { pane_id } => {
             senders
                 .send_to_screen(ScreenInstruction::TogglePanePinnedWithPaneId(
-                    pane_id.into(),
+                    pane_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;
@@ -2639,7 +2636,7 @@ pub(crate) fn route_thread_main(
         match receiver.recv_client_msg() {
             IpcRecv::Msg(instruction, err_ctx) => {
                 consecutive_malformed_messages_received = 0;
-                err_ctx.update_thread_ctx();
+                zellij_runtime::errors::update_thread_ctx(&err_ctx);
                 if !received_first_message {
                     received_first_message = true;
                     receiver
@@ -3872,14 +3869,16 @@ mod tests {
     #[test]
     fn reports_are_accepted_while_consumers_are_paused_and_rejected_for_closed_queues() {
         use zellij_utils::agent::report::{AgentReport, AgentReportState};
-        let (tx, rx) = zellij_utils::channels::unbounded();
+        let (tx, rx) = zellij_runtime::channels::unbounded();
         let senders = ThreadSenders {
             to_screen: Some(SenderWithContext::new(tx)),
             ..Default::default()
         };
         let report = AgentReport {
             report_id: "00000000-0000-4000-8000-000000000001".into(),
-            pane_id: zellij_utils::data::PaneId::Terminal(1),
+            pane_id: zellij_utils::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(
+                1,
+            )),
             state: AgentReportState::Clear,
             event: None,
             trace: false,

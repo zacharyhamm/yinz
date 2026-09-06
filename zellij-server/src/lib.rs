@@ -10,6 +10,7 @@ compile_error!("Zellij does not support Windows");
 
 pub use zellij_process::firecracker;
 pub use zellij_terminal::host_query;
+use zellij_types::style::default_palette;
 pub mod os_input_output;
 pub use zellij_terminal::output;
 pub mod panes;
@@ -123,8 +124,8 @@ impl Drop for ConnectionSlot {
         self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
-use zellij_utils::data_access::DataAccess;
-use zellij_utils::envs;
+use zellij_runtime::envs;
+use zellij_storage::data_access::DataAccess;
 use zellij_utils::pane_size::Size;
 
 use zellij_utils::input::cli_assets::CliAssets;
@@ -144,16 +145,24 @@ use crate::{
     thread_bus::{Bus, ThreadSenders},
 };
 use route::{route_thread_main, NotificationEnd};
+use zellij_runtime::channels;
+use zellij_runtime::channels::ChannelWithContext;
+use zellij_runtime::channels::SenderWithContext;
+use zellij_runtime::errors::prelude::*;
+use zellij_runtime::errors::ErrorInstruction;
+use zellij_runtime::errors::FatalError;
+use zellij_runtime::home::default_layout_dir;
+use zellij_runtime::home::get_default_data_dir;
+use zellij_runtime::home::user_plugin_dir_or_default;
+use zellij_types::diagnostics::ContextType;
+use zellij_types::diagnostics::ServerContext;
+use zellij_types::keys::KeyWithModifier;
+use zellij_types::style::Style;
 use zellij_utils::{
-    channels::{self, ChannelWithContext, SenderWithContext},
     consts::{
         DEFAULT_SCROLL_BUFFER_SIZE, SCROLL_BUFFER_SIZE, ZELLIJ_SEEN_RELEASE_NOTES_CACHE_FILE,
     },
-    data::{
-        ConnectToSession, Direction, InputMode, KeyWithModifier, LayoutInfo, LayoutWithError, Style,
-    },
-    errors::{prelude::*, ContextType, ErrorInstruction, FatalError, ServerContext},
-    home::{default_layout_dir, get_default_data_dir, user_plugin_dir_or_default},
+    data::{ConnectToSession, Direction, InputMode, LayoutInfo, LayoutWithError},
     input::{
         actions::Action,
         command::{RunCommand, TerminalAction},
@@ -164,10 +173,9 @@ use zellij_utils::{
         plugins::PluginAliases,
     },
     ipc::{ClientAttributes, ExitReason, ServerToClientMsg},
-    shared::default_palette,
 };
 
-pub use zellij_utils::internal_ids::{ClientId, PluginId, TerminalId};
+pub use zellij_types::internal_ids::{ClientId, PluginId, TerminalId};
 
 /// Instructions related to server-side application
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
@@ -966,7 +974,7 @@ pub fn start_server_impl(
 
     if install_panic_hook {
         std::panic::set_hook({
-            use zellij_utils::errors::handle_panic;
+            use zellij_runtime::errors::handle_panic;
             let to_server = to_server.clone();
             Box::new(move |info| {
                 handle_panic(info, Some(&to_server));
@@ -1133,7 +1141,10 @@ pub fn start_server_impl(
             server_receiver.recv()
         };
         let (instruction, mut err_ctx) = recv.unwrap();
-        err_ctx.add_call(ContextType::IPCServer((&instruction).into()));
+        zellij_runtime::errors::add_call(
+            &mut err_ctx,
+            ContextType::IPCServer((&instruction).into()),
+        );
         match &instruction {
             ServerInstruction::AttachClient(_, _, _, client_id) => log::info!(
                 "attach trace: server main loop received AttachClient client_id={client_id}"
@@ -2360,9 +2371,13 @@ fn init_session(
     let data_dir = cli_assets.data_dir.unwrap_or_else(get_default_data_dir);
     // Before anything can write to the plugin data store: this is the one place that holds both
     // the data dir and the options the id is resolved from, and every later reader takes what is
-    // cached here. See `zellij_utils::host_identity`.
-    zellij_utils::host_identity::init_host_id(&data_dir, config.options.host_id.as_deref());
-    let data_access = Arc::new(DataAccess::from_options(&config.options, &data_dir));
+    // cached here. See `zellij_runtime::host_identity`.
+    zellij_runtime::host_identity::init_host_id(&data_dir, config.options.host_id.as_deref());
+    let data_access = Arc::new(DataAccess::configured(
+        config.options.plugin_data_url.as_deref(),
+        config.options.plugin_data_schema.as_deref(),
+        &data_dir,
+    ));
 
     let recording_enabled = config.options.session_recording.unwrap_or(false);
     let input_enabled = config.options.session_recording_input.unwrap_or(false);
@@ -2858,8 +2873,8 @@ fn update_new_saved_config(
                     .unwrap()
                     .config_dir
                     .clone();
-                zellij_utils::home::get_config_overlay_dir(
-                    config_dir.or_else(zellij_utils::home::find_default_config_dir),
+                zellij_runtime::home::get_config_overlay_dir(
+                    config_dir.or_else(zellij_runtime::home::find_default_config_dir),
                 )
             };
             let written = match overlay_dir {

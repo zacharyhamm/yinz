@@ -11,15 +11,12 @@ use crate::os_input_output::ClientOsApi;
 use crate::terminal_escapes::ClientTeardown;
 use crate::{create_ipc_pipe, spawn_server_error_message, ClientInfo};
 use std::path::{Path, PathBuf};
+use zellij_runtime::envs;
+use zellij_runtime::host_terminal_env::host_terminal_env;
 use zellij_utils::cli::CliArgs;
 use zellij_utils::{
     data::{LayoutInfo, LayoutMetadata},
-    envs,
-    input::{
-        cli_assets::{host_terminal_env, CliAssets},
-        config::Config,
-        options::Options,
-    },
+    input::{cli_assets::CliAssets, config::Config, options::Options},
     ipc::ClientToServerMsg,
     pane_size::Size,
 };

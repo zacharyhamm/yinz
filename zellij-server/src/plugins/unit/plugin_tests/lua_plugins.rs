@@ -1042,7 +1042,7 @@ pub fn the_agent_exit_hook_restarts_the_pane_on_enter() {
         .any(|instruction| {
             matches!(
                 instruction,
-                ScreenInstruction::RerunCommandPane(zellij_utils::internal_ids::TerminalId(7), _)
+                ScreenInstruction::RerunCommandPane(zellij_types::internal_ids::TerminalId(7), _)
             )
         });
     assert!(
@@ -1111,7 +1111,7 @@ pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
         matches!(
             instruction,
             PtyInstruction::ClosePane(
-                PaneId::Terminal(zellij_utils::internal_ids::TerminalId(7)),
+                PaneId::Terminal(zellij_types::internal_ids::TerminalId(7)),
                 _
             )
         )
@@ -1128,7 +1128,7 @@ pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
             matches!(
                 instruction,
                 ScreenInstruction::ClosePane(
-                    PaneId::Terminal(zellij_utils::internal_ids::TerminalId(7)),
+                    PaneId::Terminal(zellij_types::internal_ids::TerminalId(7)),
                     ..
                 )
             )

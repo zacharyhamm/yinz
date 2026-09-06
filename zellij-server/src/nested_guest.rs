@@ -2,7 +2,7 @@ use crate::panes::PaneId;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 #[cfg(test)]
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
 
 pub const PING_INTERVAL_MS: u64 = 2000;
 pub const PONG_TIMEOUT_MS: u64 = 5000;

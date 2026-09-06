@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
-use zellij_utils::animation::{blend, Easing};
-use zellij_utils::data::Style;
+use zellij_types::animation::{blend, Easing};
+use zellij_types::style::Style;
 use zellij_utils::input::options::NotificationPosition;
 use zellij_utils::pane_size::Viewport;
 
@@ -405,7 +405,7 @@ pub fn notification_chunks(
 /// How long a toast takes to slide in, and the curve it does it on.
 ///
 /// `EaseOut` because it is arriving: on screen quickly, then settling without a bump. The easing
-/// lives in the [`Tween`](zellij_utils::animation::Tween) that drives `progress`, so nothing in
+/// lives in the [`Tween`](zellij_types::animation::Tween) that drives `progress`, so nothing in
 /// this module eases again - the reveal below is a straight multiply.
 pub const ENTER_DURATION: Duration = Duration::from_millis(200);
 pub const ENTER_EASING: Easing = Easing::EaseOut;
@@ -421,7 +421,7 @@ pub const DISPLACE_DURATION: Duration = Duration::from_millis(220);
 pub const DISPLACE_EASING: Easing = Easing::EaseOut;
 /// The distance `DISPLACE_DURATION` is quoted for - about one short toast's height. Displacements
 /// are scaled against it so speed, rather than duration, is what stays constant: see
-/// [`zellij_utils::animation::scaled_duration`].
+/// [`zellij_types::animation::scaled_duration`].
 pub const DISPLACE_SPAN: f32 = 4.0;
 
 /// `chunks` (as produced by [`notification_chunks`] for a box `width` columns wide with its
@@ -1144,11 +1144,11 @@ mod tests {
         }
     }
 
-    fn rgb_of(color: zellij_utils::data::PaletteColor) -> (u8, u8, u8) {
+    fn rgb_of(color: zellij_types::colors::PaletteColor) -> (u8, u8, u8) {
         match color {
-            zellij_utils::data::PaletteColor::Rgb(rgb) => rgb,
-            zellij_utils::data::PaletteColor::EightBit(index) => {
-                zellij_utils::shared::eightbit_to_rgb(index)
+            zellij_types::colors::PaletteColor::Rgb(rgb) => rgb,
+            zellij_types::colors::PaletteColor::EightBit(index) => {
+                zellij_types::colors::eightbit_to_rgb(index)
             },
         }
     }

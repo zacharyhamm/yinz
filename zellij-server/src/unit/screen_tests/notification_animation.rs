@@ -9,7 +9,7 @@ use crate::screen::Notification;
 use crate::ui::damage::CellRect;
 use crate::ui::notification::{notification_height, notification_lines, notification_width};
 use std::time::{Duration, Instant};
-use zellij_utils::animation::Tween;
+use zellij_types::animation::Tween;
 use zellij_utils::pane_size::Viewport;
 
 const TEXT: &str = "build finished";

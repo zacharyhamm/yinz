@@ -21,7 +21,7 @@
 //! temporary file.
 //!
 //! That `Local` is the genuine `PluginDataStore` and not a hand-written fake is
-//! what makes this affordable. `zellij_utils::plugin_data_store` is compiled for
+//! what makes this affordable. `zellij_storage::plugin_data_store` is compiled for
 //! everything except wasm, so the predicates, the upserts, FTS5 and the
 //! truncation rules under test are the same code that runs in a session. There
 //! is no second implementation to keep honest.
@@ -703,7 +703,7 @@ pub use host_stub::Host;
 #[cfg(not(target_family = "wasm"))]
 mod local {
     use super::*;
-    use zellij_utils::plugin_data_store::PluginDataStore;
+    use zellij_storage::plugin_data_store::PluginDataStore;
 
     /// The id [`Local`] hands back from `watch`. Non-zero so that a plugin
     /// storing "no watch" as zero can still tell the two apart.

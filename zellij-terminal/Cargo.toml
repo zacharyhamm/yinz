@@ -9,6 +9,8 @@ description = "Terminal emulation and output serialization for Zellij"
 workspace = true
 
 [dependencies]
+zellij-runtime = { workspace = true }
+zellij-types = { workspace = true }
 libc = { workspace = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }

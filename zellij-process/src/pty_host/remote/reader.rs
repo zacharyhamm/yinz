@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
 
 use tokio::io::unix::AsyncFd;
 use zellij_utils::input::command::RunCommand;

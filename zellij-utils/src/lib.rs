@@ -1,27 +1,25 @@
 pub mod agent;
-pub mod animation;
 pub mod cli;
 pub mod client_server_contract;
 pub mod consts;
 pub mod data;
-pub mod envs;
-pub mod errors;
-pub mod home;
-mod home_unix;
-pub mod host_identity;
+pub use zellij_runtime::envs;
+pub use zellij_runtime::errors;
+pub use zellij_runtime::home;
+pub use zellij_runtime::host_identity;
 
 #[cfg(target_os = "windows")]
 compile_error!("Zellij does not support Windows");
 pub mod input;
-pub mod internal_ids;
+pub use zellij_types::internal_ids;
 pub mod kdl;
-pub mod kitty_placeholders;
+pub use zellij_types::kitty_placeholders;
 pub mod nested_session_contract;
 pub mod pane_size;
 pub mod plugin_api;
 pub mod plugin_authoring;
-pub mod plugin_data;
-pub mod position;
+pub use zellij_types::plugin_data;
+pub use zellij_types::position;
 pub mod project_config;
 pub mod session_serialization;
 pub mod setup;
@@ -30,25 +28,19 @@ pub mod warped_tab;
 
 // The following modules can't be used when targeting wasm
 #[cfg(not(target_family = "wasm"))]
-pub mod channels; // Requires tokio
+pub use zellij_runtime::channels; // Requires tokio
 #[cfg(not(target_family = "wasm"))]
-pub mod common_path;
+pub use zellij_runtime::common_path;
 #[cfg(not(target_family = "wasm"))]
-pub mod data_access;
-#[cfg(not(target_family = "wasm"))]
-pub mod downloader; // Requires tokio
+pub use zellij_runtime::downloader;
 #[cfg(not(target_family = "wasm"))]
 pub mod ipc; // Requires interprocess
 #[cfg(not(target_family = "wasm"))]
-pub mod logging; // Requires log4rs
+pub use zellij_runtime::logging; // Requires log4rs
 #[cfg(not(target_family = "wasm"))]
 pub mod nested_session;
 #[cfg(not(target_family = "wasm"))]
-pub mod plugin_data_store; // Requires rusqlite
-#[cfg(not(target_family = "wasm"))]
-pub mod session_checkpoint;
-#[cfg(not(target_family = "wasm"))]
-pub mod session_recording;
+pub use zellij_runtime::session_checkpoint;
 #[cfg(not(target_family = "wasm"))]
 pub mod sessions;
 
@@ -56,7 +48,8 @@ pub mod sessions;
 pub use ::prost;
 
 // Vendored libraries
-pub mod vendored;
+pub use zellij_runtime::vendored;
 
-#[cfg(unix)]
-pub mod termios;
+#[cfg(all(test, not(target_family = "wasm")))]
+#[path = "unit/session_checkpoint_tests.rs"]
+mod session_checkpoint_tests;

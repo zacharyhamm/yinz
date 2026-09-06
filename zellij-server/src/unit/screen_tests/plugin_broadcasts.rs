@@ -212,7 +212,7 @@ pub fn inactive_tab_plugins_get_fresh_state_on_activation() {
         if let PluginInstruction::Update(updates) = instruction {
             for (pid, _cid, event) in updates {
                 if let (
-                    Some(zellij_utils::internal_ids::PluginId(2)),
+                    Some(zellij_types::internal_ids::PluginId(2)),
                     Event::TabUpdate(tab_infos),
                 ) = (pid, event)
                 {
@@ -289,7 +289,7 @@ pub fn closing_tab_updates_input_modes_of_destination_tab_plugins() {
             )
         })
     };
-    let mode_updates_after = |instructions: &[PluginInstruction]| -> Vec<(zellij_utils::internal_ids::PluginId, ClientId)> {
+    let mode_updates_after = |instructions: &[PluginInstruction]| -> Vec<(zellij_types::internal_ids::PluginId, ClientId)> {
         let Some(from) = close_started_at(instructions) else {
             return vec![];
         };
@@ -316,7 +316,7 @@ pub fn closing_tab_updates_input_modes_of_destination_tab_plugins() {
                     PluginInstruction::Update(updates)
                         if updates.iter().any(|(pid, _, event)| matches!(
                             (pid, event),
-                            (Some(zellij_utils::internal_ids::PluginId(2)), Event::TabUpdate(tabs)) if tabs.len() == 1
+                            (Some(zellij_types::internal_ids::PluginId(2)), Event::TabUpdate(tabs)) if tabs.len() == 1
                         ))
                 )
             });

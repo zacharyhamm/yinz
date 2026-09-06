@@ -19,7 +19,11 @@ fn forwarded(log: &[ServerInstruction]) -> Vec<(ClientId, String, String)> {
 }
 
 fn cwd_changed(pane: u32) -> Event {
-    Event::CwdChanged(PaneId::Terminal(pane), PathBuf::from("/tmp"), vec![1])
+    Event::CwdChanged(
+        PaneId::Terminal(zellij_types::internal_ids::TerminalId(pane)),
+        PathBuf::from("/tmp"),
+        vec![1],
+    )
 }
 
 /// A subscriber gets what it asked for, once per batch for a state report however many plugins

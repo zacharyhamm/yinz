@@ -20,10 +20,8 @@ use seq_scan::{
     PARTIAL_BUFFER_CAP_BYTES, PASTE_END_MARKER, PASTE_START_MARKER,
 };
 use serde::{Deserialize, Serialize};
-use zellij_utils::{
-    nested_session,
-    vendored::termwiz::input::{InputEvent, InputParser},
-};
+use zellij_runtime::vendored::termwiz::input::{InputEvent, InputParser};
+use zellij_utils::nested_session;
 
 /// Describe the terminal implementation of synchronised output
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

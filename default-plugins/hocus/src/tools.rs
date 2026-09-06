@@ -589,10 +589,12 @@ pub fn confirmation_target(call: &ToolCall) -> Option<PaneId> {
     match call.name.as_str() {
         // The agent tools address a terminal and say so: `agent_host_call`
         // rewrites them into pane-addressed primitives with `is_plugin: false`.
-        "agent_send" | "agent_control" => Some(PaneId::Terminal(pane_id)),
+        "agent_send" | "agent_control" => {
+            Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)))
+        },
         "send_input" | "rerun_pane" | "clear_pane" => match args.is_plugin? {
-            true => Some(PaneId::Plugin(pane_id)),
-            false => Some(PaneId::Terminal(pane_id)),
+            true => Some(PaneId::Plugin(zellij_tile::prelude::PluginId(pane_id))),
+            false => Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id))),
         },
         _ => None,
     }
@@ -2483,9 +2485,9 @@ pub struct PaneRef {
 impl PaneRef {
     fn id(&self) -> PaneId {
         if self.is_plugin {
-            PaneId::Plugin(self.pane_id)
+            PaneId::Plugin(zellij_tile::prelude::PluginId(self.pane_id))
         } else {
-            PaneId::Terminal(self.pane_id)
+            PaneId::Terminal(zellij_tile::prelude::TerminalId(self.pane_id))
         }
     }
 }
@@ -4229,7 +4231,10 @@ mod host {
 
     /// Write a pane's agent record to the session, for every reader of the manifest.
     pub fn report_pane_agent(pane_id: u32, agent: AgentInfo) {
-        set_pane_agent(PaneId::Terminal(pane_id), Some(agent));
+        set_pane_agent(
+            PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+            Some(agent),
+        );
     }
 
     /// Write a plugin's source at `path` under `/plugins`, making its folder first. `Ok(false)`
@@ -4371,8 +4376,8 @@ mod host {
     /// model to half-supply, so the check lives in one place.
     fn with_pane(args: &Args, body: impl FnOnce(PaneId) -> String) -> String {
         match (args.pane_id, args.is_plugin) {
-            (Some(id), Some(true)) => body(PaneId::Plugin(id)),
-            (Some(id), Some(false)) => body(PaneId::Terminal(id)),
+            (Some(id), Some(true)) => body(PaneId::Plugin(zellij_tile::prelude::PluginId(id))),
+            (Some(id), Some(false)) => body(PaneId::Terminal(zellij_tile::prelude::TerminalId(id))),
             _ => {
                 "pane_id and is_plugin are both required; call list_session to get them".to_owned()
             },
@@ -4500,7 +4505,11 @@ mod host {
             Err(error) => return error,
             Ok(true) => {},
         }
-        match warp_pane_from_session(PaneId::Terminal(pane_id), from_session, placement) {
+        match warp_pane_from_session(
+            PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+            from_session,
+            placement,
+        ) {
             Ok(message) | Err(message) => message,
         }
     }
@@ -4788,7 +4797,10 @@ mod host {
         })?;
         Some(PluginObservation {
             pane_id: pane.id,
-            contents: read_pane(PaneId::Plugin(pane.id), false),
+            contents: read_pane(
+                PaneId::Plugin(zellij_tile::prelude::PluginId(pane.id)),
+                false,
+            ),
         })
     }
 
@@ -4935,9 +4947,9 @@ mod host {
     /// half of the address rather than a detail.
     fn pane_id_of(pane: &PaneInfo) -> PaneId {
         if pane.is_plugin {
-            PaneId::Plugin(pane.id)
+            PaneId::Plugin(zellij_tile::prelude::PluginId(pane.id))
         } else {
-            PaneId::Terminal(pane.id)
+            PaneId::Terminal(zellij_tile::prelude::TerminalId(pane.id))
         }
     }
 
@@ -5079,8 +5091,8 @@ mod host {
 
     fn split_pane_id(pane: PaneId) -> (u32, bool) {
         match pane {
-            PaneId::Terminal(id) => (id, false),
-            PaneId::Plugin(id) => (id, true),
+            PaneId::Terminal(id) => (id.get(), false),
+            PaneId::Plugin(id) => (id.get(), true),
         }
     }
 

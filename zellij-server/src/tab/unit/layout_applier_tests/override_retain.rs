@@ -803,7 +803,7 @@ fn test_override_retain_terminal_but_close_plugin_panes() {
     let tab_bar_plugin = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
     initial_plugin_ids.insert(
         tab_bar_plugin.clone(),
-        vec![zellij_utils::internal_ids::PluginId(100)],
+        vec![zellij_types::internal_ids::PluginId(100)],
     );
 
     let size = Size {
@@ -913,7 +913,7 @@ fn test_override_retain_terminal_but_close_plugin_panes() {
         "Plugin pane should be unloaded even with retain_existing_terminal_panes"
     );
     assert!(
-        unloaded_plugins.contains(&zellij_utils::internal_ids::PluginId(100)),
+        unloaded_plugins.contains(&zellij_types::internal_ids::PluginId(100)),
         "Tab-bar plugin (100) should be unloaded"
     );
 
@@ -961,9 +961,9 @@ fn test_override_tiled_retain_plugin_panes_partial_match() {
     let status_bar = RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap();
     let custom =
         RunPluginOrAlias::from_url("file:///path/to/custom.wasm", &None, None, None).unwrap();
-    initial_plugin_ids.insert(tab_bar, vec![zellij_utils::internal_ids::PluginId(100)]);
-    initial_plugin_ids.insert(status_bar, vec![zellij_utils::internal_ids::PluginId(101)]);
-    initial_plugin_ids.insert(custom, vec![zellij_utils::internal_ids::PluginId(102)]);
+    initial_plugin_ids.insert(tab_bar, vec![zellij_types::internal_ids::PluginId(100)]);
+    initial_plugin_ids.insert(status_bar, vec![zellij_types::internal_ids::PluginId(101)]);
+    initial_plugin_ids.insert(custom, vec![zellij_types::internal_ids::PluginId(102)]);
 
     let size = Size {
         cols: 120,
@@ -1101,9 +1101,9 @@ fn test_override_tiled_retain_plugin_panes_no_matches() {
     let tab_bar = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
     let status_bar = RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap();
     let compact_bar = RunPluginOrAlias::from_url("zellij:compact-bar", &None, None, None).unwrap();
-    initial_plugin_ids.insert(tab_bar, vec![zellij_utils::internal_ids::PluginId(100)]);
-    initial_plugin_ids.insert(status_bar, vec![zellij_utils::internal_ids::PluginId(101)]);
-    initial_plugin_ids.insert(compact_bar, vec![zellij_utils::internal_ids::PluginId(102)]);
+    initial_plugin_ids.insert(tab_bar, vec![zellij_types::internal_ids::PluginId(100)]);
+    initial_plugin_ids.insert(status_bar, vec![zellij_types::internal_ids::PluginId(101)]);
+    initial_plugin_ids.insert(compact_bar, vec![zellij_types::internal_ids::PluginId(102)]);
 
     let size = Size {
         cols: 120,
@@ -1194,9 +1194,9 @@ fn test_override_tiled_retain_plugin_panes_no_matches() {
         RunPluginOrAlias::from_url("file:///path/to/plugin2.wasm", &None, None, None).unwrap();
     let plugin3 =
         RunPluginOrAlias::from_url("file:///path/to/plugin3.wasm", &None, None, None).unwrap();
-    override_plugin_ids.insert(plugin1, vec![zellij_utils::internal_ids::PluginId(103)]);
-    override_plugin_ids.insert(plugin2, vec![zellij_utils::internal_ids::PluginId(104)]);
-    override_plugin_ids.insert(plugin3, vec![zellij_utils::internal_ids::PluginId(105)]);
+    override_plugin_ids.insert(plugin1, vec![zellij_types::internal_ids::PluginId(103)]);
+    override_plugin_ids.insert(plugin2, vec![zellij_types::internal_ids::PluginId(104)]);
+    override_plugin_ids.insert(plugin3, vec![zellij_types::internal_ids::PluginId(105)]);
 
     applier
         .override_tiled_panes_layout_for_existing_panes(
@@ -1257,8 +1257,8 @@ fn test_override_floating_retain_plugin_panes_partial_match() {
     let mut initial_plugin_ids = HashMap::new();
     let tab_bar = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
     let status_bar = RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap();
-    initial_plugin_ids.insert(tab_bar, vec![zellij_utils::internal_ids::PluginId(100)]);
-    initial_plugin_ids.insert(status_bar, vec![zellij_utils::internal_ids::PluginId(101)]);
+    initial_plugin_ids.insert(tab_bar, vec![zellij_types::internal_ids::PluginId(100)]);
+    initial_plugin_ids.insert(status_bar, vec![zellij_types::internal_ids::PluginId(101)]);
 
     let size = Size {
         cols: 120,
@@ -1407,8 +1407,8 @@ fn test_override_floating_retain_plugin_panes_no_matches() {
     let mut initial_plugin_ids = HashMap::new();
     let tab_bar = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
     let status_bar = RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap();
-    initial_plugin_ids.insert(tab_bar, vec![zellij_utils::internal_ids::PluginId(100)]);
-    initial_plugin_ids.insert(status_bar, vec![zellij_utils::internal_ids::PluginId(101)]);
+    initial_plugin_ids.insert(tab_bar, vec![zellij_types::internal_ids::PluginId(100)]);
+    initial_plugin_ids.insert(status_bar, vec![zellij_types::internal_ids::PluginId(101)]);
 
     let size = Size {
         cols: 120,
@@ -1504,8 +1504,8 @@ fn test_override_floating_retain_plugin_panes_no_matches() {
         RunPluginOrAlias::from_url("file:///path/to/plugin1.wasm", &None, None, None).unwrap();
     let plugin2 =
         RunPluginOrAlias::from_url("file:///path/to/plugin2.wasm", &None, None, None).unwrap();
-    override_plugin_ids.insert(plugin1, vec![zellij_utils::internal_ids::PluginId(102)]);
-    override_plugin_ids.insert(plugin2, vec![zellij_utils::internal_ids::PluginId(103)]);
+    override_plugin_ids.insert(plugin1, vec![zellij_types::internal_ids::PluginId(102)]);
+    override_plugin_ids.insert(plugin2, vec![zellij_types::internal_ids::PluginId(103)]);
 
     applier
         .override_floating_panes_layout_for_existing_panes(
@@ -1565,8 +1565,8 @@ fn test_override_mixed_retain_plugin_panes_both_tiled_and_floating() {
     let mut initial_plugin_ids = HashMap::new();
     let tab_bar = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
     let status_bar = RunPluginOrAlias::from_url("zellij:status-bar", &None, None, None).unwrap();
-    initial_plugin_ids.insert(tab_bar, vec![zellij_utils::internal_ids::PluginId(100)]);
-    initial_plugin_ids.insert(status_bar, vec![zellij_utils::internal_ids::PluginId(101)]);
+    initial_plugin_ids.insert(tab_bar, vec![zellij_types::internal_ids::PluginId(100)]);
+    initial_plugin_ids.insert(status_bar, vec![zellij_types::internal_ids::PluginId(101)]);
 
     let size = Size {
         cols: 120,
@@ -1660,8 +1660,8 @@ fn test_override_mixed_retain_plugin_panes_both_tiled_and_floating() {
     let compact_bar = RunPluginOrAlias::from_url("zellij:compact-bar", &None, None, None).unwrap();
     let custom =
         RunPluginOrAlias::from_url("file:///path/to/custom.wasm", &None, None, None).unwrap();
-    override_plugin_ids.insert(compact_bar, vec![zellij_utils::internal_ids::PluginId(102)]);
-    override_plugin_ids.insert(custom, vec![zellij_utils::internal_ids::PluginId(103)]);
+    override_plugin_ids.insert(compact_bar, vec![zellij_types::internal_ids::PluginId(102)]);
+    override_plugin_ids.insert(custom, vec![zellij_types::internal_ids::PluginId(103)]);
 
     let retain_existing_terminal_panes = false;
     let retain_existing_plugin_panes = true;
@@ -1724,7 +1724,7 @@ fn test_override_retain_plugin_but_close_terminal_panes() {
 
     let mut initial_plugin_ids = HashMap::new();
     let tab_bar = RunPluginOrAlias::from_url("zellij:tab-bar", &None, None, None).unwrap();
-    initial_plugin_ids.insert(tab_bar, vec![zellij_utils::internal_ids::PluginId(100)]);
+    initial_plugin_ids.insert(tab_bar, vec![zellij_types::internal_ids::PluginId(100)]);
 
     let size = Size {
         cols: 120,

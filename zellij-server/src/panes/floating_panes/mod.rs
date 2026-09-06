@@ -1,10 +1,8 @@
 #![allow(clippy::needless_borrow)]
 #![allow(clippy::if_same_then_else)]
 pub mod floating_pane_grid;
-use zellij_utils::{
-    data::{Direction, FloatingPaneCoordinates, PaneInfo, ResizeStrategy},
-    position::Position,
-};
+use zellij_types::position::Position;
+use zellij_utils::data::{Direction, FloatingPaneCoordinates, PaneInfo, ResizeStrategy};
 
 use crate::panes::kitty_graphics::KittyHostSupport;
 use crate::resize_pty;
@@ -26,9 +24,10 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Instant;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::style::{Style, Styling};
 use zellij_utils::{
-    data::{ModeInfo, Style, Styling},
-    errors::prelude::*,
+    data::ModeInfo,
     input::command::RunCommand,
     input::layout::{FloatingPaneLayout, Run, RunPluginOrAlias},
     input::options::PaneFrameStyle,

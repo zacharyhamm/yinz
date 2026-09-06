@@ -7,9 +7,9 @@ use crate::tab::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
 use crate::{panes::PaneId, tab::Pane};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{HashMap, HashSet};
+use zellij_runtime::errors::prelude::*;
 use zellij_utils::data::{Direction, Resize, ResizeStrategy};
 use zellij_utils::{
-    errors::prelude::*,
     input::layout::SplitDirection,
     pane_size::{Dimension, PaneGeom, Viewport},
 };

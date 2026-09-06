@@ -1,10 +1,12 @@
 //! Handles cli and configuration options
 use crate::cli::Command;
-use crate::data::{InputMode, ThemeHue};
+use crate::data::InputMode;
+use clap::builder::TypedValueParser;
 use clap::{Args, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::str::FromStr;
+use zellij_types::style::ThemeHue;
 
 pub const DEFAULT_WORD_SEPARATORS: &str = "[]{}<>()";
 
@@ -238,7 +240,7 @@ pub struct Options {
     /// resolved before the first render and kept authoritative over ambient
     /// host terminal reports (CSI 2031 / DSR 997). When unset, the session
     /// follows the host terminal.
-    #[clap(long, value_enum, hide_possible_values = true, value_parser)]
+    #[clap(long, hide_possible_values = true, value_parser = clap::builder::PossibleValuesParser::new(["light", "dark"]).try_map(|value| value.parse::<ThemeHue>()))]
     pub explicit_theme_hue: Option<ThemeHue>,
     /// Set the default mode
     #[clap(long, value_enum, hide_possible_values = true, value_parser)]

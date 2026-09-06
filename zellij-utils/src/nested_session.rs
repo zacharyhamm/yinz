@@ -1,4 +1,4 @@
-use crate::data::{Direction, KeyWithModifier};
+use crate::data::Direction;
 use crate::nested_session_contract::nested_session_contract as proto;
 use base64::alphabet::STANDARD as BASE64_STANDARD_ALPHABET;
 use base64::engine::general_purpose::{
@@ -8,6 +8,7 @@ use base64::engine::{DecodePaddingMode, Engine as _};
 use prost::Message;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
+use zellij_types::keys::KeyWithModifier;
 
 const BASE64_DECODER: GeneralPurpose = GeneralPurpose::new(
     &BASE64_STANDARD_ALPHABET,
@@ -160,7 +161,7 @@ pub enum NestedSessionMessage {
 }
 
 fn keys_to_proto(keys: &[KeyWithModifier]) -> Vec<String> {
-    keys.iter().map(|key| key.to_kdl()).collect()
+    keys.iter().map(|key| key.to_keybind_string()).collect()
 }
 
 fn keys_from_proto(keys: &[String]) -> Vec<KeyWithModifier> {

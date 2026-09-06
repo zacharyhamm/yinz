@@ -7,17 +7,18 @@ use crate::{
     os_input_output::ServerOsApi, pane_groups::PaneGroups, panes::PaneId,
     plugins::PluginInstruction, thread_bus::ThreadSenders, ClientId,
 };
+use zellij_types::internal_ids::TerminalId;
 use zellij_utils::input::options::PaneFrameStyle;
-use zellij_utils::internal_ids::TerminalId;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use zellij_utils::channels::Receiver;
+use zellij_runtime::channels::Receiver;
+use zellij_runtime::envs::set_session_name;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::diagnostics::ErrorContext;
 use zellij_utils::data::Direction;
 use zellij_utils::data::Resize;
 use zellij_utils::data::ResizeStrategy;
-use zellij_utils::envs::set_session_name;
-use zellij_utils::errors::{prelude::*, ErrorContext};
 use zellij_utils::input::layout::{
     FloatingPaneLayout, Layout, PercentOrFixed, RunPluginOrAlias, SwapFloatingLayout,
     SwapTiledLayout, TiledPaneLayout,
@@ -29,16 +30,14 @@ use interprocess::local_socket::Stream as LocalSocketStream;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
-use zellij_utils::channels::{self, ChannelWithContext, SenderWithContext};
-use zellij_utils::input::mouse::MouseEvent;
+use zellij_runtime::channels::{self, ChannelWithContext, SenderWithContext};
+use zellij_types::mouse::MouseEvent;
+use zellij_types::position::Position;
+use zellij_types::style::{Palette, Style};
 use zellij_utils::ipc::IpcReceiverWithContext;
 use zellij_utils::pane_size::{Size, SizeInPixels};
-use zellij_utils::position::Position;
 use zellij_utils::{
-    data::{
-        FloatingPaneCoordinates, InputMode, ModeInfo, NewPanePlacement, OverlayPlacement, Palette,
-        Style,
-    },
+    data::{FloatingPaneCoordinates, InputMode, ModeInfo, NewPanePlacement, OverlayPlacement},
     input::command::{RunCommand, TerminalAction},
     ipc::{ClientToServerMsg, ServerToClientMsg},
 };
@@ -480,7 +479,7 @@ fn create_new_tab_with_swap_layouts(
         Vec<FloatingPaneLayout>,
         Vec<(TerminalId, Option<RunCommand>)>,
         Vec<(TerminalId, Option<RunCommand>)>,
-        HashMap<RunPluginOrAlias, Vec<zellij_utils::internal_ids::PluginId>>,
+        HashMap<RunPluginOrAlias, Vec<zellij_types::internal_ids::PluginId>>,
     )>,
     draw_pane_frames: bool,
     stacked_resize: bool,
@@ -1518,7 +1517,7 @@ impl SuppressedPaneModel {
             // both cases rather than refusing it, which is worth knowing but is
             // not what this is asking about.
             _ => NewPanePlacement::Stacked {
-                pane_id_to_stack_under: Some(Self::pick(&tc, &self.tiled()).into()),
+                pane_id_to_stack_under: Some(Self::pick(&tc, &self.tiled())),
                 borderless: None,
             },
         };
@@ -1553,7 +1552,7 @@ impl SuppressedPaneModel {
                 false,
                 true,
                 NewPanePlacement::InPlace {
-                    pane_id_to_replace: Some(replaced.into()),
+                    pane_id_to_replace: Some(replaced),
                     close_replaced_pane: false,
                     borderless: None,
                 },

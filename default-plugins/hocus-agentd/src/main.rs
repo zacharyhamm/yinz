@@ -466,11 +466,11 @@ impl ZellijPlugin for State {
                 self.publish();
             },
             Event::CommandChanged(PaneId::Terminal(id), command, is_foreground, _) => {
-                self.on_command(id, command, is_foreground);
+                self.on_command(id.get(), command, is_foreground);
                 self.publish();
             },
             Event::CwdChanged(PaneId::Terminal(id), cwd, _) => {
-                self.record_cwd(id, &cwd.to_string_lossy());
+                self.record_cwd(id.get(), &cwd.to_string_lossy());
                 self.rejoin_cwds();
                 self.resolve_repositories();
                 // A remote pane's folder is probed on the far machine, so a `cd`
@@ -804,8 +804,18 @@ impl State {
             pane_id,
             kind,
             event,
-            |pane_id, text| notify_with_pane_id(text, PaneId::Terminal(pane_id)),
-            |pane_id, title| rename_pane_with_id(PaneId::Terminal(pane_id), title),
+            |pane_id, text| {
+                notify_with_pane_id(
+                    text,
+                    PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+                )
+            },
+            |pane_id, title| {
+                rename_pane_with_id(
+                    PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+                    title,
+                )
+            },
         );
         self.drain_finished_runs(|state, run_id| {
             state.summarize_run_now(run_id);
@@ -1223,7 +1233,10 @@ impl State {
     /// Tell the session which run this pane's agent is in, so a session that adopts the pane
     /// can find it. See `AgentInfo::run_id`.
     fn publish_run_id(&self, pane_id: u32, run_id: Option<String>) {
-        set_pane_agent_run(PaneId::Terminal(pane_id), run_id);
+        set_pane_agent_run(
+            PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+            run_id,
+        );
     }
 
     /// Fill in the timelines of runs just read out of the store, and remember how much of
@@ -2362,7 +2375,12 @@ impl State {
             |url, verb, headers, body, context| {
                 web_request(url, verb, headers, body, context, None)
             },
-            |pane_id, text| notify_with_pane_id(text, PaneId::Terminal(pane_id)),
+            |pane_id, text| {
+                notify_with_pane_id(
+                    text,
+                    PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+                )
+            },
         )
     }
 
@@ -2703,8 +2721,18 @@ impl State {
             status,
             body,
             context,
-            |pane_id, title| rename_pane_with_id(PaneId::Terminal(pane_id), title),
-            |pane_id, text| notify_with_pane_id(text, PaneId::Terminal(pane_id)),
+            |pane_id, title| {
+                rename_pane_with_id(
+                    PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+                    title,
+                )
+            },
+            |pane_id, text| {
+                notify_with_pane_id(
+                    text,
+                    PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+                )
+            },
         );
     }
 
@@ -2985,7 +3013,10 @@ impl State {
     /// later — both of those publish, and both are what this reads.
     fn refresh_title_prefixes(&mut self) {
         self.refresh_title_prefixes_with(|pane_id, prefix| {
-            set_pane_title_prefix(PaneId::Terminal(pane_id), prefix)
+            set_pane_title_prefix(
+                PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+                prefix,
+            )
         });
     }
 
@@ -3176,7 +3207,10 @@ impl State {
 /// read the daemon's own feed instead.
 #[cfg(target_arch = "wasm32")]
 fn report_agent(pane_id: u32, agent: Option<AgentInfo>) {
-    set_pane_agent(PaneId::Terminal(pane_id), agent);
+    set_pane_agent(
+        PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+        agent,
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]

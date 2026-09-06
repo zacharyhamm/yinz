@@ -3,10 +3,9 @@ use super::generated_api::api::style::{
     Palette as ProtobufPalette, RgbColorPayload as ProtobufRgbColorPayload, Style as ProtobufStyle,
     Styling as ProtobufStyling, ThemeHue as ProtobufThemeHue,
 };
-use crate::data::{
-    MultiplayerColors, Palette, PaletteColor, Style, StyleDeclaration, Styling, ThemeHue,
-};
+use crate::data::PaletteColor;
 use crate::errors::prelude::*;
+use zellij_types::style::{MultiplayerColors, Palette, Style, StyleDeclaration, Styling, ThemeHue};
 
 use std::convert::TryFrom;
 
@@ -132,38 +131,34 @@ impl TryFrom<ProtobufStyling> for Styling {
     }
 }
 
-impl TryFrom<StyleDeclaration> for Vec<ProtobufColor> {
-    type Error = &'static str;
-
-    fn try_from(colors: StyleDeclaration) -> std::result::Result<Self, Self::Error> {
-        Ok(vec![
-            colors.base.try_into()?,
-            colors.background.try_into()?,
-            colors.emphasis_0.try_into()?,
-            colors.emphasis_1.try_into()?,
-            colors.emphasis_2.try_into()?,
-            colors.emphasis_3.try_into()?,
-        ])
-    }
+fn style_declaration_to_protobuf(
+    colors: StyleDeclaration,
+) -> Result<Vec<ProtobufColor>, &'static str> {
+    Ok(vec![
+        colors.base.try_into()?,
+        colors.background.try_into()?,
+        colors.emphasis_0.try_into()?,
+        colors.emphasis_1.try_into()?,
+        colors.emphasis_2.try_into()?,
+        colors.emphasis_3.try_into()?,
+    ])
 }
 
-impl TryFrom<MultiplayerColors> for Vec<ProtobufColor> {
-    type Error = &'static str;
-
-    fn try_from(value: MultiplayerColors) -> std::result::Result<Self, Self::Error> {
-        Ok(vec![
-            value.player_1.try_into()?,
-            value.player_2.try_into()?,
-            value.player_3.try_into()?,
-            value.player_4.try_into()?,
-            value.player_5.try_into()?,
-            value.player_6.try_into()?,
-            value.player_7.try_into()?,
-            value.player_8.try_into()?,
-            value.player_9.try_into()?,
-            value.player_10.try_into()?,
-        ])
-    }
+fn multiplayer_colors_to_protobuf(
+    value: MultiplayerColors,
+) -> Result<Vec<ProtobufColor>, &'static str> {
+    Ok(vec![
+        value.player_1.try_into()?,
+        value.player_2.try_into()?,
+        value.player_3.try_into()?,
+        value.player_4.try_into()?,
+        value.player_5.try_into()?,
+        value.player_6.try_into()?,
+        value.player_7.try_into()?,
+        value.player_8.try_into()?,
+        value.player_9.try_into()?,
+        value.player_10.try_into()?,
+    ])
 }
 
 impl TryFrom<Styling> for ProtobufStyling {
@@ -172,25 +167,25 @@ impl TryFrom<Styling> for ProtobufStyling {
     fn try_from(style: Styling) -> std::result::Result<Self, Self::Error> {
         let frame_unselected_vec = match style.frame_unselected {
             None => Ok(Vec::new()),
-            Some(frame_unselected) => frame_unselected.try_into(),
+            Some(frame_unselected) => style_declaration_to_protobuf(frame_unselected),
         };
 
         Ok(ProtobufStyling {
-            text_unselected: style.text_unselected.try_into()?,
-            text_selected: style.text_selected.try_into()?,
-            ribbon_unselected: style.ribbon_unselected.try_into()?,
-            ribbon_selected: style.ribbon_selected.try_into()?,
-            table_title: style.table_title.try_into()?,
-            table_cell_unselected: style.table_cell_unselected.try_into()?,
-            table_cell_selected: style.table_cell_selected.try_into()?,
-            list_unselected: style.list_unselected.try_into()?,
-            list_selected: style.list_selected.try_into()?,
+            text_unselected: style_declaration_to_protobuf(style.text_unselected)?,
+            text_selected: style_declaration_to_protobuf(style.text_selected)?,
+            ribbon_unselected: style_declaration_to_protobuf(style.ribbon_unselected)?,
+            ribbon_selected: style_declaration_to_protobuf(style.ribbon_selected)?,
+            table_title: style_declaration_to_protobuf(style.table_title)?,
+            table_cell_unselected: style_declaration_to_protobuf(style.table_cell_unselected)?,
+            table_cell_selected: style_declaration_to_protobuf(style.table_cell_selected)?,
+            list_unselected: style_declaration_to_protobuf(style.list_unselected)?,
+            list_selected: style_declaration_to_protobuf(style.list_selected)?,
             frame_unselected: frame_unselected_vec?,
-            frame_selected: style.frame_selected.try_into()?,
-            frame_highlight: style.frame_highlight.try_into()?,
-            exit_code_success: style.exit_code_success.try_into()?,
-            exit_code_error: style.exit_code_error.try_into()?,
-            multiplayer_user_colors: style.multiplayer_user_colors.try_into()?,
+            frame_selected: style_declaration_to_protobuf(style.frame_selected)?,
+            frame_highlight: style_declaration_to_protobuf(style.frame_highlight)?,
+            exit_code_success: style_declaration_to_protobuf(style.exit_code_success)?,
+            exit_code_error: style_declaration_to_protobuf(style.exit_code_error)?,
+            multiplayer_user_colors: multiplayer_colors_to_protobuf(style.multiplayer_user_colors)?,
         })
     }
 }
@@ -316,16 +311,22 @@ impl TryFrom<ProtobufColor> for PaletteColor {
             Ok(ProtobufColorType::Rgb) => match protobuf_color.payload {
                 Some(ProtobufColorPayload::RgbColorPayload(rgb_color_payload)) => {
                     Ok(PaletteColor::Rgb((
-                        rgb_color_payload.red as u8,
-                        rgb_color_payload.green as u8,
-                        rgb_color_payload.blue as u8,
+                        u8::try_from(rgb_color_payload.red)
+                            .map_err(|_| "RGB color channel out of range")?,
+                        u8::try_from(rgb_color_payload.green)
+                            .map_err(|_| "RGB color channel out of range")?,
+                        u8::try_from(rgb_color_payload.blue)
+                            .map_err(|_| "RGB color channel out of range")?,
                     )))
                 },
                 _ => Err("malformed payload for Rgb color"),
             },
             Ok(ProtobufColorType::EightBit) => match protobuf_color.payload {
                 Some(ProtobufColorPayload::EightBitColorPayload(eight_bit_payload)) => {
-                    Ok(PaletteColor::EightBit(eight_bit_payload as u8))
+                    Ok(PaletteColor::EightBit(
+                        u8::try_from(eight_bit_payload)
+                            .map_err(|_| "8bit color index out of range")?,
+                    ))
                 },
                 _ => Err("malformed payload for 8bit color"),
             },
@@ -373,6 +374,53 @@ impl TryFrom<ProtobufThemeHue> for ThemeHue {
         match protobuf_theme_hue {
             ProtobufThemeHue::Light => Ok(ThemeHue::Light),
             ProtobufThemeHue::Dark => Ok(ThemeHue::Dark),
+        }
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+    use prost::Message;
+
+    #[test]
+    fn colors_keep_their_protobuf_bytes_and_reject_narrowing_overflow() {
+        for (color, bytes) in [
+            (PaletteColor::EightBit(0), vec![8, 1, 24, 0]),
+            (PaletteColor::EightBit(255), vec![8, 1, 24, 255, 1]),
+            (
+                PaletteColor::Rgb((0, 127, 255)),
+                vec![18, 5, 16, 127, 24, 255, 1],
+            ),
+        ] {
+            let protobuf = ProtobufColor::try_from(color).unwrap();
+            assert_eq!(protobuf.encode_to_vec(), bytes);
+            let decoded = ProtobufColor::decode(bytes.as_slice()).unwrap();
+            assert_eq!(PaletteColor::try_from(decoded).unwrap(), color);
+        }
+        let too_large = ProtobufColor {
+            color_type: ProtobufColorType::EightBit as i32,
+            payload: Some(ProtobufColorPayload::EightBitColorPayload(256)),
+        };
+        assert_eq!(
+            PaletteColor::try_from(too_large),
+            Err("8bit color index out of range")
+        );
+        for channel in 0..3 {
+            let mut rgb = ProtobufRgbColorPayload::default();
+            match channel {
+                0 => rgb.red = 256,
+                1 => rgb.green = 256,
+                _ => rgb.blue = 256,
+            }
+            let too_large = ProtobufColor {
+                color_type: ProtobufColorType::Rgb as i32,
+                payload: Some(ProtobufColorPayload::RgbColorPayload(rgb)),
+            };
+            assert_eq!(
+                PaletteColor::try_from(too_large),
+                Err("RGB color channel out of range")
+            );
         }
     }
 }

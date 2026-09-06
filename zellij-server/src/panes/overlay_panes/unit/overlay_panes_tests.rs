@@ -6,9 +6,10 @@ use crate::panes::{LinkHandler, PaneId, TerminalPane};
 use crate::tab::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::path::PathBuf;
-use zellij_utils::data::{Direction, Palette, Resize};
+use zellij_types::internal_ids::TerminalId;
+use zellij_types::style::Palette;
+use zellij_utils::data::{Direction, Resize};
 use zellij_utils::input::command::{RunCommand, TerminalAction};
-use zellij_utils::internal_ids::TerminalId;
 use zellij_utils::ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg};
 
 #[derive(Clone)]

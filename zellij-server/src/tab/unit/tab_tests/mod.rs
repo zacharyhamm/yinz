@@ -6,22 +6,23 @@ use crate::pty_writer::PtyWriteInstruction;
 use crate::screen::CopyOptions;
 use crate::{os_input_output::ServerOsApi, panes::PaneId, thread_bus::ThreadSenders, ClientId};
 use std::path::PathBuf;
-use zellij_utils::channels::{unbounded, Receiver, SenderWithContext};
+use zellij_runtime::channels::{unbounded, Receiver, SenderWithContext};
+use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TerminalId;
 use zellij_utils::data::{Direction, NewPanePlacement, OverlayPlacement, Resize, ResizeStrategy};
-use zellij_utils::errors::prelude::*;
 use zellij_utils::input::layout::{SplitDirection, SplitSize, TiledPaneLayout};
-use zellij_utils::internal_ids::TerminalId;
 
 use crate::os_input_output::AsyncReader;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use zellij_types::style::{Palette, Style};
 use zellij_utils::input::options::PaneFrameStyle;
 use zellij_utils::ipc::IpcReceiverWithContext;
 use zellij_utils::pane_size::{PaneGeom, Size, SizeInPixels, Viewport};
 use zellij_utils::{
-    data::{ModeInfo, Palette, Style},
+    data::ModeInfo,
     input::command::{RunCommand, TerminalAction},
     ipc::{ClientToServerMsg, ServerToClientMsg},
 };
@@ -520,7 +521,7 @@ fn assert_panes_tile_the_whole_display(tab: &Tab, display: Size) {
 
 fn install_pty_writer_capture(
     tab: &mut Tab,
-) -> Receiver<(PtyWriteInstruction, zellij_utils::errors::ErrorContext)> {
+) -> Receiver<(PtyWriteInstruction, zellij_types::diagnostics::ErrorContext)> {
     let (tx, rx) = unbounded();
     tab.senders
         .replace_to_pty_writer(SenderWithContext::new(tx));
@@ -528,7 +529,7 @@ fn install_pty_writer_capture(
 }
 
 fn drain_pty_writer(
-    rx: &Receiver<(PtyWriteInstruction, zellij_utils::errors::ErrorContext)>,
+    rx: &Receiver<(PtyWriteInstruction, zellij_types::diagnostics::ErrorContext)>,
 ) -> Vec<PtyWriteInstruction> {
     let mut out = Vec::new();
     while let Ok((msg, _ctx)) = rx.try_recv() {

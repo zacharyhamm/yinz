@@ -9,12 +9,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::tempdir;
 use wasmi::Engine;
-use zellij_utils::data::{
-    BareKey, Event, InputMode, KeyWithModifier, ModeInfo, PermissionStatus, PermissionType,
-};
-use zellij_utils::data_access::DataAccess;
+use zellij_storage::data_access::DataAccess;
+use zellij_types::keys::{BareKey, KeyWithModifier};
+use zellij_utils::data::{Event, InputMode, ModeInfo, PermissionStatus, PermissionType};
 
-use zellij_utils::errors::ErrorContext;
+use zellij_types::diagnostics::ErrorContext;
 use zellij_utils::input::actions::Action;
 use zellij_utils::input::keybinds::Keybinds;
 use zellij_utils::input::layout::{
@@ -25,7 +24,7 @@ use crate::background_jobs::BackgroundJob;
 use crate::pty_writer::PtyWriteInstruction;
 use crate::{plugins::PluginInstruction, pty::PtyInstruction};
 use std::env::set_var;
-use zellij_utils::channels::{self, ChannelWithContext, Receiver};
+use zellij_runtime::channels::{self, ChannelWithContext, Receiver};
 use zellij_utils::input::permission::PermissionCache;
 use zellij_utils::input::plugins::PluginAliases;
 use zellij_utils::pane_size::Size;

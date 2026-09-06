@@ -1,5 +1,5 @@
-use zellij_utils::errors::prelude::*;
-use zellij_utils::internal_ids::TerminalId;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::internal_ids::TerminalId;
 
 use super::{PreparedTabWarp, Screen, ScreenInstruction, WarpAddress};
 use crate::panes::PaneId;

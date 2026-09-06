@@ -12,8 +12,8 @@ use crate::ClientId;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use zellij_utils::common_path::common_path_all;
-use zellij_utils::internal_ids::{PluginId, TerminalId};
+use zellij_runtime::common_path::common_path_all;
+use zellij_types::internal_ids::{PluginId, TerminalId};
 use zellij_utils::pane_size::PaneGeom;
 use zellij_utils::{
     data::{LayoutMetadata, PaneMetadata, TabMetadata},

@@ -8,10 +8,8 @@
 #![allow(unused)]
 
 use insta::assert_snapshot;
-use zellij_utils::{
-    pane_size::Size,
-    position::{Column, Line, Position},
-};
+use zellij_types::position::{Column, Line, Position};
+use zellij_utils::pane_size::Size;
 
 use rand::RngExt;
 use regex::Regex;

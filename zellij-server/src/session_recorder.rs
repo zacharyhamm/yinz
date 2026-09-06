@@ -4,11 +4,11 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
-use zellij_utils::internal_ids::TerminalId;
+use zellij_types::internal_ids::TerminalId;
 
-use zellij_utils::data_access::{DataAccess, RecordingSession};
-use zellij_utils::errors::prelude::*;
-use zellij_utils::session_recording::{PaneMetadata, RecordedEvent};
+use zellij_runtime::errors::prelude::*;
+use zellij_storage::data_access::{DataAccess, RecordingSession};
+use zellij_storage::session_recording::{PaneMetadata, RecordedEvent};
 
 #[derive(Debug)]
 pub enum RecorderInstruction {
@@ -445,9 +445,9 @@ fn recorder_thread(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    use zellij_storage::data_access::{PluginDataBackend, RecordingBackend, RecordingSession};
     use zellij_test_support::{default_timeout, Watched};
-    use zellij_utils::data_access::{PluginDataBackend, RecordingBackend, RecordingSession};
-    use zellij_utils::plugin_data::{
+    use zellij_types::plugin_data::{
         ApplyReport, DataEntityInfo, DataError, DataRows, DataSchemaInfo, EntityDef, FetchRequest,
         Mutation,
     };

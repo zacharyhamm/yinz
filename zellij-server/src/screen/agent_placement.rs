@@ -20,7 +20,7 @@
 //! counted as pane area and a pane collapsed in a stack counts as one; both are approximations
 //! the floor absorbs.
 
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
 
 use super::Screen;
 use crate::pty::ClientTabIndexOrPaneId;

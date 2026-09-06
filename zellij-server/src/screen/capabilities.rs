@@ -3,8 +3,8 @@ use crate::panes::alacritty_functions::xparse_color;
 use crate::panes::kitty_graphics::KittyHostSupport;
 use crate::panes::terminal_character::AnsiCode;
 use crate::ClientId;
-use zellij_utils::data::PaletteColor;
-use zellij_utils::errors::prelude::*;
+use zellij_runtime::errors::prelude::*;
+use zellij_types::colors::PaletteColor;
 use zellij_utils::ipc::PixelDimensions;
 use zellij_utils::pane_size::SizeInPixels;
 

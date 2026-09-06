@@ -8,6 +8,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+zellij-types = { workspace = true }
 zellij-tile = { path = "../../zellij-tile" }
 zellij-tile-markdown = { path = "../../zellij-tile-markdown" }
 serde = { workspace = true }
@@ -19,5 +20,5 @@ unicode-width = { workspace = true }
 # them. Target-gated because `plugin_data_store` and `rusqlite` do not build for
 # wasm — which is the same reason the plugins get `store::Host` instead.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-zellij-utils = { workspace = true }
+zellij-storage = { workspace = true }
 tempfile = { workspace = true }

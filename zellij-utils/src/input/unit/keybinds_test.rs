@@ -1,9 +1,10 @@
 use super::super::actions::*;
 use super::super::keybinds::*;
-use crate::data::{BareKey, Direction, KeyWithModifier};
+use crate::data::Direction;
 use crate::input::config::Config;
 use insta::assert_snapshot;
 use strum::IntoEnumIterator;
+use zellij_types::keys::{BareKey, KeyWithModifier};
 
 #[test]
 fn can_define_shared_keybinds_for_all_modes() {

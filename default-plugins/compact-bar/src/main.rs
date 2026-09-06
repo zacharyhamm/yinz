@@ -459,7 +459,10 @@ impl State {
     fn update_tooltip_for_mode_change(&self, new_mode: InputMode) {
         if let Some(plugin_id) = self.own_plugin_id {
             let coordinates = self.calculate_tooltip_coordinates();
-            change_floating_panes_coordinates(vec![(PaneId::Plugin(plugin_id), coordinates)]);
+            change_floating_panes_coordinates(vec![(
+                PaneId::Plugin(zellij_tile::prelude::PluginId(plugin_id)),
+                coordinates,
+            )]);
             rename_plugin_pane(plugin_id, format!("{:?}", new_mode));
         }
     }
@@ -467,7 +470,7 @@ impl State {
     fn move_tooltip_to_new_tab(&self, new_tab_index: usize) {
         if let Some(plugin_id) = self.own_plugin_id {
             break_panes_to_tab_with_index(
-                &[PaneId::Plugin(plugin_id)],
+                &[PaneId::Plugin(zellij_tile::prelude::PluginId(plugin_id))],
                 new_tab_index.saturating_sub(1), // Convert to 0-based indexing
                 false,
             );
