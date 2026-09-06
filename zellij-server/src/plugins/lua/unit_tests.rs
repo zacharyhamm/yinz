@@ -39,6 +39,9 @@ fn agent_exit_conversation_forms_scroll_and_sanitize() {
 local z, T = require('zellij'), M.test_chat
 z.show_cursor = function() end
 local C, W = T.chat, T.state
+local now = os.time()
+os.time = function() return now end
+local stamp = os.date('%Y-%m-%d %H:%M:%S', now):gsub('(%p)', '\\%1')
 local actions = 0
 z.close_self = function() actions = actions + 1 end
 z.close_terminal_pane = function() actions = actions + 1 end
@@ -61,8 +64,11 @@ z.task(function()
 end)
 M.render(24, 160)
 local count = #C.entries
+local original = C.entries[1]
+assert(original:find(stamp, 1, true), original)
+now = now + 60
 M.render(24, 160); M.render(24, 160)
-assert(#C.entries == count, 'render duplicated history')
+assert(#C.entries == count and C.entries[1] == original, 'render changed history')
 assert(C.page == 22 and not C.compact)
 assert(T.form():focused_id() == 'a')
 key('Tab'); assert(T.form():focused_id() == 'b')
@@ -175,7 +181,7 @@ fn agent_exit_queries_skip_operation_logs_and_preserve_failures() {
     std::fs::create_dir(&lock).unwrap();
     let source = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap().replace(
         "\nfunction M.load(config)",
-        "M.test_queries = { state=W, query=must_git, git=git, rebase=rebase_in_progress }\nfunction M.load(config)",
+        "M.test_queries = { state=W, chat=C, query=must_git, git=git, rebase=rebase_in_progress, raw=raw, config=config }\nfunction M.load(config)",
     );
     let plugin = load(&source).unwrap();
     plugin
@@ -204,7 +210,13 @@ fn agent_exit_queries_skip_operation_logs_and_preserve_failures() {
     plugin.lua.load(r#"
 local z = require('zellij')
 local calls = {}
+local now = os.time()
+os.time = function() return now end
+local function last() return T.chat.entries[#T.chat.entries]:gsub('\\(%p)', '%1') end
 z.async.run_command = function(opts)
+  assert(last():find('running', 1, true), 'start must precede dispatch')
+  assert(not last():find('operation=$2', 1, true), 'internal wrapper leaked')
+  now = now + 3
   table.insert(calls, opts.command)
   return {done=true, value=__run(opts.command), on_settle={}}
 end
@@ -212,12 +224,17 @@ z.task(function()
 T.state.root, T.state.tmp = root, logs
 T.state.gitdir, T.state.lock = root .. '/.git', root .. '/.git/agent-exit.lock'
 assert(T.git('not-a-git-command') ~= 0)
+assert(#T.chat.entries == 2, 'wrapped command logged twice')
+assert(last():find('Operation finished (status 1, 3s)', 1, true), last())
+assert(last():find('Full output:', 1, true))
 local diagnostic, log = T.state.diagnostic, T.state.log
 calls = {}
 assert(T.query('status', '--porcelain=v1') == '')
+assert(last():find('Command finished (status 0, 3s)', 1, true), last())
 assert(#calls == 1 and calls[1][1] == 'git' and calls[1][2] == '--no-optional-locks')
 local ok, err = pcall(T.query, 'rev-parse', '--verify', 'refs/heads/missing')
 assert(not ok and err:find('fatal:', 1, true))
+assert(last():find('Command finished (status 128, 3s)', 1, true) and last():find('fatal:', 1, true), last())
 assert(T.state.diagnostic == diagnostic and T.state.log == log and T.state.sequence == 1)
 for _, name in ipairs({'absent', 'rebase-merge', 'rebase-apply'}) do
   if name ~= 'absent' then assert(__run({'mkdir', '--', T.state.gitdir .. '/' .. name}).exit_code == 0) end
@@ -228,6 +245,27 @@ for _, name in ipairs({'absent', 'rebase-merge', 'rebase-apply'}) do
 end
 assert(T.state.diagnostic == diagnostic and T.state.sequence == 1)
 end)
+-- An unresolved result leaves just its start visible until delivery.
+local pending, resolve = z.async.future()
+z.async.run_command = function() return pending end
+local count, done = #T.chat.entries, false
+z.task(function() T.raw({'git', 'status'}); done = true end)
+assert(not done and #T.chat.entries == count + 1 and last():find('Command running', 1, true))
+now = now + 7
+resolve({exit_code=2, stdout='', stderr='delayed failure'})
+z.__update({}, {Timer=0})
+assert(done and #T.chat.entries == count + 2)
+assert(last():find('status 2, 7s', 1, true) and last():find('delayed failure', 1, true))
+for _, success in ipairs({true, false}) do
+  z.project_config.read = function()
+    assert(last():find('Reading project configuration', 1, true))
+    now = now + 4
+    if not success then error('invalid configuration') end
+    return {config={}, source=''}
+  end
+  assert(T.config() == success)
+  assert(last():find((success and 'success' or 'failed') .. ', 4s', 1, true), last())
+end
 "#).exec().unwrap();
     assert!(!lock.join("operation").exists());
     assert_eq!(std::fs::read_dir(logs).unwrap().count(), 1);
@@ -398,9 +436,10 @@ fn agent_exit_workflow_merges_and_cleans_real_worktrees() {
             std::fs::write(linked.join("shared"), "topic\n").unwrap();
         }
 
-        let source = zellij_config::consts::builtin_lua_plugin("agent-exit")
-            .unwrap()
-            .replace(
+        let builtin = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap();
+        assert!(builtin.contains("choose(\"Review and integrate changes.\""));
+        assert!(!builtin.contains("Agent exited. Review"));
+        let source = builtin.replace(
                 "\nfunction M.load(config)",
                 "M.test_workflow = { state = W, run = workflow, chat = C, form = form }\nfunction M.load(config)",
             );
@@ -1863,7 +1902,7 @@ fn agent_exit_zero_guest_changes_start_the_workflow() {
         .unwrap()
         .replace(
             "\nfunction M.load(config)",
-            "M.test_state = W\nfunction M.load(config)",
+            "M.test_state = W; M.test_chat = C\nfunction M.load(config)",
         );
     let plugin = load(&source).unwrap();
     plugin
@@ -1875,6 +1914,8 @@ fn agent_exit_zero_guest_changes_start_the_workflow() {
 local z = require('zellij')
 z.show_cursor = function() end
 local starts, commands = 0, {}
+local now = os.time()
+os.time = function() return now end
 M.test_state.start = function() starts = starts + 1 end
 z.subscribe = function() end
 z.run_command = function(opts) table.insert(commands, opts) end
@@ -1886,7 +1927,13 @@ for _, step in ipairs({'check', 'recheck'}) do
       starts, commands = 0, {}
       M.sync_warnings = warnings and 'kept guest copy' or nil
       M.syncing = step == 'recheck'
+      M.started = now
+      now = now + 5
       z.__update(M, {RunCommandResult={case[1], {case[2]:byte(1, -1)}, {}, {step=step}}})
+      local entry = M.test_chat.entries[#M.test_chat.entries]:gsub('\\(%p)', '%1')
+      if not (case[3] and warnings) then
+        assert(entry:find('status ' .. case[1] .. ', 5s', 1, true), entry)
+      end
       assert(starts == (case[3] and not warnings and 1 or 0))
       assert(not M.syncing)
       if case[3] then
