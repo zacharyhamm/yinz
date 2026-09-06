@@ -26,9 +26,9 @@ pub fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::
         .panes
         .iter()
         .flat_map(|(position, panes)| panes.iter().map(move |pane| (Some(*position), pane)))
-        .filter(|(_, pane)| !pane.is_plugin && !pane.is_suppressed)
+        .filter(|(_, pane)| !pane.is_plugin() && !pane.is_suppressed)
         .map(|(position, pane)| agents::AgentPane {
-            pane_id: pane.id,
+            pane_id: pane.id.legacy_parts().0,
             title: pane.title.clone(),
             command: pane.terminal_command.clone(),
             // The manifest carries the folder now. It used to say nothing, so
@@ -78,8 +78,8 @@ pub fn manifest_pane_ids(manifest: &PaneManifest) -> BTreeSet<u32> {
         .panes
         .values()
         .flatten()
-        .filter(|pane| !pane.is_plugin)
-        .map(|pane| pane.id)
+        .filter(|pane| !pane.is_plugin())
+        .map(|pane| pane.id.legacy_parts().0)
         .collect()
 }
 
@@ -114,8 +114,8 @@ fn focused(manifest: &PaneManifest, tabs: &[TabInfo], plugin: bool) -> Option<u3
         .filter(|(position, _)| active.map(|tab| tab.position) == Some(**position))
         .flat_map(|(_, panes)| panes.iter())
         .filter(|pane| active.map(|tab| tab.are_floating_panes_visible) == Some(pane.is_floating))
-        .find(|pane| pane.is_focused && pane.is_plugin == plugin && !pane.is_suppressed)
-        .map(|pane| pane.id)
+        .find(|pane| pane.is_focused && pane.is_plugin() == plugin && !pane.is_suppressed)
+        .map(|pane| pane.id.legacy_parts().0)
 }
 
 #[cfg(test)]
@@ -130,7 +130,7 @@ mod tests {
             0,
             vec![
                 PaneInfo {
-                    id: 3,
+                    id: zellij_tile::prelude::PaneId::from_legacy(3, false),
                     cwd: Some("/work/hocus".to_owned()),
                     host: Some("firecracker:review".to_owned()),
                     target: PaneTarget::Firecracker {
@@ -141,7 +141,7 @@ mod tests {
                     ..PaneInfo::default()
                 },
                 PaneInfo {
-                    id: 4,
+                    id: zellij_tile::prelude::PaneId::from_legacy(4, false),
                     cwd: None,
                     ..PaneInfo::default()
                 },
@@ -170,17 +170,16 @@ mod tests {
             0,
             vec![
                 PaneInfo {
-                    id: 3,
+                    id: zellij_tile::prelude::PaneId::from_legacy(3, false),
                     ..PaneInfo::default()
                 },
                 PaneInfo {
-                    id: 4,
+                    id: zellij_tile::prelude::PaneId::from_legacy(4, false),
                     is_suppressed: true,
                     ..PaneInfo::default()
                 },
                 PaneInfo {
-                    id: 5,
-                    is_plugin: true,
+                    id: zellij_tile::prelude::PaneId::from_legacy(5, true),
                     ..PaneInfo::default()
                 },
             ],
@@ -210,7 +209,7 @@ mod tests {
 
     fn focused(id: u32) -> PaneInfo {
         PaneInfo {
-            id,
+            id: zellij_tile::prelude::PaneId::from_legacy(id, false),
             is_focused: true,
             ..PaneInfo::default()
         }
@@ -261,7 +260,7 @@ mod tests {
         manifest.panes.insert(
             0,
             vec![PaneInfo {
-                is_plugin: true,
+                id: zellij_tile::prelude::PaneId::from_legacy(3, true),
                 ..focused(3)
             }],
         );
@@ -274,7 +273,7 @@ mod tests {
     #[test]
     fn the_focused_plugin_pane_is_the_half_of_the_sidebar_the_user_is_in() {
         let plugin = |id| PaneInfo {
-            is_plugin: true,
+            id: zellij_tile::prelude::PaneId::from_legacy(id, true),
             ..focused(id)
         };
         let mut manifest = PaneManifest::default();

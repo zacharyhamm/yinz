@@ -643,8 +643,8 @@ fn an_overlay_answers_the_singular_pane_info_lookup() {
     let pane_info = tab
         .get_pane_info(modal_id)
         .expect("an overlay is a pane the singular API knows about");
-    assert_eq!(pane_info.id, 7);
-    assert!(pane_info.is_plugin);
+    assert_eq!(pane_info.id, modal_id);
+    assert!(pane_info.is_plugin());
     assert!(
         pane_info.is_floating,
         "every consumer reads `is_floating` as `not tiled`, which an overlay is"
@@ -658,7 +658,7 @@ fn an_overlay_answers_the_singular_pane_info_lookup() {
     assert!(
         tab.pane_infos()
             .iter()
-            .any(|info| info.is_plugin && info.id == 7),
+            .any(|info| info.id == PaneId::Plugin(crate::PluginId::new(7))),
         "and it agrees with the plural API it sits beside"
     );
 }
@@ -2060,7 +2060,7 @@ fn an_overlay_cannot_be_the_root_of_a_stack_and_no_pane_is_lost_refusing() {
         .pane_infos()
         .into_iter()
         .filter(|info| !info.is_floating && !info.is_suppressed)
-        .map(|info| PaneId::Terminal(crate::TerminalId::new(info.id)))
+        .map(|info| info.id)
         .collect();
     for pane_id in [
         PaneId::Terminal(crate::TerminalId::new(2)),

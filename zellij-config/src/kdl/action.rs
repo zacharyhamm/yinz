@@ -1136,7 +1136,15 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                 crate::kdl_get_int_property_or_child_value!(kdl_action, "tab_position")
                     .map(|i| i as usize);
             let pane_id = crate::kdl_get_int_property_or_child_value!(kdl_action, "pane_id")
-                .map(|i| i as u32);
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| {
+                    ConfigError::new_kdl_error(
+                        "Pane id is out of range".to_owned(),
+                        kdl_action.span().offset(),
+                        kdl_action.span().len(),
+                    )
+                })?;
             let is_plugin = crate::kdl_get_bool_property_or_child_value!(kdl_action, "is_plugin")
                 .unwrap_or(false);
             let pane_id =

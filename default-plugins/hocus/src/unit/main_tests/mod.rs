@@ -621,7 +621,7 @@ fn stored_note(state: &State, id: u64) -> Option<notes::Note> {
 
 fn pane_info(id: u32, title: &str, command: Option<&str>) -> PaneInfo {
     PaneInfo {
-        id,
+        id: zellij_tile::prelude::PaneId::from_legacy(id, false),
         title: title.to_owned(),
         terminal_command: command.map(str::to_owned),
         ..PaneInfo::default()
@@ -826,7 +826,7 @@ fn a_pane_renamed_from_outside_is_titled_again_on_the_next_render() {
     state.last_pane_title = Some("hocus — a-model".to_owned());
 
     let mut own = pane_info(7, "hocus — a-model", None);
-    own.is_plugin = true;
+    own.id = zellij_tile::prelude::PaneId::from_legacy(own.id.legacy_parts().0, true);
     state.on_panes(manifest(vec![own.clone()]));
     assert_eq!(
         state.last_pane_title.as_deref(),
@@ -835,7 +835,7 @@ fn a_pane_renamed_from_outside_is_titled_again_on_the_next_render() {
     );
 
     let mut renamed = pane_info(7, "something else", None);
-    renamed.is_plugin = true;
+    renamed.id = zellij_tile::prelude::PaneId::from_legacy(renamed.id.legacy_parts().0, true);
     state.on_panes(manifest(vec![renamed]));
     assert_eq!(
         state.last_pane_title, None,

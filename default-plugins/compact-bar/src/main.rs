@@ -381,7 +381,7 @@ impl State {
     fn find_own_tab_index(&self, pane_manifest: &PaneManifest) -> Option<usize> {
         for (tab_index, panes) in &pane_manifest.panes {
             for pane in panes {
-                if pane.is_plugin && Some(PluginId::new(pane.id)) == self.own_plugin_id {
+                if Some(pane.id) == self.own_plugin_id.map(PaneId::Plugin) {
                     return Some(*tab_index);
                 }
             }

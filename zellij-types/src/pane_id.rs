@@ -57,6 +57,28 @@ pub mod legacy_tuple {
     }
 }
 
+/// Serde adapter for the flattened identity fields in a pane manifest.
+pub mod legacy_fields {
+    use super::*;
+    #[derive(Serialize, Deserialize)]
+    struct Identity {
+        id: u32,
+        is_plugin: bool,
+    }
+    pub fn serialize<S: serde::Serializer>(
+        pane: &PaneId,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let (id, is_plugin) = pane.legacy_parts();
+        Identity { id, is_plugin }.serialize(serializer)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<PaneId, D::Error> {
+        Identity::deserialize(deserializer).map(|pane| PaneId::from_legacy(pane.id, pane.is_plugin))
+    }
+}
+
 /// Serde adapter for the existing IPC pane reference object.
 pub mod legacy_reference {
     use super::*;

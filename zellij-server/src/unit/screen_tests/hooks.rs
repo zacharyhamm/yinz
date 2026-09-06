@@ -257,12 +257,10 @@ fn a_changed_agent_record_reports_pane_and_session_state() {
         .peer_sessions_cache
         .get("zellij-test")
         .expect("current session stays cached");
-    assert!(cached
-        .panes
-        .panes
-        .values()
-        .flatten()
-        .any(|pane| { pane.id == 1 && pane.agent.as_ref() == Some(&waiting) }));
+    assert!(cached.panes.panes.values().flatten().any(|pane| {
+        pane.id == PaneId::Terminal(crate::TerminalId::new(1))
+            && pane.agent.as_ref() == Some(&waiting)
+    }));
     let (_, reported) = match background_jobs.try_recv().expect("session info reported").0 {
         BackgroundJob::ReportSessionInfo(name, session_info) => (name, session_info),
         job => panic!("expected session info report, got {job:?}"),
@@ -1152,7 +1150,7 @@ fn accepted_hook_reports_keep_events_and_state_in_arrival_order_across_creation(
                     Event::SessionUpdate(sessions, _) => {
                         for session in sessions {
                             for pane in session.panes.panes.values().flatten() {
-                                if pane.id == 2 && !pane.is_plugin {
+                                if pane.id == PaneId::Terminal(crate::TerminalId::new(2)) {
                                     state = pane.agent.as_ref().map(|a| a.state);
                                 }
                             }

@@ -79,7 +79,7 @@ impl SessionList {
                     is_current_session,
                 ));
                 for pane in &tab.panes {
-                    let pane_id = PaneId::from_legacy(pane.pane_id, pane.is_plugin);
+                    let pane_id = pane.pane_id;
                     list_items.push((
                         ListItem::from_pane_info(session, tab, pane, *colors),
                         session_name.clone(),
@@ -152,7 +152,7 @@ impl SessionList {
                             self.selected_index
                                 .2
                                 .and_then(|i| t.panes.get(i))
-                                .map(|p| PaneId::from_legacy(p.pane_id, p.is_plugin))
+                                .map(|p| p.pane_id)
                         })
                 })
         }

@@ -569,9 +569,9 @@ impl ZellijPlugin for State {
             Event::PaneUpdate(pane_manifest) => {
                 for (tab_position, panes) in pane_manifest.panes {
                     for pane_info in panes {
-                        if pane_info.is_plugin {
+                        if let PaneId::Plugin(plugin_id) = pane_info.id {
                             self.plugin_id_to_tab_position
-                                .insert(PluginId::new(pane_info.id), tab_position);
+                                .insert(plugin_id, tab_position);
                         }
                     }
                 }

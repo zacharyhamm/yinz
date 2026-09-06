@@ -301,7 +301,6 @@ impl TabUiInfo {
                                 name: pane_info.title.clone(),
                                 exit_code: pane_info.exit_status,
                                 pane_id: pane_info.id,
-                                is_plugin: pane_info.is_plugin,
                             })
                         } else {
                             None
@@ -342,8 +341,7 @@ impl TabUiInfo {
 pub struct PaneUiInfo {
     pub name: String,
     pub exit_code: Option<i32>,
-    pub pane_id: u32,
-    pub is_plugin: bool,
+    pub pane_id: zellij_tile::prelude::PaneId,
 }
 
 impl PaneUiInfo {

@@ -7,7 +7,6 @@
 #![allow(clippy::borrowed_box)]
 #![allow(clippy::redundant_closure)]
 #![allow(clippy::option_as_ref_deref)]
-use crate::TerminalId;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
@@ -3496,8 +3495,8 @@ fn enrich_panes_with_pty_data(
     senders: &ThreadSenders,
 ) -> Result<()> {
     for entry in pane_entries.iter_mut() {
-        if !entry.pane_info.is_plugin {
-            let pane_id = PaneId::Terminal(TerminalId::new(entry.pane_info.id));
+        if !entry.pane_info.is_plugin() {
+            let pane_id = entry.pane_info.id;
             enrich_pane_with_running_command(entry, pane_id, senders)?;
             enrich_pane_with_cwd(entry, pane_id, senders)?;
         }
@@ -3663,15 +3662,11 @@ fn build_table_row(
 }
 
 fn format_pane_id(pane_info: &zellij_types::data::PaneInfo) -> String {
-    if pane_info.is_plugin {
-        format!("plugin_{}", pane_info.id)
-    } else {
-        format!("terminal_{}", pane_info.id)
-    }
+    pane_info.id.to_string()
 }
 
 fn format_pane_type(pane_info: &zellij_types::data::PaneInfo) -> String {
-    if pane_info.is_plugin {
+    if pane_info.is_plugin() {
         "plugin".to_string()
     } else {
         "terminal".to_string()
@@ -4130,7 +4125,7 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         let mut notification_end = NotificationEnd::new(tx);
 
-        notification_end.set_affected_pane_id(PaneId::Terminal(TerminalId::new(10)));
+        notification_end.set_affected_pane_id(PaneId::Terminal(crate::TerminalId::new(10)));
         notification_end.set_affected_tab_id(5);
 
         drop(notification_end);
@@ -4138,7 +4133,7 @@ mod tests {
         let result = rx.blocking_recv().unwrap();
         assert_eq!(
             result.affected_pane_id,
-            Some(PaneId::Terminal(TerminalId::new(10)))
+            Some(PaneId::Terminal(crate::TerminalId::new(10)))
         );
         assert_eq!(result.affected_tab_id, Some(5));
     }

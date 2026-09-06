@@ -385,8 +385,7 @@ fn no_geometry_before_the_first_tab_update() {
 /// grows no list and places nothing. See `State::is_panel`.
 fn pane(id: u32, is_suppressed: bool) -> PaneInfo {
     PaneInfo {
-        id,
-        is_plugin: true,
+        id: zellij_tile::prelude::PaneId::from_legacy(id, true),
         is_floating: true,
         is_suppressed,
         ..Default::default()
@@ -1447,8 +1446,7 @@ fn a_pair_that_is_already_together_asks_for_nothing() {
 /// A tiled pane as the manifest reports one: selectable, on the tiled layer, with a rect.
 fn tiled(id: u32, x: usize, y: usize, cols: usize, rows: usize, focused: bool) -> PaneInfo {
     PaneInfo {
-        id,
-        is_plugin: false,
+        id: zellij_tile::prelude::PaneId::from_legacy(id, false),
         is_focused: focused,
         is_selectable: true,
         pane_x: x,
@@ -1473,7 +1471,7 @@ trait WithPlugin {
 }
 impl WithPlugin for PaneInfo {
     fn with_plugin(mut self) -> Self {
-        self.is_plugin = true;
+        self.id = zellij_tile::prelude::PaneId::from_legacy(self.id.legacy_parts().0, true);
         self
     }
 }
@@ -3103,8 +3101,7 @@ fn closing_the_list_does_not_launch_another_one() {
 /// distinguishes it from the overlay every other fixture here builds.
 fn tiled_own(id: u32) -> PaneInfo {
     PaneInfo {
-        id,
-        is_plugin: true,
+        id: zellij_tile::prelude::PaneId::from_legacy(id, true),
         is_selectable: true,
         pane_columns: 80,
         pane_rows: 40,

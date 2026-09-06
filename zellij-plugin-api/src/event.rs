@@ -2215,8 +2215,10 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
     type Error = &'static str;
     fn try_from(protobuf_pane_info: ProtobufPaneInfo) -> Result<Self, &'static str> {
         Ok(PaneInfo {
-            id: protobuf_pane_info.id,
-            is_plugin: protobuf_pane_info.is_plugin,
+            id: zellij_types::pane_id::PaneId::from_legacy(
+                protobuf_pane_info.id,
+                protobuf_pane_info.is_plugin,
+            ),
             is_focused: protobuf_pane_info.is_focused,
             is_fullscreen: protobuf_pane_info.is_fullscreen,
             is_floating: protobuf_pane_info.is_floating,
@@ -2280,8 +2282,8 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
     type Error = &'static str;
     fn try_from(pane_info: PaneInfo) -> Result<Self, &'static str> {
         Ok(ProtobufPaneInfo {
-            id: pane_info.id,
-            is_plugin: pane_info.is_plugin,
+            id: pane_info.id.legacy_parts().0,
+            is_plugin: pane_info.is_plugin(),
             is_focused: pane_info.is_focused,
             is_fullscreen: pane_info.is_fullscreen,
             is_floating: pane_info.is_floating,
@@ -3082,7 +3084,7 @@ fn serialize_pane_update_event() {
     panes.insert(
         0,
         vec![PaneInfo {
-            id: 42,
+            id: zellij_types::pane_id::PaneId::from_legacy(42, false),
             ..Default::default()
         }],
     );
@@ -3292,8 +3294,7 @@ fn serialize_session_update_event_with_non_default_values() {
                 worktree: Some(PathBuf::from("/work/hocus")),
             },
             agent: None,
-            id: 1,
-            is_plugin: false,
+            id: zellij_types::pane_id::PaneId::from_legacy(1, false),
             is_focused: true,
             is_fullscreen: true,
             is_floating: false,
@@ -3323,8 +3324,7 @@ fn serialize_session_update_event_with_non_default_values() {
             host: None,
             target: Default::default(),
             agent: None,
-            id: 1,
-            is_plugin: true,
+            id: zellij_types::pane_id::PaneId::from_legacy(1, true),
             is_focused: true,
             is_fullscreen: true,
             is_floating: false,

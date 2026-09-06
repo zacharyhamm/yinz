@@ -39,8 +39,7 @@ fn serialize_and_deserialize_session_info_with_data() {
             host: None,
             target: Default::default(),
             agent: None,
-            id: 1,
-            is_plugin: false,
+            id: zellij_types::pane_id::PaneId::from_legacy(1, false),
             is_focused: true,
             is_fullscreen: true,
             is_floating: false,
@@ -70,8 +69,7 @@ fn serialize_and_deserialize_session_info_with_data() {
             host: None,
             target: Default::default(),
             agent: None,
-            id: 1,
-            is_plugin: true,
+            id: zellij_types::pane_id::PaneId::from_legacy(1, true),
             is_focused: true,
             is_fullscreen: true,
             is_floating: false,
@@ -170,4 +168,17 @@ fn serialize_and_deserialize_session_info_with_data() {
         crate::metadata::session_info::from_string(&serialized, "not this session").unwrap();
     assert_eq!(session_info, deserealized);
     insta::assert_snapshot!(serialized);
+}
+
+#[test]
+fn pane_identity_checks_kdl_range() {
+    let pane = PaneInfo::default();
+    let encoded = crate::metadata::pane_info::encode_to_kdl(&pane).to_string();
+    for id in [-1_i64, i64::from(u32::MAX) + 1, i64::MAX] {
+        let document = encoded
+            .replacen("id 0", &format!("id {id}"), 1)
+            .parse()
+            .unwrap();
+        assert!(crate::metadata::pane_info::decode_from_kdl(&document).is_err());
+    }
 }

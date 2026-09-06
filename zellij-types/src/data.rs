@@ -1226,11 +1226,9 @@ pub struct PaneManifest {
 /// border.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct PaneInfo {
-    /// The id of the pane, unique to all panes of this kind (eg. id in terminals or id in panes)
-    pub id: u32,
-    /// Whether this pane is a plugin (`true`) or a terminal (`false`), used along with `id` can represent a unique pane ID across
-    /// the running session
-    pub is_plugin: bool,
+    /// The pane identity, including whether it is a terminal or a plugin.
+    #[serde(flatten, with = "crate::pane_id::legacy_fields")]
+    pub id: PaneId,
     /// Whether the pane is focused in its layer (tiled or floating)
     pub is_focused: bool,
     pub is_fullscreen: bool,
@@ -1300,6 +1298,12 @@ pub struct PaneInfo {
     /// The agent running in this pane, if the session knows of one. See [`AgentInfo`].
     #[serde(default)]
     pub agent: Option<AgentInfo>,
+}
+
+impl PaneInfo {
+    pub fn is_plugin(&self) -> bool {
+        matches!(self.id, PaneId::Plugin(_))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]

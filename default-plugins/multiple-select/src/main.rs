@@ -220,11 +220,7 @@ impl App {
         for pane_infos in pane_manifest.panes.values() {
             for pane_info in pane_infos {
                 for client_id in pane_info.index_in_pane_group.keys() {
-                    let pane_id = if pane_info.is_plugin {
-                        PaneId::Plugin(zellij_tile::prelude::PluginId::new(pane_info.id))
-                    } else {
-                        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_info.id))
-                    };
+                    let pane_id = pane_info.id;
 
                     self.all_client_grouped_panes
                         .entry(*client_id)
@@ -244,11 +240,7 @@ impl App {
             for pane_info in pane_infos {
                 if let Some(index_in_pane_group) = pane_info.index_in_pane_group.get(&own_client_id)
                 {
-                    let pane_id = if pane_info.is_plugin {
-                        PaneId::Plugin(zellij_tile::prelude::PluginId::new(pane_info.id))
-                    } else {
-                        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_info.id))
-                    };
+                    let pane_id = pane_info.id;
                     panes_with_index.push((*index_in_pane_group, pane_id));
                     count += 1;
                 }
@@ -298,7 +290,7 @@ impl App {
     fn update_tab_info(&mut self, pane_manifest: &PaneManifest) {
         for (tab_index, pane_infos) in &pane_manifest.panes {
             for pane_info in pane_infos {
-                if pane_info.is_plugin && Some(PluginId::new(pane_info.id)) == self.own_plugin_id {
+                if Some(pane_info.id) == self.own_plugin_id.map(PaneId::Plugin) {
                     self.own_tab_index = Some(*tab_index);
                     return;
                 }

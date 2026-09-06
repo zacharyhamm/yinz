@@ -49,7 +49,7 @@ pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<(Option<usize>, Pan
         }};
     }
     let tab_position = optional_int_node!("tab_position", usize);
-    let id = int_node!("id", u32);
+    let id = u32::try_from(int_node!("id", i64)).map_err(|_| "Pane id is out of range")?;
 
     let is_plugin = bool_node!("is_plugin");
     let is_focused = bool_node!("is_focused");
@@ -90,8 +90,7 @@ pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<(Option<usize>, Pan
         host: None,
         target: Default::default(),
         agent: None,
-        id,
-        is_plugin,
+        id: zellij_types::pane_id::PaneId::from_legacy(id, is_plugin),
         is_focused,
         is_fullscreen,
         is_floating,
@@ -143,8 +142,8 @@ pub fn encode_to_kdl(value: &PaneInfo) -> KdlDocument {
         }};
     }
 
-    int_node!("id", value.id);
-    bool_node!("is_plugin", value.is_plugin);
+    int_node!("id", value.id.legacy_parts().0);
+    bool_node!("is_plugin", value.is_plugin());
     bool_node!("is_focused", value.is_focused);
     bool_node!("is_fullscreen", value.is_fullscreen);
     bool_node!("is_floating", value.is_floating);

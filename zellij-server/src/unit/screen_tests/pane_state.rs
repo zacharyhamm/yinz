@@ -23,7 +23,7 @@ fn a_pane_manifest_carries_the_pane_cwd() {
         .panes
         .values()
         .flatten()
-        .find(|pane| pane.id == 1 && !pane.is_plugin)
+        .find(|pane| pane.id == PaneId::Terminal(crate::TerminalId::new(1)))
         .expect("the terminal pane is in the manifest");
     assert_eq!(pane.cwd.as_deref(), Some("/work/hocus"));
 }
@@ -80,7 +80,7 @@ fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
         .panes
         .values()
         .flatten()
-        .find(|pane| pane.id == 1 && !pane.is_plugin)
+        .find(|pane| pane.id == PaneId::Terminal(crate::TerminalId::new(1)))
         .expect("the terminal pane is in the manifest");
     assert_eq!(
         pane.target.firecracker_worktree(),
@@ -107,7 +107,7 @@ fn a_plugin_pane_has_no_cwd() {
             .panes
             .values()
             .flatten()
-            .filter(|pane| pane.is_plugin)
+            .filter(|pane| pane.is_plugin())
             .all(|pane| pane.cwd.is_none()),
         "no plugin pane was given a folder"
     );
@@ -121,16 +121,14 @@ fn recorder_pane_metadata() {
     // Create one tab with one terminal pane and one plugin pane
     let mut pane_manifest = PaneManifest::default();
     let terminal_pane = PaneInfo {
-        id: 5,
-        is_plugin: false,
+        id: zellij_types::pane_id::PaneId::from_legacy(5, false),
         title: "my terminal".to_string(),
         pane_content_rows: 24,
         pane_content_columns: 80,
         ..Default::default()
     };
     let plugin_pane = PaneInfo {
-        id: 6,
-        is_plugin: true,
+        id: zellij_types::pane_id::PaneId::from_legacy(6, true),
         title: "plugin".to_string(),
         pane_content_rows: 24,
         pane_content_columns: 80,
