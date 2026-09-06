@@ -63,6 +63,8 @@ impl ClientLoop<'_> {
         let started_at = Instant::now();
         let mut waiting_for_first_render = true;
 
+        self.announce_synchronised_output();
+
         loop {
             let (client_instruction, mut err_ctx) = receive_client_instructions
                 .recv()
@@ -107,6 +109,19 @@ impl ClientLoop<'_> {
         outcome
     }
 
+    /// Tell the server whether this client's host presents each frame atomically.
+    ///
+    /// The loop needs the flavour, to wrap each frame in the right markers; the server needs only
+    /// the yes/no, so that it can stop hiding the cursor while a frame paints. Both are said from
+    /// here, because a second thread announcing the same decision could be ordered against this
+    /// one and leave the server holding the opposite of what the client is doing.
+    fn announce_synchronised_output(&self) {
+        self.os_input
+            .send_to_server(ClientToServerMsg::SynchronizedOutputSupport {
+                supported: self.synchronised_output.is_some(),
+            });
+    }
+
     /// Act on one instruction. Returns whether the loop should stop.
     fn handle(&mut self, instruction: ClientInstruction, outcome: &mut LoopOutcome) -> bool {
         match instruction {
@@ -144,7 +159,11 @@ impl ClientLoop<'_> {
                 }
             },
             ClientInstruction::SetSynchronizedOutput(enabled) => {
+                let support_changed = enabled.is_some() != self.synchronised_output.is_some();
                 self.synchronised_output = enabled;
+                if support_changed {
+                    self.announce_synchronised_output();
+                }
             },
             ClientInstruction::QueryTerminalSize => {
                 self.os_input

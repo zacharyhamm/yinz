@@ -361,9 +361,7 @@ pub fn screen_can_break_plugin_pane_to_a_new_tab() {
         ..Default::default()
     };
     let mut mock_screen = MockScreen::new(size);
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
     let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
     let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
@@ -372,12 +370,26 @@ pub fn screen_can_break_plugin_pane_to_a_new_tab() {
         server_receiver
     );
 
+    let initial = wait_for_settled_render(
+        &received_server_instructions,
+        size,
+        "both panes before breaking",
+        |frame| frame.contains("plugin_pane_to_break_free") && frame.contains("pane_to_stay"),
+    );
+    let _ = mock_screen
+        .to_screen
+        .send(ScreenInstruction::FocusPaneWithId(
+            PaneId::Plugin(crate::PluginId::new(1)),
+            false,
+            false,
+            crate::ClientId::new(1),
+            None,
+        ));
     let _ = mock_screen.to_screen.send(ScreenInstruction::BreakPane(
         Default::default(),
         crate::ClientId::new(1),
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
     // we send ApplyLayout, because in prod this is eventually received after the message traverses
     // through the plugin and pty threads (to open extra stuff we need in the layout, eg. the
     // default plugins)
@@ -394,35 +406,52 @@ pub fn screen_can_break_plugin_pane_to_a_new_tab() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    let _ = mock_screen.to_screen.send(ScreenInstruction::GoToTab(
+        zellij_types::internal_ids::TabNumber::new(2),
+        Some(crate::ClientId::new(1)),
+        None,
+    ));
+    let moved = wait_for_settled_render(
+        &received_server_instructions,
+        size,
+        "plugin alone in its new tab",
+        |frame| frame.contains("plugin_pane_to_break_free") && !frame.contains("pane_to_stay"),
+    );
+    let checkpoint = received_server_instructions.lock().len();
     // move back to make sure the other pane is in the previous tab
-    let _ = mock_screen
-        .to_screen
-        .send(ScreenInstruction::MoveFocusLeftOrPreviousTab(
-            crate::ClientId::new(1),
-            None,
-        ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    let _ = mock_screen.to_screen.send(ScreenInstruction::GoToTab(
+        zellij_types::internal_ids::TabNumber::new(1),
+        Some(crate::ClientId::new(1)),
+        None,
+    ));
+    let stayed = wait_for_render_after(
+        &received_server_instructions,
+        size,
+        checkpoint,
+        "original pane in its old tab",
+        |_, frame| frame.contains("pane_to_stay") && !frame.contains("plugin_pane_to_break_free"),
+    );
+    let checkpoint = received_server_instructions.lock().len();
     // move forward to make sure the broken pane is in the previous tab
-    let _ = mock_screen
-        .to_screen
-        .send(ScreenInstruction::MoveFocusRightOrNextTab(
-            crate::ClientId::new(1),
-            None,
-        ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    let _ = mock_screen.to_screen.send(ScreenInstruction::GoToTab(
+        zellij_types::internal_ids::TabNumber::new(2),
+        Some(crate::ClientId::new(1)),
+        None,
+    ));
 
+    let returned = wait_for_render_after(
+        &received_server_instructions,
+        size,
+        checkpoint,
+        "return to the plugin tab",
+        |_, frame| frame.contains("plugin_pane_to_break_free") && !frame.contains("pane_to_stay"),
+    );
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().iter(),
-        size,
-    );
-    let snapshot_count = snapshots.len();
-    for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
-    }
-    assert_snapshot!(format!("{}", snapshot_count));
+    assert_snapshot!("screen_can_break_plugin_pane_to_a_new_tab", initial);
+    assert_snapshot!("screen_can_break_plugin_pane_to_a_new_tab-3", moved);
+    assert_snapshot!("screen_can_break_plugin_pane_to_a_new_tab-2", stayed);
+    assert_eq!(returned, moved);
 }
 
 #[test]
@@ -449,9 +478,7 @@ pub fn screen_can_break_floating_plugin_pane_to_a_new_tab() {
         ..Default::default()
     };
     let mut mock_screen = MockScreen::new(size);
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
     let screen_thread = mock_screen.run(Some(initial_layout), floating_panes_layout.clone());
-    std::thread::sleep(std::time::Duration::from_millis(100)); // give time for the async render
     let received_server_instructions = Watched::new(vec![]);
     let server_receiver = mock_screen.server_receiver.take().unwrap();
     let server_thread = log_actions_in_thread!(
@@ -460,12 +487,17 @@ pub fn screen_can_break_floating_plugin_pane_to_a_new_tab() {
         server_receiver
     );
 
+    let initial = wait_for_settled_render(
+        &received_server_instructions,
+        size,
+        "both panes before breaking",
+        |frame| frame.contains("floating_plugin_pane_to_eject") && frame.contains("tiled_pane"),
+    );
     let _ = mock_screen.to_screen.send(ScreenInstruction::BreakPane(
         Default::default(),
         crate::ClientId::new(1),
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
     // we send ApplyLayout, because in prod this is eventually received after the message traverses
     // through the plugin and pty threads (to open extra stuff we need in the layout, eg. the
     // default plugins)
@@ -483,7 +515,13 @@ pub fn screen_can_break_floating_plugin_pane_to_a_new_tab() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    let moved = wait_for_settled_render(
+        &received_server_instructions,
+        size,
+        "plugin alone in its new tab",
+        |frame| frame.contains("floating_plugin_pane_to_eject") && !frame.contains("tiled_pane"),
+    );
+    let checkpoint = received_server_instructions.lock().len();
     // move back to make sure the other pane is in the previous tab
     let _ = mock_screen
         .to_screen
@@ -491,7 +529,14 @@ pub fn screen_can_break_floating_plugin_pane_to_a_new_tab() {
             crate::ClientId::new(1),
             None,
         ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    let stayed = wait_for_render_after(
+        &received_server_instructions,
+        size,
+        checkpoint,
+        "original pane in its old tab",
+        |_, frame| frame.contains("tiled_pane") && !frame.contains("floating_plugin_pane_to_eject"),
+    );
+    let checkpoint = received_server_instructions.lock().len();
     // move forward to make sure the broken pane is in the previous tab
     let _ = mock_screen
         .to_screen
@@ -499,19 +544,29 @@ pub fn screen_can_break_floating_plugin_pane_to_a_new_tab() {
             crate::ClientId::new(1),
             None,
         ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
 
+    let returned = wait_for_render_after(
+        &received_server_instructions,
+        size,
+        checkpoint,
+        "return to the plugin tab",
+        |_, frame| frame.contains("floating_plugin_pane_to_eject") && !frame.contains("tiled_pane"),
+    );
     mock_screen.teardown(vec![server_thread, screen_thread]);
 
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().iter(),
-        size,
+    assert_snapshot!(
+        "screen_can_break_floating_plugin_pane_to_a_new_tab",
+        initial
     );
-    let snapshot_count = snapshots.len();
-    for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(format!("{}", snapshot));
-    }
-    assert_snapshot!(format!("{}", snapshot_count));
+    assert_snapshot!(
+        "screen_can_break_floating_plugin_pane_to_a_new_tab-3",
+        moved
+    );
+    assert_snapshot!(
+        "screen_can_break_floating_plugin_pane_to_a_new_tab-5",
+        stayed
+    );
+    assert_eq!(returned, moved);
 }
 
 #[test]

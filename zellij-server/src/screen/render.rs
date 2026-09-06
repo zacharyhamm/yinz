@@ -107,6 +107,7 @@ impl Screen {
                 self.kitty_host_capabilities.clone(),
                 self.client_kitty_host_state.clone(),
                 self.sixel_host_capabilities.clone(),
+                self.synchronized_output_capabilities.clone(),
             );
 
             output.collect_ansi_pane_contents =
@@ -234,7 +235,7 @@ impl Screen {
             // bottom-right of the box.
             for tab_index in &tabs_that_rendered {
                 if let Some(tab) = self.tabs.get_mut(tab_index) {
-                    tab.render_cursor_last(&mut output);
+                    tab.render_cursor_last(&mut output, None);
                 }
             }
 
@@ -372,7 +373,22 @@ impl Screen {
                     self.kitty_host_capabilities.clone(),
                     self.client_kitty_host_state.clone(),
                     self.sixel_host_capabilities.clone(),
+                    self.synchronized_output_capabilities.clone(),
                 );
+
+                // This frame carries the followed client's id but goes to the watchers' terminals,
+                // so what that client's host can do says nothing about it. One stream serves every
+                // watcher, so anything short of unanimity keeps hiding the cursor while the frame
+                // paints: a hide nobody needed costs a `?25h`, a missing one is a cursor visibly
+                // chasing the repaint.
+                let every_watcher_presents_frames_atomically = {
+                    let capabilities = self.synchronized_output_capabilities.borrow();
+                    self.watcher_clients
+                        .keys()
+                        .all(|watcher_id| capabilities.get(watcher_id).copied().unwrap_or(false))
+                };
+                watcher_output
+                    .set_host_presents_frames_atomically(every_watcher_presents_frames_atomically);
 
                 let focused_tab_index_of_followed_client_id = *self
                     .active_tab_ids
@@ -414,7 +430,37 @@ impl Screen {
                     if should_force_render {
                         tab.set_force_render();
                     }
-                    tab.render(&mut watcher_output, Some(followed_client_id))
+                    if any_watcher_needs_force_render {
+                        // A watcher about to be repainted whole has not necessarily seen this
+                        // screen before - it may have just attached, resized, or changed which
+                        // client it follows, none of which the tab's memo (which is keyed by the
+                        // followed client, one entry for every watcher) can tell apart. State the
+                        // cursor from scratch for it.
+                        tab.forget_watcher_host_cursor_state(followed_client_id);
+                    }
+                    // A watcher whose last frame ended in a serialization-time `?25l` has a host
+                    // cursor the memo does not describe: it is down, and the goto that "placed" it
+                    // was clamped to that watcher's edge. Say so before the cursor pass, so the
+                    // frame that brings the cursor back into range is itself the frame that says
+                    // `?25h` and where - rather than a goto to an already-hidden cursor, with the
+                    // correction deferred to a frame nothing will schedule.
+                    //
+                    // Stated whatever this frame is about to do, rather than only when the cursor
+                    // is coming back: where it will land is not knowable here, since `render_panes`
+                    // may still groupify a stack and move the active pane out from under it. A
+                    // frame that is still cropped pays a `?25h` and a goto that the `?25l` appended
+                    // after them undoes - and only ever on a host that presents frames atomically,
+                    // which is the only kind that can reach this at all: a watcher whose frame is
+                    // painted incrementally has its cursor hidden for the frame, which makes
+                    // `must_show` true on its own.
+                    let a_watchers_cursor_was_cropped = self
+                        .watcher_clients
+                        .values()
+                        .any(|watcher_state| watcher_state.cursor_was_cropped());
+                    if a_watchers_cursor_was_cropped {
+                        tab.mark_watcher_host_cursor_cropped(followed_client_id);
+                    }
+                    tab.render_panes(&mut watcher_output, Some(followed_client_id))
                         .context(err_context)?;
                 }
                 if let Some(watcher_surface) = watcher_surface {
@@ -425,44 +471,19 @@ impl Screen {
                     )
                     .context(err_context)?;
                 }
-                if let Some(tab) = self.tabs.get(&focused_tab_index_of_followed_client_id) {
+                if let Some(tab) = self.tabs.get_mut(&focused_tab_index_of_followed_client_id) {
+                    tab.render_cursor_last(&mut watcher_output, Some(followed_client_id));
                     watcher_output
                         .set_kitty_visible_panes(followed_client_id, tab.kitty_visible_pane_ids());
                 }
 
                 // Send the rendered output to all watcher clients
                 if watcher_output.is_dirty() {
-                    let mut watcher_render_output: HashMap<ClientId, String> = HashMap::new();
-
-                    // For each watcher, clone the output and serialize with size constraints
-                    for (watcher_id, watcher_state) in &self.watcher_clients {
-                        let mut watcher_specific_output = watcher_output.clone();
-
-                        // Serialize this watcher's output with size constraints (cropping and padding handled inside)
-                        let mut serialized_output = watcher_specific_output
-                            .serialize_with_size(Some(watcher_state.size()), followed_content_size)
-                            .context(err_context)?;
-
-                        // Get the output for the followed client and map it to this watcher
-                        if let Some(followed_output) = serialized_output.remove(&followed_client_id)
-                        {
-                            watcher_render_output.insert(*watcher_id, followed_output);
-                        }
-                    }
-
-                    // Send to server for delivery to watcher clients
-                    if !watcher_render_output.is_empty() {
-                        let _ = self
-                            .bus
-                            .senders
-                            .send_to_server(ServerInstruction::Render(Some(watcher_render_output)))
-                            .context(err_context);
-                    }
-
-                    // Clear force render flag for all watchers after successful render
-                    for watcher_state in self.watcher_clients.values_mut() {
-                        watcher_state.clear_force_render();
-                    }
+                    self.render_watcher_output(
+                        &watcher_output,
+                        followed_client_id,
+                        followed_content_size,
+                    )?;
                 }
             }
         }
@@ -479,6 +500,63 @@ impl Screen {
             );
         }
 
+        Ok(())
+    }
+    /// Serialize and account only for frames that contain the followed client's stream.
+    pub(super) fn render_watcher_output(
+        &mut self,
+        watcher_output: &Output,
+        followed_client_id: ClientId,
+        followed_content_size: Option<zellij_types::pane_size::Size>,
+    ) -> Result<()> {
+        let err_context = "failed to render watcher output";
+        let mut watcher_render_output: HashMap<ClientId, String> = HashMap::new();
+
+        // Whether each watcher's copy hid the cursor because it fell outside that
+        // watcher's size. Collected rather than applied in place, because the loop
+        // borrows `watcher_clients` to read the sizes.
+        let mut cursor_was_cropped_for_watcher: Vec<(ClientId, bool)> = vec![];
+
+        // For each watcher, clone the output and serialize with size constraints
+        for (watcher_id, watcher_state) in &self.watcher_clients {
+            let mut watcher_specific_output = watcher_output.clone();
+
+            // Serialize this watcher's output with size constraints (cropping and padding handled inside)
+            let mut serialized_output = watcher_specific_output
+                .serialize_with_size(Some(watcher_state.size()), followed_content_size)
+                .context(err_context)?;
+
+            // Get the output for the followed client and map it to this watcher
+            if let Some(followed_output) = serialized_output.remove(&followed_client_id) {
+                cursor_was_cropped_for_watcher.push((
+                    *watcher_id,
+                    watcher_specific_output
+                        .cursor_is_cropped_for(followed_client_id, watcher_state.size()),
+                ));
+                watcher_render_output.insert(*watcher_id, followed_output);
+            }
+        }
+
+        // Send to server for delivery to watcher clients
+        if !watcher_render_output.is_empty() {
+            let _ = self
+                .bus
+                .senders
+                .send_to_server(ServerInstruction::Render(Some(watcher_render_output)))
+                .context(err_context);
+        }
+
+        // Clear force render flag for all watchers after successful render
+        for watcher_state in self.watcher_clients.values_mut() {
+            watcher_state.clear_force_render();
+        }
+        // What each watcher's delivered frame did to its cursor, for the next frame's cursor pass
+        // to correct the tab's memo with when the cursor comes back into range.
+        for (watcher_id, cursor_was_cropped) in cursor_was_cropped_for_watcher {
+            if let Some(watcher_state) = self.watcher_clients.get_mut(&watcher_id) {
+                watcher_state.set_cursor_was_cropped(cursor_was_cropped);
+            }
+        }
         Ok(())
     }
 }

@@ -159,3 +159,327 @@ fn reattaching_a_client_restores_floating_pane_visibility_notifications() {
         "a floating plugin must still be told when its surface is hidden after a reattach, got {visibility_events:?}"
     );
 }
+
+/// A watcher's cursor crop is decided during serialization, in that watcher's copy of the frame
+/// alone - the tab's memo of what the host was told knows nothing about it. Recording it is all
+/// this does: the next frame reads it and corrects the memo before placing the cursor, so neither
+/// direction has to buy a whole repaint to get the cursor stated again.
+#[test]
+fn a_watchers_cursor_crop_is_recorded_without_asking_for_a_full_frame() {
+    let mut watcher_state = crate::screen::WatcherState::new(Size { cols: 40, rows: 10 });
+    watcher_state.clear_force_render();
+
+    watcher_state.set_cursor_was_cropped(true);
+    assert!(watcher_state.cursor_was_cropped());
+    assert!(
+        !watcher_state.should_force_render(),
+        "the cursor going out of range is hidden again by every later frame's serialization"
+    );
+
+    watcher_state.set_cursor_was_cropped(false);
+    assert!(!watcher_state.cursor_was_cropped());
+    assert!(
+        !watcher_state.should_force_render(),
+        "and coming back into range is put right by the frame that brings it back"
+    );
+}
+
+#[test]
+fn changing_followed_client_restates_the_watchers_cursor() {
+    let size = Size { cols: 80, rows: 24 };
+    let a = ClientId::new(1);
+    let b = ClientId::new(2);
+    let watcher = ClientId::new(3);
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    screen.add_client(b).unwrap();
+    screen
+        .go_to_tab(zellij_types::internal_ids::TabNumber::new(1), a)
+        .unwrap();
+    for (tab, terminal, bytes) in [(0, 1, "\x1b[5;5H\x1b[5 q"), (1, 2, "\x1b[8;9H\x1b[3 q")] {
+        screen
+            .tabs
+            .get_mut(&TabId::new(tab))
+            .unwrap()
+            .handle_pty_bytes(crate::TerminalId::new(terminal), bytes.as_bytes().to_vec())
+            .unwrap();
+    }
+    screen.add_watcher_client(watcher).unwrap();
+    screen.set_watcher_size(watcher, size);
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(size);
+    for (followed, goto, shape, visible) in [
+        (a, "\x1b[5;5H", "\x1b[5 q", true),
+        (b, "\x1b[8;9H", "\x1b[3 q", true),
+        (a, "\x1b[5;5H", "\x1b[5 q", true),
+        (b, "\x1b[8;9H", "", false),
+        (a, "\x1b[5;5H", "\x1b[5 q", true),
+    ] {
+        if !visible {
+            screen
+                .tabs
+                .get_mut(&TabId::new(1))
+                .unwrap()
+                .handle_pty_bytes(crate::TerminalId::new(2), b"\x1b[?25l".to_vec())
+                .unwrap();
+        }
+        screen.set_followed_client(followed).unwrap();
+        assert!(screen.watcher_clients[&watcher].should_force_render());
+        screen.render_to_clients().unwrap();
+        let bytes: String = receiver
+            .try_iter()
+            .filter_map(|(instruction, _)| {
+                if let ServerInstruction::Render(Some(mut clients)) = instruction {
+                    clients.remove(&watcher)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(bytes.contains(goto) && bytes.contains(shape), "{bytes:?}");
+        assert_eq!(bytes.contains("\x1b[?25h"), visible, "{bytes:?}");
+        take_snapshot_and_cursor_coordinates(&bytes, &mut grid);
+        let expected = pane_cursor(&mut screen, followed);
+        assert_eq!(
+            grid.cursor_coordinates(),
+            Some((expected.0, expected.1, visible))
+        );
+    }
+}
+
+#[test]
+fn watcher_crop_state_changes_only_for_a_delivered_stream() {
+    let followed = ClientId::new(1);
+    let watcher = ClientId::new(2);
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
+    screen.add_watcher_client(watcher).unwrap();
+    screen.set_watcher_size(watcher, Size { cols: 40, rows: 10 });
+    let receiver = screen_wired_to_server(&mut screen);
+    screen
+        .watcher_clients
+        .get_mut(&watcher)
+        .unwrap()
+        .set_cursor_was_cropped(true);
+    screen
+        .watcher_clients
+        .get_mut(&watcher)
+        .unwrap()
+        .clear_force_render();
+
+    let mut output = crate::output::Output::default();
+    output.add_post_vte_instruction_to_client(followed, "\x1b[?25l");
+    assert!(output.is_dirty());
+    screen
+        .render_watcher_output(&output, followed, None)
+        .unwrap();
+    assert!(screen.watcher_clients[&watcher].cursor_was_cropped);
+    assert!(!screen.watcher_clients[&watcher].should_force_render());
+    assert!(receiver.try_recv().is_err());
+
+    // An entry with no character chunks still delivers cursor instructions and updates crop state.
+    output.add_clients(&[followed].into_iter().collect(), Default::default(), None);
+    output.set_cursor_coordinates(followed, 2, 2);
+    screen
+        .render_watcher_output(&output, followed, None)
+        .unwrap();
+    assert!(!screen.watcher_clients[&watcher].cursor_was_cropped);
+    assert!(!screen.watcher_clients[&watcher].should_force_render());
+    assert!(receiver.try_recv().is_ok());
+    output.set_cursor_coordinates(followed, 60, 2);
+    screen
+        .render_watcher_output(&output, followed, None)
+        .unwrap();
+    assert!(screen.watcher_clients[&watcher].cursor_was_cropped);
+    assert!(!screen.watcher_clients[&watcher].should_force_render());
+}
+
+/// Drive one frame and hand back what the watcher's terminal was sent, with that watcher's own
+/// `Grid` advanced by it - so an out-of-range goto is clamped exactly as a real host clamps it.
+fn watcher_frame(
+    screen: &mut Screen,
+    receiver: &channels::Receiver<(ServerInstruction, ErrorContext)>,
+    watcher: ClientId,
+    grid: &mut Grid,
+) -> String {
+    screen.render_to_clients().expect("TEST");
+    let mut bytes = String::new();
+    while let Ok((instruction, _)) = receiver.try_recv() {
+        if let ServerInstruction::Render(Some(mut rendered_clients)) = instruction {
+            if let Some(client_output) = rendered_clients.remove(&watcher) {
+                bytes.push_str(&client_output);
+            }
+        }
+    }
+    take_snapshot_and_cursor_coordinates(&bytes, grid);
+    bytes
+}
+
+/// A watcher smaller than the session it follows has its cursor hidden during serialization when
+/// the followed client's cursor falls outside its size - in that one watcher's byte stream, which
+/// the tab's memo of what the host was told cannot see. The frame that brings the cursor back into
+/// range has to be the frame that shows it again: nothing schedules another one, so an idle session
+/// would otherwise leave the watcher's cursor down for good.
+#[test]
+fn a_watchers_cropped_cursor_returns_in_the_frame_that_uncrops_it() {
+    let followed = ClientId::new(1);
+    let watcher = ClientId::new(2);
+    let watcher_size = Size { cols: 40, rows: 10 };
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.add_watcher_client(watcher).expect("TEST");
+    screen.set_watcher_size(watcher, watcher_size);
+    // the whole point of the bug: nothing hides the cursor for the frame on a host that presents
+    // frames atomically, so `must_show` has only the memo to go on
+    screen
+        .update_synchronized_output_support(watcher, true)
+        .expect("TEST");
+    screen.set_followed_client(followed).expect("TEST");
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(watcher_size);
+
+    let put_cursor = |screen: &mut Screen, bytes: &str| {
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .handle_pty_bytes(crate::TerminalId::new(1), bytes.as_bytes().to_vec())
+            .unwrap();
+    };
+
+    put_cursor(&mut screen, "\x1b[3;3H");
+    watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+    assert_eq!(
+        grid.cursor_coordinates(),
+        Some((2, 2, true)),
+        "precondition: a cursor inside the watcher's size is shown"
+    );
+
+    put_cursor(&mut screen, "\x1b[20;60H");
+    let bytes = watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+    assert!(
+        bytes.ends_with("\x1b[?25l"),
+        "the cursor left this watcher's size, so its stream ends with a hide: {bytes:?}"
+    );
+    assert!(
+        !grid
+            .cursor_coordinates()
+            .map(|(_, _, visible)| visible)
+            .unwrap_or(false),
+        "and the watcher's terminal has it down"
+    );
+
+    put_cursor(&mut screen, "\x1b[3;3H");
+    let bytes = watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+    assert!(
+        bytes.contains("\x1b[?25h"),
+        "the frame that brings the cursor back into range shows it again: {bytes:?}"
+    );
+    assert!(
+        !bytes.contains(" q"),
+        "without re-sending the shape, which would restart the host's blink phase: {bytes:?}"
+    );
+    assert_eq!(
+        grid.cursor_coordinates(),
+        Some((2, 2, true)),
+        "in that very frame - a second render is never scheduled"
+    );
+}
+
+/// The correction says what the host has done to the cursor, not what the followed pane wants: an
+/// application that hid its own cursor while it was out of range must not have it handed back.
+#[test]
+fn a_cursor_the_app_hid_while_cropped_stays_hidden_when_it_returns() {
+    let followed = ClientId::new(1);
+    let watcher = ClientId::new(2);
+    let watcher_size = Size { cols: 40, rows: 10 };
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.add_watcher_client(watcher).expect("TEST");
+    screen.set_watcher_size(watcher, watcher_size);
+    screen
+        .update_synchronized_output_support(watcher, true)
+        .expect("TEST");
+    screen.set_followed_client(followed).expect("TEST");
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(watcher_size);
+
+    let put_cursor = |screen: &mut Screen, bytes: &str| {
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .handle_pty_bytes(crate::TerminalId::new(1), bytes.as_bytes().to_vec())
+            .unwrap();
+    };
+
+    put_cursor(&mut screen, "\x1b[20;60H");
+    watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+    put_cursor(&mut screen, "\x1b[?25l");
+    watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+
+    put_cursor(&mut screen, "\x1b[3;3H");
+    watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+    assert!(
+        !grid
+            .cursor_coordinates()
+            .map(|(_, _, visible)| visible)
+            .unwrap_or(false),
+        "the app put this cursor down and nothing here picks it back up"
+    );
+}
+
+/// One memo entry serves every watcher, so the correction reaches a watcher that was never cropped
+/// too. It costs that watcher a `?25h` and a goto it did not need, and must leave its cursor right.
+#[test]
+fn correcting_a_small_watchers_cursor_leaves_a_larger_watchers_alone() {
+    let followed = ClientId::new(1);
+    let small = ClientId::new(2);
+    let large = ClientId::new(3);
+    let small_size = Size { cols: 40, rows: 10 };
+    let large_size = Size { cols: 80, rows: 24 };
+    let mut screen = create_new_screen(large_size, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    for (watcher, size) in [(small, small_size), (large, large_size)] {
+        screen.add_watcher_client(watcher).expect("TEST");
+        screen.set_watcher_size(watcher, size);
+        screen
+            .update_synchronized_output_support(watcher, true)
+            .expect("TEST");
+    }
+    screen.set_followed_client(followed).expect("TEST");
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut small_grid = grid_for_render_snapshot(small_size);
+    let mut large_grid = grid_for_render_snapshot(large_size);
+
+    for bytes in ["\x1b[3;3H", "\x1b[20;60H", "\x1b[3;3H"] {
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .handle_pty_bytes(crate::TerminalId::new(1), bytes.as_bytes().to_vec())
+            .unwrap();
+        screen.render_to_clients().expect("TEST");
+        while let Ok((instruction, _)) = receiver.try_recv() {
+            if let ServerInstruction::Render(Some(mut rendered_clients)) = instruction {
+                if let Some(client_output) = rendered_clients.remove(&small) {
+                    take_snapshot_and_cursor_coordinates(&client_output, &mut small_grid);
+                }
+                if let Some(client_output) = rendered_clients.remove(&large) {
+                    take_snapshot_and_cursor_coordinates(&client_output, &mut large_grid);
+                }
+            }
+        }
+        let expected = pane_cursor(&mut screen, followed);
+        assert_eq!(
+            large_grid.cursor_coordinates(),
+            Some((expected.0, expected.1, true)),
+            "the larger watcher never crops, so its cursor is right in every frame ({bytes:?})"
+        );
+    }
+    assert_eq!(
+        small_grid.cursor_coordinates(),
+        Some((2, 2, true)),
+        "and the smaller one has its cursor back"
+    );
+}

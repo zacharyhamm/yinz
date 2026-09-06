@@ -398,6 +398,7 @@ impl PaneFleet {
             self.kitty_host_capabilities.clone(),
             self.kitty_host_state.clone(),
             self.sixel_host_capabilities.clone(),
+            Rc::new(RefCell::new(HashMap::new())),
         );
         output.add_clients(&self.clients, self.link_handler.clone(), None);
 

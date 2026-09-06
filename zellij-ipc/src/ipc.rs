@@ -196,6 +196,13 @@ pub enum ClientToServerMsg {
     SixelSupport {
         supported: bool,
     },
+    /// Whether this client's host terminal presents a frame atomically (DECSET 2026
+    /// synchronised output). The server uses it to decide whether the cursor has to be hidden
+    /// while a frame paints: inside an atomic frame nothing intermediate is ever displayed, so
+    /// the hide/show pair is churn that restarts the host's cursor blink phase on every frame.
+    SynchronizedOutputSupport {
+        supported: bool,
+    },
     RequestSessionList,
     /// The host terminal gained or lost keyboard focus (DECSET 1004 report).
     HostTerminalFocusChanged {

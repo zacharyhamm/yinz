@@ -2311,6 +2311,14 @@ pub(crate) fn screen_thread_main(
             } => {
                 screen.update_sixel_support(client_id, supported);
             },
+            ScreenInstruction::SetSynchronizedOutputSupport {
+                client_id,
+                supported,
+            } => {
+                screen
+                    .update_synchronized_output_support(client_id, supported)
+                    .context("failed to update synchronized output support")?;
+            },
             ScreenInstruction::ForwardHostQuery { pane_id, query } => {
                 screen.forward_host_query(pane_id, query);
             },

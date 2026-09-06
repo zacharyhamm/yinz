@@ -524,6 +524,17 @@ impl QuitNotice {
 pub(crate) struct WatcherState {
     size: Size,
     should_force_render: bool,
+    /// Whether the followed client's cursor fell outside this watcher's size on the last frame.
+    /// `serialize_with_size` hides a cropped cursor in this watcher's stream alone, which the
+    /// tab's memo knows nothing about - so the frame that brings the cursor back into range reads
+    /// this and corrects the memo before placing the cursor (see `Screen::render_to_clients`).
+    ///
+    /// Plain bookkeeping, and deliberately not a reason to repaint: the cursor is the only thing
+    /// the size cropping makes stateful across frames. Chunk clipping and the padding sweep are
+    /// recomputed every frame, and `content_size` is the shared session surface rather than
+    /// anything per-watcher - so the crop direction needs nothing either, serialization re-emitting
+    /// `?25l` for as long as the cursor is out of range.
+    cursor_was_cropped: bool,
 }
 
 impl WatcherState {
@@ -531,6 +542,7 @@ impl WatcherState {
         WatcherState {
             size,
             should_force_render: true,
+            cursor_was_cropped: false,
         }
     }
 
@@ -552,6 +564,14 @@ impl WatcherState {
 
     pub fn set_force_render(&mut self) {
         self.should_force_render = true;
+    }
+
+    pub fn cursor_was_cropped(&self) -> bool {
+        self.cursor_was_cropped
+    }
+
+    pub fn set_cursor_was_cropped(&mut self, cursor_was_cropped: bool) {
+        self.cursor_was_cropped = cursor_was_cropped;
     }
 }
 
@@ -714,6 +734,10 @@ pub(crate) struct Screen {
     kitty_image_store: Rc<RefCell<KittyImageStore>>,
     kitty_host_capabilities: Rc<RefCell<HashMap<ClientId, bool>>>,
     sixel_host_capabilities: Rc<RefCell<HashMap<ClientId, bool>>>,
+    /// Whether each client's host terminal presents a frame atomically (DECSET 2026 synchronised
+    /// output). A client absent from this map has not said, and is treated as not atomic - the
+    /// worst case is the cursor handling we had before it was asked.
+    synchronized_output_capabilities: Rc<RefCell<HashMap<ClientId, bool>>>,
     client_kitty_host_state: Rc<RefCell<HashMap<ClientId, HostKittyState>>>,
     terminal_emulator_colors: Rc<RefCell<Palette>>,
     terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
@@ -1315,6 +1339,7 @@ impl Screen {
             kitty_image_store: Rc::new(RefCell::new(KittyImageStore::default())),
             kitty_host_capabilities: Rc::new(RefCell::new(HashMap::new())),
             sixel_host_capabilities: Rc::new(RefCell::new(HashMap::new())),
+            synchronized_output_capabilities: Rc::new(RefCell::new(HashMap::new())),
             client_kitty_host_state: Rc::new(RefCell::new(HashMap::new())),
             style: client_attributes.style,
             connected_clients: Rc::new(RefCell::new(HashSet::new())),
@@ -2091,6 +2116,12 @@ impl Screen {
         if removed_kitty_capability {
             self.push_kitty_host_support_to_tabs();
         }
+        // No aggregate to push: this one is read per client at render time. Dropped here rather
+        // than left, because client ids are recycled and the next terminal to hold this one says
+        // for itself what it can do.
+        self.synchronized_output_capabilities
+            .borrow_mut()
+            .remove(&client_id);
         let removed_sixel_capability = self
             .sixel_host_capabilities
             .borrow_mut()
@@ -2159,10 +2190,18 @@ impl Screen {
 
     pub fn remove_watcher_client(&mut self, client_id: ClientId) {
         self.watcher_clients.remove(&client_id);
+        // A watcher reports its own synchronised-output support like any other client, and ids
+        // are recycled - so its answer goes with it, as `remove_client` does for a regular one.
+        self.synchronized_output_capabilities
+            .borrow_mut()
+            .remove(&client_id);
     }
 
     pub fn set_followed_client(&mut self, client_id: ClientId) -> Result<()> {
         self.followed_client_id = Some(client_id);
+        for watcher in self.watcher_clients.values_mut() {
+            watcher.set_force_render();
+        }
         // Trigger re-render with new followed client
         self.render(None)?;
         Ok(())

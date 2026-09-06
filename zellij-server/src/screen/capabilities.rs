@@ -114,6 +114,37 @@ impl Screen {
         self.push_sixel_host_support_to_tabs();
     }
 
+    /// Remember whether this client's host presents each frame atomically (DECSET 2026).
+    ///
+    /// Unguarded, unlike `update_kitty_graphics_support`: that one arrives long after attach and
+    /// can outlive its client, so it has to check that the id still means what it meant. This one
+    /// is sent by the client the moment it attaches, and takes the same route through the server's
+    /// main loop as `AddClient` and `RemoveClient` do - so it cannot land on the wrong side of
+    /// either, and there is nothing left for a guard here to catch. Watchers report too, and they
+    /// are not in `connected_clients`, so a guard would in fact throw their answers away.
+    pub fn update_synchronized_output_support(
+        &mut self,
+        client_id: ClientId,
+        supported: bool,
+    ) -> Result<()> {
+        self.synchronized_output_capabilities
+            .borrow_mut()
+            .insert(client_id, supported);
+        // The watchers share one byte stream, hidden according to what every one of their hosts
+        // can do (see `Screen::render_to_clients`), so one watcher's answer changes the frame the
+        // others get. Rare enough to just repaint them all - and to ask for that repaint here,
+        // since this answer arrives on its own and a session with nothing else to say would
+        // otherwise leave the request armed and unspent.
+        if self.watcher_clients.contains_key(&client_id) {
+            for watcher_state in self.watcher_clients.values_mut() {
+                watcher_state.set_force_render();
+            }
+            self.render(None)
+                .context("failed to repaint the watchers after a synchronized-output answer")?;
+        }
+        Ok(())
+    }
+
     pub(super) fn sixel_host_support_aggregate(&self) -> Option<bool> {
         let capabilities = self.sixel_host_capabilities.borrow();
         if capabilities.is_empty() {

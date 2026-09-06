@@ -648,6 +648,15 @@ pub fn start_client(
         !explicitly_disable_kitty_keyboard_protocol,
     );
 
+    // Alacritty answers no DECRPM probe for mode 2026, so its DCS-flavoured synchronised output
+    // is recognised from TERM alone and never reaches the server the way a probe reply does. The
+    // client loop tells the server what this comes to, and tells it again if a probe reply later
+    // changes the answer - see `ClientLoop::announce_synchronised_output`.
+    let synchronised_output = match os_input.env_variable("TERM").as_deref() {
+        Some("alacritty") => Some(SyncOutput::DCS),
+        _ => None,
+    };
+
     let outcome = crate::client_loop::ClientLoop {
         os_input: &*os_input,
         command_is_executing: &mut command_is_executing,
@@ -655,10 +664,7 @@ pub fn start_client(
         send_input_instructions: &send_input_instructions,
         nested_reannounce: &nested_reannounce,
         teardown,
-        synchronised_output: match os_input.env_variable("TERM").as_deref() {
-            Some("alacritty") => Some(SyncOutput::DCS),
-            _ => None,
-        },
+        synchronised_output,
     }
     .run(&receive_client_instructions);
     let exit_msg = outcome.exit_msg;

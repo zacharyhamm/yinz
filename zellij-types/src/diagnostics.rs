@@ -149,6 +149,7 @@ pub enum ScreenContext {
     TerminalColorRegisters,
     SetKittyGraphicsSupport,
     SetSixelSupport,
+    SetSynchronizedOutputSupport,
     ForwardHostQuery,
     NestedSessionMessageFromPane,
     NestedGuestPingTick,
@@ -514,6 +515,7 @@ pub enum ServerContext {
     ForwardQueryToHost,
     KeyPassthroughChanged,
     EmitNestedSessionFrameToClient,
+    SynchronizedOutputSupport,
 }
 
 #[derive(
