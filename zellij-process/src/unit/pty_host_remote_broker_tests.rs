@@ -437,6 +437,7 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
     std::fs::write(&transcript, concat!(
         "{\"type\":\"session_meta\",\"payload\":{\"id\":\"remote-session\"}}\n",
         "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"remote-turn\",\"approvals_reviewer\":\"auto_review\"}}\n",
+        "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"id\":\"remote-message\",\"phase\":\"commentary\",\"content\":[{\"type\":\"output_text\",\"text\":\"remote commentary\"}]}}\n",
     )).unwrap();
     let mut hook = serde_json::json!({
         "hook_event_name": "PermissionRequest", "session_id": "remote-session",
@@ -454,6 +455,10 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
     };
     assert_eq!(kind, "codex");
     hook["approvals_reviewer"] = "auto_review".into();
+    hook["assistant_messages"] = serde_json::json!([{
+        "source_id":"remote-session:remote-message", "turn_id":"remote-turn",
+        "text":"remote commentary", "incomplete":false
+    }]);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&json).unwrap(),
         hook

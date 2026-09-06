@@ -38,7 +38,7 @@ const CODEX_EVENTS: &[&str] = zellij_types::agent::CODEX_HOOK_EVENTS;
 ///
 /// A missed bump is silent and total: `status` calls the old script current, and every event
 /// on a machine installed before the change goes nowhere.
-const SCRIPT_VERSION: u32 = 6;
+const SCRIPT_VERSION: u32 = 7;
 
 /// What marks an entry in the settings file as ours, and nothing else as ours.
 ///

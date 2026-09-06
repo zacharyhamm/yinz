@@ -871,6 +871,34 @@ mod tests {
     // -- searching ------------------------------------------------------
 
     #[test]
+    fn assistant_messages_are_searchable_and_pageable_after_archival_and_summary() {
+        let backend = backend();
+        let mut recorded = run("claude:messages", "claude", "main", 1);
+        recorded.entries = vec![
+            entry(1, RunEntryKind::Message, "commentary about the lexer", 1),
+            entry(2, RunEntryKind::Result, "lexer verified", 2),
+        ];
+        recorded.revision = 2;
+        recorded.summarized_revision = 2;
+        recorded.outcome = RunOutcome::Completed;
+        write(&backend, &recorded);
+        let found = search(&backend, &Filter::default(), None, "lexer", 10).unwrap();
+        assert_eq!(found.hits.len(), 2);
+        assert_eq!(found.hits[1].kind, RunEntryKind::Message);
+        let page = entry_page(&backend, &recorded.id, Some(1), 1).unwrap();
+        assert_eq!(page.entries[0], recorded.entries[0]);
+        let history = crate::agents::run_history(&recorded, 80, 100, 0);
+        assert!(history
+            .entries
+            .iter()
+            .any(|row| row.text.contains("message: commentary")));
+        assert!(history
+            .entries
+            .iter()
+            .any(|row| row.text.contains("result: lexer")));
+    }
+
+    #[test]
     fn an_entry_is_found_by_a_word_it_contains() {
         let backend = seeded();
         let found = search(&backend, &Filter::default(), None, "flaky", 10).unwrap();

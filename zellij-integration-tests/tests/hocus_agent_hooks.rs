@@ -224,3 +224,70 @@ fn agent_pane_id(screen: &str) -> u32 {
         })
         .unwrap_or_else(|| panic!("agent_list listed no pane:\n{screen}"))
 }
+
+#[test]
+fn assistant_messages_reach_the_timeline_and_history_search() {
+    let mut size = TERMINAL_SIZE;
+    size.rows = 70;
+    let mut zellij = TestRunner::new(size)
+        .with_config(HOCUS_CONFIG)
+        .with_layout(LayoutInfo::Stringified(HOCUS_LAYOUT.to_owned()))
+        .start();
+    zellij.wait_until("hocus asks for permissions", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(b"y");
+    zellij.wait_until("the permission prompt is dismissed", |grid| {
+        !grid.contains("Allow? (y/n)")
+    });
+    submit(&zellij, "/agent_list {}");
+    zellij.wait_until("the daemon found the pane", |grid| grid.contains("agents"));
+    let pane_id = agent_pane_id(&zellij.snapshot().to_string());
+    clear(&zellij, "agents");
+    for payload in [
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"conversation","prompt":"Inspect the parser"}"#,
+        r#"{"hook_event_name":"MessageDisplay","session_id":"conversation","turn_id":"turn","message_id":"commentary","index":0,"final":true,"delta":"Checking the lexer"}"#,
+        r#"{"hook_event_name":"PreToolUse","session_id":"conversation","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Keep Unicode?"}]}}"#,
+        r#"{"hook_event_name":"MessageDisplay","session_id":"conversation","turn_id":"turn","message_id":"final","index":0,"final":true,"delta":"Parser verified with Unicode"}"#,
+        r#"{"hook_event_name":"Stop","session_id":"conversation","turn_id":"turn","last_assistant_message":"Parser verified with Unicode"}"#,
+    ] {
+        send_hook(&mut zellij, pane_id, payload);
+    }
+    submit(&zellij, &format!("/agent_run {{\"pane_id\":{pane_id}}}"));
+    zellij.wait_until("the conversation is visible", |grid| {
+        grid.contains("Inspect the parser")
+            && grid.contains("Checking the lexer")
+            && grid.contains("Keep Unicode?")
+            && grid.contains("Parser verified with Unicode")
+            && grid.contains("4 of 4 entries")
+    });
+    clear(&zellij, "4 of 4 entries");
+    send_hook(
+        &mut zellij,
+        pane_id,
+        r#"{"hook_event_name":"SessionEnd","session_id":"conversation"}"#,
+    );
+    submit(&zellij, r#"/agent_history_search {"query":"lexer"}"#);
+    zellij.wait_until("archived assistant commentary is searchable", |grid| {
+        grid.contains("Checking the lexer") && grid.contains("message")
+    });
+    clear(&zellij, "Checking the lexer");
+    // Replay after persistence, as duplicate installed hooks can do. The completed
+    // message has the same source identity as MessageDisplay above.
+    send_hook(
+        &mut zellij,
+        pane_id,
+        r#"{"hook_event_name":"SessionEnd","session_id":"conversation","assistant_messages":[{"source_id":"conversation:final","turn_id":"turn","text":"Parser verified with Unicode"}]}"#,
+    );
+    submit(&zellij, r#"/agent_run {"run_id":"claude:conversation"}"#);
+    zellij.wait_until(
+        "a duplicate close preserves the archived conversation",
+        |grid| {
+            grid.contains("prompt")
+                && grid.contains("Inspect the parser")
+                && grid.contains("Checking the lexer")
+                && grid.contains("Keep Unicode?")
+                && grid.contains("Parser verified with Unicode")
+        },
+    );
+}

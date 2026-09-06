@@ -25,6 +25,7 @@ pub const CLAUDE_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
     // Work starts.
     "UserPromptSubmit",
+    "MessageDisplay",
     // Work continues, and names the tool it is in.
     "PreToolUse",
     "PostToolUse",
@@ -75,6 +76,10 @@ pub const CODEX_HOOK_EVENTS: &[&str] = &[
     "PreToolUse",
     "PostToolUse",
     "PermissionRequest",
+    "PreCompact",
+    "PostCompact",
+    "SubagentStart",
+    "SubagentStop",
     "Interrupt",
     "Stop",
     "SessionEnd",
@@ -554,6 +559,32 @@ pub struct HookEvent {
     /// finishing while the agent above it works on.
     #[serde(default)]
     pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u64>,
+    #[serde(default, rename = "final", skip_serializing_if = "Option::is_none")]
+    pub final_batch: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub message_incomplete: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assistant_messages: Vec<CapturedMessage>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub messages_omitted: bool,
+}
+
+/// Completed assistant prose extracted on the agent's host.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapturedMessage {
+    pub source_id: String,
+    pub turn_id: String,
+    pub text: String,
+    #[serde(default)]
+    pub incomplete: bool,
 }
 
 impl HookEvent {
@@ -589,6 +620,21 @@ impl HookEvent {
             text.as_deref()
                 .map(|text| truncate_within(text, chars, budget))
         };
+        let mut remaining = budget;
+        let mut retained_messages = Vec::new();
+        for message in self.assistant_messages.iter().rev() {
+            let mut message = message.clone();
+            let text = truncate_within(&message.text, PRUNED_MESSAGE_CHARS, remaining / 2);
+            message.incomplete |= text != message.text;
+            message.text = text;
+            let size = serde_json::to_vec(&message).map_or(usize::MAX, |json| json.len());
+            if size > remaining {
+                break;
+            }
+            remaining -= size;
+            retained_messages.push(message);
+        }
+        retained_messages.reverse();
         HookEvent {
             hook_event_name: self.hook_event_name.clone(),
             session_id: self.session_id.clone(),
@@ -607,6 +653,16 @@ impl HookEvent {
             approvals_reviewer: self.approvals_reviewer.clone(),
             prompt: cut(&self.prompt, PRUNED_MESSAGE_CHARS),
             agent_id: self.agent_id.clone(),
+            turn_id: self.turn_id.clone(),
+            message_id: self.message_id.clone(),
+            index: self.index,
+            final_batch: self.final_batch,
+            delta: cut(&self.delta, PRUNED_MESSAGE_CHARS),
+            message_incomplete: self.message_incomplete
+                || cut(&self.delta, PRUNED_MESSAGE_CHARS) != self.delta,
+            messages_omitted: self.messages_omitted
+                || retained_messages.len() < self.assistant_messages.len(),
+            assistant_messages: retained_messages,
         }
     }
 
@@ -1314,10 +1370,9 @@ mod tests {
             Some(AgentState::Busy)
         );
 
-        // Every wired event says something, or is `SessionEnd`, which ends a record rather
-        // than moving it. An event wired for nothing is a hook run for nothing.
+        // Display events carry prose without changing state. SessionEnd ends the record.
         for wired in CLAUDE_HOOK_EVENTS {
-            if *wired == HOOK_SESSION_END || *wired == "Notification" {
+            if matches!(*wired, HOOK_SESSION_END | "Notification" | "MessageDisplay") {
                 continue;
             }
             let said = match *wired {

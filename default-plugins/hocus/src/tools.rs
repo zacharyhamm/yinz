@@ -1492,7 +1492,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "agent_run",
-            "Read one run's timeline of prompts, plans, questions and results. Takes run_id or \
+            "Read one run's timeline of prompts, plans, questions, messages and results. Takes run_id or \
              pane_id; no revision reads the end of it.",
             json!({
                 "type": "object",

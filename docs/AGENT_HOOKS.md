@@ -39,8 +39,8 @@ that file as `legacy:` while they are still there.
 ## What is wired
 
 The installer writes one small script per agent - `~/.claude/hocus/hocus-hook.sh`,
-`~/.codex/hocus/hocus-hook.sh` - and registers it, with no matcher, against seventeen events
-for Claude Code and eight for Codex. The script hands each event's JSON to the session:
+`~/.codex/hocus/hocus-hook.sh` - and registers it, with no matcher, against eighteen events
+for Claude Code and twelve for Codex. The script hands each event's JSON to the session:
 
 ```sh
 zellij action agent-report --hook-json < "$payload"              # a claude
@@ -82,7 +82,7 @@ inherits the pane's; only clearing the record clears it too.
 
 That exists for the warp. **A pane's agent history is not in its record**: the record is a few
 fields on a manifest handed to every plugin on every pane update, and a history is a growing
-list of prompts, plans, questions and results. History lives in `agent_run` rows in the shared
+list of prompts, plans, questions, messages and results. History lives in `agent_run` rows in the shared
 plugin data store — with the default SQLite backend, one file per *machine*, not per session, so a run written in one
 session is legible in another; with `plugin_data_url` pointing at Postgres, one database per
 however many machines share it.
@@ -218,6 +218,7 @@ safe to run.
 | Event | Agent | State | Why |
 |---|---|---|---|
 | `SessionStart` | both | idle | Starts the feed, and proves the pane runs an agent |
+| `MessageDisplay` | claude | unchanged | Records assistant text without changing pane state |
 | `UserPromptSubmit` | both | busy | Carries `prompt`: names the pane at once, and is kept for the summary made when the session ends |
 | `PreToolUse` | both | busy | Names the tool: `busy · Bash cargo` |
 | `PostToolUse` | both | busy | Clears the tool name |
@@ -228,8 +229,8 @@ safe to run.
 | `Elicitation` | claude | **waiting** | An MCP server asking for input |
 | `ElicitationResult` | claude | busy | The answer came back |
 | `Notification` | claude | **waiting** or unchanged | Explicit input requests wait; permission reminders leave the state unchanged |
-| `SubagentStart` / `SubagentStop` | claude | busy | A worker under an agent that is working anyway |
-| `PreCompact` / `PostCompact` | claude | busy | Work the user did not ask for and is waiting on |
+| `SubagentStart` / `SubagentStop` | both | busy | A worker under an agent that is working anyway |
+| `PreCompact` / `PostCompact` | both | busy | Work the user did not ask for and is waiting on |
 | `Stop` | both | idle | Every turn end. **Carries `last_assistant_message`**, kept on the run's timeline |
 | `StopFailure` | claude | idle | The turn died on an API error — the only thing that says so |
 | `Interrupt` | codex | idle | A turn the user cancelled, which ends it just as flatly |
@@ -448,7 +449,7 @@ over:
   no cooldown, no baseline comparison — and no per-turn summary either. A turn ending is a
   fragment of a session, and a sentence about one fragment is not what anybody reads. A
   `SessionEnd` fires once, so it *is* the edge, and it cannot ask twice about one session.
-- **The input is the whole run.** The request carries every prompt, plan, question and result
+- **The input is the whole run.** The request carries every prompt, plan, question, message and result
   the run's timeline kept, and none of the tool calls — `run_delta`, cut to
   `SUMMARY_LINES`/`SUMMARY_CHARS`. The run's own prior summary is left out on purpose: the
   entries beside it are what that summary was made from, and including it would ask the model
@@ -485,16 +486,55 @@ The same hook stream also builds one durable run per agent `session_id`. It stor
 (agent kind, pane, folder and timestamps) and only the conversation useful after the fact:
 
 - prompts and plans;
-- explicit questions from `AskUserQuestion` and `request_user_input`.
+- explicit questions from `AskUserQuestion` and `request_user_input`;
+- completed assistant messages, final responses, and attributed subagent responses.
 
-Tool calls, permissions, errors, subagent boundaries and routine lifecycle events are omitted.
-Final results are retained as hidden summarization input while a run is active, so every turn's
-result reaches the summary made when the session ends. If the run is archived first, its
-unsummarized results are drawn as the durable fallback; accepted results remain hidden. Tool
-output is never stored. The retained entries stay in `shared:hocus` for the Zellij session.
+Assistant messages use the `message` entry kind. Existing `result` entries remain visible during
+active runs, after summarization, and in the archive. Summaries appear as separate entries.
+Tool output and routine lifecycle events are not stored.
 Summarization advances `summarized_revision` but does not replace or delete entries; a summary
 is also kept as a `summary` entry of its own, which is never shown back to the model. Legacy
 hook scripts without a session ID get a pane-and-start-time fallback ID.
+
+### Assistant message capture
+
+Claude's [MessageDisplay hook](https://code.claude.com/docs/en/hooks#messagedisplay) supplies
+text batches. The daemon joins batches by session, turn, and message ID, in batch-index order.
+An empty final batch completes the message. Duplicate deliveries do not create duplicate entries.
+The hook leaves the original display unchanged. Display events do not change the pane's waiting
+state, tool detail, or pane manifest.
+
+Unfinished messages have a 1 MiB text limit. The daemon marks overflow or missing batches as
+incomplete. It clears pending batches when the run ends or the pane leaves the daemon.
+A reload loses unfinished batches. Completed messages remain in the store.
+
+Codex has no equivalent [documented hook](https://learn.chatgpt.com/docs/hooks).
+Each installed hook reads completed assistant messages from the final 4 MiB of its transcript.
+Capture runs on the agent's machine, including for remote panes. The reader requires a regular
+file and matching session metadata. It reads complete JSONL records with explicit turn boundaries
+and assistant `output_text`. It excludes reasoning, internal instructions, and tool output.
+
+Codex capture can appear only when another hook fires. Transcript formats can change.
+An unreadable or unrecognized transcript does not stop ordinary hook reporting.
+The enriched event has the existing 64 KiB limit. Omitted or truncated content gets an explicit
+marker. Replay uses source identities, so identical text in different turns remains distinct.
+
+A `Stop` result is suppressed only when it matches the last captured message from the same turn.
+Otherwise, it remains as a fallback. Both agents retain `SubagentStop.last_assistant_message`
+with the subagent ID. Subagent completion does not end the parent turn.
+Messages received with `SessionEnd` are recorded before the run closes.
+
+After installing the updated binary, reinstall the hooks:
+
+```sh
+zellij hocus hooks install
+zellij hocus hooks status
+```
+
+Restart running agents and review the Codex hooks with `/hooks`.
+The installer now uses script version 7. It adds Claude `MessageDisplay` and Codex
+`PreCompact`, `PostCompact`, `SubagentStart`, and `SubagentStop`.
+Spawned Claude panes receive the same updated event list inline.
 
 **An entry keeps the whole of what the event said.** The run's metadata is one `agent_run` row,
 but its timeline is one `agent_run_entry` row per event — so an entry costs a small insert

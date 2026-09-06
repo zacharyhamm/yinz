@@ -5,6 +5,7 @@
 //! The daemon takes one startup snapshot, follows Zellij's pane, command, and CWD
 //! events, and samples agent output on a small heartbeat for activity and Git changes.
 
+mod messages;
 mod poll;
 
 use hocus_proto::agents::now_ms;
@@ -226,6 +227,7 @@ struct State {
     /// see `agents::rows::Owner`.
     host_id: HostId,
     runs: BTreeMap<u32, agents::AgentRun>,
+    pending_messages: BTreeMap<u32, messages::Pending>,
     dirty_runs: BTreeMap<String, agents::AgentRun>,
     /// Runs whose pane is gone from this session, so their write has to be guarded: a warped
     /// pane's run has been claimed by the session that took it, and our last word about the
@@ -372,6 +374,7 @@ fn run_delta(run: &agents::AgentRun) -> Option<String> {
                 agents::RunEntryKind::Plan
                     | agents::RunEntryKind::Question
                     | agents::RunEntryKind::Result
+                    | agents::RunEntryKind::Message
                     | agents::RunEntryKind::Prompt
             )
         })
@@ -1038,16 +1041,33 @@ impl State {
         if changed_session {
             self.finish_run(pane_id, agents::RunOutcome::Replaced, now_ms);
         }
-        if event.hook_event_name == agents::HOOK_SESSION_END {
-            self.finish_run(pane_id, agents::RunOutcome::Completed, now_ms);
-            return;
-        }
         let owner = self.owner();
-        if !self.runs.contains_key(&pane_id) {
+        // A duplicate installed hook can replay SessionEnd after the first close was
+        // persisted. Recover its entries before deduplicating the replay.
+        if event.hook_event_name == agents::HOOK_SESSION_END
+            && !self.runs.contains_key(&pane_id)
+            && !event.session_id.is_empty()
+        {
+            if let Some(run) = self.load_run(&agents::session_run_id(kind, &event.session_id)) {
+                if run.host_id != owner.host_id
+                    || run.zellij_session_name != owner.zellij_session_name
+                {
+                    return;
+                }
+                self.runs.insert(pane_id, run);
+            }
+        }
+        if event.hook_event_name != agents::HOOK_SESSION_END && !self.runs.contains_key(&pane_id) {
             // The manifest usually gets here first, but a hook can beat it: the pane arrives
             // and the agent speaks before the next `PaneUpdate`. Looking again costs one fetch
             // on the first event of a run and nothing after.
             self.adopt_stored_run(pane_id, kind, &event.session_id, &owner);
+        }
+        if event.hook_event_name == agents::HOOK_SESSION_END
+            && !self.runs.contains_key(&pane_id)
+            && event.assistant_messages.is_empty()
+        {
+            return;
         }
         // Read after the adoption above: a run it picked up is not a new one.
         let new_run = !self.runs.contains_key(&pane_id);
@@ -1084,6 +1104,7 @@ impl State {
                 summary: None,
                 entries: Vec::new(),
             });
+        let already_ended = run.outcome != agents::RunOutcome::Active;
         let mut changed = new_run;
         if !event.session_id.is_empty() && run.session_id.is_empty() {
             run.session_id = event.session_id.clone();
@@ -1096,22 +1117,29 @@ impl State {
             }
         }
         changed |= relocate_run(run, host, worktree);
+        changed |= self
+            .pending_messages
+            .entry(pane_id)
+            .or_default()
+            .capture(run, event, now_ms);
         if let Some((kind, text)) = agents::run_entry(event) {
             // The text the entry will keep, not the event's own prompt: the id is stored beside
             // that text and compared against ids taken from other entries' text, and
             // `entry_event_id` is what takes them - including from an entry recorded before the
             // field existed, which has none of its own.
-            let event_id = agents::run_event_id(event, &text);
-            let duplicate = match event_id.as_deref() {
-                Some(event_id) => run
-                    .entries
-                    .iter()
-                    .any(|entry| agents::entry_event_id(entry).as_deref() == Some(event_id)),
-                None => run
-                    .entries
-                    .last()
-                    .is_some_and(|entry| entry.kind == kind && entry.text == text),
-            };
+            let event_id = messages::stop_event_id(event, &text)
+                .or_else(|| agents::run_event_id(event, &text));
+            let duplicate = messages::stop_duplicates(run, event, &text)
+                || match event_id.as_deref() {
+                    Some(event_id) => run
+                        .entries
+                        .iter()
+                        .any(|entry| agents::entry_event_id(entry).as_deref() == Some(event_id)),
+                    None => run
+                        .entries
+                        .last()
+                        .is_some_and(|entry| entry.kind == kind && entry.text == text),
+                };
             if !duplicate {
                 run.revision += 1;
                 run.entries.push(agents::RunEntry {
@@ -1132,6 +1160,14 @@ impl State {
                 // session drops a report that repeats what the pane already says.
                 let run_id = self.runs[&pane_id].id.clone();
                 self.publish_run_id(pane_id, Some(run_id));
+            }
+        }
+        if event.hook_event_name == agents::HOOK_SESSION_END {
+            if already_ended && !changed {
+                self.runs.remove(&pane_id);
+                self.pending_messages.remove(&pane_id);
+            } else {
+                self.finish_run(pane_id, agents::RunOutcome::Completed, now_ms);
             }
         }
     }
@@ -1195,6 +1231,13 @@ impl State {
         let Some(mut run) = self.runs.remove(&pane_id) else {
             return;
         };
+        if let Some(pending) = self.pending_messages.remove(&pane_id) {
+            // A pane leaving may already have another writer. Drop unfinished batches
+            // rather than minting entry revisions that could race the new owner.
+            if !released {
+                pending.flush(&mut run, now_ms);
+            }
+        }
         run.outcome = outcome;
         run.ended_at_ms = Some(now_ms);
         if released {
@@ -1401,10 +1444,12 @@ impl State {
                 .runs
                 .get(&pane_id)
                 .and_then(|run| {
-                    run.entries
-                        .iter()
-                        .rev()
-                        .find(|entry| entry.kind == agents::RunEntryKind::Result)
+                    run.entries.iter().rev().find(|entry| {
+                        matches!(
+                            entry.kind,
+                            agents::RunEntryKind::Result | agents::RunEntryKind::Message
+                        )
+                    })
                 })
                 .map(|entry| entry.text.clone());
             let Some(message) = latest else {
@@ -2617,7 +2662,12 @@ impl State {
             .entries
             .iter()
             .rev()
-            .find(|entry| entry.kind == agents::RunEntryKind::Result)
+            .find(|entry| {
+                matches!(
+                    entry.kind,
+                    agents::RunEntryKind::Result | agents::RunEntryKind::Message
+                )
+            })
             .map(|entry| entry.text.clone())
         else {
             return false;
@@ -8250,5 +8300,358 @@ mod tests {
         assert!(!asked);
         assert!(sent.is_empty());
         assert!(state.dirty_runs[&run.id].summary.is_none());
+    }
+    fn display(
+        turn: &str,
+        message: &str,
+        index: u64,
+        final_batch: bool,
+        delta: &str,
+    ) -> wire::HookEvent {
+        wire::HookEvent {
+            turn_id: Some(turn.into()),
+            message_id: Some(message.into()),
+            index: Some(index),
+            final_batch: Some(final_batch),
+            delta: Some(delta.into()),
+            ..hook("MessageDisplay")
+        }
+    }
+
+    #[test]
+    fn assistant_message_batches_preserve_waits_and_deduplicate_after_reload_and_adoption() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        feed(&mut state, 7, &prompt("implement capture"), None);
+        feed(&mut state, 7, &hook("PermissionRequest"), None);
+        let waiting = cell(&state, 7);
+        for event in [
+            display("t1", "m1", 2, true, ""),
+            display("t1", "m1", 1, false, "雪\n"),
+            display("t1", "m1", 1, false, "雪\n"),
+            display("t1", "m1", 0, false, "hello "),
+        ] {
+            feed(&mut state, 7, &event, None);
+            assert_eq!(cell(&state, 7), waiting);
+        }
+        let run = state.runs[&7].clone();
+        assert_eq!(run.entries.len(), 2);
+        assert_eq!(run.entries[1].text, "hello 雪\n");
+        let mut reloaded = State::default();
+        let run = serde_json::from_str::<agents::AgentRun>(&serde_json::to_string(&run).unwrap())
+            .unwrap();
+        reloaded.adopt_run(9, run.adopted_by(9, &reloaded.owner()));
+        reloaded.record_run_event(9, "claude", &display("t1", "m1", 0, true, "hello 雪\n"), 10);
+        assert_eq!(reloaded.runs[&9].entries.len(), 2);
+        reloaded.record_run_event(9, "claude", &display("t2", "m1", 0, true, "hello 雪\n"), 11);
+        assert_eq!(
+            reloaded.runs[&9].entries.len(),
+            3,
+            "same text in another turn is distinct"
+        );
+        assert!(run_delta(&reloaded.runs[&9]).unwrap().contains("hello"));
+    }
+
+    #[test]
+    fn assistant_messages_deduplicate_stop_only_in_the_same_turn_and_capture_session_end() {
+        let mut state = State::default();
+        state.record_run_event(7, "claude", &prompt("work"), 1);
+        state.record_run_event(7, "claude", &display("t1", "m1", 0, true, "done"), 2);
+        let stop = wire::HookEvent {
+            turn_id: Some("t1".into()),
+            ..stop_saying("done")
+        };
+        state.record_run_event(7, "claude", &stop, 3);
+        assert_eq!(state.runs[&7].entries.len(), 2);
+        state.record_run_event(
+            7,
+            "claude",
+            &wire::HookEvent {
+                turn_id: Some("t2".into()),
+                ..stop
+            },
+            4,
+        );
+        assert_eq!(
+            state.runs[&7].entries.last().unwrap().kind,
+            agents::RunEntryKind::Result
+        );
+        let message = hocus_proto::agent::CapturedMessage {
+            source_id: "session:m2".into(),
+            turn_id: "t2".into(),
+            text: "closing words".into(),
+            incomplete: false,
+        };
+        let end = wire::HookEvent {
+            assistant_messages: vec![message],
+            ..hook("SessionEnd")
+        };
+        let id = state.runs[&7].id.clone();
+        state.record_run_event(7, "claude", &end, 5);
+        assert!(!state.runs.contains_key(&7));
+        assert_eq!(
+            state.dirty_runs[&id].entries.last().unwrap().text,
+            "closing words"
+        );
+        assert!(!state.pending_messages.contains_key(&7));
+        let closed = state.dirty_runs[&id].clone();
+        let summaries = state.finished_runs.len();
+        state.record_run_event(7, "claude", &end, 6);
+        assert_eq!(
+            state.dirty_runs[&id], closed,
+            "duplicate SessionEnd preserves the whole archive"
+        );
+        assert_eq!(state.finished_runs.len(), summaries);
+        assert!(!state.runs.contains_key(&7));
+    }
+
+    #[test]
+    fn capture_before_stop_requires_a_nonempty_matching_turn() {
+        for turn in [None, Some(""), Some("other"), Some("t")] {
+            let mut state = State::default();
+            state.record_run_event(7, "claude", &display("t", "m", 0, true, "done"), 1);
+            state.record_run_event(
+                7,
+                "claude",
+                &wire::HookEvent {
+                    turn_id: turn.map(str::to_owned),
+                    ..stop_saying("done")
+                },
+                2,
+            );
+            assert_eq!(
+                state.runs[&7].entries.len(),
+                if turn == Some("t") { 1 } else { 2 }
+            );
+        }
+    }
+
+    #[test]
+    fn session_end_recovery_respects_the_stored_owner() {
+        for foreign in ["host", "session", "neither"] {
+            for captured in [false, true] {
+                let mut state = State {
+                    host_id: HostId::new("host-a"),
+                    zellij_session_name: Some("here".into()),
+                    ..State::default()
+                };
+                let id = agents::session_run_id("claude", "cc-session-1");
+                let mut run = archived_run(&id);
+                run.outcome = agents::RunOutcome::Active;
+                run.ended_at_ms = None;
+                if foreign == "host" {
+                    run.host_id = HostId::new("host-b");
+                } else if foreign == "session" {
+                    run.zellij_session_name = "elsewhere".into();
+                }
+                state.dirty_runs.insert(id.clone(), run.clone());
+                let mut end = hook("SessionEnd");
+                if captured {
+                    end.assistant_messages
+                        .push(hocus_proto::agent::CapturedMessage {
+                            source_id: "s:m".into(),
+                            turn_id: "t".into(),
+                            text: "closing words".into(),
+                            incomplete: false,
+                        });
+                }
+                state.record_run_event(7, "claude", &end, 30);
+                assert!(state.runs.is_empty());
+                assert!(
+                    state.run_lookups.is_empty(),
+                    "closing never adopts a live pane"
+                );
+                if foreign != "neither" {
+                    assert_eq!(state.dirty_runs[&id], run);
+                    assert!(state.pending_messages.is_empty());
+                    assert!(state.finished_runs.is_empty());
+                } else {
+                    assert_eq!(state.dirty_runs[&id].outcome, agents::RunOutcome::Completed);
+                    assert_eq!(state.finished_runs, vec![id.clone()]);
+                    assert_eq!(
+                        state.dirty_runs[&id].entries.len(),
+                        2 + usize::from(captured)
+                    );
+                    let closed = state.dirty_runs[&id].clone();
+                    state.record_run_event(7, "claude", &end, 31);
+                    assert_eq!(state.dirty_runs[&id], closed);
+                    assert_eq!(state.finished_runs, vec![id]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn late_capture_reconciles_persisted_stop_results_only_with_a_proven_match() {
+        for kind in ["codex", "claude"] {
+            for case in [
+                "match",
+                "other turn",
+                "other text",
+                "incomplete",
+                "subagent",
+                "legacy",
+                "empty turn",
+            ] {
+                let mut state = State::default();
+                let stop = wire::HookEvent {
+                    turn_id: match case {
+                        "legacy" => None,
+                        "empty turn" => Some(String::new()),
+                        _ => Some("t".into()),
+                    },
+                    ..stop_saying("done\r\nnow")
+                };
+                state.record_run_event(7, kind, &stop, 1);
+                let run = &state.runs[&7];
+                let saved = serde_json::to_string(run).unwrap();
+                let original = run.entries[0].clone();
+                let mut reloaded = State::default();
+                reloaded
+                    .runs
+                    .insert(7, serde_json::from_str(&saved).unwrap());
+                let turn = if case == "other turn" { "next" } else { "t" };
+                let text = if case == "other text" {
+                    "different"
+                } else {
+                    "done\nnow"
+                };
+                let mut capture = if kind == "codex" {
+                    wire::HookEvent {
+                        assistant_messages: vec![hocus_proto::agent::CapturedMessage {
+                            source_id: "s:m".into(),
+                            turn_id: turn.into(),
+                            text: text.into(),
+                            incomplete: case == "incomplete",
+                        }],
+                        ..hook("PostToolUse")
+                    }
+                } else {
+                    reloaded.record_run_event(7, kind, &display(turn, "m", 0, false, text), 2);
+                    wire::HookEvent {
+                        message_incomplete: case == "incomplete",
+                        ..display(turn, "m", 1, true, "")
+                    }
+                };
+                if case == "subagent" {
+                    capture.agent_id = Some("worker".into());
+                }
+                reloaded.record_run_event(7, kind, &capture, 3);
+                let run = &reloaded.runs[&7];
+                assert_eq!(run.entries[0], original);
+                assert_eq!(
+                    run.entries.len(),
+                    if case == "match" { 1 } else { 2 },
+                    "{kind}: {case}"
+                );
+                if case == "match" {
+                    assert_eq!(run.revision, 1);
+                    assert_eq!(run_delta(run).unwrap().matches(text).count(), 1);
+                    assert!(reloaded.dirty_runs.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn assistant_message_missing_batches_and_overflow_are_incomplete_on_run_close() {
+        for event in [
+            display("t", "missing", 1, true, "tail"),
+            display("t", "interrupted", 0, false, "start"),
+            display("t", "huge", 0, true, &"雪".repeat(400000)),
+        ] {
+            let mut state = State::default();
+            state.record_run_event(7, "claude", &event, 1);
+            let id = state.runs[&7].id.clone();
+            state.record_run_event(7, "claude", &hook("SessionEnd"), 2);
+            let entries = &state.dirty_runs[&id].entries;
+            assert_eq!(entries.len(), 1);
+            assert!(entries[0].text.contains("[incomplete message"));
+            assert!(entries[0].text.len() <= 1024 * 1024 + 100);
+            assert!(!state.pending_messages.contains_key(&7));
+        }
+    }
+
+    #[test]
+    fn assistant_message_buffers_leave_with_the_pane_without_writing_over_its_new_owner() {
+        let mut state = State::default();
+        state.record_run_event(7, "claude", &display("t", "m", 0, false, "pending"), 1);
+        let id = state.runs[&7].id.clone();
+        state.release_run(7, 2);
+        assert!(!state.pending_messages.contains_key(&7));
+        assert!(state.dirty_runs[&id].entries.is_empty());
+    }
+
+    #[test]
+    fn assistant_subagent_messages_are_attributed_without_ending_the_parent_turn() {
+        for kind in ["claude", "codex"] {
+            let mut state = State::default();
+            let event = wire::HookEvent {
+                agent_id: Some("worker-7".into()),
+                last_assistant_message: Some("worker finished".into()),
+                ..hook("SubagentStop")
+            };
+            state.record_run_event(7, kind, &event, 1);
+            state.record_run_event(7, kind, &event, 2);
+            let run = &state.runs[&7];
+            assert_eq!(run.outcome, agents::RunOutcome::Active);
+            assert_eq!(run.entries.len(), 1);
+            assert_eq!(run.entries[0].text, "Subagent worker-7:\nworker finished");
+            assert_eq!(
+                hocus_proto::agent::hook_state(&event),
+                Some(hocus_proto::agent::AgentState::Busy)
+            );
+        }
+    }
+    #[test]
+    fn codex_assistant_message_windows_replay_once_and_keep_final_responses() {
+        let mut state = State::default();
+        state.record_run_event(7, "codex", &prompt("inspect the lexer"), 1);
+        let event = wire::HookEvent {
+            assistant_messages: vec![
+                hocus_proto::agent::CapturedMessage {
+                    source_id: "s:m1".into(),
+                    turn_id: "t".into(),
+                    text: "checking between tools".into(),
+                    incomplete: false,
+                },
+                hocus_proto::agent::CapturedMessage {
+                    source_id: "s:m2".into(),
+                    turn_id: "t".into(),
+                    text: "done".into(),
+                    incomplete: false,
+                },
+            ],
+            turn_id: Some("t".into()),
+            ..hook("PostToolUse")
+        };
+        state.record_run_event(7, "codex", &event, 2);
+        state.record_run_event(7, "codex", &event, 3);
+        let stop = wire::HookEvent {
+            hook_event_name: "Stop".into(),
+            last_assistant_message: Some("done".into()),
+            ..event
+        };
+        state.record_run_event(7, "codex", &stop, 4);
+        assert_eq!(state.runs[&7].entries.len(), 3);
+        assert_eq!(state.runs[&7].entries[1].text, "checking between tools");
+        assert_eq!(state.runs[&7].entries[2].text, "done");
+        state.record_run_event(
+            7,
+            "codex",
+            &wire::HookEvent {
+                turn_id: Some("next".into()),
+                assistant_messages: Vec::new(),
+                ..stop
+            },
+            5,
+        );
+        assert_eq!(
+            state.runs[&7].entries.len(),
+            4,
+            "another turn keeps its Stop fallback"
+        );
     }
 }
