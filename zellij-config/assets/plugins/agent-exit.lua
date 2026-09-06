@@ -64,7 +64,7 @@ local function literal(text)
   return fence .. "\n" .. text .. "\n" .. fence
 end
 local function append(title, detail)
-  local heading = display(title):gsub("[\r\n]", " "):gsub("(%p)", "\\%1")
+  local heading = display(os.date("%Y-%m-%d %H:%M:%S", os.time()) .. " " .. title):gsub("[\r\n]", " "):gsub("(%p)", "\\%1")
   table.insert(C.entries, "## " .. heading .. (detail and detail ~= "" and "\n\n" .. literal(detail) or ""))
   C.markdown = nil
 end
@@ -140,7 +140,8 @@ end
 local function run(step, args)
   M.syncing = true
   controls({})
-  append("VM " .. step .. " running", table.concat(args, " "))
+  M.started = os.time()
+  append("VM " .. step .. " running", zellij.json.encode(args))
   zellij.run_command {
     command = args,
     env_variables = M.env_variables,
@@ -168,12 +169,20 @@ end
 
 -- One interactive task owns one checkout. Git remains the source of truth after every helper.
 local W = { active = false, sequence = 0 }
-local function raw(argv)
+local function raw(argv, wrapped)
+  local started = os.time()
+  if not wrapped then append("Command running", zellij.json.encode(argv)) end
   local result = zellij.await(zellij.async.run_command {
     command = argv, cwd = "/", max_bytes_returned = 65536,
     env_variables = { GIT_TERMINAL_PROMPT = "0", GIT_EDITOR = "true", GIT_PAGER = "cat" },
   })
-  return result.exit_code, zellij.bytes_to_string(result.stdout), zellij.bytes_to_string(result.stderr)
+  local elapsed = os.time() - started
+  local stdout, stderr = zellij.bytes_to_string(result.stdout), zellij.bytes_to_string(result.stderr)
+  if not wrapped then
+    append("Command finished (status " .. tostring(result.exit_code) .. ", " .. elapsed .. "s)",
+      result.exit_code ~= 0 and stdout .. stderr or nil)
+  end
+  return result.exit_code, stdout, stderr, elapsed
 end
 local function shell(script, ...)
   return raw { "sh", "-c", script, "agent-exit", ... }
@@ -199,11 +208,11 @@ exit "$status"
   W.busy = true
   controls({})
   append("Operation running", zellij.json.encode(argv))
-  local code, stdout, stderr = raw(args)
+  local code, stdout, stderr, elapsed = raw(args, true)
   W.busy = false
   W.diagnostic = stdout .. stderr .. "\nFull output: " .. log
   if #stdout >= 65536 then W.diagnostic = W.diagnostic .. "\n[display truncated at 64 KiB]" end
-  append("Operation finished (status " .. tostring(code) .. ")", W.diagnostic)
+  append("Operation finished (status " .. tostring(code) .. ", " .. elapsed .. "s)", W.diagnostic)
   return code, stdout
 end
 local function git(...)
@@ -248,10 +257,13 @@ local function edit(title, initial, accept)
   end
 end
 local function config()
+  local started = os.time()
+  append("Reading project configuration", W.root)
   local ok, snapshot = pcall(zellij.project_config.read, W.root)
   W.config_error = not ok and tostring(snapshot) or nil
   W.config = ok and snapshot.config or {}
   W.config_source = ok and snapshot.source or nil
+  append("Project configuration read (" .. (ok and "success" or "failed") .. ", " .. (os.time() - started) .. "s)", W.config_error)
   return ok
 end
 local function rebase_in_progress()
@@ -442,6 +454,8 @@ trap 'rm -f -- "$operation"' EXIT
 ]], "agent-exit-ci", W.root, log, W.lock .. "/operation" }
   for _, arg in ipairs(argv) do table.insert(args, arg) end
   if shell('printf "%s\\n" launching > "$1"', W.lock .. "/helper") ~= 0 then error("Cannot record CI launch", 0) end
+  local started = os.time()
+  append("CI running", zellij.json.encode(argv) .. "\nFull log: " .. log)
   local pane = zellij.open_command_pane { { path = "bash", args = args, cwd = "/" }, { agent_workflow_run = W.run } }
   if not pane then raw { "rm", "-f", "--", W.lock .. "/helper" }; error("CI command pane could not be opened", 0) end
   local exited = zellij.async.pane_exit(pane)
@@ -449,10 +463,10 @@ trap 'rm -f -- "$operation"' EXIT
   shell('printf "%s\\n" "$2" > "$1"', W.lock .. "/helper", tostring(id))
   W.title, W.detail, W.options, W.busy = "CI running", "Full log: " .. log, {}, true
   controls({})
-  append(W.title, W.detail)
   local result = zellij.await(exited)
   W.busy = false
-  append(W.title .. " finished", "Status: " .. tostring(result.exit_code) .. (result.closed and " (pane closed)" or ""))
+  append("CI finished (status " .. tostring(result.exit_code) .. ", " .. (os.time() - started) .. "s)",
+    result.closed and "Pane closed." or nil)
   raw { "rm", "-f", "--", W.lock .. "/helper" }
   local _, log_output = raw { "cat", "--", log }
   append("CI output", log_output .. "\nFull log: " .. log .. (#log_output >= 65536 and "\n[display truncated at 64 KiB]" or ""))
@@ -623,7 +637,7 @@ local function workflow()
         W.branch = must_git("symbolic-ref", "--short", "HEAD")
         if rebase_in_progress() then return "conflict" end
         local dirty = not clean()
-        local key = choose("Agent exited. Review and integrate changes.", {
+        local key = choose("Review and integrate changes.", {
           r = "review diff", c = "commit", g = "generate commit message", n = "continue to rebase",
         }, "Branch: " .. W.branch .. "\nCheckout: " .. W.root .. "\n" ..
           (W.notice or W.config_error or (dirty and "Uncommitted changes present." or "Nothing needs committing.")))
@@ -775,6 +789,7 @@ end
 zellij.on("run_command_result", function(event)
   local exit_code, stdout, stderr, context = table.unpack(event.value)
   local step = context and context.step
+  local timing = " (status " .. tostring(exit_code) .. ", " .. (os.time() - (M.started or os.time())) .. "s)"
   if step == "check" or step == "recheck" then
     local count = output(stdout)
     local changes = exit_code == 0 and count:match("^%d+$") and tonumber(count) or nil
@@ -797,7 +812,7 @@ zellij.on("run_command_result", function(event)
       log_failure(step, exit_code, stdout, stderr)
     end
     M.syncing = false
-    append("VM " .. step .. " finished", M.status or (tostring(M.changes) .. " changed paths in the VM."))
+    append("VM " .. step .. " finished" .. timing, M.status or (tostring(M.changes) .. " changed paths in the VM."))
     C.idle = nil
     if M.changes == 0 then
       if M.sync_warnings then
@@ -811,13 +826,13 @@ zellij.on("run_command_result", function(event)
       local warnings = output(stderr):gsub("%s*\n%s*", " ")
       if warnings ~= "" then M.sync_warnings = (M.sync_warnings or "") .. "\n" .. output(stderr) end
       M.status = warnings == "" and "VM worktree synced." or "VM worktree synced. " .. warnings
-      append("VM sync finished", M.status)
+      append("VM sync finished" .. timing, M.status)
       run("recheck", { M.zellij, "firecracker", "changes", M.vm, "--session", M.session })
     else
       M.syncing = false
       M.status = "VM worktree could not be synced. See plugin log for details."
       log_failure(step, exit_code, stdout, stderr)
-      append("VM sync failed", M.status)
+      append("VM sync failed" .. timing, M.status)
       C.idle = nil
     end
     return true
