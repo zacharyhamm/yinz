@@ -294,7 +294,7 @@ impl Harness {
 
     /// Block until some rendered frame contains `needle`, and return that frame.
     fn wait_for(&self, needle: &str) -> String {
-        self.log.wait_until(
+        self.log.wait_until_described(
             &format!("a render containing {needle:?}"),
             WAIT,
             |instructions| {
@@ -302,6 +302,7 @@ impl Harness {
                     .into_iter()
                     .find(|frame| frame.contains(needle))
             },
+            |instructions| format!("{:#?}", rendered_frames(instructions)),
         )
     }
 
@@ -690,6 +691,9 @@ pub fn a_wasm_plugin_can_enqueue_and_be_a_job() {
     let harness = Harness::new(PermissionStatus::Granted);
     let fixture = format!("file:{}", *PLUGIN_FIXTURE);
     harness.load(&fixture);
+    // Broadcast pipes enumerate loaded plugins. The fixture's first frame proves it is
+    // loaded; without this wait a slow WASM load can miss the enqueue request entirely.
+    harness.wait_for("Received events:");
     // The fixture renders every event it receives, so a render mentioning a queue event is the
     // assertion. Ask it to queue *itself*.
     let _ = harness.to_plugin.send(PluginInstruction::CliPipe {
