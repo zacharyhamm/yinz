@@ -263,11 +263,15 @@ impl Drop for OutputProcessingRestored {
 /// On Unix the server daemonizes (double-fork) inside start_server(), so
 /// the intermediate child exits immediately and `cmd.status()` returns.
 pub fn spawn_server(socket_path: &Path, debug: bool) -> io::Result<()> {
-    let mut cmd = Command::new(current_exe()?);
-    cmd.arg("--server").arg(socket_path);
-    if debug {
-        cmd.arg("--debug");
-    }
+    spawn_server_with_termios(socket_path, debug, None)
+}
+
+fn spawn_server_with_termios(
+    socket_path: &Path,
+    debug: bool,
+    termios: Option<&Option<zellij_utils::termios::WireTermios>>,
+) -> io::Result<()> {
+    let mut cmd = server_command(socket_path, debug, termios)?;
     let status = {
         let _output_processing = OutputProcessingRestored::around_a_child();
         cmd.status()?
@@ -282,6 +286,23 @@ pub fn spawn_server(socket_path: &Path, debug: bool) -> io::Result<()> {
         };
         Err(io::Error::other(err_msg))
     }
+}
+
+fn server_command(
+    socket_path: &Path,
+    debug: bool,
+    termios: Option<&Option<zellij_utils::termios::WireTermios>>,
+) -> io::Result<Command> {
+    let mut cmd = Command::new(current_exe()?);
+    cmd.arg("--server").arg(socket_path);
+    if let Some(termios) = termios {
+        cmd.arg("--server-termios")
+            .arg(serde_json::to_string(termios).map_err(io::Error::other)?);
+    }
+    if debug {
+        cmd.arg("--debug");
+    }
+    Ok(cmd)
 }
 
 #[derive(Debug, Clone)]

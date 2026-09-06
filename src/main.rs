@@ -399,7 +399,7 @@ fn main() {
     {
         commands::delete_session(target_session, force);
     } else if let Some(path) = opts.server {
-        commands::start_server(path, opts.debug);
+        commands::start_server(path, opts.debug, opts.server_termios);
     } else if opts.pty_host.is_some() {
         // Only reachable when `--pty-host` was not the first argument, so the
         // fast path in `main()` did not catch it. There is no control channel on

@@ -1747,8 +1747,42 @@ impl Clone for Box<dyn ServerOsApi> {
 }
 
 pub fn get_server_os_input() -> Result<ServerOsInputOutput, std::io::Error> {
+    server_os_input_with_backend(PtyBackendImpl::new()?)
+}
+
+/// An absent argument samples stdin; explicit JSON null uses OS PTY defaults.
+pub fn get_server_os_input_from_termios_arg(
+    arg: Option<&str>,
+) -> Result<ServerOsInputOutput, std::io::Error> {
+    match arg {
+        None => get_server_os_input(),
+        Some(json) => {
+            let snapshot = serde_json::from_str(json).map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("invalid --server-termios: {e}"),
+                )
+            })?;
+            get_server_os_input_with_termios(snapshot)
+        },
+    }
+}
+
+pub fn get_server_os_input_with_termios(
+    termios: Option<zellij_utils::termios::WireTermios>,
+) -> Result<ServerOsInputOutput, std::io::Error> {
+    server_os_input_with_backend(PtyBackendImpl::with_termios(
+        termios
+            .as_ref()
+            .map(zellij_utils::termios::WireTermios::to_termios),
+    )?)
+}
+
+fn server_os_input_with_backend(
+    pty_backend: PtyBackendImpl,
+) -> Result<ServerOsInputOutput, std::io::Error> {
     Ok(ServerOsInputOutput {
-        pty_backend: PtyBackendImpl::new()?,
+        pty_backend,
         remote_hosts: Arc::new(RemoteHosts::new()),
         firecracker: Arc::new(RwLock::new(None)),
         firecracker_stopping: Arc::new(AtomicBool::new(false)),

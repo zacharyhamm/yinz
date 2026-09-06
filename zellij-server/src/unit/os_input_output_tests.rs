@@ -1376,3 +1376,16 @@ mod client_writer_flush {
         drop(writer.join().expect("the writer thread panicked"));
     }
 }
+
+#[test]
+fn server_termios_argument_distinguishes_defaults_and_invalid_json() {
+    assert!(get_server_os_input_from_termios_arg(None).is_ok());
+    assert!(get_server_os_input_from_termios_arg(Some("null")).is_ok());
+    for json in ["broken", "{}", "42"] {
+        let error = get_server_os_input_from_termios_arg(Some(json))
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("invalid --server-termios"));
+    }
+}

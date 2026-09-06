@@ -57,3 +57,6 @@ pub use ::prost;
 
 // Vendored libraries
 pub mod vendored;
+
+#[cfg(unix)]
+pub mod termios;
