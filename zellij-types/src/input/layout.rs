@@ -467,7 +467,10 @@ impl PluginAlias {
             }
         }
     }
-    pub fn set_caller_terminal_pane_id_if_not_set(&mut self, pane_id: Option<u32>) {
+    pub fn set_caller_terminal_pane_id_if_not_set(
+        &mut self,
+        pane_id: Option<crate::internal_ids::TerminalId>,
+    ) {
         if let Some(pane_id) = pane_id {
             let configuration = self
                 .configuration

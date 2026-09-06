@@ -14,7 +14,7 @@ fn screen_with_two_tabs() -> Screen {
     new_tab(&mut screen, 2, 1);
     // `new_tab` leaves the client on the tab it just made; the reveal is only
     // interesting from somewhere else.
-    screen.go_to_tab(1, crate::ClientId(1)).expect("TEST");
+    screen.go_to_tab(1, crate::ClientId::new(1)).expect("TEST");
     screen
 }
 
@@ -23,14 +23,17 @@ fn screen_with_two_tabs() -> Screen {
 /// your place mid-keystroke is worse than not being shown the pane.
 #[test]
 fn a_client_focused_inside_a_tab_is_not_dragged_out_of_it() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut screen = screen_with_two_tabs();
     let focused_before = screen.get_active_pane_id(&client_id);
-    assert_eq!(focused_before, Some(PaneId::Terminal(crate::TerminalId(1))));
+    assert_eq!(
+        focused_before,
+        Some(PaneId::Terminal(crate::TerminalId::new(1)))
+    );
 
     screen
         .reveal_pane_with_id(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             Some("hocus: send_input?".into()),
             client_id,
         )
@@ -48,19 +51,19 @@ fn a_client_focused_inside_a_tab_is_not_dragged_out_of_it() {
 /// waiting on it whenever the client does arrive.
 #[test]
 fn a_pane_that_cannot_be_revealed_is_still_marked() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut screen = screen_with_two_tabs();
 
     screen
         .reveal_pane_with_id(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             Some("hocus: send_input?".into()),
             client_id,
         )
         .expect("TEST");
 
     let marked = screen
-        .with_pane(PaneId::Terminal(crate::TerminalId(2)), |pane| {
+        .with_pane(PaneId::Terminal(crate::TerminalId::new(2)), |pane| {
             pane.frame_color_override(client_id)
         })
         .expect("the pane exists");
@@ -78,17 +81,17 @@ fn the_mark_is_drawn_only_for_the_client_it_was_raised_for() {
 
     screen
         .reveal_pane_with_id(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             Some("hocus: send_input?".into()),
-            crate::ClientId(asking_client),
+            crate::ClientId::new(asking_client),
         )
         .expect("TEST");
 
     let (asking, other) = screen
-        .with_pane(PaneId::Terminal(crate::TerminalId(2)), |pane| {
+        .with_pane(PaneId::Terminal(crate::TerminalId::new(2)), |pane| {
             (
-                pane.frame_color_override(crate::ClientId(asking_client)),
-                pane.frame_color_override(crate::ClientId(other_client)),
+                pane.frame_color_override(crate::ClientId::new(asking_client)),
+                pane.frame_color_override(crate::ClientId::new(other_client)),
             )
         })
         .expect("the pane exists");
@@ -105,18 +108,18 @@ fn a_client_cannot_clear_a_mark_raised_for_someone_else() {
     let mut screen = screen_with_two_tabs();
     screen
         .reveal_pane_with_id(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             None,
-            crate::ClientId(asking_client),
+            crate::ClientId::new(asking_client),
         )
         .expect("TEST");
 
-    screen.with_pane(PaneId::Terminal(crate::TerminalId(2)), |pane| {
-        pane.clear_pane_frame_color_override(Some(crate::ClientId(other_client)))
+    screen.with_pane(PaneId::Terminal(crate::TerminalId::new(2)), |pane| {
+        pane.clear_pane_frame_color_override(Some(crate::ClientId::new(other_client)))
     });
     let still_marked = screen
-        .with_pane(PaneId::Terminal(crate::TerminalId(2)), |pane| {
-            pane.frame_color_override(crate::ClientId(asking_client))
+        .with_pane(PaneId::Terminal(crate::TerminalId::new(2)), |pane| {
+            pane.frame_color_override(crate::ClientId::new(asking_client))
         })
         .expect("the pane exists");
     assert!(
@@ -124,12 +127,12 @@ fn a_client_cannot_clear_a_mark_raised_for_someone_else() {
         "the other client's clear is not theirs to give"
     );
 
-    screen.with_pane(PaneId::Terminal(crate::TerminalId(2)), |pane| {
-        pane.clear_pane_frame_color_override(Some(crate::ClientId(asking_client)))
+    screen.with_pane(PaneId::Terminal(crate::TerminalId::new(2)), |pane| {
+        pane.clear_pane_frame_color_override(Some(crate::ClientId::new(asking_client)))
     });
     let cleared = screen
-        .with_pane(PaneId::Terminal(crate::TerminalId(2)), |pane| {
-            pane.frame_color_override(crate::ClientId(asking_client))
+        .with_pane(PaneId::Terminal(crate::TerminalId::new(2)), |pane| {
+            pane.frame_color_override(crate::ClientId::new(asking_client))
         })
         .expect("the pane exists");
     assert_eq!(cleared, None, "its own clear does");
@@ -141,26 +144,26 @@ fn a_client_cannot_clear_a_mark_raised_for_someone_else() {
 #[test]
 fn an_override_raised_for_nobody_in_particular_belongs_to_every_client() {
     let mut screen = screen_with_two_tabs();
-    screen.with_pane(PaneId::Terminal(crate::TerminalId(2)), |pane| {
+    screen.with_pane(PaneId::Terminal(crate::TerminalId::new(2)), |pane| {
         pane.add_red_pane_frame_color_override(Some("exited 1".to_owned()))
     });
 
     let (first, second) = screen
-        .with_pane(PaneId::Terminal(crate::TerminalId(2)), |pane| {
+        .with_pane(PaneId::Terminal(crate::TerminalId::new(2)), |pane| {
             (
-                pane.frame_color_override(crate::ClientId(1)),
-                pane.frame_color_override(crate::ClientId(2)),
+                pane.frame_color_override(crate::ClientId::new(1)),
+                pane.frame_color_override(crate::ClientId::new(2)),
             )
         })
         .expect("the pane exists");
     assert!(first.is_some() && second.is_some());
 
-    screen.with_pane(PaneId::Terminal(crate::TerminalId(2)), |pane| {
+    screen.with_pane(PaneId::Terminal(crate::TerminalId::new(2)), |pane| {
         pane.clear_pane_frame_color_override(None)
     });
     let cleared = screen
-        .with_pane(PaneId::Terminal(crate::TerminalId(2)), |pane| {
-            pane.frame_color_override(crate::ClientId(1))
+        .with_pane(PaneId::Terminal(crate::TerminalId::new(2)), |pane| {
+            pane.frame_color_override(crate::ClientId::new(1))
         })
         .expect("the pane exists");
     assert_eq!(cleared, None);

@@ -221,13 +221,13 @@ pub enum Event {
         /// set only on the final chunk, when the stream was aborted rather than completed
         error: Option<String>,
     },
-    CommandPaneOpened(u32, Context), // u32 - terminal_pane_id
-    CommandPaneExited(u32, Option<i32>, Context), // u32 - terminal_pane_id, Option<i32> -
+    CommandPaneOpened(crate::internal_ids::TerminalId, Context), // u32 - terminal_pane_id
+    CommandPaneExited(crate::internal_ids::TerminalId, Option<i32>, Context), // u32 - terminal_pane_id, Option<i32> -
     // exit_code
     PaneClosed(PaneId),
-    EditPaneOpened(u32, Context),              // u32 - terminal_pane_id
-    EditPaneExited(u32, Option<i32>, Context), // u32 - terminal_pane_id, Option<i32> - exit code
-    CommandPaneReRun(u32, Context),            // u32 - terminal_pane_id, Option<i32> -
+    EditPaneOpened(crate::internal_ids::TerminalId, Context), // u32 - terminal_pane_id
+    EditPaneExited(crate::internal_ids::TerminalId, Option<i32>, Context), // u32 - terminal_pane_id, Option<i32> - exit code
+    CommandPaneReRun(crate::internal_ids::TerminalId, Context), // u32 - terminal_pane_id, Option<i32> -
     FailedToWriteConfigToDisk(Option<String>), // String -> the file path we failed to write
     ListClients(Vec<ClientInfo>),
     HostFolderChanged(PathBuf),               // PathBuf -> new host folder
@@ -237,7 +237,12 @@ pub enum Event {
     BeforeClose,
     InterceptedKeyPress(KeyWithModifier),
     /// An action was performed by the user (requires InterceptInput permission)
-    UserAction(Action, ClientId, Option<u32>, Option<ClientId>), // Action, client_id, terminal_id, cli_client_id
+    UserAction(
+        Action,
+        ClientId,
+        Option<crate::internal_ids::TerminalId>,
+        Option<ClientId>,
+    ), // Action, client_id, terminal_id, cli_client_id
     PaneRenderReport(HashMap<PaneId, PaneContents>),
     ActionComplete(Action, Option<PaneId>, BTreeMap<String, String>), // Action, pane_id, context
     CwdChanged(PaneId, PathBuf, Vec<ClientId>), // pane_id, cwd, focused_client_ids
@@ -289,7 +294,7 @@ pub enum Event {
     QueueJobStarted {
         queue: String,
         job_id: u64,
-        plugin_id: u32,
+        plugin_id: crate::internal_ids::PluginId,
         context: BTreeMap<String, String>,
     },
     /// A job this plugin enqueued has finished, one way or another. Sent only to the enqueuer.
@@ -430,8 +435,8 @@ pub struct QueueJobInfo {
     pub queue: String,
     pub plugin_url: String,
     /// The job's plugin instance, once it is running.
-    pub plugin_id: Option<u32>,
-    pub enqueuer_plugin_id: u32,
+    pub plugin_id: Option<crate::internal_ids::PluginId>,
+    pub enqueuer_plugin_id: crate::internal_ids::PluginId,
     pub context: BTreeMap<String, String>,
     pub state: QueueJobState,
 }
@@ -767,7 +772,7 @@ impl ContextMenuItem {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextMenuLink {
     /// The plugin that registered the highlight, so an item can be aimed back at it.
-    pub plugin_id: u32,
+    pub plugin_id: crate::internal_ids::PluginId,
     pub pattern: String,
     pub matched: String,
     pub context: BTreeMap<String, String>,
@@ -917,7 +922,7 @@ pub struct SessionInfo {
     pub connected_clients: usize,
     pub is_current_session: bool,
     pub available_layouts: Vec<LayoutInfo>,
-    pub plugins: BTreeMap<u32, PluginInfo>,
+    pub plugins: BTreeMap<crate::internal_ids::PluginId, PluginInfo>,
     pub tab_history: BTreeMap<ClientId, Vec<usize>>,
     pub pane_history: BTreeMap<ClientId, Vec<PaneId>>,
     pub creation_time: Duration,
@@ -1144,7 +1149,10 @@ impl SessionInfo {
     pub fn update_connected_clients(&mut self, new_connected_clients: usize) {
         self.connected_clients = new_connected_clients;
     }
-    pub fn populate_plugin_list(&mut self, plugins: BTreeMap<u32, RunPlugin>) {
+    pub fn populate_plugin_list(
+        &mut self,
+        plugins: BTreeMap<crate::internal_ids::PluginId, RunPlugin>,
+    ) {
         // u32 - plugin_id
         let mut plugin_list = BTreeMap::new();
         for (plugin_id, run_plugin) in plugins {
@@ -1751,7 +1759,7 @@ impl SelectedText {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct PluginIds {
-    pub plugin_id: u32,
+    pub plugin_id: crate::internal_ids::PluginId,
     pub zellij_pid: u32,
     pub initial_cwd: PathBuf,
     pub client_id: ClientId,
@@ -1863,7 +1871,7 @@ pub enum HookPayload {
     /// `agent_start`, `agent_waiting` and `agent_idle`: the record as it now stands, and the
     /// state it moved from - absent for a record that just appeared.
     Agent {
-        pane_id: u32,
+        pane_id: crate::internal_ids::TerminalId,
         agent: AgentInfo,
         previous_state: Option<AgentState>,
         /// The command the pane runs, for display, when it is a command pane.
@@ -1872,7 +1880,7 @@ pub enum HookPayload {
     /// `pane_exit`: any command pane's command exited. `held` says whether the pane is still
     /// there to be re-run, or is closing with its command.
     PaneExit {
-        pane_id: u32,
+        pane_id: crate::internal_ids::TerminalId,
         /// Absent when the command was killed by a signal.
         exit_code: Option<i32>,
         cwd: Option<PathBuf>,
@@ -1894,7 +1902,7 @@ use crate::command::GitCheckout;
 #[serde(default)]
 pub struct MessageToPlugin {
     pub plugin_url: Option<String>,
-    pub destination_plugin_id: Option<u32>,
+    pub destination_plugin_id: Option<crate::internal_ids::PluginId>,
     pub plugin_config: BTreeMap<String, String>,
     pub message_name: String,
     pub message_payload: Option<String>,
@@ -1929,7 +1937,10 @@ impl MessageToPlugin {
         self.plugin_url = Some(url.into());
         self
     }
-    pub fn with_destination_plugin_id(mut self, destination_plugin_id: u32) -> Self {
+    pub fn with_destination_plugin_id(
+        mut self,
+        destination_plugin_id: crate::internal_ids::PluginId,
+    ) -> Self {
         self.destination_plugin_id = Some(destination_plugin_id);
         self
     }
@@ -2056,7 +2067,7 @@ pub enum HttpVerb {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PipeSource {
     Cli(String), // String is the pipe_id of the CLI pipe (used for blocking/unblocking)
-    Plugin(u32), // u32 is the lugin id
+    Plugin(crate::internal_ids::PluginId), // the sending plugin
     Keybind,     // TODO: consider including the actual keybind here?
 }
 
@@ -2200,7 +2211,7 @@ use crate::geometry::FloatingPaneCoordinates;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OriginatingPlugin {
-    pub plugin_id: u32,
+    pub plugin_id: crate::internal_ids::PluginId,
     pub client_id: ClientId,
     pub context: Context,
 }
@@ -2209,7 +2220,11 @@ pub struct OriginatingPlugin {
 pub const HOCUS_AGENT_PANE_CONTEXT: &str = "hocus_agent_pane";
 
 impl OriginatingPlugin {
-    pub fn new(plugin_id: u32, client_id: ClientId, context: Context) -> Self {
+    pub fn new(
+        plugin_id: crate::internal_ids::PluginId,
+        client_id: ClientId,
+        context: Context,
+    ) -> Self {
         OriginatingPlugin {
             plugin_id,
             client_id,
@@ -2558,16 +2573,16 @@ pub enum PluginCommand {
     NextSwapLayout,
     GoToTabName(String),
     FocusOrCreateTab(String),
-    GoToTab(u32),                       // tab index
-    StartOrReloadPlugin(String),        // plugin url (eg. file:/path/to/plugin.wasm)
-    CloseTerminalPane(u32),             // terminal pane id
-    ClosePluginPane(u32),               // plugin pane id
-    FocusTerminalPane(u32, bool, bool), // terminal pane id, should_float_if_hidden, should_be_in_place_if_hidden
-    FocusPluginPane(u32, bool, bool), // plugin pane id, should_float_if_hidden, should_be_in_place_if_hidden
-    RenameTerminalPane(u32, String),  // terminal pane id, new name
-    RenamePluginPane(u32, String),    // plugin pane id, new name
-    RenameTab(u32, String),           // tab index, new name
-    ReportPanic(String),              // stringified panic
+    GoToTab(u32),                                                   // tab index
+    StartOrReloadPlugin(String), // plugin url (eg. file:/path/to/plugin.wasm)
+    CloseTerminalPane(crate::internal_ids::TerminalId), // terminal pane id
+    ClosePluginPane(crate::internal_ids::PluginId), // plugin pane id
+    FocusTerminalPane(crate::internal_ids::TerminalId, bool, bool), // terminal pane id, should_float_if_hidden, should_be_in_place_if_hidden
+    FocusPluginPane(crate::internal_ids::PluginId, bool, bool), // plugin pane id, should_float_if_hidden, should_be_in_place_if_hidden
+    RenameTerminalPane(crate::internal_ids::TerminalId, String), // terminal pane id, new name
+    RenamePluginPane(crate::internal_ids::PluginId, String),    // plugin pane id, new name
+    RenameTab(u32, String),                                     // tab index, new name
+    ReportPanic(String),                                        // stringified panic
     RequestPluginPermissions(Vec<PermissionType>),
     SwitchSession(ConnectToSession),
     DeleteDeadSession(String),       // String -> session name
@@ -2669,7 +2684,7 @@ pub enum PluginCommand {
     HidePaneWithId(PaneId),
     ShowPaneWithId(PaneId, bool, bool), // bools -> should_float_if_hidden, should_focus_pane
     OpenCommandPaneBackground(CommandToRun, Context),
-    RerunCommandPane(u32), // u32  - terminal pane id
+    RerunCommandPane(crate::internal_ids::TerminalId), // u32  - terminal pane id
     /// Run a different command in an existing (held) command pane, reusing its pane id. The
     /// `context` round-trips on the resulting `CommandPaneExited`, so each step of a sequence can
     /// carry its own correlation keys. When the pane's current command is still running, the
@@ -2734,7 +2749,7 @@ pub enum PluginCommand {
     SetTabProjects(BTreeMap<u64, String>),
     BreakPanesToTabWithId(Vec<PaneId>, u64, bool), // u64 - tab_id, bool -
     // should_change_focus_to_target_tab
-    ReloadPlugin(u32), // u32 - plugin pane id
+    ReloadPlugin(crate::internal_ids::PluginId), // u32 - plugin pane id
     LoadNewPlugin {
         url: String,
         config: BTreeMap<String, String>,

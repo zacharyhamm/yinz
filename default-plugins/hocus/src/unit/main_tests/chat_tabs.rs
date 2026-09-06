@@ -96,13 +96,16 @@ fn tab_at_the_bar_steps_down_into_the_box() {
 #[test]
 fn shift_tab_at_the_bar_steps_back_to_the_agent_list() {
     let mut state = three_tabs();
-    state.agents_plugin = Some(7);
+    state.agents_plugin = Some(zellij_tile::prelude::PluginId::new(7));
     state.on_key(shift_tab());
 
     assert!(state.on_key(shift_tab()));
     assert_eq!(
         state.ring_focus_calls,
-        [(PaneId::Plugin(zellij_tile::prelude::PluginId(7)), "history")],
+        [(
+            PaneId::Plugin(zellij_tile::prelude::PluginId::new(7)),
+            "history"
+        )],
         "the keyboard went to the list, landing in its history half"
     );
     assert_eq!(state.chat_tab_focus, None, "and this half is off its stop");

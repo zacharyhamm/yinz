@@ -560,27 +560,27 @@ pub enum Action {
         plugin: RunPluginOrAlias,
     },
     CloseTerminalPane {
-        pane_id: u32,
+        pane_id: crate::internal_ids::TerminalId,
     },
     ClosePluginPane {
-        pane_id: u32,
+        pane_id: crate::internal_ids::PluginId,
     },
     FocusTerminalPaneWithId {
-        pane_id: u32,
+        pane_id: crate::internal_ids::TerminalId,
         should_float_if_hidden: bool,
         should_be_in_place_if_hidden: bool,
     },
     FocusPluginPaneWithId {
-        pane_id: u32,
+        pane_id: crate::internal_ids::PluginId,
         should_float_if_hidden: bool,
         should_be_in_place_if_hidden: bool,
     },
     RenameTerminalPane {
-        pane_id: u32,
+        pane_id: crate::internal_ids::TerminalId,
         name: Vec<u8>,
     },
     RenamePluginPane {
-        pane_id: u32,
+        pane_id: crate::internal_ids::PluginId,
         name: Vec<u8>,
     },
     RenameTab {
@@ -633,7 +633,7 @@ pub enum Action {
         payload: Option<String>,
         args: Option<BTreeMap<String, String>>,
         plugin: Option<String>,
-        plugin_id: Option<u32>, // supercedes plugin if present
+        plugin_id: Option<crate::internal_ids::PluginId>, // supercedes plugin if present
         configuration: Option<BTreeMap<String, String>>,
         launch_new: bool,
         skip_cache: bool,
@@ -826,7 +826,7 @@ pub fn hook_report_actions(
     };
     actions.push(Action::AgentEvent(crate::agent::AgentEvent::from_hook(
         kind,
-        terminal_id.get(),
+        terminal_id,
         event,
         json,
     )));

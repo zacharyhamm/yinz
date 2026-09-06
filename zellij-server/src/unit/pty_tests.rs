@@ -1,3 +1,12 @@
+#[cfg(test)]
+const CLIENT_1: zellij_types::internal_ids::ClientId = zellij_types::internal_ids::ClientId::new(1);
+#[cfg(test)]
+const TERMINAL_3: zellij_types::internal_ids::TerminalId =
+    zellij_types::internal_ids::TerminalId::new(3);
+#[cfg(test)]
+const TERMINAL_41: zellij_types::internal_ids::TerminalId =
+    zellij_types::internal_ids::TerminalId::new(41);
+
 use super::*;
 use crate::os_input_output::ServerOsApi;
 use crate::plugins::PluginInstruction;
@@ -215,7 +224,7 @@ impl ServerOsApi for MockOsApi {
             // The child pid is the terminal id offset into a range of its own, so
             // a test asserting on signals cannot confuse the two.
             return Ok((
-                crate::TerminalId(terminal_id),
+                crate::TerminalId::new(terminal_id),
                 Box::new(crate::os_input_output::NullAsyncReader),
                 Some(1000 + terminal_id),
             ));
@@ -288,7 +297,7 @@ impl ServerOsApi for MockOsApi {
         })
     }
     fn reserve_terminal_id(&self) -> std::result::Result<TerminalId, anyhow::Error> {
-        Ok(crate::TerminalId(
+        Ok(crate::TerminalId::new(
             self.next_terminal_id.fetch_add(1, Ordering::SeqCst),
         ))
     }
@@ -583,13 +592,13 @@ fn foreground_command_emitted_with_is_foreground_true() {
     let child_pid = 100;
     mock.set_foreground_cmd(child_pid, vec!["vim".into(), "file.rs".into()]);
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
-    set_active_terminal(&mut pty, crate::TerminalId(1), child_pid);
+    set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
 
     pty.update_and_report_cwds();
 
     let events = collect_command_changed_events(&rx);
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].0, PaneId::Terminal(crate::TerminalId(1)));
+    assert_eq!(events[0].0, PaneId::Terminal(crate::TerminalId::new(1)));
     assert_eq!(events[0].1, vec!["vim", "file.rs"]);
     assert!(events[0].2, "expected is_foreground=true");
 }
@@ -600,13 +609,13 @@ fn empty_foreground_falls_back_to_shell_command() {
     let child_pid = 100;
     mock.set_cmd(child_pid, vec!["/bin/bash".into()]);
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
-    set_active_terminal(&mut pty, crate::TerminalId(1), child_pid);
+    set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
 
     pty.update_and_report_cwds();
 
     let events = collect_command_changed_events(&rx);
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].0, PaneId::Terminal(crate::TerminalId(1)));
+    assert_eq!(events[0].0, PaneId::Terminal(crate::TerminalId::new(1)));
     assert_eq!(events[0].1, vec!["/bin/bash"]);
     assert!(!events[0].2, "expected is_foreground=false");
 }
@@ -618,7 +627,7 @@ fn foreground_clearing_emits_shell_fallback() {
     mock.set_cmd(child_pid, vec!["/bin/zsh".into()]);
     mock.set_foreground_cmd(child_pid, vec!["cargo".into(), "build".into()]);
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock.clone());
-    set_active_terminal(&mut pty, crate::TerminalId(1), child_pid);
+    set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
 
     pty.update_and_report_cwds();
     let events = collect_command_changed_events(&rx);
@@ -628,7 +637,7 @@ fn foreground_clearing_emits_shell_fallback() {
 
     mock.clear_foreground_cmd(child_pid);
     pty.pane_activity_flags
-        .get(&TerminalId(1))
+        .get(&TerminalId::new(1))
         .unwrap()
         .store(true, Ordering::Relaxed);
 
@@ -648,13 +657,13 @@ fn no_event_when_foreground_unchanged() {
     let child_pid = 100;
     mock.set_foreground_cmd(child_pid, vec!["htop".into()]);
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
-    set_active_terminal(&mut pty, crate::TerminalId(1), child_pid);
+    set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
 
     pty.update_and_report_cwds();
     let _ = collect_command_changed_events(&rx);
 
     pty.pane_activity_flags
-        .get(&TerminalId(1))
+        .get(&TerminalId::new(1))
         .unwrap()
         .store(true, Ordering::Relaxed);
     pty.update_and_report_cwds();
@@ -671,9 +680,9 @@ fn no_event_for_inactive_terminal() {
     let child_pid = 100;
     mock.set_foreground_cmd(child_pid, vec!["vim".into()]);
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
-    set_active_terminal(&mut pty, crate::TerminalId(1), child_pid);
+    set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
     pty.pane_activity_flags
-        .get(&TerminalId(1))
+        .get(&TerminalId::new(1))
         .unwrap()
         .store(false, Ordering::Relaxed);
 
@@ -691,7 +700,7 @@ fn foreground_change_between_two_commands() {
     let child_pid = 100;
     mock.set_foreground_cmd(child_pid, vec!["vim".into()]);
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock.clone());
-    set_active_terminal(&mut pty, crate::TerminalId(1), child_pid);
+    set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
 
     pty.update_and_report_cwds();
     let events = collect_command_changed_events(&rx);
@@ -700,7 +709,7 @@ fn foreground_change_between_two_commands() {
 
     mock.set_foreground_cmd(child_pid, vec!["cargo".into(), "test".into()]);
     pty.pane_activity_flags
-        .get(&TerminalId(1))
+        .get(&TerminalId::new(1))
         .unwrap()
         .store(true, Ordering::Relaxed);
 
@@ -718,10 +727,10 @@ fn activity_flag_reset_after_poll() {
     let mock = MockOsApi::new();
     let child_pid = 100;
     let (mut pty, _rx) = make_pty_with_plugin_receiver(mock);
-    set_active_terminal(&mut pty, crate::TerminalId(1), child_pid);
+    set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
     assert!(pty
         .pane_activity_flags
-        .get(&TerminalId(1))
+        .get(&TerminalId::new(1))
         .unwrap()
         .load(Ordering::Relaxed));
 
@@ -729,7 +738,7 @@ fn activity_flag_reset_after_poll() {
 
     assert!(
         !pty.pane_activity_flags
-            .get(&TerminalId(1))
+            .get(&TerminalId::new(1))
             .unwrap()
             .load(Ordering::Relaxed),
         "activity flag should be reset to false after poll"
@@ -744,10 +753,10 @@ fn multiple_terminals_only_active_ones_polled() {
     mock.set_cwd(pid_active, PathBuf::from("/active"));
     mock.set_cwd(pid_inactive, PathBuf::from("/inactive"));
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
-    set_active_terminal(&mut pty, crate::TerminalId(1), pid_active);
-    set_active_terminal(&mut pty, crate::TerminalId(2), pid_inactive);
+    set_active_terminal(&mut pty, crate::TerminalId::new(1), pid_active);
+    set_active_terminal(&mut pty, crate::TerminalId::new(2), pid_inactive);
     pty.pane_activity_flags
-        .get(&TerminalId(2))
+        .get(&TerminalId::new(2))
         .unwrap()
         .store(false, Ordering::Relaxed);
 
@@ -755,7 +764,7 @@ fn multiple_terminals_only_active_ones_polled() {
 
     let events = collect_cwd_changed_events(&rx);
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].0, PaneId::Terminal(crate::TerminalId(1)));
+    assert_eq!(events[0].0, PaneId::Terminal(crate::TerminalId::new(1)));
     assert_eq!(events[0].1, PathBuf::from("/active"));
 }
 
@@ -767,13 +776,13 @@ fn cwd_changed_event_emitted_on_change() {
     let child_pid = 100;
     mock.set_cwd(child_pid, PathBuf::from("/home/user"));
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
-    set_active_terminal(&mut pty, crate::TerminalId(1), child_pid);
+    set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
 
     pty.update_and_report_cwds();
 
     let events = collect_cwd_changed_events(&rx);
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].0, PaneId::Terminal(crate::TerminalId(1)));
+    assert_eq!(events[0].0, PaneId::Terminal(crate::TerminalId::new(1)));
     assert_eq!(events[0].1, PathBuf::from("/home/user"));
 }
 
@@ -783,9 +792,9 @@ fn no_cwd_event_when_unchanged() {
     let child_pid = 100;
     mock.set_cwd(child_pid, PathBuf::from("/home/user"));
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
-    set_active_terminal(&mut pty, crate::TerminalId(1), child_pid);
+    set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
     pty.terminal_cwds
-        .insert(crate::TerminalId(1), PathBuf::from("/home/user"));
+        .insert(crate::TerminalId::new(1), PathBuf::from("/home/user"));
 
     pty.update_and_report_cwds();
 
@@ -806,11 +815,11 @@ fn a_pane_that_never_leaves_its_launch_folder_still_reports_it() {
     mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
 
-    pty.capture_initial_cwd(crate::TerminalId(1), child_pid, None);
+    pty.capture_initial_cwd(crate::TerminalId::new(1), child_pid, None);
 
     let events = collect_cwd_changed_events(&rx);
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].0, PaneId::Terminal(crate::TerminalId(1)));
+    assert_eq!(events[0].0, PaneId::Terminal(crate::TerminalId::new(1)));
     assert_eq!(events[0].1, PathBuf::from("/work/hocus"));
 }
 
@@ -822,7 +831,7 @@ fn an_initial_cwd_the_os_cannot_answer_falls_back_to_the_requested_one() {
     let (mut pty, rx) = make_pty_with_plugin_receiver(MockOsApi::new());
 
     pty.capture_initial_cwd(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         100,
         Some(PathBuf::from("/work/hocus")),
     );
@@ -831,7 +840,7 @@ fn an_initial_cwd_the_os_cannot_answer_falls_back_to_the_requested_one() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].1, PathBuf::from("/work/hocus"));
     assert_eq!(
-        pty.terminal_cwds.get(&TerminalId(1)),
+        pty.terminal_cwds.get(&TerminalId::new(1)),
         Some(&PathBuf::from("/work/hocus"))
     );
 }
@@ -840,7 +849,7 @@ fn an_initial_cwd_the_os_cannot_answer_falls_back_to_the_requested_one() {
 fn an_initial_cwd_with_nothing_to_go_on_reports_nothing() {
     let (mut pty, rx) = make_pty_with_plugin_receiver(MockOsApi::new());
 
-    pty.capture_initial_cwd(crate::TerminalId(1), 100, None);
+    pty.capture_initial_cwd(crate::TerminalId::new(1), 100, None);
 
     assert!(collect_cwd_changed_events(&rx).is_empty());
     assert!(pty.terminal_cwds.is_empty());
@@ -854,9 +863,9 @@ fn an_initial_cwd_reports_once_and_the_ticker_stays_quiet() {
     let child_pid = 100;
     mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
-    set_active_terminal(&mut pty, crate::TerminalId(1), child_pid);
+    set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
 
-    pty.capture_initial_cwd(crate::TerminalId(1), child_pid, None);
+    pty.capture_initial_cwd(crate::TerminalId::new(1), child_pid, None);
     pty.update_and_report_cwds();
 
     assert_eq!(collect_cwd_changed_events(&rx).len(), 1);
@@ -871,11 +880,11 @@ fn an_initial_cwd_reaches_screen() {
     mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
 
-    pty.capture_initial_cwd(crate::TerminalId(1), child_pid, None);
+    pty.capture_initial_cwd(crate::TerminalId::new(1), child_pid, None);
 
     assert_eq!(
         collect_pane_cwd_instructions(&screen_rx),
-        vec![(TerminalId(1), Some(PathBuf::from("/work/hocus")))]
+        vec![(TerminalId::new(1), Some(PathBuf::from("/work/hocus")))]
     );
 }
 
@@ -887,14 +896,14 @@ fn a_closed_pane_takes_its_folder_with_it() {
     let child_pid = 100;
     mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
-    pty.capture_initial_cwd(crate::TerminalId(1), child_pid, None);
+    pty.capture_initial_cwd(crate::TerminalId::new(1), child_pid, None);
     let _ = collect_pane_cwd_instructions(&screen_rx);
 
-    pty.forget_terminal_cwd(crate::TerminalId(1));
+    pty.forget_terminal_cwd(crate::TerminalId::new(1));
 
     assert_eq!(
         collect_pane_cwd_instructions(&screen_rx),
-        vec![(TerminalId(1), None)]
+        vec![(TerminalId::new(1), None)]
     );
     assert!(pty.terminal_cwds.is_empty());
 }
@@ -905,16 +914,16 @@ fn a_closed_pane_takes_its_folder_with_it() {
 fn osc7_emits_cwd_changed() {
     let mock = MockOsApi::new();
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
-    pty.id_to_child_pid.insert(crate::TerminalId(1), 100);
+    pty.id_to_child_pid.insert(crate::TerminalId::new(1), 100);
 
-    pty.notify_cwd_from_osc7(crate::TerminalId(1), PathBuf::from("/tmp/new"));
+    pty.notify_cwd_from_osc7(crate::TerminalId::new(1), PathBuf::from("/tmp/new"));
 
     let events = collect_cwd_changed_events(&rx);
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].0, PaneId::Terminal(crate::TerminalId(1)));
+    assert_eq!(events[0].0, PaneId::Terminal(crate::TerminalId::new(1)));
     assert_eq!(events[0].1, PathBuf::from("/tmp/new"));
     assert_eq!(
-        pty.terminal_cwds.get(&TerminalId(1)),
+        pty.terminal_cwds.get(&TerminalId::new(1)),
         Some(&PathBuf::from("/tmp/new")),
         "cache should be updated"
     );
@@ -924,11 +933,11 @@ fn osc7_emits_cwd_changed() {
 fn osc7_no_event_when_unchanged() {
     let mock = MockOsApi::new();
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
-    pty.id_to_child_pid.insert(crate::TerminalId(1), 100);
+    pty.id_to_child_pid.insert(crate::TerminalId::new(1), 100);
     pty.terminal_cwds
-        .insert(crate::TerminalId(1), PathBuf::from("/same"));
+        .insert(crate::TerminalId::new(1), PathBuf::from("/same"));
 
-    pty.notify_cwd_from_osc7(crate::TerminalId(1), PathBuf::from("/same"));
+    pty.notify_cwd_from_osc7(crate::TerminalId::new(1), PathBuf::from("/same"));
 
     let events = collect_cwd_changed_events(&rx);
     assert!(events.is_empty(), "no event when osc7 path matches cache");
@@ -939,11 +948,11 @@ fn osc7_clears_activity_flag() {
     let mock = MockOsApi::new();
     let (mut pty, _rx) = make_pty_with_plugin_receiver(mock);
     let flag = Arc::new(AtomicBool::new(true));
-    pty.id_to_child_pid.insert(crate::TerminalId(1), 100);
+    pty.id_to_child_pid.insert(crate::TerminalId::new(1), 100);
     pty.pane_activity_flags
-        .insert(crate::TerminalId(1), flag.clone());
+        .insert(crate::TerminalId::new(1), flag.clone());
 
-    pty.notify_cwd_from_osc7(crate::TerminalId(1), PathBuf::from("/new"));
+    pty.notify_cwd_from_osc7(crate::TerminalId::new(1), PathBuf::from("/new"));
 
     assert!(
         !flag.load(Ordering::Relaxed),
@@ -958,9 +967,9 @@ fn osc7_then_poll_skips_terminal() {
     mock.set_cwd(child_pid, PathBuf::from("/from-proc"));
     mock.set_foreground_cmd(child_pid, vec!["vim".into()]);
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
-    set_active_terminal(&mut pty, crate::TerminalId(1), child_pid);
+    set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
 
-    pty.notify_cwd_from_osc7(crate::TerminalId(1), PathBuf::from("/from-osc7"));
+    pty.notify_cwd_from_osc7(crate::TerminalId::new(1), PathBuf::from("/from-osc7"));
     let osc7_events = collect_cwd_changed_events(&rx);
     assert_eq!(osc7_events.len(), 1);
 
@@ -994,8 +1003,8 @@ fn pty_with_remote_pane(terminal_id: TerminalId, bystander_pid: u32) -> (Pty, Mo
 
 #[test]
 fn closing_a_remote_pane_does_not_signal_a_local_process() {
-    let (mut pty, os_api) = pty_with_remote_pane(crate::TerminalId(7), 4242);
-    let _ = pty.close_pane(PaneId::Terminal(crate::TerminalId(7)));
+    let (mut pty, os_api) = pty_with_remote_pane(crate::TerminalId::new(7), 4242);
+    let _ = pty.close_pane(PaneId::Terminal(crate::TerminalId::new(7)));
 
     assert!(
         os_api.local_signals().is_empty(),
@@ -1004,17 +1013,17 @@ fn closing_a_remote_pane_does_not_signal_a_local_process() {
     );
     assert_eq!(
         os_api.remote_signals(),
-        vec![(TerminalId(7), ChildSignal::Hup)]
+        vec![(TerminalId::new(7), ChildSignal::Hup)]
     );
 }
 
 #[test]
 fn a_failed_remote_termination_does_not_fail_the_close() {
-    let (mut pty, os_api) = pty_with_remote_pane(crate::TerminalId(7), 4242);
-    os_api.fail_clear_of(crate::TerminalId(7));
+    let (mut pty, os_api) = pty_with_remote_pane(crate::TerminalId::new(7), 4242);
+    os_api.fail_clear_of(crate::TerminalId::new(7));
 
     assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId(7)))
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
         .is_ok());
 }
 
@@ -1042,15 +1051,15 @@ fn a_firecracker_preflight_does_not_block_other_pty_work() {
             invoked_with: Some(Run::Command(command.clone())),
             new_pane_placement: NewPanePlacement::default(),
             start_suppressed: false,
-            client_or_tab_index: ClientTabIndexOrPaneId::ClientId(crate::ClientId(1)),
+            client_or_tab_index: ClientTabIndexOrPaneId::ClientId(crate::ClientId::new(1)),
             completion_tx: None,
             set_blocking: false,
         },
-        Ok((crate::TerminalId(41), false)),
+        Ok((crate::TerminalId::new(41), false)),
     )
     .unwrap();
     pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
-        terminal_id: crate::TerminalId(41),
+        terminal_id: crate::TerminalId::new(41),
         terminal_action: TerminalAction::RunCommand(command),
     }))
     .unwrap();
@@ -1062,17 +1071,17 @@ fn a_firecracker_preflight_does_not_block_other_pty_work() {
     assert!(matches!(
         instructions.first(),
         Some(ScreenInstruction::NewPane(
-            PaneId::Terminal(TerminalId(41)),
+            PaneId::Terminal(TERMINAL_41),
             ..
         ))
     ));
     assert!(matches!(
         instructions.get(1),
-        Some(ScreenInstruction::PtyBytes(TerminalId(41), loading))
+        Some(ScreenInstruction::PtyBytes(TERMINAL_41, loading))
             if String::from_utf8_lossy(loading).contains("Starting Firecracker VM")
     ));
     assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId(7)))
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
         .is_ok());
     os_api.spawn_release.wait();
 }
@@ -1087,12 +1096,12 @@ fn closing_a_new_remote_pane_while_it_connects_tears_down_the_late_transport() {
     pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
 
     pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
-        terminal_id: crate::TerminalId(41),
+        terminal_id: crate::TerminalId::new(41),
         terminal_action: TerminalAction::RunCommand(firecracker_command()),
     }))
     .unwrap();
     os_api.transport_started.wait();
-    pty.close_pane(PaneId::Terminal(crate::TerminalId(41)))
+    pty.close_pane(PaneId::Terminal(crate::TerminalId::new(41)))
         .unwrap();
     let closed_at = os_api.cleared_terminal_ids.lock().unwrap().len();
     os_api.transport_release.wait();
@@ -1108,7 +1117,7 @@ fn closing_a_new_remote_pane_while_it_connects_tears_down_the_late_transport() {
 
     assert_eq!(
         os_api.cleared_terminal_ids.lock().unwrap()[closed_at..],
-        [TerminalId(41)]
+        [TerminalId::new(41)]
     );
 }
 
@@ -1146,23 +1155,23 @@ fn a_firecracker_layout_appears_before_preflight_finishes() {
         0,
         false,
         true,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
     )
     .unwrap();
     assert!(screen_rx.try_iter().any(|(instruction, _)| matches!(
         instruction,
         ScreenInstruction::ApplyLayout(_, _, tiled, _, _, _, _, _, _, _, _)
-            if tiled == vec![(TerminalId(0), None)]
+            if tiled == vec![(TerminalId::new(0), None)]
     )));
     os_api.spawn_started.wait();
     assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId(7)))
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
         .is_ok());
     os_api.spawn_release.wait();
     os_api.transport_started.wait();
     assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId(7)))
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
         .is_ok());
     os_api.transport_release.wait();
 }
@@ -1183,7 +1192,7 @@ fn dropping_pty_does_not_wait_for_a_firecracker_worker() {
         ..Default::default()
     };
     pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
-        terminal_id: crate::TerminalId(41),
+        terminal_id: crate::TerminalId::new(41),
         terminal_action: TerminalAction::RunCommand(command),
     }))
     .unwrap();
@@ -1240,19 +1249,19 @@ fn a_firecracker_layout_override_appears_before_transport() {
         )],
         retain_existing_terminal_panes: false,
         retain_existing_plugin_panes: false,
-        client_id: crate::ClientId(1),
+        client_id: crate::ClientId::new(1),
         completion_tx: None,
     };
 
     pty.finish_layout_override(pending).unwrap();
     assert!(screen_rx.try_iter().any(|(instruction, _)| matches!(
         instruction,
-        ScreenInstruction::OverrideLayoutComplete(tabs, false, false, ClientId(1), _)
-            if tabs.len() == 1 && tabs[0].new_terminal_pids == vec![(TerminalId(0), None)]
+        ScreenInstruction::OverrideLayoutComplete(tabs, false, false, CLIENT_1, _)
+            if tabs.len() == 1 && tabs[0].new_terminal_pids == vec![(TerminalId::new(0), None)]
     )));
     os_api.spawn_started.wait();
     assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId(7)))
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
         .is_ok());
     os_api.spawn_release.wait();
     os_api.transport_started.wait();
@@ -1331,7 +1340,7 @@ fn a_firecracker_rerun_does_not_block_the_pty_during_transport() {
 
     assert!(pty
         .request_rerun(
-            PaneId::Terminal(crate::TerminalId(41)),
+            PaneId::Terminal(crate::TerminalId::new(41)),
             firecracker_command(),
             None
         )
@@ -1339,22 +1348,22 @@ fn a_firecracker_rerun_does_not_block_the_pty_during_transport() {
         .is_none());
     os_api.spawn_started.wait();
     assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId(7)))
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
         .is_ok());
     os_api.spawn_release.wait();
     os_api.transport_started.wait();
     assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId(7)))
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
         .is_ok());
     assert!(pty_rx.try_recv().is_err());
     os_api.transport_release.wait();
 
     let (pending, spawned) = resolved_rerun(&pty_rx);
     pty.handle_rerun_spawned(pending, spawned).unwrap();
-    assert!(!pty.reruns.contains_key(&TerminalId(41)));
+    assert!(!pty.reruns.contains_key(&TerminalId::new(41)));
     assert_eq!(
         *os_api.resolved_spawns.lock().unwrap(),
-        vec![TerminalId(41)]
+        vec![TerminalId::new(41)]
     );
 }
 
@@ -1373,7 +1382,7 @@ fn closing_a_pane_mid_transport_tears_down_the_late_spawn() {
 
     assert!(pty
         .request_rerun(
-            PaneId::Terminal(crate::TerminalId(41)),
+            PaneId::Terminal(crate::TerminalId::new(41)),
             firecracker_command(),
             None
         )
@@ -1384,15 +1393,15 @@ fn closing_a_pane_mid_transport_tears_down_the_late_spawn() {
     // with the pane rather than being started against a closed one.
     assert!(pty
         .request_rerun(
-            PaneId::Terminal(crate::TerminalId(41)),
+            PaneId::Terminal(crate::TerminalId::new(41)),
             firecracker_command(),
             None
         )
         .unwrap()
         .is_none());
-    assert_eq!(pty.reruns[&TerminalId(41)].queued.len(), 1);
+    assert_eq!(pty.reruns[&TerminalId::new(41)].queued.len(), 1);
     assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId(41)))
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(41)))
         .is_ok());
     let closed_at = os_api.cleared_terminal_ids.lock().unwrap().len();
     os_api.transport_release.wait();
@@ -1402,10 +1411,10 @@ fn closing_a_pane_mid_transport_tears_down_the_late_spawn() {
 
     assert_eq!(
         os_api.cleared_terminal_ids.lock().unwrap()[closed_at..],
-        [TerminalId(41)],
+        [TerminalId::new(41)],
         "the late spawn must be torn down through the funnel"
     );
-    assert!(!pty.reruns.contains_key(&TerminalId(41)));
+    assert!(!pty.reruns.contains_key(&TerminalId::new(41)));
     assert!(
         pty_rx.try_recv().is_err(),
         "no rerun may be started for a closed pane"
@@ -1420,14 +1429,14 @@ fn a_failed_spawn_for_a_closed_pane_does_not_fail_the_pty_thread() {
     let mut os_api = MockOsApi::new();
     os_api.spawn_started = Arc::new(Barrier::new(2));
     os_api.spawn_release = Arc::new(Barrier::new(2));
-    os_api.fail_rerun_of(crate::TerminalId(41));
+    os_api.fail_rerun_of(crate::TerminalId::new(41));
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
     let (pty_tx, pty_rx) = channels::unbounded();
     pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
 
     assert!(pty
         .request_rerun(
-            PaneId::Terminal(crate::TerminalId(41)),
+            PaneId::Terminal(crate::TerminalId::new(41)),
             firecracker_command(),
             None
         )
@@ -1435,7 +1444,7 @@ fn a_failed_spawn_for_a_closed_pane_does_not_fail_the_pty_thread() {
         .is_none());
     os_api.spawn_started.wait();
     assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId(41)))
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(41)))
         .is_ok());
     let closed_at = os_api.cleared_terminal_ids.lock().unwrap().len();
     os_api.spawn_release.wait();
@@ -1448,7 +1457,7 @@ fn a_failed_spawn_for_a_closed_pane_does_not_fail_the_pty_thread() {
         os_api.cleared_terminal_ids.lock().unwrap()[closed_at..].is_empty(),
         "nothing started, so there is nothing to tear down"
     );
-    assert!(!pty.reruns.contains_key(&TerminalId(41)));
+    assert!(!pty.reruns.contains_key(&TerminalId::new(41)));
     assert!(
         pty_rx.try_recv().is_err(),
         "no rerun may be started for a closed pane"
@@ -1469,7 +1478,7 @@ fn an_empty_spawn_slot_for_a_closed_pane_does_not_fail_the_pty_thread() {
 
     assert!(pty
         .request_rerun(
-            PaneId::Terminal(crate::TerminalId(41)),
+            PaneId::Terminal(crate::TerminalId::new(41)),
             firecracker_command(),
             None
         )
@@ -1477,7 +1486,7 @@ fn an_empty_spawn_slot_for_a_closed_pane_does_not_fail_the_pty_thread() {
         .is_none());
     os_api.transport_started.wait();
     assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId(41)))
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(41)))
         .is_ok());
     let closed_at = os_api.cleared_terminal_ids.lock().unwrap().len();
     os_api.transport_release.wait();
@@ -1505,11 +1514,11 @@ fn a_local_rerun_during_a_deferred_one_is_queued_not_run_twice() {
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
     let (pty_tx, pty_rx) = channels::unbounded();
     pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
-    os_api.mark_remote(crate::TerminalId(41));
+    os_api.mark_remote(crate::TerminalId::new(41));
 
     assert!(pty
         .request_rerun(
-            PaneId::Terminal(crate::TerminalId(41)),
+            PaneId::Terminal(crate::TerminalId::new(41)),
             firecracker_command(),
             None
         )
@@ -1521,7 +1530,7 @@ fn a_local_rerun_during_a_deferred_one_is_queued_not_run_twice() {
         ..Default::default()
     };
     assert!(
-        pty.request_rerun(PaneId::Terminal(crate::TerminalId(41)), local, None)
+        pty.request_rerun(PaneId::Terminal(crate::TerminalId::new(41)), local, None)
             .unwrap()
             .is_none(),
         "a local rerun of a pane with one in flight is queued, not handed back"
@@ -1535,7 +1544,7 @@ fn a_local_rerun_during_a_deferred_one_is_queued_not_run_twice() {
     let reruns = os_api.rerun_commands();
     assert_eq!(reruns.len(), 1, "the queued local rerun runs once, after");
     assert_eq!(reruns[0].command, PathBuf::from("sh"));
-    assert!(!pty.reruns.contains_key(&TerminalId(41)));
+    assert!(!pty.reruns.contains_key(&TerminalId::new(41)));
     assert!(os_api.cleared_terminal_ids.lock().unwrap().is_empty());
 }
 
@@ -1552,7 +1561,7 @@ fn a_second_deferred_rerun_is_queued_and_the_first_result_is_kept() {
 
     assert!(pty
         .request_rerun(
-            PaneId::Terminal(crate::TerminalId(41)),
+            PaneId::Terminal(crate::TerminalId::new(41)),
             firecracker_command(),
             None
         )
@@ -1562,7 +1571,7 @@ fn a_second_deferred_rerun_is_queued_and_the_first_result_is_kept() {
     let mut second = firecracker_command();
     second.args = vec!["--second".to_owned()];
     assert!(pty
-        .request_rerun(PaneId::Terminal(crate::TerminalId(41)), second, None)
+        .request_rerun(PaneId::Terminal(crate::TerminalId::new(41)), second, None)
         .unwrap()
         .is_none());
     os_api.spawn_release.wait();
@@ -1574,7 +1583,7 @@ fn a_second_deferred_rerun_is_queued_and_the_first_result_is_kept() {
     );
     pty.handle_rerun_spawned(pending, spawned).unwrap();
     assert!(
-        pty.reruns.contains_key(&TerminalId(41)),
+        pty.reruns.contains_key(&TerminalId::new(41)),
         "the second is off-thread now"
     );
 
@@ -1584,10 +1593,10 @@ fn a_second_deferred_rerun_is_queued_and_the_first_result_is_kept() {
     assert_eq!(pending.run_command.args, vec!["--second".to_owned()]);
     pty.handle_rerun_spawned(pending, spawned).unwrap();
 
-    assert!(!pty.reruns.contains_key(&TerminalId(41)));
+    assert!(!pty.reruns.contains_key(&TerminalId::new(41)));
     assert_eq!(
         *os_api.resolved_spawns.lock().unwrap(),
-        vec![TerminalId(41), TerminalId(41)]
+        vec![TerminalId::new(41), TerminalId::new(41)]
     );
     assert!(
         os_api.cleared_terminal_ids.lock().unwrap().is_empty(),
@@ -1614,13 +1623,13 @@ fn an_ssh_spawn_does_not_block_the_pty_thread() {
     };
     assert!(command.defers_spawn());
     pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
-        terminal_id: crate::TerminalId(41),
+        terminal_id: crate::TerminalId::new(41),
         terminal_action: TerminalAction::RunCommand(command),
     }))
     .unwrap();
     os_api.spawn_started.wait();
     assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId(7)))
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
         .is_ok());
     assert!(pty_rx.try_recv().is_err());
     os_api.spawn_release.wait();
@@ -1634,7 +1643,7 @@ fn an_ssh_spawn_does_not_block_the_pty_thread() {
     ));
     assert_eq!(
         *os_api.resolved_spawns.lock().unwrap(),
-        vec![TerminalId(41)]
+        vec![TerminalId::new(41)]
     );
 }
 
@@ -1678,14 +1687,14 @@ fn a_failing_layout_pane_clears_its_reserved_remote_panes() {
         0,
         false,
         true,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
     );
 
     assert!(result.is_err(), "the local failure is still reported");
     assert_eq!(
         *os_api.cleared_terminal_ids.lock().unwrap(),
-        vec![TerminalId(0)],
+        vec![TerminalId::new(0)],
         "the reservation made before the local failure is released"
     );
     assert!(pty.task_handles.is_empty());
@@ -1735,7 +1744,7 @@ fn a_failing_layout_closes_the_panes_it_already_spawned() {
         0,
         false,
         true,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
     );
 
@@ -1744,7 +1753,7 @@ fn a_failing_layout_closes_the_panes_it_already_spawned() {
     cleared.sort_unstable();
     assert_eq!(
         cleared,
-        vec![TerminalId(0), TerminalId(1)],
+        vec![TerminalId::new(0), TerminalId::new(1)],
         "both the running local pane and the reserved remote one are released"
     );
     assert_eq!(
@@ -1796,7 +1805,7 @@ fn a_failing_layout_override_closes_the_panes_it_already_spawned() {
         HashMap::new(),
         0,
         None,
-        crate::ClientId(1),
+        crate::ClientId::new(1),
         None,
         None,
         false,
@@ -1806,7 +1815,7 @@ fn a_failing_layout_override_closes_the_panes_it_already_spawned() {
     assert!(result.is_err(), "the local failure is still reported");
     let mut cleared = os_api.cleared_terminal_ids.lock().unwrap().clone();
     cleared.sort_unstable();
-    assert_eq!(cleared, vec![TerminalId(0), TerminalId(1)]);
+    assert_eq!(cleared, vec![TerminalId::new(0), TerminalId::new(1)]);
     assert_eq!(os_api.local_signals(), vec![(1000, "SIGHUP")]);
     assert!(pty.id_to_child_pid.is_empty());
     assert!(pty.task_handles.is_empty());
@@ -1827,14 +1836,14 @@ fn a_failed_firecracker_rerun_is_shown_and_held_without_hold_on_close() {
         ..Default::default()
     };
     let error = ZellijError::PaneStartFailed {
-        terminal_id: 41,
+        terminal_id: zellij_types::internal_ids::TerminalId::new(41),
         message: "provider failed".to_owned(),
     }
     .into();
 
     finish_command_rerun(
         &mut pty,
-        PaneId::Terminal(crate::TerminalId(41)),
+        PaneId::Terminal(crate::TerminalId::new(41)),
         command,
         Err(error),
     )
@@ -1846,11 +1855,11 @@ fn a_failed_firecracker_rerun_is_shown_and_held_without_hold_on_close() {
         .collect::<Vec<_>>();
     assert!(instructions.iter().any(|instruction| matches!(
         instruction,
-        ScreenInstruction::PtyBytes(TerminalId(41), message) if message == b"provider failed"
+        ScreenInstruction::PtyBytes(TERMINAL_41, message) if message == b"provider failed"
     )));
     assert!(instructions.iter().any(|instruction| matches!(
         instruction,
-        ScreenInstruction::HoldPane(PaneId::Terminal(TerminalId(41)), Some(2), _)
+        ScreenInstruction::HoldPane(PaneId::Terminal(TERMINAL_41), Some(2), _)
     )));
 }
 
@@ -1860,17 +1869,17 @@ fn a_failed_firecracker_rerun_is_shown_and_held_without_hold_on_close() {
 fn pty_teardown_closes_firecracker_panes_without_local_pids() {
     let os_api = MockOsApi::new();
     let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
-    os_api.mark_firecracker(crate::TerminalId(7));
+    os_api.mark_firecracker(crate::TerminalId::new(7));
 
     drop(pty);
 
     assert_eq!(
         os_api.remote_signals(),
-        vec![(TerminalId(7), ChildSignal::Hup)]
+        vec![(TerminalId::new(7), ChildSignal::Hup)]
     );
     assert_eq!(
         os_api.cleared_terminal_ids.lock().unwrap().clone(),
-        vec![TerminalId(7)]
+        vec![TerminalId::new(7)]
     );
 }
 
@@ -1880,7 +1889,7 @@ fn pty_teardown_closes_firecracker_panes_without_local_pids() {
 fn pty_teardown_leaves_ssh_panes_adoptable() {
     let os_api = MockOsApi::new();
     let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
-    os_api.mark_remote(crate::TerminalId(7));
+    os_api.mark_remote(crate::TerminalId::new(7));
 
     drop(pty);
 
@@ -1894,13 +1903,13 @@ fn pty_teardown_leaves_ssh_panes_adoptable() {
 /// timeout on every remote pane of a closing tab.
 #[test]
 fn closing_a_remote_pane_does_not_wait_for_its_reader() {
-    let (mut pty, os_api) = pty_with_remote_pane(crate::TerminalId(7), 4242);
+    let (mut pty, os_api) = pty_with_remote_pane(crate::TerminalId::new(7), 4242);
     let (started_tx, started_rx) = channels::bounded(1);
     let (release_tx, release_rx) = channels::bounded::<()>(1);
     // A reader that never reaches an await point until released, so an abort
     // alone cannot end it within the shutdown timeout.
     pty.task_handles.insert(
-        crate::TerminalId(7),
+        crate::TerminalId::new(7),
         async_runtime().spawn(async move {
             let _ = started_tx.send(());
             let _ = tokio::task::spawn_blocking(move || release_rx.recv()).await;
@@ -1909,7 +1918,7 @@ fn closing_a_remote_pane_does_not_wait_for_its_reader() {
     started_rx.recv().unwrap();
 
     let start = std::time::Instant::now();
-    pty.close_pane(PaneId::Terminal(crate::TerminalId(7)))
+    pty.close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
         .unwrap();
     let took = start.elapsed();
     let _ = release_tx.send(());
@@ -1920,14 +1929,14 @@ fn closing_a_remote_pane_does_not_wait_for_its_reader() {
     );
     assert_eq!(
         os_api.remote_signals(),
-        vec![(TerminalId(7), ChildSignal::Hup)]
+        vec![(TerminalId::new(7), ChildSignal::Hup)]
     );
 }
 
 #[test]
 fn sigint_to_a_remote_pane_does_not_signal_a_local_process() {
-    let (pty, os_api) = pty_with_remote_pane(crate::TerminalId(7), 4242);
-    pty.send_sigint_to_pane(PaneId::Terminal(crate::TerminalId(7)));
+    let (pty, os_api) = pty_with_remote_pane(crate::TerminalId::new(7), 4242);
+    pty.send_sigint_to_pane(PaneId::Terminal(crate::TerminalId::new(7)));
 
     assert!(
         os_api.local_signals().is_empty(),
@@ -1936,14 +1945,14 @@ fn sigint_to_a_remote_pane_does_not_signal_a_local_process() {
     );
     assert_eq!(
         os_api.remote_signals(),
-        vec![(TerminalId(7), ChildSignal::Int)]
+        vec![(TerminalId::new(7), ChildSignal::Int)]
     );
 }
 
 #[test]
 fn sigkill_to_a_remote_pane_does_not_signal_a_local_process() {
-    let (pty, os_api) = pty_with_remote_pane(crate::TerminalId(7), 4242);
-    pty.send_sigkill_to_pane(PaneId::Terminal(crate::TerminalId(7)));
+    let (pty, os_api) = pty_with_remote_pane(crate::TerminalId::new(7), 4242);
+    pty.send_sigkill_to_pane(PaneId::Terminal(crate::TerminalId::new(7)));
 
     assert!(
         os_api.local_signals().is_empty(),
@@ -1952,7 +1961,7 @@ fn sigkill_to_a_remote_pane_does_not_signal_a_local_process() {
     );
     assert_eq!(
         os_api.remote_signals(),
-        vec![(TerminalId(7), ChildSignal::Kill)]
+        vec![(TerminalId::new(7), ChildSignal::Kill)]
     );
 }
 
@@ -1962,11 +1971,11 @@ fn a_local_pane_is_still_signalled_by_pid() {
     let os_api = MockOsApi::new();
     let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
     let mut pty = pty;
-    pty.id_to_child_pid.insert(crate::TerminalId(3), 909);
+    pty.id_to_child_pid.insert(crate::TerminalId::new(3), 909);
 
-    pty.send_sigint_to_pane(PaneId::Terminal(crate::TerminalId(3)));
-    pty.send_sigkill_to_pane(PaneId::Terminal(crate::TerminalId(3)));
-    let _ = pty.close_pane(PaneId::Terminal(crate::TerminalId(3)));
+    pty.send_sigint_to_pane(PaneId::Terminal(crate::TerminalId::new(3)));
+    pty.send_sigkill_to_pane(PaneId::Terminal(crate::TerminalId::new(3)));
+    let _ = pty.close_pane(PaneId::Terminal(crate::TerminalId::new(3)));
 
     assert_eq!(
         os_api.local_signals(),
@@ -1978,8 +1987,8 @@ fn a_local_pane_is_still_signalled_by_pid() {
 /// Handing a remote pid to a plugin invites the same mistake one layer out.
 #[test]
 fn a_remote_panes_pid_is_not_handed_to_plugins() {
-    let (pty, _os_api) = pty_with_remote_pane(crate::TerminalId(7), 4242);
-    match pty.get_pane_pid(PaneId::Terminal(crate::TerminalId(7))) {
+    let (pty, _os_api) = pty_with_remote_pane(crate::TerminalId::new(7), 4242);
+    match pty.get_pane_pid(PaneId::Terminal(crate::TerminalId::new(7))) {
         GetPanePidResponse::Err(msg) => {
             assert!(
                 msg.contains("another machine"),
@@ -2018,7 +2027,7 @@ fn remote_pane(
 #[test]
 fn a_remote_panes_foreground_command_is_reported_like_any_other() {
     let (mut pty, _mock, plugin_rx, _screen_rx) = remote_pane(
-        crate::TerminalId(7),
+        crate::TerminalId::new(7),
         RemoteStatus {
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -2030,7 +2039,7 @@ fn a_remote_panes_foreground_command_is_reported_like_any_other() {
 
     let events = collect_command_changed_events(&plugin_rx);
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].0, PaneId::Terminal(crate::TerminalId(7)));
+    assert_eq!(events[0].0, PaneId::Terminal(crate::TerminalId::new(7)));
     assert_eq!(events[0].1, vec!["claude", "--resume"]);
     assert!(
         events[0].2,
@@ -2043,7 +2052,7 @@ fn a_remote_panes_foreground_command_is_reported_like_any_other() {
 #[test]
 fn a_remote_pane_with_no_foreground_falls_back_to_its_own_command() {
     let (mut pty, _mock, plugin_rx, _screen_rx) = remote_pane(
-        crate::TerminalId(7),
+        crate::TerminalId::new(7),
         RemoteStatus {
             cwd: None,
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -2063,7 +2072,7 @@ fn a_remote_pane_with_no_foreground_falls_back_to_its_own_command() {
 #[test]
 fn a_remote_panes_cwd_is_reported_unchanged() {
     let (mut pty, _mock, _plugin_rx, screen_rx) = remote_pane(
-        crate::TerminalId(7),
+        crate::TerminalId::new(7),
         RemoteStatus {
             cwd: Some("/srv/build/project".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -2076,7 +2085,10 @@ fn a_remote_panes_cwd_is_reported_unchanged() {
     let cwds = collect_pane_cwd_instructions(&screen_rx);
     assert_eq!(
         cwds,
-        vec![(TerminalId(7), Some(PathBuf::from("/srv/build/project")))],
+        vec![(
+            TerminalId::new(7),
+            Some(PathBuf::from("/srv/build/project"))
+        )],
         "a remote cwd must be reported as-is"
     );
 }
@@ -2088,7 +2100,7 @@ fn a_remote_panes_cwd_is_reported_unchanged() {
 #[test]
 fn a_silent_remote_pane_is_still_polled() {
     let (mut pty, mock, plugin_rx, _screen_rx) = remote_pane(
-        crate::TerminalId(7),
+        crate::TerminalId::new(7),
         RemoteStatus {
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -2102,7 +2114,7 @@ fn a_silent_remote_pane_is_still_polled() {
     assert_eq!(first.len(), 1, "a silent remote pane was skipped entirely");
 
     mock.set_remote_status(
-        crate::TerminalId(7),
+        crate::TerminalId::new(7),
         RemoteStatus {
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -2119,7 +2131,7 @@ fn a_silent_remote_pane_is_still_polled() {
 #[test]
 fn an_unchanged_remote_pane_emits_nothing_further() {
     let (mut pty, _mock, plugin_rx, _screen_rx) = remote_pane(
-        crate::TerminalId(7),
+        crate::TerminalId::new(7),
         RemoteStatus {
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -2142,7 +2154,7 @@ fn an_unchanged_remote_pane_emits_nothing_further() {
 #[test]
 fn a_remote_pane_answers_the_plugin_facing_accessors() {
     let (pty, _mock, _plugin_rx, _screen_rx) = remote_pane(
-        crate::TerminalId(7),
+        crate::TerminalId::new(7),
         RemoteStatus {
             cwd: Some("/srv/build/project".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
@@ -2150,11 +2162,11 @@ fn a_remote_pane_answers_the_plugin_facing_accessors() {
         },
     );
 
-    match pty.get_pane_running_command(PaneId::Terminal(crate::TerminalId(7))) {
+    match pty.get_pane_running_command(PaneId::Terminal(crate::TerminalId::new(7))) {
         GetPaneRunningCommandResponse::Ok(argv) => assert_eq!(argv, vec!["claude".to_owned()]),
         other => panic!("expected the running command, got {other:?}"),
     }
-    match pty.get_pane_cwd(PaneId::Terminal(crate::TerminalId(7))) {
+    match pty.get_pane_cwd(PaneId::Terminal(crate::TerminalId::new(7))) {
         GetPaneCwdResponse::Ok(cwd) => assert_eq!(cwd, PathBuf::from("/srv/build/project")),
         other => panic!("expected the cwd, got {other:?}"),
     }
@@ -2169,7 +2181,7 @@ fn a_remote_pane_answers_the_plugin_facing_accessors() {
 fn a_remote_pane_hands_its_git_probe_to_the_plugins() {
     let mock = MockOsApi::new();
     mock.set_remote_git_probe(
-        crate::TerminalId(7),
+        crate::TerminalId::new(7),
         RemoteGitProbe {
             host: "build-box".to_owned(),
             cwd: "/srv/build/project".to_owned(),
@@ -2180,7 +2192,7 @@ fn a_remote_pane_hands_its_git_probe_to_the_plugins() {
     );
     let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock);
 
-    match pty.get_pane_git_probe(PaneId::Terminal(crate::TerminalId(7))) {
+    match pty.get_pane_git_probe(PaneId::Terminal(crate::TerminalId::new(7))) {
         GetPaneGitProbeResponse::Ok(probe) => {
             assert_eq!(
                 probe.host, "build-box",
@@ -2204,7 +2216,7 @@ fn a_local_pane_has_no_git_probe_to_give() {
     let mock = MockOsApi::new();
     let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock);
 
-    match pty.get_pane_git_probe(PaneId::Terminal(crate::TerminalId(7))) {
+    match pty.get_pane_git_probe(PaneId::Terminal(crate::TerminalId::new(7))) {
         GetPaneGitProbeResponse::Err(message) => assert!(
             message.contains("not remote"),
             "the reason has to be readable: {message}"
@@ -2219,20 +2231,23 @@ fn a_local_pane_has_no_git_probe_to_give() {
 fn a_remote_panes_host_is_announced_to_screen() {
     let mock = MockOsApi::new();
     mock.set_remote_status(
-        crate::TerminalId(7),
+        crate::TerminalId::new(7),
         RemoteStatus {
             cwd: Some("/home/me/work".to_owned()),
             shell_argv: Some(vec!["/bin/zsh".to_owned()]),
             foreground_argv: None,
         },
     );
-    mock.set_remote_host(crate::TerminalId(7), "build-box");
+    mock.set_remote_host(crate::TerminalId::new(7), "build-box");
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
 
-    pty.report_terminal_host(crate::TerminalId(7));
+    pty.report_terminal_host(crate::TerminalId::new(7));
 
     let hosts = collect_pane_host_instructions(&screen_rx);
-    assert_eq!(hosts, vec![(TerminalId(7), Some("build-box".to_owned()))]);
+    assert_eq!(
+        hosts,
+        vec![(TerminalId::new(7), Some("build-box".to_owned()))]
+    );
 }
 
 /// Local panes are the overwhelming majority, and must stay silent — an
@@ -2243,7 +2258,7 @@ fn a_local_pane_announces_no_host() {
     let mock = MockOsApi::new();
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
 
-    pty.report_terminal_host(crate::TerminalId(3));
+    pty.report_terminal_host(crate::TerminalId::new(3));
 
     assert!(
         collect_pane_host_instructions(&screen_rx).is_empty(),
@@ -2260,7 +2275,7 @@ fn a_respawn_back_onto_this_machine_retracts_the_panes_host() {
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
 
     pty.rerun_command_in_pane(
-        PaneId::Terminal(crate::TerminalId(7)),
+        PaneId::Terminal(crate::TerminalId::new(7)),
         RunCommand {
             command: PathBuf::from("step2"),
             hold_on_close: true,
@@ -2271,7 +2286,7 @@ fn a_respawn_back_onto_this_machine_retracts_the_panes_host() {
 
     assert_eq!(
         collect_pane_host_instructions(&screen_rx),
-        vec![(TerminalId(7), None)],
+        vec![(TerminalId::new(7), None)],
         "the pane's host should be retracted, exactly once"
     );
 }
@@ -2281,11 +2296,11 @@ fn a_respawn_back_onto_this_machine_retracts_the_panes_host() {
 #[test]
 fn a_respawn_on_the_same_host_reports_it_once_and_never_blips() {
     let mock = MockOsApi::new();
-    mock.set_remote_host(crate::TerminalId(7), "build-box");
+    mock.set_remote_host(crate::TerminalId::new(7), "build-box");
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
 
     pty.rerun_command_in_pane(
-        PaneId::Terminal(crate::TerminalId(7)),
+        PaneId::Terminal(crate::TerminalId::new(7)),
         RunCommand {
             command: PathBuf::from("step2"),
             hold_on_close: true,
@@ -2299,7 +2314,7 @@ fn a_respawn_on_the_same_host_reports_it_once_and_never_blips() {
 
     assert_eq!(
         collect_pane_host_instructions(&screen_rx),
-        vec![(TerminalId(7), Some("build-box".to_owned()))],
+        vec![(TerminalId::new(7), Some("build-box".to_owned()))],
         "one update naming the host, with no host-less one before it"
     );
 }
@@ -2307,13 +2322,13 @@ fn a_respawn_on_the_same_host_reports_it_once_and_never_blips() {
 #[test]
 fn a_respawn_onto_another_host_clears_the_old_hosts_cwd() {
     let mock = MockOsApi::new();
-    mock.set_remote_host(crate::TerminalId(7), "old-box");
+    mock.set_remote_host(crate::TerminalId::new(7), "old-box");
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
     pty.terminal_cwds
-        .insert(crate::TerminalId(7), PathBuf::from("/srv/on-old-box"));
+        .insert(crate::TerminalId::new(7), PathBuf::from("/srv/on-old-box"));
 
     pty.rerun_command_in_pane(
-        PaneId::Terminal(crate::TerminalId(7)),
+        PaneId::Terminal(crate::TerminalId::new(7)),
         RunCommand {
             command: PathBuf::from("step2"),
             hold_on_close: true,
@@ -2328,20 +2343,22 @@ fn a_respawn_onto_another_host_clears_the_old_hosts_cwd() {
     assert!(pty.terminal_cwds.is_empty());
     assert_eq!(
         collect_pane_cwd_instructions(&screen_rx),
-        vec![(TerminalId(7), None)]
+        vec![(TerminalId::new(7), None)]
     );
 }
 
 #[test]
 fn a_same_host_respawn_keeps_its_cwd_until_the_host_reports_again() {
     let mock = MockOsApi::new();
-    mock.set_remote_host(crate::TerminalId(7), "build-box");
+    mock.set_remote_host(crate::TerminalId::new(7), "build-box");
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
-    pty.terminal_cwds
-        .insert(crate::TerminalId(7), PathBuf::from("/srv/on-build-box"));
+    pty.terminal_cwds.insert(
+        crate::TerminalId::new(7),
+        PathBuf::from("/srv/on-build-box"),
+    );
 
     pty.rerun_command_in_pane(
-        PaneId::Terminal(crate::TerminalId(7)),
+        PaneId::Terminal(crate::TerminalId::new(7)),
         RunCommand {
             command: PathBuf::from("step2"),
             hold_on_close: true,
@@ -2354,7 +2371,7 @@ fn a_same_host_respawn_keeps_its_cwd_until_the_host_reports_again() {
     .unwrap();
 
     assert_eq!(
-        pty.terminal_cwds.get(&TerminalId(7)),
+        pty.terminal_cwds.get(&TerminalId::new(7)),
         Some(&PathBuf::from("/srv/on-build-box"))
     );
     assert!(collect_pane_cwd_instructions(&screen_rx).is_empty());
@@ -2363,14 +2380,14 @@ fn a_same_host_respawn_keeps_its_cwd_until_the_host_reports_again() {
 #[test]
 fn a_failed_host_change_retracts_the_old_host_and_cwd() {
     let mock = MockOsApi::new();
-    mock.set_remote_host(crate::TerminalId(7), "old-box");
-    mock.fail_rerun_of(crate::TerminalId(7));
+    mock.set_remote_host(crate::TerminalId::new(7), "old-box");
+    mock.fail_rerun_of(crate::TerminalId::new(7));
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
     pty.terminal_cwds
-        .insert(crate::TerminalId(7), PathBuf::from("/srv/on-old-box"));
+        .insert(crate::TerminalId::new(7), PathBuf::from("/srv/on-old-box"));
 
     let result = pty.rerun_command_in_pane(
-        PaneId::Terminal(crate::TerminalId(7)),
+        PaneId::Terminal(crate::TerminalId::new(7)),
         RunCommand {
             command: PathBuf::from("step2"),
             hold_on_close: true,
@@ -2392,8 +2409,8 @@ fn a_failed_host_change_retracts_the_old_host_and_cwd() {
             _ => {},
         }
     }
-    assert_eq!(cwd_updates, vec![(TerminalId(7), None)]);
-    assert_eq!(host_updates, vec![(TerminalId(7), None)]);
+    assert_eq!(cwd_updates, vec![(TerminalId::new(7), None)]);
+    assert_eq!(host_updates, vec![(TerminalId::new(7), None)]);
 }
 
 /// A cwd is a path on one machine. Handing a local pane's cwd to a pane that
@@ -2405,7 +2422,7 @@ fn a_remote_pane_does_not_inherit_a_local_panes_cwd() {
     let mock = MockOsApi::new();
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock);
     pty.terminal_cwds.insert(
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         PathBuf::from("/home/me/on-this-machine"),
     );
 
@@ -2416,7 +2433,7 @@ fn a_remote_pane_does_not_inherit_a_local_panes_cwd() {
         },
         ..Default::default()
     });
-    pty.fill_cwd_from_pane_id(&mut action, &PaneId::Terminal(crate::TerminalId(3)));
+    pty.fill_cwd_from_pane_id(&mut action, &PaneId::Terminal(crate::TerminalId::new(3)));
 
     match action {
         TerminalAction::RunCommand(command) => assert_eq!(command.cwd, None),
@@ -2430,10 +2447,10 @@ fn a_remote_pane_does_not_inherit_a_local_panes_cwd() {
 #[test]
 fn a_remote_pane_inherits_the_cwd_of_a_pane_on_its_own_machine() {
     let mock = MockOsApi::new();
-    mock.set_remote_host(crate::TerminalId(3), "build-box");
+    mock.set_remote_host(crate::TerminalId::new(3), "build-box");
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock);
     pty.terminal_cwds.insert(
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         PathBuf::from("/srv/on-the-far-machine"),
     );
 
@@ -2444,7 +2461,7 @@ fn a_remote_pane_inherits_the_cwd_of_a_pane_on_its_own_machine() {
         },
         ..Default::default()
     });
-    pty.fill_cwd_from_pane_id(&mut action, &PaneId::Terminal(crate::TerminalId(3)));
+    pty.fill_cwd_from_pane_id(&mut action, &PaneId::Terminal(crate::TerminalId::new(3)));
 
     match action {
         TerminalAction::RunCommand(command) => {
@@ -2461,7 +2478,7 @@ fn a_local_pane_still_inherits_a_local_panes_cwd() {
     let mock = MockOsApi::new();
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock);
     pty.terminal_cwds.insert(
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         PathBuf::from("/home/me/on-this-machine"),
     );
 
@@ -2469,7 +2486,7 @@ fn a_local_pane_still_inherits_a_local_panes_cwd() {
         command: PathBuf::from("/bin/sh"),
         ..Default::default()
     });
-    pty.fill_cwd_from_pane_id(&mut action, &PaneId::Terminal(crate::TerminalId(3)));
+    pty.fill_cwd_from_pane_id(&mut action, &PaneId::Terminal(crate::TerminalId::new(3)));
 
     match action {
         TerminalAction::RunCommand(command) => {
@@ -2484,14 +2501,14 @@ fn a_local_pane_still_inherits_a_local_panes_cwd() {
 #[test]
 fn closing_a_pane_retracts_its_host() {
     let mock = MockOsApi::new();
-    mock.set_remote_host(crate::TerminalId(7), "build-box");
+    mock.set_remote_host(crate::TerminalId::new(7), "build-box");
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
 
-    let _ = pty.close_pane(PaneId::Terminal(crate::TerminalId(7)));
+    let _ = pty.close_pane(PaneId::Terminal(crate::TerminalId::new(7)));
 
     let hosts = collect_pane_host_instructions(&screen_rx);
     assert!(
-        hosts.contains(&(crate::TerminalId(7), None)),
+        hosts.contains(&(crate::TerminalId::new(7), None)),
         "closing a pane should retract its host, got {hosts:?}"
     );
 }
@@ -2502,26 +2519,26 @@ fn closing_a_pane_retracts_its_host() {
 #[test]
 fn a_pane_that_could_not_start_names_its_terminal_and_its_reason() {
     let not_found: anyhow::Error = ZellijError::CommandNotFound {
-        terminal_id: 3,
+        terminal_id: zellij_types::internal_ids::TerminalId::new(3),
         command: "htop".to_owned(),
     }
     .into();
     let (terminal_id, message) =
         pane_start_failure(&not_found).expect("a missing command must stay survivable");
-    assert_eq!(terminal_id, crate::TerminalId(3));
+    assert_eq!(terminal_id, crate::TerminalId::new(3));
     assert!(
         message.contains("htop"),
         "the pane should say what was missing, got: {message}"
     );
 
     let unreachable: anyhow::Error = ZellijError::PaneStartFailed {
-        terminal_id: 4,
+        terminal_id: zellij_types::internal_ids::TerminalId::new(4),
         message: "could not open a pane on build-box: the broker closed the connection".to_owned(),
     }
     .into();
     let (terminal_id, message) =
         pane_start_failure(&unreachable).expect("an unreachable host must not end the session");
-    assert_eq!(terminal_id, crate::TerminalId(4));
+    assert_eq!(terminal_id, crate::TerminalId::new(4));
     assert!(
         message.contains("build-box"),
         "the pane should name the machine, got: {message}"
@@ -2547,7 +2564,8 @@ fn a_pane_that_could_not_start_names_its_terminal_and_its_reason() {
 fn set_warpable_terminal(pty: &mut Pty, terminal_id: TerminalId) {
     pty.terminal_cmds
         .insert(terminal_id, vec!["/bin/sh".to_owned()]);
-    pty.id_to_child_pid.insert(terminal_id, 100 + terminal_id.0);
+    pty.id_to_child_pid
+        .insert(terminal_id, 100 + terminal_id.get());
     pty.task_handles
         .insert(terminal_id, async_runtime().spawn(async {}));
 }
@@ -2588,12 +2606,15 @@ fn a_pane_that_cannot_be_warped_is_refused_before_its_reader_is_touched() {
     // it costs an error message.
     let mock = MockOsApi::new();
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock.clone());
-    set_warpable_terminal(&mut pty, crate::TerminalId(3));
-    mock.refuse_to_warp(crate::TerminalId(3), "pane 3 has no pty-host supervisor");
+    set_warpable_terminal(&mut pty, crate::TerminalId::new(3));
+    mock.refuse_to_warp(
+        crate::TerminalId::new(3),
+        "pane 3 has no pty-host supervisor",
+    );
 
     let error = format!(
         "{:#}",
-        pty.release_terminal_for_warp(crate::TerminalId(3), test_warp_deadline())
+        pty.release_terminal_for_warp(crate::TerminalId::new(3), test_warp_deadline())
             .expect_err("an unwarpable pane must be refused")
     );
 
@@ -2606,11 +2627,11 @@ fn a_pane_that_cannot_be_warped_is_refused_before_its_reader_is_touched() {
         "nothing should have been released"
     );
     assert!(
-        pty.task_handles.contains_key(&TerminalId(3)),
+        pty.task_handles.contains_key(&TerminalId::new(3)),
         "the pane's reader must still be running — this is the whole point of asking first"
     );
     assert!(
-        pty.terminal_cmds.contains_key(&TerminalId(3)),
+        pty.terminal_cmds.contains_key(&TerminalId::new(3)),
         "a refused pane keeps its bookkeeping"
     );
 }
@@ -2622,12 +2643,15 @@ fn a_refused_pane_is_not_told_it_was_cut_loose() {
     // written into its scrollback.
     let mock = MockOsApi::new();
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
-    set_warpable_terminal(&mut pty, crate::TerminalId(3));
-    mock.refuse_to_warp(crate::TerminalId(3), "pane 3 has no pty-host supervisor");
+    set_warpable_terminal(&mut pty, crate::TerminalId::new(3));
+    mock.refuse_to_warp(
+        crate::TerminalId::new(3),
+        "pane 3 has no pty-host supervisor",
+    );
 
     let released = release_pane_for_warp(
         &mut pty,
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         "elsewhere",
         test_warp_deadline(),
     );
@@ -2653,12 +2677,12 @@ fn a_release_that_fails_after_the_check_says_so_in_the_pane() {
     // is that it stops looking alive.
     let mock = MockOsApi::new();
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
-    set_warpable_terminal(&mut pty, crate::TerminalId(3));
-    mock.fail_the_release_of(crate::TerminalId(3));
+    set_warpable_terminal(&mut pty, crate::TerminalId::new(3));
+    mock.fail_the_release_of(crate::TerminalId::new(3));
 
     let released = release_pane_for_warp(
         &mut pty,
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         "elsewhere",
         test_warp_deadline(),
     );
@@ -2666,7 +2690,7 @@ fn a_release_that_fails_after_the_check_says_so_in_the_pane() {
     assert!(released.is_err(), "the release should have failed");
     let instructions = drain_screen(&screen_rx);
     let message = pane_messages(&instructions)
-        .remove(&TerminalId(3))
+        .remove(&TerminalId::new(3))
         .expect("the pane should have been told what happened to it");
     assert!(
         message.contains("could not move this pane to 'elsewhere'"),
@@ -2675,7 +2699,7 @@ fn a_release_that_fails_after_the_check_says_so_in_the_pane() {
     assert!(
         instructions.iter().any(|instruction| matches!(
             instruction,
-            ScreenInstruction::HoldPane(PaneId::Terminal(TerminalId(3)), ..)
+            ScreenInstruction::HoldPane(PaneId::Terminal(TERMINAL_3), ..)
         )),
         "a pane with nothing on the other end must be held rather than left looking live"
     );
@@ -2691,7 +2715,12 @@ fn a_tabs_panes_are_released_together_rather_than_one_after_another() {
     // pane one.
     let mock = MockOsApi::new();
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock.clone());
-    let terminal_ids = vec![TerminalId(1), TerminalId(2), TerminalId(3), TerminalId(4)];
+    let terminal_ids = vec![
+        TerminalId::new(1),
+        TerminalId::new(2),
+        TerminalId::new(3),
+        TerminalId::new(4),
+    ];
     for terminal_id in &terminal_ids {
         set_warpable_terminal(&mut pty, *terminal_id);
     }
@@ -2728,13 +2757,13 @@ fn a_release_gets_what_is_left_of_the_callers_deadline_and_no_more() {
     let mock = MockOsApi::new();
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock.clone());
     for terminal_id in [1, 2] {
-        set_warpable_terminal(&mut pty, crate::TerminalId(terminal_id));
+        set_warpable_terminal(&mut pty, crate::TerminalId::new(terminal_id));
     }
     let remaining = std::time::Duration::from_millis(400);
 
     release_tab_for_warp(
         &mut pty,
-        vec![crate::TerminalId(1), TerminalId(2)],
+        vec![crate::TerminalId::new(1), TerminalId::new(2)],
         std::time::Instant::now() + remaining,
     );
 
@@ -2765,11 +2794,11 @@ fn a_pane_whose_caller_has_already_given_up_is_refused_before_its_reader_is_touc
     // stays exactly as it was.
     let mock = MockOsApi::new();
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
-    set_warpable_terminal(&mut pty, crate::TerminalId(3));
+    set_warpable_terminal(&mut pty, crate::TerminalId::new(3));
 
     let error = format!(
         "{:#}",
-        pty.release_terminal_for_warp(crate::TerminalId(3), expired_warp_deadline())
+        pty.release_terminal_for_warp(crate::TerminalId::new(3), expired_warp_deadline())
             .expect_err("a release nobody is waiting for must be refused")
     );
 
@@ -2782,7 +2811,7 @@ fn a_pane_whose_caller_has_already_given_up_is_refused_before_its_reader_is_touc
         "nothing should have been released"
     );
     assert!(
-        pty.task_handles.contains_key(&TerminalId(3)),
+        pty.task_handles.contains_key(&TerminalId::new(3)),
         "the pane's reader must still be running — refusing after the abort is what stranded it"
     );
     assert!(
@@ -2799,12 +2828,12 @@ fn a_tab_whose_caller_has_already_given_up_is_refused_while_it_is_still_whole() 
     let mock = MockOsApi::new();
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
     for terminal_id in [1, 2] {
-        set_warpable_terminal(&mut pty, crate::TerminalId(terminal_id));
+        set_warpable_terminal(&mut pty, crate::TerminalId::new(terminal_id));
     }
 
     let released = release_tab_for_warp(
         &mut pty,
-        vec![crate::TerminalId(1), TerminalId(2)],
+        vec![crate::TerminalId::new(1), TerminalId::new(2)],
         expired_warp_deadline(),
     );
 
@@ -2840,16 +2869,19 @@ fn one_unwarpable_pane_stops_a_whole_tab_being_released() {
     let mock = MockOsApi::new();
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
     for terminal_id in [1, 2, 3] {
-        set_warpable_terminal(&mut pty, crate::TerminalId(terminal_id));
+        set_warpable_terminal(&mut pty, crate::TerminalId::new(terminal_id));
     }
-    mock.refuse_to_warp(crate::TerminalId(3), "pane 3 has no pty-host supervisor");
+    mock.refuse_to_warp(
+        crate::TerminalId::new(3),
+        "pane 3 has no pty-host supervisor",
+    );
 
     let released = release_tab_for_warp(
         &mut pty,
         vec![
-            crate::TerminalId(1),
-            crate::TerminalId(2),
-            crate::TerminalId(3),
+            crate::TerminalId::new(1),
+            crate::TerminalId::new(2),
+            crate::TerminalId::new(3),
         ],
         test_warp_deadline(),
     );
@@ -2884,19 +2916,19 @@ fn a_tab_release_that_fails_part_way_tells_every_pane_in_it() {
     let mock = MockOsApi::new();
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
     for terminal_id in [1, 3] {
-        set_warpable_terminal(&mut pty, crate::TerminalId(terminal_id));
+        set_warpable_terminal(&mut pty, crate::TerminalId::new(terminal_id));
     }
-    mock.fail_the_release_of(crate::TerminalId(3));
+    mock.fail_the_release_of(crate::TerminalId::new(3));
 
     release_tab_for_warp(
         &mut pty,
-        vec![crate::TerminalId(1), TerminalId(3)],
+        vec![crate::TerminalId::new(1), TerminalId::new(3)],
         test_warp_deadline(),
     );
 
     let messages = pane_messages(&drain_screen(&screen_rx));
     let orphaned = messages
-        .get(&TerminalId(1))
+        .get(&TerminalId::new(1))
         .expect("the pane handed over before the failure must say so");
     assert!(
         orphaned.contains("had already been handed over")
@@ -2905,7 +2937,7 @@ fn a_tab_release_that_fails_part_way_tells_every_pane_in_it() {
     );
     assert!(
         messages
-            .get(&TerminalId(3))
+            .get(&TerminalId::new(3))
             .is_some_and(|message| message.contains("this tab could not be moved")),
         "the pane whose release failed must say so too, got: {messages:?}"
     );
@@ -2918,7 +2950,7 @@ fn a_tab_release_that_fails_part_way_tells_every_pane_in_it() {
 
 fn step_origin(step: &str) -> zellij_types::data::OriginatingPlugin {
     zellij_types::data::OriginatingPlugin::new(
-        2,
+        zellij_types::internal_ids::PluginId::new(2),
         crate::ClientId::new(1),
         std::collections::BTreeMap::from([("__step".to_owned(), step.to_owned())]),
     )
@@ -2945,7 +2977,7 @@ fn a_respawn_commands_own_context_wins_over_the_panes_original() {
     let mock = MockOsApi::new();
     let (mut pty, plugin_rx) = make_pty_with_plugin_receiver(mock.clone());
     pty.originating_plugins
-        .insert(crate::TerminalId(1), step_origin("1"));
+        .insert(crate::TerminalId::new(1), step_origin("1"));
 
     let replacement = RunCommand {
         command: PathBuf::from("step2"),
@@ -2953,7 +2985,7 @@ fn a_respawn_commands_own_context_wins_over_the_panes_original() {
         originating_plugin: Some(step_origin("2")),
         ..Default::default()
     };
-    pty.rerun_command_in_pane(PaneId::Terminal(crate::TerminalId(1)), replacement)
+    pty.rerun_command_in_pane(PaneId::Terminal(crate::TerminalId::new(1)), replacement)
         .unwrap();
 
     let ran = mock.rerun_commands();
@@ -2968,7 +3000,7 @@ fn a_respawn_commands_own_context_wins_over_the_panes_original() {
     );
     assert_eq!(
         pty.originating_plugins
-            .get(&TerminalId(1))
+            .get(&TerminalId::new(1))
             .and_then(|origin| origin.context.get("__step"))
             .map(String::as_str),
         Some("2"),
@@ -2986,15 +3018,18 @@ fn a_respawn_without_a_context_falls_back_to_the_panes_original() {
     let mock = MockOsApi::new();
     let (mut pty, plugin_rx) = make_pty_with_plugin_receiver(mock.clone());
     pty.originating_plugins
-        .insert(crate::TerminalId(1), step_origin("1"));
+        .insert(crate::TerminalId::new(1), step_origin("1"));
 
     let same_command_again = RunCommand {
         command: PathBuf::from("step1"),
         hold_on_close: true,
         ..Default::default()
     };
-    pty.rerun_command_in_pane(PaneId::Terminal(crate::TerminalId(1)), same_command_again)
-        .unwrap();
+    pty.rerun_command_in_pane(
+        PaneId::Terminal(crate::TerminalId::new(1)),
+        same_command_again,
+    )
+    .unwrap();
 
     assert_eq!(
         mock.rerun_commands()[0]

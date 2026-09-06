@@ -57,8 +57,8 @@ impl QueuedJob {
             job_id: self.job_id,
             queue: self.queue.clone(),
             plugin_url: self.run_plugin_or_alias.location_string(),
-            plugin_id: plugin_id.map(|id| id.0),
-            enqueuer_plugin_id: self.enqueuer.0 .0,
+            plugin_id,
+            enqueuer_plugin_id: self.enqueuer.0,
             context: self.context.clone(),
             state,
         }

@@ -6,9 +6,9 @@ fn borderless_floating_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     // Create borderless floating pane
@@ -33,7 +33,7 @@ fn borderless_floating_pane() {
     .unwrap();
 
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\n\n                   I am borderless".as_bytes()),
     )
     .unwrap();
@@ -54,9 +54,9 @@ fn borderless_pane_content_fills_edges() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let new_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     let coordinates = FloatingPaneCoordinates {
@@ -81,7 +81,7 @@ fn borderless_pane_content_fills_edges() {
 
     // Fill with X's to verify content reaches edges
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\r\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\r\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\r\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\r\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX".as_bytes()),
     )
     .unwrap();
@@ -102,9 +102,9 @@ fn borderless_pinned_floating_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
-    let borderless_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let borderless_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
     let coordinates = FloatingPaneCoordinates {
@@ -132,13 +132,13 @@ fn borderless_pinned_floating_pane() {
         .unwrap();
 
     tab.handle_pty_bytes(
-        crate::TerminalId(1),
+        crate::TerminalId::new(1),
         Vec::from("Content behind pinned pane".as_bytes()),
     )
     .unwrap();
 
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("\n\nPinned borderless pane".as_bytes()),
     )
     .unwrap();
@@ -160,7 +160,7 @@ fn cursor_hidden_when_floating_pane_is_under_pinned_pane() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
 
@@ -175,7 +175,7 @@ fn cursor_hidden_when_floating_pane_is_under_pinned_pane() {
     };
 
     tab.new_floating_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
@@ -196,7 +196,7 @@ fn cursor_hidden_when_floating_pane_is_under_pinned_pane() {
     };
 
     tab.new_floating_pane(
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
         None,
         false,
@@ -208,17 +208,17 @@ fn cursor_hidden_when_floating_pane_is_under_pinned_pane() {
 
     // Add some text to both panes so we can see them
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("Bottom floating pane".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         Vec::from("Top pinned pane".as_bytes()),
     )
     .unwrap();
 
-    // Explicitly focus the bottom floating pane (PaneId::Terminal(TerminalId(2)))
+    // Explicitly focus the bottom floating pane (PaneId::Terminal(TerminalId::new(2)))
     // Use move_focus_left to switch from pane 3 to pane 2
     tab.move_focus_left(client_id).unwrap();
 
@@ -245,12 +245,12 @@ fn hidden_panes_do_not_inflate_overlay_cursor_z_index() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
-    let hidden_pane_id = PaneId::Terminal(crate::TerminalId(2));
-    let overlay_pane_id = PaneId::Terminal(crate::TerminalId(3));
-    let pinned_pane_id = PaneId::Terminal(crate::TerminalId(4));
+    let hidden_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
+    let overlay_pane_id = PaneId::Terminal(crate::TerminalId::new(3));
+    let pinned_pane_id = PaneId::Terminal(crate::TerminalId::new(4));
     let coordinates = FloatingPaneCoordinates {
         x: Some(PercentOrFixed::Fixed(10)),
         y: Some(PercentOrFixed::Fixed(5)),
@@ -331,7 +331,7 @@ fn cursor_visible_when_pinned_pane_is_focused() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, ModeInfo::default());
     let mut output = Output::default();
 
@@ -346,7 +346,7 @@ fn cursor_visible_when_pinned_pane_is_focused() {
     };
 
     tab.new_floating_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
@@ -367,7 +367,7 @@ fn cursor_visible_when_pinned_pane_is_focused() {
     };
 
     tab.new_floating_pane(
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
         None,
         false,
@@ -379,12 +379,12 @@ fn cursor_visible_when_pinned_pane_is_focused() {
 
     // Add some text to both panes
     tab.handle_pty_bytes(
-        crate::TerminalId(2),
+        crate::TerminalId::new(2),
         Vec::from("Bottom floating pane".as_bytes()),
     )
     .unwrap();
     tab.handle_pty_bytes(
-        crate::TerminalId(3),
+        crate::TerminalId::new(3),
         Vec::from("Top pinned pane".as_bytes()),
     )
     .unwrap();

@@ -262,7 +262,7 @@ fn confirming_a_pane_tool_singles_out_that_pane() {
     assert!(matches!(state.status, Status::ConfirmingTool));
     assert_eq!(
         state.spotlight,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(7)))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(7)))
     );
 }
 
@@ -296,7 +296,7 @@ fn answering_takes_the_mark_back_off() {
         state.on_chunk("hocus-1", b"", true, None);
         assert_eq!(
             state.spotlight,
-            Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(3))),
+            Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(3))),
             "{answer}: the mark goes up to begin with"
         );
 
@@ -321,14 +321,14 @@ fn the_mark_travels_with_a_parked_chat() {
     assert_eq!(state.spotlight, None, "the foreground keeps nothing");
     assert_eq!(
         parked.spotlight,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(5)))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(5)))
     );
 
     state.put_chat(parked);
 
     assert_eq!(
         state.spotlight,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(5)))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(5)))
     );
 }
 

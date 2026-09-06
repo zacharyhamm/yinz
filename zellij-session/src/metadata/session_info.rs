@@ -117,10 +117,10 @@ pub fn from_string(
                                 if let (Some(pane_type), Some(id)) = (pane_type, id) {
                                     let pane_id = match pane_type {
                                         "terminal" => Some(PaneId::Terminal(
-                                            zellij_types::internal_ids::TerminalId(id),
+                                            zellij_types::internal_ids::TerminalId::new(id),
                                         )),
                                         "plugin" => Some(PaneId::Plugin(
-                                            zellij_types::internal_ids::PluginId(id),
+                                            zellij_types::internal_ids::PluginId::new(id),
                                         )),
                                         _ => None,
                                     };

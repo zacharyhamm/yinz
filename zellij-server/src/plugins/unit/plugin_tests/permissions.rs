@@ -28,7 +28,7 @@ pub fn send_configuration_to_plugins() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -105,7 +105,7 @@ pub fn request_plugin_permissions() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -177,7 +177,7 @@ pub fn granted_permission_request_result() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -198,7 +198,7 @@ pub fn granted_permission_request_result() {
                     ScreenInstruction::RequestPluginPermissions(_, plugin_permission) => {
                         let _ =
                             plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
-                                crate::PluginId(0),
+                                crate::PluginId::new(0),
                                 Some(client_id),
                                 plugin_permission.permissions,
                                 PermissionStatus::Granted,
@@ -274,7 +274,7 @@ pub fn denied_permission_request_result() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -295,7 +295,7 @@ pub fn denied_permission_request_result() {
                     ScreenInstruction::RequestPluginPermissions(_, plugin_permission) => {
                         let _ =
                             plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
-                                crate::PluginId(0),
+                                crate::PluginId::new(0),
                                 Some(client_id),
                                 plugin_permission.permissions,
                                 PermissionStatus::Denied,

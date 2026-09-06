@@ -1767,7 +1767,6 @@ pub fn actions_from_cli(
             }])
         },
     }
-
 }
 fn reconfigure_action(
     fragment: String,
@@ -1966,10 +1965,10 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::WriteToPaneId { pane_id, bytes } => {
-                assert!(matches!(
-                    pane_id,
-                    PaneId::Terminal(zellij_types::internal_ids::TerminalId(1))
-                ));
+                assert_eq!(
+                    *pane_id,
+                    PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1))
+                );
                 assert!(!bytes.is_empty());
             },
             _ => panic!("Expected WriteToPaneId action"),
@@ -2012,10 +2011,10 @@ mod tests {
                 resize,
                 direction,
             } => {
-                assert!(matches!(
-                    pane_id,
-                    PaneId::Terminal(zellij_types::internal_ids::TerminalId(3))
-                ));
+                assert_eq!(
+                    *pane_id,
+                    PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(3))
+                );
                 assert!(matches!(resize, Resize::Increase));
                 assert!(matches!(direction, Some(Direction::Left)));
             },
@@ -2058,10 +2057,10 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::MovePaneByPaneId { pane_id, direction } => {
-                assert!(matches!(
-                    pane_id,
-                    PaneId::Terminal(zellij_types::internal_ids::TerminalId(9))
-                ));
+                assert_eq!(
+                    *pane_id,
+                    PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(9))
+                );
                 assert!(matches!(direction, Some(Direction::Right)));
             },
             _ => panic!("Expected MovePaneByPaneId action"),
@@ -2101,10 +2100,10 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::EditScrollbackByPaneId { pane_id, ansi } => {
-                assert!(matches!(
-                    pane_id,
-                    PaneId::Terminal(zellij_types::internal_ids::TerminalId(15))
-                ));
+                assert_eq!(
+                    *pane_id,
+                    PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(15))
+                );
                 assert!(!ansi);
             },
             _ => panic!("Expected EditScrollbackByPaneId action"),
@@ -2124,10 +2123,12 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::RenamePaneByPaneId { pane_id, name } => {
-                assert!(matches!(
-                    pane_id,
-                    Some(PaneId::Terminal(zellij_types::internal_ids::TerminalId(19)))
-                ));
+                assert_eq!(
+                    *pane_id,
+                    Some(PaneId::Terminal(
+                        zellij_types::internal_ids::TerminalId::new(19)
+                    ))
+                );
                 assert_eq!(name, &"my-pane".as_bytes().to_vec());
             },
             _ => panic!("Expected RenamePaneByPaneId action"),
@@ -2482,7 +2483,7 @@ mod tests {
             Action::EditScrollbackByPaneId { pane_id, ansi } => {
                 assert_eq!(
                     *pane_id,
-                    PaneId::Terminal(zellij_types::internal_ids::TerminalId(15))
+                    PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(15))
                 );
                 assert!(*ansi);
             },
@@ -2533,7 +2534,9 @@ mod tests {
             Action::DumpScreen { pane_id, ansi, .. } => {
                 assert_eq!(
                     *pane_id,
-                    Some(PaneId::Terminal(zellij_types::internal_ids::TerminalId(5)))
+                    Some(PaneId::Terminal(
+                        zellij_types::internal_ids::TerminalId::new(5)
+                    ))
                 );
                 assert!(*ansi);
             },
@@ -2553,10 +2556,10 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::FocusPaneByPaneId { pane_id } => {
-                assert!(matches!(
-                    pane_id,
-                    PaneId::Terminal(zellij_types::internal_ids::TerminalId(7))
-                ));
+                assert_eq!(
+                    *pane_id,
+                    PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7))
+                );
             },
             _ => panic!("Expected FocusPaneByPaneId action"),
         }
@@ -2574,10 +2577,10 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::FocusPaneByPaneId { pane_id } => {
-                assert!(matches!(
-                    pane_id,
-                    PaneId::Terminal(zellij_types::internal_ids::TerminalId(3))
-                ));
+                assert_eq!(
+                    *pane_id,
+                    PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(3))
+                );
             },
             _ => panic!("Expected FocusPaneByPaneId action"),
         }
@@ -2595,10 +2598,10 @@ mod tests {
         assert_eq!(actions.len(), 1);
         match &actions[0] {
             Action::FocusPaneByPaneId { pane_id } => {
-                assert!(matches!(
-                    pane_id,
-                    PaneId::Plugin(zellij_types::internal_ids::PluginId(2))
-                ));
+                assert_eq!(
+                    *pane_id,
+                    PaneId::Plugin(zellij_types::internal_ids::PluginId::new(2))
+                );
             },
             _ => panic!("Expected FocusPaneByPaneId action"),
         }
@@ -3133,7 +3136,9 @@ mod tests {
             } => {
                 assert_eq!(
                     *pane_id_to_replace,
-                    Some(PaneId::Terminal(zellij_types::internal_ids::TerminalId(4)))
+                    Some(PaneId::Terminal(
+                        zellij_types::internal_ids::TerminalId::new(4)
+                    ))
                 );
             },
             _ => panic!("Expected NewInPlacePane action"),
@@ -3368,7 +3373,7 @@ mod tests {
     /// off text a state says nothing about.
     #[test]
     fn a_hook_event_sets_the_record_and_broadcasts_itself() {
-        let pane_id = PaneId::Terminal(zellij_types::internal_ids::TerminalId(7));
+        let pane_id = PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7));
         let hook = |json: &str| {
             let event: zellij_types::agent::HookEvent = serde_json::from_str(json).expect("parsed");
             hook_report_actions("claude", pane_id, &event, json.to_owned())
@@ -3377,7 +3382,8 @@ mod tests {
             Some(Action::AgentEvent(event)) => {
                 assert_eq!(event.raw, json, "the event goes out whole");
                 assert_eq!(
-                    event.pane_id, 7,
+                    event.pane_id,
+                    zellij_types::internal_ids::TerminalId::new(7),
                     "the bare number, which is what a reader keys by"
                 );
                 // The payload is the agent's own JSON and never says which agent wrote it, so
@@ -3393,9 +3399,13 @@ mod tests {
         assert_eq!(actions.len(), 2);
         match &actions[0] {
             Action::SetPaneAgent {
-                pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(7)),
+                pane_id,
                 agent: Some(agent),
             } => {
+                assert_eq!(
+                    *pane_id,
+                    PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7))
+                );
                 assert_eq!(agent.state, AgentState::Waiting);
                 assert_eq!(agent.source, AgentSource::Reported);
                 assert_eq!(agent.waiting_on.as_deref(), Some("Bash rm"));
@@ -3468,7 +3478,12 @@ mod tests {
                     "tool_name": tool, "tool_input": {"command": "git status", "file_path": "/work/main.rs"}
                 }).to_string();
                 let event = serde_json::from_str(&json).unwrap();
-                let actions = hook_report_actions(kind, PaneId::Terminal(7), &event, json);
+                let actions = hook_report_actions(
+                    kind,
+                    PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7)),
+                    &event,
+                    json,
+                );
                 match &actions[..] {
                     [Action::SetPaneAgent {
                         agent: Some(agent), ..
@@ -3493,7 +3508,12 @@ mod tests {
                 for reminder in ["permission_prompt", "worker_permission_prompt"] {
                     let json = serde_json::json!({"hook_event_name": "Notification", "notification_type": reminder}).to_string();
                     let event = serde_json::from_str(&json).unwrap();
-                    let actions = hook_report_actions(kind, PaneId::Terminal(7), &event, json);
+                    let actions = hook_report_actions(
+                        kind,
+                        PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7)),
+                        &event,
+                        json,
+                    );
                     assert!(
                         matches!(&actions[..], [Action::AgentEvent(event)] if event.state.is_none())
                     );
@@ -3525,7 +3545,7 @@ mod tests {
         let event: zellij_types::agent::HookEvent = serde_json::from_str(&json).expect("parsed");
         let actions = hook_report_actions(
             "claude",
-            PaneId::Terminal(zellij_types::internal_ids::TerminalId(7)),
+            PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7)),
             &event,
             json,
         );
@@ -3571,7 +3591,7 @@ mod tests {
         assert_eq!(
             report(Some("waiting"), false).unwrap(),
             vec![Action::SetPaneAgent {
-                pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(4)),
+                pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(4)),
                 agent: Some(AgentInfo {
                     kind: "codex".to_owned(),
                     state: AgentState::Waiting,
@@ -3588,7 +3608,7 @@ mod tests {
         assert_eq!(
             report(None, true).unwrap(),
             vec![Action::SetPaneAgent {
-                pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(4)),
+                pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(4)),
                 agent: None,
             }]
         );
@@ -4146,18 +4166,18 @@ mod tests {
             if tc.draw(generators::booleans()) {
                 (
                     format!("plugin_{}", n),
-                    PaneId::Plugin(zellij_types::internal_ids::PluginId(n)),
+                    PaneId::Plugin(zellij_types::internal_ids::PluginId::new(n)),
                 )
             } else if tc.draw(generators::booleans()) {
                 (
                     format!("terminal_{}", n),
-                    PaneId::Terminal(zellij_types::internal_ids::TerminalId(n)),
+                    PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(n)),
                 )
             } else {
                 // a bare integer is a terminal pane id
                 (
                     format!("{}", n),
-                    PaneId::Terminal(zellij_types::internal_ids::TerminalId(n)),
+                    PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(n)),
                 )
             }
         }
@@ -4206,7 +4226,7 @@ mod tests {
             }
         }
 
-        /// `"5"`, `"terminal_5"` both parse to `PaneId::Terminal(zellij_types::internal_ids::TerminalId(5))`, so an
+        /// `"5"`, `"terminal_5"` both parse to `PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(5))`, so an
         /// action built from either spelling has to come out identical. This is
         /// what pins the id to `PaneId::from_str` rather than to some
         /// variant-local parse.

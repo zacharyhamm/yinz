@@ -19,7 +19,7 @@ pub fn switch_to_tab_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -95,7 +95,7 @@ pub fn hide_self_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -171,7 +171,7 @@ pub fn show_self_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -246,7 +246,7 @@ pub fn close_terminal_pane_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -322,7 +322,7 @@ pub fn close_plugin_pane_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -398,7 +398,7 @@ pub fn focus_terminal_pane_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -474,7 +474,7 @@ pub fn focus_plugin_pane_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -550,7 +550,7 @@ pub fn rename_terminal_pane_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -626,7 +626,7 @@ pub fn rename_plugin_pane_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,
@@ -702,7 +702,7 @@ pub fn rename_tab_plugin_command() {
         ..Default::default()
     });
     let tab_index = 1;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,

@@ -812,7 +812,7 @@ impl State {
         self.archive_more = rows.truncated;
     }
 
-    pub(crate) fn send_run_detail(&self, plugin_id: u32, run_id: &str) {
+    pub(crate) fn send_run_detail(&self, plugin_id: zellij_tile::prelude::PluginId, run_id: &str) {
         let Ok(rows) = self.store().fetch(&agents::rows::run_by_id_request(run_id)) else {
             return;
         };
@@ -844,7 +844,7 @@ impl State {
     /// Answered either way (`wire::AGENT_RESUME_RESULT`). The panel put a confirmation in
     /// front of this, so the user has already said yes to something; a refusal that never
     /// arrives would leave that yes looking like a key that does nothing.
-    pub(crate) fn resume_run(&mut self, plugin_id: u32, run_id: &str) {
+    pub(crate) fn resume_run(&mut self, plugin_id: zellij_tile::prelude::PluginId, run_id: &str) {
         let answer = |detail: String| {
             let Ok(payload) = serde_json::to_string(&wire::ResumeResult {
                 run_id: run_id.to_owned(),
@@ -1498,7 +1498,12 @@ impl State {
     /// Addressed by plugin id rather than broadcast, unlike everything else
     /// hocus sends: the asker is one of possibly several, and an acknowledgement
     /// delivered to the wrong one would answer a question it never put.
-    fn ack_ask(&self, reply_to: Option<u32>, outcome: wire::AskOutcome, detail: &str) {
+    fn ack_ask(
+        &self,
+        reply_to: Option<zellij_tile::prelude::PluginId>,
+        outcome: wire::AskOutcome,
+        detail: &str,
+    ) {
         let Some(id) = reply_to else {
             return;
         };

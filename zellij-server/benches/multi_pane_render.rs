@@ -53,7 +53,7 @@ const PANE_COUNTS: &[usize] = &[1, 2, 4, 8, 16];
 /// `CursorMoves` only writes to every `ROW_STRIDE`th row, so the rest of the viewport stays clean.
 const ROW_STRIDE: usize = 4;
 
-const CLIENT_ID: zellij_server::ClientId = zellij_server::ClientId(1);
+const CLIENT_ID: zellij_server::ClientId = zellij_server::ClientId::new(1);
 
 // ---------------------------------------------------------------------------------------------
 // deterministic byte generation
@@ -331,7 +331,7 @@ impl PaneFleet {
             .enumerate()
             .map(|(index, geom)| {
                 TerminalPane::new(
-                    zellij_server::TerminalId(index as u32),
+                    zellij_server::TerminalId::new(index as u32),
                     geom,
                     Style::default(),
                     index,

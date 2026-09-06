@@ -49,10 +49,7 @@ impl ZellijPlugin for State {
             None,
             None,
         ) {
-            change_overlay_coordinates(vec![(
-                PaneId::Plugin(zellij_tile::prelude::PluginId(plugin_id)),
-                coordinates,
-            )]);
+            change_overlay_coordinates(vec![(PaneId::Plugin(plugin_id), coordinates)]);
         }
     }
 

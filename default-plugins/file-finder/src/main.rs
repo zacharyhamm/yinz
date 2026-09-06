@@ -63,13 +63,13 @@ enum Stage {
     #[default]
     Idle,
     /// fzf is running in `pane_id`.
-    Finding { pane_id: u32 },
+    Finding { pane_id: TerminalId },
     /// An editor or viewer is running in `pane_id`.
-    Opened { pane_id: u32 },
+    Opened { pane_id: TerminalId },
 }
 
 impl Stage {
-    fn pane_id(&self) -> Option<u32> {
+    fn pane_id(&self) -> Option<TerminalId> {
         match self {
             Stage::Idle => None,
             Stage::Finding { pane_id } | Stage::Opened { pane_id } => Some(*pane_id),
@@ -84,7 +84,7 @@ struct State {
     /// Where the finder script writes the selected path.
     out_path: PathBuf,
     /// This plugin's own pane id, used to notice when focus lands back on it.
-    plugin_id: u32,
+    plugin_id: zellij_tile::prelude::PluginId,
     stage: Stage,
 }
 
@@ -130,12 +130,7 @@ impl ZellijPlugin for State {
                 // The user closed our pane by hand. Without this the plugin would linger
                 // hidden for the rest of the session, and the next keypress would focus
                 // that corpse instead of starting a new search.
-                if Some(pane_id)
-                    == self
-                        .stage
-                        .pane_id()
-                        .map(|id| PaneId::Terminal(TerminalId::new(id)))
-                {
+                if Some(pane_id) == self.stage.pane_id().map(PaneId::Terminal) {
                     self.finish();
                 }
             },
@@ -187,9 +182,7 @@ impl State {
         ) {
             Some(PaneId::Terminal(pane_id)) => {
                 rename_pane_with_id(PaneId::Terminal(pane_id), &title);
-                self.stage = Stage::Finding {
-                    pane_id: pane_id.get(),
-                };
+                self.stage = Stage::Finding { pane_id };
             },
             _ => {
                 // Nothing was opened, so there is no pane to report the failure in.
@@ -199,14 +192,14 @@ impl State {
         }
     }
 
-    fn handle_pane_exited(&mut self, pane_id: u32) {
+    fn handle_pane_exited(&mut self, pane_id: TerminalId) {
         match self.stage {
             Stage::Finding { pane_id: finder } if finder == pane_id => {
                 self.handle_selection(pane_id);
             },
             Stage::Opened { pane_id: opened } if opened == pane_id => {
                 // The editor or viewer quit. Take the pane with it.
-                close_pane_with_id(PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)));
+                close_pane_with_id(PaneId::Terminal(pane_id));
                 self.finish();
             },
             _ => {},
@@ -214,7 +207,7 @@ impl State {
     }
 
     /// fzf has exited: read what it chose and hand the pane over, or tidy up.
-    fn handle_selection(&mut self, finder_pane_id: u32) {
+    fn handle_selection(&mut self, finder_pane_id: TerminalId) {
         let contents = std::fs::read_to_string(self.host_out_path()).unwrap_or_default();
         let _ = std::fs::remove_file(self.host_out_path());
 
@@ -222,16 +215,14 @@ impl State {
             Some(selection) => PathBuf::from(selection),
             None => {
                 // Cancelled — Esc, an empty list, or fzf failing to start.
-                close_pane_with_id(PaneId::Terminal(zellij_tile::prelude::TerminalId(
-                    finder_pane_id,
-                )));
+                close_pane_with_id(PaneId::Terminal(finder_pane_id));
                 self.finish();
                 return;
             },
         };
 
         let cwd = selection.parent().map(Path::to_path_buf);
-        let target = PaneId::Terminal(zellij_tile::prelude::TerminalId(finder_pane_id));
+        let target = PaneId::Terminal(finder_pane_id);
 
         // `close_replaced_pane: true` retires the held fzf pane for good; the new pane
         // inherits its floating slot and geometry.
@@ -259,9 +250,7 @@ impl State {
 
         match opened {
             Some(PaneId::Terminal(pane_id)) => {
-                self.stage = Stage::Opened {
-                    pane_id: pane_id.get(),
-                };
+                self.stage = Stage::Opened { pane_id };
                 // These in-place-of-pane-id calls deliberately do not move focus, and
                 // the pane they replaced was the focused one.
                 focus_pane_with_id(PaneId::Terminal(pane_id), true, false);
@@ -302,17 +291,9 @@ impl State {
             return;
         };
         let focused = get_focused_pane_info().ok().map(|(_, pane)| pane);
-        if focused
-            == Some(PaneId::Plugin(zellij_tile::prelude::PluginId(
-                self.plugin_id,
-            )))
-        {
+        if focused == Some(PaneId::Plugin(self.plugin_id)) {
             hide_self();
-            focus_pane_with_id(
-                PaneId::Terminal(zellij_tile::prelude::TerminalId(driving)),
-                true,
-                false,
-            );
+            focus_pane_with_id(PaneId::Terminal(driving), true, false);
         }
     }
 
@@ -366,7 +347,7 @@ fn finder_title(label: Option<String>) -> String {
 /// `zellij_pid` is the server's own pid, so it separates sessions the way the name needs.
 /// It also separates the integration tests, which are separate processes and were losing
 /// each other's selections exactly this way.
-fn selection_path(zellij_pid: u32, plugin_id: u32) -> PathBuf {
+fn selection_path(zellij_pid: u32, plugin_id: zellij_tile::prelude::PluginId) -> PathBuf {
     PathBuf::from(format!(
         "/tmp/zellij-file-finder-{}-{}.sel",
         zellij_pid, plugin_id
@@ -420,8 +401,20 @@ mod tests {
     #[test]
     fn stage_reports_the_pane_it_is_driving() {
         assert_eq!(Stage::Idle.pane_id(), None);
-        assert_eq!(Stage::Finding { pane_id: 3 }.pane_id(), Some(3));
-        assert_eq!(Stage::Opened { pane_id: 9 }.pane_id(), Some(9));
+        assert_eq!(
+            Stage::Finding {
+                pane_id: zellij_tile::prelude::TerminalId::new(3)
+            }
+            .pane_id(),
+            Some(TerminalId::new(3))
+        );
+        assert_eq!(
+            Stage::Opened {
+                pane_id: zellij_tile::prelude::TerminalId::new(9)
+            }
+            .pane_id(),
+            Some(TerminalId::new(9))
+        );
     }
 
     #[test]
@@ -455,13 +448,19 @@ mod tests {
     /// the only thing keeping two sessions off each other's selection file.
     #[test]
     fn two_sessions_do_not_share_a_selection_file() {
-        assert_ne!(selection_path(1000, 2), selection_path(1001, 2));
+        assert_ne!(
+            selection_path(1000, zellij_tile::prelude::PluginId::new(2)),
+            selection_path(1001, zellij_tile::prelude::PluginId::new(2))
+        );
     }
 
     /// And the plugin id still separates two finders within one session.
     #[test]
     fn two_finders_in_one_session_do_not_share_a_selection_file() {
-        assert_ne!(selection_path(1000, 2), selection_path(1000, 5));
+        assert_ne!(
+            selection_path(1000, zellij_tile::prelude::PluginId::new(2)),
+            selection_path(1000, zellij_tile::prelude::PluginId::new(5))
+        );
     }
 
     #[test]

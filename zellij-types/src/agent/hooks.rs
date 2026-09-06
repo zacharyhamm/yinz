@@ -125,7 +125,7 @@ pub const CLAUDE_HOOK_REPORT_COMMAND: &str = "zellij action agent-report --hook-
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentEvent {
     /// The terminal pane the agent runs in.
-    pub pane_id: u32,
+    pub pane_id: crate::internal_ids::TerminalId,
     /// `claude`, `codex`, … as the report named it.
     pub kind: String,
     /// The agent's own name for the event: `SessionStart`, `UserPromptSubmit`, `Stop`, …
@@ -151,7 +151,12 @@ pub struct AgentEvent {
 impl AgentEvent {
     /// Read `event` the way the record is read - one reading, so a plugin and the pane's
     /// record cannot disagree about what the event meant - and keep `json` as it arrived.
-    pub fn from_hook(kind: &str, pane_id: u32, event: &HookEvent, json: String) -> Self {
+    pub fn from_hook(
+        kind: &str,
+        pane_id: crate::internal_ids::TerminalId,
+        event: &HookEvent,
+        json: String,
+    ) -> Self {
         // The prose comes off the bounded event, not `event`: a prompt or a final message has
         // no bound in Claude Code's schema, and copying it whole beside a pruned `raw` would
         // hand every subscribing plugin the very bytes the prune exists to keep out.
@@ -1738,7 +1743,12 @@ mod tests {
             ..event("Stop")
         };
         let json = serde_json::to_string(&stop).expect("the event serializes");
-        let typed = AgentEvent::from_hook("claude", 7, &stop, json);
+        let typed = AgentEvent::from_hook(
+            "claude",
+            crate::internal_ids::TerminalId::new(7),
+            &stop,
+            json,
+        );
         assert!(typed.raw.len() <= HOOK_BROADCAST_MAX_BYTES);
         let arrived: HookEvent = serde_json::from_str(&typed.raw).expect("still an event");
         assert_eq!(typed.last_message, arrived.last_assistant_message);
@@ -1758,7 +1768,12 @@ mod tests {
             ..event("Stop")
         };
         let json = serde_json::to_string(&small).expect("the event serializes");
-        let typed = AgentEvent::from_hook("claude", 7, &small, json.clone());
+        let typed = AgentEvent::from_hook(
+            "claude",
+            crate::internal_ids::TerminalId::new(7),
+            &small,
+            json.clone(),
+        );
         assert_eq!(typed.raw, json);
         assert_eq!(typed.last_message, small.last_assistant_message);
         assert_eq!(typed.prompt, None);

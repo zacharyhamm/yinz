@@ -974,13 +974,17 @@ impl TryFrom<ProtobufAction> for Action {
             },
             Some(ProtobufActionName::CloseTerminalPane) => match protobuf_action.optional_payload {
                 Some(OptionalPayload::CloseTerminalPanePayload(payload)) => {
-                    Ok(Action::CloseTerminalPane { pane_id: payload })
+                    Ok(Action::CloseTerminalPane {
+                        pane_id: zellij_types::internal_ids::TerminalId::new(payload),
+                    })
                 },
                 _ => Err("Wrong payload for Action::CloseTerminalPane"),
             },
             Some(ProtobufActionName::ClosePluginPane) => match protobuf_action.optional_payload {
                 Some(OptionalPayload::ClosePluginPanePayload(payload)) => {
-                    Ok(Action::ClosePluginPane { pane_id: payload })
+                    Ok(Action::ClosePluginPane {
+                        pane_id: zellij_types::internal_ids::PluginId::new(payload),
+                    })
                 },
                 _ => Err("Wrong payload for Action::ClosePluginPane"),
             },
@@ -991,7 +995,7 @@ impl TryFrom<ProtobufAction> for Action {
                         let should_float_if_hidden = payload.should_float;
                         let should_be_in_place_if_hidden = payload.should_be_in_place;
                         Ok(Action::FocusTerminalPaneWithId {
-                            pane_id: terminal_pane_id,
+                            pane_id: zellij_types::internal_ids::TerminalId::new(terminal_pane_id),
                             should_float_if_hidden,
                             should_be_in_place_if_hidden,
                         })
@@ -1006,7 +1010,7 @@ impl TryFrom<ProtobufAction> for Action {
                         let should_float_if_hidden = payload.should_float;
                         let should_be_in_place_if_hidden = payload.should_be_in_place;
                         Ok(Action::FocusPluginPaneWithId {
-                            pane_id: plugin_pane_id,
+                            pane_id: zellij_types::internal_ids::PluginId::new(plugin_pane_id),
                             should_float_if_hidden,
                             should_be_in_place_if_hidden,
                         })
@@ -1020,7 +1024,7 @@ impl TryFrom<ProtobufAction> for Action {
                         let terminal_pane_id = payload.id;
                         let new_pane_name = payload.name;
                         Ok(Action::RenameTerminalPane {
-                            pane_id: terminal_pane_id,
+                            pane_id: zellij_types::internal_ids::TerminalId::new(terminal_pane_id),
                             name: new_pane_name,
                         })
                     },
@@ -1032,7 +1036,7 @@ impl TryFrom<ProtobufAction> for Action {
                     let plugin_pane_id = payload.id;
                     let new_pane_name = payload.name;
                     Ok(Action::RenamePluginPane {
-                        pane_id: plugin_pane_id,
+                        pane_id: zellij_types::internal_ids::PluginId::new(plugin_pane_id),
                         name: new_pane_name,
                     })
                 },
@@ -1962,13 +1966,13 @@ impl TryFrom<Action> for ProtobufAction {
                 pane_id: terminal_pane_id,
             } => Ok(ProtobufAction {
                 name: ProtobufActionName::CloseTerminalPane as i32,
-                optional_payload: Some(OptionalPayload::CloseTerminalPanePayload(terminal_pane_id)),
+                optional_payload: Some(OptionalPayload::CloseTerminalPanePayload(terminal_pane_id.get())),
             }),
             Action::ClosePluginPane {
                 pane_id: plugin_pane_id,
             } => Ok(ProtobufAction {
                 name: ProtobufActionName::ClosePluginPane as i32,
-                optional_payload: Some(OptionalPayload::ClosePluginPanePayload(plugin_pane_id)),
+                optional_payload: Some(OptionalPayload::ClosePluginPanePayload(plugin_pane_id.get())),
             }),
             Action::FocusTerminalPaneWithId {
                 pane_id: terminal_pane_id,
@@ -1978,7 +1982,7 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::FocusTerminalPaneWithId as i32,
                 optional_payload: Some(OptionalPayload::FocusTerminalPaneWithIdPayload(
                     PaneIdAndShouldFloat {
-                        pane_id: terminal_pane_id,
+                        pane_id: terminal_pane_id.get(),
                         should_float: should_float_if_hidden,
                         should_be_in_place: should_be_in_place_if_hidden,
                     },
@@ -1992,7 +1996,7 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::FocusPluginPaneWithId as i32,
                 optional_payload: Some(OptionalPayload::FocusPluginPaneWithIdPayload(
                     PaneIdAndShouldFloat {
-                        pane_id: plugin_pane_id,
+                        pane_id: plugin_pane_id.get(),
                         should_float: should_float_if_hidden,
                         should_be_in_place: should_be_in_place_if_hidden,
                     },
@@ -2005,7 +2009,7 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::RenameTerminalPane as i32,
                 optional_payload: Some(OptionalPayload::RenameTerminalPanePayload(IdAndName {
                     name: new_name,
-                    id: terminal_pane_id,
+                    id: terminal_pane_id.get(),
                 })),
             }),
             Action::RenamePluginPane {
@@ -2015,7 +2019,7 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::RenamePluginPane as i32,
                 optional_payload: Some(OptionalPayload::RenamePluginPanePayload(IdAndName {
                     name: new_name,
-                    id: plugin_pane_id,
+                    id: plugin_pane_id.get(),
                 })),
             }),
             Action::RenameTab {
@@ -2597,12 +2601,12 @@ impl TryFrom<ProtobufPaneId> for PaneId {
         use super::generated_api::api::action::pane_id::PaneIdVariant;
 
         match protobuf_pane_id.pane_id_variant {
-            Some(PaneIdVariant::Terminal(id)) => {
-                Ok(PaneId::Terminal(zellij_types::internal_ids::TerminalId(id)))
-            },
-            Some(PaneIdVariant::Plugin(id)) => {
-                Ok(PaneId::Plugin(zellij_types::internal_ids::PluginId(id)))
-            },
+            Some(PaneIdVariant::Terminal(id)) => Ok(PaneId::Terminal(
+                zellij_types::internal_ids::TerminalId::new(id),
+            )),
+            Some(PaneIdVariant::Plugin(id)) => Ok(PaneId::Plugin(
+                zellij_types::internal_ids::PluginId::new(id),
+            )),
             None => Err("PaneId must have either terminal or plugin id"),
         }
     }

@@ -1,5 +1,8 @@
 //! Confirming a quit: the `Ctrl-q` route, the last pane closing, and the notices both carry.
 
+#[cfg(test)]
+const CLIENT_2: zellij_types::internal_ids::ClientId = zellij_types::internal_ids::ClientId::new(2);
+
 use super::*;
 use crate::screen::PluginId;
 use {zellij_types::data::OverlayKind, zellij_types::data::OverlayPlacement};
@@ -17,7 +20,7 @@ fn close_pane(screen: &mut Screen, pane_id: PaneId) {
         .close_pane(pane_id, false, None);
 }
 
-const HOCUS_PLUGIN_ID: PluginId = crate::PluginId(7);
+const HOCUS_PLUGIN_ID: PluginId = crate::PluginId::new(7);
 
 /// A screen with one tab, one pane, and a channel onto its own instruction queue - which is
 /// where `confirm_quit` puts the modal.
@@ -27,7 +30,7 @@ fn screen_with_a_single_pane() -> (Screen, ScreenReceiver) {
     new_tab(&mut screen, 1, 1);
     // The sweep that decides an emptied tab's fate only runs for regular clients, so the screen
     // needs one attached for any of this to happen at all.
-    screen.add_client(crate::ClientId(1)).expect("TEST");
+    screen.add_client(crate::ClientId::new(1)).expect("TEST");
     let (to_screen, screen_receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
     screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
     (screen, screen_receiver)
@@ -73,7 +76,7 @@ fn quit_action_asks_the_screen_to_confirm() {
     route_arbitrary_action_to_server(
         &mock_screen.clone_session_metadata(),
         Action::Quit,
-        crate::ClientId(2),
+        crate::ClientId::new(2),
     );
 
     let screen_receiver = mock_screen.screen_receiver.take().unwrap();
@@ -87,7 +90,7 @@ fn quit_action_asks_the_screen_to_confirm() {
     };
     assert!(matches!(
         instruction,
-        ScreenInstruction::ConfirmQuit(ClientId(2), _)
+        ScreenInstruction::ConfirmQuit(CLIENT_2, _)
     ));
 
     mock_screen.teardown(vec![]);
@@ -101,7 +104,7 @@ fn quit_action_asks_the_screen_to_confirm() {
 fn confirming_a_plain_quit_launches_the_modal_with_no_configuration() {
     let (mut screen, screen_receiver) = screen_with_a_single_pane();
     screen
-        .confirm_quit(crate::ClientId(1), false, None)
+        .confirm_quit(crate::ClientId::new(1), false, None)
         .expect("TEST");
 
     let launch = launched_plugin(&screen_receiver).expect("the modal is launched");
@@ -131,7 +134,7 @@ fn a_notice_reaches_the_confirmation() {
         true,
     );
     screen
-        .confirm_quit(crate::ClientId(1), false, None)
+        .confirm_quit(crate::ClientId::new(1), false, None)
         .expect("TEST");
 
     let launch = launched_plugin(&screen_receiver).expect("the modal is launched");
@@ -152,10 +155,10 @@ fn a_notice_reaches_the_confirmation() {
 #[test]
 fn notices_from_several_plugins_are_joined_in_a_stable_order() {
     let (mut screen, screen_receiver) = screen_with_a_single_pane();
-    screen.set_quit_notice(crate::PluginId(9), Some("second".to_owned()), false);
-    screen.set_quit_notice(crate::PluginId(3), Some("first".to_owned()), false);
+    screen.set_quit_notice(crate::PluginId::new(9), Some("second".to_owned()), false);
+    screen.set_quit_notice(crate::PluginId::new(3), Some("first".to_owned()), false);
     screen
-        .confirm_quit(crate::ClientId(1), false, None)
+        .confirm_quit(crate::ClientId::new(1), false, None)
         .expect("TEST");
 
     let launch = launched_plugin(&screen_receiver).expect("the modal is launched");
@@ -178,7 +181,7 @@ fn a_withdrawn_notice_leaves_nothing_behind() {
     assert!(!screen.quit_is_guarded());
 
     screen
-        .confirm_quit(crate::ClientId(1), false, None)
+        .confirm_quit(crate::ClientId::new(1), false, None)
         .expect("TEST");
     let launch = launched_plugin(&screen_receiver).expect("the modal is launched");
     let (_, configuration, _) = launch_details(&launch);
@@ -193,7 +196,7 @@ fn the_last_pane_closing_still_exits_when_nothing_guards() {
     let (to_server, server_receiver): ChannelWithContext<ServerInstruction> = channels::unbounded();
     screen.bus.senders.to_server = Some(SenderWithContext::new(to_server));
 
-    close_pane(&mut screen, PaneId::Terminal(crate::TerminalId(1)));
+    close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
     screen.render_to_clients().expect("TEST");
 
     assert!(screen.tabs.is_empty(), "the emptied tab is swept");
@@ -215,7 +218,7 @@ fn the_last_pane_closing_confirms_when_a_plugin_guards() {
         true,
     );
 
-    close_pane(&mut screen, PaneId::Terminal(crate::TerminalId(1)));
+    close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
     screen.render_to_clients().expect("TEST");
 
     assert_eq!(screen.tabs.len(), 1, "the last tab is held open");
@@ -251,7 +254,7 @@ fn the_confirmation_is_raised_once_and_not_once_per_frame() {
     let (mut screen, screen_receiver) = screen_with_a_single_pane();
     screen.set_quit_notice(HOCUS_PLUGIN_ID, None, true);
 
-    close_pane(&mut screen, PaneId::Terminal(crate::TerminalId(1)));
+    close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
     for _ in 0..4 {
         screen.render_to_clients().expect("TEST");
     }
@@ -269,7 +272,7 @@ fn opening_a_pane_in_the_held_tab_makes_a_later_close_ask_again() {
     let (mut screen, screen_receiver) = screen_with_a_single_pane();
     screen.set_quit_notice(HOCUS_PLUGIN_ID, None, true);
 
-    close_pane(&mut screen, PaneId::Terminal(crate::TerminalId(1)));
+    close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
     screen.render_to_clients().expect("TEST");
     let tab_id = *screen.tabs.keys().next().expect("the tab is held");
     assert!(launched_plugin(&screen_receiver).is_some());
@@ -277,12 +280,12 @@ fn opening_a_pane_in_the_held_tab_makes_a_later_close_ask_again() {
     add_pane_to_tab(
         &mut screen,
         tab_id,
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         false,
     );
     screen.render_to_clients().expect("TEST");
 
-    close_pane(&mut screen, PaneId::Terminal(crate::TerminalId(2)));
+    close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(2)));
     screen.render_to_clients().expect("TEST");
     assert_eq!(screen.tabs.len(), 1, "still held");
     assert!(

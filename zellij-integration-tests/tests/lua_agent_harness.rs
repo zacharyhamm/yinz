@@ -80,7 +80,10 @@ fn wait_for_log_line(what: &str) -> Vec<String> {
 }
 
 /// The agent's source and state as one `pane_update` event reports them for `terminal_id`.
-fn agent_in(event_json: &str, terminal_id: u32) -> Option<(String, String)> {
+fn agent_in(
+    event_json: &str,
+    terminal_id: zellij_types::internal_ids::TerminalId,
+) -> Option<(String, String)> {
     let event: serde_json::Value = serde_json::from_str(event_json).ok()?;
     let agent = event
         .get("PaneUpdate")?

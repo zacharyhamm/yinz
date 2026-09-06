@@ -52,16 +52,16 @@ fn click_context(pane_id: PaneId, click: (usize, usize)) -> ContextMenuContext {
 
 /// A screen with one tab and a menu already open and resolved, anchored at `click`.
 fn screen_with_open_menu(click: (usize, usize)) -> (Screen, ClientId, u64) {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut screen = screen_with_menu_configured();
     let request_id = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), click),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), click),
         client_id,
     );
     screen.set_context_menu_items(
         request_id,
         menu_items(),
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
     (screen, client_id, request_id)
@@ -78,10 +78,10 @@ fn viewport(_screen: &Screen) -> Viewport {
 
 #[test]
 fn a_menu_awaiting_its_plugin_draws_nothing() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut screen = screen_with_menu_configured();
     screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (10, 5)),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (10, 5)),
         client_id,
     );
 
@@ -99,10 +99,10 @@ fn a_menu_awaiting_its_plugin_draws_nothing() {
 
 #[test]
 fn the_timeout_falls_back_to_the_configured_items() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut screen = screen_with_menu_configured();
     let request_id = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (10, 5)),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (10, 5)),
         client_id,
     );
 
@@ -120,10 +120,10 @@ fn the_timeout_falls_back_to_the_configured_items() {
 /// run an item they never aimed at - `Close pane` where they meant `Copy`.
 #[test]
 fn a_late_plugin_answer_is_ignored_once_the_fallback_is_visible() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut screen = screen_with_menu_configured();
     let request_id = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (10, 5)),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (10, 5)),
         client_id,
     );
 
@@ -131,7 +131,7 @@ fn a_late_plugin_answer_is_ignored_once_the_fallback_is_visible() {
     screen.set_context_menu_items(
         request_id,
         vec![ContextMenuItem::new("Filtered", vec![])],
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
 
@@ -148,23 +148,23 @@ fn a_late_plugin_answer_is_ignored_once_the_fallback_is_visible() {
 /// changes nothing either.
 #[test]
 fn a_second_plugin_answer_is_ignored() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut screen = screen_with_menu_configured();
     let request_id = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (10, 5)),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (10, 5)),
         client_id,
     );
 
     screen.set_context_menu_items(
         request_id,
         vec![ContextMenuItem::new("Filtered", vec![])],
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
     screen.set_context_menu_items(
         request_id,
         vec![ContextMenuItem::new("Stale", vec![])],
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
 
@@ -178,10 +178,10 @@ fn a_second_plugin_answer_is_ignored() {
 /// behaviour put back on. Without this a menu draws perfectly and does nothing when clicked.
 #[test]
 fn an_item_the_plugin_returns_by_id_gets_its_actions_back() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut screen = screen_with_menu_configured();
     let request_id = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (10, 5)),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (10, 5)),
         client_id,
     );
 
@@ -203,7 +203,7 @@ fn an_item_the_plugin_returns_by_id_gets_its_actions_back() {
     screen.set_context_menu_items(
         request_id,
         from_plugin,
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
 
@@ -227,17 +227,17 @@ fn an_item_the_plugin_returns_by_id_gets_its_actions_back() {
 
 #[test]
 fn a_plugins_answer_replaces_what_the_menu_says() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut screen = screen_with_menu_configured();
     let request_id = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (10, 5)),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (10, 5)),
         client_id,
     );
 
     screen.set_context_menu_items(
         request_id,
         vec![ContextMenuItem::new("Open https://example.com", vec![])],
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
 
@@ -258,21 +258,21 @@ fn an_answer_naming_a_menu_that_is_gone_is_dropped() {
     screen.set_context_menu_items(
         stale_request_id,
         vec![ContextMenuItem::new("Too late", vec![])],
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
     assert!(!screen.context_menu_is_open(client_id));
 
     // ...and again, with a newer menu in the way
     let newer_request_id = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (20, 8)),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (20, 8)),
         client_id,
     );
     assert_ne!(newer_request_id, stale_request_id, "ids are monotonic");
     screen.set_context_menu_items(
         stale_request_id,
         vec![ContextMenuItem::new("Too late", vec![])],
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
     assert!(
@@ -285,17 +285,17 @@ fn an_answer_naming_a_menu_that_is_gone_is_dropped() {
 
 #[test]
 fn a_plugin_answering_with_nothing_closes_the_menu() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut screen = screen_with_menu_configured();
     let request_id = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (10, 5)),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (10, 5)),
         client_id,
     );
 
     screen.set_context_menu_items(
         request_id,
         vec![],
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
 
@@ -309,13 +309,13 @@ fn a_plugin_answering_with_nothing_closes_the_menu() {
 fn opening_a_second_menu_replaces_the_first() {
     let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
     let second = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (30, 9)),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (30, 9)),
         client_id,
     );
     screen.set_context_menu_items(
         second,
         menu_items(),
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
 
@@ -339,10 +339,10 @@ fn esc_closes_the_menu() {
 /// with an invisible thing eating their keys.
 #[test]
 fn esc_closes_a_menu_that_is_still_waiting() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut screen = screen_with_menu_configured();
     screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (10, 5)),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (10, 5)),
         client_id,
     );
 
@@ -520,7 +520,7 @@ fn a_release_on_a_separator_does_nothing() {
 /// blinks through the box painted over it.
 #[test]
 fn a_menu_covering_the_cursor_hides_it_until_it_closes() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size { cols: 80, rows: 20 };
     let mut screen = screen_with_menu_configured();
     let server_receiver = screen_wired_to_server(&mut screen);
@@ -530,19 +530,19 @@ fn a_menu_covering_the_cursor_hides_it_until_it_closes() {
     screen
         .get_active_tab_mut(client_id)
         .expect("TEST")
-        .handle_pty_bytes(crate::TerminalId(1), b"\x1b[10;20H".to_vec())
+        .handle_pty_bytes(crate::TerminalId::new(1), b"\x1b[10;20H".to_vec())
         .expect("TEST");
     let expected = pane_cursor(&mut screen, client_id);
     assert_eq!(expected, (19, 9), "the escape put the cursor here");
 
     let request_id = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (18, 5)),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (18, 5)),
         client_id,
     );
     screen.set_context_menu_items(
         request_id,
         menu_items(),
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
     let layout = screen
@@ -579,31 +579,35 @@ fn a_menu_covering_the_cursor_hides_it_until_it_closes() {
 fn one_clients_menu_does_not_hide_another_clients_cursor() {
     let size = Size { cols: 80, rows: 20 };
     let mut screen = screen_with_menu_configured();
-    screen.add_client(crate::ClientId(2)).expect("TEST");
+    screen.add_client(crate::ClientId::new(2)).expect("TEST");
     let server_receiver = screen_wired_to_server(&mut screen);
 
     screen
-        .get_active_tab_mut(crate::ClientId(1))
+        .get_active_tab_mut(crate::ClientId::new(1))
         .expect("TEST")
-        .handle_pty_bytes(crate::TerminalId(1), b"\x1b[10;20H".to_vec())
+        .handle_pty_bytes(crate::TerminalId::new(1), b"\x1b[10;20H".to_vec())
         .expect("TEST");
-    let expected = pane_cursor(&mut screen, crate::ClientId(2));
+    let expected = pane_cursor(&mut screen, crate::ClientId::new(2));
 
     // client 1's menu, over the cell both clients' cursors sit on
     let request_id = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (18, 5)),
-        crate::ClientId(1),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (18, 5)),
+        crate::ClientId::new(1),
     );
     screen.set_context_menu_items(
         request_id,
         menu_items(),
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
-        crate::ClientId(1),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
+        crate::ClientId::new(1),
     );
 
     let mut grid = grid_for_render_snapshot(size);
-    let (cursor, snapshot) =
-        render_frame_and_cursor_into(&mut screen, &server_receiver, crate::ClientId(2), &mut grid);
+    let (cursor, snapshot) = render_frame_and_cursor_into(
+        &mut screen,
+        &server_receiver,
+        crate::ClientId::new(2),
+        &mut grid,
+    );
     assert_eq!(
         cursor,
         Some(expected),
@@ -615,7 +619,7 @@ fn one_clients_menu_does_not_hide_another_clients_cursor() {
 #[test]
 fn closing_a_menu_forces_what_was_under_it_to_repaint() {
     let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
-    let pane_id = PaneId::Terminal(crate::TerminalId(1));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     for tab in screen.tabs.values_mut() {
         if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
             pane.set_should_render(false);
@@ -642,19 +646,19 @@ fn closing_a_menu_a_client_does_not_have_does_nothing() {
     let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
     assert!(screen.close_context_menu(client_id));
     assert!(!screen.close_context_menu(client_id));
-    assert!(!screen.close_context_menu(ClientId(client_id.0 + 1)));
+    assert!(!screen.close_context_menu(ClientId::new(client_id.get() + 1)));
 }
 
 #[test]
 fn a_menu_over_a_pane_closes_when_that_pane_does() {
     let (mut screen, client_id, _) = screen_with_open_menu((10, 5));
-    screen.close_context_menus_for_pane(PaneId::Terminal(crate::TerminalId(2)));
+    screen.close_context_menus_for_pane(PaneId::Terminal(crate::TerminalId::new(2)));
     assert!(
         screen.context_menu_is_open(client_id),
         "a different pane closing is not this menu's business"
     );
 
-    screen.close_context_menus_for_pane(PaneId::Terminal(crate::TerminalId(1)));
+    screen.close_context_menus_for_pane(PaneId::Terminal(crate::TerminalId::new(1)));
     assert!(!screen.context_menu_is_open(client_id));
 }
 
@@ -662,46 +666,46 @@ fn a_menu_over_a_pane_closes_when_that_pane_does() {
 fn each_client_gets_its_own_menu() {
     let mut screen = screen_with_menu_configured();
     let first = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (10, 5)),
-        crate::ClientId(1),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (10, 5)),
+        crate::ClientId::new(1),
     );
     let second = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (40, 12)),
-        crate::ClientId(2),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (40, 12)),
+        crate::ClientId::new(2),
     );
     screen.set_context_menu_items(
         first,
         menu_items(),
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
-        crate::ClientId(1),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
+        crate::ClientId::new(1),
     );
     screen.set_context_menu_items(
         second,
         menu_items(),
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
-        crate::ClientId(2),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
+        crate::ClientId::new(2),
     );
 
     let view = viewport(&screen);
     assert_eq!(
         screen
-            .context_menu_layout_for(crate::ClientId(1), view)
+            .context_menu_layout_for(crate::ClientId::new(1), view)
             .unwrap()
             .x,
         10
     );
     assert_eq!(
         screen
-            .context_menu_layout_for(crate::ClientId(2), view)
+            .context_menu_layout_for(crate::ClientId::new(2), view)
             .unwrap()
             .x,
         40
     );
 
-    screen.close_context_menu(crate::ClientId(1));
-    assert!(!screen.context_menu_is_open(crate::ClientId(1)));
+    screen.close_context_menu(crate::ClientId::new(1));
+    assert!(!screen.context_menu_is_open(crate::ClientId::new(1)));
     assert!(
-        screen.context_menu_is_open(crate::ClientId(2)),
+        screen.context_menu_is_open(crate::ClientId::new(2)),
         "one client dismissing does not dismiss the other's"
     );
 }
@@ -711,7 +715,7 @@ fn each_client_gets_its_own_menu() {
 /// a right-click actually reaches it.
 #[test]
 fn a_right_press_asks_the_plugin_thread_what_the_menu_should_say() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size { cols: 80, rows: 20 };
     let mut bus: Bus<ScreenInstruction> = Bus::empty();
     bus.os_input = Some(Box::new(FakeInputOutput::default()));
@@ -754,7 +758,7 @@ fn a_right_press_asks_the_plugin_thread_what_the_menu_should_say() {
 /// what it was.
 #[test]
 fn a_right_press_with_the_option_off_asks_nobody_anything() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut bus: Bus<ScreenInstruction> = Bus::empty();
     bus.os_input = Some(Box::new(FakeInputOutput::default()));
     let (to_plugin, plugin_receiver) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
@@ -787,10 +791,10 @@ fn a_selected_items_context_reaches_only_the_plugin_that_offered_it() {
     let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
     new_tab(&mut screen, 1, 0);
     screen.context_menu = configured_menu();
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
 
     let request_id = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (10, 5)),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (10, 5)),
         client_id,
     );
     screen.set_context_menu_items(
@@ -802,7 +806,7 @@ fn a_selected_items_context_reaches_only_the_plugin_that_offered_it() {
                 .collect(),
             ..Default::default()
         }],
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
     capture.drain_plugin_updates();
@@ -818,7 +822,7 @@ fn a_selected_items_context_reaches_only_the_plugin_that_offered_it() {
     assert_eq!(selections.len(), 1, "got: {selections:?}");
     assert_eq!(
         selections[0].0,
-        Some(zellij_types::internal_ids::PluginId(HOOK_PLUGIN_ID)),
+        Some(zellij_types::internal_ids::PluginId::new(HOOK_PLUGIN_ID)),
         "addressed to the hook, not broadcast"
     );
     assert_eq!(selections[0].1, Some(client_id));
@@ -829,13 +833,13 @@ fn a_selected_items_context_reaches_only_the_plugin_that_offered_it() {
 /// is up, though, and an item that then ran against whatever had focus would close the wrong pane.
 #[test]
 fn an_item_runs_against_the_clicked_pane_even_if_focus_moved_meanwhile() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let (to_screen, screen_receiver) = channels::unbounded::<(ScreenInstruction, ErrorContext)>();
     let mut screen = screen_with_menu_configured();
     {
         let tab = screen.get_active_tab_mut(client_id).unwrap();
         tab.new_floating_pane(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             None,
             None,
             false,
@@ -846,20 +850,20 @@ fn an_item_runs_against_the_clicked_pane_even_if_focus_moved_meanwhile() {
         .expect("TEST");
     }
     let request_id = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (10, 5)),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (10, 5)),
         client_id,
     );
     screen.set_context_menu_items(
         request_id,
         menu_items(),
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
 
     // Something else - the hook, a background plugin - moves the focus while the menu is open.
     screen
         .focus_pane_with_id(
-            PaneId::Terminal(crate::TerminalId(2)),
+            PaneId::Terminal(crate::TerminalId::new(2)),
             false,
             false,
             client_id,
@@ -867,14 +871,14 @@ fn an_item_runs_against_the_clicked_pane_even_if_focus_moved_meanwhile() {
         .expect("TEST");
     assert_eq!(
         screen.active_pane_id(client_id),
-        Some(PaneId::Terminal(crate::TerminalId(2)))
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
     );
 
     screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
     // "Copy" is a focus-relative action, and this stands in for the screen thread draining the
     // instruction the activation enqueued - see `activating_an_item_enqueues_rather_than_acting_inline`.
     screen.dispatch_context_menu_actions(
-        PaneId::Terminal(crate::TerminalId(1)),
+        PaneId::Terminal(crate::TerminalId::new(1)),
         vec![Action::Copy],
         client_id,
     );
@@ -888,7 +892,7 @@ fn an_item_runs_against_the_clicked_pane_even_if_focus_moved_meanwhile() {
         ScreenInstruction::FocusPaneWithId(pane_id, _, _, for_client, _) => {
             assert_eq!(
                 pane_id,
-                PaneId::Terminal(crate::TerminalId(1)),
+                PaneId::Terminal(crate::TerminalId::new(1)),
                 "the pane the menu was over"
             );
             assert_eq!(for_client, client_id);
@@ -910,7 +914,7 @@ fn an_item_runs_against_the_clicked_pane_even_if_focus_moved_meanwhile() {
 /// routing, and a menu is only a third way of asking for the same action.
 #[test]
 fn a_menu_item_announces_its_actions_as_user_input() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let (to_screen, _screen_receiver) = channels::unbounded::<(ScreenInstruction, ErrorContext)>();
     let (to_plugin, plugin_receiver) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let (mut screen, _, _) = screen_with_open_menu((10, 5));
@@ -918,7 +922,7 @@ fn a_menu_item_announces_its_actions_as_user_input() {
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
 
     screen.dispatch_context_menu_actions(
-        PaneId::Terminal(crate::TerminalId(1)),
+        PaneId::Terminal(crate::TerminalId::new(1)),
         vec![Action::Copy],
         client_id,
     );
@@ -943,7 +947,7 @@ fn a_menu_item_announces_its_actions_as_user_input() {
     assert_eq!(announced.1, Action::Copy);
     assert_eq!(
         announced.2,
-        Some(TerminalId(1)),
+        Some(TerminalId::new(1)),
         "the terminal the menu was opened over"
     );
     assert_eq!(announced.3, None, "nothing about this came from the CLI");
@@ -953,13 +957,13 @@ fn a_menu_item_announces_its_actions_as_user_input() {
 /// tell the plugins it did something either.
 #[test]
 fn a_vanished_pane_announces_nothing() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let (to_plugin, plugin_receiver) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let (mut screen, _, _) = screen_with_open_menu((10, 5));
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
 
     screen.dispatch_context_menu_actions(
-        PaneId::Terminal(crate::TerminalId(999)),
+        PaneId::Terminal(crate::TerminalId::new(999)),
         vec![Action::CloseFocus],
         client_id,
     );
@@ -1015,7 +1019,7 @@ fn a_reload_replaces_the_configured_menu() {
             false,
             HostNotificationProtocol::default(),
             Size { rows: 0, cols: 0 },
-            crate::ClientId(1),
+            crate::ClientId::new(1),
         )
         .unwrap();
 
@@ -1031,17 +1035,17 @@ fn a_reload_replaces_the_configured_menu() {
 /// to act on - and its focus-relative items would then mean whichever pane the client was moved to.
 #[test]
 fn a_menu_dies_with_the_tab_holding_its_pane() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut screen = screen_with_menu_configured();
     new_tab(&mut screen, 2, 1);
     let request_id = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(2)), (10, 5)),
+        click_context(PaneId::Terminal(crate::TerminalId::new(2)), (10, 5)),
         client_id,
     );
     screen.set_context_menu_items(
         request_id,
         menu_items(),
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
     assert!(screen.context_menu_is_open(client_id));
@@ -1057,17 +1061,17 @@ fn a_menu_dies_with_the_tab_holding_its_pane() {
 /// A menu over a pane in a *different* tab is none of a tab closure's business.
 #[test]
 fn closing_a_tab_leaves_other_tabs_menus_alone() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut screen = screen_with_menu_configured();
     new_tab(&mut screen, 2, 1);
     let request_id = screen.open_context_menu(
-        click_context(PaneId::Terminal(crate::TerminalId(1)), (10, 5)),
+        click_context(PaneId::Terminal(crate::TerminalId::new(1)), (10, 5)),
         client_id,
     );
     screen.set_context_menu_items(
         request_id,
         menu_items(),
-        Some(crate::PluginId(HOOK_PLUGIN_ID)),
+        Some(crate::PluginId::new(HOOK_PLUGIN_ID)),
         client_id,
     );
 
@@ -1081,7 +1085,7 @@ fn closing_a_tab_leaves_other_tabs_menus_alone() {
 /// the click cannot land between them.
 #[test]
 fn activating_an_item_enqueues_rather_than_acting_inline() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let (to_screen, screen_receiver) = channels::unbounded::<(ScreenInstruction, ErrorContext)>();
     let (mut screen, _, _) = screen_with_open_menu((10, 5));
     screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
@@ -1104,7 +1108,7 @@ fn activating_an_item_enqueues_rather_than_acting_inline() {
         } => {
             assert_eq!(
                 *pane_id,
-                PaneId::Terminal(crate::TerminalId(1)),
+                PaneId::Terminal(crate::TerminalId::new(1)),
                 "the pane the menu was over"
             );
             assert_eq!(actions, &vec![Action::Copy]);
@@ -1120,13 +1124,13 @@ fn activating_an_item_enqueues_rather_than_acting_inline() {
 /// its focus-relative actions anyway would aim them at whatever took that pane's place.
 #[test]
 fn a_vanished_pane_drops_its_items_actions() {
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let (to_screen, screen_receiver) = channels::unbounded::<(ScreenInstruction, ErrorContext)>();
     let (mut screen, _, _) = screen_with_open_menu((10, 5));
     screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
 
     screen.dispatch_context_menu_actions(
-        PaneId::Terminal(crate::TerminalId(999)),
+        PaneId::Terminal(crate::TerminalId::new(999)),
         vec![Action::CloseFocus],
         client_id,
     );
@@ -1140,7 +1144,7 @@ fn a_vanished_pane_drops_its_items_actions() {
     // ...and the same call for a pane that *is* there does route it, so the assertion above is
     // about the missing pane rather than about the plumbing being dead.
     screen.dispatch_context_menu_actions(
-        PaneId::Terminal(crate::TerminalId(1)),
+        PaneId::Terminal(crate::TerminalId::new(1)),
         vec![Action::CloseFocus],
         client_id,
     );

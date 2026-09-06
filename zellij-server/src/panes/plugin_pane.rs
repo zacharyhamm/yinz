@@ -1208,7 +1208,7 @@ mod tests {
             ..Default::default()
         };
         let mut pane = PluginPane::new(
-            PluginId(1),
+            PluginId::new(1),
             geom,
             SenderWithContext::new(plugin_tx),
             "test".to_owned(),
@@ -1247,9 +1247,9 @@ mod tests {
             },
         );
         let last_content_row = pane.get_content_rows() - 1;
-        pane.show_cursor(ClientId(1), Some((0, last_content_row)));
+        pane.show_cursor(ClientId::new(1), Some((0, last_content_row)));
         assert_eq!(
-            pane.cursor_coordinates(Some(ClientId(1))),
+            pane.cursor_coordinates(Some(ClientId::new(1))),
             Some((0, last_content_row + 1, true))
         );
     }
@@ -1267,9 +1267,9 @@ mod tests {
             },
         );
         let last_content_column = pane.get_content_columns() - 1;
-        pane.show_cursor(ClientId(1), Some((last_content_column, 0)));
+        pane.show_cursor(ClientId::new(1), Some((last_content_column, 0)));
         assert_eq!(
-            pane.cursor_coordinates(Some(ClientId(1))),
+            pane.cursor_coordinates(Some(ClientId::new(1))),
             Some((last_content_column + 1, 0, true))
         );
     }
@@ -1287,28 +1287,28 @@ mod tests {
             },
         );
         pane.set_mouse_selection_support(true);
-        pane.handle_plugin_bytes(ClientId(1), b"abcdef".to_vec());
-        pane.show_cursor(ClientId(1), Some((0, 0)));
+        pane.handle_plugin_bytes(ClientId::new(1), b"abcdef".to_vec());
+        pane.show_cursor(ClientId::new(1), Some((0, 0)));
 
-        pane.start_text_selection(ClientId(1));
-        pane.move_text_selection(Direction::Right, ClientId(1));
-        pane.move_text_selection(Direction::Right, ClientId(1));
+        pane.start_text_selection(ClientId::new(1));
+        pane.move_text_selection(Direction::Right, ClientId::new(1));
+        pane.move_text_selection(Direction::Right, ClientId::new(1));
         assert_eq!(
-            pane.cursor_coordinates(Some(ClientId(1))),
+            pane.cursor_coordinates(Some(ClientId::new(1))),
             Some((3, 1, true)),
             "the cursor follows the selection's live end, offset by the frame"
         );
 
-        pane.swap_text_selection_ends(ClientId(1));
+        pane.swap_text_selection_ends(ClientId::new(1));
         assert_eq!(
-            pane.cursor_coordinates(Some(ClientId(1))),
+            pane.cursor_coordinates(Some(ClientId::new(1))),
             Some((1, 1, true)),
             "swapping the ends is visible on a plugin pane too"
         );
 
-        pane.finish_text_selection(ClientId(1));
+        pane.finish_text_selection(ClientId::new(1));
         assert_eq!(
-            pane.cursor_coordinates(Some(ClientId(1))),
+            pane.cursor_coordinates(Some(ClientId::new(1))),
             Some((1, 1, true)),
             "the plugin's own cursor is back once the selection is finished"
         );
@@ -1340,13 +1340,15 @@ mod tests {
             ztext(0, 0, columns, "top"),
             ztext(5, rows - 1, columns, "bottom"),
         );
-        pane.handle_plugin_bytes(ClientId(1), frame.into_bytes());
+        pane.handle_plugin_bytes(ClientId::new(1), frame.into_bytes());
 
         // `Grid`'s `Debug` prints one viewport row per line, each behind a `00 (C): `
         // index prefix.
         let rendered = format!(
             "{:?}",
-            pane.grids.get(&ClientId(1)).expect("the grid was created")
+            pane.grids
+                .get(&ClientId::new(1))
+                .expect("the grid was created")
         );
         let row_content = |line: &str| {
             line.split_once("): ")
@@ -1375,8 +1377,8 @@ mod tests {
             },
         );
         let content_rows = pane.get_content_rows();
-        pane.show_cursor(ClientId(1), Some((0, content_rows)));
-        assert_eq!(pane.cursor_coordinates(Some(ClientId(1))), None);
+        pane.show_cursor(ClientId::new(1), Some((0, content_rows)));
+        assert_eq!(pane.cursor_coordinates(Some(ClientId::new(1))), None);
     }
 
     /// The frame a plugin drawing an image emits, built with the very helpers a plugin calls -
@@ -1440,8 +1442,8 @@ mod tests {
                 height: 16,
             }),
         );
-        pane.handle_plugin_bytes(ClientId(1), image_frame(42, 2, &tiny_png()));
-        let chunks = kitty_chunks(&mut pane, ClientId(1));
+        pane.handle_plugin_bytes(ClientId::new(1), image_frame(42, 2, &tiny_png()));
+        let chunks = kitty_chunks(&mut pane, ClientId::new(1));
         // A contiguous placeholder run resolves to one chunk covering the cells it spans, not one
         // chunk per cell.
         assert_eq!(chunks.len(), 1, "{chunks:?}");
@@ -1462,10 +1464,10 @@ mod tests {
         );
         // The pixels are transmitted once; every later frame is only the placeholder cells, which
         // is the whole reason a plugin can afford to redraw an image at ten frames a second.
-        pane.handle_plugin_bytes(ClientId(1), image_frame(42, 2, &tiny_png()));
-        let first = kitty_chunks(&mut pane, ClientId(1));
-        pane.handle_plugin_bytes(ClientId(1), image_row(42, 0, 2).into_bytes());
-        let second = kitty_chunks(&mut pane, ClientId(1));
+        pane.handle_plugin_bytes(ClientId::new(1), image_frame(42, 2, &tiny_png()));
+        let first = kitty_chunks(&mut pane, ClientId::new(1));
+        pane.handle_plugin_bytes(ClientId::new(1), image_row(42, 0, 2).into_bytes());
+        let second = kitty_chunks(&mut pane, ClientId::new(1));
         assert_eq!(second.len(), first.len());
         // The placement uid is stable across the rebuild, so the host diff does not retransmit.
         assert_eq!(
@@ -1486,8 +1488,8 @@ mod tests {
             }),
         );
         pane.update_kitty_host_support(KittyHostSupport::ProtocolDisabled);
-        pane.handle_plugin_bytes(ClientId(1), image_frame(42, 2, &tiny_png()));
-        assert!(kitty_chunks(&mut pane, ClientId(1)).is_empty());
+        pane.handle_plugin_bytes(ClientId::new(1), image_frame(42, 2, &tiny_png()));
+        assert!(kitty_chunks(&mut pane, ClientId::new(1)).is_empty());
     }
 
     /// A PNG wide enough that its base64 does not fit in one command, so the transmission has to
@@ -1504,8 +1506,8 @@ mod tests {
                 height: 16,
             }),
         );
-        pane.handle_plugin_bytes(ClientId(1), image_frame(0xb000, 2, &chunky_png()));
-        assert_eq!(kitty_chunks(&mut pane, ClientId(1)).len(), 1);
+        pane.handle_plugin_bytes(ClientId::new(1), image_frame(0xb000, 2, &chunky_png()));
+        assert_eq!(kitty_chunks(&mut pane, ClientId::new(1)).len(), 1);
     }
 
     #[test]
@@ -1530,8 +1532,8 @@ mod tests {
         let mut frame = whole[..first_chunk_end].to_owned();
         frame.push_str(&place_image_sequence(0xb000, 2, 1));
         frame.push_str(&image_row(0xb000, 0, 2));
-        pane.handle_plugin_bytes(ClientId(1), frame.into_bytes());
-        assert!(kitty_chunks(&mut pane, ClientId(1)).is_empty());
+        pane.handle_plugin_bytes(ClientId::new(1), frame.into_bytes());
+        assert!(kitty_chunks(&mut pane, ClientId::new(1)).is_empty());
     }
 
     #[test]
@@ -1539,10 +1541,10 @@ mod tests {
         let mut pane = test_plugin_pane(10, 10, Offset::default());
         // `q` omitted, so the grid would ordinarily answer this - onto a queue nobody drains.
         pane.handle_plugin_bytes(
-            ClientId(1),
+            ClientId::new(1),
             b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec(),
         );
-        let grid = pane.grids.get(&ClientId(1)).expect("grid");
+        let grid = pane.grids.get(&ClientId::new(1)).expect("grid");
         assert!(grid.pending_messages_to_pty.is_empty());
         assert!(grid.pending_forwarded_queries.is_empty());
     }

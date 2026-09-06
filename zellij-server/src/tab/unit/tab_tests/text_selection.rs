@@ -9,10 +9,10 @@ pub fn a_keyboard_selection_is_finished_on_the_pane_it_started_on() {
         cols: 121,
         rows: 20,
     };
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut tab = create_new_tab(size, true);
-    let first_pane_id = PaneId::Terminal(crate::TerminalId(1));
-    let second_pane_id = PaneId::Terminal(crate::TerminalId(2));
+    let first_pane_id = PaneId::Terminal(crate::TerminalId::new(1));
+    let second_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     tab.horizontal_split(second_pane_id, None, client_id, None, None)
         .unwrap();
     tab.move_focus_up(client_id).unwrap();

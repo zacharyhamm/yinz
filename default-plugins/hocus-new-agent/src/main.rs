@@ -100,7 +100,7 @@ struct State {
     /// project is derived from.
     source_directory: PathBuf,
     projects: Registry,
-    plugin_id: u32,
+    plugin_id: zellij_tile::prelude::PluginId,
     job: Job,
     firecracker_image_edited: bool,
     error: Option<String>,
@@ -196,7 +196,7 @@ impl Default for State {
                 .status_row(),
             source_directory: PathBuf::from("."),
             projects: Registry::new(),
-            plugin_id: 0,
+            plugin_id: zellij_tile::prelude::PluginId::new(0),
             job: Job::New,
             firecracker_image_edited: false,
             error: None,
@@ -503,10 +503,7 @@ impl State {
             // resizes it where it is; `OverlayPanes` keeps the kind, and keeps the position too
             // once the user has dragged the modal - which is what makes the `None` x and the 20% y
             // an *initial* placement rather than one re-imposed for the life of the pane.
-            change_overlay_coordinates(vec![(
-                PaneId::Plugin(zellij_tile::prelude::PluginId(self.plugin_id)),
-                coordinates,
-            )]);
+            change_overlay_coordinates(vec![(PaneId::Plugin(self.plugin_id), coordinates)]);
             self.requested_size = Some(size);
         }
     }

@@ -172,7 +172,7 @@ fn create_layout_applier_fixtures(
     let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
     let character_cell_size = Rc::new(RefCell::new(None));
 
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut connected_clients_map = HashSet::new();
     connected_clients_map.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients_map));
@@ -308,7 +308,7 @@ fn create_layout_applier_fixtures_with_receivers(
     let terminal_emulator_color_codes = Rc::new(RefCell::new(HashMap::new()));
     let character_cell_size = Rc::new(RefCell::new(None));
 
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let mut connected_clients_map = HashSet::new();
     connected_clients_map.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients_map));

@@ -81,7 +81,7 @@ pub struct DumpSessionLayoutResponse {
 /// The plugin id a state report is addressed to when no plugin wants it but a `zellij events`
 /// client does. No plugin ever has this id, so the plugin thread loads nothing for it and the
 /// report reaches the CLI subscribers alone. See `WasmBridge::forward_events_to_cli_subscribers`.
-pub const CLI_EVENTS_ONLY_TARGET: PluginId = PluginId(u32::MAX);
+pub const CLI_EVENTS_ONLY_TARGET: PluginId = PluginId::new(u32::MAX);
 
 #[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PluginInstruction {
@@ -1284,7 +1284,7 @@ pub(crate) fn plugin_thread_main(
                     (Some(plugin_url), None) => {
                         // send to specific plugin(s)
                         pipe_to_specific_plugins(
-                            PipeSource::Plugin(source_plugin_id.0),
+                            PipeSource::Plugin(source_plugin_id),
                             &plugin_url,
                             &Some(message.plugin_config),
                             &None,
@@ -1307,10 +1307,10 @@ pub(crate) fn plugin_thread_main(
                     (None, Some(destination_plugin_id)) => {
                         let is_private = true;
                         pipe_messages.push((
-                            Some(PluginId(destination_plugin_id)),
+                            Some(destination_plugin_id),
                             None,
                             PipeMessage::new(
-                                PipeSource::Plugin(source_plugin_id.0),
+                                PipeSource::Plugin(source_plugin_id),
                                 message.message_name,
                                 &message.message_payload,
                                 &Some(message.message_args),
@@ -1322,10 +1322,10 @@ pub(crate) fn plugin_thread_main(
                         log::warn!("Message contains both a destination plugin url: {plugin_url} and a destination plugin id: {destination_plugin_id}, ignoring the url and prioritizing the id");
                         let is_private = true;
                         pipe_messages.push((
-                            Some(PluginId(destination_plugin_id)),
+                            Some(destination_plugin_id),
                             None,
                             PipeMessage::new(
-                                PipeSource::Plugin(source_plugin_id.0),
+                                PipeSource::Plugin(source_plugin_id),
                                 message.message_name,
                                 &message.message_payload,
                                 &Some(message.message_args),
@@ -1336,7 +1336,7 @@ pub(crate) fn plugin_thread_main(
                     (None, None) => {
                         // send to all plugins
                         pipe_to_all_plugins(
-                            PipeSource::Plugin(source_plugin_id.0),
+                            PipeSource::Plugin(source_plugin_id),
                             &message.message_name,
                             &message.message_payload,
                             &Some(message.message_args),
@@ -1436,7 +1436,7 @@ pub(crate) fn plugin_thread_main(
                 let updates = vec![(
                     None,
                     None,
-                    Event::UserAction(action, client_id, terminal_id.map(|id| id.0), cli_client_id),
+                    Event::UserAction(action, client_id, terminal_id, cli_client_id),
                 )];
                 wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
             },

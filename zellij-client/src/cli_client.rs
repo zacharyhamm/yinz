@@ -96,7 +96,7 @@ fn pipe_client(
     skip_cache: bool,
     floating: Option<bool>,
     in_place: Option<bool>,
-    pane_id: Option<u32>,
+    pane_id: Option<zellij_types::internal_ids::TerminalId>,
     cwd: Option<PathBuf>,
     pane_title: Option<String>,
 ) {
@@ -219,7 +219,7 @@ fn pipe_client(
 fn individual_messages_client(
     os_input: &mut Box<dyn CliClientOs>,
     action: Action,
-    pane_id: Option<u32>,
+    pane_id: Option<zellij_types::internal_ids::TerminalId>,
 ) -> Option<i32> {
     // Every blocking pane waits for its own `Exit`, condition or no condition. The server
     // broadcasts `UnblockInputThread` to every client whenever any pane closes anywhere in the

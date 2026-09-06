@@ -1,3 +1,9 @@
+#[cfg(test)]
+const CLIENT_1: zellij_types::internal_ids::ClientId = zellij_types::internal_ids::ClientId::new(1);
+#[cfg(test)]
+const PLUGIN_77: zellij_types::internal_ids::PluginId =
+    zellij_types::internal_ids::PluginId::new(77);
+
 use super::*;
 
 #[test]
@@ -8,13 +14,18 @@ fn kitty_query_replies_ok_when_capable_client_connected() {
     };
     let mut screen = create_new_screen(size, true, true);
     new_tab(&mut screen, 1, 0);
-    screen.update_kitty_graphics_support(crate::ClientId(1), true);
+    screen.update_kitty_graphics_support(crate::ClientId::new(1), true);
     assert_eq!(
-        screen.kitty_host_capabilities.borrow().get(&ClientId(1)),
+        screen
+            .kitty_host_capabilities
+            .borrow()
+            .get(&ClientId::new(1)),
         Some(&true)
     );
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
-    let active_pane = active_tab.get_active_pane_mut(crate::ClientId(1)).unwrap();
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
+    let active_pane = active_tab
+        .get_active_pane_mut(crate::ClientId::new(1))
+        .unwrap();
     active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
     assert_eq!(
         active_pane.drain_messages_to_pty(),
@@ -30,13 +41,18 @@ fn kitty_query_replies_enotsupported_when_no_capable_client() {
     };
     let mut screen = create_new_screen(size, true, true);
     new_tab(&mut screen, 1, 0);
-    screen.update_kitty_graphics_support(crate::ClientId(1), false);
+    screen.update_kitty_graphics_support(crate::ClientId::new(1), false);
     assert_eq!(
-        screen.kitty_host_capabilities.borrow().get(&ClientId(1)),
+        screen
+            .kitty_host_capabilities
+            .borrow()
+            .get(&ClientId::new(1)),
         Some(&false)
     );
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
-    let active_pane = active_tab.get_active_pane_mut(crate::ClientId(1)).unwrap();
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
+    let active_pane = active_tab
+        .get_active_pane_mut(crate::ClientId::new(1))
+        .unwrap();
     active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
     let replies = active_pane.drain_messages_to_pty();
     assert_eq!(replies.len(), 1);
@@ -53,14 +69,19 @@ fn kitty_query_is_ignored_when_the_protocol_is_disabled_in_the_config() {
     };
     let mut screen = create_new_screen_with_kitty_graphics(size, true, true, false);
     new_tab(&mut screen, 1, 0);
-    screen.update_kitty_graphics_support(crate::ClientId(1), true);
+    screen.update_kitty_graphics_support(crate::ClientId::new(1), true);
     assert_eq!(
-        screen.kitty_host_capabilities.borrow().get(&ClientId(1)),
+        screen
+            .kitty_host_capabilities
+            .borrow()
+            .get(&ClientId::new(1)),
         Some(&false),
         "a capable host must still be recorded as incapable when the protocol is disabled"
     );
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
-    let active_pane = active_tab.get_active_pane_mut(crate::ClientId(1)).unwrap();
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
+    let active_pane = active_tab
+        .get_active_pane_mut(crate::ClientId::new(1))
+        .unwrap();
     active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
     assert!(
         active_pane.drain_messages_to_pty().is_empty(),
@@ -76,12 +97,14 @@ fn kitty_support_recomputed_on_client_detach() {
     };
     let mut screen = create_new_screen(size, true, true);
     new_tab(&mut screen, 1, 0);
-    screen.add_client(crate::ClientId(2)).expect("TEST");
-    screen.update_kitty_graphics_support(crate::ClientId(1), false);
-    screen.update_kitty_graphics_support(crate::ClientId(2), true);
-    screen.remove_client(crate::ClientId(2)).expect("TEST");
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
-    let active_pane = active_tab.get_active_pane_mut(crate::ClientId(1)).unwrap();
+    screen.add_client(crate::ClientId::new(2)).expect("TEST");
+    screen.update_kitty_graphics_support(crate::ClientId::new(1), false);
+    screen.update_kitty_graphics_support(crate::ClientId::new(2), true);
+    screen.remove_client(crate::ClientId::new(2)).expect("TEST");
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
+    let active_pane = active_tab
+        .get_active_pane_mut(crate::ClientId::new(1))
+        .unwrap();
     active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
     let replies = active_pane.drain_messages_to_pty();
     assert_eq!(replies.len(), 1);
@@ -95,30 +118,33 @@ fn plugins_receive_kitty_support_per_client() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_theme_capture(size);
     new_tab(&mut screen, 1, 0);
-    screen.add_client(crate::ClientId(2)).expect("TEST");
-    add_pane_to_tab(&mut screen, 0, PaneId::Plugin(crate::PluginId(77)), false);
+    screen.add_client(crate::ClientId::new(2)).expect("TEST");
+    add_pane_to_tab(
+        &mut screen,
+        0,
+        PaneId::Plugin(crate::PluginId::new(77)),
+        false,
+    );
     capture.drain_plugin_updates();
 
-    screen.update_kitty_graphics_support(crate::ClientId(1), true);
-    screen.update_kitty_graphics_support(crate::ClientId(2), false);
+    screen.update_kitty_graphics_support(crate::ClientId::new(1), true);
+    screen.update_kitty_graphics_support(crate::ClientId::new(2), false);
 
     let capabilities: BTreeMap<ClientId, bool> = capture
         .drain_plugin_updates()
         .into_iter()
         .filter_map(
             |(plugin_id, client_id, event)| match (plugin_id, client_id, event) {
-                (
-                    Some(zellij_types::internal_ids::PluginId(77)),
-                    Some(client_id),
-                    Event::ModeUpdate(mode_info),
-                ) => Some((client_id, mode_info.capabilities.kitty_graphics)),
+                (Some(PLUGIN_77), Some(client_id), Event::ModeUpdate(mode_info)) => {
+                    Some((client_id, mode_info.capabilities.kitty_graphics))
+                },
                 _ => None,
             },
         )
         .collect();
     assert_eq!(
         capabilities,
-        BTreeMap::from([(ClientId(1), true), (ClientId(2), false)])
+        BTreeMap::from([(ClientId::new(1), true), (ClientId::new(2), false)])
     );
 }
 
@@ -127,19 +153,24 @@ fn plugins_receive_kitty_support_after_a_client_id_is_reused() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_theme_capture(size);
     new_tab(&mut screen, 1, 0);
-    add_pane_to_tab(&mut screen, 0, PaneId::Plugin(crate::PluginId(77)), false);
+    add_pane_to_tab(
+        &mut screen,
+        0,
+        PaneId::Plugin(crate::PluginId::new(77)),
+        false,
+    );
 
-    screen.update_kitty_graphics_support(crate::ClientId(1), true);
-    screen.remove_client(crate::ClientId(1)).expect("TEST");
-    screen.add_client(crate::ClientId(1)).expect("TEST");
+    screen.update_kitty_graphics_support(crate::ClientId::new(1), true);
+    screen.remove_client(crate::ClientId::new(1)).expect("TEST");
+    screen.add_client(crate::ClientId::new(1)).expect("TEST");
     capture.drain_plugin_updates();
 
-    screen.update_kitty_graphics_support(crate::ClientId(1), true);
+    screen.update_kitty_graphics_support(crate::ClientId::new(1), true);
 
     assert!(capture.drain_plugin_updates().into_iter().any(
         |(plugin_id, client_id, event)| matches!(
             (plugin_id, client_id, event),
-            (Some(zellij_types::internal_ids::PluginId(77)), Some(ClientId(1)), Event::ModeUpdate(mode_info))
+            (Some(PLUGIN_77), Some(CLIENT_1), Event::ModeUpdate(mode_info))
                 if mode_info.capabilities.kitty_graphics
         )
     ));
@@ -156,24 +187,29 @@ fn a_capability_reply_for_a_departed_client_is_ignored() {
     };
     let mut screen = create_new_screen(size, true, true);
     new_tab(&mut screen, 1, 0);
-    screen.add_client(crate::ClientId(2)).expect("TEST");
-    screen.update_kitty_graphics_support(crate::ClientId(1), false);
-    screen.remove_client(crate::ClientId(2)).expect("TEST");
+    screen.add_client(crate::ClientId::new(2)).expect("TEST");
+    screen.update_kitty_graphics_support(crate::ClientId::new(1), false);
+    screen.remove_client(crate::ClientId::new(2)).expect("TEST");
 
-    screen.update_kitty_graphics_support(crate::ClientId(2), true);
+    screen.update_kitty_graphics_support(crate::ClientId::new(2), true);
 
     assert_eq!(
-        screen.kitty_host_capabilities.borrow().get(&ClientId(2)),
+        screen
+            .kitty_host_capabilities
+            .borrow()
+            .get(&ClientId::new(2)),
         None,
         "a departed client must not be recorded"
     );
     assert!(
-        !screen.mode_info.contains_key(&ClientId(2)),
+        !screen.mode_info.contains_key(&ClientId::new(2)),
         "a departed client must not come back as a phantom in the mode_info map"
     );
     // ...and the aggregate still reflects only the client that is actually here.
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
-    let active_pane = active_tab.get_active_pane_mut(crate::ClientId(1)).unwrap();
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
+    let active_pane = active_tab
+        .get_active_pane_mut(crate::ClientId::new(1))
+        .unwrap();
     active_pane.handle_pty_bytes(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\".to_vec());
     let replies = active_pane.drain_messages_to_pty();
     assert_eq!(replies.len(), 1);
@@ -190,17 +226,22 @@ fn a_reused_client_id_does_not_inherit_the_previous_clients_kitty_capability() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, capture) = create_new_screen_with_theme_capture(size);
     new_tab(&mut screen, 1, 0);
-    add_pane_to_tab(&mut screen, 0, PaneId::Plugin(crate::PluginId(77)), false);
+    add_pane_to_tab(
+        &mut screen,
+        0,
+        PaneId::Plugin(crate::PluginId::new(77)),
+        false,
+    );
 
-    screen.update_kitty_graphics_support(crate::ClientId(1), true);
-    screen.remove_client(crate::ClientId(1)).expect("TEST");
-    screen.add_client(crate::ClientId(1)).expect("TEST");
+    screen.update_kitty_graphics_support(crate::ClientId::new(1), true);
+    screen.remove_client(crate::ClientId::new(1)).expect("TEST");
+    screen.add_client(crate::ClientId::new(1)).expect("TEST");
     capture.drain_plugin_updates();
 
     // What the server enqueues right after `AddClient`, and the point at which a stale entry
     // would be cloned and fanned out to every plugin.
     screen
-        .change_mode(InputMode::Normal, None, crate::ClientId(1))
+        .change_mode(InputMode::Normal, None, crate::ClientId::new(1))
         .expect("TEST");
 
     let reported: Vec<bool> = capture
@@ -208,11 +249,9 @@ fn a_reused_client_id_does_not_inherit_the_previous_clients_kitty_capability() {
         .into_iter()
         .filter_map(
             |(plugin_id, client_id, event)| match (plugin_id, client_id, event) {
-                (
-                    Some(zellij_types::internal_ids::PluginId(77)),
-                    Some(ClientId(1)),
-                    Event::ModeUpdate(mode_info),
-                ) => Some(mode_info.capabilities.kitty_graphics),
+                (Some(PLUGIN_77), Some(CLIENT_1), Event::ModeUpdate(mode_info)) => {
+                    Some(mode_info.capabilities.kitty_graphics)
+                },
                 _ => None,
             },
         )
@@ -232,13 +271,18 @@ fn primary_da_advertises_sixel_when_capable_client_connected() {
     };
     let mut screen = create_new_screen(size, true, true);
     new_tab(&mut screen, 1, 0);
-    screen.update_sixel_support(crate::ClientId(1), true);
+    screen.update_sixel_support(crate::ClientId::new(1), true);
     assert_eq!(
-        screen.sixel_host_capabilities.borrow().get(&ClientId(1)),
+        screen
+            .sixel_host_capabilities
+            .borrow()
+            .get(&ClientId::new(1)),
         Some(&true)
     );
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
-    let active_pane = active_tab.get_active_pane_mut(crate::ClientId(1)).unwrap();
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
+    let active_pane = active_tab
+        .get_active_pane_mut(crate::ClientId::new(1))
+        .unwrap();
     active_pane.handle_pty_bytes(b"\x1b[c".to_vec());
     assert_eq!(
         active_pane.drain_messages_to_pty(),
@@ -254,13 +298,18 @@ fn primary_da_omits_sixel_when_no_capable_client() {
     };
     let mut screen = create_new_screen(size, true, true);
     new_tab(&mut screen, 1, 0);
-    screen.update_sixel_support(crate::ClientId(1), false);
+    screen.update_sixel_support(crate::ClientId::new(1), false);
     assert_eq!(
-        screen.sixel_host_capabilities.borrow().get(&ClientId(1)),
+        screen
+            .sixel_host_capabilities
+            .borrow()
+            .get(&ClientId::new(1)),
         Some(&false)
     );
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
-    let active_pane = active_tab.get_active_pane_mut(crate::ClientId(1)).unwrap();
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
+    let active_pane = active_tab
+        .get_active_pane_mut(crate::ClientId::new(1))
+        .unwrap();
     active_pane.handle_pty_bytes(b"\x1b[c".to_vec());
     assert_eq!(
         active_pane.drain_messages_to_pty(),
@@ -276,12 +325,14 @@ fn sixel_support_recomputed_on_client_detach() {
     };
     let mut screen = create_new_screen(size, true, true);
     new_tab(&mut screen, 1, 0);
-    screen.add_client(crate::ClientId(2)).expect("TEST");
-    screen.update_sixel_support(crate::ClientId(1), false);
-    screen.update_sixel_support(crate::ClientId(2), true);
-    screen.remove_client(crate::ClientId(2)).expect("TEST");
-    let active_tab = screen.get_active_tab_mut(crate::ClientId(1)).unwrap();
-    let active_pane = active_tab.get_active_pane_mut(crate::ClientId(1)).unwrap();
+    screen.add_client(crate::ClientId::new(2)).expect("TEST");
+    screen.update_sixel_support(crate::ClientId::new(1), false);
+    screen.update_sixel_support(crate::ClientId::new(2), true);
+    screen.remove_client(crate::ClientId::new(2)).expect("TEST");
+    let active_tab = screen.get_active_tab_mut(crate::ClientId::new(1)).unwrap();
+    let active_pane = active_tab
+        .get_active_pane_mut(crate::ClientId::new(1))
+        .unwrap();
     active_pane.handle_pty_bytes(b"\x1b[c".to_vec());
     assert_eq!(
         active_pane.drain_messages_to_pty(),
@@ -294,7 +345,7 @@ fn resize_pty_pixel_dimensions(
 ) -> Option<(u32, Option<u16>, Option<u16>)> {
     match instruction {
         PtyWriteInstruction::ResizePty(terminal_id, _cols, _rows, width, height) => {
-            Some((terminal_id.0, *width, *height))
+            Some((terminal_id.get(), *width, *height))
         },
         _ => None,
     }

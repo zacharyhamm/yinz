@@ -63,7 +63,7 @@ struct State {
 
     // Plugin configuration
     config: BTreeMap<String, String>,
-    own_plugin_id: Option<u32>,
+    own_plugin_id: Option<zellij_tile::prelude::PluginId>,
     toggle_tooltip_key: Option<String>,
 
     // Tooltip state
@@ -381,7 +381,7 @@ impl State {
     fn find_own_tab_index(&self, pane_manifest: &PaneManifest) -> Option<usize> {
         for (tab_index, panes) in &pane_manifest.panes {
             for pane in panes {
-                if pane.is_plugin && Some(pane.id) == self.own_plugin_id {
+                if pane.is_plugin && Some(PluginId::new(pane.id)) == self.own_plugin_id {
                     return Some(*tab_index);
                 }
             }
@@ -459,10 +459,7 @@ impl State {
     fn update_tooltip_for_mode_change(&self, new_mode: InputMode) {
         if let Some(plugin_id) = self.own_plugin_id {
             let coordinates = self.calculate_tooltip_coordinates();
-            change_floating_panes_coordinates(vec![(
-                PaneId::Plugin(zellij_tile::prelude::PluginId(plugin_id)),
-                coordinates,
-            )]);
+            change_floating_panes_coordinates(vec![(PaneId::Plugin(plugin_id), coordinates)]);
             rename_plugin_pane(plugin_id, format!("{:?}", new_mode));
         }
     }
@@ -470,7 +467,7 @@ impl State {
     fn move_tooltip_to_new_tab(&self, new_tab_index: usize) {
         if let Some(plugin_id) = self.own_plugin_id {
             break_panes_to_tab_with_index(
-                &[PaneId::Plugin(zellij_tile::prelude::PluginId(plugin_id))],
+                &[PaneId::Plugin(plugin_id)],
                 new_tab_index.saturating_sub(1), // Convert to 0-based indexing
                 false,
             );

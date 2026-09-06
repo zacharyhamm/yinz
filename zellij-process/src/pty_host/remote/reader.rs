@@ -109,7 +109,7 @@ impl RemoteReader {
             synthetic_prefix: 0,
             on_exit: Mutex::new(None),
             cmd: RunCommand::default(),
-            terminal_id: TerminalId(0),
+            terminal_id: TerminalId::new(0),
             agent_report_cb: None,
         })
     }

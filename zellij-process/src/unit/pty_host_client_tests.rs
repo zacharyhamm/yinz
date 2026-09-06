@@ -81,7 +81,7 @@ fn finished_child() -> Child {
 fn params<'a>(host_bin: &'a Path, cmd: &RunCommand) -> SpawnParams<'a> {
     SpawnParams {
         host_bin,
-        terminal_id: TerminalId(7),
+        terminal_id: TerminalId::new(7),
         session_name: Some("client-tests".to_owned()),
         cmd: cmd.clone(),
         failover_cmd: None,
@@ -232,7 +232,11 @@ fn a_host_that_cannot_find_the_command_produces_the_error_the_pty_thread_downcas
             terminal_id,
             command,
         }) => {
-            assert_eq!(*terminal_id, 7, "the pane's own id should be reported");
+            assert_eq!(
+                *terminal_id,
+                zellij_types::internal_ids::TerminalId::new(7),
+                "the pane's own id should be reported"
+            );
             assert_eq!(command, "/bin/sh");
         },
         other => panic!("expected a ZellijError::CommandNotFound, got {other:?}: {err:#}"),
@@ -375,7 +379,7 @@ fn pending_host(control: UnixStream, host_child: Child) -> PendingHost {
             std::fs::File::open("/dev/null").expect("failed to open /dev/null"),
         )),
         child_pid: 991,
-        terminal_id: TerminalId(7),
+        terminal_id: TerminalId::new(7),
         cmd: sh("true"),
     }
 }
@@ -408,7 +412,7 @@ fn a_pane_is_reported_closed_exactly_once_even_if_its_supervisor_then_dies() {
 
     assert_eq!(
         reported(&reports),
-        vec![(TerminalId(7), Some(5))],
+        vec![(TerminalId::new(7), Some(5))],
         "the pane should have been reported closed exactly once, with its real status"
     );
 }
@@ -432,7 +436,7 @@ fn a_supervisor_that_dies_without_reporting_still_closes_its_pane() {
 
     assert_eq!(
         reported(&reports),
-        vec![(TerminalId(7), None)],
+        vec![(TerminalId::new(7), None)],
         "a supervisor that died silently should close the pane with an unknown status"
     );
 }
@@ -859,7 +863,7 @@ fn spawn_real_host(dir: &Path, cmd: RunCommand) -> Result<PendingHost> {
     let params = |cmd: RunCommand| SpawnParams {
         job_control: true,
         host_bin: &wrapper,
-        terminal_id: TerminalId(7),
+        terminal_id: TerminalId::new(7),
         session_name: Some("client-tests".to_owned()),
         cmd,
         failover_cmd: None,
@@ -937,7 +941,7 @@ fn spawning_a_real_supervisor_yields_a_pty_the_server_can_read() {
     );
     assert_eq!(
         reported(&reports),
-        vec![(TerminalId(7), Some(3))],
+        vec![(TerminalId::new(7), Some(3))],
         "the real supervisor should have reported the child's exit status"
     );
 
@@ -1201,7 +1205,7 @@ fn a_released_pane_can_be_attached_by_another_server() {
     // would: ids are per-server, so 7 there and 42 here are the same pane.
     let pending = attach(AttachParams {
         control_socket: &control_socket,
-        terminal_id: TerminalId(42),
+        terminal_id: TerminalId::new(42),
         session_name: Some("the-other-session".to_owned()),
     })
     .expect("attaching to the released supervisor failed");
@@ -1270,7 +1274,7 @@ fn attaching_to_a_pane_someone_else_holds_is_refused() {
 
     let err = match attach(AttachParams {
         control_socket: &control_socket,
-        terminal_id: TerminalId(42),
+        terminal_id: TerminalId::new(42),
         session_name: Some("the-other-session".to_owned()),
     }) {
         Ok(_) => panic!("attaching to an attached supervisor should have been refused"),

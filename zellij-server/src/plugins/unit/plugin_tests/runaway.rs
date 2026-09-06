@@ -11,6 +11,9 @@
 //! The assertion in each test is partly the test finishing: `teardown` joins the plugin thread,
 //! which without the token would never return.
 
+#[cfg(test)]
+const PLUGIN_0: zellij_types::internal_ids::PluginId = zellij_types::internal_ids::PluginId::new(0);
+
 use super::*;
 use crate::plugins::plugin_map::CANCELLED_BY_HOST;
 use crate::ClientId;
@@ -100,7 +103,7 @@ impl RunawayHarness {
         let cache_path = plugin_host_folder.join("permissions_test.kdl");
         let (plugin_thread_sender, screen_receiver, teardown) =
             create_plugin_thread(Some(plugin_host_folder), None);
-        let client_id = ClientId(1);
+        let client_id = ClientId::new(1);
         let size = Size { cols: 80, rows: 10 };
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (log, screen_thread) = observe_screen(
@@ -150,7 +153,7 @@ impl RunawayHarness {
             |instructions| {
                 instructions
                     .iter()
-                    .any(|i| matches!(i, ScreenInstruction::PluginBytes(assets) if assets.iter().any(|a| a.plugin_id == crate::PluginId(0))))
+                    .any(|i| matches!(i, ScreenInstruction::PluginBytes(assets) if assets.iter().any(|a| a.plugin_id == crate::PluginId::new(0))))
                     .then_some(())
             },
         );
@@ -161,7 +164,7 @@ impl RunawayHarness {
         let _ = self
             .plugin_thread_sender
             .send(PluginInstruction::Update(vec![(
-                Some(crate::PluginId(0)),
+                Some(crate::PluginId::new(0)),
                 Some(self.client_id),
                 Event::Key(KeyWithModifier::new(BareKey::Char('a'))),
             )]));
@@ -219,21 +222,13 @@ fn a_runaway_plugin_is_stopped_by_its_unload(run_plugin: RunPluginOrAlias) {
     harness.start_the_loop();
     let _ = harness
         .plugin_thread_sender
-        .send(PluginInstruction::Unload(crate::PluginId(0)));
+        .send(PluginInstruction::Unload(crate::PluginId::new(0)));
     harness.wait_for_cancel_report();
 
     let (_, seen) = harness.finish();
     let crash_reports: Vec<String> = seen
         .iter()
-        .filter(|i| {
-            matches!(
-                i,
-                ScreenInstruction::UpdatePluginLoadingStage(
-                    zellij_types::internal_ids::PluginId(0),
-                    _
-                )
-            )
-        })
+        .filter(|i| matches!(i, ScreenInstruction::UpdatePluginLoadingStage(PLUGIN_0, _)))
         .map(|i| format!("{i:?}"))
         .filter(|report| report.contains("Panic!") || report.contains("already borrowed"))
         .collect();
@@ -318,10 +313,7 @@ pub fn a_lua_plugin_stuck_in_load_is_stopped_by_its_unload() {
                 .any(|i| {
                     matches!(
                         i,
-                        ScreenInstruction::SetSelectable(
-                            PaneId::Plugin(zellij_types::internal_ids::PluginId(0)),
-                            false
-                        )
+                        ScreenInstruction::SetSelectable(PaneId::Plugin(PLUGIN_0), false)
                     )
                 })
                 .then_some(())
@@ -329,7 +321,7 @@ pub fn a_lua_plugin_stuck_in_load_is_stopped_by_its_unload() {
     );
     let _ = harness
         .plugin_thread_sender
-        .send(PluginInstruction::Unload(crate::PluginId(0)));
+        .send(PluginInstruction::Unload(crate::PluginId::new(0)));
     harness.wait_for_cancel_report();
     harness.finish();
 }

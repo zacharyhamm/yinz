@@ -6001,9 +6001,9 @@ impl Tab {
                         let mut pane_ids_to_error = vec![];
                         for (id, is_terminal) in pane_ids {
                             if *is_terminal {
-                                pane_ids_to_error.push(PaneId::Terminal(TerminalId(*id)));
+                                pane_ids_to_error.push(PaneId::Terminal(TerminalId::new(*id)));
                             } else {
-                                pane_ids_to_error.push(PaneId::Plugin(PluginId(*id)));
+                                pane_ids_to_error.push(PaneId::Plugin(PluginId::new(*id)));
                             };
                         }
                         self.senders
@@ -7177,7 +7177,7 @@ impl Tab {
     pub fn scroll_terminal_up(&mut self, terminal_pane_id: TerminalId) -> Result<()> {
         let pane_id = PaneId::Terminal(terminal_pane_id);
         let err_context = || format!("failed to scroll up pane {pane_id:?}");
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         let synthetic_position = Position::new(0, 0);
         let (mouse_sgr, is_alt) = match self.get_pane_with_id(pane_id) {
             Some(pane) => (
@@ -7216,7 +7216,7 @@ impl Tab {
     pub fn scroll_terminal_down(&mut self, terminal_pane_id: TerminalId) -> Result<()> {
         let pane_id = PaneId::Terminal(terminal_pane_id);
         let err_context = || format!("failed to scroll down pane {pane_id:?}");
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         let synthetic_position = Position::new(0, 0);
         let (mouse_sgr, is_alt) = match self.get_pane_with_id(pane_id) {
             Some(pane) => (
@@ -7256,10 +7256,10 @@ impl Tab {
 
     pub fn scroll_terminal_page_up(&mut self, terminal_pane_id: TerminalId) {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
-            let fictitious_client_id = ClientId(1); // this is not checked for terminal panes and we
-                                                    // don't have an actual client id here
-                                                    // TODO: traits were a mistake
-                                                    // prevent overflow when row == 0
+            let fictitious_client_id = ClientId::new(1); // this is not checked for terminal panes and we
+                                                         // don't have an actual client id here
+                                                         // TODO: traits were a mistake
+                                                         // prevent overflow when row == 0
             let scroll_rows = terminal_pane.rows().max(1).saturating_sub(1);
             terminal_pane.scroll_up(scroll_rows, fictitious_client_id);
         }
@@ -7284,9 +7284,9 @@ impl Tab {
 
     pub fn scroll_terminal_page_down(&mut self, terminal_pane_id: TerminalId) {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
-            let fictitious_client_id = ClientId(1); // this is not checked for terminal panes and we
-                                                    // don't have an actual client id here
-                                                    // TODO: traits were a mistake
+            let fictitious_client_id = ClientId::new(1); // this is not checked for terminal panes and we
+                                                         // don't have an actual client id here
+                                                         // TODO: traits were a mistake
             let scroll_rows = terminal_pane.get_content_rows();
             terminal_pane.scroll_down(scroll_rows, fictitious_client_id);
             if !terminal_pane.is_scrolled() {
@@ -7450,9 +7450,9 @@ impl Tab {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
             terminal_pane.clear_scroll();
             if let Some(size) = terminal_pane.get_line_number() {
-                let fictitious_client_id = ClientId(1); // this is not checked for terminal panes and we
-                                                        // don't have an actual client id here
-                                                        // TODO: traits were a mistake
+                let fictitious_client_id = ClientId::new(1); // this is not checked for terminal panes and we
+                                                             // don't have an actual client id here
+                                                             // TODO: traits were a mistake
                 terminal_pane.scroll_up(size, fictitious_client_id);
             }
         }
@@ -8883,9 +8883,9 @@ impl Tab {
                         let mut pane_ids_to_error = vec![];
                         for (id, is_terminal) in pane_ids {
                             if *is_terminal {
-                                pane_ids_to_error.push(PaneId::Terminal(TerminalId(*id)));
+                                pane_ids_to_error.push(PaneId::Terminal(TerminalId::new(*id)));
                             } else {
-                                pane_ids_to_error.push(PaneId::Plugin(PluginId(*id)));
+                                pane_ids_to_error.push(PaneId::Plugin(PluginId::new(*id)));
                             };
                         }
                         self.senders
@@ -9397,13 +9397,13 @@ impl Tab {
     }
     // --- Pane-targeting CLI methods ---
     pub fn scroll_up_by_pane_id(&mut self, pane_id: PaneId) {
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.scroll_up(1, fictitious_client_id);
         }
     }
     pub fn scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.scroll_down(1, fictitious_client_id);
             if !pane.is_scrolled() {
@@ -9415,7 +9415,7 @@ impl Tab {
         Ok(())
     }
     pub fn scroll_to_top_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.clear_scroll();
             if let Some(size) = pane.get_line_number() {
@@ -9436,14 +9436,14 @@ impl Tab {
         Ok(())
     }
     pub fn page_scroll_up_by_pane_id(&mut self, pane_id: PaneId) {
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = pane.rows().max(1).saturating_sub(1);
             pane.scroll_up(scroll_rows, fictitious_client_id);
         }
     }
     pub fn page_scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = pane.get_content_rows();
             pane.scroll_down(scroll_rows, fictitious_client_id);
@@ -9456,14 +9456,14 @@ impl Tab {
         Ok(())
     }
     pub fn half_page_scroll_up_by_pane_id(&mut self, pane_id: PaneId) {
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = (pane.rows().max(1).saturating_sub(1)) / 2;
             pane.scroll_up(scroll_rows, fictitious_client_id);
         }
     }
     pub fn half_page_scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = ClientId(1);
+        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = (pane.rows().max(1).saturating_sub(1)) / 2;
             pane.scroll_down(scroll_rows, fictitious_client_id);
@@ -9629,7 +9629,7 @@ pub fn pane_info_for_pane(
 
     match pane_id {
         PaneId::Terminal(terminal_id) => {
-            pane_info.id = terminal_id.0;
+            pane_info.id = terminal_id.get();
             pane_info.is_plugin = false;
             if let Some(Run::Command(command)) = pane.invoked_with() {
                 pane_info.target = command.target.clone();
@@ -9640,7 +9640,7 @@ pub fn pane_info_for_pane(
             });
         },
         PaneId::Plugin(plugin_id) => {
-            pane_info.id = plugin_id.0;
+            pane_info.id = plugin_id.get();
             pane_info.is_plugin = true;
             pane_info.plugin_url = pane.invoked_with().as_ref().and_then(|c| match c {
                 Run::Plugin(run_plugin_or_alias) => Some(run_plugin_or_alias.location_string()),

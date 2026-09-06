@@ -403,7 +403,7 @@ fn manifest(tab_index: usize, panes: Vec<PaneInfo>) -> PaneManifest {
 fn a_pane_update_reporting_us_suppressed_confirms_the_hide() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         hidden: true,
         hide_pending: 2,
         ..Default::default()
@@ -423,7 +423,7 @@ fn a_stale_frame_does_not_undo_a_hide() {
     // the user pressed Esc; this snapshot was taken before the instruction reached the server
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         hidden: true,
         hide_pending: 2,
         ..Default::default()
@@ -444,7 +444,7 @@ fn a_stale_frame_does_not_undo_a_hide() {
 fn a_pane_update_after_the_hide_landed_is_a_reveal() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         // the hide has been seen to land, so nothing is outstanding
         hidden: true,
         hide_pending: 0,
@@ -462,7 +462,7 @@ fn a_pane_update_after_the_hide_landed_is_a_reveal() {
 fn a_pane_update_while_visible_only_tracks_which_tab_we_are_on() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         ..Default::default()
     };
 
@@ -479,13 +479,17 @@ fn a_pane_update_while_visible_only_tracks_which_tab_we_are_on() {
 fn an_agent_list_the_user_closed_is_forgotten() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
-        agents_plugin: Some(9),
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
+        agents_plugin: Some(zellij_tile::prelude::PluginId::new(9)),
         ..Default::default()
     };
 
     state.on_panes(manifest(0, vec![pane(7, false), pane(9, false)]));
-    assert_eq!(state.agents_plugin, Some(9), "still open, still remembered");
+    assert_eq!(
+        state.agents_plugin,
+        Some(zellij_tile::prelude::PluginId::new(9)),
+        "still open, still remembered"
+    );
 
     state.on_panes(manifest(0, vec![pane(7, false)]));
     assert_eq!(
@@ -506,7 +510,7 @@ fn an_agent_list_the_user_closed_is_forgotten() {
 /// An `AGENT_STRIP_YIELD` naming `stop`, as the agent list sends it when the ring steps out.
 fn yielded(stop: &str) -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(7),
+        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(7)),
         name: hocus_proto::wire::AGENT_STRIP_YIELD.to_owned(),
         payload: None,
         args: BTreeMap::from([(hocus_proto::wire::PANEL_STOP.to_owned(), stop.to_owned())]),
@@ -632,7 +636,7 @@ fn the_discount_runs_out_if_the_focus_never_arrives() {
     assert_eq!(state.ring_focus_pending, 0);
 }
 
-fn selection(plugin_id: u32) -> PipeMessage {
+fn selection(plugin_id: zellij_tile::prelude::PluginId) -> PipeMessage {
     PipeMessage {
         source: PipeSource::Plugin(plugin_id),
         name: hocus_proto::wire::AGENT_SELECTION.to_owned(),
@@ -656,7 +660,7 @@ fn selection(plugin_id: u32) -> PipeMessage {
 fn placed_state() -> State {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         kdl: state_config(),
         ..Default::default()
     };
@@ -685,8 +689,11 @@ fn state_config() -> BTreeMap<String, String> {
 fn a_list_that_announces_itself_before_it_is_on_a_tab_is_placed_when_it_appears() {
     let mut state = placed_state();
 
-    state.pipe(selection(9));
-    assert_eq!(state.agents_plugin, Some(9));
+    state.pipe(selection(zellij_tile::prelude::PluginId::new(9)));
+    assert_eq!(
+        state.agents_plugin,
+        Some(zellij_tile::prelude::PluginId::new(9))
+    );
     assert!(
         !state.agents_placed,
         "no manifest has named the list's tab, so nothing says that placement reached it"
@@ -707,10 +714,10 @@ fn a_list_that_announces_itself_before_it_is_on_a_tab_is_placed_when_it_appears(
 #[test]
 fn a_repeated_announcement_owes_no_placement() {
     let mut state = placed_state();
-    state.agents_plugin = Some(9);
+    state.agents_plugin = Some(zellij_tile::prelude::PluginId::new(9));
     state.on_panes(manifest(0, vec![pane(7, false), pane(9, false)]));
 
-    state.pipe(selection(9));
+    state.pipe(selection(zellij_tile::prelude::PluginId::new(9)));
     assert!(
         state.agents_placed,
         "the same id it already had, so nothing was announced and nothing is owed"
@@ -722,7 +729,7 @@ fn a_repeated_announcement_owes_no_placement() {
 #[test]
 fn a_reopened_list_is_placed_again() {
     let mut state = placed_state();
-    state.pipe(selection(9));
+    state.pipe(selection(zellij_tile::prelude::PluginId::new(9)));
     state.on_panes(manifest(0, vec![pane(7, false), pane(9, false)]));
     assert!(state.agents_placed);
 
@@ -733,7 +740,7 @@ fn a_reopened_list_is_placed_again() {
         "a list that is gone is nothing to place, or the retry would spin"
     );
 
-    state.pipe(selection(11));
+    state.pipe(selection(zellij_tile::prelude::PluginId::new(11)));
     assert!(
         !state.agents_placed,
         "a fresh pane, at the centered default, with a placement owed to it"
@@ -747,7 +754,7 @@ fn a_reopened_list_is_placed_again() {
 #[test]
 fn a_tab_update_retries_the_lists_placement() {
     let mut state = placed_state();
-    state.agents_plugin = Some(9);
+    state.agents_plugin = Some(zellij_tile::prelude::PluginId::new(9));
     state.agents_tab_index = Some(0);
     state.agents_placed = false;
 
@@ -773,7 +780,7 @@ fn a_tab_update_retries_the_lists_placement() {
 #[test]
 fn a_resize_while_both_halves_are_hidden_is_still_placed() {
     let mut state = placed_state();
-    state.pipe(selection(9));
+    state.pipe(selection(zellij_tile::prelude::PluginId::new(9)));
     state.on_panes(manifest(0, vec![pane(7, false), pane(9, false)]));
     assert_eq!(state.placed_against, (50, 200));
 
@@ -1065,8 +1072,8 @@ fn two_clients_on_different_tabs_leave_the_panes_alone() {
 fn the_agent_lists_tab_is_tracked_beside_our_own() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
-        agents_plugin: Some(9),
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
+        agents_plugin: Some(zellij_tile::prelude::PluginId::new(9)),
         ..Default::default()
     };
 
@@ -1091,7 +1098,7 @@ fn the_agent_lists_tab_is_tracked_beside_our_own() {
 fn a_placement_that_could_not_land_is_made_again_when_the_pane_appears() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         ..Default::default()
     };
     let tabs = vec![TabInfo {
@@ -1136,7 +1143,7 @@ fn a_placement_that_could_not_land_is_made_again_when_the_pane_appears() {
 fn a_reveal_stays_on_the_tab_the_server_put_us_on() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         own_tab_index: Some(3),
         hidden: true,
         hide_pending: 0,
@@ -1173,8 +1180,8 @@ fn a_reveal_stays_on_the_tab_the_server_put_us_on() {
 fn a_visible_agent_list_brings_the_conversation_back_with_it() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
-        agents_plugin: Some(9),
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
+        agents_plugin: Some(zellij_tile::prelude::PluginId::new(9)),
         own_tab_index: Some(3),
         hidden: true,
         hide_pending: 0,
@@ -1198,8 +1205,8 @@ fn a_visible_agent_list_brings_the_conversation_back_with_it() {
 fn a_hide_only_half_landed_is_not_read_as_a_reveal() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
-        agents_plugin: Some(9),
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
+        agents_plugin: Some(zellij_tile::prelude::PluginId::new(9)),
         own_tab_index: Some(3),
         hidden: true,
         hide_pending: 2,
@@ -1222,8 +1229,8 @@ fn a_hide_only_half_landed_is_not_read_as_a_reveal() {
 fn our_own_hide_landing_is_not_a_reveal() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
-        agents_plugin: Some(9),
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
+        agents_plugin: Some(zellij_tile::prelude::PluginId::new(9)),
         hidden: true,
         hide_pending: 2,
         ..Default::default()
@@ -1250,7 +1257,7 @@ fn our_own_hide_landing_is_not_a_reveal() {
 fn a_greeting_that_arrives_before_our_first_pane_update_is_the_list_that_made_us() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         ..Default::default()
     };
     assert!(state.own_tab_index.is_none(), "no manifest yet");
@@ -1269,7 +1276,7 @@ fn a_greeting_that_arrives_before_our_first_pane_update_is_the_list_that_made_us
 fn a_greeting_to_a_conversation_that_was_already_open_claims_nothing() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         own_tab_index: Some(0),
         ..Default::default()
     };
@@ -1280,7 +1287,7 @@ fn a_greeting_to_a_conversation_that_was_already_open_claims_nothing() {
     // nor does a greeting with no marker on it at all
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         ..Default::default()
     };
     state.note_greeting_from_agents(false);
@@ -1294,7 +1301,7 @@ fn a_greeting_to_a_conversation_that_was_already_open_claims_nothing() {
 fn a_list_already_asked_for_is_not_asked_for_twice() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         ..Default::default()
     };
 
@@ -1323,7 +1330,7 @@ fn a_list_already_asked_for_is_not_asked_for_twice() {
 fn a_list_that_never_arrives_is_asked_for_again_on_the_next_reveal() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         ..Default::default()
     };
 
@@ -1342,7 +1349,7 @@ fn a_list_that_never_arrives_is_asked_for_again_on_the_next_reveal() {
     // And a reveal on its own does too - a dismissal is not what makes the claim recoverable.
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         ..Default::default()
     };
     state.on_panes(manifest(0, vec![pane(7, false)]));
@@ -1388,7 +1395,7 @@ fn the_panes_are_placed_against_the_tab_s_display_area() {
 fn the_surface_is_what_a_tab_update_caches() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         ..Default::default()
     };
     state.on_tabs(vec![a_tab()]);
@@ -1484,7 +1491,7 @@ fn pick_anchor_skips_the_focused_pane() {
     ];
     assert_eq!(
         pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2)))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2)))
     );
 }
 
@@ -1499,7 +1506,7 @@ fn pick_anchor_prefers_the_pane_hocus_is_covering() {
     ];
     assert_eq!(
         pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(1)))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1)))
     );
 }
 
@@ -1513,7 +1520,7 @@ fn pick_anchor_breaks_ties_by_the_larger_pane() {
     ];
     assert_eq!(
         pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(3)))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(3)))
     );
 }
 
@@ -1540,7 +1547,7 @@ fn pick_anchor_ignores_floating_suppressed_and_unselectable_panes() {
     ];
     assert_eq!(
         pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(5)))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(5)))
     );
 }
 
@@ -1555,16 +1562,16 @@ fn pick_anchor_skips_panes_already_visited() {
     ];
     assert_eq!(
         pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2))),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2))),
         "the pane the conversation is covering most"
     );
     assert_eq!(
         pick_anchor(
             at(3, 14, 60, 33),
             &panes,
-            &[PaneId::Terminal(zellij_tile::prelude::TerminalId(2))]
+            &[PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2))]
         ),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(1))),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1))),
         "and then the next one, rather than the same one again"
     );
     assert_eq!(
@@ -1572,8 +1579,8 @@ fn pick_anchor_skips_panes_already_visited() {
             at(3, 14, 60, 33),
             &panes,
             &[
-                PaneId::Terminal(zellij_tile::prelude::TerminalId(2)),
-                PaneId::Terminal(zellij_tile::prelude::TerminalId(1))
+                PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2)),
+                PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1))
             ]
         ),
         None,
@@ -1591,13 +1598,13 @@ fn pick_anchor_falls_back_to_the_only_tiled_pane() {
     ];
     assert_eq!(
         pick_anchor(at(3, 14, 60, 33), &panes, &[]),
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(1)))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1)))
     );
     assert_eq!(
         pick_anchor(
             at(3, 14, 60, 33),
             &panes,
-            &[PaneId::Terminal(zellij_tile::prelude::TerminalId(1))]
+            &[PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1))]
         ),
         None,
         "and nowhere left once it has been toured - the press walks the corners instead"
@@ -1801,7 +1808,7 @@ fn placed_chat(state: &State) -> (usize, usize, usize, usize) {
     let (placements, _) = state.last_placement.as_ref().expect("a placement");
     let (_, chat) = placements
         .iter()
-        .find(|(id, _)| *id == PaneId::Plugin(zellij_tile::prelude::PluginId(7)))
+        .find(|(id, _)| *id == PaneId::Plugin(zellij_tile::prelude::PluginId::new(7)))
         .expect("our own pane");
     rect(chat)
 }
@@ -1814,7 +1821,7 @@ fn ctrl_o_moves_the_conversation_clear_of_the_largest_unfocused_pane() {
 
     assert_eq!(
         state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2)))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2)))
     );
     let (_, is_the_users) = state.last_placement.as_ref().expect("a placement");
     assert!(
@@ -1853,7 +1860,7 @@ fn ctrl_o_walks_off_whatever_the_conversation_is_covering() {
     state.on_key(ctrl_o());
     assert_eq!(
         state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2))),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2))),
         "the pane it is on"
     );
     let (x, _, w, _) = placed_chat(&state);
@@ -1870,7 +1877,7 @@ fn ctrl_o_walks_off_whatever_the_conversation_is_covering() {
     state.on_key(ctrl_o());
     assert_eq!(
         state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(3))),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(3))),
         "now it is on pane 3"
     );
     let (x, _, w, _) = placed_chat(&state);
@@ -1893,7 +1900,7 @@ fn ctrl_o_with_one_tiled_pane_moves_to_the_top_right() {
 
     assert_eq!(
         state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(1))),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1))),
         "the focused pane is admitted when it is the only one"
     );
     let (w, h) = corner_size();
@@ -1940,7 +1947,7 @@ fn ctrl_o_twice_on_the_same_pane_moves_to_the_next_corner() {
 
     assert_eq!(
         state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2))),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2))),
         "the same anchor"
     );
     let second = placed_chat(&state);
@@ -2043,7 +2050,7 @@ fn ctrl_o_tours_every_pane_before_it_cycles_corners() {
         "three presses, three panes: {anchored:?}"
     );
     assert!(
-        !anchored.contains(&PaneId::Terminal(zellij_tile::prelude::TerminalId(1))),
+        !anchored.contains(&PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1))),
         "and never the pane the user is working in: {anchored:?}"
     );
 }
@@ -2091,7 +2098,7 @@ fn ctrl_o_moves_with_no_tiled_panes_at_all() {
 fn ctrl_o_does_nothing_when_every_corner_is_the_same_rectangle() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         ..Default::default()
     };
     state.on_tabs(vec![TabInfo {
@@ -2156,13 +2163,13 @@ fn a_closed_pane_does_not_hold_a_slot_in_the_tour() {
 
     assert_eq!(
         state.panel.warp_visited,
-        vec![PaneId::Terminal(zellij_tile::prelude::TerminalId(3))],
+        vec![PaneId::Terminal(zellij_tile::prelude::TerminalId::new(3))],
         "the pane that is gone is out of the tour"
     );
     state.on_key(ctrl_o());
     assert_eq!(
         state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(3))),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(3))),
         "and it is not offered again"
     );
 }
@@ -2269,7 +2276,7 @@ fn a_resize_keeps_the_corner_the_last_press_chose() {
 #[test]
 fn a_pane_closing_does_not_move_the_agent_list() {
     let mut state = two_pane_state();
-    state.pipe(selection(9));
+    state.pipe(selection(zellij_tile::prelude::PluginId::new(9)));
     state.on_panes(manifest(0, list_beside()));
     // The press is what gives `track_anchor` an anchor to lose: with none, it returns at its
     // first guard and the assertion below holds however the placement arms are written.
@@ -2328,13 +2335,13 @@ fn a_hidden_panel_keeps_its_anchor() {
     state.hide_panel();
     assert_eq!(
         state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2)))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2)))
     );
     state.reveal_panel();
 
     assert_eq!(
         state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2)))
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2)))
     );
     assert_eq!(placed_chat(&state), anchored, "revealed where it was");
 }
@@ -2357,7 +2364,7 @@ fn list_beside() -> Vec<PaneInfo> {
 /// A hocus over the two-pane tab with an agent list open beside it, the panel at home.
 fn agents_beside_state() -> State {
     let mut state = two_pane_state();
-    state.pipe(selection(9));
+    state.pipe(selection(zellij_tile::prelude::PluginId::new(9)));
     state.on_panes(manifest(0, list_beside()));
     state.last_placement = None;
     state
@@ -2367,7 +2374,7 @@ fn agents_beside_state() -> State {
 /// the other half, being the only one of the two that knows both plugin ids.
 fn list_hide() -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(9),
+        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(9)),
         name: hocus_proto::wire::AGENT_STRIP_HIDE.to_owned(),
         payload: None,
         args: BTreeMap::new(),
@@ -2380,7 +2387,7 @@ fn list_hide() -> PipeMessage {
 /// the key is a request rather than a move.
 fn list_reposition() -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(9),
+        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(9)),
         name: hocus_proto::wire::AGENT_STRIP_REPOSITION.to_owned(),
         payload: None,
         args: BTreeMap::new(),
@@ -2390,11 +2397,14 @@ fn list_reposition() -> PipeMessage {
 }
 
 /// One half's rect from the last placement, and `None` when that placement did not name it.
-fn placed_pane(state: &State, plugin_id: u32) -> Option<(usize, usize, usize, usize)> {
+fn placed_pane(
+    state: &State,
+    plugin_id: zellij_tile::prelude::PluginId,
+) -> Option<(usize, usize, usize, usize)> {
     let (placements, _) = state.last_placement.as_ref()?;
     placements
         .iter()
-        .find(|(id, _)| *id == PaneId::Plugin(zellij_tile::prelude::PluginId(plugin_id)))
+        .find(|(id, _)| *id == PaneId::Plugin(plugin_id))
         .map(|(_, coordinates)| rect(coordinates))
 }
 
@@ -2409,7 +2419,7 @@ fn a_list_that_opens_is_placed_as_the_left_half_of_the_panel() {
         "no list yet, so the conversation has the whole panel"
     );
 
-    state.pipe(selection(9));
+    state.pipe(selection(zellij_tile::prelude::PluginId::new(9)));
     assert_eq!(
         state.shown(),
         Shown::BOTH,
@@ -2419,18 +2429,18 @@ fn a_list_that_opens_is_placed_as_the_left_half_of_the_panel() {
     assert_eq!(
         placements.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
         vec![
-            PaneId::Plugin(zellij_tile::prelude::PluginId(7)),
-            PaneId::Plugin(zellij_tile::prelude::PluginId(9))
+            PaneId::Plugin(zellij_tile::prelude::PluginId::new(7)),
+            PaneId::Plugin(zellij_tile::prelude::PluginId::new(9))
         ],
         "both halves, in one call"
     );
     assert_eq!(
-        placed_pane(&state, 9),
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(9)),
         Some((3, 14, 30, 33)),
         "the list on the left"
     );
     assert_eq!(
-        placed_pane(&state, 7),
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(7)),
         Some((33, 14, 30, 33)),
         "the conversation from the divider"
     );
@@ -2481,12 +2491,12 @@ fn a_list_that_closes_gives_its_width_to_the_conversation() {
 
     assert_eq!(state.shown(), only_chat(), "no list to hold a half");
     assert_eq!(
-        placed_pane(&state, 7),
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(7)),
         Some((3, 14, 60, 33)),
         "the conversation fills the panel"
     );
     assert_eq!(
-        placed_pane(&state, 9),
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(9)),
         None,
         "and a pane that is gone is not placed"
     );
@@ -2508,8 +2518,14 @@ fn hiding_the_panel_moves_no_rectangle() {
 
     state.reveal_panel();
     assert!(!state.hidden);
-    assert_eq!(placed_pane(&state, 9), Some((3, 14, 30, 33)));
-    assert_eq!(placed_pane(&state, 7), Some((33, 14, 30, 33)));
+    assert_eq!(
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(9)),
+        Some((3, 14, 30, 33))
+    );
+    assert_eq!(
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(7)),
+        Some((33, 14, 30, 33))
+    );
 }
 
 /// A seam drag happens in the server and claims nothing; the manifest is how it reaches the next
@@ -2538,14 +2554,26 @@ fn a_dragged_divider_is_read_back_off_the_manifest_and_kept() {
     // panel being dismissed and brought back
     state.hide_panel();
     state.reveal_panel();
-    assert_eq!(placed_pane(&state, 9), Some((3, 14, 32, 33)));
-    assert_eq!(placed_pane(&state, 7), Some((35, 14, 28, 33)));
+    assert_eq!(
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(9)),
+        Some((3, 14, 32, 33))
+    );
+    assert_eq!(
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(7)),
+        Some((35, 14, 28, 33))
+    );
 
     // a wider panel is cut in the same proportion: 32 of 60 is 48 of 90
     state.kdl = config(&[("width", "90")]);
     state.apply_overlay_geometry();
-    assert_eq!(placed_pane(&state, 9), Some((3, 14, 48, 33)));
-    assert_eq!(placed_pane(&state, 7), Some((51, 14, 42, 33)));
+    assert_eq!(
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(9)),
+        Some((3, 14, 48, 33))
+    );
+    assert_eq!(
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(7)),
+        Some((51, 14, 42, 33))
+    );
 }
 
 /// The manifest the server sends back after hocus's own placement shows the halves side by side
@@ -2558,7 +2586,10 @@ fn a_manifest_echoing_our_own_placement_leaves_the_split_alone() {
     state.split = Some((1, 3));
     state.kdl = config(&[("width", "100")]);
     state.apply_overlay_geometry();
-    assert_eq!(placed_pane(&state, 9).map(|(_, _, cols, _)| cols), Some(33));
+    assert_eq!(
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(9)).map(|(_, _, cols, _)| cols),
+        Some(33)
+    );
 
     state.on_panes(manifest(0, echoed_placement(&state)));
     assert_eq!(
@@ -2587,7 +2618,7 @@ fn the_split_does_not_drift_across_repeated_resizes() {
     }
     assert_eq!(state.split, Some((1, 3)));
     assert_eq!(
-        placed_pane(&state, 9).map(|(_, _, cols, _)| cols),
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(9)).map(|(_, _, cols, _)| cols),
         Some(33),
         "a third of 100, as on the first resize"
     );
@@ -2596,9 +2627,11 @@ fn the_split_does_not_drift_across_repeated_resizes() {
 /// The manifest the server would send back for the last placement: both halves drawn exactly
 /// where they were asked to go, over the two-pane tab.
 fn echoed_placement(state: &State) -> Vec<PaneInfo> {
-    let (x, y, cols, rows) = placed_pane(state, 9).expect("the list was placed");
+    let (x, y, cols, rows) =
+        placed_pane(state, zellij_tile::prelude::PluginId::new(9)).expect("the list was placed");
     let list = overlay_pane(9, x, y, cols, rows);
-    let (x, y, cols, rows) = placed_pane(state, 7).expect("the conversation was placed");
+    let (x, y, cols, rows) = placed_pane(state, zellij_tile::prelude::PluginId::new(7))
+        .expect("the conversation was placed");
     let chat = overlay_pane(7, x, y, cols, rows);
     vec![
         list,
@@ -2627,8 +2660,14 @@ fn a_split_dragged_below_the_floor_is_kept() {
     assert_eq!(state.split, Some((50, 60)), "read as dragged");
 
     state.apply_overlay_geometry();
-    assert_eq!(placed_pane(&state, 9), Some((3, 14, 50, 33)));
-    assert_eq!(placed_pane(&state, 7), Some((53, 14, 10, 33)));
+    assert_eq!(
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(9)),
+        Some((3, 14, 50, 33))
+    );
+    assert_eq!(
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(7)),
+        Some((53, 14, 10, 33))
+    );
 }
 
 /// Ctrl-o in the list moves the panel only when the list is here to move: with no list, or with
@@ -2700,7 +2739,7 @@ fn ctrl_o_in_the_list_moves_the_panel_clear_of_the_largest_unfocused_pane() {
 
     assert_eq!(
         state.panel.anchor,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(2))),
+        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2))),
         "the largest pane the user is not working in"
     );
     let (_, is_the_users) = state.last_placement.as_ref().expect("a placement");
@@ -2708,8 +2747,10 @@ fn ctrl_o_in_the_list_moves_the_panel_clear_of_the_largest_unfocused_pane() {
         is_the_users,
         "sent as the user's own placement, over any drag"
     );
-    let (agents_x, _, agents_w, _) = placed_pane(&state, 9).expect("the list is placed");
-    let (chat_x, _, chat_w, _) = placed_pane(&state, 7).expect("and the conversation");
+    let (agents_x, _, agents_w, _) =
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(9)).expect("the list is placed");
+    let (chat_x, _, chat_w, _) =
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(7)).expect("and the conversation");
     assert!(
         chat_x + chat_w <= 100 && agents_x + agents_w <= 100,
         "clear of pane 2, which starts at 100: {agents_x} {agents_w} / {chat_x} {chat_w}"
@@ -2727,12 +2768,15 @@ fn a_press_in_either_half_places_the_whole_panel() {
     assert_eq!(
         placements.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
         vec![
-            PaneId::Plugin(zellij_tile::prelude::PluginId(7)),
-            PaneId::Plugin(zellij_tile::prelude::PluginId(9))
+            PaneId::Plugin(zellij_tile::prelude::PluginId::new(7)),
+            PaneId::Plugin(zellij_tile::prelude::PluginId::new(9))
         ],
         "both halves, from the list's press"
     );
-    let from_the_list = (placed_pane(&state, 7), placed_pane(&state, 9));
+    let from_the_list = (
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(7)),
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(9)),
+    );
 
     let mut state = agents_beside_state();
     state.on_key(ctrl_o());
@@ -2740,19 +2784,23 @@ fn a_press_in_either_half_places_the_whole_panel() {
     assert_eq!(
         placements.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
         vec![
-            PaneId::Plugin(zellij_tile::prelude::PluginId(7)),
-            PaneId::Plugin(zellij_tile::prelude::PluginId(9))
+            PaneId::Plugin(zellij_tile::prelude::PluginId::new(7)),
+            PaneId::Plugin(zellij_tile::prelude::PluginId::new(9))
         ],
         "and both halves from the conversation's"
     );
     assert_eq!(
-        (placed_pane(&state, 7), placed_pane(&state, 9)),
+        (
+            placed_pane(&state, zellij_tile::prelude::PluginId::new(7)),
+            placed_pane(&state, zellij_tile::prelude::PluginId::new(9))
+        ),
         from_the_list,
         "to the same place: it is one panel and one tour"
     );
-    let (agents_x, _, agents_w, _) = placed_pane(&state, 9).expect("the list");
+    let (agents_x, _, agents_w, _) =
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(9)).expect("the list");
     assert_eq!(
-        placed_pane(&state, 7).map(|(x, ..)| x),
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(7)).map(|(x, ..)| x),
         Some(agents_x + agents_w),
         "cut at the split"
     );
@@ -2770,14 +2818,16 @@ fn ctrl_o_in_the_list_always_moves_it() {
     for press in 0..5 {
         state.last_placement = None;
         state.pipe(list_reposition());
-        let placed = placed_pane(&state, 9).expect("a placement");
+        let placed =
+            placed_pane(&state, zellij_tile::prelude::PluginId::new(9)).expect("a placement");
         assert_ne!(placed, was, "press {press} moved the list nowhere");
         corners.insert(placed);
         was = placed;
         // The manifest the server would send back, so the next press ranks against where the
         // panel actually is rather than where it started.
         let (x, y, cols, rows) = placed;
-        let (chat_x, chat_y, chat_cols, chat_rows) = placed_pane(&state, 7).expect("a placement");
+        let (chat_x, chat_y, chat_cols, chat_rows) =
+            placed_pane(&state, zellij_tile::prelude::PluginId::new(7)).expect("a placement");
         state.on_panes(manifest(
             0,
             vec![
@@ -2800,7 +2850,7 @@ fn ctrl_o_in_the_list_always_moves_it() {
 #[test]
 fn ctrl_o_keeps_the_panels_current_size() {
     let mut state = two_pane_state();
-    state.pipe(selection(9));
+    state.pipe(selection(zellij_tile::prelude::PluginId::new(9)));
     // the user ctrl-dragged the panel's top edge up, and the divider across
     state.on_panes(manifest(
         0,
@@ -2815,8 +2865,10 @@ fn ctrl_o_keeps_the_panels_current_size() {
 
     state.pipe(list_reposition());
 
-    let (agents_x, _, agents_w, agents_h) = placed_pane(&state, 9).expect("a placement");
-    let (chat_x, _, chat_w, chat_h) = placed_pane(&state, 7).expect("a placement");
+    let (agents_x, _, agents_w, agents_h) =
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(9)).expect("a placement");
+    let (chat_x, _, chat_w, chat_h) =
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(7)).expect("a placement");
     assert_eq!(
         (agents_w + chat_w, agents_h, chat_h),
         (80, 40, 40),
@@ -2905,11 +2957,14 @@ fn joining_a_revealed_list_opens_no_second_list() {
     assert!(!state.hidden);
     assert!(!state.agents_open_requested);
     assert_eq!(
-        placed_pane(&state, 9),
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(9)),
         Some((3, 14, 30, 33)),
         "and the panel comes back at the split"
     );
-    assert_eq!(placed_pane(&state, 7), Some((33, 14, 30, 33)));
+    assert_eq!(
+        placed_pane(&state, zellij_tile::prelude::PluginId::new(7)),
+        Some((33, 14, 30, 33))
+    );
 }
 
 /// A list asked for before the Esc still arrives afterwards - `hide_panel` has no id for it and
@@ -2923,12 +2978,13 @@ fn a_list_that_arrives_after_the_esc_arrives_hidden() {
     state.hide_panel();
     state.visibility_calls.clear();
 
-    state.pipe(selection(9));
+    state.pipe(selection(zellij_tile::prelude::PluginId::new(9)));
 
     assert!(
-        state
-            .visibility_calls
-            .contains(&(PaneId::Plugin(zellij_tile::prelude::PluginId(9)), false)),
+        state.visibility_calls.contains(&(
+            PaneId::Plugin(zellij_tile::prelude::PluginId::new(9)),
+            false
+        )),
         "the half that could not be named at the Esc is named here"
     );
     assert!(!state.agents_visible, "so the panel is down, both halves");
@@ -2955,11 +3011,11 @@ fn a_job_showing_the_conversation_shows_the_whole_panel() {
     assert!(state.hide_pending == 0, "so the hide it replaces is void");
     assert!(state
         .visibility_calls
-        .contains(&(PaneId::Plugin(zellij_tile::prelude::PluginId(7)), true)));
+        .contains(&(PaneId::Plugin(zellij_tile::prelude::PluginId::new(7)), true)));
     assert!(
         state
             .visibility_calls
-            .contains(&(PaneId::Plugin(zellij_tile::prelude::PluginId(9)), true)),
+            .contains(&(PaneId::Plugin(zellij_tile::prelude::PluginId::new(9)), true)),
         "and the list comes back with it"
     );
 }
@@ -2978,7 +3034,7 @@ fn a_stale_hide_does_not_hold_a_panel_that_came_back() {
     assert!(
         state
             .visibility_calls
-            .contains(&(PaneId::Plugin(zellij_tile::prelude::PluginId(9)), true)),
+            .contains(&(PaneId::Plugin(zellij_tile::prelude::PluginId::new(9)), true)),
         "the list is put back beside us rather than the frame being swallowed"
     );
     assert!(!state.hidden);
@@ -2996,9 +3052,10 @@ fn a_hide_that_landed_on_one_half_is_restated_on_the_other() {
     state.on_panes(manifest(0, vec![pane(7, true), pane(9, false)]));
 
     assert!(
-        state
-            .visibility_calls
-            .contains(&(PaneId::Plugin(zellij_tile::prelude::PluginId(9)), false)),
+        state.visibility_calls.contains(&(
+            PaneId::Plugin(zellij_tile::prelude::PluginId::new(9)),
+            false
+        )),
         "the half still standing is asked down again"
     );
     assert!(state.hidden, "and the frame is not read as a reveal");
@@ -3064,7 +3121,7 @@ fn tiled_own(id: u32) -> PaneInfo {
 #[test]
 fn a_hocus_in_the_layout_grows_no_agent_list() {
     let mut state = State {
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         kdl: state_config(),
         ..Default::default()
     };
@@ -3112,7 +3169,7 @@ fn a_hocus_in_the_layout_grows_no_agent_list() {
 #[test]
 fn esc_in_a_layout_pane_hides_nothing() {
     let mut state = State {
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         kdl: state_config(),
         ..Default::default()
     };
@@ -3140,9 +3197,9 @@ fn esc_in_a_layout_pane_hides_nothing() {
 fn a_dismissed_panel_does_not_follow_a_tab_switch() {
     let mut state = State {
         own_is_floating: Some(true),
-        own_plugin_id: 7,
+        own_plugin_id: zellij_tile::prelude::PluginId::new(7),
         own_tab_index: Some(0),
-        agents_plugin: Some(9),
+        agents_plugin: Some(zellij_tile::prelude::PluginId::new(9)),
         hidden: true,
         agents_visible: true,
         client: ClientId::new(1),

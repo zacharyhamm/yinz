@@ -589,12 +589,14 @@ pub fn confirmation_target(call: &ToolCall) -> Option<PaneId> {
     match call.name.as_str() {
         // The agent tools address a terminal and say so: `agent_host_call`
         // rewrites them into pane-addressed primitives with `is_plugin: false`.
-        "agent_send" | "agent_control" => {
-            Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)))
-        },
+        "agent_send" | "agent_control" => Some(PaneId::Terminal(
+            zellij_tile::prelude::TerminalId::new(pane_id),
+        )),
         "send_input" | "rerun_pane" | "clear_pane" => match args.is_plugin? {
-            true => Some(PaneId::Plugin(zellij_tile::prelude::PluginId(pane_id))),
-            false => Some(PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id))),
+            true => Some(PaneId::Plugin(zellij_tile::prelude::PluginId::new(pane_id))),
+            false => Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(
+                pane_id,
+            ))),
         },
         _ => None,
     }
@@ -2485,9 +2487,9 @@ pub struct PaneRef {
 impl PaneRef {
     fn id(&self) -> PaneId {
         if self.is_plugin {
-            PaneId::Plugin(zellij_tile::prelude::PluginId(self.pane_id))
+            PaneId::Plugin(zellij_tile::prelude::PluginId::new(self.pane_id))
         } else {
-            PaneId::Terminal(zellij_tile::prelude::TerminalId(self.pane_id))
+            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(self.pane_id))
         }
     }
 }
@@ -4232,7 +4234,7 @@ mod host {
     /// Write a pane's agent record to the session, for every reader of the manifest.
     pub fn report_pane_agent(pane_id: u32, agent: AgentInfo) {
         set_pane_agent(
-            PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
             Some(agent),
         );
     }
@@ -4347,7 +4349,7 @@ mod host {
             },
             "rerun_pane" => match args.terminal_pane_id() {
                 Ok(id) => {
-                    rerun_command_pane(id);
+                    rerun_command_pane(TerminalId::new(id));
                     "rerun".to_owned()
                 },
                 Err(error) => error,
@@ -4376,8 +4378,10 @@ mod host {
     /// model to half-supply, so the check lives in one place.
     fn with_pane(args: &Args, body: impl FnOnce(PaneId) -> String) -> String {
         match (args.pane_id, args.is_plugin) {
-            (Some(id), Some(true)) => body(PaneId::Plugin(zellij_tile::prelude::PluginId(id))),
-            (Some(id), Some(false)) => body(PaneId::Terminal(zellij_tile::prelude::TerminalId(id))),
+            (Some(id), Some(true)) => body(PaneId::Plugin(zellij_tile::prelude::PluginId::new(id))),
+            (Some(id), Some(false)) => {
+                body(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(id)))
+            },
             _ => {
                 "pane_id and is_plugin are both required; call list_session to get them".to_owned()
             },
@@ -4506,7 +4510,7 @@ mod host {
             Ok(true) => {},
         }
         match warp_pane_from_session(
-            PaneId::Terminal(zellij_tile::prelude::TerminalId(pane_id)),
+            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
             from_session,
             placement,
         ) {
@@ -4759,7 +4763,7 @@ mod host {
     /// Load the plugin at `path` without a pane, as one shared instance for the session - or,
     /// when an instance is already running (`running` is its id, from the session's plugin
     /// list), reload that one in place, so a second call never starts a second copy.
-    pub fn reload_plugin_headless(path: &str, running: Option<u32>) {
+    pub fn reload_plugin_headless(path: &str, running: Option<zellij_tile::prelude::PluginId>) {
         match running {
             Some(id) => reload_plugin_with_id(id),
             None => load_new_plugin(
@@ -4798,7 +4802,7 @@ mod host {
         Some(PluginObservation {
             pane_id: pane.id,
             contents: read_pane(
-                PaneId::Plugin(zellij_tile::prelude::PluginId(pane.id)),
+                PaneId::Plugin(zellij_tile::prelude::PluginId::new(pane.id)),
                 false,
             ),
         })
@@ -4947,9 +4951,9 @@ mod host {
     /// half of the address rather than a detail.
     fn pane_id_of(pane: &PaneInfo) -> PaneId {
         if pane.is_plugin {
-            PaneId::Plugin(zellij_tile::prelude::PluginId(pane.id))
+            PaneId::Plugin(zellij_tile::prelude::PluginId::new(pane.id))
         } else {
-            PaneId::Terminal(zellij_tile::prelude::TerminalId(pane.id))
+            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane.id))
         }
     }
 
@@ -5266,7 +5270,7 @@ pub mod test_seams {
         pub static PLUGIN_ENTRIES: RefCell<Option<Vec<zellij_tile::prelude::FsEntry>>> = const { RefCell::new(None) };
         pub static PLUGIN_READS: RefCell<super::BTreeMap<String, Result<String, String>>> = const { RefCell::new(super::BTreeMap::new()) };
         /// The `running` each `reload_plugin_headless` was given, in order.
-        pub static HEADLESS_RELOADS: RefCell<Vec<Option<u32>>> = const { RefCell::new(Vec::new()) };
+        pub static HEADLESS_RELOADS: RefCell<Vec<Option<zellij_tile::prelude::PluginId>>> = const { RefCell::new(Vec::new()) };
         /// What each `spawn_agent` asked the host for, in order.
         pub static SPAWN_AGENT_CALLS: RefCell<Vec<SpawnAgentCall>> = const { RefCell::new(Vec::new()) };
         pub static PLUGIN_SOURCE: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -5302,7 +5306,7 @@ pub mod test_seams {
 
 /// Off wasm the ask is recorded - which instance, if any, was named - for the tests to read.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn reload_plugin_headless(path: &str, running: Option<u32>) {
+pub fn reload_plugin_headless(path: &str, running: Option<zellij_tile::prelude::PluginId>) {
     test_seams::HEADLESS_RELOADS.with_borrow_mut(|asked| asked.push(running));
     reload_plugin(path);
 }

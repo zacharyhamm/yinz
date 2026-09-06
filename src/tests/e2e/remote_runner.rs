@@ -170,7 +170,7 @@ fn read_from_channel(
                 let styled_underlines = true;
                 let explicitly_disable_kitty_keyboard_protocol = false;
                 let mut terminal_output = TerminalPane::new(
-                    zellij_server::TerminalId(0),
+                    zellij_server::TerminalId::new(0),
                     pane_geom,
                     Style::default(),
                     0,

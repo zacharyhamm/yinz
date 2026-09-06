@@ -360,10 +360,10 @@ pub struct State {
     /// Valid `hocus/*.lua` files from the latest scan, keyed by their namespace.
     extension_files: BTreeMap<String, String>,
     /// Running plugin ids whose resolved file location agrees with their Hocus launch config.
-    extension_instances: BTreeMap<u32, (String, String)>,
+    extension_instances: BTreeMap<zellij_tile::prelude::PluginId, (String, String)>,
     /// Every running plugin by id, from the session's plugin list - what a headless
     /// `plugin_reload` looks the running instance up in.
-    plugin_instances: BTreeMap<u32, PluginInstance>,
+    plugin_instances: BTreeMap<zellij_tile::prelude::PluginId, PluginInstance>,
     /// `mono_ms` when the foreground chat's awaited extension call was sent;
     /// `poll_extension_call` gives up on it after `extensions::CALL_TIMEOUT_MS`. Parked chats
     /// carry their own in `Chat::extension_call_started_ms`.
@@ -687,7 +687,7 @@ pub struct State {
     ///
     /// Cached rather than asked for each time: `get_plugin_ids` is a host round-trip, and the
     /// overlay paths want it on every `TabUpdate`. It never changes for the life of the plugin.
-    pub(crate) own_plugin_id: u32,
+    pub(crate) own_plugin_id: zellij_tile::prelude::PluginId,
     /// The pane title last asserted with `rename_plugin_pane`, so a render that
     /// would restate the same one does not.
     ///
@@ -849,7 +849,7 @@ pub struct State {
     /// Learned from the first `AGENT_SELECTION` rather than assumed, because a plugin
     /// pane is only known by its id — a title is a name the user can change, and a url
     /// cannot tell two instances apart.
-    agents_plugin: Option<u32>,
+    agents_plugin: Option<zellij_tile::prelude::PluginId>,
     /// Whether a list has been asked for and not yet announced itself.
     ///
     /// The panel is both halves or it is nothing, so a revealed conversation with no list beside
@@ -1023,7 +1023,7 @@ impl Default for State {
             last_focused_agent: None,
             focused_pane: None,
             focused_plugin: None,
-            own_plugin_id: 0,
+            own_plugin_id: zellij_tile::prelude::PluginId::new(0),
             last_pane_title: None,
             surface_rows: 0,
             surface_cols: 0,

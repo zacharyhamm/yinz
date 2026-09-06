@@ -109,7 +109,7 @@ fn the_strip_carries_the_focused_pane_agent_or_not() {
 /// The id the agents pane announces itself with. Any number; what matters is
 /// that hocus records it, because it is the only thing that lets hocus place the
 /// list beside itself.
-const AGENTS_PANE: u32 = 11;
+const AGENTS_PANE: PluginId = PluginId::new(11);
 
 /// `state_with_panes` - one `codex` agent on pane 3, one shell on pane 4 - with
 /// the agents pane known and pane 3 holding a summary. `polls` is how long ago
@@ -117,7 +117,7 @@ const AGENTS_PANE: u32 = 11;
 fn state_with_summary(polls: u32) -> State {
     let mut state = state_with_panes();
     state.agents_plugin = Some(AGENTS_PANE);
-    state.focused_plugin = Some(AGENTS_PANE);
+    state.focused_plugin = Some(AGENTS_PANE.get());
     state.activity = agents::Activity::from([(3, (11, polls))]);
     state.summaries = agents::Summaries::from([(
         3,
@@ -412,7 +412,7 @@ fn archive_offset_moves_only_for_completions_before_the_loaded_page() {
 }
 
 /// One `AGENT_SELECTION` from the agents pane.
-fn selection(plugin_id: u32, pane_id: Option<u32>) -> PipeMessage {
+fn selection(plugin_id: zellij_tile::prelude::PluginId, pane_id: Option<u32>) -> PipeMessage {
     PipeMessage {
         source: PipeSource::Plugin(plugin_id),
         name: wire::AGENT_SELECTION.to_owned(),

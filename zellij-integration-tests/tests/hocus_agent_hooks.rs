@@ -14,8 +14,8 @@
 //! So the pipe comes from outside every plugin, exactly as the generated script sends
 //! it, and the assertion is read off hocus's own `agent_list` on the grid.
 
-use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE};
 use zellij_cli::args::CliAction;
+use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE};
 use zellij_types::data::PaneId;
 use zellij_types::input::actions::hook_report_actions;
 
@@ -133,8 +133,12 @@ fn hooks_keep_the_pane_record_and_hocus_waiting_status_in_agreement() {
             r#"{"hook_event_name":"Notification","notification_type":"worker_permission_prompt"}"#,
         ] {
             let event = serde_json::from_str(payload).unwrap();
-            let actions =
-                hook_report_actions(kind, PaneId::Terminal(pane_id), &event, payload.to_owned());
+            let actions = hook_report_actions(
+                kind,
+                PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(pane_id)),
+                &event,
+                payload.to_owned(),
+            );
             let (exit_code, output) = zellij.run_actions_reporting(actions);
             assert_eq!(exit_code, 0, "{output}");
             let (exit_code, listed) = zellij.run_cli_action_reporting(CliAction::ListPanes {

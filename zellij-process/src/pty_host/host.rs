@@ -335,7 +335,7 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
         host_id,
         host_pid,
         label,
-        terminal_id: TerminalId(terminal_id),
+        terminal_id: TerminalId::new(terminal_id),
         session_name,
         cmd,
         started_at_unix: unix_now(),
@@ -356,7 +356,7 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
     match start_session(
         &ctx.cmd,
         failover_cmd.as_ref(),
-        TerminalId(terminal_id),
+        TerminalId::new(terminal_id),
         termios.as_ref(),
         initial_size.as_ref(),
         arg0.as_deref(),
@@ -421,7 +421,7 @@ impl HostContext {
         HostStatus {
             host_id: self.host_id.clone(),
             session_name: self.session_name.clone(),
-            terminal_id: self.terminal_id.0,
+            terminal_id: self.terminal_id.get(),
             command: self.cmd.to_string(),
             cwd: self.cmd.cwd.clone(),
             child_pid: self.session.as_ref().map(|s| s.child_pid),
@@ -795,7 +795,7 @@ fn serve_cli_connection(ctx: &mut HostContext, mut stream: UnixStream) -> CliOut
             ctx,
             stream,
             protocol_version,
-            TerminalId(terminal_id),
+            TerminalId::new(terminal_id),
             session_name,
         ),
         Ok(Some(_)) => CliOutcome::Done,
@@ -1107,7 +1107,7 @@ fn start_session(
     .is_none()
     {
         return Err(ZellijError::CommandNotFound {
-            terminal_id: terminal_id.0,
+            terminal_id,
             command: cmd.command.to_string_lossy().to_string(),
         })
         .with_context(err_context);

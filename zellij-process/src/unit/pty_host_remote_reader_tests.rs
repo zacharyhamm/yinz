@@ -137,7 +137,7 @@ fn exit_recorder() -> (Arc<Mutex<Vec<Option<i32>>>>, QuitCb) {
 async fn a_child_exit_is_reported_to_the_pty_thread() {
     let (reader, _conn, mut peer) = reader_pair();
     let (seen, cb) = exit_recorder();
-    let mut reader = reader.on_exit(TerminalId(7), RunCommand::default(), cb);
+    let mut reader = reader.on_exit(TerminalId::new(7), RunCommand::default(), cb);
 
     let mut framed = Vec::new();
     write_control(
@@ -165,7 +165,7 @@ async fn giving_up_on_a_reconnect_is_reported_as_the_end_of_the_pane() {
     let (reader, _conn, peer) = reader_pair();
     let (seen, cb) = exit_recorder();
     // No reconnector, so the first transport loss is terminal.
-    let mut reader = reader.on_exit(TerminalId(7), RunCommand::default(), cb);
+    let mut reader = reader.on_exit(TerminalId::new(7), RunCommand::default(), cb);
     drop(peer);
 
     let mut buf = [0u8; 64];
@@ -186,7 +186,7 @@ async fn giving_up_on_a_reconnect_is_reported_as_the_end_of_the_pane() {
 async fn the_end_of_a_pane_is_reported_only_once() {
     let (reader, _conn, mut peer) = reader_pair();
     let (seen, cb) = exit_recorder();
-    let mut reader = reader.on_exit(TerminalId(7), RunCommand::default(), cb);
+    let mut reader = reader.on_exit(TerminalId::new(7), RunCommand::default(), cb);
 
     let mut framed = Vec::new();
     write_control(
@@ -240,7 +240,11 @@ async fn an_agent_report_control_frame_reaches_the_callback() {
     let seen: Arc<Mutex<Vec<(TerminalId, String, String)>>> = Arc::new(Mutex::new(vec![]));
     let sink = seen.clone();
     let mut reader = reader
-        .on_exit(TerminalId(7), RunCommand::default(), Box::new(|_, _, _| {}))
+        .on_exit(
+            TerminalId::new(7),
+            RunCommand::default(),
+            Box::new(|_, _, _| {}),
+        )
         .on_agent_report(Arc::new(move |terminal_id, kind, json| {
             sink.lock()
                 .expect("poisoned")
@@ -262,7 +266,7 @@ async fn an_agent_report_control_frame_reaches_the_callback() {
     assert_eq!(
         seen.lock().expect("poisoned").clone(),
         vec![(
-            TerminalId(7),
+            TerminalId::new(7),
             "claude".to_owned(),
             r#"{"hook_event_name":"Stop"}"#.to_owned()
         )]

@@ -146,9 +146,12 @@ impl Screen {
         {
             pane_info.cwd = self
                 .terminal_cwds
-                .get(&TerminalId(pane_info.id))
+                .get(&TerminalId::new(pane_info.id))
                 .map(|cwd| cwd.to_string_lossy().into_owned());
-            pane_info.host = self.terminal_hosts.get(&TerminalId(pane_info.id)).cloned();
+            pane_info.host = self
+                .terminal_hosts
+                .get(&TerminalId::new(pane_info.id))
+                .cloned();
             // The worktree the pane's VM actually mirrors, for a pane that named none of
             // its own: `pane_info.target` is what the pane was *asked* for, and a pane
             // that joined an existing VM asked for a VM by name and nothing else. Only
@@ -161,7 +164,7 @@ impl Screen {
                 },
             ) = (
                 self.terminal_firecracker_worktrees
-                    .get(&TerminalId(pane_info.id)),
+                    .get(&TerminalId::new(pane_info.id)),
                 &mut pane_info.target,
             ) {
                 if named.is_none() {

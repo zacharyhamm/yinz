@@ -375,10 +375,10 @@ impl TryFrom<ProtobufPaneId> for PaneId {
     fn try_from(protobuf_pane_id: ProtobufPaneId) -> Result<Self, &'static str> {
         match ProtobufPaneType::try_from(protobuf_pane_id.pane_type).ok() {
             Some(ProtobufPaneType::Terminal) => Ok(PaneId::Terminal(
-                zellij_types::internal_ids::TerminalId(protobuf_pane_id.id),
+                zellij_types::internal_ids::TerminalId::new(protobuf_pane_id.id),
             )),
             Some(ProtobufPaneType::Plugin) => Ok(PaneId::Plugin(
-                zellij_types::internal_ids::PluginId(protobuf_pane_id.id),
+                zellij_types::internal_ids::PluginId::new(protobuf_pane_id.id),
             )),
             None => Err("Failed to convert PaneId"),
         }
@@ -1420,13 +1420,17 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::CloseTerminalPane) => match protobuf_plugin_command.payload {
                 Some(Payload::CloseTerminalPanePayload(pane_id)) => {
-                    Ok(PluginCommand::CloseTerminalPane(pane_id))
+                    Ok(PluginCommand::CloseTerminalPane(
+                        zellij_types::internal_ids::TerminalId::new(pane_id),
+                    ))
                 },
                 _ => Err("Mismatched payload for CloseTerminalPane"),
             },
             Some(CommandName::ClosePluginPane) => match protobuf_plugin_command.payload {
                 Some(Payload::ClosePluginPanePayload(pane_id)) => {
-                    Ok(PluginCommand::ClosePluginPane(pane_id))
+                    Ok(PluginCommand::ClosePluginPane(
+                        zellij_types::internal_ids::PluginId::new(pane_id),
+                    ))
                 },
                 _ => Err("Mismatched payload for ClosePluginPane"),
             },
@@ -1436,7 +1440,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     let should_float = payload.should_float;
                     let should_be_in_place = payload.should_be_in_place;
                     Ok(PluginCommand::FocusTerminalPane(
-                        pane_id,
+                        zellij_types::internal_ids::TerminalId::new(pane_id),
                         should_float,
                         should_be_in_place,
                     ))
@@ -1449,7 +1453,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     let should_float = payload.should_float;
                     let should_be_in_place = payload.should_be_in_place;
                     Ok(PluginCommand::FocusPluginPane(
-                        pane_id,
+                        zellij_types::internal_ids::PluginId::new(pane_id),
                         should_float,
                         should_be_in_place,
                     ))
@@ -1460,7 +1464,10 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 Some(Payload::RenameTerminalPanePayload(payload)) => {
                     let pane_id = payload.id;
                     let new_name = payload.new_name;
-                    Ok(PluginCommand::RenameTerminalPane(pane_id, new_name))
+                    Ok(PluginCommand::RenameTerminalPane(
+                        zellij_types::internal_ids::TerminalId::new(pane_id),
+                        new_name,
+                    ))
                 },
                 _ => Err("Mismatched payload for RenameTerminalPane"),
             },
@@ -1468,7 +1475,10 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 Some(Payload::RenamePluginPanePayload(payload)) => {
                     let pane_id = payload.id;
                     let new_name = payload.new_name;
-                    Ok(PluginCommand::RenamePluginPane(pane_id, new_name))
+                    Ok(PluginCommand::RenamePluginPane(
+                        zellij_types::internal_ids::PluginId::new(pane_id),
+                        new_name,
+                    ))
                 },
                 _ => Err("Mismatched payload for RenamePluginPane"),
             },
@@ -1710,7 +1720,8 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                                 should_focus: protobuf_new_plugin_args.should_focus,
                             }
                         }),
-                        destination_plugin_id,
+                        destination_plugin_id: destination_plugin_id
+                            .map(zellij_types::internal_ids::PluginId::new),
                         floating_pane_coordinates: floating_pane_coordinates
                             .and_then(|f| f.try_into().ok()),
                     }))
@@ -1902,7 +1913,9 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::RerunCommandPane) => match protobuf_plugin_command.payload {
                 Some(Payload::RerunCommandPanePayload(rerun_command_pane_payload)) => Ok(
-                    PluginCommand::RerunCommandPane(rerun_command_pane_payload.terminal_pane_id),
+                    PluginCommand::RerunCommandPane(zellij_types::internal_ids::TerminalId::new(
+                        rerun_command_pane_payload.terminal_pane_id,
+                    )),
                 ),
                 _ => Err("Mismatched payload for RerunCommandPane"),
             },
@@ -2312,7 +2325,9 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::ReloadPlugin) => match protobuf_plugin_command.payload {
                 Some(Payload::ReloadPluginPayload(reload_plugin_payload)) => {
-                    Ok(PluginCommand::ReloadPlugin(reload_plugin_payload.plugin_id))
+                    Ok(PluginCommand::ReloadPlugin(
+                        zellij_types::internal_ids::PluginId::new(reload_plugin_payload.plugin_id),
+                    ))
                 },
                 _ => Err("Mismatched payload for ReloadPlugin"),
             },
@@ -3879,11 +3894,11 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             }),
             PluginCommand::CloseTerminalPane(pane_id) => Ok(ProtobufPluginCommand {
                 name: CommandName::CloseTerminalPane as i32,
-                payload: Some(Payload::CloseTerminalPanePayload(pane_id)),
+                payload: Some(Payload::CloseTerminalPanePayload(pane_id.get())),
             }),
             PluginCommand::ClosePluginPane(pane_id) => Ok(ProtobufPluginCommand {
                 name: CommandName::ClosePluginPane as i32,
-                payload: Some(Payload::ClosePluginPanePayload(pane_id)),
+                payload: Some(Payload::ClosePluginPanePayload(pane_id.get())),
             }),
             PluginCommand::FocusTerminalPane(
                 pane_id,
@@ -3892,7 +3907,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             ) => Ok(ProtobufPluginCommand {
                 name: CommandName::FocusTerminalPane as i32,
                 payload: Some(Payload::FocusTerminalPanePayload(PaneIdAndShouldFloat {
-                    pane_id,
+                    pane_id: pane_id.get(),
                     should_float: should_float_if_hidden,
                     should_be_in_place: should_be_in_place_if_hidden,
                 })),
@@ -3904,7 +3919,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             ) => Ok(ProtobufPluginCommand {
                 name: CommandName::FocusPluginPane as i32,
                 payload: Some(Payload::FocusPluginPanePayload(PaneIdAndShouldFloat {
-                    pane_id,
+                    pane_id: pane_id.get(),
                     should_float: should_float_if_hidden,
                     should_be_in_place: should_be_in_place_if_hidden,
                 })),
@@ -3912,14 +3927,14 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::RenameTerminalPane(pane_id, new_name) => Ok(ProtobufPluginCommand {
                 name: CommandName::RenameTerminalPane as i32,
                 payload: Some(Payload::RenameTerminalPanePayload(IdAndNewName {
-                    id: pane_id,
+                    id: pane_id.get(),
                     new_name,
                 })),
             }),
             PluginCommand::RenamePluginPane(pane_id, new_name) => Ok(ProtobufPluginCommand {
                 name: CommandName::RenamePluginPane as i32,
                 payload: Some(Payload::RenamePluginPanePayload(IdAndNewName {
-                    id: pane_id,
+                    id: pane_id.get(),
                     new_name,
                 })),
             }),
@@ -4116,7 +4131,9 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                                 should_focus: m_t_p.should_focus,
                             }
                         }),
-                        destination_plugin_id: message_to_plugin.destination_plugin_id,
+                        destination_plugin_id: message_to_plugin
+                            .destination_plugin_id
+                            .map(|id| id.get()),
                         floating_pane_coordinates: message_to_plugin
                             .floating_pane_coordinates
                             .and_then(|f| f.try_into().ok()),
@@ -4301,7 +4318,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::RerunCommandPane(terminal_pane_id) => Ok(ProtobufPluginCommand {
                 name: CommandName::RerunCommandPane as i32,
                 payload: Some(Payload::RerunCommandPanePayload(RerunCommandPanePayload {
-                    terminal_pane_id,
+                    terminal_pane_id: terminal_pane_id.get(),
                 })),
             }),
             PluginCommand::RunCommandInPane {
@@ -4657,7 +4674,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::ReloadPlugin(plugin_id) => Ok(ProtobufPluginCommand {
                 name: CommandName::ReloadPlugin as i32,
                 payload: Some(Payload::ReloadPluginPayload(ReloadPluginPayload {
-                    plugin_id,
+                    plugin_id: plugin_id.get(),
                 })),
             }),
             PluginCommand::LoadNewPlugin {
@@ -6978,8 +6995,10 @@ mod tests {
     fn notifications_with_and_without_panes_survive_the_wire() {
         for pane_id in [
             None,
-            Some(PaneId::Terminal(zellij_types::internal_ids::TerminalId(7))),
-            Some(PaneId::Plugin(zellij_types::internal_ids::PluginId(3))),
+            Some(PaneId::Terminal(
+                zellij_types::internal_ids::TerminalId::new(7),
+            )),
+            Some(PaneId::Plugin(zellij_types::internal_ids::PluginId::new(3))),
         ] {
             let protobuf: ProtobufPluginCommand = PluginCommand::Notify("done".to_owned(), pane_id)
                 .try_into()
@@ -7027,11 +7046,11 @@ mod tests {
     fn reveal_pane_with_id_protobuf_round_trip() {
         for (pane_id, label) in [
             (
-                PaneId::Terminal(zellij_types::internal_ids::TerminalId(7)),
+                PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7)),
                 Some("hocus: send_input?".to_owned()),
             ),
             (
-                PaneId::Plugin(zellij_types::internal_ids::PluginId(3)),
+                PaneId::Plugin(zellij_types::internal_ids::PluginId::new(3)),
                 None,
             ),
         ] {
@@ -7055,8 +7074,14 @@ mod tests {
     fn set_related_panes_protobuf_round_trip() {
         for pane_ids in [
             vec![],
-            vec![PaneId::Terminal(7)],
-            vec![PaneId::Terminal(7), PaneId::Terminal(8), PaneId::Plugin(3)],
+            vec![PaneId::Terminal(
+                zellij_types::internal_ids::TerminalId::new(7),
+            )],
+            vec![
+                PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7)),
+                PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(8)),
+                PaneId::Plugin(zellij_types::internal_ids::PluginId::new(3)),
+            ],
         ] {
             let original = PluginCommand::SetRelatedPanes(pane_ids.clone());
             let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
@@ -7077,15 +7102,15 @@ mod tests {
     fn set_pane_title_prefix_protobuf_round_trip() {
         for (pane_id, prefix) in [
             (
-                PaneId::Terminal(zellij_types::internal_ids::TerminalId(7)),
+                PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7)),
                 Some("zellij:topic".to_owned()),
             ),
             (
-                PaneId::Terminal(zellij_types::internal_ids::TerminalId(7)),
+                PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7)),
                 Some(String::new()),
             ),
             (
-                PaneId::Plugin(zellij_types::internal_ids::PluginId(3)),
+                PaneId::Plugin(zellij_types::internal_ids::PluginId::new(3)),
                 None,
             ),
         ] {
@@ -7307,7 +7332,7 @@ mod tests {
     fn warp_pane_to_session_protobuf_round_trip() {
         for placement in EVERY_PLACEMENT {
             let original = PluginCommand::WarpPaneToSession {
-                pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(7)),
+                pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7)),
                 to_session: "other".to_owned(),
                 placement,
             };
@@ -7321,7 +7346,7 @@ mod tests {
                 } => {
                     assert_eq!(
                         pane_id,
-                        PaneId::Terminal(zellij_types::internal_ids::TerminalId(7))
+                        PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7))
                     );
                     assert_eq!(to_session, "other");
                     assert_eq!(decoded_placement, placement);
@@ -7335,7 +7360,7 @@ mod tests {
     fn warp_pane_from_session_protobuf_round_trip() {
         for placement in EVERY_PLACEMENT {
             let original = PluginCommand::WarpPaneFromSession {
-                pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId(11)),
+                pane_id: PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(11)),
                 from_session: "other".to_owned(),
                 placement,
             };
@@ -7349,7 +7374,7 @@ mod tests {
                 } => {
                     assert_eq!(
                         pane_id,
-                        PaneId::Terminal(zellij_types::internal_ids::TerminalId(11))
+                        PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(11))
                     );
                     assert_eq!(from_session, "other");
                     assert_eq!(decoded_placement, placement);

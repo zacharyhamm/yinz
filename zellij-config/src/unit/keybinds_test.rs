@@ -458,3 +458,23 @@ mod props {
         }
     }
 }
+
+#[test]
+fn message_plugin_id_checks_the_shared_identity_range() {
+    use zellij_types::input::options::Options;
+    use zellij_types::internal_ids::PluginId;
+    for value in [-1_i64, i64::from(u32::MAX) + 1, i64::MAX] {
+        let node: kdl::KdlNode = format!("MessagePluginId {value}").parse().unwrap();
+        assert!(crate::kdl::action::from_kdl((&node, &Options::default())).is_err());
+    }
+    for value in [0_u32, u32::MAX] {
+        let node: kdl::KdlNode = format!("MessagePluginId {value}").parse().unwrap();
+        let action = crate::kdl::action::from_kdl((&node, &Options::default())).unwrap();
+        match action {
+            Action::KeybindPipe { plugin_id, .. } => {
+                assert_eq!(plugin_id, Some(PluginId::new(value)))
+            },
+            other => panic!("unexpected action: {other:?}"),
+        }
+    }
+}

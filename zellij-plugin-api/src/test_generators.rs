@@ -76,7 +76,9 @@ pub(crate) fn optional_booleans(tc: &hegel::TestCase) -> Option<bool> {
 
 pub(crate) fn agent_events(tc: &hegel::TestCase) -> zellij_types::agent::AgentEvent {
     zellij_types::agent::AgentEvent {
-        pane_id: tc.draw(generators::integers::<u32>()),
+        pane_id: zellij_types::internal_ids::TerminalId::new(
+            tc.draw(generators::integers::<u32>()),
+        ),
         kind: strings(tc),
         hook: strings(tc),
         session_id: optional_strings(tc),
@@ -191,9 +193,9 @@ fn up_to<T>(tc: &hegel::TestCase, max: usize, draw: impl Fn(&hegel::TestCase) ->
 pub(crate) fn pane_id(tc: &hegel::TestCase) -> PaneId {
     let n = tc.draw(generators::integers::<u32>());
     if booleans(tc) {
-        PaneId::Terminal(zellij_types::internal_ids::TerminalId(n))
+        PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(n))
     } else {
-        PaneId::Plugin(zellij_types::internal_ids::PluginId(n))
+        PaneId::Plugin(zellij_types::internal_ids::PluginId::new(n))
     }
 }
 
@@ -436,7 +438,9 @@ pub(crate) fn new_pane_placements(tc: &hegel::TestCase) -> NewPanePlacement {
 
 pub(crate) fn originating_plugins(tc: &hegel::TestCase) -> OriginatingPlugin {
     OriginatingPlugin {
-        plugin_id: tc.draw(generators::integers::<u32>()),
+        plugin_id: zellij_types::internal_ids::PluginId::new(
+            tc.draw(generators::integers::<u32>()),
+        ),
         client_id: zellij_types::data::ClientId::new(tc.draw(generators::integers::<u16>())),
         context: context(tc),
     }
@@ -1068,27 +1072,39 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             plugin: run_plugins_or_aliases(tc),
         },
         ActionKind::CloseTerminalPane => Action::CloseTerminalPane {
-            pane_id: tc.draw(generators::integers::<u32>()),
+            pane_id: zellij_types::internal_ids::TerminalId::new(
+                tc.draw(generators::integers::<u32>()),
+            ),
         },
         ActionKind::ClosePluginPane => Action::ClosePluginPane {
-            pane_id: tc.draw(generators::integers::<u32>()),
+            pane_id: zellij_types::internal_ids::PluginId::new(
+                tc.draw(generators::integers::<u32>()),
+            ),
         },
         ActionKind::FocusTerminalPaneWithId => Action::FocusTerminalPaneWithId {
-            pane_id: tc.draw(generators::integers::<u32>()),
+            pane_id: zellij_types::internal_ids::TerminalId::new(
+                tc.draw(generators::integers::<u32>()),
+            ),
             should_float_if_hidden: booleans(tc),
             should_be_in_place_if_hidden: booleans(tc),
         },
         ActionKind::FocusPluginPaneWithId => Action::FocusPluginPaneWithId {
-            pane_id: tc.draw(generators::integers::<u32>()),
+            pane_id: zellij_types::internal_ids::PluginId::new(
+                tc.draw(generators::integers::<u32>()),
+            ),
             should_float_if_hidden: booleans(tc),
             should_be_in_place_if_hidden: booleans(tc),
         },
         ActionKind::RenameTerminalPane => Action::RenameTerminalPane {
-            pane_id: tc.draw(generators::integers::<u32>()),
+            pane_id: zellij_types::internal_ids::TerminalId::new(
+                tc.draw(generators::integers::<u32>()),
+            ),
             name: bytes(tc),
         },
         ActionKind::RenamePluginPane => Action::RenamePluginPane {
-            pane_id: tc.draw(generators::integers::<u32>()),
+            pane_id: zellij_types::internal_ids::PluginId::new(
+                tc.draw(generators::integers::<u32>()),
+            ),
             name: bytes(tc),
         },
         ActionKind::RenameTab => Action::RenameTab {
@@ -1132,7 +1148,9 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             payload: optional_strings(tc),
             args: optional_non_empty_context(tc),
             plugin: optional_strings(tc),
-            plugin_id: tc.draw(generators::optional(generators::integers::<u32>())),
+            plugin_id: tc
+                .draw(generators::optional(generators::integers::<u32>()))
+                .map(zellij_types::internal_ids::PluginId::new),
             configuration: optional_non_empty_context(tc),
             launch_new: booleans(tc),
             skip_cache: booleans(tc),
@@ -1391,7 +1409,9 @@ pub(crate) fn new_plugin_args(tc: &hegel::TestCase) -> NewPluginArgs {
 pub(crate) fn messages_to_plugin(tc: &hegel::TestCase) -> MessageToPlugin {
     MessageToPlugin {
         plugin_url: optional_strings(tc),
-        destination_plugin_id: booleans(tc).then(|| u32s(tc)),
+        destination_plugin_id: booleans(tc)
+            .then(|| u32s(tc))
+            .map(zellij_types::internal_ids::PluginId::new),
         plugin_config: context(tc),
         message_name: strings(tc),
         message_payload: optional_strings(tc),
@@ -1682,16 +1702,30 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::FocusOrCreateTab => PluginCommand::FocusOrCreateTab(strings(tc)),
         CommandType::GoToTab => PluginCommand::GoToTab(u32s(tc)),
         CommandType::StartOrReloadPlugin => PluginCommand::StartOrReloadPlugin(strings(tc)),
-        CommandType::CloseTerminalPane => PluginCommand::CloseTerminalPane(u32s(tc)),
-        CommandType::ClosePluginPane => PluginCommand::ClosePluginPane(u32s(tc)),
-        CommandType::FocusTerminalPane => {
-            PluginCommand::FocusTerminalPane(u32s(tc), booleans(tc), booleans(tc))
+        CommandType::CloseTerminalPane => {
+            PluginCommand::CloseTerminalPane(zellij_types::internal_ids::TerminalId::new(u32s(tc)))
         },
-        CommandType::FocusPluginPane => {
-            PluginCommand::FocusPluginPane(u32s(tc), booleans(tc), booleans(tc))
+        CommandType::ClosePluginPane => {
+            PluginCommand::ClosePluginPane(zellij_types::internal_ids::PluginId::new(u32s(tc)))
         },
-        CommandType::RenameTerminalPane => PluginCommand::RenameTerminalPane(u32s(tc), strings(tc)),
-        CommandType::RenamePluginPane => PluginCommand::RenamePluginPane(u32s(tc), strings(tc)),
+        CommandType::FocusTerminalPane => PluginCommand::FocusTerminalPane(
+            zellij_types::internal_ids::TerminalId::new(u32s(tc)),
+            booleans(tc),
+            booleans(tc),
+        ),
+        CommandType::FocusPluginPane => PluginCommand::FocusPluginPane(
+            zellij_types::internal_ids::PluginId::new(u32s(tc)),
+            booleans(tc),
+            booleans(tc),
+        ),
+        CommandType::RenameTerminalPane => PluginCommand::RenameTerminalPane(
+            zellij_types::internal_ids::TerminalId::new(u32s(tc)),
+            strings(tc),
+        ),
+        CommandType::RenamePluginPane => PluginCommand::RenamePluginPane(
+            zellij_types::internal_ids::PluginId::new(u32s(tc)),
+            strings(tc),
+        ),
         CommandType::RenameTab => PluginCommand::RenameTab(u32s(tc), strings(tc)),
         CommandType::ReportPanic => PluginCommand::ReportPanic(strings(tc)),
         CommandType::RequestPluginPermissions => {
@@ -1780,7 +1814,9 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::OpenCommandPaneBackground => {
             PluginCommand::OpenCommandPaneBackground(commands_to_run(tc), context(tc))
         },
-        CommandType::RerunCommandPane => PluginCommand::RerunCommandPane(u32s(tc)),
+        CommandType::RerunCommandPane => {
+            PluginCommand::RerunCommandPane(zellij_types::internal_ids::TerminalId::new(u32s(tc)))
+        },
         CommandType::RunCommandInPane => PluginCommand::RunCommandInPane {
             pane_id: pane_id(tc),
             command: commands_to_run(tc),
@@ -1847,7 +1883,9 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::BreakPanesToTabWithId => {
             PluginCommand::BreakPanesToTabWithId(pane_ids(tc), u64s(tc), booleans(tc))
         },
-        CommandType::ReloadPlugin => PluginCommand::ReloadPlugin(u32s(tc)),
+        CommandType::ReloadPlugin => {
+            PluginCommand::ReloadPlugin(zellij_types::internal_ids::PluginId::new(u32s(tc)))
+        },
         CommandType::LoadNewPlugin => PluginCommand::LoadNewPlugin {
             url: strings(tc),
             config: context(tc),

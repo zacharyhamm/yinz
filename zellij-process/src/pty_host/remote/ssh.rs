@@ -903,7 +903,7 @@ fn handshake_and_spawn(
             failover_cmd: None,
             initial_size,
             env: env.to_vec(),
-            terminal_id: terminal_id.0,
+            terminal_id: terminal_id.get(),
         },
     )?;
     match read_broker_msg(&mut read_half)? {
@@ -914,7 +914,7 @@ fn handshake_and_spawn(
             // is a placeholder the far machine could not know; `spawn_terminal`
             // rewrites it with the one it reserved before asking.
             SpawnFailureKind::CommandNotFound => Err(ZellijError::CommandNotFound {
-                terminal_id: 0,
+                terminal_id: zellij_types::internal_ids::TerminalId::new(0),
                 command: cmd.command.to_string_lossy().to_string(),
             }
             .into()),

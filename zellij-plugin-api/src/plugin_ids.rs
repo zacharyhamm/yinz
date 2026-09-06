@@ -10,7 +10,9 @@ impl TryFrom<ProtobufPluginIds> for PluginIds {
     type Error = &'static str;
     fn try_from(protobuf_plugin_ids: ProtobufPluginIds) -> Result<Self, &'static str> {
         Ok(PluginIds {
-            plugin_id: protobuf_plugin_ids.plugin_id as u32,
+            plugin_id: zellij_types::internal_ids::PluginId::new(
+                protobuf_plugin_ids.plugin_id as u32,
+            ),
             zellij_pid: protobuf_plugin_ids.zellij_pid as u32,
             initial_cwd: PathBuf::from(protobuf_plugin_ids.initial_cwd),
             client_id: ClientId::try_from(protobuf_plugin_ids.client_id)
@@ -25,7 +27,7 @@ impl TryFrom<PluginIds> for ProtobufPluginIds {
     type Error = &'static str;
     fn try_from(plugin_ids: PluginIds) -> Result<Self, &'static str> {
         Ok(ProtobufPluginIds {
-            plugin_id: plugin_ids.plugin_id as i32,
+            plugin_id: plugin_ids.plugin_id.get() as i32,
             zellij_pid: plugin_ids.zellij_pid as i32,
             initial_cwd: plugin_ids.initial_cwd.display().to_string(),
             client_id: u32::from(plugin_ids.client_id.get()),
@@ -57,10 +59,29 @@ mod tests {
         zellij_types::data::PaletteColor,
     )> = zellij_types::data::client_id_to_colors;
     const _: fn(
-        u32,
+        zellij_types::internal_ids::PluginId,
         ClientId,
         std::collections::BTreeMap<String, String>,
     ) -> zellij_types::data::OriginatingPlugin = zellij_types::data::OriginatingPlugin::new;
+
+    #[test]
+    fn plugin_identity_preserves_all_legacy_wire_bits() {
+        // This protobuf field is int32, but legacy senders use all 32 bits for an unsigned ID.
+        let bytes = [
+            0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
+        ];
+        let wire = ProtobufPluginIds::decode(bytes.as_slice()).unwrap();
+        let ids = PluginIds::try_from(wire).unwrap();
+        assert_eq!(
+            ids.plugin_id,
+            zellij_types::internal_ids::PluginId::new(u32::MAX)
+        );
+        assert_eq!(serde_json::to_value(&ids).unwrap()["plugin_id"], u32::MAX);
+        assert_eq!(
+            ProtobufPluginIds::try_from(ids).unwrap().encode_to_vec(),
+            bytes
+        );
+    }
 
     #[test]
     fn client_identity_preserves_fixed_protobuf_bytes_and_json() {

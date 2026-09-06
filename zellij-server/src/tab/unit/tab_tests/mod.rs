@@ -157,7 +157,7 @@ fn create_new_tab(size: Size, stacked_resize: bool) -> Tab {
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     let character_cell_info = Rc::new(RefCell::new(None));
@@ -220,7 +220,7 @@ fn create_new_tab(size: Size, stacked_resize: bool) -> Tab {
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(crate::TerminalId(1), None)],
+        vec![(crate::TerminalId::new(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -241,7 +241,7 @@ fn create_new_tab_with_layout(size: Size, layout: TiledPaneLayout) -> Tab {
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     let character_cell_info = Rc::new(RefCell::new(None));
@@ -303,7 +303,7 @@ fn create_new_tab_with_layout(size: Size, layout: TiledPaneLayout) -> Tab {
     );
     let mut new_terminal_ids = vec![];
     for i in 0..layout.extract_run_instructions().len() {
-        new_terminal_ids.push((TerminalId(i as u32), None));
+        new_terminal_ids.push((TerminalId::new(i as u32), None));
     }
     tab.apply_layout(
         layout,
@@ -332,7 +332,7 @@ fn create_new_tab_with_cell_size(
     let style = Style::default();
     let draw_pane_frames = PaneFrameStyle::Full;
     let auto_layout = true;
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let session_is_mirrored = true;
     let mut connected_clients = HashSet::new();
     connected_clients.insert(client_id);
@@ -394,7 +394,7 @@ fn create_new_tab_with_cell_size(
     tab.apply_layout(
         TiledPaneLayout::default(),
         vec![],
-        vec![(crate::TerminalId(1), None)],
+        vec![(crate::TerminalId::new(1), None)],
         vec![],
         HashMap::new(),
         client_id,
@@ -412,7 +412,7 @@ fn create_tab_with_two_floating_panes() -> Tab {
     let stacked_resize = false;
     let mut tab = create_new_tab(size, stacked_resize);
     tab.new_floating_pane(
-        PaneId::Terminal(crate::TerminalId(2)),
+        PaneId::Terminal(crate::TerminalId::new(2)),
         None,
         None,
         false,
@@ -422,7 +422,7 @@ fn create_tab_with_two_floating_panes() -> Tab {
     )
     .unwrap();
     tab.new_floating_pane(
-        PaneId::Terminal(crate::TerminalId(3)),
+        PaneId::Terminal(crate::TerminalId::new(3)),
         None,
         None,
         false,
@@ -449,7 +449,7 @@ fn create_tab_with_four_panes() -> Tab {
     let stacked_resize = false;
     let mut tab = create_new_tab(size, stacked_resize);
     for i in 2..5 {
-        let new_pane_id = PaneId::Terminal(crate::TerminalId(i));
+        let new_pane_id = PaneId::Terminal(crate::TerminalId::new(i));
         tab.new_pane(
             new_pane_id,
             None,
@@ -457,7 +457,7 @@ fn create_tab_with_four_panes() -> Tab {
             false,
             true,
             NewPanePlacement::default(),
-            Some(crate::ClientId(1)),
+            Some(crate::ClientId::new(1)),
             None,
         )
         .unwrap();
@@ -475,13 +475,13 @@ fn tiled_pane_geoms(tab: &Tab) -> Vec<(PaneId, PaneGeom)> {
 
 fn open_pane_five(tab: &mut Tab) {
     tab.new_pane(
-        PaneId::Terminal(crate::TerminalId(5)),
+        PaneId::Terminal(crate::TerminalId::new(5)),
         None,
         None,
         false,
         true,
         NewPanePlacement::default(),
-        Some(crate::ClientId(1)),
+        Some(crate::ClientId::new(1)),
         None,
     )
     .unwrap();

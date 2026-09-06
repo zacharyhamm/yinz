@@ -1,3 +1,7 @@
+#[cfg(test)]
+const TERMINAL_1: zellij_types::internal_ids::TerminalId =
+    zellij_types::internal_ids::TerminalId::new(1);
+
 use super::*;
 use zellij_test_support::Watched;
 
@@ -8,16 +12,16 @@ fn subscriber_receives_initial_delivery() {
     new_tab(&mut screen, 1, 0);
 
     screen.subscribe_to_pane_renders(
-        crate::ClientId(100),
+        crate::ClientId::new(100),
         vec![zellij_types::data::PaneId::Terminal(
-            zellij_types::internal_ids::TerminalId(1),
+            zellij_types::internal_ids::TerminalId::new(1),
         )],
         None,
         false,
     );
 
     let msgs = messages.lock().unwrap();
-    let client_msgs = msgs.get(&ClientId(100)).unwrap();
+    let client_msgs = msgs.get(&ClientId::new(100)).unwrap();
     assert_eq!(client_msgs.len(), 1);
     match &client_msgs[0] {
         ServerToClientMsg::PaneRenderUpdate {
@@ -39,16 +43,16 @@ fn subscriber_receives_initial_with_scrollback() {
     new_tab(&mut screen, 1, 0);
 
     screen.subscribe_to_pane_renders(
-        crate::ClientId(100),
+        crate::ClientId::new(100),
         vec![zellij_types::data::PaneId::Terminal(
-            zellij_types::internal_ids::TerminalId(1),
+            zellij_types::internal_ids::TerminalId::new(1),
         )],
         Some(0),
         false,
     );
 
     let msgs = messages.lock().unwrap();
-    let client_msgs = msgs.get(&ClientId(100)).unwrap();
+    let client_msgs = msgs.get(&ClientId::new(100)).unwrap();
     assert_eq!(client_msgs.len(), 1);
     match &client_msgs[0] {
         ServerToClientMsg::PaneRenderUpdate {
@@ -70,9 +74,9 @@ fn subscriber_no_update_on_unchanged_viewport() {
     new_tab(&mut screen, 1, 0);
 
     screen.subscribe_to_pane_renders(
-        crate::ClientId(100),
+        crate::ClientId::new(100),
         vec![zellij_types::data::PaneId::Terminal(
-            zellij_types::internal_ids::TerminalId(1),
+            zellij_types::internal_ids::TerminalId::new(1),
         )],
         None,
         false,
@@ -80,7 +84,7 @@ fn subscriber_no_update_on_unchanged_viewport() {
 
     let initial_viewport = {
         let msgs = messages.lock().unwrap();
-        let client_msgs = msgs.get(&ClientId(100)).unwrap();
+        let client_msgs = msgs.get(&ClientId::new(100)).unwrap();
         match &client_msgs[0] {
             ServerToClientMsg::PaneRenderUpdate { viewport, .. } => viewport.clone(),
             _ => panic!("Expected PaneRenderUpdate"),
@@ -89,7 +93,7 @@ fn subscriber_no_update_on_unchanged_viewport() {
 
     let mut pane_map = HashMap::new();
     pane_map.insert(
-        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1)),
         PaneContents {
             viewport: initial_viewport,
             ..Default::default()
@@ -98,7 +102,7 @@ fn subscriber_no_update_on_unchanged_viewport() {
     screen.deliver_subscriber_updates_from_map(&pane_map, None);
 
     let msgs = messages.lock().unwrap();
-    let client_msgs = msgs.get(&ClientId(100)).unwrap();
+    let client_msgs = msgs.get(&ClientId::new(100)).unwrap();
     assert_eq!(client_msgs.len(), 1);
 }
 
@@ -109,9 +113,9 @@ fn subscriber_receives_update_on_changed_viewport() {
     new_tab(&mut screen, 1, 0);
 
     screen.subscribe_to_pane_renders(
-        crate::ClientId(100),
+        crate::ClientId::new(100),
         vec![zellij_types::data::PaneId::Terminal(
-            zellij_types::internal_ids::TerminalId(1),
+            zellij_types::internal_ids::TerminalId::new(1),
         )],
         None,
         false,
@@ -119,7 +123,7 @@ fn subscriber_receives_update_on_changed_viewport() {
 
     let mut pane_map = HashMap::new();
     pane_map.insert(
-        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1)),
         PaneContents {
             viewport: vec!["changed line".to_string()],
             ..Default::default()
@@ -128,7 +132,7 @@ fn subscriber_receives_update_on_changed_viewport() {
     screen.deliver_subscriber_updates_from_map(&pane_map, None);
 
     let msgs = messages.lock().unwrap();
-    let client_msgs = msgs.get(&ClientId(100)).unwrap();
+    let client_msgs = msgs.get(&ClientId::new(100)).unwrap();
     assert_eq!(client_msgs.len(), 2);
     match &client_msgs[1] {
         ServerToClientMsg::PaneRenderUpdate {
@@ -152,16 +156,16 @@ fn subscriber_error_for_nonexistent_pane() {
     new_tab(&mut screen, 1, 0);
 
     screen.subscribe_to_pane_renders(
-        crate::ClientId(100),
+        crate::ClientId::new(100),
         vec![zellij_types::data::PaneId::Terminal(
-            zellij_types::internal_ids::TerminalId(999),
+            zellij_types::internal_ids::TerminalId::new(999),
         )],
         None,
         false,
     );
 
     let msgs = messages.lock().unwrap();
-    let client_msgs = msgs.get(&ClientId(100)).unwrap();
+    let client_msgs = msgs.get(&ClientId::new(100)).unwrap();
     assert_eq!(client_msgs.len(), 1);
     match &client_msgs[0] {
         ServerToClientMsg::LogError { lines } => {
@@ -175,7 +179,9 @@ fn subscriber_error_for_nonexistent_pane() {
         other => panic!("Expected LogError, got {:?}", other),
     }
     assert!(
-        !screen.pane_render_subscribers.contains_key(&ClientId(100)),
+        !screen
+            .pane_render_subscribers
+            .contains_key(&ClientId::new(100)),
         "Subscriber should not be registered for nonexistent pane"
     );
 }
@@ -188,22 +194,25 @@ fn subscriber_state_registered_for_multiple_panes() {
     new_tab(&mut screen, 2, 1);
 
     screen.subscribe_to_pane_renders(
-        crate::ClientId(100),
+        crate::ClientId::new(100),
         vec![
-            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
-            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(2)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(2)),
         ],
         None,
         false,
     );
 
-    let sub = screen.pane_render_subscribers.get(&ClientId(100)).unwrap();
+    let sub = screen
+        .pane_render_subscribers
+        .get(&ClientId::new(100))
+        .unwrap();
     assert_eq!(sub.pane_ids.len(), 2);
     assert!(sub.pane_ids.contains(&zellij_types::data::PaneId::Terminal(
-        zellij_types::internal_ids::TerminalId(1)
+        zellij_types::internal_ids::TerminalId::new(1)
     )));
     assert!(sub.pane_ids.contains(&zellij_types::data::PaneId::Terminal(
-        zellij_types::internal_ids::TerminalId(2)
+        zellij_types::internal_ids::TerminalId::new(2)
     )));
 }
 
@@ -214,17 +223,17 @@ fn multiple_subscribers_receive_updates() {
     new_tab(&mut screen, 1, 0);
 
     screen.subscribe_to_pane_renders(
-        crate::ClientId(100),
+        crate::ClientId::new(100),
         vec![zellij_types::data::PaneId::Terminal(
-            zellij_types::internal_ids::TerminalId(1),
+            zellij_types::internal_ids::TerminalId::new(1),
         )],
         None,
         false,
     );
     screen.subscribe_to_pane_renders(
-        crate::ClientId(101),
+        crate::ClientId::new(101),
         vec![zellij_types::data::PaneId::Terminal(
-            zellij_types::internal_ids::TerminalId(1),
+            zellij_types::internal_ids::TerminalId::new(1),
         )],
         None,
         false,
@@ -232,7 +241,7 @@ fn multiple_subscribers_receive_updates() {
 
     let mut pane_map = HashMap::new();
     pane_map.insert(
-        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1)),
         PaneContents {
             viewport: vec!["new content".to_string()],
             ..Default::default()
@@ -241,8 +250,8 @@ fn multiple_subscribers_receive_updates() {
     screen.deliver_subscriber_updates_from_map(&pane_map, None);
 
     let msgs = messages.lock().unwrap();
-    let client_100_msgs = msgs.get(&ClientId(100)).unwrap();
-    let client_101_msgs = msgs.get(&ClientId(101)).unwrap();
+    let client_100_msgs = msgs.get(&ClientId::new(100)).unwrap();
+    let client_101_msgs = msgs.get(&ClientId::new(101)).unwrap();
     assert_eq!(client_100_msgs.len(), 2);
     assert_eq!(client_101_msgs.len(), 2);
 }
@@ -254,17 +263,21 @@ fn subscriber_removed_on_remove_client() {
     new_tab(&mut screen, 1, 0);
 
     screen.subscribe_to_pane_renders(
-        crate::ClientId(100),
+        crate::ClientId::new(100),
         vec![zellij_types::data::PaneId::Terminal(
-            zellij_types::internal_ids::TerminalId(1),
+            zellij_types::internal_ids::TerminalId::new(1),
         )],
         None,
         false,
     );
-    assert!(screen.pane_render_subscribers.contains_key(&ClientId(100)));
+    assert!(screen
+        .pane_render_subscribers
+        .contains_key(&ClientId::new(100)));
 
-    let _ = screen.remove_client(crate::ClientId(100));
-    assert!(!screen.pane_render_subscribers.contains_key(&ClientId(100)));
+    let _ = screen.remove_client(crate::ClientId::new(100));
+    assert!(!screen
+        .pane_render_subscribers
+        .contains_key(&ClientId::new(100)));
 }
 
 #[test]
@@ -274,27 +287,25 @@ fn subscriber_removed_when_all_panes_closed() {
     new_tab(&mut screen, 1, 0);
 
     screen.subscribe_to_pane_renders(
-        crate::ClientId(100),
+        crate::ClientId::new(100),
         vec![zellij_types::data::PaneId::Terminal(
-            zellij_types::internal_ids::TerminalId(1),
+            zellij_types::internal_ids::TerminalId::new(1),
         )],
         None,
         false,
     );
 
     screen.notify_pane_closed_to_subscribers(zellij_types::data::PaneId::Terminal(
-        zellij_types::internal_ids::TerminalId(1),
+        zellij_types::internal_ids::TerminalId::new(1),
     ));
 
     let msgs = messages.lock().unwrap();
-    let client_msgs = msgs.get(&ClientId(100)).unwrap();
+    let client_msgs = msgs.get(&ClientId::new(100)).unwrap();
     let has_pane_closed = client_msgs.iter().any(|m| {
         matches!(
             m,
             ServerToClientMsg::SubscribedPaneClosed {
-                pane_id: zellij_types::data::PaneId::Terminal(
-                    zellij_types::internal_ids::TerminalId(1)
-                ),
+                pane_id: zellij_types::data::PaneId::Terminal(TERMINAL_1),
             }
         )
     });
@@ -308,7 +319,9 @@ fn subscriber_removed_when_all_panes_closed() {
     });
     assert!(has_pane_closed, "Should send SubscribedPaneClosed");
     assert!(has_exit, "Should send Exit when all panes closed");
-    assert!(!screen.pane_render_subscribers.contains_key(&ClientId(100)));
+    assert!(!screen
+        .pane_render_subscribers
+        .contains_key(&ClientId::new(100)));
 }
 
 #[test]
@@ -319,28 +332,26 @@ fn subscriber_partial_close() {
     new_tab(&mut screen, 2, 1);
 
     screen.subscribe_to_pane_renders(
-        crate::ClientId(100),
+        crate::ClientId::new(100),
         vec![
-            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
-            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(2)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(2)),
         ],
         None,
         false,
     );
 
     screen.notify_pane_closed_to_subscribers(zellij_types::data::PaneId::Terminal(
-        zellij_types::internal_ids::TerminalId(1),
+        zellij_types::internal_ids::TerminalId::new(1),
     ));
 
     let msgs = messages.lock().unwrap();
-    let client_msgs = msgs.get(&ClientId(100)).unwrap();
+    let client_msgs = msgs.get(&ClientId::new(100)).unwrap();
     let has_pane_closed = client_msgs.iter().any(|m| {
         matches!(
             m,
             ServerToClientMsg::SubscribedPaneClosed {
-                pane_id: zellij_types::data::PaneId::Terminal(
-                    zellij_types::internal_ids::TerminalId(1)
-                ),
+                pane_id: zellij_types::data::PaneId::Terminal(TERMINAL_1),
             }
         )
     });
@@ -352,11 +363,13 @@ fn subscriber_partial_close() {
         "Should send SubscribedPaneClosed for closed pane"
     );
     assert!(!has_exit, "Should NOT send Exit when panes remain");
-    assert!(screen.pane_render_subscribers.contains_key(&ClientId(100)));
+    assert!(screen
+        .pane_render_subscribers
+        .contains_key(&ClientId::new(100)));
     assert_eq!(
         screen
             .pane_render_subscribers
-            .get(&ClientId(100))
+            .get(&ClientId::new(100))
             .unwrap()
             .pane_ids
             .len(),
@@ -372,24 +385,24 @@ fn subscriber_full_close_sequence() {
     new_tab(&mut screen, 2, 1);
 
     screen.subscribe_to_pane_renders(
-        crate::ClientId(100),
+        crate::ClientId::new(100),
         vec![
-            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
-            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(2)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(2)),
         ],
         None,
         false,
     );
 
     screen.notify_pane_closed_to_subscribers(zellij_types::data::PaneId::Terminal(
-        zellij_types::internal_ids::TerminalId(1),
+        zellij_types::internal_ids::TerminalId::new(1),
     ));
     screen.notify_pane_closed_to_subscribers(zellij_types::data::PaneId::Terminal(
-        zellij_types::internal_ids::TerminalId(2),
+        zellij_types::internal_ids::TerminalId::new(2),
     ));
 
     let msgs = messages.lock().unwrap();
-    let client_msgs = msgs.get(&ClientId(100)).unwrap();
+    let client_msgs = msgs.get(&ClientId::new(100)).unwrap();
     let pane_closed_count = client_msgs
         .iter()
         .filter(|m| matches!(m, ServerToClientMsg::SubscribedPaneClosed { .. }))
@@ -407,7 +420,9 @@ fn subscriber_full_close_sequence() {
         .count();
     assert_eq!(pane_closed_count, 2, "Two SubscribedPaneClosed messages");
     assert_eq!(exit_count, 1, "One Exit message after all panes closed");
-    assert!(!screen.pane_render_subscribers.contains_key(&ClientId(100)));
+    assert!(!screen
+        .pane_render_subscribers
+        .contains_key(&ClientId::new(100)));
 }
 
 #[test]
@@ -417,9 +432,9 @@ fn delivery_path_a_and_b_produce_same_content() {
     new_tab(&mut screen, 1, 0);
 
     screen.subscribe_to_pane_renders(
-        crate::ClientId(100),
+        crate::ClientId::new(100),
         vec![zellij_types::data::PaneId::Terminal(
-            zellij_types::internal_ids::TerminalId(1),
+            zellij_types::internal_ids::TerminalId::new(1),
         )],
         None,
         false,
@@ -428,12 +443,12 @@ fn delivery_path_a_and_b_produce_same_content() {
     messages
         .lock()
         .unwrap()
-        .get_mut(&ClientId(100))
+        .get_mut(&ClientId::new(100))
         .unwrap()
         .clear();
 
     let contents = {
-        let server_pane_id = PaneId::Terminal(crate::TerminalId(1));
+        let server_pane_id = PaneId::Terminal(crate::TerminalId::new(1));
         let mut found_contents = None;
         for tab in screen.tabs.values() {
             if let Some(pane) = tab.get_pane_with_id(server_pane_id) {
@@ -446,17 +461,17 @@ fn delivery_path_a_and_b_produce_same_content() {
 
     screen
         .pane_render_subscribers
-        .get_mut(&ClientId(100))
+        .get_mut(&ClientId::new(100))
         .unwrap()
         .previous_viewports
         .insert(
-            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1)),
             vec!["old".to_string()],
         );
 
     let mut pane_map = HashMap::new();
     pane_map.insert(
-        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+        zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1)),
         contents.clone(),
     );
     let mut all_pane_contents = HashMap::new();
@@ -469,7 +484,7 @@ fn delivery_path_a_and_b_produce_same_content() {
 
     let viewport_a = {
         let msgs = messages.lock().unwrap();
-        let client_msgs = msgs.get(&ClientId(100)).unwrap();
+        let client_msgs = msgs.get(&ClientId::new(100)).unwrap();
         match &client_msgs[0] {
             ServerToClientMsg::PaneRenderUpdate { viewport, .. } => viewport.clone(),
             other => panic!("Expected PaneRenderUpdate, got {:?}", other),
@@ -479,16 +494,16 @@ fn delivery_path_a_and_b_produce_same_content() {
     messages
         .lock()
         .unwrap()
-        .get_mut(&ClientId(100))
+        .get_mut(&ClientId::new(100))
         .unwrap()
         .clear();
     screen
         .pane_render_subscribers
-        .get_mut(&ClientId(100))
+        .get_mut(&ClientId::new(100))
         .unwrap()
         .previous_viewports
         .insert(
-            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(1)),
             vec!["old".to_string()],
         );
 
@@ -496,7 +511,7 @@ fn delivery_path_a_and_b_produce_same_content() {
 
     let viewport_b = {
         let msgs = messages.lock().unwrap();
-        let client_msgs = msgs.get(&ClientId(100)).unwrap();
+        let client_msgs = msgs.get(&ClientId::new(100)).unwrap();
         match &client_msgs[0] {
             ServerToClientMsg::PaneRenderUpdate { viewport, .. } => viewport.clone(),
             other => panic!("Expected PaneRenderUpdate, got {:?}", other),
@@ -517,9 +532,9 @@ fn close_tab_notifies_subscribers() {
     new_tab(&mut screen, 2, 1);
 
     screen.subscribe_to_pane_renders(
-        crate::ClientId(100),
+        crate::ClientId::new(100),
         vec![zellij_types::data::PaneId::Terminal(
-            zellij_types::internal_ids::TerminalId(1),
+            zellij_types::internal_ids::TerminalId::new(1),
         )],
         None,
         false,
@@ -528,22 +543,20 @@ fn close_tab_notifies_subscribers() {
     messages
         .lock()
         .unwrap()
-        .get_mut(&ClientId(100))
+        .get_mut(&ClientId::new(100))
         .unwrap()
         .clear();
 
-    let _ = screen.go_to_tab(1, crate::ClientId(1));
-    let _ = screen.close_tab(crate::ClientId(1));
+    let _ = screen.go_to_tab(1, crate::ClientId::new(1));
+    let _ = screen.close_tab(crate::ClientId::new(1));
 
     let msgs = messages.lock().unwrap();
-    let client_msgs = msgs.get(&ClientId(100)).unwrap();
+    let client_msgs = msgs.get(&ClientId::new(100)).unwrap();
     let has_pane_closed = client_msgs.iter().any(|m| {
         matches!(
             m,
             ServerToClientMsg::SubscribedPaneClosed {
-                pane_id: zellij_types::data::PaneId::Terminal(
-                    zellij_types::internal_ids::TerminalId(1)
-                ),
+                pane_id: zellij_types::data::PaneId::Terminal(TERMINAL_1),
             }
         )
     });
@@ -586,10 +599,14 @@ fn close_pane_notifies_subscribers_via_instruction() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::SubscribeToPaneRenders {
-            client_id: crate::ClientId(100),
+            client_id: crate::ClientId::new(100),
             pane_ids: vec![
-                zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(0)),
-                zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId(1)),
+                zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(
+                    0,
+                )),
+                zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(
+                    1,
+                )),
             ],
             scrollback: None,
             ansi: false,
@@ -599,7 +616,7 @@ fn close_pane_notifies_subscribers_via_instruction() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::CloseFocusedPane(
-            crate::ClientId(1),
+            crate::ClientId::new(1),
             None,
         ));
     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -611,7 +628,7 @@ fn close_pane_notifies_subscribers_via_instruction() {
         .server_to_client_messages
         .lock()
         .unwrap();
-    let client_msgs = msgs.get(&ClientId(100)).unwrap_or(&vec![]).clone();
+    let client_msgs = msgs.get(&ClientId::new(100)).unwrap_or(&vec![]).clone();
     let has_pane_closed = client_msgs
         .iter()
         .any(|m| matches!(m, ServerToClientMsg::SubscribedPaneClosed { .. }));
@@ -647,9 +664,9 @@ fn integration_pty_bytes_delivered_to_subscriber() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::SubscribeToPaneRenders {
-            client_id: crate::ClientId(100),
+            client_id: crate::ClientId::new(100),
             pane_ids: vec![zellij_types::data::PaneId::Terminal(
-                zellij_types::internal_ids::TerminalId(0),
+                zellij_types::internal_ids::TerminalId::new(0),
             )],
             scrollback: None,
             ansi: false,
@@ -657,7 +674,7 @@ fn integration_pty_bytes_delivered_to_subscriber() {
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         "hello world\r\n".as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -669,7 +686,7 @@ fn integration_pty_bytes_delivered_to_subscriber() {
         .server_to_client_messages
         .lock()
         .unwrap();
-    let subscriber_msgs = msgs.get(&ClientId(100)).unwrap_or(&vec![]).clone();
+    let subscriber_msgs = msgs.get(&ClientId::new(100)).unwrap_or(&vec![]).clone();
 
     assert!(
         subscriber_msgs.len() >= 2,
@@ -724,9 +741,9 @@ fn integration_pty_bytes_not_delivered_when_viewport_unchanged() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::SubscribeToPaneRenders {
-            client_id: crate::ClientId(100),
+            client_id: crate::ClientId::new(100),
             pane_ids: vec![zellij_types::data::PaneId::Terminal(
-                zellij_types::internal_ids::TerminalId(0),
+                zellij_types::internal_ids::TerminalId::new(0),
             )],
             scrollback: None,
             ansi: false,
@@ -745,7 +762,7 @@ fn integration_pty_bytes_not_delivered_when_viewport_unchanged() {
         .server_to_client_messages
         .lock()
         .unwrap();
-    let subscriber_msgs = msgs.get(&ClientId(100)).unwrap_or(&vec![]).clone();
+    let subscriber_msgs = msgs.get(&ClientId::new(100)).unwrap_or(&vec![]).clone();
 
     let render_update_count = subscriber_msgs
         .iter()
@@ -785,7 +802,7 @@ fn integration_scrollback_from_pre_subscription_pty_bytes() {
         data.push_str(&format!("line {}\r\n", i));
     }
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         data.as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -793,9 +810,9 @@ fn integration_scrollback_from_pre_subscription_pty_bytes() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::SubscribeToPaneRenders {
-            client_id: crate::ClientId(100),
+            client_id: crate::ClientId::new(100),
             pane_ids: vec![zellij_types::data::PaneId::Terminal(
-                zellij_types::internal_ids::TerminalId(0),
+                zellij_types::internal_ids::TerminalId::new(0),
             )],
             scrollback: Some(0),
             ansi: false,
@@ -803,7 +820,7 @@ fn integration_scrollback_from_pre_subscription_pty_bytes() {
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         "post subscribe line\r\n".as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -815,7 +832,7 @@ fn integration_scrollback_from_pre_subscription_pty_bytes() {
         .server_to_client_messages
         .lock()
         .unwrap();
-    let subscriber_msgs = msgs.get(&ClientId(100)).unwrap_or(&vec![]).clone();
+    let subscriber_msgs = msgs.get(&ClientId::new(100)).unwrap_or(&vec![]).clone();
 
     let initial_msg = subscriber_msgs.iter().find(|m| {
         matches!(
@@ -905,7 +922,7 @@ fn integration_no_scrollback_when_not_requested() {
         data.push_str(&format!("line {}\r\n", i));
     }
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         data.as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -913,9 +930,9 @@ fn integration_no_scrollback_when_not_requested() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::SubscribeToPaneRenders {
-            client_id: crate::ClientId(100),
+            client_id: crate::ClientId::new(100),
             pane_ids: vec![zellij_types::data::PaneId::Terminal(
-                zellij_types::internal_ids::TerminalId(0),
+                zellij_types::internal_ids::TerminalId::new(0),
             )],
             scrollback: None,
             ansi: false,
@@ -923,7 +940,7 @@ fn integration_no_scrollback_when_not_requested() {
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         "post subscribe\r\n".as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -935,7 +952,7 @@ fn integration_no_scrollback_when_not_requested() {
         .server_to_client_messages
         .lock()
         .unwrap();
-    let subscriber_msgs = msgs.get(&ClientId(100)).unwrap_or(&vec![]).clone();
+    let subscriber_msgs = msgs.get(&ClientId::new(100)).unwrap_or(&vec![]).clone();
 
     for msg in &subscriber_msgs {
         match msg {
@@ -976,9 +993,9 @@ fn integration_subscriber_survives_after_regular_client_detach() {
     let _ = mock_screen
         .to_screen
         .send(ScreenInstruction::SubscribeToPaneRenders {
-            client_id: crate::ClientId(100),
+            client_id: crate::ClientId::new(100),
             pane_ids: vec![zellij_types::data::PaneId::Terminal(
-                zellij_types::internal_ids::TerminalId(0),
+                zellij_types::internal_ids::TerminalId::new(0),
             )],
             scrollback: None,
             ansi: false,
@@ -987,11 +1004,11 @@ fn integration_subscriber_survives_after_regular_client_detach() {
 
     let _ = mock_screen
         .to_screen
-        .send(ScreenInstruction::RemoveClient(crate::ClientId(1)));
+        .send(ScreenInstruction::RemoveClient(crate::ClientId::new(1)));
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     let _ = mock_screen.to_screen.send(ScreenInstruction::PtyBytes(
-        crate::TerminalId(0),
+        crate::TerminalId::new(0),
         "after detach\r\n".as_bytes().to_vec(),
     ));
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1003,7 +1020,7 @@ fn integration_subscriber_survives_after_regular_client_detach() {
         .server_to_client_messages
         .lock()
         .unwrap();
-    let subscriber_msgs = msgs.get(&ClientId(100)).unwrap_or(&vec![]).clone();
+    let subscriber_msgs = msgs.get(&ClientId::new(100)).unwrap_or(&vec![]).clone();
 
     let has_after_detach = subscriber_msgs.iter().any(|m| match m {
         ServerToClientMsg::PaneRenderUpdate { viewport, .. } => {

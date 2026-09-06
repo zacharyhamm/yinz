@@ -26,7 +26,7 @@ pub fn a_plugin_subscribing_after_the_broadcast_is_told_the_current_host_theme_m
     let cache_path = plugin_host_folder.join("permissions_test.kdl");
     let (plugin_thread_sender, screen_receiver, teardown) =
         create_plugin_thread(Some(plugin_host_folder), None);
-    let client_id = ClientId(1);
+    let client_id = ClientId::new(1);
     let size = Size {
         cols: 121,
         rows: 20,

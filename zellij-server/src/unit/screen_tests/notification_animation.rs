@@ -266,12 +266,16 @@ fn a_toast_only_frame_leaves_the_cursor_in_the_active_pane() {
     let mut screen = screen_with_a_settled_toast(size, start);
     screen.pinned_now = Some(start);
     let server_receiver = screen_wired_to_server(&mut screen);
-    let expected = pane_cursor(&mut screen, crate::ClientId(1));
+    let expected = pane_cursor(&mut screen, crate::ClientId::new(1));
 
     let mut grid = grid_for_render_snapshot(size);
     // the opening frame paints the panes and the toast over them
-    let (cursor, _) =
-        render_frame_and_cursor_into(&mut screen, &server_receiver, crate::ClientId(1), &mut grid);
+    let (cursor, _) = render_frame_and_cursor_into(
+        &mut screen,
+        &server_receiver,
+        crate::ClientId::new(1),
+        &mut grid,
+    );
     assert_eq!(
         cursor,
         Some(expected),
@@ -280,8 +284,12 @@ fn a_toast_only_frame_leaves_the_cursor_in_the_active_pane() {
 
     // ...and on the next one nothing under the toast has changed, so the toast is the only thing
     // in the frame. this is the frame that used to lose the cursor.
-    let (cursor, snapshot) =
-        render_frame_and_cursor_into(&mut screen, &server_receiver, crate::ClientId(1), &mut grid);
+    let (cursor, snapshot) = render_frame_and_cursor_into(
+        &mut screen,
+        &server_receiver,
+        crate::ClientId::new(1),
+        &mut grid,
+    );
     assert!(
         snapshot.contains(TEXT),
         "the toast must still be painting on its own, or this asserts nothing:\n{snapshot}"
@@ -321,24 +329,28 @@ fn a_toast_covering_the_cursor_hides_it_until_it_leaves() {
         .expect("the toast fits");
     let target = (toast.x + 1, toast.y + 1);
     screen
-        .get_active_tab_mut(crate::ClientId(1))
+        .get_active_tab_mut(crate::ClientId::new(1))
         .expect("TEST")
         .handle_pty_bytes(
-            crate::TerminalId(1),
+            crate::TerminalId::new(1),
             format!("\u{1b}[{};{}H", target.1 + 1, target.0 + 1)
                 .as_bytes()
                 .to_vec(),
         )
         .expect("TEST");
-    let expected = pane_cursor(&mut screen, crate::ClientId(1));
+    let expected = pane_cursor(&mut screen, crate::ClientId::new(1));
     assert_eq!(
         expected, target,
         "the pane's cursor should now be under the toast"
     );
 
     let mut grid = grid_for_render_snapshot(size);
-    let (cursor, snapshot) =
-        render_frame_and_cursor_into(&mut screen, &server_receiver, crate::ClientId(1), &mut grid);
+    let (cursor, snapshot) = render_frame_and_cursor_into(
+        &mut screen,
+        &server_receiver,
+        crate::ClientId::new(1),
+        &mut grid,
+    );
     assert_eq!(
         cursor, None,
         "a toast painted over the cursor's cell must hide it:\n{snapshot}"
@@ -351,8 +363,12 @@ fn a_toast_covering_the_cursor_hides_it_until_it_leaves() {
     screen.reap_settled_notifications(gone_at);
     assert!(screen.notifications.is_empty(), "the toast slid out");
 
-    let (cursor, snapshot) =
-        render_frame_and_cursor_into(&mut screen, &server_receiver, crate::ClientId(1), &mut grid);
+    let (cursor, snapshot) = render_frame_and_cursor_into(
+        &mut screen,
+        &server_receiver,
+        crate::ClientId::new(1),
+        &mut grid,
+    );
     assert_eq!(
         cursor,
         Some(expected),
