@@ -1,6 +1,7 @@
 MIT License
 
 Copyright (c) 2020 Zellij contributors
+Copyright (c) 2026 Zachary Hamm <hamm.zachary@gmail.com>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
