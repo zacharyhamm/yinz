@@ -334,6 +334,34 @@ mod tests {
     }
 
     #[test]
+    fn two_silent_idle_records_remain_counted_until_they_end() {
+        let mut panes = manifest(vec![Some(agent(AgentState::Idle, false)); 2]);
+        for _ in 0..3 {
+            assert_eq!(
+                AgentCounts::from_manifest(&panes),
+                AgentCounts {
+                    idle: 2,
+                    ..AgentCounts::default()
+                }
+            );
+        }
+        let records = panes.panes.values_mut().next().unwrap();
+        records[0].agent.as_mut().unwrap().state = AgentState::Busy;
+        assert_eq!(
+            AgentCounts::from_manifest(&panes),
+            AgentCounts {
+                busy: 1,
+                idle: 1,
+                waiting: 0
+            }
+        );
+        let records = panes.panes.values_mut().next().unwrap();
+        records[0].agent = None;
+        records[1].agent.as_mut().unwrap().state = AgentState::Exited;
+        assert_eq!(AgentCounts::from_manifest(&panes), AgentCounts::default());
+    }
+
+    #[test]
     fn every_state_is_counted_whatever_reported_it() {
         let mut spawned = agent(AgentState::Busy, false);
         spawned.source = AgentSource::Spawned;

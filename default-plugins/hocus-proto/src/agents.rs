@@ -5864,8 +5864,6 @@ mod tests {
             "PostToolUseFailure",
             "PermissionDenied",
             "ElicitationResult",
-            "SubagentStart",
-            "SubagentStop",
             "PreCompact",
             "PostCompact",
         ] {
@@ -5876,6 +5874,9 @@ mod tests {
             );
         }
         assert_eq!(hook_phase(&event("Elicitation")), Some(HookPhase::Waiting));
+        for name in ["SubagentStart", "SubagentStop"] {
+            assert_eq!(hook_phase(&event(name)), None);
+        }
         // A *background* session that finished, which is the pane's agent still working —
         // Claude Code raises this one from its background-job monitor, on the foreground
         // session's payload. The pane's own turn ending is `Stop`, which arrives earlier and

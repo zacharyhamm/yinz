@@ -3684,6 +3684,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn two_silent_adopted_idle_agents_rebuild_their_hook_feeds() {
+        let mut state = State::default();
+        let panes = ["codex", "claude"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, kind)| {
+                let mut record = agents::registered_agent(kind, None);
+                record.source = hocus_proto::agent::AgentSource::Reported;
+                record.state = hocus_proto::agent::AgentState::Idle;
+                record.session_id = Some(format!("{kind}-session"));
+                record.run_id = Some(format!("{kind}:transferred-run"));
+                PaneInfo {
+                    id: zellij_tile::prelude::PaneId::from_legacy(i as u32 + 7, false),
+                    agent: Some(record),
+                    ..PaneInfo::default()
+                }
+            })
+            .collect();
+        state
+            .manifest
+            .panes
+            .insert(zellij_tile::prelude::TabPosition::new(0), panes);
+        for _ in 0..3 {
+            state.rebuild_panes();
+            assert_eq!(state.hooks.len(), 2);
+            for id in [7, 8] {
+                assert_eq!(state.hooks[&id].phase, agents::HookPhase::Idle);
+            }
+            assert!(state.event_fed.is_empty(), "no hook event was needed");
+        }
+        state.manifest.panes.values_mut().next().unwrap()[0]
+            .agent
+            .as_mut()
+            .unwrap()
+            .state = hocus_proto::agent::AgentState::Busy;
+        state.rebuild_panes();
+        assert_eq!(state.hooks[&7].phase, agents::HookPhase::Busy);
+        state.manifest.panes.values_mut().next().unwrap()[0]
+            .agent
+            .as_mut()
+            .unwrap()
+            .state = hocus_proto::agent::AgentState::Exited;
+        state.rebuild_panes();
+        assert!(!state.hooks.contains_key(&7));
+        assert_eq!(state.hooks[&8].phase, agents::HookPhase::Idle);
+    }
+
     /// An event that builds no feed claims nothing. The daemon can be reloaded mid-session,
     /// and then the first broadcast for a pane arrives before any snapshot has: there is no
     /// pane list to classify against, so no feed is built. Reading that as "this pane is fed
@@ -8599,10 +8647,7 @@ mod tests {
             assert_eq!(run.outcome, agents::RunOutcome::Active);
             assert_eq!(run.entries.len(), 1);
             assert_eq!(run.entries[0].text, "Subagent worker-7:\nworker finished");
-            assert_eq!(
-                hocus_proto::agent::hook_state(&event),
-                Some(hocus_proto::agent::AgentState::Busy)
-            );
+            assert_eq!(hocus_proto::agent::hook_state(&event), None);
         }
     }
     #[test]
