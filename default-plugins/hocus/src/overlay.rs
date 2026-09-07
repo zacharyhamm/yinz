@@ -1507,7 +1507,13 @@ impl State {
             // Nothing to unsuppress: the panel has to grow its other half first. The placement
             // below still runs - the list announces itself with an id, and `on_panes` places it
             // then.
-            None => self.open_agents_pane(),
+            None if !self.agents_closed => self.open_agents_pane(),
+            // Except a list the user closed, which is not a half owed back - the same split
+            // `on_panes` makes for the same reason. A reveal that reached here without passing
+            // through `hide_panel` is a toast click or a job firing, and neither is the user
+            // asking for the list again; `hide_panel` clears the flag, so Esc and then `c` still
+            // grows it back. See `State::agents_closed`.
+            None => {},
         }
         self.apply_overlay_geometry();
     }

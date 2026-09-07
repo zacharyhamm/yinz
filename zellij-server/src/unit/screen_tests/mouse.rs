@@ -168,9 +168,14 @@ fn clicking_overlapping_pane_notifications_uses_paint_order() {
 /// The click on a toast is the one gesture that says "the thing this was about, now". Focusing
 /// the pane says where; the message says what, and only the plugin that raised the toast can act
 /// on it - hocus opening the conversation that asked, say.
+///
+/// Both clients travel with it. A toast raised by one client's instance can be clicked by
+/// another, and the two ids answer different questions - see
+/// `plugins::client_for_notification_click`.
 #[test]
 fn clicking_a_notification_tells_the_plugin_that_raised_it() {
     let size = Size { cols: 80, rows: 20 };
+    let raiser = ClientId::new(2);
     let client_id = ClientId::new(1);
     let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let mut screen = create_non_mirrored_screen(size);
@@ -184,6 +189,7 @@ fn clicking_a_notification_tells_the_plugin_that_raised_it() {
         Some(PaneId::Terminal(crate::TerminalId::new(1))),
         Some(NotificationClick {
             plugin_id: crate::PluginId::new(7),
+            client_id: raiser,
             message: "hocus_toast_click".to_owned(),
             payload: "42".to_owned(),
         }),
@@ -199,9 +205,13 @@ fn clicking_a_notification_tells_the_plugin_that_raised_it() {
     let posted = plugin_rx
         .try_iter()
         .find_map(|(instruction, _)| match instruction {
-            PluginInstruction::PostMessageToPlugin(plugin_id, to, message, payload) => {
-                Some((plugin_id, to, message, payload))
-            },
+            PluginInstruction::NotificationClicked {
+                plugin_id,
+                raiser,
+                clicker,
+                message,
+                payload,
+            } => Some((plugin_id, raiser, clicker, message, payload)),
             _ => None,
         })
         .expect("the click reaches the plugin that raised the toast");
@@ -209,6 +219,7 @@ fn clicking_a_notification_tells_the_plugin_that_raised_it() {
         posted,
         (
             crate::PluginId::new(7),
+            raiser,
             client_id,
             "hocus_toast_click".to_owned(),
             "42".to_owned()
@@ -238,6 +249,7 @@ fn a_notification_click_is_reported_even_when_its_pane_is_already_focused() {
         Some(focused),
         Some(NotificationClick {
             plugin_id: crate::PluginId::new(7),
+            client_id,
             message: "hocus_toast_click".to_owned(),
             payload: "9".to_owned(),
         }),
@@ -250,9 +262,10 @@ fn a_notification_click_is_reported_even_when_its_pane_is_already_focused() {
         client_id,
     );
 
-    assert!(plugin_rx
-        .try_iter()
-        .any(|(instruction, _)| matches!(instruction, PluginInstruction::PostMessageToPlugin(..))));
+    assert!(plugin_rx.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        PluginInstruction::NotificationClicked { .. }
+    )));
 }
 
 /// A toast with nothing to do is not a click target: swallowing the press would leave the user

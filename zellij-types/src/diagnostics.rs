@@ -415,6 +415,7 @@ pub enum PluginContext {
     ApplyCachedWorkerMessages,
     PostMessageToPluginWorker,
     PostMessageToPlugin,
+    NotificationClicked,
     PluginSubscribedToEvents,
     SubscribeCliClientToEvents,
     ReloadPluginByUrl,

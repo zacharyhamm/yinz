@@ -192,6 +192,18 @@ pub enum PluginInstruction {
         String, // serialized message
         String, // serialized payload
     ),
+    /// Somebody clicked a toast that asked to hear about it. Two clients, because the one id
+    /// `PostMessageToPlugin` carries cannot answer both halves of this - see
+    /// [`client_for_notification_click`].
+    NotificationClicked {
+        plugin_id: PluginId,
+        /// The client whose instance raised the toast.
+        raiser: ClientId,
+        /// The client who clicked it. The same client, nearly always.
+        clicker: ClientId,
+        message: String,
+        payload: String,
+    },
     PluginSubscribedToEvents(PluginId, ClientId, HashSet<EventType>),
     /// A `zellij events` client asking for the session's state events, by name.
     SubscribeCliClientToEvents {
@@ -952,6 +964,25 @@ pub(crate) fn plugin_thread_main(
                 )];
                 wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
             },
+            PluginInstruction::NotificationClicked {
+                plugin_id,
+                raiser,
+                clicker,
+                message,
+                payload,
+            } => {
+                let client_id = client_for_notification_click(
+                    wasm_bridge.plugin_is_shared(&plugin_id),
+                    raiser,
+                    clicker,
+                );
+                let updates = vec![(
+                    Some(plugin_id),
+                    Some(client_id),
+                    Event::CustomMessage(message, payload),
+                )];
+                wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
+            },
             PluginInstruction::PluginSubscribedToEvents(plugin_id, client_id, events) => {
                 wasm_bridge.notify_screen_of_background_plugin_subscriptions(
                     plugin_id,
@@ -1620,6 +1651,33 @@ fn populate_session_layout_metadata(
     }
     session_layout_metadata.update_plugin_cmds(plugin_ids_to_cmds);
     session_layout_metadata.update_plugin_aliases_in_default_layout(plugin_aliases);
+}
+
+/// Which client a clicked toast is addressed to.
+///
+/// The one client id an update carries is read two ways, and which of them matters depends on
+/// whether the plugin is shared - so no single choice is right for both and the caller hands over
+/// each candidate rather than picking.
+///
+/// A shared plugin is one instance for the whole session, which every client reaches: the id is
+/// not consulted for delivery at all, and becomes the *acting* client instead. The client who
+/// should act is the one who clicked - it is their pane the reveal has to land in, and the host
+/// has already focused it for them.
+///
+/// A per-client plugin has an instance per client, and only the raiser's knows what the toast was
+/// about; naming anybody else drops the click on the floor, silently, which is what this is here
+/// to stop. The acting client there is that instance's own whatever we pass, so the raiser costs
+/// the clicker nothing.
+fn client_for_notification_click(
+    plugin_is_shared: bool,
+    raiser: ClientId,
+    clicker: ClientId,
+) -> ClientId {
+    if plugin_is_shared {
+        clicker
+    } else {
+        raiser
+    }
 }
 
 fn pipe_to_all_plugins(

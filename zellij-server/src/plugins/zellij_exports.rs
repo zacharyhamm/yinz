@@ -4761,9 +4761,13 @@ fn notify(env: &PluginEnv, text: String, pane_id: Option<PaneId>, click: Option<
         return;
     };
     // Stamped here rather than carried up from the plugin: a toast may only ever call back the
-    // plugin that raised it, so the id is the host's to supply.
+    // plugin that raised it, so the id is the host's to supply. `owner_client_id` and not
+    // `client_id`, because this names an *instance* rather than a turn - it is the key the plugin
+    // map holds this one under, which is what the delivery matches on. Same distinction
+    // `post_message_to` makes for a worker.
     let on_click = click.map(|click| NotificationClick {
         plugin_id: env.plugin_id,
+        client_id: env.owner_client_id,
         message: click.message,
         payload: click.payload,
     });

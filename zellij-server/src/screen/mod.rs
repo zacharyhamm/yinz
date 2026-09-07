@@ -1132,6 +1132,11 @@ impl Screen {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotificationClick {
     pub plugin_id: PluginId,
+    /// The client whose instance raised the toast - the key it is stored under in the plugin map,
+    /// not whoever is acting on it now. A per-client plugin has an instance per client and only
+    /// this one knows what the toast was about, so the click has to be able to name it however
+    /// long the toast stands and whoever ends up clicking it.
+    pub client_id: ClientId,
     pub message: String,
     pub payload: String,
 }
