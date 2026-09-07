@@ -45,6 +45,19 @@ Codex, a separate review agent, two repair rounds, `cargo x ci check`, and local
 `firecrackerImage` select a VM for the worker. Its host worktree remains the source for
 review and integration.
 
+On agent exit, the workflow uses the exit pane for status, questions and interactive
+agents. The original terminal and its scrollback remain behind that view. Runners and
+noninteractive commands use supervised background panes. Active agents share the exit
+location in dispatch order. Other agents stay suppressed and continue their work.
+Verified turn completion, failure or process exit restores status or the next active
+agent. Agents remain available for later prompts.
+
+Final results and errors stay visible. Enter restarts the original agent. Esc restores
+its scrollback and detaches the view. Delete closes the original terminal. Restart and
+destructive close are disabled while work is active. Closing the view does not cancel
+work. A detached or missing view never causes a replacement launch or a new visible
+pane. Ordinary CLI launches keep their separate view.
+
 The view shows authoritative run and child-run state, findings, revision identities,
 test results, pending questions and retained command output. Close the view to detach;
 reopen it with `show`. The supervised Swamp command continues independently. Cancel is
@@ -109,8 +122,10 @@ Older hooks or stored requests without a digest use exact prompt text. Session a
 still apply to completion. Prompt observation is registered before bytes are sent. Idle,
 closed panes and process exit are not agent success.
 
-Rebuild and restart the server with matching bridge assets to activate these changes.
-The new hook JSON fields are optional. No protobuf or stored-data migration is required.
+Rebuild and restart with matching binary and plugin assets. Mixed versions and
+pre-change workflow attachments are not supported. Validate with fresh runs. A bridge
+or server reload does not restore pane placement. Use a separate `show` view to inspect
+the saved run.
 
 Use the model's `observe`, `agent_inspect` and `reconcile` methods to inspect saved
 operations. Never create a replacement mutation merely because a caller timed out.

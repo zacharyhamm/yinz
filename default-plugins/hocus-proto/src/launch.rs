@@ -49,6 +49,7 @@ pub fn open(spec: &Spec, source_directory: std::path::PathBuf) -> Result<Spawned
         None,
         std::collections::BTreeMap::new(),
         true,
+        false,
     )
 }
 

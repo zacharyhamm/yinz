@@ -784,6 +784,8 @@ pub struct SpawnAgentPayload {
     pub context: ::prost::alloc::vec::Vec<ContextItem>,
     #[prost(bool, tag="6")]
     pub automatic_firecracker_vm: bool,
+    #[prost(bool, tag="7")]
+    pub start_suppressed: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

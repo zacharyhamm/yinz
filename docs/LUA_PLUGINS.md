@@ -594,6 +594,11 @@ happened, `zellij.notify` for the person. hocus's own run history (`agent_run`,
 `agent_run_entry` in `shared:hocus`, see *Hocus data*) is readable too, for what an agent
 concluded in a session that has since closed.
 
+A workflow can use `zellij.agent.spawn_details { start_suppressed = true, ... }` to
+create an agent without a visible split or automatic tab placement. Use
+`zellij.replace_pane_with_existing_pane { current, agent, true }` to show it in an
+existing pane location and retain the replaced pane.
+
 ## Plugin-to-plugin calls
 
 `zellij.message_to_plugin` is fire and forget. `zellij.rpc` is a call with an answer:
@@ -848,6 +853,9 @@ Hocus authors can read it with `plugin_docs(section="example_forms")` and inspec
 
 
 ## Modules
+
+`require("zellij.workflow_view")` loads the embedded workflow view used by the agent-exit hook.
+It shares status rendering and question controls with the separate CLI view.
 
 A plugin can be more than one file. `require("name")` loads `name.lua` from the plugin's own
 folder, or `name/init.lua`, and `require("app.ui")` is `app/ui.lua`:

@@ -2957,6 +2957,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         .map(|item| (item.name, item.value))
                         .collect(),
                     automatic_firecracker_vm: payload.automatic_firecracker_vm,
+                    start_suppressed: payload.start_suppressed,
                 }),
                 _ => Err("Mismatched payload for SpawnAgent"),
             },
@@ -5284,6 +5285,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name,
                 context,
                 automatic_firecracker_vm,
+                start_suppressed,
             } => Ok(ProtobufPluginCommand {
                 name: CommandName::SpawnAgent as i32,
                 payload: Some(Payload::SpawnAgentPayload(SpawnAgentPayload {
@@ -5296,6 +5298,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                         .map(|(name, value)| ContextItem { name, value })
                         .collect(),
                     automatic_firecracker_vm,
+                    start_suppressed,
                 })),
             }),
             PluginCommand::SetQuitNotice { notice, guard } => Ok(ProtobufPluginCommand {
@@ -7182,6 +7185,7 @@ mod tests {
             name: Some("fixer".to_owned()),
             context: BTreeMap::from([("step".to_owned(), "1".to_owned())]),
             automatic_firecracker_vm: true,
+            start_suppressed: true,
         };
         let protobuf: ProtobufPluginCommand = command.clone().try_into().unwrap();
         let decoded: PluginCommand = protobuf.try_into().unwrap();
@@ -7194,6 +7198,7 @@ mod tests {
             name: None,
             context: BTreeMap::new(),
             automatic_firecracker_vm: false,
+            start_suppressed: false,
         };
         let protobuf: ProtobufPluginCommand = empty.clone().try_into().unwrap();
         let decoded: PluginCommand = protobuf.try_into().unwrap();

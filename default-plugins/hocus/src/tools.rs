@@ -4842,6 +4842,7 @@ mod host {
             args.name.clone(),
             BTreeMap::new(),
             automatic_firecracker_vm,
+            false,
         ) {
             Ok(agent) => {
                 let (id, is_plugin) = split_pane_id(agent.pane_id);

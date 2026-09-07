@@ -3,7 +3,7 @@ local z = require('zellij')
 local M = {status='No run attached', scroll=0, pending={}, selected=1}
 local form
 local function text(s) return z.text.sanitize(tostring(s or '')) end
-local function refresh()
+function M.refresh()
   if not M.attachment or M.busy then return end
   M.busy = true
   z.task(function()
@@ -13,8 +13,12 @@ local function refresh()
     if reply.error then M.status = reply.error
     else
       M.snapshot = reply.result
+      M.active = M.snapshot.active or M.snapshot.history.status == 'running' or M.snapshot.history.status == 'suspended'
+      for _,child in ipairs(M.snapshot.children or {}) do
+        M.active = M.active or child.status == 'running' or child.status == 'suspended'
+      end
       M.attachment.run = M.snapshot.run
-      M.status = 'Run ' .. M.snapshot.run .. ': ' .. M.snapshot.history.status
+      M.status = 'Run ' .. (M.snapshot.run or M.snapshot.launch) .. ': ' .. M.snapshot.history.status
       M.pending = {}
       local latest={}
       for _,entry in ipairs((M.snapshot.questions or {}).results or {}) do
@@ -33,16 +37,21 @@ local function refresh()
     z.request_render()
   end)
 end
+function M.focused_control() return form:focused_id() end
+function M.attach(attachment)
+  M.attachment=attachment
+  M.active=true
+  M.refresh()
+end
 function M.load()
   z.subscribe {'key','mouse','pasted_text'}
   form = z.ui.form({{kind='text_input',id='answer',label='Answer',value=''}, {kind='button',id='submit',label='Submit answer'}, {kind='button',id='next',label='Next question'}, {kind='button',id='cancel_run',label='Cancel run'}, {kind='button',id='detach',label='Detach'}}, {enter_submits=true})
-  z.every(2,refresh)
+  z.every(2,M.refresh)
 end
 function M.pipe(message)
   if message.name ~= 'show' or not message.payload then return end
-  M.attachment = z.json.decode(message.payload)
+  M.attach(z.json.decode(message.payload))
   z.show_self(true)
-  refresh()
   local pipe = type(message.source)=='table' and message.source.Cli
   if pipe then z.cli_pipe_output(pipe,z.json.encode({attached=true})); z.unblock_cli_pipe_input(pipe) end
 end
@@ -54,7 +63,7 @@ function M.update(event)
   elseif event.name=='mouse' then action=form:handle_mouse(event)
   elseif event.name=='pasted_text' then action=form:insert_pasted_text(event.value) end
   if not action then return true end
-  if action.kind=='cancel' or action.id=='detach' then z.close_self(); return true end
+  if action.kind=='cancel' or action.id=='detach' then z.close_self();return true end
   if action.id=='next' then M.selected=M.selected % math.max(1,#M.pending)+1;return true end
   if action.id=='submit' or action.kind=='submit' then
     local entry = M.pending[M.selected]
@@ -65,7 +74,7 @@ function M.update(event)
       local ok,result=pcall(function() return z.await(z.async.run_command {cwd=M.snapshot.root,context={swamp_owner='view'},command={z.server_binary or 'zellij','workflow','answer',q.run,entry.model,q.question,answer},max_bytes_returned=8192}) end)
       M.status=ok and (result.exit_code==0 and 'Answer recorded' or result.stderr) or tostring(result)
       M.busy=false
-      refresh()
+      M.refresh()
     end)
   elseif action.id=='cancel_run' and M.snapshot and M.attachment.run then
     M.busy=true
@@ -73,7 +82,7 @@ function M.update(event)
       local ok,result=pcall(function() return z.await(z.async.run_command {cwd=M.snapshot.root,context={swamp_owner='view'},command={z.server_binary or 'zellij','workflow','cancel',M.attachment.run},max_bytes_returned=8192}) end)
       M.status=ok and (result.exit_code==0 and 'Cancellation requested; resources preserved' or result.stderr) or tostring(result)
       M.busy=false
-      refresh()
+      M.refresh()
     end)
   end
   return true

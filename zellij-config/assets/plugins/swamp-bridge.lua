@@ -35,6 +35,69 @@ local function save_event(uid, outcome, fields)
   for k, v in pairs(fields or {}) do value[k] = v end
   put(uid, value, row)
 end
+-- Placement belongs to the authenticated hook instance, never to a caller-supplied pane.
+-- It is intentionally not recovered across server/bridge reloads.
+local placements={}
+local function active(work)
+  local works={[work]=true}
+  local runs=read(scope(work,'runs'))
+  for id in pairs(runs and runs.entries or {}) do works[id]=true end
+  local cursor
+  repeat
+    local rows,page=D.fetch{entity='delivery',after_id=cursor}
+    for _,row in ipairs(rows) do
+      local id=decode(row.uid)
+      if id[1]==identity.host_id and id[2]==identity.session and works[id[3]] then
+        local operation=decode(row.value)
+        if operation.outcome=='pending' or operation.outcome=='unknown' then
+          local method=decode(operation.request).method
+          -- workflow_run copies the runner's outcome but does not track its completion.
+          if method=='command' or method=='agent_prompt' then return true end
+        end
+      end
+    end
+    cursor=page.next_cursor
+  until not cursor or cursor==z.null
+  return false
+end
+local function launch_failure(work, launch, logs, directory)
+  return {launch=work,root=launch.checkout or directory,history={id=work,workflowName=launch.workflow or 'Workflow launch',status='failed'},
+    children={},active=active(work),logs=logs}
+end
+local function present(work)
+  local placement=placements[work]
+  if not placement or placement.detached then return end
+  local view=z.plugin_pane(placement.view)
+  local ok,info=pcall(z.get_pane_info,view)
+  if not ok or not info or info.plugin_url~='zellij:agent-exit' then
+    placement.detached=true
+    return
+  end
+  local current=placement.current and z.terminal_pane(placement.current) or view
+  local ok,current_info=pcall(z.get_pane_info,current)
+  if not ok or not current_info or current_info.is_suppressed then
+    placement.detached=true
+    return
+  end
+  local next_pane
+  while #placement.queue>0 do
+    local operation=read(placement.queue[1])
+    if operation and operation.outcome=='pending' then
+      next_pane=operation.pane
+      break
+    end
+    table.remove(placement.queue,1)
+  end
+  if next_pane==placement.current then return end
+  local target=next_pane and z.terminal_pane(next_pane) or view
+  local ok,target_info=pcall(z.get_pane_info,target)
+  if not ok or not target_info or not target_info.is_suppressed then
+    placement.detached=true
+    return
+  end
+  z.replace_pane_with_existing_pane{current,target,true}
+  placement.current=next_pane
+end
 local function finish_agent(owner, event, raw)
   local agent_uid = scope(owner.work, owner.agent)
   local agent, row = read(agent_uid)
@@ -51,6 +114,7 @@ local function finish_agent(owner, event, raw)
   save_event(uid, outcome, {message=event.last_message or z.null, hook=event.hook, agentSession=event.session_id or z.null})
   agent.outstanding = nil
   put(agent_uid, agent, row)
+  present(owner.work)
 end
 local function command(argv, cwd)
   local r = z.await(z.async.run_command {command=argv, cwd=cwd or '/', context={swamp_owner=encode(identity)}, max_bytes_returned=1048576})
@@ -150,6 +214,10 @@ handle = function(args)
     return {operations=operations}
   end
   if args.method == 'workflow_show' then
+    local failed=args.launch and args.launch~=z.null and read(scope(args.launch,'launch'))
+    if failed and failed.outcome=='failed' and failed.error then
+      return launch_failure(args.launch,failed,failed.error,args.directory)
+    end
     local config = z.project_config.read(assert(args.directory, 'Missing control checkout'))
     assert(not config.error, config.error)
     local attachment,work
@@ -169,6 +237,16 @@ handle = function(args)
         if entry.workflow=='@hammz/zellij-agent-exit' or not attachment then attachment=entry;attachment.run=id end
       end
     end
+    if not attachment and work then
+      local runner=read(scope(work,'swamp-process'))
+      if runner and (runner.outcome=='completed' or runner.outcome=='failed' or runner.outcome=='process-exit') then
+        runner=handle{method='observe',work=work,key='swamp-process'}
+        local logs='Workflow runner exited without reporting a run. Exit status: '..tostring(runner.exitCode)
+        if runner.output then logs=logs..'\nRetained command scrollback (may omit older output):\n'..runner.output end
+        if runner.logError then logs=logs..'\nLog unavailable: '..runner.logError end
+        return launch_failure(work,result(scope(work,'launch')),logs)
+      end
+    end
     assert(attachment,'Launch has no reported run yet; reconcile by launch token without repeating it')
     local run=attachment.run
     local history=decode(command({'swamp','workflow','history','get',run,'--json'},config.root))
@@ -182,7 +260,7 @@ handle = function(args)
     for _,id in ipairs(ids) do
       if id~=run then children[#children+1]=decode(command({'swamp','workflow','history','get',id,'--json'},config.root)) end
     end
-    return {run=run,root=config.root,history=history,children=children,
+    return {run=run,root=config.root,history=history,children=children,active=active(work),
       outputs=outputs,logs=command({'swamp','workflow','history','logs',run,'--tail','100','--json'},config.root),questions=questions}
 
   end
@@ -302,6 +380,7 @@ handle = function(args)
     value.owner, value.outcome = owner, 'pending'
     put(uid, value, row)
     opts.context = {swamp_owner=encode(owner), swamp_operation=args.key}
+    opts.start_suppressed = read(scope(args.work,'view')) ~= nil
     local spawned = z.agent.spawn_details(opts)
     value, row = read(uid)
     value.pane = spawned.pane_id.Terminal or spawned.pane_id
@@ -339,6 +418,11 @@ handle = function(args)
     agent.outstanding = uid
     -- One transaction publishes observation and the exclusive prompt slot before bytes.
     D.apply({D.put('delivery', {value=encode(value)}, uid, row.rev), D.put('delivery', {value=encode(agent)}, agent_uid, agent_row.rev)})
+    local placement=placements[args.work]
+    if placement and not placement.detached then
+      placement.queue[#placement.queue+1]=uid
+      present(args.work)
+    end
     dispatch_prompt(agent)
   elseif args.method == 'command' then
     assert(type(args.argv) == 'table' and #args.argv > 0, 'Missing literal argv')
@@ -347,7 +431,7 @@ handle = function(args)
     put(uid, value, row)
     local argv = {}
     for i=2,#args.argv do argv[#argv+1] = args.argv[i] end
-    local pane = z.open_command_pane {{path=args.argv[1], args=argv, cwd=args.cwd}, {swamp_owner=encode(owner), swamp_operation=args.key}}
+    local pane = z.open_command_pane_background {{path=args.argv[1], args=argv, cwd=args.cwd}, {swamp_owner=encode(owner), swamp_operation=args.key}}
     value, row = read(uid)
     value.pane = pane.Terminal or pane
     value.checkout, value.log = args.cwd, 'terminal_' .. value.pane
@@ -382,6 +466,28 @@ handle = function(args)
   else error('Unknown bridge method') end
   return result(uid)
 end
+local function invoke(args)
+  local new_launch=type(args)=='table' and args.method=='workflow_run' and not read(scope(args.work,args.key))
+  local ok,response=pcall(handle,args)
+  if ok then return response end
+  if new_launch then
+    -- A validation/configuration failure before a runner claim is safe to restart.
+    -- Once dispatch was claimed, its outcome stays uncertain until reconciled.
+    pcall(function()
+      if not read(scope(args.work,'swamp-process')) then
+        save_event(scope(args.work,args.key),'failed',{error=tostring(response)})
+      end
+    end)
+  end
+  pcall(function()
+    local value=read(scope(args.work,args.key))
+    if value and value.request==encode(args) and value.outcome=='pending' then
+      save_event(scope(args.work,args.key),'unknown',{error=tostring(response)})
+      present(args.work)
+    end
+  end)
+  error(response)
+end
 function M.load()
   local ids = z.get_plugin_ids()
   identity = {host_id=ids.host_id, session=z.server_session, incarnation=z.server_incarnation}
@@ -393,7 +499,17 @@ function M.load()
     assert(from, 'Workflow RPC requires a host-authenticated plugin source')
     local pane = z.get_pane_info(z.plugin_pane(from))
     assert(pane.plugin_url=='zellij:agent-exit' or pane.plugin_url=='zellij:swamp-workflow', 'Only builtin workflow views may use the privileged bridge RPC')
-    return handle(args)
+    if args.method=='workflow_run' and pane.plugin_url=='zellij:agent-exit' then
+      local uid=scope(args.work,'view')
+      local existing=read(uid)
+      if existing then
+        assert(existing.view==from and existing.incarnation==identity.incarnation,'Launch already belongs to another hook instance')
+      else
+        put(uid,{view=from,incarnation=identity.incarnation})
+        placements[args.work]={view=from,queue={}}
+      end
+    end
+    return invoke(args)
   end)
 end
 function M.pipe(message)
@@ -402,17 +518,7 @@ function M.pipe(message)
   if not pipe then return end
   z.block_cli_pipe_input(pipe)
   z.task(function()
-    local ok, response = pcall(function() return handle(decode(message.payload)) end)
-    if not ok then
-      pcall(function()
-        local args=decode(message.payload)
-        local uid=scope(args.work,args.key)
-        local value,row=read(uid)
-        if value and value.request==encode(args) and value.outcome=='pending' then
-          value.outcome='unknown'; put(uid,value,row)
-        end
-      end)
-    end
+    local ok, response = pcall(function() return invoke(decode(message.payload)) end)
     z.cli_pipe_output(pipe, encode(ok and {result=response} or {error=tostring(response)}))
     z.unblock_cli_pipe_input(pipe)
   end)
@@ -459,7 +565,7 @@ z.on('command_pane_exited', function(event)
   if owner.host_id ~= identity.host_id or owner.session ~= identity.session then return end
   local uid = scope(owner.work, context.swamp_operation or owner.agent)
   local value = read(uid)
-  if not value or encode(value.owner) ~= encode(owner) then return end
+  if not value or encode(value.owner) ~= encode(owner) or (value.pane and value.pane~=event.pane_id) then return end
   local request = decode(value.request)
   local outcome = request.method == 'command' and (event.exit_code == 0 and 'completed' or 'failed') or 'process-exit'
   save_event(uid, outcome, {exitCode=event.exit_code or z.null})
@@ -469,5 +575,6 @@ z.on('command_pane_exited', function(event)
     put(uid,current,row)
   end
   if value.outstanding then save_event(value.outstanding, 'process-exit', {exitCode=event.exit_code or z.null}) end
+  present(owner.work)
 end)
 return M
