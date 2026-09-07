@@ -45,7 +45,7 @@ function M.attach(attachment)
 end
 function M.load()
   z.subscribe {'key','mouse','pasted_text'}
-  form = z.ui.form({{kind='text_input',id='answer',label='Answer',value=''}, {kind='button',id='submit',label='Submit answer'}, {kind='button',id='next',label='Next question'}, {kind='button',id='cancel_run',label='Cancel run'}, {kind='button',id='detach',label='Detach'}}, {enter_submits=true})
+  form = z.ui.form({{kind='text_input',id='answer',label='Answer',value=''}, {kind='button',id='submit',label='Submit answer'}, {kind='button',id='next',label='Next question'}, {kind='button',id='cancel_run',label='Cancel run'}, {kind='button',id='detach',label='Detach'}})
   z.every(2,M.refresh)
 end
 function M.pipe(message)
@@ -66,7 +66,7 @@ function M.update(event)
   if not action then return true end
   if action.kind=='cancel' or action.id=='detach' then z.close_self();return true end
   if action.id=='next' then M.selected=M.selected % math.max(1,#M.pending)+1;return true end
-  if action.id=='submit' or action.kind=='submit' then
+  if action.kind=='button_pressed' and action.id=='submit' then
     local entry = M.pending[M.selected]
     if not entry or M.busy then return true end
     local q, answer = entry.attributes, form:value('answer')
@@ -89,7 +89,7 @@ function M.update(event)
   return true
 end
 function M.render(rows,cols)
-  local lines={text(M.status), 'Closing this view detaches it. PgUp/PgDn: history.'}
+  local lines={text(M.status), 'Arrows/Tab: move. Enter: activate. Esc: back. PgUp/PgDn: history. Closing this view detaches it.'}
   local entry=M.pending[M.selected]
   if entry then
     local q=entry.attributes

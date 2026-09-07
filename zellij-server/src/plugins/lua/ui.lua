@@ -95,13 +95,8 @@ local function wrap(state, single_id, ids)
   end
   return w
 end
-local function construct(fields, opts, single, dialog)
+local function construct(fields, single, dialog)
   typed(fields, "table", "fields")
-  opts = default(opts, {})
-  typed(opts, "table", "form options")
-  if not dialog then
-    for k in pairs(opts) do assert(k == "enter_submits", "unknown form option: " .. tostring(k)) end
-  end
   local descriptors, ids = {}, {}
   for k in pairs(fields) do
     assert(type(k) == "number" and math.type(k) == "integer" and k >= 1 and k <= #fields, "fields must be an array")
@@ -111,10 +106,10 @@ local function construct(fields, opts, single, dialog)
     descriptors[i] = d
     if d.kind ~= "button" then ids[#ids+1] = d.id end
   end
-  local state = native.form(descriptors, typed(default(opts.enter_submits, true), "boolean", "enter_submits"), dialog)
+  local state = native.form(descriptors, dialog)
   return wrap(state, single and descriptors[1].id, ids)
 end
-function ui.form(fields, opts) return construct(fields, opts) end
+function ui.form(fields) return construct(fields) end
 for _, kind in ipairs({"text_input", "checkbox", "radio_group", "select", "combo", "button"}) do
   ui[kind] = function(d)
     d = default(d, {})
@@ -122,16 +117,16 @@ for _, kind in ipairs({"text_input", "checkbox", "radio_group", "select", "combo
     local copy = {}
     for k,v in pairs(d) do copy[k]=v end
     copy.kind = kind
-    return construct({copy}, {}, true)
+    return construct({copy}, true)
   end
 end
 function ui.dialog(d)
   typed(d, "table", "dialog descriptor")
-  for k in pairs(d) do assert(k == "title" or k == "message" or k == "help" or k == "fields" or k == "enter_submits", "unknown dialog field: " .. tostring(k)) end
+  for k in pairs(d) do assert(k == "title" or k == "message" or k == "help" or k == "fields", "unknown dialog field: " .. tostring(k)) end
   typed(d.title, "string", "title")
   if d.message ~= nil then typed(d.message, "string", "message") end
   if d.help ~= nil then typed(d.help, "string", "help") end
-  return construct(default(d.fields, {}), d, false, d)
+  return construct(default(d.fields, {}), false, d)
 end
 function ui.markdown(source, opts)
   typed(source, "string", "Markdown source")

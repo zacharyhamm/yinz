@@ -266,7 +266,7 @@ impl Select {
             // exists for. Enter is deliberately not in this list: the `Form`
             // owns what it means for a closed select, because that depends on
             // whether the form submits from Enter at all. A form built with
-            // `Form::enter_never_submits` opens the list with it.
+            // `Form` opens the list with it.
             BareKey::Char(c) if key.has_no_modifiers() => {
                 self.open();
                 self.filter.insert_char(c);
@@ -481,8 +481,7 @@ mod tests {
         assert_eq!(select.selected_index(), None);
     }
 
-    /// Enter has to keep meaning "submit" on a closed select, or a form with one
-    /// in it can only be submitted from a text field.
+    /// The containing form handles Enter on a closed select to activate it.
     #[test]
     fn enter_on_a_closed_select_is_not_consumed() {
         let mut select = a_select();

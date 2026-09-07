@@ -15,7 +15,7 @@ local form = ui.form({
   {kind='checkbox', id='frames', label='Frames', value=true},
   {kind='button', id='preview', label='Preview'},
   {kind='button', id='reset', label='Reset'},
-}, {enter_submits=false})
+})
 local confirm = ui.dialog {
   title='Preview these settings?', message='Confirm to render the submitted values. Nothing is saved.',
   fields={{kind='button',id='yes',label='Confirm'}, {kind='button',id='no',label='Cancel'}},
@@ -140,7 +140,7 @@ function M.render(rows, cols)
   local frame = content .. form:render{width=form_width,height=form_rows}
   if rows >= 2 then frame = frame .. ui.text(status):render{x=0,y=rows-2,width=cols,height=1} end
   if rows >= 1 then
-    frame = frame .. ui.text('Tab/Shift-Tab: focus  Enter: choose  PgUp/PgDn: Markdown'):render{x=0,y=rows-1,width=cols,height=1}
+    frame = frame .. ui.text('Arrows/Tab: move  Enter: activate  Esc: back  PgUp/PgDn: Markdown'):render{x=0,y=rows-1,width=cols,height=1}
   end
   return frame
 end

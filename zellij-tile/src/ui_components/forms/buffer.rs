@@ -38,6 +38,9 @@ mod tests {
     fn native_buffers_leave_host_cursor_delivery_to_the_caller() {
         crate::shim::take_last_cursor_position();
         let mut form = Form::new().field("name", "Name", TextInput::new("日".into()));
+        form.handle_key(crate::prelude::KeyWithModifier::new(
+            crate::prelude::BareKey::Enter,
+        ));
         let buffer = form.render_buffer_in_viewport(2, 3, 20, 1);
         assert_eq!(buffer.cursor, Some(Some((10, 3))));
         assert!(buffer.output.starts_with("\u{1b}Pztext;"));

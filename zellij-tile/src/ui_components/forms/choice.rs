@@ -176,23 +176,37 @@ impl RadioGroup {
         y: usize,
         width: usize,
         focused: bool,
+        active: bool,
     ) {
         self.last_option_rects.clear();
         let prompt = take_columns(prompt, width);
         let prompt_width = prompt.width();
         let mut prompt = Text::new(prompt).color_all(2);
-        if focused {
+        if focused && (!active || prompt_width >= width) {
             prompt = prompt.selected();
         }
         buffer.text(prompt, x, y, Some(width), None);
 
         let right = x.saturating_add(width);
         let mut option_x = x.saturating_add(prompt_width);
-        for (index, option) in self.options.iter().enumerate() {
+        // Keep the active option visible when the full group does not fit.
+        let start = self
+            .selected
+            .filter(|selected| {
+                focused
+                    && active
+                    && self.options[..=*selected]
+                        .iter()
+                        .map(|option| option.width() + 5)
+                        .sum::<usize>()
+                        > width.saturating_sub(prompt_width) + 1
+            })
+            .unwrap_or(0);
+        for (index, option) in self.options.iter().enumerate().skip(start) {
             if option_x >= right {
                 break;
             }
-            if index > 0 {
+            if index > start {
                 option_x = option_x.saturating_add(1);
                 if option_x >= right {
                     break;
@@ -208,7 +222,9 @@ impl RadioGroup {
             if visible_width == 0 {
                 break;
             }
-            let text = if focused || self.hovered == Some(index) {
+            let text = if (focused && active && self.selected == Some(index))
+                || self.hovered == Some(index)
+            {
                 Text::new(visible).selected()
             } else {
                 Text::new(visible)
@@ -316,7 +332,15 @@ mod tests {
     #[test]
     fn narrow_unicode_radio_options_stay_inside_the_row() {
         let mut radio = RadioGroup::new(["日本語", "English"]);
-        radio.render_row(&mut RenderBuffer::default(), "Mode: ", 4, 2, 12, true);
+        radio.render_row(
+            &mut RenderBuffer::default(),
+            "Mode: ",
+            4,
+            2,
+            12,
+            true,
+            false,
+        );
         assert!(radio
             .last_option_rects
             .iter()
