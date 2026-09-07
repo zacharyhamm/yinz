@@ -253,14 +253,13 @@ impl ZellijPlugin for State {
         }
         set_selectable(true);
         rename_plugin_pane(self.plugin_id, self.pane_title());
-        self.resize(None);
     }
 
     fn update(&mut self, event: Event) -> bool {
         match event {
             Event::TabUpdate(tabs) => {
                 if let Some(tab) = tabs.first() {
-                    self.resize(Some((tab.display_area_columns).get()));
+                    self.resize((tab.display_area_columns).get());
                 }
                 false
             },
@@ -467,10 +466,8 @@ fn fork_note(pane: &AgentPane, kind: &str) -> String {
     }
 }
 
-fn modal_width(display_columns: Option<usize>) -> String {
-    display_columns
-        .map(|columns| columns.div_ceil(2).min(60).to_string())
-        .unwrap_or_else(|| "50%".to_owned())
+fn modal_width(display_columns: usize) -> String {
+    display_columns.div_ceil(2).min(60).to_string()
 }
 
 /// Rows of pane the dialog needs: its own rows plus the two the pane frame
@@ -481,7 +478,7 @@ fn modal_height(dialog: &Dialog) -> String {
 }
 
 impl State {
-    fn resize(&mut self, display_columns: Option<usize>) {
+    fn resize(&mut self, display_columns: usize) {
         let size = (modal_width(display_columns), modal_height(&self.dialog));
         if self.requested_size.as_ref() == Some(&size) {
             // nothing about the modal's size changed, so there is nothing to ask for. A
@@ -1117,8 +1114,31 @@ mod tests {
 
     #[test]
     fn modal_is_half_the_display_up_to_sixty_columns() {
-        assert_eq!(modal_width(Some(80)), "40");
-        assert_eq!(modal_width(Some(200)), "60");
+        assert_eq!(modal_width(80), "40");
+        assert_eq!(modal_width(200), "60");
+    }
+
+    #[test]
+    fn new_and_fork_wait_for_display_dimensions_before_requesting_geometry() {
+        for columns in [80, 200] {
+            for dialog in [State::default().dialog, fork_dialog()] {
+                let mut state = State {
+                    dialog,
+                    ..Default::default()
+                };
+                state.update(Event::TabUpdate(vec![]));
+                assert_eq!(state.requested_size, None);
+                let tab = TabInfo {
+                    display_area_columns: ColumnCount::new(columns),
+                    ..Default::default()
+                };
+                state.update(Event::TabUpdate(vec![tab.clone()]));
+                let expected = Some((modal_width(columns), modal_height(&state.dialog)));
+                assert_eq!(state.requested_size, expected);
+                state.update(Event::TabUpdate(vec![tab]));
+                assert_eq!(state.requested_size, expected);
+            }
+        }
     }
 
     #[test]
@@ -1328,7 +1348,7 @@ mod tests {
     fn the_help_line_fits_the_narrowest_modal() {
         // `modal_width` is half the display, so 80 columns is the narrowest
         // terminal worth drawing this in.
-        let narrowest: usize = modal_width(Some(80)).parse().unwrap();
+        let narrowest: usize = modal_width(80).parse().unwrap();
         let mut state = State::default();
         let mut lines = vec![];
         for id in [PROJECT, AGENT, MODEL, CREATE_BRANCH, BASE, "create"] {
@@ -1765,7 +1785,7 @@ mod tests {
 
     #[test]
     fn the_fork_help_line_fits_the_narrowest_modal() {
-        let narrowest: usize = modal_width(Some(80)).parse().unwrap();
+        let narrowest: usize = modal_width(80).parse().unwrap();
         let mut state = State {
             dialog: fork_dialog(),
             ..Default::default()

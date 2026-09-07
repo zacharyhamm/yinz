@@ -727,6 +727,11 @@ impl OverlayPanes {
             .map(|overlay| overlay.carry)
             .unwrap_or_default()
     }
+    pub fn finish_placement(&mut self, pane_id: PaneId) {
+        if let Some(overlay) = self.panes.get_mut(&pane_id) {
+            overlay.carry.awaiting_placement = false;
+        }
+    }
     pub fn len(&self) -> usize {
         self.panes.len()
     }

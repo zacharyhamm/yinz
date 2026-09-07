@@ -3496,19 +3496,15 @@ impl Tab {
         self.close_down_to_max_terminals()?;
         let new_pane =
             self.build_pane(pid, initial_pane_title, invoked_with, blocking_notification)?;
-        if start_suppressed {
-            return self.park_new_pane(new_pane);
-        }
         let awaiting_placement = run_awaits_placement(new_pane.invoked_with());
         self.add_overlay_pane(
             new_pane,
             pid,
             placement.kind,
             placement.coordinates.unwrap_or_default(),
-            // a newly opened overlay is on screen and nobody has dragged it yet; both are things
-            // that happen to it later. It may still be waiting to be placed, which is not the same
-            // as being hidden - see `OverlayCarry::awaiting_placement`.
+            // Hidden overlays still accept geometry before reveal.
             OverlayCarry {
+                hidden: start_suppressed,
                 awaiting_placement,
                 ..Default::default()
             },
@@ -5184,7 +5180,11 @@ impl Tab {
                 Some(AdjustedInput::PermissionRequestResult(permissions, status)) => {
                     if active_pane.query_should_be_suppressed() {
                         active_pane.set_should_be_suppressed(false);
-                        self.suppress_pane(PaneId::Plugin(pid), client_id);
+                        if self.pane_is_overlay(PaneId::Plugin(pid)) {
+                            self.hide_overlay_pane(PaneId::Plugin(pid));
+                        } else {
+                            self.suppress_pane(PaneId::Plugin(pid), client_id);
+                        }
                     }
                     self.request_plugin_permissions(pid, None);
                     self.senders
@@ -8323,6 +8323,10 @@ impl Tab {
         pid: PluginId,
         loading_indication: LoadingIndication,
     ) {
+        if loading_indication.is_error() {
+            // Failed initialization may never send geometry; show the diagnostic anyway.
+            self.overlay_panes.finish_placement(PaneId::Plugin(pid));
+        }
         if let Some(plugin_pane) = self
             .tiled_panes
             .get_pane_mut(PaneId::Plugin(pid))
@@ -9090,6 +9094,18 @@ impl Tab {
         pid: PluginId,
         permissions: Option<PluginPermission>,
     ) {
+        let pane_id = PaneId::Plugin(pid);
+        if permissions.is_some() {
+            // Permission is needed before a plugin can send its placement.
+            self.overlay_panes.finish_placement(pane_id);
+            if self.overlay_panes.is_hidden(&pane_id) {
+                if let Some(pane) = self.overlay_panes.get_pane_mut(pane_id) {
+                    pane.set_should_be_suppressed(true);
+                }
+                self.show_overlay_pane(pane_id);
+                self.overlay_panes.focus_pane_for_all_clients(pane_id);
+            }
+        }
         let mut should_focus_pane = false;
         if let Some(plugin_pane) = self
             .tiled_panes

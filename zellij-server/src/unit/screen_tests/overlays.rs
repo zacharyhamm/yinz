@@ -247,6 +247,361 @@ fn an_overlay_that_awaits_placement_is_not_painted_until_it_is_placed() {
     );
 }
 
+#[test]
+fn self_sizing_builtins_and_resolved_aliases_await_placement_without_new_configuration() {
+    for url in ["zellij:hocus-new-agent", "zellij:quit-confirmation"] {
+        let plugin = zellij_runtime::plugin_location::run_plugin_from_url(url).unwrap();
+        assert!(RunPluginOrAlias::RunPlugin(plugin.clone()).awaits_placement());
+        for name in [
+            "custom-binding",
+            "hocus-duplicate-agent",
+            "hocus-fork-agent",
+        ] {
+            assert!(RunPluginOrAlias::Alias(PluginAlias {
+                name: name.to_owned(),
+                run_plugin: Some(plugin.clone()),
+                ..Default::default()
+            })
+            .awaits_placement());
+        }
+    }
+    let mut ordinary =
+        zellij_runtime::plugin_location::run_plugin_from_url("zellij:about").unwrap();
+    ordinary.configuration.insert("modal", "true");
+    assert!(!RunPluginOrAlias::RunPlugin(ordinary.clone()).awaits_placement());
+    ordinary.configuration.insert("awaits_placement", "true");
+    assert!(RunPluginOrAlias::RunPlugin(ordinary).awaits_placement());
+}
+
+/// Drive the actual screen queue, with a render and a FIFO reply barrier between lifecycle
+/// steps. No plugin thread or debounce timing decides whether the intermediate frame is tested.
+#[test]
+fn self_sizing_modals_never_paint_the_default_outline() {
+    for columns in [80, 200] {
+        for early in [false, true] {
+            for url in ["zellij:hocus-new-agent", "zellij:quit-confirmation"] {
+                let size = Size {
+                    cols: columns,
+                    rows: 40,
+                };
+                let mut mock = MockScreen::new(size);
+                let server_rx = mock.server_receiver.take().unwrap();
+                let thread = mock.run(None, vec![]);
+                let pid = PluginId::new(9);
+                let pane_id = PaneId::Plugin(pid);
+                let to_screen = mock.to_screen.clone();
+                let mut grid = grid_for_render_snapshot(size);
+                let mut render_step = || {
+                    to_screen.send(ScreenInstruction::RenderToClients).unwrap();
+                    let (tx, rx) = crossbeam::channel::bounded(1);
+                    to_screen
+                        .send(ScreenInstruction::GetPaneInfo {
+                            pane_id,
+                            response_channel: tx,
+                        })
+                        .unwrap();
+                    let info = rx
+                        .recv_timeout(zellij_test_support::default_timeout())
+                        .unwrap();
+                    let frames: Vec<_> = server_rx
+                        .try_iter()
+                        .filter_map(|(event, _)| {
+                            if let ServerInstruction::Render(Some(clients)) = event {
+                                clients.get(&CLIENT_1).map(|bytes| {
+                                    take_snapshot_and_cursor_coordinates(bytes, &mut grid).1
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    (info, frames)
+                };
+                assert!(render_step().0.is_none());
+                let width = if url.ends_with("hocus-new-agent") {
+                    columns.div_ceil(2).min(60)
+                } else {
+                    columns * 40 / 100
+                };
+                let coordinates = FloatingPaneCoordinates {
+                    width: Some(PercentOrFixed::Fixed(width)),
+                    height: Some(PercentOrFixed::Fixed(8)),
+                    ..Default::default()
+                };
+                let place = || {
+                    // Two requests catch lost/reversed buffered coordinates.
+                    for height in [6, 8] {
+                        to_screen
+                            .send(ScreenInstruction::ChangeOverlayCoordinates(
+                                vec![(
+                                    pane_id,
+                                    FloatingPaneCoordinates {
+                                        height: Some(PercentOrFixed::Fixed(height)),
+                                        ..coordinates.clone()
+                                    },
+                                )],
+                                true,
+                                None,
+                            ))
+                            .unwrap();
+                    }
+                };
+                if early {
+                    place();
+                    let (info, frames) = render_step();
+                    assert!(info.is_none());
+                    assert!(frames.iter().all(|frame| !frame.contains("MODAL")));
+                }
+                let mut plugin = zellij_runtime::plugin_location::run_plugin_from_url(url).unwrap();
+                plugin.configuration.insert("modal", "true");
+                to_screen
+                    .send(ScreenInstruction::AddPlugin(
+                        Some(true),
+                        false,
+                        false,
+                        RunPluginOrAlias::RunPlugin(plugin),
+                        Some("MODAL".to_owned()),
+                        None,
+                        pid,
+                        None,
+                        None,
+                        false,
+                        None,
+                        Some(true),
+                        Some(CLIENT_1),
+                        None,
+                        None,
+                    ))
+                    .unwrap();
+                if !early {
+                    let (info, frames) = render_step();
+                    assert!(info.is_some(), "the modal exists before placement");
+                    assert!(!frames.is_empty(), "force a frame while awaiting geometry");
+                    assert!(
+                        frames.iter().all(|frame| !frame.contains("MODAL")),
+                        "{frames:?}"
+                    );
+                    place();
+                }
+                let (info, frames) = render_step();
+                let info = info.unwrap();
+                assert_eq!(info.pane_columns.get(), width);
+                assert_eq!(info.pane_rows.get(), 8);
+                assert!(
+                    frames.iter().any(|frame| frame.contains("MODAL")),
+                    "{frames:?}"
+                );
+                let final_border = format!("└{}┘", "─".repeat(width - 2));
+                for frame in frames.iter().filter(|frame| frame.contains("MODAL")) {
+                    assert!(frame.contains(&final_border), "{frame}");
+                }
+                mock.teardown(vec![thread]);
+            }
+        }
+    }
+}
+
+#[test]
+fn waiting_modals_recover_on_error_or_resize_and_ordinary_modals_open_immediately() {
+    use crate::ui::loading_indication::LoadingIndication;
+    for recovery in ["placed", "error", "resize", "ordinary"] {
+        let size = Size { cols: 80, rows: 24 };
+        let (mut screen, _, server_rx) =
+            create_new_screen_with_capture(size, false, false, true, true);
+        let (plugin_tx, _plugin_rx) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+        new_tab(&mut screen, 1, TabId::new(0));
+        let mut grid = grid_for_render_snapshot(size);
+        render_frame_into(&mut screen, &server_rx, CLIENT_1, &mut grid);
+        let url = if recovery == "ordinary" {
+            "zellij:about"
+        } else {
+            "zellij:hocus-new-agent"
+        };
+        let mut plugin = zellij_runtime::plugin_location::run_plugin_from_url(url).unwrap();
+        plugin.configuration.insert("modal", "true");
+        let run = RunPluginOrAlias::RunPlugin(plugin);
+        let pid = PluginId::new(9);
+        let pane_id = PaneId::Plugin(pid);
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .new_pane(
+                pane_id,
+                Some("MODAL".to_owned()),
+                Some(Run::Plugin(run.clone())),
+                false,
+                true,
+                NewPanePlacement::Overlay(OverlayPlacement::modal(None)),
+                Some(CLIENT_1),
+                None,
+            )
+            .unwrap();
+        let frame = render_frame_into(&mut screen, &server_rx, CLIENT_1, &mut grid);
+        assert_eq!(frame.contains("MODAL"), recovery == "ordinary", "{frame}");
+        match recovery {
+            "placed" => {
+                screen.change_overlay_coordinates(vec![(pane_id, popup_coordinates())], false);
+            },
+            "error" => {
+                let mut loading = LoadingIndication::new("modal".to_owned());
+                loading.indicate_loading_error("LOAD FAILED".to_owned());
+                super::super::replay_pending_plugin_events(
+                    &mut screen,
+                    vec![ScreenInstruction::UpdatePluginLoadingStage(pid, loading)],
+                )
+                .unwrap();
+            },
+            "resize" => screen
+                .resize_to_screen(Size { cols: 82, rows: 24 })
+                .unwrap(),
+            _ => {},
+        }
+        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        assert!(!tab.overlay_carry_for(pane_id).awaiting_placement);
+        // Reopening an existing modal must not restart the placement wait.
+        tab.hide_overlay_pane(pane_id);
+        assert!(screen
+            .focus_plugin_pane(&run, true, true, false, CLIENT_1, &mut None)
+            .unwrap());
+        assert!(
+            !screen.tabs[&TabId::new(0)]
+                .overlay_carry_for(pane_id)
+                .awaiting_placement
+        );
+        let frame = render_frame_into(&mut screen, &server_rx, CLIENT_1, &mut grid);
+        assert!(frame.contains("MODAL"), "{frame}");
+        if recovery == "error" {
+            assert!(frame.contains("LOAD FAILED"), "{frame}");
+        }
+        let placed_at = screen.tabs[&TabId::new(0)]
+            .get_pane_with_id(pane_id)
+            .unwrap()
+            .position_and_size();
+        new_tab(&mut screen, 2, TabId::new(1));
+        assert!(screen
+            .focus_plugin_pane(&run, true, true, false, CLIENT_1, &mut None)
+            .unwrap());
+        let moved_tab = &screen.tabs[&TabId::new(1)];
+        assert!(!moved_tab.overlay_carry_for(pane_id).awaiting_placement);
+        assert_eq!(
+            moved_tab
+                .get_pane_with_id(pane_id)
+                .unwrap()
+                .position_and_size(),
+            placed_at
+        );
+    }
+}
+
+#[test]
+fn initially_suppressed_modals_accept_geometry_before_or_after_reveal() {
+    for reveal_before_placement in [false, true] {
+        for move_to_another_tab in [false, true] {
+            let size = Size { cols: 80, rows: 24 };
+            let (mut screen, _, server_rx) =
+                create_new_screen_with_capture(size, false, false, true, true);
+            let (plugin_tx, _plugin_rx) = channels::unbounded();
+            screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+            new_tab(&mut screen, 1, TabId::new(0));
+            open_floating_pane(&mut screen, TabId::new(0), 2, "HIDDENFLOATING", false);
+            screen
+                .tabs
+                .get_mut(&TabId::new(0))
+                .unwrap()
+                .hide_floating_panes();
+            let mut grid = grid_for_render_snapshot(size);
+            render_frame_into(&mut screen, &server_rx, CLIENT_1, &mut grid);
+            let mut plugin =
+                zellij_runtime::plugin_location::run_plugin_from_url("zellij:hocus-new-agent")
+                    .unwrap();
+            plugin.configuration.insert("modal", "true");
+            let run = RunPluginOrAlias::RunPlugin(plugin);
+            let pane_id = PaneId::Plugin(PluginId::new(9));
+            screen
+                .tabs
+                .get_mut(&TabId::new(0))
+                .unwrap()
+                .new_pane(
+                    pane_id,
+                    Some("MODAL".to_owned()),
+                    Some(Run::Plugin(run.clone())),
+                    true,
+                    true,
+                    NewPanePlacement::Floating(None),
+                    Some(CLIENT_1),
+                    None,
+                )
+                .unwrap();
+            let info = screen.tabs[&TabId::new(0)].get_pane_info(pane_id).unwrap();
+            assert!(info.is_suppressed);
+            assert!(!info.is_focused);
+            assert_ne!(screen.active_pane_id(CLIENT_1), Some(pane_id));
+            let frame = render_frame_into(&mut screen, &server_rx, CLIENT_1, &mut grid);
+            assert!(!frame.contains("MODAL"), "{frame}");
+
+            if !reveal_before_placement {
+                screen.change_overlay_coordinates(vec![(pane_id, popup_coordinates())], false);
+                let tab = &screen.tabs[&TabId::new(0)];
+                let info = tab.get_pane_info(pane_id).unwrap();
+                assert!(info.is_suppressed);
+                assert_ne!(screen.active_pane_id(CLIENT_1), Some(pane_id));
+                assert!(!tab.overlay_carry_for(pane_id).awaiting_placement);
+                let frame = render_frame_into(&mut screen, &server_rx, CLIENT_1, &mut grid);
+                assert!(!frame.contains("MODAL"), "{frame}");
+            }
+            let destination = if move_to_another_tab {
+                new_tab(&mut screen, 3, TabId::new(1));
+                open_floating_pane(&mut screen, TabId::new(1), 4, "HIDDENFLOATING", false);
+                screen
+                    .tabs
+                    .get_mut(&TabId::new(1))
+                    .unwrap()
+                    .hide_floating_panes();
+                TabId::new(1)
+            } else {
+                TabId::new(0)
+            };
+            assert!(screen
+                .focus_plugin_pane(&run, true, true, false, CLIENT_1, &mut None)
+                .unwrap());
+            assert_eq!(screen.active_pane_id(CLIENT_1), Some(pane_id));
+            let tab = &screen.tabs[&destination];
+            let info = tab.get_pane_info(pane_id).unwrap();
+            assert!(!info.is_suppressed);
+            assert_eq!(
+                tab.overlay_carry_for(pane_id).awaiting_placement,
+                reveal_before_placement
+            );
+            if reveal_before_placement {
+                let frame = render_frame_into(&mut screen, &server_rx, CLIENT_1, &mut grid);
+                assert!(!frame.contains("MODAL"), "{frame}");
+                screen.change_overlay_coordinates(vec![(pane_id, popup_coordinates())], false);
+            }
+            // One sizing request, with no resize or second request to rescue the reveal.
+            let tab = &screen.tabs[&destination];
+            let geom = tab.get_pane_with_id(pane_id).unwrap().position_and_size();
+            assert_eq!(
+                (geom.x, geom.y, geom.cols.as_usize(), geom.rows.as_usize()),
+                (2, 2, 48, 4)
+            );
+            assert!(!tab.overlay_carry_for(pane_id).awaiting_placement);
+            assert!(screen
+                .tabs
+                .values()
+                .all(|tab| !tab.are_floating_panes_visible()));
+            if move_to_another_tab {
+                assert!(screen.tabs[&TabId::new(0)].get_pane_info(pane_id).is_none());
+            }
+            let frame = render_frame_into(&mut screen, &server_rx, CLIENT_1, &mut grid);
+            assert!(frame.contains("MODAL"), "{frame}");
+            assert!(frame.contains(&format!("└{}┘", "─".repeat(46))), "{frame}");
+            assert!(!frame.contains("HIDDENFLOATING"), "{frame}");
+        }
+    }
+}
+
 /// Put a *plugin* overlay in `tab_id`, returning what `focus_plugin_pane` has to be asked for to
 /// find it again and the pane's id.
 ///
@@ -4320,6 +4675,34 @@ fn a_moved_and_resized_overlay_keeps_its_geometry_across_a_tab_move() {
     );
 }
 
+#[test]
+fn replayed_overlay_geometry_preserves_the_user_placement_override() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, TabId::new(0));
+    open_overlay_with(&mut screen, 3, overlay_coordinates());
+    drag_overlay_by(&mut screen, 3, 20, 4);
+    let dropped_at = floating_geom(&screen, 3);
+    for override_user_placement in [false, true] {
+        super::super::replay_pending_plugin_events(
+            &mut screen,
+            vec![ScreenInstruction::ChangeOverlayCoordinates(
+                vec![(PaneId::Terminal(TERMINAL_3), overlay_coordinates())],
+                override_user_placement,
+                None,
+            )],
+        )
+        .unwrap();
+        let placed_at = floating_geom(&screen, 3);
+        let expected = if override_user_placement {
+            (2, 2)
+        } else {
+            (dropped_at.x, dropped_at.y)
+        };
+        assert_eq!((placed_at.x, placed_at.y), expected);
+    }
+}
+
 /// A plugin relaying a move key outranks a drag, but not the independent size the user chose.
 #[test]
 fn a_dragged_and_resized_overlay_is_moved_without_being_resized() {
@@ -4522,6 +4905,124 @@ fn suppressing_an_overlay_hides_it_in_place() {
         ),
         "and it comes back exactly where it was"
     );
+}
+
+#[test]
+fn overlay_permission_prompts_restore_visibility_and_preserve_placement() {
+    use zellij_types::data::{PermissionStatus, PermissionType, PluginPermission};
+
+    for kind in [OverlayKind::Dismissible, OverlayKind::Modal] {
+        for hidden in [false, true] {
+            for awaiting_placement in [false, true] {
+                let size = Size {
+                    cols: 100,
+                    rows: 30,
+                };
+                let mut screen = create_non_mirrored_screen(size);
+                let (plugin_tx, plugin_rx) = channels::unbounded();
+                let plugin_sender = SenderWithContext::new(plugin_tx);
+                screen.bus.senders.to_plugin = Some(plugin_sender.clone());
+                new_tab(&mut screen, 1, TabId::new(0));
+                let pid = PluginId::new(9);
+                let pane_id = PaneId::Plugin(pid);
+                let pane = PaneFactory::plugin(
+                    pid,
+                    Default::default(),
+                    plugin_sender,
+                    "overlay".to_owned(),
+                    "overlay".to_owned(),
+                    screen.sixel_image_store.clone(),
+                    screen.kitty_image_store.clone(),
+                    screen.terminal_emulator_colors.clone(),
+                    screen.terminal_emulator_color_codes.clone(),
+                    Rc::new(RefCell::new(LinkHandler::new())),
+                    screen.character_cell_size.clone(),
+                    screen.connected_clients.borrow().iter().copied().collect(),
+                    screen.style,
+                    None,
+                    screen.debug,
+                    screen.arrow_fonts,
+                    screen.styled_underlines,
+                );
+                let coordinates = FloatingPaneCoordinates {
+                    height: Some(PercentOrFixed::Fixed(12)),
+                    ..overlay_coordinates()
+                };
+                let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+                tab.add_overlay_pane(
+                    pane,
+                    pane_id,
+                    kind,
+                    coordinates,
+                    OverlayCarry {
+                        hidden,
+                        awaiting_placement,
+                        ..Default::default()
+                    },
+                    true,
+                    Some(CLIENT_1),
+                )
+                .unwrap();
+                let placement = tab.overlay_placement_for(pane_id).unwrap();
+                let geometry = tab.get_pane_with_id(pane_id).unwrap().position_and_size();
+                let permissions = vec![PermissionType::ReadApplicationState];
+                // Each answer starts a new request on the same pane; duplicate requests must
+                // also retain the original hidden-state marker.
+                for (key, expected) in [
+                    ('y', PermissionStatus::Granted),
+                    ('n', PermissionStatus::Denied),
+                ] {
+                    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+                    for _ in 0..2 {
+                        tab.request_plugin_permissions(
+                            pid,
+                            Some(PluginPermission::new(
+                                "overlay".to_owned(),
+                                permissions.clone(),
+                            )),
+                        );
+                    }
+                    assert!(!tab.overlay_carry_for(pane_id).hidden);
+                    assert!(!tab.overlay_carry_for(pane_id).awaiting_placement);
+                    assert_eq!(tab.get_active_pane_id(CLIENT_1), Some(pane_id));
+                    let frame = rendered_frame(&mut screen, size);
+                    assert!(frame.contains("Allow?"), "prompt must render: {frame}");
+
+                    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+                    tab.write_to_active_terminal(&None, vec![key as u8], false, CLIENT_1)
+                        .unwrap();
+                    assert!(plugin_rx.try_iter().any(|(instruction, _)| matches!(
+                        instruction,
+                        PluginInstruction::PermissionRequestResult(id, Some(client), requested, status, None)
+                            if id == pid && client == CLIENT_1 && requested == permissions && status == expected
+                    )), "the focused prompt must receive the answer");
+                    assert!(tab.pane_is_overlay(pane_id));
+                    assert_eq!(tab.overlay_carry_for(pane_id).hidden, hidden);
+                    assert_eq!(tab.overlay_placement_for(pane_id).unwrap(), placement);
+                    let pane = tab.get_pane_with_id(pane_id).unwrap();
+                    assert_eq!(pane.position_and_size(), geometry);
+                    assert!(!pane.query_should_be_suppressed());
+                    if hidden {
+                        assert_ne!(tab.get_active_pane_id(CLIENT_1), Some(pane_id));
+                    }
+                    // Reveal once to check the prompt was cleared even when its pane was hidden.
+                    tab.show_overlay_pane(pane_id);
+                    let frame = rendered_frame(&mut screen, size);
+                    assert!(
+                        !frame.contains("Allow?"),
+                        "answered prompt must clear: {frame}"
+                    );
+                    if hidden {
+                        screen
+                            .tabs
+                            .get_mut(&TabId::new(0))
+                            .unwrap()
+                            .hide_overlay_pane(pane_id);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A hidden overlay is re-resolved while hidden, so it comes back sized for the screen as it is

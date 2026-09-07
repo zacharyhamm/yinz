@@ -106,15 +106,19 @@ impl RunPluginOrAlias {
     /// the panel appears where it belongs. Opting in here says "do not paint me until somebody has
     /// placed me"; the first `change_overlay_coordinates` naming the pane is what releases it.
     ///
-    /// Opt-in rather than the rule for every coordinate-less overlay, because most of them have no
-    /// owner to place them: `hocus-new-agent` and the quit confirmation are put where they go by
-    /// the server and would simply never appear.
+    /// The self-sizing agent dialogs and quit confirmation opt in automatically, including
+    /// resolved aliases. Other plugins opt in with `awaits_placement true`; overlays that do
+    /// not place themselves can still appear immediately.
     ///
     /// **The key is part of plugin identity**, as `overlay` is - a plugin is (location,
     /// configuration) - so a keybinding that writes it and a plugin-side launch that does not
     /// address two different instances. See `hocus_proto::launch::overlay_configuration`.
     pub fn awaits_placement(&self) -> bool {
         self.configuration_value_is_true("awaits_placement")
+            || self.get_run_plugin().is_some_and(|plugin| {
+                matches!(plugin.location, RunPluginLocation::Zellij(tag)
+                    if matches!(tag.to_string().as_str(), "hocus-new-agent" | "quit-confirmation"))
+            })
     }
     pub fn requests_overlay(&self) -> bool {
         self.overlay_placement().is_some()
