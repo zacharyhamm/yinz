@@ -410,6 +410,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 name,
                 context,
                 automatic_firecracker_vm,
+                start_suppressed,
             } => spawn_agent(
                 env,
                 spec,
@@ -418,6 +419,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 name,
                 context,
                 automatic_firecracker_vm,
+                start_suppressed,
             ),
             PluginCommand::SetQuitNotice { notice, guard } => set_quit_notice(env, notice, guard),
             PluginCommand::ReloadPluginByUrl(url) => reload_plugin_by_url(env, url)?,
@@ -2623,7 +2625,7 @@ fn open_command_pane_near_plugin(
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) {
-    let pane_id = spawn_command_pane_near_plugin(env, command_to_run, context, None, false);
+    let pane_id = spawn_command_pane_near_plugin(env, command_to_run, context, None, false, false);
     let response = ProtobufOpenCommandPaneNearPluginResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_near_plugin response".to_string())
@@ -2636,6 +2638,7 @@ fn spawn_command_pane_near_plugin(
     context: BTreeMap<String, String>,
     name: Option<String>,
     cwd_already_resolved: bool,
+    start_suppressed: bool,
 ) -> OpenCommandPaneNearPluginResponse {
     let preserve_cwd = cwd_already_resolved && !command_to_run.target.is_remote();
     let resolved_cwd = preserve_cwd.then(|| command_to_run.cwd.take());
@@ -2655,7 +2658,7 @@ fn spawn_command_pane_near_plugin(
             direction: None,
             borderless: None,
         },
-        false,
+        start_suppressed,
         ClientTabIndexOrPaneId::PaneIdOrClient(PaneId::Plugin(env.plugin_id), env.client_id),
         Some(NotificationEnd::new(completion_tx)),
         false, // set_blocking
@@ -2687,6 +2690,7 @@ fn open_command_pane_in_git_checkout_near_plugin(
                 BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), kind)]),
                 None,
                 true,
+                false,
             )
             .ok_or_else(|| "Zellij did not open the agent pane".to_owned())
         });
@@ -2707,6 +2711,7 @@ fn spawn_agent(
     name: Option<String>,
     mut context: BTreeMap<String, String>,
     automatic_firecracker_vm: bool,
+    start_suppressed: bool,
 ) {
     let result: SpawnAgentResponse = (|| {
         if let Some(owner) = context.get("swamp_owner") {
@@ -2791,7 +2796,7 @@ fn spawn_agent(
             checkout_made,
         )?;
         context.insert(HOCUS_AGENT_PANE_CONTEXT.to_owned(), kind);
-        spawn_command_pane_near_plugin(env, command, context, name, true)
+        spawn_command_pane_near_plugin(env, command, context, name, true, start_suppressed)
             .map(|pane_id| SpawnedAgent {
                 pane_id,
                 branch,

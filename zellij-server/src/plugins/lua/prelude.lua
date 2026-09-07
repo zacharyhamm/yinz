@@ -1342,6 +1342,7 @@ function zellij.agent.spawn_details(opts)
     name = opts.name,
     context = opts.context or {},
     automatic_firecracker_vm = opts.automatic_firecracker_vm or false,
+    start_suppressed = opts.start_suppressed or false,
   })
 end
 

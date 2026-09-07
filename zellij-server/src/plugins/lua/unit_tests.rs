@@ -1893,6 +1893,7 @@ fn spawn_agent_is_built_from_a_nested_spec_table() {
             name,
             context,
             automatic_firecracker_vm,
+            start_suppressed,
         }) => {
             assert_eq!(
                 spec,
@@ -1904,6 +1905,7 @@ fn spawn_agent_is_built_from_a_nested_spec_table() {
                     ..Default::default()
                 }
             );
+            assert!(!start_suppressed);
             assert_eq!(source_directory, Some(PathBuf::from("/host")));
             assert_eq!(cwd, None);
             assert_eq!(name, Some("fixer".to_owned()));
@@ -6882,7 +6884,13 @@ end
 z.task=function(f) f() end
 z.await=function(value) return value end
 z.request_render=function() end
-z.message_to_plugin=function() end
+z.message_to_plugin=function() error('must not open a floating view') end
+z.every=function() end
+z.get_plugin_ids=function() return {plugin_id=1} end
+z.get_pane_info=function() return {is_suppressed=false} end
+local view=require('zellij.workflow_view')
+local refresh=view.refresh
+view.refresh=function() end
 local expected_vm='original-vm'
 z.rpc.call=function(request)
   assert(request.payload.directory=='/work/topic')
@@ -6892,9 +6900,35 @@ z.rpc.call=function(request)
 end
 M.load{agent_pane_id='7',agent_cwd='/guest',agent_firecracker_worktree='/work/topic',agent_firecracker_vm=expected_vm,agent_exit_token='exit-token'}
 assert(not M.busy)
+M.update{name='key',key='Enter'}
+M.update{name='key',key='Delete'}
+assert(rerun==1 and closed==0,'active workflow disables restart and destructive close')
+view.active=false
+M.update{name='key',key='Enter'}
+assert(rerun==2,'completed workflow permits restarting the original agent')
 expected_vm=''
 M.load{agent_pane_id='7',agent_cwd='/work/topic',agent_exit_token='exit-token'}
 assert(not M.busy)
+-- Synthetic failures stay attached by launch token across refreshes.
+view.refresh=refresh
+local unresolved=true
+z.rpc.call=function(request)
+  assert(request.payload.launch=='exit-token' and not request.payload.run)
+  return {result={launch='exit-token',history={status='failed'},active=unresolved,logs='Exit status: 1'}}
+end
+for i=1,2 do
+  view.refresh()
+  assert(not view.attachment.run and view.active and not view.busy)
+  M.update{name='key',key='Enter'}
+  M.update{name='key',key='Delete'}
+  assert(rerun==2 and closed==0)
+end
+unresolved=false
+view.refresh()
+assert(not view.active and not view.attachment.run)
+M.update{name='key',key='Enter'}
+M.update{name='key',key='Delete'}
+assert(rerun==3 and closed==1)
 "#,
         )
         .exec()
@@ -6910,6 +6944,14 @@ fn swamp_bridge_claims_ownership_before_dispatch_and_never_infers_completion_fro
         .globals()
         .set("M", plugin.plugin.clone())
         .unwrap();
+    plugin
+        .lua
+        .globals()
+        .set(
+            "reload_bridge",
+            plugin.lua.load(source).into_function().unwrap(),
+        )
+        .unwrap();
     plugin.lua.load(r#"
 local z=require('zellij')
 local rows, owners, panes, supervisors={}, {}, {}, {}
@@ -6919,7 +6961,21 @@ z.get_plugin_ids=function() return {host_id='host'} end
 z.subscribe=function() end
 z.data.define=function() end
 z.data.eq=function(_,uid) return uid end
-z.data.fetch=function(q) return rows[q.filter] and {rows[q.filter]} or {} end
+local scan_pages=0
+z.data.fetch=function(q)
+  if q.filter then return rows[q.filter] and {rows[q.filter]} or {}, {} end
+  local ids={}
+  for uid in pairs(rows) do ids[#ids+1]=uid end
+  table.sort(ids)
+  local page,first={},(q.after_id or 0)+1
+  local last=math.min(first+2,#ids) -- small pages exercise the same cursor contract
+  for i=first,last do
+    local row=rows[ids[i]]
+    page[#page+1]={uid=ids[i],value=row.value,rev=row.rev}
+  end
+  scan_pages=scan_pages+1
+  return page,{next_cursor=last<#ids and last or z.null}
+end
 z.data.put=function(_,v,uid,rev) return {uid=uid,value=v.value,rev=rev} end
 z.data.apply=function(changes)
   if changes.uid then changes={changes} end
@@ -6953,9 +7009,9 @@ z.agent.send=function(pane,prompt)
   if prompt=='fast' then event(pane.Terminal,'UserPromptSubmit',prompt);event(pane.Terminal,'Stop') end
 end
 M.load{}
-local function call(a)
+local function call(a,from)
   local answer,err
-  z.task(function() local ok,r=pcall(handler,a,{source={Plugin=1}}); if ok then answer=r else err=r end end)
+  z.task(function() local ok,r=pcall(handler,a,{source={Plugin=from or 1}}); if ok then answer=r else err=r end end)
   return answer,err
 end
 local function spawn(work)
@@ -7046,7 +7102,7 @@ z.async.run_command=function(opts)
   local a,r=z.async.future();r{exit_code=exit_code,stdout=stdout,stderr=stderr};return a
 end
 local expected_checkout=source_root
-z.open_command_pane=function(opts)
+z.open_command_pane_background=function(opts)
   command_panes=command_panes+1
   local command=opts[1]
   assert(command.path=='swamp' and command.cwd=='/control')
@@ -7086,7 +7142,9 @@ for i,output in ipairs{{'{"error":"extension unavailable"}',''}, {'','validation
   assert(message:find('Directory: /control\nExit status: 1',1,true))
   assert(message:find('stdout:\n'..output[1]..'\nstderr:\n'..output[2],1,true))
   assert(command_panes==2 and resolved==2 and commands==1)
-  assert(call(request).outcome=='unknown' and commands==1) -- keep the claim; never retry dispatch
+  assert(call(request).outcome=='failed' and commands==1) -- keep the claim; never retry dispatch
+  local failure=assert(call{method='workflow_show',launch=request.work,directory='/invalid'})
+  assert(failure.history.status=='failed' and failure.logs:find('Host command failed',1,true))
 end
 -- Recover a Swamp run launched before its attachment step was delivered.
 local launch_uid=z.json.encode({'host','session','recovery','launch'})
@@ -7098,6 +7156,204 @@ end
 assert(call{method='reconcile',work='recovery',key='reconcile',operation='launch'}.outcome=='unknown')
 assert(rows[z.json.encode({'host','session','recovered-run','attachment'})])
 assert(spawned==3) -- reconciliation never launches a replacement
+-- Attach a hook before dispatch. Only this pane may own the launch token.
+local visible={Plugin=1}
+local view_exists=true
+local replacements=0
+z.get_pane_info=function(pane)
+  if pane.Plugin==3 then return {plugin_url='zellij:swamp-workflow'} end
+  if pane.Plugin then
+    assert(view_exists,'view closed')
+    return {plugin_url='zellij:agent-exit',is_suppressed=not visible.Plugin}
+  end
+  assert(panes[pane.Terminal],'pane absent')
+  return {target='Local',is_suppressed=visible.Terminal~=pane.Terminal}
+end
+z.replace_pane_with_existing_pane=function(args)
+  assert(z.json.encode(args[1])==z.json.encode(visible))
+  assert(args[3]==true,'keep the replaced agent/view')
+  visible=args[2];replacements=replacements+1
+end
+z.project_config.read=function() return {root='/control',config={workflow='configured'}} end
+z.async.run_command=function(opts)
+  local stdout=''
+  if opts.command[2]=='pty-host' then
+    local hosts={}
+    for pane in pairs(panes) do hosts[#hosts+1]={terminal_id=pane,attached=true,session_name='session',host_id='supervisor-'..pane,child_pid=100+pane} end
+    stdout=z.json.encode(hosts)
+  end
+  local a,r=z.async.future();r{exit_code=0,stdout=stdout,stderr=''};return a
+end
+z.open_command_pane_background=function(opts)
+  owners[30]=opts[2].swamp_owner
+  command_panes=command_panes+1;panes[30]=true;return {Terminal=30}
+end
+local attached=launch('attached','/source')
+assert(call(attached))
+local before_commands=command_panes
+assert(call(launch('attached','/source')) and command_panes==before_commands)
+local _,wrong_view
+z.task(function() local ok,r=pcall(handler,launch('attached','/source'),{source={Plugin=2}});if not ok then wrong_view=r end end)
+assert(tostring(wrong_view):find('another hook instance'))
+z.agent.spawn_details=function(opts)
+  assert(opts.start_suppressed,'attached agents must never open a split')
+  next_pane=next_pane+1;panes[next_pane]=true;owners[next_pane]=opts.context.swamp_owner
+  return {pane_id={Terminal=next_pane}}
+end
+local first=assert(call{method='agent_spawn',work='attached',key='first',spec={kind='codex'}}).pane
+local second=assert(call{method='agent_spawn',work='attached',key='second',spec={kind='codex'}}).pane
+local function turn(agent,id)
+  return {method='agent_prompt',work='attached',key=id,agent=agent,prompt=id}
+end
+event(first,'SessionStart');event(second,'SessionStart')
+assert(call(turn('first','turn1')).outcome=='pending')
+assert(visible.Terminal==first and replacements==1)
+assert(call(turn('second','turn2')).outcome=='pending')
+assert(visible.Terminal==first and replacements==1,'concurrent agent stays suppressed')
+event(first,'Stop',nil,nil,'t1','session')
+assert(visible.Terminal==first,'unaccepted completion must not switch')
+event(first,'UserPromptSubmit','turn1',nil,'t1','session')
+event(first,'Stop',nil,nil,'wrong','session')
+assert(visible.Terminal==first)
+event(first,'Stop',nil,nil,'t1','session')
+assert(visible.Terminal==second and replacements==2)
+event(second,'UserPromptSubmit','turn2',nil,'t2','session')
+event(second,'StopFailure',nil,nil,'t2','session')
+assert(visible.Plugin==1 and replacements==3)
+assert(call(turn('first','reuse')).outcome=='pending')
+assert(visible.Terminal==first and replacements==4,'reuse the retained pane')
+z.__update(M,{CommandPaneExited={first,1,{swamp_owner=owners[first],swamp_operation='first'}}})
+assert(visible.Plugin==1 and replacements==5,'process failure restores status')
+-- The history can finish before an uncertain prompt. Presentation is not activity.
+local host_command=z.async.run_command
+local reported=false
+z.async.run_command=function(opts)
+  if opts.command[2]=='pty-host' then return host_command(opts) end
+  local output={results={}}
+  if opts.command[3]=='history' and opts.command[4]=='search' and reported then
+    output={results={{runId='attached-run',workflowName='configured',inputs={session='session',launch='attached'}}}}
+  elseif opts.command[3]=='history' and opts.command[4]=='get' then
+    assert(opts.command[5]=='attached-run' or opts.command[5]=='zz-child','never query history with a launch token')
+    output={id='attached-run',workflowName='configured',status='completed',inputs={session='session',launch='attached'}}
+  end
+  local a,r=z.async.future();r{exit_code=0,stdout=z.json.encode(output),stderr=''};return a
+end
+local function show() return call({method='workflow_show',launch='attached',directory='/control'},3) end
+for _,outcome in ipairs{'pending','unknown'} do
+  local uid=z.json.encode({'host','session','attached','swamp-process'})
+  local runner=z.json.decode(rows[uid].value);runner.outcome=outcome;rows[uid].value=z.json.encode(runner)
+  assert(select(2,show()):find('no reported run'))
+  assert(call(launch('attached','/source')) and command_panes==before_commands)
+end
+z.get_pane_scrollback=function() return {lines_above_viewport={},viewport={'runner diagnostics'},lines_below_viewport={}} end
+for _,code in ipairs{1,0} do
+  local uid=z.json.encode({'host','session','attached','swamp-process'})
+  local runner=z.json.decode(rows[uid].value);runner.outcome='pending';rows[uid].value=z.json.encode(runner)
+  z.__update(M,{CommandPaneExited={30,code,{swamp_owner=owners[30],swamp_operation='swamp-process'}}})
+  for i=1,2 do
+    local snapshot=assert(show())
+    assert(snapshot.history.status=='failed' and snapshot.launch=='attached' and not snapshot.run and not snapshot.active)
+    assert(snapshot.logs:find('Exit status: '..code,1,true) and snapshot.logs:find('runner diagnostics',1,true))
+    assert(call(launch('attached','/source')) and command_panes==before_commands)
+  end
+end
+z.get_pane_scrollback=function() error('scrollback unavailable') end
+assert(show().logs:find('Log unavailable:',1,true))
+z.agent.send=function(pane,prompt)
+  event(pane.Terminal,'UserPromptSubmit',prompt,nil,prompt,'session')
+  error('uncertain send')
+end
+assert(select(2,call(turn('second','uncertain'))))
+assert(visible.Plugin==1,'unknown prompt leaves the presentation queue')
+assert(show().active,'runner exit does not clear an uncertain prompt')
+reported=true
+assert(show().active,'completed history does not clear an uncertain prompt')
+event(second,'Notification',nil,nil,'uncertain','session')
+event(second,'Stop',nil,nil,'wrong','session')
+event(second,'Stop',nil,nil,'uncertain','wrong-session')
+assert(show().active,'idle and mismatched completion leave the guard in place')
+event(second,'Stop',nil,nil,'uncertain','session')
+assert(not show().active,'verified completion clears the guard')
+view_exists=false
+z.agent.send=function() end
+assert(call(turn('second','detached'),3).outcome=='pending')
+assert(replacements==7,'closing the view must not open a replacement')
+assert(call({method='agent_spawn',work='attached',key='after-detach',spec={kind='codex'}},3))
+assert(call(launch('attached','/source'),3) and command_panes==before_commands)
+assert(replacements==7,'detached launches and new agents remain suppressed')
+assert(show().active,'detached prompt still guards the completed workflow')
+event(second,'UserPromptSubmit','detached',nil,'detached','session')
+event(second,'Stop',nil,nil,'detached','session')
+assert(not show().active)
+-- Register another prompt after the placement is already detached.
+z.agent.send=function() error('uncertain detached send') end
+assert(select(2,call(turn('second','detached-unknown'),3)))
+assert(show().active)
+z.__update(M,{CommandPaneExited={second,1,{swamp_owner=owners[second],swamp_operation='second'}}})
+assert(not show().active,'process exit clears the detached unknown prompt')
+-- Reload the module with retained rows and fresh event handlers/placement state.
+view_exists=true
+local handlers={}
+z.on=function(name,handler) handlers[name]=handler end
+M=reload_bridge()
+z.instance_id='fresh-bridge'
+M.load{}
+z.__update=function(_,event)
+  if event.AgentEvent then handlers.agent_event(event.AgentEvent)
+  else
+    local e=event.CommandPaneExited
+    handlers.command_pane_exited{pane_id=e[1],exit_code=e[2],context=e[3]}
+  end
+end
+assert(not show().active,'the copied pending workflow_run record is not activity')
+-- Scope comes from the durable key, including claims without an owner yet.
+local function retained(host,session,work,key,method,outcome)
+  local uid=z.json.encode{host,session,work,key}
+  rows[uid]={rev=1,value=z.json.encode{request=z.json.encode{method=method},outcome=outcome}}
+  return uid
+end
+for _,method in ipairs{'command','agent_prompt'} do
+  retained('other-host','session','attached',method,method,'pending')
+  retained('host','other-session','attached',method,method,'unknown')
+  retained('host','session','other-launch',method,method,'pending')
+end
+assert(not show().active,'other hosts, sessions and launches cannot hold the guard')
+-- A durable child attachment is sufficient even when history search omits it.
+assert(call{method='workflow_attach',work='attached',key='attachment',run='zz-child',workflow='child',directory='/control'})
+for _,method in ipairs{'command','agent_prompt'} do
+  for _,outcome in ipairs{'pending','unknown'} do
+    local uid=retained('host','session','zz-child','command',method,outcome)
+    scan_pages=0
+    assert(show().active and scan_pages>1,'unresolved run-scoped operations beyond page one survive reload')
+    rows[uid]=nil
+  end
+end
+-- Real dispatches made before another reload keep their verified completion path.
+z.agent.send=function() end
+for _,outcome in ipairs{'pending','unknown'} do
+  local prompt_key='reload-'..outcome
+  assert(call(turn('after-detach',prompt_key),3))
+  local agent=call{method='lookup',work='attached',key='after-detach'}
+  event(agent.pane,'UserPromptSubmit',prompt_key,nil,prompt_key,'session')
+  local uid=z.json.encode{'host','session','attached',prompt_key}
+  local operation=z.json.decode(rows[uid].value);operation.outcome=outcome
+  rows[uid].value=z.json.encode(operation)
+  M=reload_bridge();M.load{}
+  assert(show().active,'prompt survives a fresh bridge')
+  event(agent.pane,'Stop',nil,nil,prompt_key,'session')
+  assert(not show().active,'verified prompt completion clears activity after reload')
+  for _,work in ipairs{'attached','zz-child'} do
+    local command_key=prompt_key..'-command'
+    local command=assert(call({method='command',work=work,key=command_key,argv={'true'},cwd='/control'},3))
+    local uid=z.json.encode{'host','session',work,command_key}
+    command.outcome=outcome;rows[uid].value=z.json.encode(command)
+    M=reload_bridge();M.load{}
+    assert(show().active,'command survives a fresh bridge')
+    z.__update(M,{CommandPaneExited={30,0,{swamp_owner=owners[30],swamp_operation=command_key}}})
+    assert(not show().active,'verified command completion clears activity after reload')
+  end
+end
+assert(replacements==7,'reload never recovers placement')
 -- A caller cannot proxy an unprivileged plugin through the builtin bridge.
 z.get_pane_info=function() return {plugin_url='file:untrusted.lua'} end
 assert(select(2,call{method='identity'}))

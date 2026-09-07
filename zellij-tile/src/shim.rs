@@ -808,6 +808,7 @@ pub fn spawn_agent(
     name: Option<String>,
     context: BTreeMap<String, String>,
     automatic_firecracker_vm: bool,
+    start_suppressed: bool,
 ) -> Result<SpawnedAgent, String> {
     let plugin_command = PluginCommand::SpawnAgent {
         spec,
@@ -816,6 +817,7 @@ pub fn spawn_agent(
         name,
         context,
         automatic_firecracker_vm,
+        start_suppressed,
     };
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());

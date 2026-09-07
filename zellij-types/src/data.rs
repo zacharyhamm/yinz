@@ -3149,6 +3149,9 @@ pub enum PluginCommand {
         context: BTreeMap<String, String>,
         #[serde(default)]
         automatic_firecracker_vm: bool,
+        /// Start parked, without opening a split or selecting an agent tab.
+        #[serde(default)]
+        start_suppressed: bool,
     },
     /// What this plugin wants said, and decided, when the session is about to end.
     ///

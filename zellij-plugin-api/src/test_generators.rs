@@ -1624,6 +1624,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             name: optional_strings(tc),
             context: context(tc),
             automatic_firecracker_vm: booleans(tc),
+            start_suppressed: booleans(tc),
         },
         CommandType::SetQuitNotice => PluginCommand::SetQuitNotice {
             notice: optional_strings(tc),

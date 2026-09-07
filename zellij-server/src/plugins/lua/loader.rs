@@ -190,7 +190,7 @@ pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result
     install_text_width(&lua, &zellij)?;
     super::ui::install(&lua, &zellij).map_err(|e| anyhow!("failed to install shared UI: {}", e))?;
 
-    // `require("zellij")` is the module itself; anything else is a file next to the plugin.
+    // `zellij` and the shared workflow view are embedded modules; other names are sibling files.
     let require = {
         let zellij = zellij.clone();
         let plugin_dir = env
@@ -209,6 +209,21 @@ pub fn load_lua_plugin(source: &str, chunk_name: &str, env: PluginEnv) -> Result
         lua.create_function(move |lua, name: String| {
             if name == "zellij" {
                 return Ok(LuaValue::Table(zellij.clone()));
+            }
+            if name == "zellij.workflow_view" {
+                let cached: LuaValue = loaded.get(name.as_str())?;
+                if cached != LuaValue::Nil {
+                    return Ok(cached);
+                }
+                let module: LuaValue = lua
+                    .load(
+                        zellij_config::consts::builtin_lua_plugin("swamp-workflow")
+                            .ok_or_else(|| mlua::Error::runtime("missing workflow view"))?,
+                    )
+                    .set_name("zellij:swamp-workflow")
+                    .eval()?;
+                loaded.set(name.as_str(), module.clone())?;
+                return Ok(module);
             }
             require_sibling(lua, plugin_dir.as_deref(), &loaded, &loading, &name)
         })

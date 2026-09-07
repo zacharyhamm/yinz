@@ -3080,7 +3080,9 @@ impl Screen {
         let originating_plugin = run_command.originating_plugin.as_ref();
         // The command-exit event carries ownership to the bridge. Managed helpers never
         // recursively start an exit workflow or replace their preserved command pane.
-        if run_command.workflow_owner().is_some() {
+        if run_command.workflow_owner().is_some()
+            || originating_plugin.is_some_and(|p| p.context.contains_key("agent_workflow_owner"))
+        {
             return;
         }
         let context_says_agent = originating_plugin
