@@ -22,7 +22,8 @@ fn screen_with_a_settled_toast(
 ) -> (Screen, Receiver<(BackgroundJob, ErrorContext)>) {
     let (mut screen, background_jobs) = screen_with_background_jobs(size);
     new_tab(&mut screen, 1, TabId::new(0));
-    let mut notification = Notification::new(NotificationId::new(0), TEXT.to_owned(), None, now);
+    let mut notification =
+        Notification::new(NotificationId::new(0), TEXT.to_owned(), None, None, now);
     notification.reveal = Tween::settled(1.0);
     notification.y_offset = Tween::settled(0.0);
     screen.notifications.push(notification);
@@ -150,6 +151,7 @@ fn a_plugin_load_cannot_slow_the_clock_under_a_moving_toast() {
     screen.notifications.push(Notification::new(
         NotificationId::new(0),
         TEXT.to_owned(),
+        None,
         None,
         start,
     ));

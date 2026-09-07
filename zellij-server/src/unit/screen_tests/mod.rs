@@ -2156,11 +2156,21 @@ fn notification_history_keeps_dismissed_toasts() {
     let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
     mock_screen
         .to_screen
-        .send(ScreenInstruction::Notify("first".to_owned(), None, None))
+        .send(ScreenInstruction::Notify(
+            "first".to_owned(),
+            None,
+            None,
+            None,
+        ))
         .unwrap();
     mock_screen
         .to_screen
-        .send(ScreenInstruction::Notify("second".to_owned(), None, None))
+        .send(ScreenInstruction::Notify(
+            "second".to_owned(),
+            None,
+            None,
+            None,
+        ))
         .unwrap();
     mock_screen
         .to_screen

@@ -1982,7 +1982,7 @@ pub fn rename_session(name: &SessionName) {
 /// Show a notification that dismisses itself after a timeout. Its corner and timeout come from the
 /// `notification_position` and `notification_timeout` config options.
 pub fn notify(text: &str) {
-    let plugin_command = PluginCommand::Notify(text.to_owned(), None);
+    let plugin_command = PluginCommand::Notify(text.to_owned(), None, None);
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };
@@ -1990,7 +1990,28 @@ pub fn notify(text: &str) {
 
 /// Show a notification that focuses `pane_id` when clicked.
 pub fn notify_with_pane_id(text: &str, pane_id: PaneId) {
-    let plugin_command = PluginCommand::Notify(text.to_owned(), Some(pane_id));
+    let plugin_command = PluginCommand::Notify(text.to_owned(), Some(pane_id), None);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Show a notification that focuses `pane_id` when clicked *and* tells this plugin that it was,
+/// as an `Event::CustomMessage(message, payload)`.
+///
+/// The focus alone cannot be told apart from any other way into the pane, so a plugin that has to
+/// do something more particular than "be looked at" - open the conversation the toast was about,
+/// say - wants this rather than [`notify_with_pane_id`]. Requires a subscription to
+/// `EventType::CustomMessage`; the message arrives after the focus has landed.
+pub fn notify_with_click(text: &str, pane_id: PaneId, message: &str, payload: &str) {
+    let plugin_command = PluginCommand::Notify(
+        text.to_owned(),
+        Some(pane_id),
+        Some(NotifyClick {
+            message: message.to_owned(),
+            payload: payload.to_owned(),
+        }),
+    );
     let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
     object_to_stdout(&protobuf_plugin_command.encode_to_vec());
     unsafe { host_run_plugin_command() };

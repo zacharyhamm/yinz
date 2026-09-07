@@ -1554,6 +1554,39 @@ impl State {
         self.reveal_panel();
     }
 
+    /// A toast hocus raised was clicked: put the panel back and open the conversation it was
+    /// about.
+    ///
+    /// The host has already focused our pane by the time this runs - that is what
+    /// `notify_with_click`'s `PaneId` bought - but a host-side focus reveals the pane without
+    /// telling hocus, which is exactly the wedge `show_panel` exists to avoid: `hidden` would
+    /// stay true, `hide_pending` would stay set, and the stale-hide guard in `on_panes` would eat
+    /// the reveal. So the intent is flipped here too, at the source.
+    ///
+    /// The chat is the half the focus cannot express. A toast raised by a parked chat says
+    /// nothing about *which* tab to open, and landing the user on whatever happened to be in
+    /// front leaves the question that interrupted them still shut - which was the whole reason
+    /// the toast went up.
+    pub(crate) fn on_toast_click(&mut self, chat_id: Option<u64>) -> bool {
+        self.show_panel();
+        let Some(chat_id) = chat_id.filter(|chat_id| self.chat_id != Some(*chat_id)) else {
+            // The chat that asked is already the one on screen, or the toast named none. Either
+            // way the reveal above is the whole of it.
+            return true;
+        };
+        // A chat that is no longer parked was closed, or has been brought forward by something
+        // else since the toast went up. Neither is an error - the panel is up, which is most of
+        // what the click asked for.
+        if let Some(index) = self
+            .parked
+            .iter()
+            .position(|chat| chat.chat_id == Some(chat_id))
+        {
+            self.switch_to_tab(self.tab_of_parked(index));
+        }
+        true
+    }
+
     /// Record a `show`/`hide` for the tests - see [`State::visibility_calls`]. Compiled away
     /// outside them.
     pub(crate) fn note_visibility(&mut self, pane: PaneId, shown: bool) {

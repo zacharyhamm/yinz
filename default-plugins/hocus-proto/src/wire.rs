@@ -200,6 +200,14 @@ pub const COMPLETE: &str = "hocus_complete";
 /// for the reason [`ASK_ACK`] is: an asker is one of possibly several and must not read
 /// somebody else's answer. A CLI caller is answered on its own pipe instead.
 pub const COMPLETE_RESULT: &str = "hocus_complete_result";
+/// host → hocus: somebody clicked a toast hocus raised, and the payload is the
+/// `chat_id` of the chat that raised it.
+///
+/// Arrives as an `Event::CustomMessage`, not a pipe: it is the host answering a
+/// `notify_with_click`, and only ever reaches the instance that asked. The click
+/// already focused hocus's pane by the time this lands - what it adds is *which*
+/// conversation the toast was about, which the focus alone cannot say.
+pub const TOAST_CLICK: &str = "hocus_toast_click";
 
 /// One agent poll: what goes out and what comes back. The activity map rides
 /// along both ways so the caller's copy stays the only truth — the poller keeps

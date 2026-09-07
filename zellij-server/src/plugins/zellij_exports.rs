@@ -84,7 +84,7 @@ use {
     zellij_types::data::ListOrphanedPanesResponse, zellij_types::data::MessageToPlugin,
     zellij_types::data::NewPanePlacement, zellij_types::data::NewTabResponse,
     zellij_types::data::NewTabUnfocusedResponse, zellij_types::data::NewTiledPaneInTabResponse,
-    zellij_types::data::OpenCommandPaneBackgroundResponse,
+    zellij_types::data::NotifyClick, zellij_types::data::OpenCommandPaneBackgroundResponse,
     zellij_types::data::OpenCommandPaneFloatingNearPluginResponse,
     zellij_types::data::OpenCommandPaneFloatingResponse,
     zellij_types::data::OpenCommandPaneInGitCheckoutResponse,
@@ -118,7 +118,10 @@ use {
     zellij_types::data::WarpPlacement, zellij_types::data::HOCUS_AGENT_PANE_CONTEXT,
 };
 
-use crate::{panes::PaneId, screen::ScreenInstruction};
+use crate::{
+    panes::PaneId,
+    screen::{NotificationClick, ScreenInstruction},
+};
 use kdl::KdlDocument;
 
 use prost::Message;
@@ -680,7 +683,9 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 context,
             ),
             PluginCommand::RenameSession(new_session_name) => rename_session(env, new_session_name),
-            PluginCommand::Notify(text, pane_id) => notify(env, text, pane_id.map(Into::into)),
+            PluginCommand::Notify(text, pane_id, click) => {
+                notify(env, text, pane_id.map(Into::into), click)
+            },
             PluginCommand::UnblockCliPipeInput(pipe_name) => unblock_cli_pipe_input(env, pipe_name),
             PluginCommand::BlockCliPipeInput(pipe_name) => block_cli_pipe_input(env, pipe_name),
             PluginCommand::CliPipeOutput(pipe_name, output) => {
@@ -4748,15 +4753,27 @@ fn rename_session(env: &PluginEnv, new_session_name: SessionName) {
     }
 }
 
-fn notify(env: &PluginEnv, text: String, pane_id: Option<PaneId>) {
+fn notify(env: &PluginEnv, text: String, pane_id: Option<PaneId>, click: Option<NotifyClick>) {
     let error_msg = || format!("failed to show notification from plugin {}", env.name());
     let Some(pane_id) = pane_id else {
         let action = Action::Notify(text);
         apply_action!(action, error_msg, env);
         return;
     };
+    // Stamped here rather than carried up from the plugin: a toast may only ever call back the
+    // plugin that raised it, so the id is the host's to supply.
+    let on_click = click.map(|click| NotificationClick {
+        plugin_id: env.plugin_id,
+        message: click.message,
+        payload: click.payload,
+    });
     env.senders
-        .send_to_screen(ScreenInstruction::Notify(text, Some(pane_id), None))
+        .send_to_screen(ScreenInstruction::Notify(
+            text,
+            Some(pane_id),
+            on_click,
+            None,
+        ))
         .with_context(error_msg)
         .non_fatal();
 }

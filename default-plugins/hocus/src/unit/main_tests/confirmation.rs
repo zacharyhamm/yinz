@@ -359,3 +359,32 @@ fn aborting_answers_every_outstanding_call() {
     assert_eq!(results[1].tool_call_id.as_deref(), Some("b"));
     assert!(matches!(state.status, Status::Idle));
 }
+
+/// The toast is drawn over whatever pane the user is in, so the click on it is the only gesture
+/// that can say "the thing this was about, now". It carries hocus's own pane - which is what the
+/// host focuses - and the chat that asked, which the focus alone cannot express.
+#[test]
+fn the_confirmation_toast_is_clickable_and_names_the_chat_that_asked() {
+    tools::test_seams::reset();
+    let mut state = ready_state();
+    state.own_plugin_id = zellij_tile::prelude::PluginId::new(7);
+    state.chat_id = Some(42);
+
+    let frame = tool_call_frame(
+        "call_1",
+        "new_remote_pane",
+        r#"{"remote_host":"box","command":"htop"}"#,
+    );
+    state.on_chunk("hocus-1", &frame, false, None);
+    state.on_chunk("hocus-1", b"", true, None);
+    assert!(matches!(state.status, Status::ConfirmingTool));
+
+    let toasts = tools::test_seams::TOASTS.with_borrow(Clone::clone);
+    let (_, pane, chat_id) = toasts.first().expect("the ask went up as a toast");
+    assert_eq!(
+        *pane,
+        PaneId::Plugin(zellij_tile::prelude::PluginId::new(7)),
+        "the click brings hocus itself back"
+    );
+    assert_eq!(*chat_id, Some(42), "onto the chat that asked");
+}

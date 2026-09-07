@@ -1906,6 +1906,7 @@ pub(crate) fn route_action(
                 .send_to_screen(ScreenInstruction::Notify(
                     text,
                     None,
+                    None,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
                 .with_context(err_context)?;

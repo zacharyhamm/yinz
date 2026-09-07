@@ -889,3 +889,54 @@ fn a_skill_is_a_planning_turn_while_planning_and_answers_a_waiting_plan() {
     assert!(!state.awaiting_plan());
     assert!(state.is_receiving());
 }
+
+/// The sidebar is very often not what is being looked at, which is why the plan announces itself
+/// with a toast at all - and the click on it has to land on the chat that planned, which for a
+/// parked one is behind a tab the reveal alone would leave shut.
+#[test]
+fn the_plan_toast_is_clickable_and_names_the_chat_that_planned() {
+    tools::test_seams::reset();
+    let mut state = planning_state();
+    state.own_plugin_id = zellij_tile::prelude::PluginId::new(7);
+    state.chat_id = Some(42);
+
+    reply_and_settle(&mut state, "here is the plan");
+    assert!(matches!(state.plan, Plan::AwaitingApproval));
+
+    let toasts = tools::test_seams::TOASTS.with_borrow(Clone::clone);
+    let (text, pane, chat_id) = toasts.first().expect("the plan went up as a toast");
+    assert!(text.contains("hocus has a plan"), "got: {text}");
+    assert_eq!(
+        *pane,
+        PaneId::Plugin(zellij_tile::prelude::PluginId::new(7))
+    );
+    assert_eq!(*chat_id, Some(42));
+}
+
+/// A chat servicing itself off-screen is the case the whole click path exists for: it is swapped
+/// into the foreground for the length of the turn, so the id the toast records is the parked
+/// chat's, not the one the user is actually looking at.
+#[test]
+fn a_toast_from_a_parked_chat_names_the_parked_chat() {
+    tools::test_seams::reset();
+    // A planning turn in flight, parked: exactly what `with_parked` swaps in to service.
+    let mut planning = planning_state();
+    planning.chat_id = Some(2);
+    let parked = planning.take_chat();
+
+    let mut state = idle_state();
+    state.own_plugin_id = zellij_tile::prelude::PluginId::new(7);
+    state.chat_id = Some(1);
+    state.parked.push(parked);
+
+    state.with_parked(0, |parked| reply_and_settle(parked, "here is the plan"));
+
+    let toasts = tools::test_seams::TOASTS.with_borrow(Clone::clone);
+    let (_, _, chat_id) = toasts.first().expect("the plan went up as a toast");
+    assert_eq!(
+        *chat_id,
+        Some(2),
+        "the chat that planned, not the one on screen"
+    );
+    assert_eq!(state.chat_id, Some(1), "which is still where it was");
+}

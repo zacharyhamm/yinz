@@ -5,9 +5,10 @@ use zellij_types::internal_ids::TabId;
 
 use zellij_runtime::errors::prelude::*;
 
-use super::{NotificationLayout, Screen};
+use super::{NotificationClick, NotificationLayout, Screen};
 use crate::output::Output;
 use crate::panes::PaneId;
+use crate::plugins::PluginInstruction;
 use crate::ui::damage::{overlay_damage, CellRect};
 use crate::ui::notification::{
     notification_chunks, notification_height, notification_lines, notification_origins,
@@ -322,12 +323,18 @@ impl Screen {
         result.context("failed to render notifications")
     }
 
-    fn pane_notification_at(
+    /// Which toast is under `position`, if it is one a click means anything to.
+    ///
+    /// A toast is only a click target if it has somewhere to send the click: a pane to focus, a
+    /// plugin to tell, or both. One with neither - a plain `notify`, or `zellij action notify` -
+    /// is decoration, and a click over it must fall through to the pane underneath rather than
+    /// being swallowed by a thing that would do nothing with it.
+    fn notification_at(
         &self,
         viewport: Viewport,
         position: Position,
         now: Instant,
-    ) -> Option<(NotificationId, PaneId)> {
+    ) -> Option<(NotificationId, Option<PaneId>, Option<NotificationClick>)> {
         let line = usize::try_from(position.line()).ok()?;
         self.notification_layout(viewport, now)
             .into_iter()
@@ -339,11 +346,16 @@ impl Screen {
                     && (layout.y..layout.y + notification_height(layout.lines.len()))
                         .contains(&line)
             })
-            .and_then(|layout| {
-                layout
-                    .notification
-                    .pane_id
-                    .map(|pane_id| (layout.notification.id, pane_id))
+            .map(|layout| layout.notification)
+            .filter(|notification| {
+                notification.pane_id.is_some() || notification.on_click.is_some()
+            })
+            .map(|notification| {
+                (
+                    notification.id,
+                    notification.pane_id,
+                    notification.on_click.clone(),
+                )
             })
     }
 
@@ -387,15 +399,16 @@ impl Screen {
         {
             return false;
         }
-        let Some((notification_id, pane_id)) =
-            self.pane_notification_at(viewport, event.position, now)
+        let Some((notification_id, pane_id, on_click)) =
+            self.notification_at(viewport, event.position, now)
         else {
             return false;
         };
 
         self.dismiss_notification(notification_id, now).non_fatal();
-        let pane_exists = self.tab_containing_pane(pane_id).is_some();
-        if pane_exists {
+        if let Some(pane_id) =
+            pane_id.filter(|pane_id| self.tab_containing_pane(*pane_id).is_some())
+        {
             if self.get_active_pane_id(&client_id) != Some(pane_id) {
                 self.focus_pane_with_id(pane_id, true, false, client_id)
                     .non_fatal();
@@ -403,6 +416,22 @@ impl Screen {
             self.clear_bell_for_pane_id(pane_id, client_id);
             self.sync_scroll_mode_on_focus(client_id).non_fatal();
             self.log_and_report_session_state().non_fatal();
+        }
+        // After the focus, so a plugin that acts on the click is acting on a pane the server has
+        // already brought back - and unconditionally, because the focus above is skipped when the
+        // toast's pane is already this client's active one, which is not a reason for the plugin
+        // that raised it to hear nothing.
+        if let Some(on_click) = on_click {
+            self.bus
+                .senders
+                .send_to_plugin(PluginInstruction::PostMessageToPlugin(
+                    on_click.plugin_id,
+                    client_id,
+                    on_click.message,
+                    on_click.payload,
+                ))
+                .context("failed to tell a plugin its notification was clicked")
+                .non_fatal();
         }
         self.notify_plugins_of_input(client_id);
         self.render(None).non_fatal();

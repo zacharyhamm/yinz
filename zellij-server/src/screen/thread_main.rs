@@ -4080,6 +4080,7 @@ pub(crate) fn screen_thread_main(
             ScreenInstruction::Notify(
                 text,
                 pane_id,
+                on_click,
                 _completion_tx, // the action ends here, dropping this will release anything
                                 // waiting for it
             ) => {
@@ -4104,7 +4105,7 @@ pub(crate) fn screen_thread_main(
                 screen.with_notification_stack_change(now, |screen| {
                     screen
                         .notifications
-                        .insert(0, Notification::new(id, text, pane_id, now));
+                        .insert(0, Notification::new(id, text, pane_id, on_click, now));
                 });
                 screen
                     .bus

@@ -3,7 +3,7 @@ const TERMINAL_1: zellij_types::internal_ids::TerminalId =
     zellij_types::internal_ids::TerminalId::new(1);
 
 use super::*;
-use crate::screen::Notification;
+use crate::screen::{Notification, NotificationClick};
 use crate::ui::notification::{notification_height, notification_width};
 use std::time::Instant;
 use zellij_test_support::Watched;
@@ -16,10 +16,21 @@ use zellij_types::internal_ids::TabPosition;
 /// A toast that has finished arriving and is sitting still, which is what every hit-test below
 /// wants: the animation is not under test here, the geometry is.
 fn settled_notification(id: u64, text: &str, pane_id: PaneId) -> Notification {
+    settled_notification_with(id, text, Some(pane_id), None)
+}
+
+/// The same, for the tests that care about what a toast carries rather than where it sits.
+fn settled_notification_with(
+    id: u64,
+    text: &str,
+    pane_id: Option<PaneId>,
+    on_click: Option<NotificationClick>,
+) -> Notification {
     let mut notification = Notification::new(
         NotificationId::new(id),
         text.to_owned(),
-        Some(pane_id),
+        pane_id,
+        on_click,
         Instant::now(),
     );
     notification.reveal = Tween::settled(1.0);
@@ -152,6 +163,140 @@ fn clicking_overlapping_pane_notifications_uses_paint_order() {
     );
     assert!(!screen.notifications[0].is_dismissing());
     assert!(screen.notifications[1].is_dismissing());
+}
+
+/// The click on a toast is the one gesture that says "the thing this was about, now". Focusing
+/// the pane says where; the message says what, and only the plugin that raised the toast can act
+/// on it - hocus opening the conversation that asked, say.
+#[test]
+fn clicking_a_notification_tells_the_plugin_that_raised_it() {
+    let size = Size { cols: 80, rows: 20 };
+    let client_id = ClientId::new(1);
+    let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    let mut screen = create_non_mirrored_screen(size);
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    new_tab(&mut screen, 1, TabId::new(0));
+
+    let text = "hocus has a plan";
+    screen.notifications.push(settled_notification_with(
+        0,
+        text,
+        Some(PaneId::Terminal(crate::TerminalId::new(1))),
+        Some(NotificationClick {
+            plugin_id: crate::PluginId::new(7),
+            message: "hocus_toast_click".to_owned(),
+            payload: "42".to_owned(),
+        }),
+    ));
+    let width = notification_width(text, size.cols).expect("notification fits");
+    let x = size.cols - width - 1;
+
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(1, (x + 1) as u16)),
+        client_id,
+    );
+
+    let posted = plugin_rx
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            PluginInstruction::PostMessageToPlugin(plugin_id, to, message, payload) => {
+                Some((plugin_id, to, message, payload))
+            },
+            _ => None,
+        })
+        .expect("the click reaches the plugin that raised the toast");
+    assert_eq!(
+        posted,
+        (
+            crate::PluginId::new(7),
+            client_id,
+            "hocus_toast_click".to_owned(),
+            "42".to_owned()
+        )
+    );
+    assert!(screen.notifications[0].is_dismissing());
+}
+
+/// A toast whose plugin is already the pane in front still has something to say - the focus is
+/// skipped there, and skipping the message with it would silently drop the click.
+#[test]
+fn a_notification_click_is_reported_even_when_its_pane_is_already_focused() {
+    let size = Size { cols: 80, rows: 20 };
+    let client_id = ClientId::new(1);
+    let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    let mut screen = create_non_mirrored_screen(size);
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    new_tab(&mut screen, 1, TabId::new(0));
+    let focused = screen
+        .get_active_pane_id(&client_id)
+        .expect("the tab has a focused pane");
+
+    let text = "needs you";
+    screen.notifications.push(settled_notification_with(
+        0,
+        text,
+        Some(focused),
+        Some(NotificationClick {
+            plugin_id: crate::PluginId::new(7),
+            message: "hocus_toast_click".to_owned(),
+            payload: "9".to_owned(),
+        }),
+    ));
+    let width = notification_width(text, size.cols).expect("notification fits");
+    let x = size.cols - width - 1;
+
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(1, (x + 1) as u16)),
+        client_id,
+    );
+
+    assert!(plugin_rx
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction, PluginInstruction::PostMessageToPlugin(..))));
+}
+
+/// A toast with nothing to do is not a click target: swallowing the press would leave the user
+/// unable to click the pane a plain `notify` happens to be sitting over.
+#[test]
+fn clicking_a_notification_with_no_target_falls_through_to_the_pane() {
+    let size = Size { cols: 80, rows: 20 };
+    let client_id = ClientId::new(1);
+    let mut screen = create_non_mirrored_screen(size);
+    let (pty_writer_tx, pty_writer_rx) =
+        channels::unbounded::<(PtyWriteInstruction, ErrorContext)>();
+    screen.bus.senders.to_pty_writer = Some(SenderWithContext::new(pty_writer_tx));
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(
+            crate::TerminalId::new(1),
+            b"\x1b[?1002h\x1b[?1006h".to_vec(),
+        )
+        .unwrap();
+    pty_writer_rx.try_iter().for_each(drop);
+
+    let text = "just saying";
+    screen
+        .notifications
+        .push(settled_notification_with(0, text, None, None));
+    let width = notification_width(text, size.cols).expect("notification fits");
+    let x = size.cols - width - 1;
+
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(1, (x + 1) as u16)),
+        client_id,
+    );
+
+    assert!(
+        !screen.notifications[0].is_dismissing(),
+        "a toast that is not a click target is not dismissed by the click either"
+    );
+    assert!(
+        pty_writer_rx.try_recv().is_ok(),
+        "the press reaches the pane underneath"
+    );
 }
 
 #[test]

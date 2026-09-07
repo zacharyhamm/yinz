@@ -5271,6 +5271,10 @@ pub mod test_seams {
         pub static SPAWN_AGENT_CALLS: RefCell<Vec<SpawnAgentCall>> = const { RefCell::new(Vec::new()) };
         pub static PLUGIN_SOURCE: RefCell<Option<String>> = const { RefCell::new(None) };
         pub static GRANTED_PERMISSIONS: RefCell<Vec<PermissionType>> = const { RefCell::new(Vec::new()) };
+        /// Every `toast_for_chat`, in order: the text, the pane the click focuses, and the chat
+        /// the click names. The raw `zellij_tile` shims write protobuf to real stdout in a native
+        /// test binary, so a toast is only observable through a seam.
+        pub static TOASTS: RefCell<Vec<(String, super::PaneId, Option<u64>)>> = const { RefCell::new(Vec::new()) };
     }
 
     /// One `plugin_reload` is one ask. Past this many the tool loop is re-running a head it
@@ -5289,6 +5293,7 @@ pub mod test_seams {
         SPAWN_AGENT_CALLS.with_borrow_mut(Vec::clear);
         PLUGIN_SOURCE.with_borrow_mut(|source| *source = None);
         GRANTED_PERMISSIONS.with_borrow_mut(Vec::clear);
+        TOASTS.with_borrow_mut(Vec::clear);
     }
 
     pub fn set_plugin_source(source: &str) {
@@ -5403,6 +5408,35 @@ pub fn drop_spotlight(pane: PaneId) {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn raise_spotlight(_pane: PaneId, _label: String) {}
+
+/// Raise a toast that comes back to hocus when it is clicked.
+///
+/// Two things travel with it. `pane` is what the *host* does with the click - focus hocus, which
+/// is the whole point of a toast drawn over some other pane. `chat_id` is what hocus does with
+/// it: the toast may have been raised by a chat that is parked behind another tab, and the click
+/// is the only word we get that the user came for *that* conversation. See `wire::TOAST_CLICK`.
+#[cfg(target_arch = "wasm32")]
+pub fn toast_for_chat(text: &str, pane: PaneId, chat_id: Option<u64>) {
+    match chat_id {
+        Some(chat_id) => zellij_tile::shim::notify_with_click(
+            text,
+            pane,
+            hocus_proto::wire::TOAST_CLICK,
+            &chat_id.to_string(),
+        ),
+        // A chat with no id yet is one nothing has been logged against, which neither toast site
+        // can be reached from - but a click that named no chat would be a click hocus could not
+        // route, so the pane focus is offered on its own rather than guessed at.
+        None => zellij_tile::shim::notify_with_pane_id(text, pane),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn toast_for_chat(text: &str, pane: PaneId, chat_id: Option<u64>) {
+    test_seams::TOASTS.with_borrow_mut(|toasts| {
+        toasts.push((text.to_owned(), pane, chat_id));
+    });
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn drop_spotlight(_pane: PaneId) {}

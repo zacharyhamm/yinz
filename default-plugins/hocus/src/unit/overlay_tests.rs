@@ -3293,3 +3293,61 @@ fn a_hide_that_never_lands_stops_being_believed() {
     );
     assert_eq!(state.hide_pending, 0);
 }
+
+/// A toast hocus raised is clicked. The host has already focused our pane by then, but a
+/// host-side focus tells hocus nothing - so the click has to flip the intent here too, or the
+/// panel wedges exactly as a bare `show_self` used to leave it.
+#[test]
+fn clicking_a_toast_brings_the_whole_panel_back() {
+    let mut state = agents_beside_state();
+    state.hide_panel();
+    assert!(state.hide_pending > 0);
+    state.visibility_calls.clear();
+
+    assert!(state.on_toast_click(None));
+
+    assert!(!state.hidden, "the intent is flipped at the source");
+    assert_eq!(state.hide_pending, 0, "so the hide it replaces is void");
+    assert!(state
+        .visibility_calls
+        .contains(&(PaneId::Plugin(zellij_tile::prelude::PluginId::new(9)), true)));
+}
+
+/// The chat is the half the focus cannot express: a toast raised by a parked chat says nothing
+/// about which tab to open, and landing on whatever was in front leaves the question that
+/// interrupted the user still shut.
+#[test]
+fn clicking_a_toast_opens_the_chat_that_raised_it() {
+    let mut state = agents_beside_state();
+    state.chat_id = Some(1);
+    state.parked.push(crate::Chat {
+        chat_id: Some(2),
+        ..Default::default()
+    });
+
+    assert!(state.on_toast_click(Some(2)));
+
+    assert_eq!(
+        state.chat_id,
+        Some(2),
+        "the chat that asked is the one on screen"
+    );
+    assert!(
+        state.parked.iter().any(|chat| chat.chat_id == Some(1)),
+        "and the one it replaced is parked, not lost"
+    );
+}
+
+/// A chat the user closed between the toast going up and the click landing is not an error - the
+/// panel is up, which is most of what the click asked for.
+#[test]
+fn clicking_a_toast_for_a_chat_that_is_gone_still_reveals_the_panel() {
+    let mut state = agents_beside_state();
+    state.hide_panel();
+    state.chat_id = Some(1);
+
+    assert!(state.on_toast_click(Some(99)));
+
+    assert!(!state.hidden);
+    assert_eq!(state.chat_id, Some(1), "and nothing was switched to");
+}

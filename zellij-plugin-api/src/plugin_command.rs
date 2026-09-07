@@ -230,7 +230,7 @@ use {
     zellij_types::data::KillSessionsResponse, zellij_types::data::ListOrphanedPanesResponse,
     zellij_types::data::MessageToPlugin, zellij_types::data::Mutation,
     zellij_types::data::NewPluginArgs, zellij_types::data::NotificationInfo,
-    zellij_types::data::OpenCommandPaneInGitCheckoutResponse,
+    zellij_types::data::NotifyClick, zellij_types::data::OpenCommandPaneInGitCheckoutResponse,
     zellij_types::data::OpenCommandPaneOverlayResponse, zellij_types::data::OrphanedPane,
     zellij_types::data::OverlayPlacement, zellij_types::data::PaneGitProbe,
     zellij_types::data::PaneId, zellij_types::data::PermissionType,
@@ -1681,16 +1681,21 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 _ => Err("Mismatched payload for RenameSession"),
             },
             Some(CommandName::Notify) => match protobuf_plugin_command.payload {
-                Some(Payload::NotifyPayload(text)) => Ok(PluginCommand::Notify(text, None)),
-                Some(Payload::NotifyWithPanePayload(payload)) => Ok(PluginCommand::Notify(
-                    payload.text,
-                    Some(
-                        payload
-                            .pane_id
-                            .ok_or("NotifyWithPane must have a pane id")?
-                            .try_into()?,
-                    ),
-                )),
+                Some(Payload::NotifyPayload(text)) => Ok(PluginCommand::Notify(text, None, None)),
+                Some(Payload::NotifyWithPanePayload(payload)) => {
+                    let pane_id = payload
+                        .pane_id
+                        .ok_or("NotifyWithPane must have a pane id")?
+                        .try_into()?;
+                    // Both halves or neither: a click message with nothing to say, or a payload
+                    // with no name to say it under, is not a message anybody can route.
+                    let click = match (payload.click_message, payload.click_payload) {
+                        (Some(message), Some(payload)) => Some(NotifyClick { message, payload }),
+                        (None, None) => None,
+                        _ => return Err("NotifyWithPane click needs both message and payload"),
+                    };
+                    Ok(PluginCommand::Notify(payload.text, Some(pane_id), click))
+                },
                 _ => Err("Mismatched payload for Notify"),
             },
             Some(CommandName::UnblockCliPipeInput) => match protobuf_plugin_command.payload {
@@ -4141,13 +4146,18 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::RenameSession as i32,
                 payload: Some(Payload::RenameSessionPayload(new_session_name.to_string())),
             }),
-            PluginCommand::Notify(text, pane_id) => Ok(ProtobufPluginCommand {
+            PluginCommand::Notify(text, pane_id, click) => Ok(ProtobufPluginCommand {
                 name: CommandName::Notify as i32,
                 payload: Some(match pane_id {
                     Some(pane_id) => Payload::NotifyWithPanePayload(NotifyWithPanePayload {
                         text,
                         pane_id: Some(pane_id.try_into()?),
+                        click_message: click.as_ref().map(|click| click.message.clone()),
+                        click_payload: click.map(|click| click.payload),
                     }),
+                    // A click message needs somewhere to land, and the legacy string payload has
+                    // no room for one - so a click without a pane is dropped rather than encoded
+                    // into a shape that cannot carry it back.
                     None => Payload::NotifyPayload(text),
                 }),
             }),
@@ -7154,9 +7164,16 @@ mod tests {
             )),
             Some(PaneId::Plugin(zellij_types::internal_ids::PluginId::new(3))),
         ] {
-            let protobuf: ProtobufPluginCommand = PluginCommand::Notify("done".to_owned(), pane_id)
-                .try_into()
-                .expect("encode");
+            // The click rides on the pane payload, so it is only offered where there is one -
+            // see the encoder, which drops a click that has no pane to land in.
+            let click = pane_id.map(|_| NotifyClick {
+                message: "hocus_toast_click".to_owned(),
+                payload: "42".to_owned(),
+            });
+            let protobuf: ProtobufPluginCommand =
+                PluginCommand::Notify("done".to_owned(), pane_id, click.clone())
+                    .try_into()
+                    .expect("encode");
             assert_eq!(
                 matches!(&protobuf.payload, Some(Payload::NotifyPayload(_))),
                 pane_id.is_none(),
@@ -7164,9 +7181,10 @@ mod tests {
             );
             let decoded: PluginCommand = protobuf.try_into().expect("decode");
             match decoded {
-                PluginCommand::Notify(text, decoded_pane_id) => {
+                PluginCommand::Notify(text, decoded_pane_id, decoded_click) => {
                     assert_eq!(text, "done");
                     assert_eq!(decoded_pane_id, pane_id);
+                    assert_eq!(decoded_click, click);
                 },
                 other => panic!("expected Notify, got {:?}", other),
             }

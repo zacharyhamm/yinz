@@ -36,15 +36,15 @@ use {
     zellij_types::data::HttpVerb, zellij_types::data::InputMode, zellij_types::data::LayoutInfo,
     zellij_types::data::LayoutMetadata, zellij_types::data::MessageToPlugin,
     zellij_types::data::Mutation, zellij_types::data::NewPanePlacement,
-    zellij_types::data::NewPluginArgs, zellij_types::data::OriginatingPlugin,
-    zellij_types::data::OverlayKind, zellij_types::data::OverlayPlacement,
-    zellij_types::data::PaneId, zellij_types::data::PaneMetadata,
-    zellij_types::data::PermissionType, zellij_types::data::PluginCommand,
-    zellij_types::data::PluginMessage, zellij_types::data::PluginTag,
-    zellij_types::data::RegexHighlight, zellij_types::data::RemotePaneHandoff,
-    zellij_types::data::TabMetadata, zellij_types::data::UnblockCondition,
-    zellij_types::data::WarpPlacement, zellij_types::data::WarpedPane,
-    zellij_types::data::WarpedTab, zellij_types::data::WatchMode,
+    zellij_types::data::NewPluginArgs, zellij_types::data::NotifyClick,
+    zellij_types::data::OriginatingPlugin, zellij_types::data::OverlayKind,
+    zellij_types::data::OverlayPlacement, zellij_types::data::PaneId,
+    zellij_types::data::PaneMetadata, zellij_types::data::PermissionType,
+    zellij_types::data::PluginCommand, zellij_types::data::PluginMessage,
+    zellij_types::data::PluginTag, zellij_types::data::RegexHighlight,
+    zellij_types::data::RemotePaneHandoff, zellij_types::data::TabMetadata,
+    zellij_types::data::UnblockCondition, zellij_types::data::WarpPlacement,
+    zellij_types::data::WarpedPane, zellij_types::data::WarpedTab, zellij_types::data::WatchMode,
 };
 use {
     zellij_types::input::actions::Action, zellij_types::input::actions::ActionKind,
@@ -1790,7 +1790,16 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::CancelWebRequest => PluginCommand::CancelWebRequest(strings(tc)),
         CommandType::RenameSession => PluginCommand::RenameSession(strings(tc).into()),
         CommandType::Notify => {
-            PluginCommand::Notify(strings(tc), booleans(tc).then(|| pane_id(tc)))
+            // A click is only carried by the pane-bearing payload, so generating one without a
+            // pane would ask the round-trip to preserve something the wire cannot hold.
+            let pane = booleans(tc).then(|| pane_id(tc));
+            let click = pane.and_then(|_| {
+                booleans(tc).then(|| NotifyClick {
+                    message: strings(tc),
+                    payload: strings(tc),
+                })
+            });
+            PluginCommand::Notify(strings(tc), pane, click)
         },
         CommandType::UnblockCliPipeInput => PluginCommand::UnblockCliPipeInput(strings(tc)),
         CommandType::BlockCliPipeInput => PluginCommand::BlockCliPipeInput(strings(tc)),
