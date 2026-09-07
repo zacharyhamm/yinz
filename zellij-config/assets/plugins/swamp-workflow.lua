@@ -61,7 +61,8 @@ function M.update(event)
   local action
   if event.name=='key' then action=form:handle_key(event)
   elseif event.name=='mouse' then action=form:handle_mouse(event)
-  elseif event.name=='pasted_text' then action=form:insert_pasted_text(event.value) end
+  elseif event.name=='pasted_text' then action=form:insert_pasted_text(event.value)
+  else return false end
   if not action then return true end
   if action.kind=='cancel' or action.id=='detach' then z.close_self();return true end
   if action.id=='next' then M.selected=M.selected % math.max(1,#M.pending)+1;return true end

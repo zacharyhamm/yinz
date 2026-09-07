@@ -70,6 +70,15 @@ fn advance(zellij: &TestSession, stage: &str) {
 
 #[test]
 fn swamp_exit_keeps_status_agent_question_and_result_in_the_original_location() {
+    swamp_exit_with_status_bar(false);
+}
+
+#[test]
+fn swamp_exit_status_bar_tracks_mode_changes_while_the_workflow_view_is_active() {
+    swamp_exit_with_status_bar(true);
+}
+
+fn swamp_exit_with_status_bar(status_bar: bool) {
     let root = zellij_integration_tests::test_env::init().join("swamp-exit");
     fs::create_dir_all(&root).unwrap();
     let path = root.join("exit.lua");
@@ -80,7 +89,11 @@ fn swamp_exit_keeps_status_agent_question_and_result_in_the_original_location() 
             path.display()
         ))
         .with_layout(LayoutInfo::Stringified(
-            "layout { pane command=\"claude\"; }".into(),
+            if status_bar {
+                "layout { pane command=\"claude\" focus=true; pane size=2 borderless=true { plugin location=\"zellij:status-bar\"; }; }"
+            } else {
+                "layout { pane command=\"claude\"; }"
+            }.into(),
         ))
         .start();
     let original = zellij.expect_pty_spawn();
@@ -121,6 +134,21 @@ fn swamp_exit_keeps_status_agent_question_and_result_in_the_original_location() 
     zellij.wait_until("verified completion restores question", |s| {
         s.contains("Continue work?")
     });
+    if status_bar {
+        for _ in 0..2 {
+            zellij.send_stdin(&keys::ctrl('g'));
+            zellij.wait_until("status bar shows locked mode beside the workflow", |s| {
+                s.contains("Continue work?") && s.contains("INTERFACE LOCKED")
+            });
+            zellij.send_stdin(&keys::ctrl('g'));
+            zellij.wait_until("status bar shows normal mode beside the workflow", |s| {
+                s.contains("Continue work?")
+                    && s.contains("Ctrl")
+                    && s.contains("LOCK")
+                    && !s.contains("INTERFACE LOCKED")
+            });
+        }
+    }
     zellij.send_stdin(b"yes");
     zellij.send_stdin(&keys::ENTER);
     zellij.wait_until("final result stays visible", |s| {
@@ -149,7 +177,10 @@ fn swamp_exit_keeps_status_agent_question_and_result_in_the_original_location() 
                 .flat_map(|p| p.as_array().unwrap())
                 .filter(|p| p["is_suppressed"] == false)
                 .collect();
-            assert!(panes.len() <= 1, "extra visible pane: {json}");
+            assert!(
+                panes.len() <= 1 + usize::from(status_bar),
+                "extra visible pane: {json}"
+            );
             assert!(panes.iter().all(|p| p["is_floating"] == false), "{json}");
         } else if kind == "TabUpdate" {
             tab_events += 1;

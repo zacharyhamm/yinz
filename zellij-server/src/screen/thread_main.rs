@@ -1710,7 +1710,6 @@ pub(crate) fn screen_thread_main(
                         ));
                 }
                 screen.render(None)?;
-                screen.log_and_report_session_state()?;
             },
             ScreenInstruction::SetMouseSelectionSupport(pid, selection_support) => {
                 if screen
