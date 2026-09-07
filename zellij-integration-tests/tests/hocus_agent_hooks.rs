@@ -291,3 +291,128 @@ fn assistant_messages_reach_the_timeline_and_history_search() {
         },
     );
 }
+
+#[test]
+fn background_workers_preserve_the_parent_record_and_idle_count() {
+    let mut size = TERMINAL_SIZE;
+    size.rows = 70;
+    size.cols = 180;
+    let layout = r#"layout {
+        pane focus=true size="50%" { plugin location="hocus"; }
+        pane name="claude" command="sleep" { args "600"; }
+        pane size=1 borderless=true { plugin location="zellij:status-bar"; }
+    }"#
+    .to_owned();
+    let config = HOCUS_CONFIG.replace(
+        "plugins {",
+        "plugins {\n  hocus-agents location=\"zellij:hocus-agents\" { shared true; }",
+    );
+    let mut zellij = TestRunner::new(size)
+        .with_config(&config)
+        .with_layout(LayoutInfo::Stringified(layout))
+        .start();
+    zellij.wait_until("hocus asks for permissions", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(b"y");
+    zellij.wait_until("permissions granted", |grid| !grid.contains("Allow? (y/n)"));
+    submit(&zellij, "/agent_list {}");
+    zellij.wait_until("the daemon found the pane", |grid| grid.contains("•"));
+    let pane_id = agent_pane_id(&zellij.snapshot().to_string());
+    clear(&zellij, "•");
+
+    let record = |zellij: &mut TestSession| {
+        let (code, output) = zellij.run_cli_action_reporting(CliAction::ListPanes {
+            tab: false,
+            command: false,
+            state: true,
+            geometry: false,
+            all: true,
+            json: true,
+        });
+        assert_eq!(code, 0, "{output}");
+        let panes: serde_json::Value = serde_json::from_str(&output).unwrap();
+        panes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|pane| pane["id"] == pane_id && pane["is_plugin"] == false)
+            .unwrap()["agent"]
+            .clone()
+    };
+    for (parent, expected) in [
+        ("UserPromptSubmit", "Busy"),
+        ("Stop", "Idle"),
+        ("PreToolUse", "Busy"),
+        ("PermissionRequest", "Waiting"),
+        ("Stop", "Idle"),
+    ] {
+        send_hook(
+            &mut zellij,
+            pane_id,
+            &serde_json::json!({
+                "hook_event_name": parent, "session_id": "recap-parent", "cwd": "/work",
+                "tool_name": "Bash", "tool_input": {"command": "git status"},
+            })
+            .to_string(),
+        );
+        submit(&zellij, "/agent_list {}");
+        zellij.wait_until("the daemon processes the parent event", |grid| {
+            grid.contains("•") && grid.contains(&expected.to_lowercase())
+        });
+        clear(&zellij, "•");
+        let before = record(&mut zellij);
+        assert_eq!(before["state"], expected);
+        for worker in ["SubagentStart", "SubagentStop"] {
+            send_hook(
+                &mut zellij,
+                pane_id,
+                &serde_json::json!({
+                    "hook_event_name": worker, "session_id": "recap-parent",
+                    "agent_id": "recap", "last_assistant_message": "Recap completed",
+                })
+                .to_string(),
+            );
+            assert_eq!(record(&mut zellij), before, "{parent} then {worker}");
+            if expected == "Idle" {
+                zellij.wait_until("the status bar retains one idle agent", |grid| {
+                    grid.contains("·1") || grid.contains("1i")
+                });
+            }
+        }
+    }
+    submit(&zellij, "/agent_list {}");
+    zellij.wait_until("the daemon preserves the idle parent", |grid| {
+        grid.contains("idle")
+    });
+    clear(&zellij, "•");
+    submit(&zellij, &format!("/agent_run {{\"pane_id\":{pane_id}}}"));
+    zellij.wait_until("the recap is recorded once", |grid| {
+        grid.contains("Recap completed") && grid.to_string().matches("Recap completed").count() == 1
+    });
+    let (code, output) = zellij.run_cli_action_reporting(CliAction::LaunchOrFocusPlugin {
+        floating: true,
+        in_place: false,
+        close_replaced_pane: false,
+        move_to_focused_tab: true,
+        url: "hocus-agents".into(),
+        configuration: None,
+        skip_plugin_cache: false,
+        tab_id: None,
+    });
+    assert_eq!(code, 0, "{output}");
+    zellij.wait_until("the agents panel retains the idle parent", |grid| {
+        grid.to_string()
+            .lines()
+            .any(|line| line.contains("claude") && line.contains("idle"))
+    });
+    send_hook(
+        &mut zellij,
+        pane_id,
+        r#"{"hook_event_name":"SessionEnd","session_id":"recap-parent"}"#,
+    );
+    assert!(record(&mut zellij).is_null());
+    zellij.wait_until("the ended agent leaves active counts", |grid| {
+        !grid.contains("·1") && !grid.contains("1i")
+    });
+}

@@ -2117,6 +2117,33 @@ fn remote_pane(
     (pty, mock, plugin_rx, screen_rx)
 }
 
+#[test]
+fn remote_subagent_hooks_broadcast_without_writing_parent_state() {
+    let (pty, _, plugin_rx, screen_rx) = remote_pane(TerminalId::new(7), RemoteStatus::default());
+    for kind in ["claude", "codex"] {
+        for hook in ["SubagentStart", "SubagentStop"] {
+            let json = serde_json::json!({
+                "hook_event_name": hook, "session_id": "parent", "agent_id": "recap",
+                "last_assistant_message": "Recap completed",
+            })
+            .to_string();
+            handle_remote_agent_report(&pty.bus.senders, TerminalId::new(7), kind, json.clone())
+                .unwrap();
+            assert!(screen_rx.try_recv().is_err());
+            let (PluginInstruction::Update(events), _) = plugin_rx.try_recv().unwrap() else {
+                panic!("expected a plugin update");
+            };
+            let [(None, None, Event::AgentEvent(event))] = events.as_slice() else {
+                panic!("expected one broadcast");
+            };
+            assert_eq!(event.state, None);
+            assert_eq!(event.hook, hook);
+            assert_eq!(event.kind, kind);
+            assert_eq!(event.raw, json);
+        }
+    }
+}
+
 /// The whole point of Phase 3: argv the broker read on its own machine reaches
 /// the same event a local pane's argv would. Agent classification is pure string
 /// matching over that argv, so this is what makes a remote agent detectable at

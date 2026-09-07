@@ -33,9 +33,8 @@ pub const CLAUDE_HOOK_EVENTS: &[&str] = &[
     // A tool that failed is still the agent working; without this the record sits on the
     // failed tool's name until the next one starts.
     "PostToolUseFailure",
-    // A worker starting and finishing under an agent that is working either way. Wired
-    // so a long subagent run keeps saying so rather than falling silent between the
-    // parent's own tool calls.
+    // Worker lifecycle events feed history without changing the parent's state.
+    // Background workers can outlive the parent's turn.
     "SubagentStart",
     "SubagentStop",
     // Compaction is work the user did not ask for and is waiting on all the same.
@@ -849,12 +848,13 @@ pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
         } else {
             AgentState::Busy
         }),
-        // Everything that is the agent doing something. `SubagentStart`/`SubagentStop` are a
-        // worker beginning and ending under an agent that is working either way, and compaction
-        // is work the user did not ask for but is waiting on all the same.
+        // Workers can start or finish after the parent stops, or while it waits for input.
+        "SubagentStart" | "SubagentStop" => None,
+        // Work by the parent, including compaction.
         "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
-        | "PermissionDenied" | "ElicitationResult" | "SubagentStart" | "SubagentStop"
-        | "PreCompact" | "PostCompact" => Some(AgentState::Busy),
+        | "PermissionDenied" | "ElicitationResult" | "PreCompact" | "PostCompact" => {
+            Some(AgentState::Busy)
+        },
         // Waiting or nothing, never idle: see [`WAITING_NOTIFICATIONS`] for why no
         // notification is read as the turn ending, `agent_completed` included.
         "Notification" => match event.notification_type.as_deref() {
@@ -1157,6 +1157,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn subagent_lifecycle_only_broadcasts_without_a_parent_state_change() {
+        for kind in ["claude", "codex"] {
+            for name in ["SubagentStart", "SubagentStop"] {
+                let event = event(name);
+                assert_eq!(hook_state(&event), None);
+                assert!(matches!(hook_outcome(kind, &event), HookOutcome::Nothing));
+                let actions = crate::input::actions::hook_report_actions(
+                    kind,
+                    crate::pane_id::PaneId::Terminal(crate::internal_ids::TerminalId::new(9)),
+                    &event,
+                    serde_json::to_string(&event).unwrap(),
+                );
+                assert!(
+                    matches!(actions.as_slice(), [crate::input::actions::Action::AgentEvent(event)]
+                    if event.hook == name && event.state.is_none())
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_hook_settings_wire_every_event_to_the_command() {
         let settings = claude_hook_settings("zellij action agent-report --hook-json");
         let hooks = settings["hooks"].as_object().unwrap();
@@ -1367,8 +1388,6 @@ mod tests {
             "PostToolUseFailure",
             "PermissionDenied",
             "ElicitationResult",
-            "SubagentStart",
-            "SubagentStop",
             "PreCompact",
             "PostCompact",
         ] {
@@ -1405,7 +1424,14 @@ mod tests {
 
         // Display events carry prose without changing state. SessionEnd ends the record.
         for wired in CLAUDE_HOOK_EVENTS {
-            if matches!(*wired, HOOK_SESSION_END | "Notification" | "MessageDisplay") {
+            if matches!(
+                *wired,
+                HOOK_SESSION_END
+                    | "Notification"
+                    | "MessageDisplay"
+                    | "SubagentStart"
+                    | "SubagentStop"
+            ) {
                 continue;
             }
             let said = match *wired {

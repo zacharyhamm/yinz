@@ -428,6 +428,130 @@ fn a_tab_of_local_and_remote_panes_warps_whole() {
     drop((local, remote));
 }
 
+/// Silent hook records must survive both the handoff and the old server's teardown.
+#[test]
+fn two_idle_agents_keep_their_records_after_a_whole_tab_warp_and_source_shutdown() {
+    use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
+    use zellij_types::input::actions::Action;
+    use zellij_types::pane_id::PaneId;
+
+    let ((mut sender, _source_shell), (receiver, _receiver_shell)) = sender_and_receiver();
+    // Leave room for the idle count beside the status bar's key hints.
+    receiver.resize(zellij_types::pane_size::Size {
+        rows: 24,
+        cols: 200,
+    });
+    sender.send_stdin(&keys::ctrl('t'));
+    sender.send_stdin(&keys::key('n'));
+    let shell = sender.expect_pty_spawn();
+    shell.output(b"first idle agent\r\n");
+    sender.wait_until("the travelling tab to open", |grid| {
+        grid.contains("first idle agent")
+    });
+    let second = split_off_a_pane(&sender, "second idle agent");
+    let records: Vec<_> = ["codex", "claude"]
+        .into_iter()
+        .map(|kind| AgentInfo {
+            kind: kind.to_owned(),
+            state: AgentState::Idle,
+            source: AgentSource::Reported,
+            detail: Some(format!("{kind} finished")),
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: Some(format!("/work/{kind}")),
+            session_id: Some(format!("{kind}-session")),
+            run_id: Some(format!("{kind}:transferred-run")),
+        })
+        .collect();
+    for (pane, record) in [&shell, &second].into_iter().zip(&records) {
+        let (code, output) = sender.run_actions_reporting(vec![Action::SetPaneAgent {
+            pane_id: PaneId::Terminal(pane.terminal_id()),
+            agent: Some(record.clone()),
+        }]);
+        assert_eq!(code, 0, "{output}");
+    }
+    let list = |session: &TestSession| -> Vec<serde_json::Value> {
+        let (code, output) = session.run_cli_action_reporting(CliAction::ListPanes {
+            tab: false,
+            command: false,
+            state: true,
+            geometry: false,
+            all: true,
+            json: true,
+        });
+        assert_eq!(code, 0, "{output}");
+        serde_json::from_str(&output).unwrap()
+    };
+    let assert_records = || {
+        let panes = list(&receiver);
+        records
+            .iter()
+            .map(|record| {
+                let matching: Vec<_> = panes
+                    .iter()
+                    .filter(|pane| pane["agent"]["run_id"] == serde_json::json!(record.run_id))
+                    .collect();
+                assert_eq!(matching.len(), 1, "missing or duplicated record: {panes:?}");
+                assert_eq!(matching[0]["agent"], serde_json::to_value(record).unwrap());
+                matching[0]["id"].as_u64().unwrap() as u32
+            })
+            .collect::<Vec<_>>()
+    };
+    let (code, output) = sender.run_cli_action_reporting(CliAction::WarpTab {
+        to_session: Some(receiver.session_name().to_owned()),
+        from_session: None,
+        tab_id: None,
+    });
+    assert_eq!(code, 0, "{output}");
+    receiver.wait_until("the transferred tab to arrive", |grid| {
+        grid.contains("second idle agent")
+    });
+    let destination_ids = assert_records();
+    receiver.wait_until("the status bar to count both idle agents", |grid| {
+        grid.contains("·2") || grid.contains("2i")
+    });
+    sender.quit();
+    // Each CLI client attaches and detaches, causing fresh manifest publications. No hook
+    // or timer is needed to keep the records alive, even after their old owner has gone.
+    for _ in 0..3 {
+        assert_eq!(assert_records(), destination_ids);
+    }
+    receiver.wait_until(
+        "both idle agents to remain counted after source shutdown",
+        |grid| grid.contains("·2") || grid.contains("2i"),
+    );
+    let mut busy = records[0].clone();
+    busy.state = AgentState::Busy;
+    let (code, output) = receiver.run_actions_reporting(vec![Action::SetPaneAgent {
+        pane_id: PaneId::from_legacy(destination_ids[0], false),
+        agent: Some(busy.clone()),
+    }]);
+    assert_eq!(code, 0, "{output}");
+    assert!(list(&receiver)
+        .iter()
+        .any(|pane| pane["agent"] == serde_json::to_value(&busy).unwrap()));
+    let event =
+        serde_json::from_str(r#"{"hook_event_name":"SessionEnd","session_id":"codex-session"}"#)
+            .unwrap();
+    let (code, output) =
+        receiver.run_actions_reporting(zellij_types::input::actions::hook_report_actions(
+            "codex",
+            PaneId::from_legacy(destination_ids[0], false),
+            &event,
+            String::new(),
+        ));
+    assert_eq!(code, 0, "{output}");
+    let panes = list(&receiver);
+    assert!(panes
+        .iter()
+        .find(|pane| pane["id"] == destination_ids[0] && pane["is_plugin"] == false)
+        .unwrap()["agent"]
+        .is_null());
+    assert!(panes
+        .iter()
+        .any(|pane| pane["agent"] == serde_json::to_value(&records[1]).unwrap()));
+}
+
 #[test]
 fn the_sessions_last_pane_is_refused_and_the_session_survives() {
     // Moving a pane should not be a way to end a session by accident. A tab's
