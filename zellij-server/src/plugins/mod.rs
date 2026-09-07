@@ -1259,6 +1259,7 @@ pub(crate) fn plugin_thread_main(
                             .to_owned(),
                         None,
                         None,
+                        None,
                     ))?;
                 } else if let Some((id, client)) = store {
                     wasm_bridge.pipe_messages(
