@@ -752,6 +752,20 @@ fn create_plugin_thread_with_pty_receiver(
     layout_dir: Option<PathBuf>,
     session_env_vars: Option<std::collections::BTreeMap<String, String>>,
 ) -> PluginThreadHarnessWith<PtyInstruction> {
+    create_plugin_thread_with_pty_receiver_and_layout(
+        zellij_cwd,
+        layout_dir,
+        session_env_vars,
+        Box::default(),
+    )
+}
+
+fn create_plugin_thread_with_pty_receiver_and_layout(
+    zellij_cwd: Option<PathBuf>,
+    layout_dir: Option<PathBuf>,
+    session_env_vars: Option<std::collections::BTreeMap<String, String>>,
+    layout: Box<zellij_types::input::layout::Layout>,
+) -> PluginThreadHarnessWith<PtyInstruction> {
     let zellij_cwd = zellij_cwd.unwrap_or_else(|| PathBuf::from("."));
     let session_env_vars = session_env_vars.unwrap_or_else(|| std::env::vars().collect());
     let (to_server, _server_receiver): ChannelWithContext<ServerInstruction> =
@@ -805,7 +819,7 @@ fn create_plugin_thread_with_pty_receiver(
                 engine,
                 data_dir,
                 data_access,
-                Box::default(),
+                layout,
                 Some(layout_dir),
                 Some(user_plugin_dir),
                 vec![],

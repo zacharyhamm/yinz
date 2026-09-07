@@ -1,6 +1,6 @@
 use super::*;
 use unicode_width::UnicodeWidthStr;
-use zellij_types::internal_ids::TabId;
+use zellij_types::internal_ids::{PluginId, TabId};
 
 /// The project a plugin says each tab is on, as `SetTabProjects` carries it.
 fn set_projects(screen: &mut Screen, projects: &[(usize, &str)]) {
@@ -336,6 +336,209 @@ fn arrangement_group(identity: &str, pane_ids: &[u32]) -> zellij_types::data::Pr
         configuration_root: None,
         pane_ids: pane_ids.to_vec(),
     }
+}
+
+fn capture_arrangement_loads(screen: &mut Screen) -> Receiver<(PluginInstruction, ErrorContext)> {
+    let (sender, receiver) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    receiver
+}
+
+fn apply_arrangement_loads(
+    screen: &mut Screen,
+    receiver: &Receiver<(PluginInstruction, ErrorContext)>,
+) {
+    let loads: Vec<_> = receiver
+        .try_iter()
+        .filter_map(|(instruction, _)| {
+            if let PluginInstruction::NewTab(
+                _,
+                _,
+                Some(layout),
+                floating,
+                id,
+                _,
+                _,
+                focus,
+                client,
+                _,
+            ) = instruction
+            {
+                assert_eq!(floating, Some(vec![]));
+                assert!(!focus);
+                Some((layout, id, client))
+            } else {
+                None
+            }
+        })
+        .collect();
+    for (layout, id, client) in loads {
+        let mut plugins: HashMap<RunPluginOrAlias, Vec<PluginId>> = HashMap::new();
+        for (index, run) in layout.extract_run_instructions().into_iter().enumerate() {
+            let Some(Run::Plugin(plugin)) = run else {
+                panic!("arrangement must not spawn terminals")
+            };
+            plugins
+                .entry(plugin)
+                .or_default()
+                .push(PluginId::new((id.get() * 100 + index) as u32));
+        }
+        screen
+            .apply_layout(
+                layout,
+                vec![],
+                vec![],
+                vec![],
+                plugins,
+                id,
+                false,
+                client,
+                None,
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn arrangement_loads_new_tab_chrome_without_spawning_template_terminals() {
+    for (top, bottom) in [(1, 2), (2, 3), (0, 0)] {
+        let mut screen = create_new_screen(
+            Size {
+                cols: 120,
+                rows: 40,
+            },
+            true,
+            true,
+        );
+        let receiver = capture_arrangement_loads(&mut screen);
+        let bars = if top == 0 {
+            String::new()
+        } else {
+            format!(r#"pane size={top} borderless=true {{ plugin location="zellij:tab-bar"; }}"#)
+        };
+        let footer = if bottom == 0 {
+            String::new()
+        } else {
+            format!(
+                r#"pane size={bottom} borderless=true {{ plugin location="zellij:status-bar"; }}"#
+            )
+        };
+        *screen.default_layout = zellij_config::kdl::layout::from_kdl(
+            &format!(
+                r#"layout {{ new_tab_template {{
+                {bars}
+                pane {{ pane command="must-not-start"; pane; }}
+                {footer}
+                floating_panes {{ pane command="must-not-float"; }}
+            }}; }}"#
+            ),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        arrangement_test_tab(
+            &mut screen,
+            0,
+            &[1, 2, 3, 4],
+            TiledPaneLayout {
+                children: vec![TiledPaneLayout::default(); 4],
+                ..Default::default()
+            },
+        );
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join(".zellij")).unwrap();
+        std::fs::write(
+            directory.path().join(".zellij/layout.kdl"),
+            "layout { pane split_direction=\"vertical\" { pane; pane; }; }",
+        )
+        .unwrap();
+        let mut b = arrangement_group("b", &[2, 4]);
+        b.configuration_root = Some(directory.path().display().to_string());
+        let focused = screen.get_active_pane_id(&ClientId::new(1));
+        let groups = vec![
+            arrangement_group("a", &[1]),
+            b,
+            arrangement_group("c", &[3]),
+        ];
+        screen
+            .arrange_project_panes(groups.clone(), ClientId::new(1))
+            .unwrap();
+        assert!(screen.pending_arrangement.is_some());
+        assert_eq!(screen.tabs[&TabId::new(0)].arrangement_pane_ids().len(), 4);
+        // A second request must neither move panes nor allocate more tabs.
+        screen
+            .arrange_project_panes(groups.clone(), ClientId::new(1))
+            .unwrap();
+        assert_eq!(screen.tabs.len(), 3);
+        apply_arrangement_loads(&mut screen, &receiver);
+        assert!(screen.pending_arrangement.is_none());
+        assert_eq!(screen.get_active_pane_id(&ClientId::new(1)), focused);
+        for id in [1, 2] {
+            let tab = &screen.tabs[&TabId::new(id)];
+            assert_eq!(
+                tab.get_tiled_pane_ids().len(),
+                (if top == 0 { 0 } else { 2 }) + if id == 1 { 2 } else { 1 }
+            );
+            let terminal = tab
+                .get_pane_with_id(PaneId::Terminal(TerminalId::new(id as u32 + 1)))
+                .unwrap();
+            let geom = terminal.position_and_size();
+            assert_eq!(geom.cols.as_usize(), if id == 1 { 60 } else { 120 });
+            assert_eq!(geom.y, top);
+            assert_eq!(geom.rows.as_usize(), 40 - top - bottom);
+            assert_eq!(tab.tiled_and_floating_pane_ids(), tab.get_tiled_pane_ids());
+        }
+        let before: Vec<_> = screen
+            .tabs
+            .values()
+            .map(|tab| tab.get_tiled_pane_ids())
+            .collect();
+        screen
+            .arrange_project_panes(groups, ClientId::new(1))
+            .unwrap();
+        assert!(screen.pending_arrangement.is_none());
+        assert_eq!(
+            before,
+            screen
+                .tabs
+                .values()
+                .map(|tab| tab.get_tiled_pane_ids())
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn arrangement_cancels_when_a_destination_closes_during_loading() {
+    let mut screen = create_new_screen(
+        Size {
+            cols: 120,
+            rows: 40,
+        },
+        true,
+        true,
+    );
+    let receiver = capture_arrangement_loads(&mut screen);
+    arrangement_test_tab(
+        &mut screen,
+        0,
+        &[1, 2],
+        TiledPaneLayout {
+            children: vec![TiledPaneLayout::default(); 2],
+            ..Default::default()
+        },
+    );
+    screen
+        .arrange_project_panes(
+            vec![arrangement_group("a", &[1]), arrangement_group("b", &[2])],
+            ClientId::new(1),
+        )
+        .unwrap();
+    screen.close_tab_by_id(TabId::new(1)).unwrap();
+    apply_arrangement_loads(&mut screen, &receiver);
+    assert!(screen.pending_arrangement.is_none());
+    assert_eq!(screen.tabs[&TabId::new(0)].arrangement_pane_ids().len(), 2);
 }
 
 #[test]
@@ -754,11 +957,13 @@ fn arrangement_splits_original_lists_by_project_and_preserves_separate_stacks() 
         arrangement_group("b", &[4, 2]),
         arrangement_group("c", &[5]),
     ];
+    let receiver = capture_arrangement_loads(&mut screen);
     let mut previous = None;
     for _ in 0..2 {
         screen
             .arrange_project_panes(groups.clone(), ClientId::new(1))
             .unwrap();
+        apply_arrangement_loads(&mut screen, &receiver);
         screen.render(None).unwrap();
         assert_eq!(screen.tabs.len(), 3);
         assert_eq!(screen.get_active_pane_id(&ClientId::new(1)), Some(pane(2)));

@@ -2077,7 +2077,7 @@ pub(crate) fn screen_thread_main(
                         cwd,
                         default_shell,
                         layout,
-                        floating_panes_layout,
+                        (!floating_panes_layout.is_empty()).then_some(floating_panes_layout),
                         tab_index,
                         initial_panes,
                         block_on_first_terminal,
@@ -2284,7 +2284,7 @@ pub(crate) fn screen_thread_main(
                                     None,
                                     default_shell,
                                     None,
-                                    vec![],
+                                    None,
                                     tab_index,
                                     None,  // initial_panes
                                     false, // block_on_first_terminal

@@ -6,7 +6,7 @@ Options:
       --simplified-ui <SIMPLIFIED_UI>
           Allow plugins to use a more simplified layout that is compatible with more fonts (true or
           false)
-
+          
           [possible values: true, false]
 
       --theme <THEME>
@@ -61,7 +61,7 @@ Options:
 
       --agent-double-escape <AGENT_DOUBLE_ESCAPE>
           Require two plain Escape presses within one second in agent panes (default: false)
-
+          
           [possible values: true, false]
 
       --pane-frames <PANE_FRAMES>

@@ -5,6 +5,74 @@ use zellij_types::internal_ids::TabId;
 
 #[test]
 #[serial(plugin_tests)]
+fn new_tab_distinguishes_default_empty_and_explicit_floating_layouts() {
+    use zellij_types::input::{command::RunCommand, layout::Run};
+
+    let layout = zellij_config::kdl::layout::from_kdl(
+        &format!(
+            r#"layout {{ new_tab_template {{
+                pane {{ plugin location="file:{}"; }}
+                floating_panes {{
+                    pane command="default-floating-command"
+                    pane {{ plugin location="file:{}"; }}
+                }}
+            }}; }}"#,
+            *PLUGIN_FIXTURE, *PLUGIN_FIXTURE
+        ),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let default_floating = layout.new_tab().1;
+    assert_eq!(default_floating.len(), 2);
+    let mut explicit_floating = default_floating.clone();
+    explicit_floating[0].run = Some(Run::Command(RunCommand {
+        command: PathBuf::from("explicit-floating-command"),
+        ..Default::default()
+    }));
+    let (sender, pty_receiver, _screen_receiver, teardown) =
+        create_plugin_thread_with_pty_receiver_and_layout(None, None, None, Box::new(layout));
+    let client_id = ClientId::new(1);
+    sender
+        .send(PluginInstruction::AddClient(client_id))
+        .unwrap();
+    for (floating, expected) in [
+        (Some(vec![]), vec![]),
+        (None, default_floating),
+        (Some(explicit_floating.clone()), explicit_floating),
+    ] {
+        sender
+            .send(PluginInstruction::NewTab(
+                None,
+                None,
+                None,
+                floating,
+                TabId::new(1),
+                None,
+                false,
+                false,
+                client_id,
+                None,
+            ))
+            .unwrap();
+        let (instruction, _) = pty_receiver.recv_timeout(default_timeout()).unwrap();
+        let PtyInstruction::NewTab(_, _, _, resolved, _, plugin_ids, ..) = instruction else {
+            panic!("expected a resolved new tab, got {instruction:?}");
+        };
+        // The handler requests plugins before handing commands to PTY. This also
+        // proves an empty override keeps tiled chrome without starting a floating plugin.
+        assert_eq!(resolved, expected);
+        assert_eq!(
+            plugin_ids.values().map(Vec::len).sum::<usize>(),
+            if expected.is_empty() { 1 } else { 2 }
+        );
+    }
+    teardown();
+}
+
+#[test]
+#[serial(plugin_tests)]
 pub fn load_new_plugin_from_hd() {
     // here we load our fixture plugin into the plugin thread, and then send it an update message
     // expecting tha thte plugin will log the received event and render it later after the update

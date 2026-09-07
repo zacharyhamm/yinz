@@ -182,7 +182,11 @@ impl Screen {
                     tabs_that_rendered.push(*tab_index);
                     // Something selectable is back, so a later close asks again.
                     self.last_tab_held_open = false;
-                } else if !tab.is_pending() {
+                } else if !tab.is_pending()
+                    && !self.pending_arrangement.as_ref().is_some_and(|pending| {
+                        pending.destinations.values().any(|id| id == tab_index)
+                    })
+                {
                     if hold_the_last_tab {
                         // A plugin has something outstanding and asked to be consulted. Draw the
                         // tab anyway - `render_panes` copes with no active tiled pane, and the
