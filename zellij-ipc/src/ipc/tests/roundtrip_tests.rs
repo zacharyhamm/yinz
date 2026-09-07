@@ -664,6 +664,7 @@ fn test_client_messages() {
                 theme_dir: Some(PathBuf::from("theme_dir")),
                 user_plugin_dir: Some(PathBuf::from("user_plugin_dir")),
                 mouse_mode: Some(true),
+                agent_double_escape: Some(true),
                 // Intentionally not carried over the wire; see the field's docs.
                 detachable_panes: None,
                 plugin_data_url: None,
@@ -4883,5 +4884,19 @@ fn position_wire_preserves_scrollback_and_rejects_line_overflow() {
             column: Column::new(0)
         })
         .is_err());
+    }
+}
+
+#[test]
+fn agent_double_escape_ipc_round_trip() {
+    use crate::client_server_contract::client_server_contract::Options as ProtoOptions;
+    for value in [None, Some(false), Some(true)] {
+        let options = Options {
+            agent_double_escape: value,
+            ..Options::default()
+        };
+        let wire = ProtoOptions::from(options.clone()).encode_to_vec();
+        let decoded = ProtoOptions::decode(wire.as_slice()).unwrap();
+        assert_eq!(Options::try_from(decoded).unwrap(), options);
     }
 }

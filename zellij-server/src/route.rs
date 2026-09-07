@@ -2728,6 +2728,17 @@ pub(crate) fn route_thread_main(
                             .context("tracking active client")?
                             .set_last_active_client(client_id);
                     }
+                    if let ClientToServerMsg::Key { key, .. } = &instruction {
+                        if key.bare_key != zellij_types::keys::BareKey::Esc
+                            || !key.has_no_modifiers()
+                        {
+                            if let Some(senders) = &senders {
+                                senders
+                                    .send_to_screen(ScreenInstruction::ResetAgentEscape(client_id))
+                                    .non_fatal();
+                            }
+                        }
+                    }
                     let Some(instruction) = crate::locked_escape::prepare_input(
                         instruction,
                         &session_data,
@@ -2830,6 +2841,7 @@ pub(crate) fn route_thread_main(
                                 // binding fires, rather than only dismissing it after the fact.
                                 let mut menu_handled_key = false;
                                 if actions_dismiss_context_menu(&actions) {
+                                    senders.send_to_screen(ScreenInstruction::ResetAgentEscape(client_id)).non_fatal();
                                     let (completion_tx, completion_rx) = oneshot::channel();
                                     let sent = senders.send_to_screen(
                                         ScreenInstruction::ContextMenuHandleKeyIfOpen {

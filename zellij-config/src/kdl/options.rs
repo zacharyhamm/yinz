@@ -83,6 +83,9 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
     let user_plugin_dir =
         kdl_property_first_arg_as_string_or_error!(kdl_options, "user_plugin_dir")
             .map(|(string, _entry)| PathBuf::from(string));
+    let agent_double_escape =
+        kdl_property_first_arg_as_bool_or_error!(kdl_options, "agent_double_escape")
+            .map(|(v, _)| v);
     let mouse_mode =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "mouse_mode").map(|(v, _)| v);
     let detachable_panes =
@@ -338,6 +341,7 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         theme_dir,
         user_plugin_dir,
         mouse_mode,
+        agent_double_escape,
         detachable_panes,
         firecracker_provider,
         firecracker_provider_timeout_secs: firecracker_provider_timeout_secs
@@ -880,6 +884,30 @@ fn locked_escape_timeout_ms_to_kdl(value: &Options, add_comments: bool) -> Optio
     }
 }
 
+fn agent_double_escape_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
+    let comment_text =
+        "// Require two plain Escape presses within one second in panes with an agent record.
+// The first press is discarded; the second sends one Escape. Disabled by default.";
+
+    let create_node = |node_value: bool| -> KdlNode {
+        let mut node = KdlNode::new("agent_double_escape");
+        node.push(KdlValue::Bool(node_value));
+        node
+    };
+    if let Some(agent_double_escape) = value.agent_double_escape {
+        let mut node = create_node(agent_double_escape);
+        if add_comments {
+            node.set_leading(format!("{}\n", comment_text));
+        }
+        Some(node)
+    } else if add_comments {
+        let mut node = create_node(false);
+        node.set_leading(format!("{}\n// ", comment_text));
+        Some(node)
+    } else {
+        None
+    }
+}
 fn mouse_mode_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
     let comment_text = format!(
         "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
@@ -2269,6 +2297,9 @@ pub fn to_kdl(value: &Options, add_comments: bool) -> Vec<KdlNode> {
     }
     if let Some(timeout) = firecracker_provider_timeout_secs_to_kdl(value, add_comments) {
         nodes.push(timeout);
+    }
+    if let Some(node) = agent_double_escape_to_kdl(value, add_comments) {
+        nodes.push(node);
     }
     if let Some(mouse_mode) = mouse_mode_to_kdl(value, add_comments) {
         nodes.push(mouse_mode);

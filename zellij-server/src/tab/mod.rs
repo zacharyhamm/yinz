@@ -85,7 +85,7 @@ use crate::{
 };
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     str,
@@ -316,6 +316,8 @@ struct HostCursorState {
 }
 
 pub(crate) struct Tab {
+    pub agent_double_escape: bool,
+    pub pending_agent_escapes: HashMap<(ClientId, PaneId), Instant>,
     pub id: TabId,
     pub position: TabPosition,
     pub name: String,
@@ -1282,6 +1284,8 @@ impl Tab {
         let swap_layouts = SwapLayouts::new(swap_layouts, display_area.clone());
 
         Tab {
+            agent_double_escape: false,
+            pending_agent_escapes: HashMap::new(),
             id,
             position,
             tiled_panes,
@@ -4446,6 +4450,10 @@ impl Tab {
     /// Replace `pane_id`'s agent record, answering whether it changed. Unchanged is the common
     /// case - a hook reporting `busy` on every tool call - and costs no manifest.
     pub fn set_pane_agent(&mut self, pane_id: PaneId, agent: Option<AgentInfo>) -> bool {
+        if agent.is_none() {
+            self.pending_agent_escapes
+                .retain(|(_, pane), _| *pane != pane_id);
+        }
         let pane = self
             .floating_panes
             .get_mut(&pane_id)
@@ -5035,6 +5043,31 @@ impl Tab {
 
         if should_not_write_to_terminal {
             return Ok(should_update_ui);
+        }
+
+        if self.agent_double_escape && matches!(pane_id, PaneId::Terminal(_)) {
+            if let (Some(client_id), Some(key)) = (client_id, key_with_modifier) {
+                let target = (client_id, pane_id);
+                if active_pane.agent_info().is_some()
+                    && !active_pane.is_held()
+                    && !active_pane.is_suspended()
+                    && active_pane.guest_modal_selection(client_id).is_none()
+                    && key.bare_key == zellij_types::keys::BareKey::Esc
+                    && key.has_no_modifiers()
+                {
+                    let now = Instant::now();
+                    if !self
+                        .pending_agent_escapes
+                        .remove(&target)
+                        .is_some_and(|first| now.duration_since(first) < Duration::from_secs(1))
+                    {
+                        self.pending_agent_escapes.insert(target, now);
+                        return Ok(false);
+                    }
+                } else {
+                    self.pending_agent_escapes.remove(&target);
+                }
+            }
         }
 
         // Somebody is answering. Whatever the agent here was waiting for, it is no longer

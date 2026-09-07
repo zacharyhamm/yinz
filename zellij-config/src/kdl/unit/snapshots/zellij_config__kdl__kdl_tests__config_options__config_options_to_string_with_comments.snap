@@ -91,6 +91,9 @@ user_plugin_dir "/tmp/plugins"
 
 // Firecracker provider request timeout
 // firecracker_provider_timeout_secs 60
+// Require two plain Escape presses within one second in panes with an agent record.
+// The first press is discarded; the second sends one Escape. Disabled by default.
+// agent_double_escape false
  
 // Toggle enabling the mouse mode.
 // On certain configurations, or terminals this could

@@ -559,3 +559,5 @@ mod splitting;
 mod stack_resize;
 mod text_selection;
 mod viewport_clamp;
+
+mod agent_double_escape;
