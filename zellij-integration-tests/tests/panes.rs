@@ -6,6 +6,7 @@ use zellij_integration_tests::{
     split_down_and_wait_for_prompt, split_right_and_wait_for_prompt, start_zellij,
     tab_bar_shows_no_lone_pane_id, Coord, Size, TestRunner, TestSession, PROMPT, TERMINAL_SIZE,
 };
+use zellij_types::data::LayoutInfo;
 
 #[test]
 fn cannot_split_terminals_vertically_when_active_terminal_is_too_small() {
@@ -177,6 +178,39 @@ fn closing_last_pane_exits_when_no_background_panes_remain() {
 
     zellij.wait_until(
         "zellij exited after closing the last pane",
+        |grid_snapshot| grid_snapshot.contains("Bye from Zellij!"),
+    );
+}
+
+#[test]
+fn last_terminal_exit_ends_session_with_background_plugins() {
+    let zellij = start_zellij();
+    let terminal = claim_first_terminal_and_wait_for_prompt(&zellij);
+
+    terminal.exit(Some(0));
+
+    zellij.wait_until(
+        "zellij exited after the last shell exited",
+        |grid_snapshot| grid_snapshot.contains("Bye from Zellij!"),
+    );
+}
+
+#[test]
+fn last_terminal_exit_ends_session_without_plugin_renders() {
+    let zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".to_owned()))
+        .start();
+    let terminal = zellij.expect_pty_spawn();
+    terminal.output(PROMPT);
+    zellij.wait_until("shell prompt rendered", |grid_snapshot| {
+        grid_snapshot.contains("$ ")
+    });
+
+    terminal.exit(Some(0));
+
+    zellij.wait_until(
+        "zellij exited after the last shell exited",
         |grid_snapshot| grid_snapshot.contains("Bye from Zellij!"),
     );
 }

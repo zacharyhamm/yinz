@@ -5590,10 +5590,9 @@ fn an_overlay_does_not_keep_the_session_alive_when_the_last_tab_closes() {
     );
 }
 
-/// An overlay retains its tab after the last terminal leaves. Rendering and
-/// arrangement use the same retention rule.
+/// An overlay follows the client to a surviving tab when its last terminal leaves.
 #[test]
-fn an_overlay_keeps_its_tab_when_the_last_terminal_leaves() {
+fn an_overlay_moves_to_a_surviving_tab_when_the_last_terminal_leaves() {
     let size = Size { cols: 80, rows: 12 };
     let (mut screen, popup_id) = screen_with_an_overlay_on_the_second_tab(size);
     let (server_sender, _server_receiver) = channels::unbounded();
@@ -5609,25 +5608,25 @@ fn an_overlay_keeps_its_tab_when_the_last_terminal_leaves() {
     screen.render_to_clients().expect("TEST");
 
     assert!(
-        screen.tabs.contains_key(&TabId::new(1)),
-        "an overlay keeps its source tab alive"
+        !screen.tabs.contains_key(&TabId::new(1)),
+        "an overlay alone does not keep its source tab alive"
     );
     assert!(
         screen
             .tabs
-            .get(&TabId::new(1))
+            .get(&TabId::new(0))
             .expect("TEST")
             .pane_is_overlay(popup_id),
-        "the overlay remains in its source tab"
+        "the overlay moves to the surviving tab"
     );
 }
 
-/// A genuinely empty tab is still reaped, while a tab with an overlay is retained.
+/// Overlays alone do not keep the session alive after all its terminals exit.
 #[test]
-fn render_reaps_only_the_tab_without_retained_panes() {
+fn render_reaps_all_tabs_when_only_overlays_remain() {
     let size = Size { cols: 80, rows: 12 };
     let (mut screen, popup_id) = screen_with_an_overlay_on_the_second_tab(size);
-    let (server_sender, _server_receiver) = channels::unbounded();
+    let (server_sender, server_receiver) = channels::unbounded();
     screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
     let (pty_sender, pty_receiver) = channels::unbounded();
     screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
@@ -5643,12 +5642,13 @@ fn render_reaps_only_the_tab_without_retained_panes() {
     }
     screen.render_to_clients().expect("TEST");
 
-    assert_eq!(screen.tabs.len(), 1);
-    assert!(screen.tabs[&TabId::new(1)].pane_is_overlay(popup_id));
+    assert!(screen.tabs.is_empty());
+    assert!(std::iter::from_fn(|| server_receiver.try_recv().ok())
+        .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))));
     let torn_down = panes_torn_down_by_pty(&pty_receiver);
     assert!(
-        !torn_down.contains(&popup_id),
-        "rendering must not tear down the retained overlay: {torn_down:?}"
+        torn_down.contains(&popup_id),
+        "the overlay is torn down with the session: {torn_down:?}"
     );
 }
 
