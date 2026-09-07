@@ -29,9 +29,6 @@ pub const MAX_REQUEST_BYTES: usize = 64_000;
 /// this transcript itself, and one that has stopped noticing is what the cap is for.
 pub const MAX_MESSAGES: usize = 200;
 pub const MAX_TOOLS: usize = 64;
-/// How much answer is handed back. Capped for the same reason a tool result is: the caller
-/// may be a Lua table, and a runaway model must not become a runaway allocation.
-pub const MAX_CONTENT_BYTES: usize = 64_000;
 
 /// The roles the endpoint understands. A caller that misspells one gets told so here rather
 /// than by a provider error three seconds later.
@@ -192,7 +189,7 @@ pub fn parse_completion(status: u16, body: &[u8], request_id: &str) -> Completio
         .unwrap_or_default();
     CompletionReply {
         request_id: request_id.to_owned(),
-        content: capped(content),
+        content: content.to_owned(),
         tool_calls: tool_calls(choice),
         finish_reason: choice
             .get("finish_reason")
@@ -213,7 +210,7 @@ pub fn parse_completion(status: u16, body: &[u8], request_id: &str) -> Completio
 pub fn error_reply(request_id: &str, detail: &str) -> CompletionReply {
     CompletionReply {
         request_id: request_id.to_owned(),
-        error: capped(detail),
+        error: detail.to_owned(),
         ..Default::default()
     }
 }
@@ -260,18 +257,6 @@ fn usage(response: &Value) -> Option<CompletionUsage> {
         completion_tokens: field("completion_tokens"),
         total_tokens: field("total_tokens"),
     })
-}
-
-/// [`MAX_CONTENT_BYTES`] of text, cut on a character boundary.
-fn capped(text: &str) -> String {
-    if text.len() <= MAX_CONTENT_BYTES {
-        return text.to_owned();
-    }
-    let mut end = MAX_CONTENT_BYTES;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text[..end].to_owned()
 }
 
 // ---------------------------------------------------------------------------
@@ -504,17 +489,16 @@ mod tests {
     }
 
     #[test]
-    fn content_is_capped_on_a_character_boundary() {
-        let long = "é".repeat(MAX_CONTENT_BYTES);
-        let body = serde_json::to_vec(&json!({
-            "choices": [{ "message": { "content": long } }],
-        }))
-        .unwrap();
-        let reply = parse_completion(200, &body, "hc1");
-        assert!(reply.content.len() <= MAX_CONTENT_BYTES);
-        // Cutting mid-character would have panicked on the slice, or produced a replacement
-        // character here.
-        assert!(reply.content.chars().all(|c| c == 'é'));
+    fn long_answers_are_preserved_exactly() {
+        for long in ["a".repeat(64_001), "é".repeat(64_001)] {
+            let body = serde_json::to_vec(&json!({
+                "choices": [{ "message": { "content": long } }],
+            }))
+            .unwrap();
+            let reply = parse_completion(200, &body, "hc1");
+            assert_eq!(reply.content, long);
+            assert_eq!(error_reply("hc1", &long).error, long);
+        }
     }
 
     #[test]

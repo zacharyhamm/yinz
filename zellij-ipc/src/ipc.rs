@@ -530,7 +530,7 @@ where
 /// moving a pane between sessions carries its whole scrollback as an ANSI dump.
 /// The same guard exists on the pty-host's own wire format, which sizes it far
 /// smaller because it only ever carries control messages.
-pub const MAX_IPC_FRAME_LEN: usize = 64 * 1024 * 1024;
+pub use crate::MAX_IPC_FRAME_LEN;
 
 // Protobuf wire format utilities
 /// The frame reader, reachable from the tests in this crate so the length guard
