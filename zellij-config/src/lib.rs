@@ -14,3 +14,5 @@ pub mod theme;
 mod keybinds;
 #[cfg(not(target_family = "wasm"))]
 mod lua_config;
+
+pub mod project_layout;

@@ -807,6 +807,8 @@ pub struct PaneInfo {
     pub firecracker_worktree: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag="33")]
     pub target: ::core::option::Option<super::command::PaneTarget>,
+    #[prost(bool, tag="34")]
+    pub is_stack_list_member: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

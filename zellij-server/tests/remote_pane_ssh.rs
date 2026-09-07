@@ -417,8 +417,8 @@ impl Pane {
         self.conn.status()
     }
 
-    fn git_probe(&self) -> Option<RemoteGitProbe> {
-        self.conn.git_probe()
+    fn git_probe(&self, cwd: &str) -> Option<RemoteGitProbe> {
+        self.conn.git_probe(cwd).expect("request remote git probe")
     }
 
     /// Wait for the far machine's status pump to report something we care about.
@@ -1250,12 +1250,15 @@ fn a_git_checkout_on_the_far_machine_is_probed_there() {
          git config user.email t@example.com && git config user.name test"
     ));
 
-    let pane = open_pane_in(&hosts, &idle_marked(&marker), Some(&dir));
+    let pane = open_pane_in(&hosts, &idle_marked(&marker), Some("/tmp"));
     pane.wait_for_output(&format!("{marker}-started"));
 
+    pane.wait_for_status("the process directory", |status| {
+        status.cwd.as_deref() == Some("/tmp")
+    });
     let deadline = Instant::now() + SETTLE;
     let probe = loop {
-        if let Some(probe) = pane.git_probe() {
+        if let Some(probe) = pane.git_probe(&dir) {
             break probe;
         }
         assert!(
@@ -1334,7 +1337,7 @@ fn a_branch_switched_in_place_on_the_far_machine_is_reported() {
     let wait_for_branch = |want: &str| {
         let deadline = Instant::now() + Duration::from_secs(configured * 3);
         loop {
-            if let Some(probe) = pane.git_probe() {
+            if let Some(probe) = pane.git_probe(&dir) {
                 if branch_of(&probe).as_deref() == Some(want) {
                     return;
                 }
@@ -1342,7 +1345,7 @@ fn a_branch_switched_in_place_on_the_far_machine_is_reported() {
             assert!(
                 Instant::now() < deadline,
                 "the far machine never reported branch {want}; last probe was {:?}",
-                pane.git_probe(),
+                pane.git_probe(&dir),
             );
             std::thread::sleep(Duration::from_millis(200));
         }

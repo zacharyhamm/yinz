@@ -1134,6 +1134,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
             id: TabId::try_from(tc.draw(generators::integers::<u64>())).unwrap(),
             name: strings(tc),
         },
+        ActionKind::ArrangePanesByProject => Action::ArrangePanesByProject,
         ActionKind::BreakPane => Action::BreakPane,
         ActionKind::BreakPaneRight => Action::BreakPaneRight,
         ActionKind::BreakPaneLeft => Action::BreakPaneLeft,
@@ -1890,7 +1891,9 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             pane_id: pane_id(tc),
         },
         CommandType::GetPaneGitProbe => PluginCommand::GetPaneGitProbe {
+            refresh_token: Some("refresh-test".into()),
             pane_id: pane_id(tc),
+            cwd: "/work/project".into(),
         },
         CommandType::MovePaneWithPaneId => PluginCommand::MovePaneWithPaneId(pane_id(tc)),
         CommandType::MovePaneWithPaneIdInDirection => {
@@ -1931,6 +1934,14 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         },
         CommandType::RenameTabWithId => {
             PluginCommand::RenameTabWithId(TabId::try_from(u64s(tc)).unwrap(), strings(tc))
+        },
+        CommandType::ArrangeProjectPanes => {
+            PluginCommand::ArrangeProjectPanes(vec![zellij_types::data::ProjectPaneGroup {
+                identity: strings(tc),
+                name: strings(tc),
+                configuration_root: Some(strings(tc)),
+                pane_ids: vec![u32s(tc)],
+            }])
         },
         CommandType::SetTabProjects => PluginCommand::SetTabProjects(tab_projects(tc)),
         CommandType::BreakPanesToTabWithId => PluginCommand::BreakPanesToTabWithId(

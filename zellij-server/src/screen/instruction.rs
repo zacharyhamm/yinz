@@ -286,6 +286,7 @@ pub enum ScreenInstruction {
     GoToTabWithId(TabId, Option<ClientId>, Option<NotificationEnd>),
     CloseTabWithId(TabId, Option<NotificationEnd>),
     RenameTabWithId(TabId, Vec<u8>, Option<NotificationEnd>),
+    ArrangeProjectPanes(Vec<zellij_types::data::ProjectPaneGroup>, ClientId),
     SetTabProjects(BTreeMap<TabId, String>),
     BreakPanesToTabWithId {
         pane_ids: Vec<PaneId>,

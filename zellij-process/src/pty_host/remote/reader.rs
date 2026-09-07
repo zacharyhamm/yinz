@@ -324,6 +324,7 @@ impl RemoteReader {
                 true
             },
             BrokerToServerMsg::GitProbe {
+                refresh_token,
                 cwd,
                 exit_code,
                 metadata_base64,
@@ -333,6 +334,7 @@ impl RemoteReader {
                 let metadata = decode_buffered(&metadata_base64).unwrap_or_default();
                 let config = decode_buffered(&config_base64).unwrap_or_default();
                 self.conn.set_git_probe(RemoteGitProbe {
+                    refresh_token,
                     host: self.conn.host().to_owned(),
                     cwd,
                     exit_code,

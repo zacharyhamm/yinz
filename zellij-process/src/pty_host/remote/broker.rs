@@ -694,15 +694,16 @@ fn catch_up_and_attach(
     // The project a pane belongs to is discovered once, on a cwd change that may
     // have happened long before this reconnect. Replaying it means the pane is
     // attributed straight away rather than at whatever point it next moves.
-    if let Some(git) = session.git_probe() {
-        send(wire, &git_report(&git))?;
+    if let Some((git, refresh_token)) = session.git_probe() {
+        send(wire, &git_report(&git, refresh_token))?;
     }
     Ok(())
 }
 
-fn git_report(git: &super::status::GitProbe) -> BrokerToServerMsg {
+fn git_report(git: &super::status::GitProbe, refresh_token: Option<String>) -> BrokerToServerMsg {
     use crate::pty_host::protocol::encode_buffered;
     BrokerToServerMsg::GitProbe {
+        refresh_token,
         cwd: git.cwd.clone(),
         exit_code: git.exit_code,
         metadata_base64: encode_buffered(&git.metadata),
@@ -755,6 +756,7 @@ fn git_refresh_interval() -> std::time::Duration {
 /// Pulled out of the pump's loop so it can be tested at all: inside a
 /// `loop { sleep }` the refresh interval is only reachable by waiting for it.
 pub struct GitProbePump {
+    refresh_token: Option<String>,
     last: Option<super::status::GitProbe>,
     since_refresh: std::time::Duration,
     interval: std::time::Duration,
@@ -763,6 +765,7 @@ pub struct GitProbePump {
 impl GitProbePump {
     pub fn new(interval: std::time::Duration) -> Self {
         GitProbePump {
+            refresh_token: None,
             last: None,
             since_refresh: std::time::Duration::ZERO,
             interval,
@@ -791,15 +794,27 @@ impl GitProbePump {
         elapsed: std::time::Duration,
         probe: impl Fn(&str) -> super::status::GitProbe,
     ) -> Option<Probed> {
+        self.tick_with_refresh(cwd, None, elapsed, probe)
+    }
+
+    pub fn tick_with_refresh(
+        &mut self,
+        cwd: &str,
+        refresh_token: Option<&str>,
+        elapsed: std::time::Duration,
+        probe: impl Fn(&str) -> super::status::GitProbe,
+    ) -> Option<Probed> {
+        let refresh = refresh_token != self.refresh_token.as_deref();
         self.since_refresh += elapsed;
         let moved = self.last.as_ref().map(|last| last.cwd.as_str()) != Some(cwd);
         let due = self.since_refresh >= self.interval;
-        if !moved && !due {
+        if !moved && !due && !refresh {
             return None;
         }
         self.since_refresh = std::time::Duration::ZERO;
         let git = probe(cwd);
-        let changed = self.last.as_ref() != Some(&git);
+        let changed = refresh || self.last.as_ref() != Some(&git);
+        self.refresh_token = refresh_token.map(str::to_owned);
         self.last = Some(git.clone());
         Some(Probed {
             probe: git,
@@ -833,15 +848,20 @@ fn start_status_pump(session: Arc<PaneSession>) -> Result<()> {
                 }
                 let probe = super::status::probe(session.master_fd(), session.child_pid);
 
-                if let Some(cwd) = probe.cwd.as_deref() {
-                    if let Some(ran) = git.tick(cwd, STATUS_INTERVAL, super::status::probe_git) {
+                if let Some((cwd, refresh_token)) = session.git_probe_target() {
+                    if let Some(ran) = git.tick_with_refresh(
+                        &cwd,
+                        refresh_token.as_deref(),
+                        STATUS_INTERVAL,
+                        super::status::probe_git,
+                    ) {
                         // Cached whether or not it is sent: this cache is what
                         // `catch_up_and_attach` replays to a server that has
                         // just reconnected and has no probe of its own.
-                        session.set_git_probe(ran.probe.clone());
+                        session.set_git_probe(ran.probe.clone(), refresh_token.clone());
                         if ran.changed {
                             if let Some(wire) = session.wire() {
-                                let _ = send(&wire, &git_report(&ran.probe));
+                                let _ = send(&wire, &git_report(&ran.probe, refresh_token));
                             }
                         }
                     }
@@ -943,6 +963,12 @@ fn pump_control(
                         height_in_pixels,
                     }) => {
                         set_winsize(master_fd, cols, rows, width_in_pixels, height_in_pixels);
+                    },
+                    ServerToBrokerMsg::GetGitProbe { cwd, refresh_token } => {
+                        if cwd.is_empty() {
+                            return Err(anyhow!("git probe directory is empty"));
+                        }
+                        session.request_git_probe(cwd, refresh_token);
                     },
                     ServerToBrokerMsg::SignalChild(signal) => {
                         signal_child(child_pid, signal);

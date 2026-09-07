@@ -825,7 +825,11 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 get_pane_running_command(env, pane_id.into())
             },
             PluginCommand::GetPaneCwd { pane_id } => get_pane_cwd(env, pane_id.into()),
-            PluginCommand::GetPaneGitProbe { pane_id } => get_pane_git_probe(env, pane_id.into()),
+            PluginCommand::GetPaneGitProbe {
+                pane_id,
+                cwd,
+                refresh_token,
+            } => get_pane_git_probe(env, pane_id.into(), cwd, refresh_token),
             PluginCommand::MovePaneWithPaneId(pane_id) => {
                 move_pane_with_pane_id(env, pane_id.into())
             },
@@ -883,6 +887,14 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::CloseTabWithId(tab_id) => close_tab_with_id(env, tab_id),
             PluginCommand::RenameTabWithId(tab_id, new_name) => {
                 rename_tab_with_id(env, tab_id, &new_name)
+            },
+            PluginCommand::ArrangeProjectPanes(groups) => {
+                env.senders
+                    .send_to_screen(ScreenInstruction::ArrangeProjectPanes(
+                        groups,
+                        env.client_id,
+                    ))
+                    .non_fatal();
             },
             PluginCommand::SetTabProjects(tab_projects) => set_tab_projects(env, tab_projects),
             PluginCommand::BreakPanesToTabWithId(pane_ids, tab_id, should_change_focus) => {
@@ -6827,13 +6839,21 @@ fn write_pane_cwd_response(env: &mut PluginEnv, pane_id: PaneId, response: GetPa
 ///
 /// One channel round trip and no process: unlike the local path, which spawns
 /// two `git` processes per folder, this is only a read of what has already
-/// arrived. That is why the plugin side can afford to ask on its heartbeat.
-fn get_pane_git_probe(env: &mut PluginEnv, pane_id: PaneId) {
+/// arrived. A refresh token also requests a new probe; only its correlated result
+/// can answer that request. The plugin polls without blocking the PTY thread.
+fn get_pane_git_probe(
+    env: &mut PluginEnv,
+    pane_id: PaneId,
+    cwd: String,
+    refresh_token: Option<String>,
+) {
     let (sender, receiver) = crossbeam::channel::bounded(1);
 
     env.senders
         .send_to_pty(PtyInstruction::GetPaneGitProbe {
+            refresh_token,
             pane_id,
+            cwd,
             response_channel: sender,
         })
         .with_context(|| format!("Failed to get the git probe for pane {:?}", pane_id))
@@ -7916,6 +7936,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::GoToTabWithId
         | CommandType::CloseTabWithId
         | CommandType::RenameTabWithId
+        | CommandType::ArrangeProjectPanes
         | CommandType::SetTabProjects
         | CommandType::BreakPanesToTabWithId
         | CommandType::ReloadPlugin

@@ -1139,8 +1139,13 @@ pub trait ServerOsApi: Send + Sync {
     /// this into a checkout identity, including the awkward part where a
     /// repository with no commits writes its identity to stdout and *then* exits
     /// 128. Parsing here would duplicate that and drift from it.
-    fn remote_pane_git_probe(&self, _terminal_id: TerminalId) -> Option<RemoteGitProbe> {
-        None
+    fn remote_pane_git_probe(
+        &self,
+        _terminal_id: TerminalId,
+        _cwd: &str,
+        _refresh_token: Option<&str>,
+    ) -> Result<Option<RemoteGitProbe>, String> {
+        Err("pane is not remote".into())
     }
     /// The machine a pane runs on, or `None` if it runs on this one.
     fn remote_pane_host(&self, _terminal_id: TerminalId) -> Option<String> {
@@ -1330,8 +1335,14 @@ impl ServerOsApi for ServerOsInputOutput {
     fn remote_pane_ids(&self) -> Vec<TerminalId> {
         self.pty_backend.remote_pane_ids()
     }
-    fn remote_pane_git_probe(&self, terminal_id: TerminalId) -> Option<RemoteGitProbe> {
-        self.pty_backend.remote_git_probe(terminal_id)
+    fn remote_pane_git_probe(
+        &self,
+        terminal_id: TerminalId,
+        cwd: &str,
+        refresh_token: Option<&str>,
+    ) -> Result<Option<RemoteGitProbe>, String> {
+        self.pty_backend
+            .remote_git_probe(terminal_id, cwd, refresh_token)
     }
     fn remote_pane_host(&self, terminal_id: TerminalId) -> Option<String> {
         self.pty_backend.remote_host(terminal_id)

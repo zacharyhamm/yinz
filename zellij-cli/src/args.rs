@@ -1765,6 +1765,8 @@ tail -f /tmp/my-live-logfile | zellij action pipe --name logs --plugin https://e
         #[clap(short, long, value_parser)]
         json: bool,
     },
+    /// Group terminal panes into project tabs, with branches and worktrees together.
+    ArrangePanesByProject,
     TogglePanePinned {
         /// Target a specific pane by ID (eg. terminal_1, plugin_2, or 3)
         #[clap(short, long, value_parser)]

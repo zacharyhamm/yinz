@@ -373,12 +373,19 @@ impl ServerOsApi for MockOsApi {
     fn remote_pane_host(&self, terminal_id: TerminalId) -> Option<String> {
         self.remote_hosts.lock().unwrap().get(&terminal_id).cloned()
     }
-    fn remote_pane_git_probe(&self, terminal_id: TerminalId) -> Option<RemoteGitProbe> {
+    fn remote_pane_git_probe(
+        &self,
+        terminal_id: TerminalId,
+        cwd: &str,
+        _refresh_token: Option<&str>,
+    ) -> Result<Option<RemoteGitProbe>, String> {
         self.remote_git_probes
             .lock()
             .unwrap()
             .get(&terminal_id)
             .cloned()
+            .map(|probe| Some(probe).filter(|probe| probe.cwd == cwd))
+            .ok_or_else(|| "pane is not remote".into())
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
         Box::new((*self).clone())
@@ -2307,6 +2314,7 @@ fn a_remote_pane_hands_its_git_probe_to_the_plugins() {
     mock.set_remote_git_probe(
         crate::TerminalId::new(7),
         RemoteGitProbe {
+            refresh_token: None,
             host: "build-box".to_owned(),
             cwd: "/srv/build/project".to_owned(),
             exit_code: Some(128),
@@ -2316,7 +2324,15 @@ fn a_remote_pane_hands_its_git_probe_to_the_plugins() {
     );
     let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock);
 
-    match pty.get_pane_git_probe(PaneId::Terminal(crate::TerminalId::new(7))) {
+    assert_eq!(
+        pty.get_pane_git_probe(PaneId::Terminal(crate::TerminalId::new(7)), "/agent", None),
+        GetPaneGitProbeResponse::Pending
+    );
+    match pty.get_pane_git_probe(
+        PaneId::Terminal(crate::TerminalId::new(7)),
+        "/srv/build/project",
+        None,
+    ) {
         GetPaneGitProbeResponse::Ok(probe) => {
             assert_eq!(
                 probe.host, "build-box",
@@ -2340,7 +2356,11 @@ fn a_local_pane_has_no_git_probe_to_give() {
     let mock = MockOsApi::new();
     let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(mock);
 
-    match pty.get_pane_git_probe(PaneId::Terminal(crate::TerminalId::new(7))) {
+    match pty.get_pane_git_probe(
+        PaneId::Terminal(crate::TerminalId::new(7)),
+        "/srv/build/project",
+        None,
+    ) {
         GetPaneGitProbeResponse::Err(message) => assert!(
             message.contains("not remote"),
             "the reason has to be readable: {message}"

@@ -54,6 +54,7 @@ pub struct RemoteStatus {
 /// the parsing stays in one place rather than being duplicated for remote panes.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RemoteGitProbe {
+    pub refresh_token: Option<String>,
     /// The machine this was run on, so two checkouts at the same path on
     /// different hosts stay distinct.
     pub host: String,
@@ -117,6 +118,7 @@ pub struct RemoteConn {
     /// never be read that way.
     child_exit: Mutex<Option<Option<i32>>>,
     git_probe: Mutex<Option<RemoteGitProbe>>,
+    git_probe_target: Mutex<Option<(String, Option<String>)>>,
     transport_lost: AtomicBool,
     /// A label for diagnostics, and the address to reconnect to.
     host: String,
@@ -165,6 +167,7 @@ impl RemoteConn {
             status: Mutex::new(RemoteStatus::default()),
             child_exit: Mutex::new(None),
             git_probe: Mutex::new(None),
+            git_probe_target: Mutex::new(None),
             transport_lost: AtomicBool::new(false),
             host,
             pane_token,
@@ -364,6 +367,14 @@ impl RemoteConn {
         out.broken = false;
         drop(out);
         self.transport_lost.store(false, Ordering::SeqCst);
+        if let Ok(target) = self.git_probe_target.lock() {
+            if let Some((cwd, refresh_token)) = target.as_ref() {
+                self.send_control(&ServerToBrokerMsg::GetGitProbe {
+                    cwd: cwd.clone(),
+                    refresh_token: refresh_token.clone(),
+                })?;
+            }
+        }
         Ok((resumed.read_socket, resumed.dropped))
     }
 
@@ -560,13 +571,58 @@ impl RemoteConn {
     }
 
     pub fn set_git_probe(&self, probe: RemoteGitProbe) {
+        if let Ok(target) = self.git_probe_target.lock() {
+            if let Some((cwd, Some(token))) = target.as_ref() {
+                if probe.cwd != *cwd || probe.refresh_token.as_ref() != Some(token) {
+                    return;
+                }
+            }
+        }
         if let Ok(mut slot) = self.git_probe.lock() {
             *slot = Some(probe);
         }
     }
 
-    pub fn git_probe(&self) -> Option<RemoteGitProbe> {
-        self.git_probe.lock().ok().and_then(|p| p.clone())
+    pub fn git_probe(&self, cwd: &str) -> Result<Option<RemoteGitProbe>> {
+        self.git_probe_with_refresh(cwd, None)
+    }
+
+    pub fn git_probe_with_refresh(
+        &self,
+        cwd: &str,
+        refresh_token: Option<&str>,
+    ) -> Result<Option<RemoteGitProbe>> {
+        if cwd.is_empty() {
+            return Err(anyhow!("git probe directory is empty"));
+        }
+        let mut target = self
+            .git_probe_target
+            .lock()
+            .to_anyhow()
+            .context("failed to lock the remote git probe target")?;
+        if target.as_ref().map(|(path, _)| path.as_str()) != Some(cwd)
+            || refresh_token.is_some_and(|token| {
+                target.as_ref().and_then(|(_, token)| token.as_deref()) != Some(token)
+            })
+        {
+            *target = Some((cwd.to_owned(), refresh_token.map(str::to_owned)));
+            self.send_control(&ServerToBrokerMsg::GetGitProbe {
+                cwd: cwd.to_owned(),
+                refresh_token: refresh_token.map(str::to_owned),
+            })?;
+        }
+        Ok(self
+            .git_probe
+            .lock()
+            .to_anyhow()
+            .context("failed to lock the remote git probe result")?
+            .as_ref()
+            .filter(|probe| {
+                probe.cwd == cwd
+                    && refresh_token
+                        .is_none_or(|token| probe.refresh_token.as_deref() == Some(token))
+            })
+            .cloned())
     }
 
     pub fn set_child_exit(&self, status: Option<i32>) {

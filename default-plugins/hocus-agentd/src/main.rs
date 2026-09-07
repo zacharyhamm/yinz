@@ -213,6 +213,12 @@ struct State {
     related_panes: Option<BTreeSet<u32>>,
     /// What Git said about each folder, keyed by folder *and machine*.
     repositories: BTreeMap<Location, projects::Repository>,
+    /// Store instances awaiting a refreshed arrangement snapshot.
+    arrangement_subscribers: Vec<PluginId>,
+    arrangement_remote_pending: BTreeSet<u32>,
+    arrangement_remote_failed: BTreeSet<u32>,
+    arrangement_refresh_token: Option<String>,
+    arrangement_started_at: Option<i64>,
     /// Local probes in flight. Only ever local: a remote folder is answered by
     /// the host in one call, with nothing to correlate — see
     /// `refresh_remote_repositories_with`.
@@ -638,6 +644,35 @@ impl ZellijPlugin for State {
             // run, and nothing else here would ever write it. Same reason `on_hook_of` calls
             // this.
             self.persist_dirty_runs();
+            return false;
+        }
+        if pipe_message.name == "arrange_projects_refresh" {
+            if let PipeSource::Plugin(id) = pipe_message.source {
+                if !self.arrangement_subscribers.contains(&id) {
+                    self.arrangement_subscribers.push(id);
+                    self.arrangement_started_at.get_or_insert_with(now_ms);
+                }
+                if self.arrangement_refresh_token.is_none() {
+                    self.arrangement_refresh_token =
+                        Some(format!("{:?}", std::time::SystemTime::now()));
+                    self.arrangement_remote_failed.clear();
+                    self.arrangement_remote_pending
+                        .extend(self.remote_pane_ids());
+                }
+                let locations = self
+                    .pane_locations()
+                    .into_iter()
+                    .filter(|l| l.host.is_none() && !self.git_probes.contains_key(l))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                for location in &locations {
+                    self.repositories.remove(location);
+                }
+                self.start_git_probes(locations);
+                self.refresh_remote_repositories();
+                self.publish_forced();
+            }
             return false;
         }
         if pipe_message.name == wire::AGENT_REFRESH {
@@ -2169,7 +2204,14 @@ impl State {
                 .get(&pane_id)
                 .map(|checkout| checkout.worktree.as_str()),
             self.hosts.get(&pane_id).map(String::as_str),
-            self.cwds.get(&pane_id).map(String::as_str),
+            self.panes
+                .iter()
+                .flatten()
+                .find(|pane| pane.pane_id == pane_id)
+                .and_then(|pane| pane.agent.as_ref())
+                .and_then(|agent| agent.cwd.as_deref())
+                .filter(|cwd| !cwd.is_empty())
+                .or_else(|| self.cwds.get(&pane_id).map(String::as_str)),
         )
     }
 
@@ -2187,6 +2229,7 @@ impl State {
         self.cwds
             .keys()
             .chain(self.firecracker_worktrees.keys())
+            .chain(self.panes.iter().flatten().map(|pane| &pane.pane_id))
             .collect::<BTreeSet<_>>()
             .into_iter()
             .filter_map(|pane_id| self.location_of(*pane_id))
@@ -2261,33 +2304,8 @@ impl State {
         self.refresh_remote_repositories_with(poll::pane_git_probe);
     }
 
-    /// Ask the host what Git said about each remote pane's folder.
-    ///
-    /// A separate path from `start_git_probes`, and deliberately not routed
-    /// through `git_probes`: that machinery exists to join two asynchronous
-    /// `RunCommandResult` events back together, and this is one synchronous call
-    /// that returns an answer the far machine has already computed. Reusing it
-    /// would mean inventing a probe id and waiting for an event that never
-    /// comes.
-    ///
-    /// The answer is filed under the folder the probe was *run in*, not under
-    /// wherever the pane is now. The far machine probes on its own clock, so a
-    /// pane that has just moved reports the folder it came from; filing that
-    /// under the new folder would claim a checkout the pane has left. Filed
-    /// under its own folder instead, the entry is simply a fact about a folder,
-    /// and the ancestor walk in hocus still offers it as a project while the
-    /// exact answer is on its way — which is precisely what a local pane does
-    /// between a `cd` and its next probe.
-    ///
-    /// `probe_of` is injected for the reason `repair_cwds_with` and
-    /// `repair_commands_with` are: it reaches the host, and this has to stay
-    /// testable on the host triple.
-    fn refresh_remote_repositories_with(
-        &mut self,
-        mut probe_of: impl FnMut(u32) -> Option<PaneGitProbe>,
-    ) {
-        let remote: Vec<u32> = self
-            .panes
+    fn remote_pane_ids(&self) -> Vec<u32> {
+        self.panes
             .iter()
             .flatten()
             .filter(|pane| pane.host.is_some())
@@ -2301,10 +2319,28 @@ impl State {
             // Filtered here rather than further down so the emptiness check and the
             // cursor arithmetic below both see the real set.
             .filter(|pane| pane.firecracker_worktree.is_none())
-            .filter(|pane| pane.status == agents::AgentStatus::Running)
+            .filter(|pane| {
+                pane.status == agents::AgentStatus::Running
+                    || !self.arrangement_subscribers.is_empty()
+            })
             .map(|pane| pane.pane_id)
-            .collect();
+            .collect()
+    }
+
+    /// Request the checkout location selected for each remote pane. A pending result
+    /// keeps arrangement waiting; results are always filed under their actual location.
+    /// `probe_of` is injected because host calls are unavailable in native tests.
+    fn refresh_remote_repositories_with(
+        &mut self,
+        mut probe_of: impl FnMut(u32, &str, Option<&str>) -> Result<Option<PaneGitProbe>, String>,
+    ) {
+        let remote = self.remote_pane_ids();
+        self.arrangement_remote_pending
+            .retain(|id| remote.contains(id));
         if remote.is_empty() {
+            if !self.arrangement_subscribers.is_empty() {
+                self.publish();
+            }
             return;
         }
 
@@ -2335,24 +2371,52 @@ impl State {
         let due: Vec<u32> = rotation
             .iter()
             .copied()
-            .filter(unknown)
-            .chain(rotation.iter().copied().filter(|id| !unknown(id)))
+            .filter(|id| self.arrangement_remote_pending.contains(id))
+            .chain(
+                rotation
+                    .iter()
+                    .copied()
+                    .filter(unknown)
+                    .chain(rotation.iter().copied().filter(|id| !unknown(id)))
+                    .filter(|id| !self.arrangement_remote_pending.contains(id)),
+            )
             .take(REMOTE_PROBES_PER_TICK)
             .collect();
         self.remote_probe_cursor = (self.remote_probe_cursor + due.len()) % remote.len();
 
         let mut changed = false;
         for pane_id in due {
-            let Some(probe) = probe_of(pane_id) else {
+            let Some(requested) = self.location_of(pane_id).filter(|l| !l.path.is_empty()) else {
+                self.arrangement_remote_pending.remove(&pane_id);
                 continue;
             };
+            let refreshing = self.arrangement_remote_pending.contains(&pane_id);
+            let token = refreshing
+                .then_some(self.arrangement_refresh_token.as_deref())
+                .flatten();
+            let probe = match probe_of(pane_id, &requested.path, token) {
+                Ok(Some(probe)) => probe,
+                Ok(None) => continue,
+                Err(_) => {
+                    if refreshing {
+                        self.arrangement_remote_failed.insert(pane_id);
+                    }
+                    self.arrangement_remote_pending.remove(&pane_id);
+                    continue;
+                },
+            };
             let location = Location::new(Some(probe.host), probe.cwd);
+            if location == requested {
+                self.arrangement_remote_pending.remove(&pane_id);
+            }
             let outcome = poll::repository(probe.exit_code, &probe.metadata, &probe.config);
+            if refreshing && outcome == poll::ProbeOutcome::Failed {
+                self.arrangement_remote_failed.insert(pane_id);
+            }
             changed |= self.record_probe_outcome(location, outcome);
         }
-        // Only on change. This runs on every heartbeat, and a snapshot is the
-        // whole session's panes and folders pushed to every subscriber.
-        if changed {
+        // Arrangement completion must publish even when metadata is unchanged.
+        if changed || !self.arrangement_subscribers.is_empty() {
             self.publish();
         }
     }
@@ -3495,6 +3559,10 @@ impl State {
     }
 
     fn publish_with_force(&mut self, force: bool) {
+        self.publish_with(force, pipe_message_to_plugin);
+    }
+
+    fn publish_with(&mut self, force: bool, mut send: impl FnMut(MessageToPlugin)) {
         self.refresh_title_prefixes();
         self.refresh_related_agents();
         let reply = PollReply {
@@ -3522,6 +3590,52 @@ impl State {
         let Ok(payload) = serde_json::to_string(&reply) else {
             return;
         };
+        if ((self.git_probes.is_empty() && self.arrangement_remote_pending.is_empty())
+            || self
+                .arrangement_started_at
+                .is_some_and(|start| now_ms() - start >= 15_000))
+            && !self.arrangement_subscribers.is_empty()
+        {
+            let positions: BTreeMap<_, _> = self
+                .manifest
+                .panes
+                .iter()
+                .flat_map(|(tab, panes)| {
+                    panes
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, pane)| !pane.is_plugin())
+                        .map(move |(position, pane)| (pane.id.legacy_parts().0, (*tab, position)))
+                })
+                .collect();
+            let mut ordered_reply = reply;
+            let unavailable: BTreeSet<_> = self
+                .arrangement_remote_failed
+                .iter()
+                .chain(&self.arrangement_remote_pending)
+                .copied()
+                .collect();
+            if !unavailable.is_empty() {
+                notify(&format!("Arrange panes: {} remote panes left untouched because fresh repository metadata is unavailable", unavailable.len()));
+            }
+            if let Some(panes) = &mut ordered_reply.panes {
+                panes.retain(|pane| !unavailable.contains(&pane.pane_id));
+                panes.sort_by_key(|pane| (positions.get(&pane.pane_id).copied(), pane.pane_id));
+            }
+            if let Ok(payload) = serde_json::to_string(&ordered_reply) {
+                self.arrangement_started_at = None;
+                self.arrangement_refresh_token = None;
+                self.arrangement_remote_failed.clear();
+                self.arrangement_remote_pending.clear();
+                for id in std::mem::take(&mut self.arrangement_subscribers) {
+                    send(
+                        MessageToPlugin::new("arrange_projects_snapshot")
+                            .with_destination_plugin_id(id)
+                            .with_payload(payload.clone()),
+                    );
+                }
+            }
+        }
         // Withheld when identical to what already went out. Nearly every host
         // event ends here — PaneUpdate and the TabUpdate right behind it, the
         // heartbeat, every hook — and a snapshot that says nothing new still
@@ -3536,7 +3650,7 @@ impl State {
         // must not do. No subscribers means there is simply nobody to notify;
         // the cached snapshot remains ready for the first subscriber.
         for id in &self.subscribers {
-            pipe_message_to_plugin(
+            send(
                 MessageToPlugin::new(wire::AGENT_SNAPSHOT)
                     .with_destination_plugin_id(*id)
                     .with_payload(payload.clone())
@@ -4477,9 +4591,9 @@ mod tests {
     fn a_remote_folder_is_resolved_from_its_own_machines_probe() {
         let mut state = agent_on(7, "build-box", "/work/hocus");
 
-        state.refresh_remote_repositories_with(|pane_id| {
+        state.refresh_remote_repositories_with(|pane_id, _, _| {
             assert_eq!(pane_id, 7);
-            Some(far_probe("build-box", "/work/hocus", "topic"))
+            Ok(Some(far_probe("build-box", "/work/hocus", "topic")))
         });
 
         let repository = state
@@ -4680,7 +4794,7 @@ mod tests {
     fn a_firecracker_pane_with_a_worktree_is_never_asked_for_a_remote_probe() {
         let mut state = vm_agent(7, "review", "/workspace", Some("/work/hocus"));
 
-        state.refresh_remote_repositories_with(|pane_id| {
+        state.refresh_remote_repositories_with(|pane_id, _, _| {
             panic!("pane {pane_id} was asked for a remote probe");
         });
 
@@ -4694,9 +4808,9 @@ mod tests {
         let mut state = vm_agent(7, "review", "/workspace", None);
 
         assert!(state.repository_cwds(false).is_empty());
-        state.refresh_remote_repositories_with(|pane_id| {
+        state.refresh_remote_repositories_with(|pane_id, _, _| {
             assert_eq!(pane_id, 7);
-            Some(far_probe("firecracker:review", "/workspace", "topic"))
+            Ok(Some(far_probe("firecracker:review", "/workspace", "topic")))
         });
 
         assert!(state
@@ -4773,8 +4887,8 @@ mod tests {
             ..State::default()
         };
 
-        state.refresh_remote_repositories_with(|_| {
-            Some(far_probe("build-box", "/work/hocus", "topic"))
+        state.refresh_remote_repositories_with(|_, _, _| {
+            Ok(Some(far_probe("build-box", "/work/hocus", "topic")))
         });
         state.record_probe_outcome(
             local("/work/hocus"),
@@ -4810,8 +4924,8 @@ mod tests {
     fn a_probe_that_describes_the_folder_a_pane_has_left_is_filed_under_that_folder() {
         let mut state = agent_on(7, "build-box", "/work/hocus/deep");
 
-        state.refresh_remote_repositories_with(|_| {
-            Some(far_probe("build-box", "/work/hocus", "topic"))
+        state.refresh_remote_repositories_with(|_, _, _| {
+            Ok(Some(far_probe("build-box", "/work/hocus", "topic")))
         });
 
         assert!(
@@ -4880,23 +4994,260 @@ mod tests {
         };
 
         let mut asked: Vec<u32> = Vec::new();
-        state.refresh_remote_repositories_with(|pane_id| {
+        state.refresh_remote_repositories_with(|pane_id, _, _| {
             asked.push(pane_id);
-            None
+            Ok(None)
         });
         assert_eq!(asked.len(), REMOTE_PROBES_PER_TICK);
 
         // The next tick resumes where this one stopped, so every pane is
         // reached rather than the first few being asked forever.
         let mut next: Vec<u32> = Vec::new();
-        state.refresh_remote_repositories_with(|pane_id| {
+        state.refresh_remote_repositories_with(|pane_id, _, _| {
             next.push(pane_id);
-            None
+            Ok(None)
         });
         assert!(
             next.iter().any(|pane_id| !asked.contains(pane_id)),
             "the rotation did not move: {asked:?} then {next:?}",
         );
+    }
+
+    #[test]
+    fn arrangement_refresh_waits_for_all_remote_attempts_and_local_probes() {
+        for local_completion in [0, 1, 2] {
+            for missing in [false, true] {
+                let count = 20;
+                let mut state = State {
+                    panes: Some(
+                        (0..count)
+                            .map(|id| {
+                                let mut pane = pane(id, "codex", &format!("/work/{id}"));
+                                pane.host = Some("build-box".into());
+                                pane
+                            })
+                            .collect(),
+                    ),
+                    cwds: (0..count).map(|id| (id, format!("/work/{id}"))).collect(),
+                    hosts: (0..count).map(|id| (id, "build-box".into())).collect(),
+                    ..State::default()
+                };
+                // Seed unchanged metadata, then prime the normal snapshot deduplication.
+                if !missing {
+                    for id in 0..count {
+                        let probe = far_probe("build-box", &format!("/work/{id}"), "main");
+                        state.record_probe_outcome(
+                            remote("build-box", &probe.cwd),
+                            poll::repository(probe.exit_code, &probe.metadata, &probe.config),
+                        );
+                    }
+                }
+                state.publish();
+                if local_completion != 0 {
+                    state
+                        .git_probes
+                        .insert(local("/local"), GitProbe::default());
+                }
+                state.arrangement_subscribers = vec![PluginId::new(10), PluginId::new(11)];
+                state
+                    .arrangement_remote_pending
+                    .extend(state.remote_pane_ids());
+                let mut asked = BTreeSet::new();
+                let mut probe = |id, _: &str, _: Option<&str>| {
+                    asked.insert(id);
+                    if missing {
+                        Err("unavailable".into())
+                    } else {
+                        Ok(Some(far_probe("build-box", &format!("/work/{id}"), "main")))
+                    }
+                };
+                state.refresh_remote_repositories_with(&mut probe);
+                assert_eq!(
+                    state.arrangement_remote_pending.len(),
+                    count as usize - REMOTE_PROBES_PER_TICK
+                );
+                state.publish_forced();
+                assert_eq!(state.arrangement_subscribers.len(), 2, "no early delivery");
+                if local_completion == 1 {
+                    state.git_probes.clear();
+                    state.publish();
+                    assert_eq!(state.arrangement_subscribers.len(), 2);
+                }
+                for _ in 1..(count as usize).div_ceil(REMOTE_PROBES_PER_TICK) {
+                    assert_eq!(state.arrangement_subscribers.len(), 2, "no early delivery");
+                    state.refresh_remote_repositories_with(&mut probe);
+                }
+                assert!(state.arrangement_remote_pending.is_empty());
+                assert_eq!(asked.len(), count as usize);
+                if local_completion == 2 {
+                    assert_eq!(state.arrangement_subscribers.len(), 2);
+                    state.git_probes.clear();
+                    let mut deliveries = vec![];
+                    state.publish_with(false, |message| {
+                        deliveries.push(message.destination_plugin_id.unwrap())
+                    });
+                    state.publish_with(true, |message| {
+                        deliveries.push(message.destination_plugin_id.unwrap())
+                    });
+                    assert_eq!(deliveries, vec![PluginId::new(10), PluginId::new(11)]);
+                }
+                assert!(
+                    state.arrangement_subscribers.is_empty(),
+                    "each subscriber consumed once"
+                );
+                state.publish_forced();
+                assert!(
+                    state.arrangement_subscribers.is_empty(),
+                    "no repeat delivery"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn arrangement_refresh_waits_for_the_reported_directory_and_non_checkout() {
+        let mut state = agent_on(7, "build-box", "/process");
+        state.panes.as_mut().unwrap()[0].agent = Some(AgentInfo {
+            kind: "codex".into(),
+            state: AgentState::Busy,
+            source: AgentSource::Reported,
+            detail: None,
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: Some("/agent".into()),
+            session_id: None,
+            run_id: None,
+        });
+        state.arrangement_subscribers.push(PluginId::new(10));
+        state.arrangement_started_at = Some(now_ms());
+        state.arrangement_remote_pending.insert(7);
+        state.refresh_remote_repositories_with(|id, cwd, _| {
+            assert_eq!((id, cwd), (7, "/agent"));
+            Ok(None)
+        });
+        assert!(!state.arrangement_subscribers.is_empty());
+        state.refresh_remote_repositories_with(|_, _, _| {
+            Ok(Some(far_probe("build-box", "/process", "main")))
+        });
+        assert!(state.arrangement_remote_pending.contains(&7));
+        assert!(!state
+            .repositories
+            .contains_key(&remote("build-box", "/agent")));
+        state.panes.as_mut().unwrap()[0].agent.as_mut().unwrap().cwd = Some("/changed".into());
+        state.refresh_remote_repositories_with(|_, cwd, _| {
+            assert_eq!(cwd, "/changed");
+            let mut probe = far_probe("build-box", cwd, "main");
+            probe.exit_code = Some(128);
+            probe.metadata.clear();
+            Ok(Some(probe))
+        });
+        assert!(
+            state.arrangement_subscribers.is_empty(),
+            "a matching non-checkout completes the wait"
+        );
+        assert!(!state.repositories[&remote("build-box", "/changed")].is_checkout());
+        state.panes.as_mut().unwrap()[0].agent.as_mut().unwrap().cwd = Some(String::new());
+        state.refresh_remote_repositories_with(|_, cwd, _| {
+            assert_eq!(cwd, "/process", "empty agent cwd falls back to process cwd");
+            Ok(None)
+        });
+    }
+
+    #[test]
+    fn arrangement_excludes_remote_errors_and_timeouts_despite_cached_identity() {
+        for failure in ["error", "invalid", "timeout"] {
+            let mut state = agent_on(7, "build-box", "/work");
+            let old = far_probe("build-box", "/work", "old-branch");
+            state.record_probe_outcome(
+                remote("build-box", "/work"),
+                poll::repository(old.exit_code, &old.metadata, &old.config),
+            );
+            state.arrangement_subscribers.push(PluginId::new(10));
+            state.arrangement_started_at = Some(now_ms());
+            state.arrangement_refresh_token = Some("new-arrangement".into());
+            state.arrangement_remote_pending.insert(7);
+            // Hold delivery so this test can inspect the final payload.
+            state
+                .git_probes
+                .insert(local("/local"), GitProbe::default());
+            for _ in 0..2 {
+                state.refresh_remote_repositories_with(|_, _, token| {
+                    assert_eq!(token, Some("new-arrangement"));
+                    Ok(None)
+                });
+                assert!(state.arrangement_remote_pending.contains(&7));
+            }
+            state.refresh_remote_repositories_with(|_, _, token| {
+                assert_eq!(token, Some("new-arrangement"));
+                match failure {
+                    "error" => Err("disconnected".into()),
+                    "invalid" => Ok(Some(PaneGitProbe {
+                        host: "build-box".into(),
+                        cwd: "/work".into(),
+                        exit_code: None,
+                        metadata: vec![],
+                        config: vec![],
+                    })),
+                    _ => Ok(None),
+                }
+            });
+            assert!(
+                state
+                    .repositories
+                    .contains_key(&remote("build-box", "/work")),
+                "the old cache exists for background readers"
+            );
+            state.git_probes.clear();
+            if failure == "timeout" {
+                state.arrangement_started_at = Some(now_ms() - 15_000);
+            }
+            let mut delivered = vec![];
+            state.publish_with(false, |message| {
+                if message.destination_plugin_id == Some(PluginId::new(10)) {
+                    delivered.push(
+                        serde_json::from_str::<PollReply>(
+                            message.message_payload.as_deref().unwrap(),
+                        )
+                        .unwrap(),
+                    );
+                }
+            });
+            assert_eq!(delivered.len(), 1);
+            assert!(
+                delivered[0].panes.as_ref().unwrap().is_empty(),
+                "{failure} must not classify a remote pane from the old cache"
+            );
+        }
+    }
+
+    #[test]
+    fn arrangement_refresh_wait_is_bounded() {
+        let mut state = agent_on(7, "build-box", "/work");
+        state.arrangement_subscribers.push(PluginId::new(10));
+        state.arrangement_remote_pending.insert(7);
+        state.arrangement_started_at = Some(now_ms());
+        state.refresh_remote_repositories_with(|_, _, _| Ok(None));
+        assert!(!state.arrangement_subscribers.is_empty());
+        state.arrangement_started_at = Some(now_ms() - 15_000);
+        let mut delivered = vec![];
+        state.publish_with(false, |message| {
+            delivered.push(message.destination_plugin_id)
+        });
+        assert_eq!(delivered, vec![Some(PluginId::new(10))]);
+        assert!(state.arrangement_remote_pending.is_empty());
+    }
+
+    #[test]
+    fn arrangement_refresh_forgets_closed_and_ineligible_remote_panes() {
+        let mut state = agent_on(7, "build-box", "/work/hocus");
+        state.arrangement_subscribers.push(PluginId::new(10));
+        state.arrangement_remote_pending.extend([7, 8]);
+        state.panes.as_mut().unwrap()[0].host = None;
+        state.refresh_remote_repositories_with(|id, _, _| {
+            panic!("ineligible pane {id} was queried")
+        });
+        assert!(state.arrangement_remote_pending.is_empty());
+        assert!(state.arrangement_subscribers.is_empty());
     }
 
     /// A local pane has no cached probe and the host says so; asking would spend
@@ -4905,7 +5256,7 @@ mod tests {
     fn a_local_pane_is_never_asked_for_a_remote_probe() {
         let mut state = agent_in(7, "/work");
 
-        state.refresh_remote_repositories_with(|pane_id| {
+        state.refresh_remote_repositories_with(|pane_id, _, _| {
             panic!("asked the host about local pane {pane_id}");
         });
     }

@@ -261,6 +261,7 @@ enum CommandName {
   ProjectConfigRead = 282;
   ProjectConfigWrite = 283;
   SetRelatedPanes = 284;
+  ArrangeProjectPanes = 285;
 }
 
 message PluginCommand {
@@ -469,6 +470,7 @@ message PluginCommand {
     string project_config_read_payload = 223;
     ProjectConfigWritePayload project_config_write_payload = 224;
     SetRelatedPanesPayload set_related_panes_payload = 225;
+    ArrangeProjectPanesPayload arrange_project_panes_payload = 226;
   }
 }
 
@@ -1456,6 +1458,8 @@ message GetPaneCwdResponse {
 
 message GetPaneGitProbePayload {
   PaneId pane_id = 1;
+  string cwd = 2;
+  optional string refresh_token = 3;
 }
 
 // Git's own output, unparsed. `bytes` rather than `string` because
@@ -1472,6 +1476,7 @@ message GetPaneGitProbeResponse {
   oneof result {
     PaneGitProbe probe = 1;
     string error = 2;
+    bool pending = 3;
   }
 }
 
@@ -2019,3 +2024,11 @@ message ProjectConfigWritePayload {
   string source = 2;
   optional string expected = 3;
 }
+
+message ProjectPaneGroup {
+  string identity = 1;
+  string name = 2;
+  optional string configuration_root = 3;
+  repeated uint32 pane_ids = 4;
+}
+message ArrangeProjectPanesPayload { repeated ProjectPaneGroup groups = 1; }

@@ -103,6 +103,8 @@ Commands:
   list-panes                        List all panes in the current session
   list-tabs                         List all tabs with their information
   current-tab-info                  Get information about the currently active tab
+  arrange-panes-by-project          Group terminal panes into project tabs, with branches and
+                                    worktrees together
   toggle-pane-pinned                
   stack-panes                       Stack pane ids Ids are a space separated list of pane ids. They
                                     should either be in the form of `terminal_<int>` (eg.

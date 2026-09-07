@@ -2539,6 +2539,21 @@ impl WasmBridge {
             .unwrap()
             .all_plugin_ids_for_plugin_location(plugin_location, plugin_configuration)
     }
+    pub fn builtin_service_instance(&self, name: &str) -> Option<(PluginId, ClientId)> {
+        self.plugin_map
+            .lock()
+            .unwrap()
+            .clone_plugin_assets()
+            .get(&RunPluginLocation::Zellij(
+                zellij_types::data::PluginTag::new(name),
+            ))
+            .into_iter()
+            .flat_map(|configurations| configurations.values())
+            .flatten()
+            .copied()
+            .min()
+    }
+
     pub fn all_plugin_and_client_ids_for_plugin_location(
         &mut self,
         plugin_location: &RunPluginLocation,

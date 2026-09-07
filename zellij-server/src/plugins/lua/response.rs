@@ -256,6 +256,7 @@ pub fn response_to_lua(lua: &Lua, command: CommandType, bytes: &[u8]) -> Option<
                 Some(get_pane_git_probe_response::Result::Probe(probe)) => {
                     value(lua, PaneGitProbe::from(probe))
                 },
+                Some(get_pane_git_probe_response::Result::Pending(_)) => Ok(LuaValue::Nil),
                 Some(get_pane_git_probe_response::Result::Error(e)) => Err(anyhow!("{}", e)),
                 None => Err(anyhow!("zellij answered with nothing")),
             })

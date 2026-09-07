@@ -50,7 +50,10 @@ use crate::pty_host::protocol::{SpawnFailureKind, WireWinsize};
 /// event to the broker over its socket, and the broker relays it on the pane's
 /// control channel, so a report is authenticated by the transport rather than
 /// parsed out of the pane's bytes where any program could forge it.
-pub const REMOTE_PROTOCOL_VERSION: u32 = 5;
+/// v6 requests an explicit Git probe directory, independently of the process cwd.
+/// v7 correlates explicit refresh requests and completed probes, including unchanged results.
+/// Both machines must run this protocol; there is no process-cwd fallback.
+pub const REMOTE_PROTOCOL_VERSION: u32 = 7;
 
 /// Frame kind tags. The tag is what lets pty bytes stay raw while everything
 /// else stays JSON.
@@ -126,6 +129,10 @@ pub struct RemotePaneEntry {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ServerToBrokerMsg {
+    GetGitProbe {
+        refresh_token: Option<String>,
+        cwd: String,
+    },
     Hello {
         protocol_version: u32,
         zellij_version: String,
@@ -257,6 +264,7 @@ pub enum BrokerToServerMsg {
     /// status tick: a checkout's identity does not change while you sit in it,
     /// and forking two git processes per second per pane would be absurd.
     GitProbe {
+        refresh_token: Option<String>,
         cwd: String,
         exit_code: Option<i32>,
         metadata_base64: String,

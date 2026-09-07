@@ -364,6 +364,23 @@ impl Screen {
         should_change_focus_to_target_tab: bool,
         client_id: ClientId,
     ) -> Result<BreakPanesToTabOutcome> {
+        self.move_project_or_existing_panes(
+            pane_ids,
+            tab_id,
+            should_change_focus_to_target_tab,
+            client_id,
+            false,
+        )
+    }
+
+    pub(super) fn move_project_or_existing_panes(
+        &mut self,
+        pane_ids: Vec<PaneId>,
+        tab_id: TabId,
+        should_change_focus_to_target_tab: bool,
+        client_id: ClientId,
+        arrangement: bool,
+    ) -> Result<BreakPanesToTabOutcome> {
         let err_context = || format!("failed to move panes to tab with id {tab_id}");
         let mut outcome = BreakPanesToTabOutcome::default();
 
@@ -402,7 +419,11 @@ impl Screen {
                     let source_tab_id = tab.id;
                     // *before* the extraction: it is what drops an overlay's kind and
                     // coordinates, and "not floating" would land a modal here as a tiled pane
-                    let placement = tab.placement_for_extraction(pane_id);
+                    let placement = if arrangement && tab.pane_is_stack_list_member(&pane_id) {
+                        ExtractedPanePlacement::Tiled
+                    } else {
+                        tab.placement_for_extraction(pane_id)
+                    };
                     let carried_respawn = tab.take_pending_respawn(pane_id);
                     // dont_swap_if_suppressed, and no client_id: we do not need to
                     // necessarily trigger a relayout for the source tab
@@ -427,7 +448,12 @@ impl Screen {
             Some(destination) => {
                 for (source_tab_id, placement, pane, carried_respawn) in extracted {
                     let pane_id = pane.pid();
-                    match destination.accept_extracted_pane(pane, placement.clone()) {
+                    let accepted = if arrangement {
+                        destination.accept_arranged_pane(pane, placement.clone())
+                    } else {
+                        destination.accept_extracted_pane(pane, placement.clone())
+                    };
+                    match accepted {
                         AcceptedPane::Accepted => {
                             outcome.moved.push(pane_id);
                             if let Some(entry) = carried_respawn {

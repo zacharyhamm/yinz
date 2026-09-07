@@ -594,3 +594,30 @@ async fn a_reconnect_retries_before_giving_up() {
         "both scheduled failures should have been consumed"
     );
 }
+
+#[test]
+fn git_probe_target_changed_during_an_outage_is_restored_on_reconnect() {
+    use crate::pty_host::remote::protocol::read_frame;
+    use std::time::Duration;
+    let (_reader, conn, mut peer, peer_rx, _rc) = reconnecting_pair(0, 0);
+    peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    assert_eq!(conn.git_probe("/first").unwrap(), None);
+    read_frame(&mut peer).unwrap().unwrap();
+    conn.mark_transport_lost();
+    assert!(conn
+        .git_probe_with_refresh("/agent", Some("fresh"))
+        .is_err());
+    let _ = conn.reconnect().unwrap();
+    let mut resumed = peer_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    resumed
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let message = read_frame(&mut resumed)
+        .unwrap()
+        .unwrap()
+        .decode_control::<ServerToBrokerMsg>()
+        .unwrap();
+    assert!(
+        matches!(message, ServerToBrokerMsg::GetGitProbe { cwd, refresh_token } if cwd == "/agent" && refresh_token.as_deref() == Some("fresh"))
+    );
+}

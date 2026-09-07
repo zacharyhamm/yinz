@@ -16,6 +16,7 @@
 mod clipboard;
 mod copy_command;
 mod layout_applier;
+pub(crate) use layout_applier::arrangement_layout;
 mod mouse_handler;
 mod swap_layouts;
 
@@ -2319,6 +2320,136 @@ impl Tab {
             .with_context(|| "failed to apply cached resizes".to_string())?;
         Ok(())
     }
+    /// Boundary UI panes occupy the area outside the terminal viewport.
+    pub(crate) fn arrangement_pane_ids(&self) -> Vec<PaneId> {
+        let viewport = self.get_viewport();
+        self.get_tiled_pane_ids()
+            .into_iter()
+            .chain(self.suppressed_stack_list_members().map(|(id, _)| *id))
+            .filter(|id| {
+                self.get_pane_with_id(*id).is_some_and(|pane| {
+                    let geom = pane.position_and_size();
+                    geom.x < viewport.x + viewport.cols
+                        && geom.x + geom.cols.as_usize() > viewport.x
+                        && geom.y < viewport.y + viewport.rows
+                        && geom.y + geom.rows.as_usize() > viewport.y
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn arrangement_stacks(&self) -> Vec<StackList> {
+        self.stack_lists.values().cloned().collect()
+    }
+
+    /// Intermediate extraction must not trigger automatic layouts that dissolve lists.
+    pub(crate) fn prepare_arrangement(&mut self) {
+        self.tiled_panes.unset_fullscreen();
+        self.swap_layouts.set_is_tiled_damaged();
+        self.swap_layouts.set_is_floating_damaged();
+    }
+
+    /// Reassemble the preflighted partitions using ordinary member removal and sizing.
+    pub(crate) fn restore_arrangement_stacks(&mut self, stacks: &[StackList]) {
+        for stack in stacks {
+            let mut panes = vec![];
+            for id in &stack.members {
+                if let Some(pane) = self.extract_pane(*id, true) {
+                    panes.push(pane);
+                }
+            }
+            for pane in panes {
+                if pane.pid() == stack.visible {
+                    self.tiled_panes
+                        .add_pane_with_existing_geom(pane.pid(), pane);
+                } else {
+                    self.park_pane(pane);
+                }
+            }
+            if stack.members.len() == 1 {
+                continue;
+            }
+            let id = self.next_stack_list_id;
+            self.next_stack_list_id += 1;
+            for member in &stack.members {
+                self.stack_list_of_member.insert(*member, id);
+            }
+            self.stack_lists.insert(id, stack.clone());
+            self.refresh_or_dissolve_stack_list(id);
+        }
+    }
+
+    pub(crate) fn restore_arrangement_stack_visibility(&mut self, originals: &[StackList]) {
+        let remaining: Vec<_> = self
+            .stack_lists
+            .iter()
+            .map(|(id, stack)| (*id, stack.clone()))
+            .collect();
+        for (id, stack) in remaining {
+            if let Some(original) = originals
+                .iter()
+                .find(|original| original.members.contains(&stack.visible))
+            {
+                let visible = if stack.members.contains(&original.visible) {
+                    Some(original.visible)
+                } else {
+                    original
+                        .members
+                        .iter()
+                        .find(|member| stack.members.contains(member))
+                        .copied()
+                };
+                if let Some(visible) = visible {
+                    self.select_stack_list_member(id, visible, None);
+                }
+            }
+        }
+    }
+
+    /// Applies geometry to existing panes only. No terminal or plugin is created.
+    pub fn arrange_existing_panes(
+        &mut self,
+        layout: &TiledPaneLayout,
+        order: &[PaneId],
+    ) -> Result<()> {
+        self.tiled_panes.unset_fullscreen();
+        LayoutApplier::new(
+            &self.viewport,
+            &self.senders,
+            &self.sixel_image_store,
+            &self.kitty_image_store,
+            &self.link_handler,
+            &self.terminal_emulator_colors,
+            &self.terminal_emulator_color_codes,
+            &self.character_cell_size,
+            &self.connected_clients_in_app,
+            &self.style,
+            &self.display_area,
+            &mut self.tiled_panes,
+            &mut self.floating_panes,
+            self.pane_frame_style,
+            &mut self.focus_pane_id,
+            &self.os_api,
+            self.debug,
+            self.arrow_fonts,
+            self.styled_underlines,
+            self.osc8_hyperlinks,
+            self.explicitly_disable_kitty_keyboard_protocol,
+            None,
+        )
+        .apply_tiled_panes_layout_in_order(layout, Some(order))?;
+        self.is_pending = false;
+        self.apply_buffered_instructions()?;
+        self.tiled_panes.reapply_pane_frames();
+        self.resize_all_stack_list_hidden_members();
+        self.swap_layouts.set_is_tiled_damaged();
+        self.set_should_clear_display_before_rendering();
+        self.set_force_render();
+        self.senders
+            .send_to_pty_writer(PtyWriteInstruction::ApplyCachedResizes)?;
+        Ok(())
+    }
+
     fn relayout_tiled_panes(&mut self, search_backwards: bool) -> Result<()> {
         if self.tiled_panes.fullscreen_is_active() {
             self.tiled_panes.unset_fullscreen();
@@ -5975,13 +6106,16 @@ impl Tab {
             .filter(|(_, p)| p.selectable());
         selectable_tiled_panes.count() > 0 || selectable_floating_panes.count() > 0
     }
-    pub fn has_selectable_tiled_panes(&self) -> bool {
-        let selectable_tiled_panes = self.tiled_panes.get_panes().filter(|(_, p)| p.selectable());
-        selectable_tiled_panes.count() > 0
+    pub(crate) fn should_retain_tab(&self) -> bool {
+        self.has_selectable_panes()
+            || !self.suppressed_panes.is_empty()
+            || !self.overlay_plugin_ids().is_empty()
+            || self
+                .get_all_pane_ids()
+                .iter()
+                .any(|id| matches!(id, PaneId::Terminal(_)))
     }
-    /// Re-send every pane's pty size - tiled, floating, overlay and suppressed alike -
-    /// without changing any geometry. Used when the character cell size becomes known
-    /// after the ptys were created, so they get their pixel dimensions too.
+
     pub fn resize_pty_all_panes(&mut self) -> Result<()> {
         let err_context = || format!("failed to resize PTYs of all panes in tab {}", self.id);
         self.tiled_panes
@@ -6693,6 +6827,7 @@ impl Tab {
             info.is_fullscreen = self.tiled_panes.fullscreen_is_active();
             info.is_floating = false;
             info.is_suppressed = false;
+            info.is_stack_list_member = self.pane_is_stack_list_member(&pane_id);
             return Some(info);
         }
 
@@ -6703,6 +6838,7 @@ impl Tab {
             info.is_fullscreen = self.floating_panes.fullscreen_pane_id() == Some(pane_id);
             info.is_floating = true;
             info.is_suppressed = false;
+            info.is_stack_list_member = self.pane_is_stack_list_member(&pane_id);
             return Some(info);
         }
 
@@ -6725,6 +6861,7 @@ impl Tab {
             info.is_fullscreen = false;
             info.is_floating = false;
             info.is_suppressed = true;
+            info.is_stack_list_member = self.pane_is_stack_list_member(&pane_id);
             return Some(info);
         }
 
@@ -8548,6 +8685,17 @@ impl Tab {
         let mut pane_info = vec![];
         let current_pane_group = { self.current_pane_group.borrow().clone_inner() };
         let mut tiled_pane_info = self.tiled_panes.pane_info(&current_pane_group);
+        // Preserve traversal order in the manifest. Coordinate sorting interleaves
+        // nested columns and would make repeated project arrangement swap panes.
+        tiled_pane_info.sort_by_key(|info| {
+            (
+                self.tiled_panes
+                    .get_pane(info.id)
+                    .and_then(|pane| pane.position_and_size().logical_position)
+                    .unwrap_or(usize::MAX),
+                info.id,
+            )
+        });
         let mut floating_pane_info = self.floating_panes.pane_info(&current_pane_group);
         let mut overlay_pane_info = self.overlay_panes.pane_info(&current_pane_group);
         pane_info.append(&mut tiled_pane_info);
@@ -8561,6 +8709,9 @@ impl Tab {
             pane_info_for_suppressed_pane.is_focused = false;
             pane_info_for_suppressed_pane.is_fullscreen = false;
             pane_info.push(pane_info_for_suppressed_pane);
+        }
+        for info in &mut pane_info {
+            info.is_stack_list_member = self.pane_is_stack_list_member(&info.id);
         }
         pane_info
     }
@@ -8762,6 +8913,22 @@ impl Tab {
         }
         Ok(())
     }
+    /// The complete destination geometry has already been checked by arrangement.
+    /// Intermediate splits must not reject a batch that fits its final layout.
+    pub(super) fn accept_arranged_pane(
+        &mut self,
+        pane: Box<dyn Pane>,
+        placement: ExtractedPanePlacement,
+    ) -> AcceptedPane {
+        let id = pane.pid();
+        match placement {
+            ExtractedPanePlacement::Tiled => self.tiled_panes.add_pane_with_existing_geom(id, pane),
+            ExtractedPanePlacement::Floating => self.floating_panes.add_pane(id, pane),
+            placement => return self.accept_extracted_pane(pane, placement),
+        }
+        AcceptedPane::Accepted
+    }
+
     /// Take a pane extracted from another tab, or hand it back if there is no room.
     ///
     /// `add_tiled_pane`/`add_floating_pane` take the box by value and return `Ok(())`

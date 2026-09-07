@@ -141,3 +141,88 @@ fn a_lone_shell_gets_a_project_name_after_tab_creation() {
         },
     );
 }
+
+#[test]
+fn arrangement_cli_and_tab_binding_keep_both_running_terminals() {
+    let repository = write_git_repository("arrangement-project", "main");
+    let layout = format!(
+        r#"layout {{
+        tab {{
+            pane size=1 borderless=true {{ plugin location="zellij:tab-bar"; }}
+            pane cwd="{}"
+        }}
+        tab focus=true {{
+            pane size=1 borderless=true {{ plugin location="zellij:tab-bar"; }}
+            pane cwd="{}"
+        }}
+    }}"#,
+        repository.display(),
+        repository.display()
+    );
+    let zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_PROJECT_CONFIG)
+        .with_layout(LayoutInfo::Stringified(layout))
+        .start();
+    let first = zellij.expect_pty_spawn();
+    let second = zellij.expect_pty_spawn();
+    first.output(b"ARRANGE_FIRST");
+    second.output(b"ARRANGE_SECOND");
+    zellij.wait_until("the store identifies the project", |screen| {
+        screen.contains("arrangement-project")
+    });
+    assert_eq!(
+        zellij.run_cli_action(zellij_cli::args::CliAction::ArrangePanesByProject),
+        0
+    );
+    zellij.wait_until("the project terminals share one tab", |screen| {
+        screen.contains("ARRANGE_FIRST") && screen.contains("ARRANGE_SECOND")
+    });
+    zellij.send_stdin(&[keys::ctrl('t'), keys::key('a')].concat());
+    first.output(b"_STILL_RUNNING");
+    second.output(b"_STILL_RUNNING");
+    zellij.wait_until("both processes still render after the binding", |screen| {
+        screen.contains("ARRANGE_FIRST_STILL_RUNNING")
+            && screen.contains("ARRANGE_SECOND_STILL_RUNNING")
+    });
+    let (status, listed) =
+        zellij.run_cli_action_reporting(zellij_cli::args::CliAction::ListPanes {
+            tab: false,
+            command: false,
+            state: false,
+            geometry: false,
+            all: true,
+            json: true,
+        });
+    assert_eq!(status, 0);
+    let panes: serde_json::Value = serde_json::from_str(&listed).expect("pane list JSON");
+    let mut ids: Vec<_> = panes
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|pane| pane["is_plugin"] == false)
+        .map(|pane| pane["id"].as_u64().unwrap())
+        .collect();
+    ids.sort();
+    let mut expected = vec![
+        u64::from(first.terminal_id().get()),
+        u64::from(second.terminal_id().get()),
+    ];
+    expected.sort();
+    assert_eq!(ids, expected);
+}
+
+#[test]
+fn arrangement_reports_disabled_builtin_services() {
+    let zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .start();
+    let terminal = zellij.expect_pty_spawn();
+    terminal.output(b"$ ");
+    assert_eq!(
+        zellij.run_cli_action(zellij_cli::args::CliAction::ArrangePanesByProject),
+        0
+    );
+    zellij.wait_until("disabled services are explained", |screen| {
+        screen.contains("hocus-store") && screen.contains("hocus-agentd")
+    });
+}

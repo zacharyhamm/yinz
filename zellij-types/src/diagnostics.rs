@@ -140,6 +140,7 @@ pub enum ScreenContext {
     GoToTabWithId,
     CloseTabWithId,
     RenameTabWithId,
+    ArrangeProjectPanes,
     SetTabProjects,
     BreakPanesToTabWithId,
     RecomputeTabSize,
@@ -397,6 +398,7 @@ pub enum PtyContext {
     strum_macros::VariantNames,
 )]
 pub enum PluginContext {
+    ArrangePanesByProject,
     Load,
     LoadBackgroundPlugin,
     RunHook,
