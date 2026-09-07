@@ -11,7 +11,7 @@ impl Screen {
     fn arrangement_notice(&self, message: String) {
         self.bus
             .senders
-            .send_to_screen(ScreenInstruction::Notify(message, None, None))
+            .send_to_screen(ScreenInstruction::Notify(message, None, None, None))
             .non_fatal();
     }
 
