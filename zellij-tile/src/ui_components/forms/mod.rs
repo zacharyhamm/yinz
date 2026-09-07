@@ -30,7 +30,7 @@
 //!
 //! # let key = KeyWithModifier::new(BareKey::Enter);
 //! match form.handle_key(key) {
-//!     FormEvent::Submit => { /* read form.text("name") */ },
+//!     FormEvent::ButtonPressed(id) if id == "save" => { /* read form.text("name") */ },
 //!     FormEvent::Ignored => { /* the plugin's own bindings apply */ },
 //!     _ => {},
 //! }
@@ -38,7 +38,7 @@
 //! form.render(0, 0, 40); // places the cursor too
 //!
 //! let mut dialog = Dialog::new(Text::new("Rename"), form)
-//!     .help(Text::new("<Enter> Save, <Esc> Cancel"));
+//!     .help(Text::new("Arrows/Tab: move, Enter: activate, Esc: back"));
 //! dialog.render(Rect::new(0, 0, 40, 10));
 //! ```
 //!
@@ -50,8 +50,8 @@
 //!   has fewer rows than fields.
 //! - [`FormEvent::Ignored`] means the form did not consume the key, so a plugin
 //!   keeps its own bindings.
-//! - Traversal keys are configurable ([`Form::with_traversal_keys`]) because
-//!   `Tab` is already spoken for in most plugins.
+//! - Arrows traverse inactive controls. Tab and Shift-Tab always move focus.
+//!   [`Form::with_traversal_keys`] adds bindings without taking active arrows.
 //! - An open [`Select`] or [`Combo`] dropdown *overlays* the rows below it, so a
 //!   screen that prints its own chrome after the form should check
 //!   [`Form::overlay_rect`].
@@ -63,10 +63,15 @@
 //!   act on `Mouse::Release`, and only when it lands back where the
 //!   `Mouse::LeftClick` did. A plugin that subscribes to `EventType::Mouse` and
 //!   forwards every variant gets that for free.
-//! - Enter submits by default, from whichever field has focus.
-//!   [`Form::enter_never_submits`] turns that off: Enter then acts on the
-//!   focused widget - opening a list, toggling a checkbox, entering a text
-//!   field's input mode - and only a button submits.
+//! - Enter activates a control. Typing or paste also starts text editing.
+//!   Enter or Esc ends text editing and preserves the text. Only buttons submit.
+//! - Enter/Space opens a select or activates a radio group. Active arrows change
+//!   the dropdown highlight or radio selection. Enter commits a dropdown.
+//!   Enter/Space/Esc leaves a radio group and preserves its selection.
+//! - Esc closes a combo's suggestions first, then ends editing on the next press.
+//!   Esc on an inactive control cancels the form. Ctrl-C always cancels.
+//! - Traversal ends interaction and discards uncommitted dropdown highlights.
+//!   `FocusMoved` reports interaction changes; `FieldChanged` reports value changes.
 
 mod button;
 mod choice;

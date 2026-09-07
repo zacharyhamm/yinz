@@ -24,7 +24,7 @@ fn error(message: impl Into<String>) -> mlua::Error {
     mlua::Error::runtime(message.into())
 }
 
-fn build(fields: Vec<Descriptor>, enter_submits: bool) -> mlua::Result<Form> {
+fn build(fields: Vec<Descriptor>) -> mlua::Result<Form> {
     let mut form = Form::new();
     let mut ids = std::collections::HashSet::new();
     for d in fields {
@@ -100,11 +100,7 @@ fn build(fields: Vec<Descriptor>, enter_submits: bool) -> mlua::Result<Form> {
             _ => return Err(error(format!("unknown widget kind: {}", d.kind))),
         };
     }
-    Ok(if enter_submits {
-        form
-    } else {
-        form.enter_never_submits()
-    })
+    Ok(form)
 }
 
 enum Widget {
@@ -134,7 +130,6 @@ fn action(lua: &Lua, event: FormEvent) -> mlua::Result<Table> {
         FormEvent::Complete(id) => ("complete", Some(id)),
         FormEvent::ButtonPressed(id) => ("button_pressed", Some(id)),
         FormEvent::FocusMoved => ("focus_moved", None),
-        FormEvent::Submit => ("submit", None),
         FormEvent::Cancel => ("cancel", None),
         FormEvent::Ignored => ("ignored", None),
     };
@@ -317,23 +312,21 @@ pub(super) fn install(lua: &Lua, zellij: &Table) -> mlua::Result<()> {
     let native = lua.create_table()?;
     native.set(
         "form",
-        lua.create_function(
-            |lua, (fields, enter_submits, dialog): (Value, bool, Option<Table>)| {
-                let form = build(lua.from_value(fields)?, enter_submits)?;
-                Ok(if let Some(t) = dialog {
-                    let mut d = Dialog::new(Text::new(t.get::<String>("title")?), form);
-                    if let Some(s) = t.get::<Option<String>>("message")? {
-                        d = d.message(Text::new(s));
-                    }
-                    if let Some(s) = t.get::<Option<String>>("help")? {
-                        d = d.help(Text::new(s));
-                    }
-                    Widget::Dialog(d)
-                } else {
-                    Widget::Form(form)
-                })
-            },
-        )?,
+        lua.create_function(|lua, (fields, dialog): (Value, Option<Table>)| {
+            let form = build(lua.from_value(fields)?)?;
+            Ok(if let Some(t) = dialog {
+                let mut d = Dialog::new(Text::new(t.get::<String>("title")?), form);
+                if let Some(s) = t.get::<Option<String>>("message")? {
+                    d = d.message(Text::new(s));
+                }
+                if let Some(s) = t.get::<Option<String>>("help")? {
+                    d = d.help(Text::new(s));
+                }
+                Widget::Dialog(d)
+            } else {
+                Widget::Form(form)
+            })
+        })?,
     )?;
     native.set(
         "markdown",
@@ -427,6 +420,7 @@ mod tests {
             BareKey::Left,
             BareKey::Backspace,
             BareKey::Tab,
+            BareKey::Enter,
             BareKey::Down,
             BareKey::Char('c'),
             BareKey::Enter,
@@ -437,6 +431,7 @@ mod tests {
             BareKey::Tab,
             BareKey::Char(' '),
             BareKey::Tab,
+            BareKey::Enter,
             BareKey::Right,
             BareKey::Tab,
             BareKey::Enter,
@@ -516,6 +511,53 @@ mod tests {
                 dialog.render_buffer(Rect::new(2, 3, width, height)).output
             );
         }
+    }
+
+    #[test]
+    fn lua_controls_activate_explicitly_and_submit_only_through_buttons() {
+        interpreter()
+            .load(
+                r#"
+            local ui = zellij.ui
+            local input = ui.text_input{}
+            assert(input:handle_key('Enter').kind == 'focus_moved')
+            assert(input:handle_key('x').kind == 'field_changed')
+            assert(input:handle_key('Enter').kind == 'focus_moved')
+            assert(input:value() == 'x')
+            local radio = ui.radio_group{options={'one','two'}}
+            radio:handle_key('Right')
+            assert(radio:value() == 1)
+            radio:handle_key(' ')
+            assert(radio:value() == 1)
+            assert(radio:handle_key('Right').kind == 'field_changed')
+            assert(radio:value() == 2)
+            radio:handle_key('Esc')
+            assert(radio:handle_key('Esc').kind == 'cancel')
+            local select = ui.select{options={'one','two'}}
+            select:handle_key('Enter')
+            assert(select:handle_key('Down').kind == 'focus_moved')
+            assert(select:value() == 1)
+            select:handle_key('Esc')
+            assert(select:value() == 1)
+            local combo = ui.combo{options={'one','two'}}
+            combo:handle_key('Enter')
+            combo:handle_key('Down')
+            assert(combo:handle_key('Enter').kind == 'field_changed')
+            assert(combo:value() == 'one')
+            assert(combo:handle_key('Esc').kind == 'cancel')
+            local dialog = ui.dialog{title='Answer', fields={
+                {kind='text_input',id='answer'}, {kind='button',id='submit',label='Submit'}
+            }}
+            dialog:insert_pasted_text('answer')
+            assert(dialog:handle_key('Enter').kind == 'focus_moved')
+            assert(dialog:handle_key('Right').kind == 'focus_moved')
+            local action = dialog:handle_key('Enter')
+            assert(action.kind == 'button_pressed' and action.id == 'submit')
+            assert(dialog:value('answer') == 'answer')
+        "#,
+            )
+            .exec()
+            .unwrap();
     }
 
     #[test]

@@ -6786,11 +6786,12 @@ f:set_value('description', '# Custom heading')
 assert(key('Enter'))
 assert(not state()) -- Only the Preview button submits.
 f:focus('layout')
-key('Down')
+key('Enter')
 demo.update{name='key', key='w', bare_key={Char='w'}, key_modifiers={}}
 key('Enter')
 assert(f:value('layout') == 5)
 f:focus('mode')
+key('Enter')
 key('Right')
 assert(f:value('mode') == 2)
 f:focus('frames')
@@ -6847,6 +6848,50 @@ assert(f:value('branch') == 'main' and f:focused_id() == 'name')
     let mut reloaded = load(&source).unwrap();
     reloaded.load(&BTreeMap::new()).unwrap();
     assert_eq!(reloaded.render(24, 60).unwrap(), initial);
+}
+
+#[test]
+fn swamp_workflow_answer_requires_the_submit_button() {
+    let source = zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap();
+    let plugin = load(source).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin
+        .lua
+        .load(
+            r#"
+        local z = require('zellij')
+        z.subscribe = function() end
+        z.every = function() end
+        z.task = function(f) f() end
+        z.await = function(value) return value end
+        M.load()
+        M.refresh = function() end
+        M.snapshot = {root='/work'}
+        M.pending = {{model='model', attributes={run='run',question='question'}}}
+        local calls = 0
+        z.async.run_command = function(request)
+            calls = calls + 1
+            assert(request.command[3] == 'answer' and request.command[7] == 'my answer')
+            return {exit_code=0}
+        end
+        local function key(k)
+            return M.update{name='key',bare_key=k,key_modifiers={}}
+        end
+        M.update{name='pasted_text',value='my answer'}
+        key('Enter')
+        assert(calls == 0 and M.focused_control() == 'answer')
+        key('Down')
+        assert(M.focused_control() == 'submit')
+        key('Enter')
+        assert(calls == 1 and M.status == 'Answer recorded')
+    "#,
+        )
+        .exec()
+        .unwrap();
 }
 
 #[test]

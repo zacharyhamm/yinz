@@ -182,10 +182,7 @@ impl Default for State {
                 "Reuse existing branch or worktree",
                 Checkbox::new(false),
             )
-            .button("create", Button::new("Create agent"))
-            // Half a form filled in and an Enter pressed out of habit used to
-            // be enough to start an agent. Nothing but the button starts one.
-            .enter_never_submits();
+            .button("create", Button::new("Create agent"));
         // Replaced every render by `help_for`, which says what Enter does in
         // whichever field has focus. Set here too so the dialog reserves the
         // row from the start.
@@ -378,13 +375,13 @@ impl ZellijPlugin for State {
 fn help_for(form: &Form) -> &'static str {
     let Some(field) = form.focused_id().and_then(|id| form.field_by_id(id)) else {
         // No field of that id: focus is on the button, or the form is empty.
-        return "<Enter> create  <Tab> next  <Esc> cancel";
+        return "<Enter> create  <↓/Tab> next  <Esc> back";
     };
     if let Some(select) = field.select() {
         return if select.is_open() {
             "<Enter> choose  <↑↓> move  <Esc> close"
         } else {
-            "<Enter> open  <Tab> next  <Esc> cancel"
+            "<Enter> open  <↓/Tab> next  <Esc> back"
         };
     }
     if let Some(combo) = field.combo() {
@@ -395,19 +392,23 @@ fn help_for(form: &Form) -> &'static str {
         } else if form.is_editing() {
             "<Enter> done  <↓> list  <Tab> next"
         } else {
-            "<Enter> edit  <Tab> next  <Esc> cancel"
+            "<Enter> edit  <↓/Tab> next  <Esc> back"
         };
     }
     if field.checkbox().is_some() {
-        return "<Enter> toggle  <Tab> next  <Esc> cancel";
+        return "<Enter> toggle  <↓/Tab> next  <Esc> back";
     }
     if field.radio().is_some() {
-        return "<Enter> change  <Tab> next  <Esc> cancel";
+        return if form.is_radio_active() {
+            "<Arrows> choose  <Enter/Esc> done"
+        } else {
+            "<Enter> activate  <↓/Tab> next"
+        };
     }
     if form.is_editing() {
         "<Enter> done  <Tab> next  <Esc> back"
     } else {
-        "<Enter> edit  <Tab> next  <Esc> cancel"
+        "<Enter> edit  <↓/Tab> next  <Esc> back"
     }
 }
 
@@ -426,10 +427,7 @@ fn fork_dialog() -> Dialog {
             "Agent",
             Select::new(launch::OFFERED.iter().copied().map(capitalized)),
         )
-        .button("fork", Button::new("Fork agent"))
-        // For the reason the New agent form does it: an Enter pressed out of habit should
-        // open the list, never start an agent.
-        .enter_never_submits();
+        .button("fork", Button::new("Fork agent"));
     let help = help_for(&form);
     Dialog::new(Text::new("Fork agent").color_all(2), form)
         .help(Text::new(help))
@@ -802,9 +800,6 @@ fn start(command: CommandToRun) -> Option<PaneId> {
 impl State {
     fn handle(&mut self, event: FormEvent) -> bool {
         match event {
-            // Only the button. `FormEvent::Submit` cannot reach here - the form
-            // is built with `enter_never_submits` - and saying so in the match
-            // is what keeps a stray Enter from ever creating an agent again.
             FormEvent::ButtonPressed(_) => {
                 if matches!(self.job, Job::Fork { .. }) {
                     self.fork()

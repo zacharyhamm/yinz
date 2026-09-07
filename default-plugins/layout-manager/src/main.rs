@@ -228,10 +228,17 @@ impl ZellijPlugin for State {
 
         match event {
             Event::PastedText(text) => {
-                if let Screen::ImportLayout(ref mut import_screen) = self.screen {
-                    import_screen.handle_pasted_text(text);
-                    should_render = true;
-                }
+                should_render = match &mut self.screen {
+                    Screen::ImportLayout(screen) => {
+                        screen.handle_pasted_text(text);
+                        true
+                    },
+                    Screen::NewLayoutFromSession(screen) => {
+                        screen.form.insert_pasted_text(&text).is_some()
+                    },
+                    Screen::RenameLayout(screen) => screen.form.insert_pasted_text(&text).is_some(),
+                    _ => false,
+                };
             },
             Event::AvailableLayoutInfo(available_layouts, layouts_with_errors) => {
                 // Convert valid layouts to DisplayLayout::Valid
@@ -312,7 +319,31 @@ impl ZellijPlugin for State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screens::ErrorScreen;
+    use crate::screens::{ErrorScreen, NewLayoutFromCurrentSessionScreen, RenameLayoutScreen};
+
+    #[test]
+    fn paste_reaches_both_forms_and_starts_editing() {
+        for screen in [
+            Screen::RenameLayout(RenameLayoutScreen::new(String::new(), 0)),
+            Screen::NewLayoutFromSession(NewLayoutFromCurrentSessionScreen::new(
+                String::new(),
+                LayoutMetadata::default(),
+            )),
+        ] {
+            let mut state = State {
+                screen,
+                ..Default::default()
+            };
+            assert!(state.update(Event::PastedText("pasted".into())));
+            let form = match &state.screen {
+                Screen::RenameLayout(screen) => &screen.form,
+                Screen::NewLayoutFromSession(screen) => &screen.form,
+                _ => unreachable!(),
+            };
+            assert_eq!(form.text("name"), "pasted");
+            assert!(form.is_editing());
+        }
+    }
 
     fn state_with_layouts(names: &[&str]) -> State {
         State {

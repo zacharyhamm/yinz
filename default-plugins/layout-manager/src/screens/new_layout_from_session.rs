@@ -45,7 +45,6 @@ impl NewLayoutFromCurrentSessionScreen {
 
     pub fn handle_key(&mut self, key: KeyWithModifier) -> KeyResponse {
         match self.form.handle_key(key.clone()) {
-            FormEvent::Submit => self.attempt_save_current_session(),
             FormEvent::Cancel => KeyResponse::new_screen(self.cancel_save()),
             // A different target means a different layout to save, so the dump
             // behind the details block is re-read.
@@ -263,13 +262,13 @@ impl NewLayoutFromCurrentSessionScreen {
 
     fn help_text_full(&self) -> (&str, &[&str]) {
         (
-            "<Tab> - Move between fields, <Enter> - Save, <Esc> - Back",
+            "<Tab/Arrows> Move, <Enter> Activate, <Esc> Back",
             &["<Tab>", "<Enter>", "<Esc>"],
         )
     }
     fn help_text_short(&self) -> (&str, &[&str]) {
         (
-            "<Tab> - Move, <Enter> - Save, <Esc> - Back",
+            "<Tab/Arrows> Move, <Enter> Activate, <Esc> Back",
             &["<Tab>", "<Enter>", "<Esc>"],
         )
     }

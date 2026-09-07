@@ -762,7 +762,7 @@ function M.update(e)
   elseif e.name == "mouse" then action = form:handle_mouse(e)
   elseif e.name == "pasted_text" then action = form:insert_pasted_text(e.value)
   else return false end
-  if action.kind == "submit" or (action.kind == "button_pressed" and action.id == "save") then
+  if action.kind == "button_pressed" and action.id == "save" then
     local values = form:values() -- name/branch: strings; layout/mode: indices; frames: boolean
     -- Validate values here, then perform the plugin's action.
   end
@@ -808,10 +808,21 @@ Pane coordinates start at zero. A zero width or height produces no form output a
 Forms scroll to keep the focused field visible. Dropdowns cover later rows within the supplied area.
 
 Actions contain `kind`, `should_render`, and an optional `id`.
-Kinds are `field_changed`, `complete`, `button_pressed`, `focus_moved`, `submit`, `cancel`, and `ignored`.
-Only `ignored` sets `should_render=false`. Tab and Shift-Tab move focus.
-Enter submits from a field by default. Pass `{enter_submits=false}` as the second argument to `ui.form`
-to make Enter interact with fields and require a button for submission.
+Kinds are `field_changed`, `complete`, `button_pressed`, `focus_moved`, `cancel`, and `ignored`.
+Only `ignored` sets `should_render=false`. Interaction changes return `focus_moved`.
+`field_changed` means a value changed, not just a dropdown highlight.
+
+- On an inactive control, Down/Right moves forward and Up/Left moves backward. Focus wraps and skips disabled buttons.
+- Tab and Shift-Tab always move focus and end interaction. Text stays. Uncommitted dropdown highlights are discarded.
+- Enter starts text editing. Typing or paste also starts editing. Active arrows control the cursor or history. Enter/Esc ends editing.
+- Enter/Space opens a select. Typing opens and filters it. Up/Down moves the highlight. Enter commits. Esc closes without a selection change.
+- Enter activates a combo and opens available suggestions. Typing filters them. Up/Down moves the highlight. Enter accepts the highlight or typed text and ends editing.
+- Esc closes combo suggestions first. The next Esc ends editing and preserves the text.
+- Enter/Space activates a radio group without a value change. Active arrows change selection. Enter/Space/Esc leaves the group.
+- Enter/Space toggles a checkbox or presses a button immediately. Use a `button_pressed` handler to submit.
+- Esc on an inactive control cancels the form. Ctrl-C cancels from any control.
+
+Standalone Lua widgets follow the same activation rules.
 
 `ui.dialog{title="Confirm", message="Continue?", fields={...}, help="Esc: cancel"}` accepts the same field descriptions.
 It centers the content within the supplied area and bounds the form height.

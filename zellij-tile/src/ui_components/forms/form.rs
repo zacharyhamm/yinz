@@ -10,26 +10,10 @@
 //! every one of them re-derived the cursor column by hand. Here it happens once,
 //! in [`Form::render`].
 //!
-//! ## Tab is not assumed
-//!
-//! `Tab` already means five different things across the builtin plugins: next
-//! screen (session-manager, plugin-manager), toggle save target
-//! (layout-manager), next coordinate (multiple-select), descend into a
-//! directory (strider), and completion inside [`TextInput`] itself. So a form
-//! never insists on it:
-//!
-//! - traversal keys are configurable via [`Form::with_traversal_keys`], and
-//!   default to Tab / Shift-Tab;
-//! - anything the form does not consume comes back as [`FormEvent::Ignored`],
-//!   so the plugin's own bindings still work and the form never silently
-//!   swallows a key.
-//!
-//! Note the ordering consequence: traversal is checked *before* the focused
-//! field sees the key, so with the default keys `Tab` moves focus and a field
-//! never reports [`FormEvent::Complete`]. A form that wants tab-completion
-//! should pick different traversal keys. Under
-//! [`Form::enter_never_submits`] the same ordering is what lets `Tab` leave a
-//! text field's input mode: it never reaches the field at all.
+//! Arrows traverse inactive controls. Enter activates a control; active controls
+//! own their arrows until Enter, Esc, or traversal ends the interaction.
+//! Tab and Shift-Tab always traverse. Additional traversal keys are configurable,
+//! but cannot take arrows from an active control. Only buttons submit a form.
 
 use super::button::{Button, Rect};
 use super::choice::{Checkbox, RadioGroup};
@@ -59,9 +43,6 @@ pub enum FormEvent {
     /// changed - a dropdown opened or closed, a text field entered or left
     /// input mode. Nothing a caller reads has a new value.
     FocusMoved,
-    /// The form was submitted — Enter in a field. Never emitted by a form built
-    /// with [`Form::enter_never_submits`], where a button is the only way out.
-    Submit,
     /// The form was cancelled — Esc, or Ctrl-c in a field.
     Cancel,
     /// The form did not consume this. The plugin's own bindings apply.
@@ -149,8 +130,7 @@ impl Field {
     ///
     /// A [`Combo`] answers with its own editor: its value *is* typed text, so
     /// everything a form does to a text field - place the caret where a click
-    /// landed, take a paste, run the input-mode dance under
-    /// [`enter_never_submits`](Form::enter_never_submits) - it wants done to it
+    /// landed, take a paste, enter and leave input mode - it wants done to it
     /// too.
     pub fn input(&self) -> Option<&TextInput> {
         match &self.widget {
@@ -304,7 +284,7 @@ pub struct Form {
     focus: Option<Focus>,
     next_key: KeyWithModifier,
     prev_key: KeyWithModifier,
-    enter_never_submits: bool,
+    radio_active: bool,
     editing: bool,
     pressed: Option<PressTarget>,
 }
@@ -342,7 +322,7 @@ impl Form {
             focus: None,
             next_key: KeyWithModifier::new(BareKey::Tab),
             prev_key: KeyWithModifier::new(BareKey::Tab).with_shift_modifier(),
-            enter_never_submits: false,
+            radio_active: false,
             editing: false,
             pressed: None,
         }
@@ -408,31 +388,17 @@ impl Form {
         self
     }
 
-    /// Enter never submits: it acts on the focused widget instead.
-    ///
-    /// A closed [`Select`] opens on Enter (and the open one commits on the
-    /// next), a [`Checkbox`] toggles, a [`RadioGroup`] advances, and a
-    /// [`TextInput`] enters and leaves an input mode - so [`FormEvent::Submit`]
-    /// is never emitted and a button is the only way to submit.
-    ///
-    /// Note that a text field is not typed into until it is in input mode, so a
-    /// form whose *first* widget is one opens with no cursor anywhere until the
-    /// user presses Enter or starts typing.
-    pub fn enter_never_submits(mut self) -> Self {
-        self.enter_never_submits = true;
-        self
-    }
-
     /// Whether the focused text field is in input mode.
-    ///
-    /// Always false unless the form was built with
-    /// [`enter_never_submits`](Self::enter_never_submits): every other form
-    /// types into its focused field directly.
     pub fn is_editing(&self) -> bool {
         self.editing
     }
 
-    /// Replace the default Tab / Shift-Tab traversal.
+    /// Whether the focused radio group owns arrow keys.
+    pub fn is_radio_active(&self) -> bool {
+        self.radio_active
+    }
+
+    /// Add traversal bindings alongside Tab / Shift-Tab and inactive arrows.
     pub fn with_traversal_keys(mut self, next: KeyWithModifier, prev: KeyWithModifier) -> Self {
         self.next_key = next;
         self.prev_key = prev;
@@ -538,6 +504,7 @@ impl Form {
         // Unguarded, unlike the dropdown above: `focus_on` onto the field that
         // already has focus is a request to start over on it, not a no-op.
         self.editing = false;
+        self.radio_active = false;
         self.focus = Some(focus);
         for (i, (_, button)) in self.buttons.iter_mut().enumerate() {
             button.set_focused(focus == Focus::Button(i));
@@ -613,6 +580,7 @@ impl Form {
                 Focus::Button(i) => !self.buttons[i].1.is_disabled(),
             };
             if focusable {
+                self.close_open_dropdown();
                 self.set_focus(candidate);
                 return FormEvent::FocusMoved;
             }
@@ -621,110 +589,46 @@ impl Form {
     }
 
     pub fn handle_key(&mut self, key: KeyWithModifier) -> FormEvent {
-        // Traversal first — see the module note. A field would otherwise
-        // consume Tab as a completion request.
-        if key == self.next_key {
+        if key == KeyWithModifier::new(BareKey::Char('c')).with_ctrl_modifier() {
+            return FormEvent::Cancel;
+        }
+        let arrow = matches!(
+            key.bare_key,
+            BareKey::Up | BareKey::Down | BareKey::Left | BareKey::Right
+        );
+        let active = self.editing || self.radio_active || self.open_dropdown_index().is_some();
+        if key == KeyWithModifier::new(BareKey::Tab) {
             return self.move_focus(true);
         }
-        if key == self.prev_key {
+        if key == KeyWithModifier::new(BareKey::Tab).with_shift_modifier() {
             return self.move_focus(false);
         }
-        if self.enter_never_submits {
-            return self.handle_key_strict(key);
+        if !(active && arrow) {
+            if key == self.next_key {
+                return self.move_focus(true);
+            }
+            if key == self.prev_key {
+                return self.move_focus(false);
+            }
+            if arrow && key.has_no_modifiers() {
+                return self.move_focus(matches!(key.bare_key, BareKey::Down | BareKey::Right));
+            }
         }
-
-        match self.focus {
-            Some(Focus::Field(i)) => {
-                let Some(field) = self.fields.get_mut(i) else {
-                    return FormEvent::Ignored;
-                };
-                let id = field.id.clone();
-                match &mut field.widget {
-                    Widget::Text(input) => match input.handle_key(key) {
-                        InputAction::Continue => FormEvent::FieldChanged(id),
-                        InputAction::Submit => FormEvent::Submit,
-                        InputAction::Cancel => FormEvent::Cancel,
-                        InputAction::Complete => FormEvent::Complete(id),
-                        InputAction::NoAction => FormEvent::Ignored,
-                    },
-                    Widget::Select(select) => match select.handle_key(key.clone()) {
-                        SelectAction::Continue | SelectAction::Committed => {
-                            FormEvent::FieldChanged(id)
-                        },
-                        // Esc closed the dropdown. It did not cancel the form:
-                        // one Esc per thing being backed out of.
-                        SelectAction::Cancelled => FormEvent::FocusMoved,
-                        // A closed select does not take Enter or Esc, so the
-                        // form still submits and cancels from one.
-                        SelectAction::NoAction => match key.bare_key {
-                            BareKey::Enter if key.has_no_modifiers() => FormEvent::Submit,
-                            BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
-                            _ => FormEvent::Ignored,
-                        },
-                    },
-                    Widget::Combo(combo) => match combo.handle_key(key) {
-                        ComboAction::Continue | ComboAction::Committed => {
-                            FormEvent::FieldChanged(id)
-                        },
-                        // Esc closed the list. It did not cancel the form: one
-                        // Esc per thing being backed out of.
-                        ComboAction::Cancelled => FormEvent::FocusMoved,
-                        // Whatever the list did not want is a text field's key,
-                        // and means here what it means in one.
-                        ComboAction::Input(action) => match action {
-                            InputAction::Continue => FormEvent::FieldChanged(id),
-                            InputAction::Submit => FormEvent::Submit,
-                            InputAction::Cancel => FormEvent::Cancel,
-                            InputAction::Complete => FormEvent::Complete(id),
-                            InputAction::NoAction => FormEvent::Ignored,
-                        },
-                    },
-                    Widget::Checkbox(checkbox) => match key.bare_key {
-                        BareKey::Char(' ') if key.has_no_modifiers() => {
-                            checkbox.toggle();
-                            FormEvent::FieldChanged(id)
-                        },
-                        BareKey::Enter if key.has_no_modifiers() => FormEvent::Submit,
-                        BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
-                        _ => FormEvent::Ignored,
-                    },
-                    Widget::Radio(radio) => {
-                        if radio.handle_key(key.clone()) {
-                            FormEvent::FieldChanged(id)
-                        } else {
-                            match key.bare_key {
-                                BareKey::Enter if key.has_no_modifiers() => FormEvent::Submit,
-                                BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
-                                _ => FormEvent::Ignored,
-                            }
-                        }
-                    },
-                }
-            },
-            Some(Focus::Button(i)) => {
-                let Some((id, button)) = self.buttons.get(i) else {
-                    return FormEvent::Ignored;
-                };
-                match key.bare_key {
-                    BareKey::Enter | BareKey::Char(' ') if key.has_no_modifiers() => {
-                        if button.is_disabled() {
-                            FormEvent::Ignored
-                        } else {
-                            FormEvent::ButtonPressed(id.clone())
-                        }
-                    },
-                    BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
-                    _ => FormEvent::Ignored,
-                }
-            },
-            None => FormEvent::Ignored,
+        if key.bare_key == BareKey::Enter && !key.has_no_modifiers() {
+            return FormEvent::Ignored;
+        }
+        if !active && key == KeyWithModifier::new(BareKey::Esc) {
+            return FormEvent::Cancel;
+        }
+        let event = self.handle_control_key(key);
+        if active && arrow && event == FormEvent::Ignored {
+            FormEvent::FocusMoved
+        } else {
+            event
         }
     }
 
-    /// Key handling for a form built with
-    /// [`enter_never_submits`](Self::enter_never_submits): Enter acts on the
-    /// focused widget, and only a button submits.
-    fn handle_key_strict(&mut self, key: KeyWithModifier) -> FormEvent {
+    fn handle_control_key(&mut self, key: KeyWithModifier) -> FormEvent {
         match self.focus {
             Some(Focus::Field(i)) => {
                 // A combo with its list open is the one field where Enter and
@@ -752,21 +656,26 @@ impl Form {
                 match &mut field.widget {
                     // Handled above; `input()` said these have no editor.
                     Widget::Text(_) | Widget::Combo(_) => FormEvent::Ignored,
-                    Widget::Select(select) => match select.handle_key(key.clone()) {
-                        SelectAction::Continue | SelectAction::Committed => {
-                            FormEvent::FieldChanged(id)
-                        },
-                        SelectAction::Cancelled => FormEvent::FocusMoved,
-                        // A closed select: Enter opens the list, which the next
-                        // Enter commits from. Nothing here submits.
-                        SelectAction::NoAction => match key.bare_key {
-                            BareKey::Enter if key.has_no_modifiers() => {
-                                select.open();
-                                FormEvent::FocusMoved
+                    Widget::Select(select) => {
+                        let before = select.selected_index();
+                        let event = match select.handle_key(key.clone()) {
+                            SelectAction::Continue
+                            | SelectAction::Committed
+                            | SelectAction::Cancelled => FormEvent::FocusMoved,
+                            SelectAction::NoAction => match key.bare_key {
+                                BareKey::Enter if key.has_no_modifiers() => {
+                                    select.open();
+                                    FormEvent::FocusMoved
+                                },
+                                BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
+                                _ => FormEvent::Ignored,
                             },
-                            BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
-                            _ => FormEvent::Ignored,
-                        },
+                        };
+                        if before != select.selected_index() {
+                            FormEvent::FieldChanged(id)
+                        } else {
+                            event
+                        }
                     },
                     Widget::Checkbox(checkbox) => match key.bare_key {
                         BareKey::Char(' ') | BareKey::Enter if key.has_no_modifiers() => {
@@ -776,23 +685,20 @@ impl Form {
                         BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
                         _ => FormEvent::Ignored,
                     },
-                    Widget::Radio(radio) => {
-                        if radio.handle_key(key.clone()) {
-                            return FormEvent::FieldChanged(id);
-                        }
-                        match key.bare_key {
-                            // A radio cannot be unset, so the nearest thing to
-                            // toggling one is moving to the next option.
-                            BareKey::Enter if key.has_no_modifiers() => {
-                                if radio.advance(true) {
-                                    FormEvent::FieldChanged(id)
-                                } else {
-                                    FormEvent::Ignored
-                                }
-                            },
-                            BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
-                            _ => FormEvent::Ignored,
-                        }
+                    Widget::Radio(radio) => match key.bare_key {
+                        BareKey::Enter | BareKey::Char(' ') if key.has_no_modifiers() => {
+                            self.radio_active = !self.radio_active;
+                            FormEvent::FocusMoved
+                        },
+                        BareKey::Esc if key.has_no_modifiers() && self.radio_active => {
+                            self.radio_active = false;
+                            FormEvent::FocusMoved
+                        },
+                        BareKey::Esc if key.has_no_modifiers() => FormEvent::Cancel,
+                        _ if self.radio_active && radio.handle_key(key) => {
+                            FormEvent::FieldChanged(id)
+                        },
+                        _ => FormEvent::Ignored,
                     },
                 }
             },
@@ -802,9 +708,7 @@ impl Form {
         }
     }
 
-    /// A focused text field under
-    /// [`enter_never_submits`](Self::enter_never_submits), where Enter is a
-    /// mode switch rather than anything the form as a whole hears about.
+    /// Enter starts or ends text editing, preserving the value.
     fn handle_key_text(&mut self, i: usize, key: KeyWithModifier) -> FormEvent {
         let editing = self.editing;
         if key.bare_key == BareKey::Enter {
@@ -815,6 +719,13 @@ impl Form {
                 return FormEvent::Ignored;
             }
             self.editing = !editing;
+            if self.editing {
+                if let Some(combo) = self.fields[i].combo_mut() {
+                    if !combo.suggestions().is_empty() {
+                        combo.open();
+                    }
+                }
+            }
             return FormEvent::FocusMoved;
         }
         if key.bare_key == BareKey::Esc && key.has_no_modifiers() {
@@ -838,8 +749,10 @@ impl Form {
             return FormEvent::Ignored;
         };
         let id = field.id.clone();
+        let before = field.text().to_owned();
         match field.handle_input_key(key) {
-            InputAction::Continue => FormEvent::FieldChanged(id),
+            InputAction::Continue if field.text() != before => FormEvent::FieldChanged(id),
+            InputAction::Continue => FormEvent::FocusMoved,
             InputAction::Cancel => FormEvent::Cancel,
             InputAction::Complete => FormEvent::Complete(id),
             // Enter was dealt with above, whatever its modifiers.
@@ -848,8 +761,7 @@ impl Form {
         }
     }
 
-    /// A focused combo with its list open, under
-    /// [`enter_never_submits`](Self::enter_never_submits).
+    /// A focused combo with its list open.
     ///
     /// Enter takes the highlighted suggestion, or - with nothing highlighted -
     /// leaves the input mode the way Enter does in any other field. Esc closes
@@ -862,19 +774,29 @@ impl Form {
         let Some(combo) = field.combo_mut() else {
             return FormEvent::Ignored;
         };
-        match combo.handle_key(key) {
-            ComboAction::Continue | ComboAction::Committed => FormEvent::FieldChanged(id),
+        let before = combo.text().to_owned();
+        let event = match combo.handle_key(key) {
+            ComboAction::Continue => FormEvent::FocusMoved,
+            ComboAction::Committed => {
+                self.editing = false;
+                FormEvent::FocusMoved
+            },
             ComboAction::Cancelled => FormEvent::FocusMoved,
             // The list handed the key back: it is the input mode's now, and
             // that is form-level state.
             ComboAction::Input(InputAction::Submit) => {
-                self.editing = !self.editing;
+                self.editing = false;
                 FormEvent::FocusMoved
             },
-            ComboAction::Input(InputAction::Continue) => FormEvent::FieldChanged(id),
+            ComboAction::Input(InputAction::Continue) => FormEvent::FocusMoved,
             ComboAction::Input(InputAction::Cancel) => FormEvent::Cancel,
-            ComboAction::Input(InputAction::Complete) => FormEvent::Complete(id),
+            ComboAction::Input(InputAction::Complete) => return FormEvent::Complete(id),
             ComboAction::Input(InputAction::NoAction) => FormEvent::Ignored,
+        };
+        if combo.text() != before {
+            FormEvent::FieldChanged(id)
+        } else {
+            event
         }
     }
 
@@ -1051,11 +973,16 @@ impl Form {
                     }
                 },
             }
+            let radio_active = self.radio_active
+                && self.focus == Some(Focus::Field(i))
+                && matches!(self.pressed, Some(PressTarget::Radio(_, _)));
             self.set_focus(Focus::Field(i));
+            // Keep the active radio's options in place across a render before release.
+            self.radio_active = radio_active;
             // After `set_focus`, which clears input mode. Placing the caret
             // where the press landed and then hiding it would be pointless: a
             // click into a field is intent enough to start typing in it.
-            if self.enter_never_submits && self.fields[i].input().is_some() {
+            if self.fields[i].input().is_some() {
                 self.editing = true;
             }
             return FormEvent::FocusMoved;
@@ -1129,6 +1056,10 @@ impl Form {
             PressTarget::DropdownOption(i, option) => {
                 let field = &mut self.fields[i];
                 let id = field.id.clone();
+                let before = (
+                    field.text().to_owned(),
+                    field.select().and_then(Select::selected_index),
+                );
                 let Some(dropdown) = field.dropdown_mut() else {
                     return FormEvent::Ignored;
                 };
@@ -1136,7 +1067,17 @@ impl Form {
                     return FormEvent::Ignored;
                 }
                 dropdown.commit_option(option);
-                FormEvent::FieldChanged(id)
+                self.editing = false;
+                if before
+                    != (
+                        field.text().to_owned(),
+                        field.select().and_then(Select::selected_index),
+                    )
+                {
+                    FormEvent::FieldChanged(id)
+                } else {
+                    FormEvent::FocusMoved
+                }
             },
         }
     }
@@ -1319,7 +1260,7 @@ impl Form {
 
         // 1. Work out where the cursor goes, printing nothing yet.
         // Read out here: `self` is borrowed for the field below.
-        let typing = !self.enter_never_submits || self.editing;
+        let typing = self.editing;
         let cursor = match self.focus {
             Some(Focus::Field(i)) if i >= start && i < end => {
                 self.fields.get(i).and_then(|field| {
@@ -1405,9 +1346,15 @@ impl Form {
                 Widget::Checkbox(checkbox) => {
                     checkbox.render_row(&mut buffer, &prompt, x, row_y, width, focused)
                 },
-                Widget::Radio(radio) => {
-                    radio.render_row(&mut buffer, &prompt, x, row_y, width, focused)
-                },
+                Widget::Radio(radio) => radio.render_row(
+                    &mut buffer,
+                    &prompt,
+                    x,
+                    row_y,
+                    width,
+                    focused,
+                    self.radio_active,
+                ),
             }
             field.last_rendered = Some(Rect::new(x, row_y, width, 1));
         }
@@ -1480,6 +1427,211 @@ impl Form {
 mod tests {
     use super::*;
 
+    #[test]
+    fn inactive_arrows_traverse_every_control_and_skip_disabled_buttons() {
+        let ids = ["name", "layout", "frames", "mode", "model", "save"];
+        for (arrow, forward) in [
+            (BareKey::Down, true),
+            (BareKey::Right, true),
+            (BareKey::Up, false),
+            (BareKey::Left, false),
+        ] {
+            for (index, id) in ids.iter().enumerate() {
+                let mut form = a_strict_form()
+                    .combo("model", "Model", Combo::new(["one", "two"]))
+                    .button("disabled", Button::new("Disabled").disabled(true));
+                form.focus_on(id);
+                assert_eq!(form.handle_key(key(arrow)), FormEvent::FocusMoved);
+                let next = if forward {
+                    (index + 1) % ids.len()
+                } else {
+                    (index + ids.len() - 1) % ids.len()
+                };
+                assert_eq!(form.focused_id(), Some(ids[next]), "{id}, {arrow:?}");
+                assert_eq!(form.text("mode"), "One");
+                assert!(!form.checked("frames"));
+            }
+        }
+    }
+
+    #[test]
+    fn active_controls_keep_all_arrows_even_with_custom_traversal() {
+        for id in ["name", "layout", "mode", "model"] {
+            for arrow in [BareKey::Up, BareKey::Down, BareKey::Left, BareKey::Right] {
+                let mut form = a_strict_form()
+                    .combo("model", "Model", Combo::empty())
+                    .with_traversal_keys(key(arrow), key(arrow).with_alt_modifier());
+                form.focus_on(id);
+                form.handle_key(key(BareKey::Enter));
+                assert_ne!(
+                    form.handle_key(key(arrow)),
+                    FormEvent::Ignored,
+                    "{id}, {arrow:?}"
+                );
+                assert_eq!(form.focused_id(), Some(id));
+                assert_ne!(
+                    form.handle_key(key(arrow).with_alt_modifier()),
+                    FormEvent::Ignored
+                );
+                assert_eq!(form.focused_id(), Some(id));
+            }
+        }
+    }
+
+    #[test]
+    fn traversal_ends_interaction_and_discards_dropdown_highlights() {
+        for backward in [false, true] {
+            for id in ["name", "layout", "mode", "model"] {
+                let mut form = a_strict_form().combo("model", "Model", Combo::new(["one", "two"]));
+                form.focus_on(id);
+                form.handle_key(key(BareKey::Enter));
+                if id == "name" {
+                    form.insert_pasted_text("keep me");
+                }
+                form.handle_key(key(BareKey::Down));
+                let value = form.text(id).to_owned();
+                let tab = if backward {
+                    key(BareKey::Tab).with_shift_modifier()
+                } else {
+                    key(BareKey::Tab)
+                };
+                assert_eq!(form.handle_key(tab), FormEvent::FocusMoved);
+                assert!(!form.is_editing());
+                assert!(!form.is_radio_active());
+                assert!(form.open_dropdown_index().is_none());
+                assert_eq!(form.text(id), value);
+            }
+        }
+    }
+
+    #[test]
+    fn ctrl_c_cancels_every_control_in_every_state() {
+        for active in [false, true] {
+            for id in ["name", "layout", "frames", "mode", "model", "save"] {
+                let mut form = a_strict_form().combo("model", "Model", Combo::new(["one"]));
+                form.focus_on(id);
+                if active {
+                    form.handle_key(key(BareKey::Enter));
+                }
+                assert_eq!(
+                    form.handle_key(key(BareKey::Char('c')).with_ctrl_modifier()),
+                    FormEvent::Cancel
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dropdown_highlighting_and_unchanged_commits_only_report_interaction() {
+        let mut form = a_strict_form();
+        form.focus_on("layout");
+        form.handle_key(key(BareKey::Enter));
+        assert_eq!(form.handle_key(key(BareKey::Down)), FormEvent::FocusMoved);
+        assert_eq!(form.text("layout"), "default");
+        assert_eq!(form.handle_key(key(BareKey::Esc)), FormEvent::FocusMoved);
+        assert_eq!(form.text("layout"), "default");
+        form.handle_key(key(BareKey::Enter));
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::FocusMoved);
+        form.handle_key(key(BareKey::Enter));
+        form.render(0, 0, 40);
+        assert_eq!(click(&mut form, 2, 0), FormEvent::FocusMoved);
+        assert_eq!(form.text("layout"), "default");
+    }
+
+    #[test]
+    fn empty_and_single_control_forms_keep_navigation_bounded() {
+        for arrow in [BareKey::Up, BareKey::Down, BareKey::Left, BareKey::Right] {
+            assert_eq!(Form::new().handle_key(key(arrow)), FormEvent::Ignored);
+            let mut form = Form::new().select("only", "Only", Select::new(["one"]));
+            assert_eq!(form.handle_key(key(arrow)), FormEvent::FocusMoved);
+            assert_eq!(form.focused_id(), Some("only"));
+            form.handle_key(key(BareKey::Enter));
+            assert_eq!(form.handle_key(key(arrow)), FormEvent::FocusMoved);
+            form.handle_key(key(BareKey::Tab));
+            assert!(!form.select_by_id("only").unwrap().is_open());
+        }
+        let mut form = Form::new().radio("only", "Only", RadioGroup::new(["one"]));
+        form.handle_key(key(BareKey::Char(' ')));
+        assert!(form.is_radio_active());
+        assert_eq!(form.handle_key(key(BareKey::Right)), FormEvent::FocusMoved);
+        form.handle_key(key(BareKey::Esc));
+        assert!(!form.is_radio_active());
+        assert_eq!(form.handle_key(key(BareKey::Esc)), FormEvent::Cancel);
+    }
+
+    #[test]
+    fn active_text_retains_modified_editing_and_only_value_changes_report_changed() {
+        let mut form = a_form();
+        form.insert_pasted_text("hello world");
+        assert_eq!(
+            form.handle_key(key(BareKey::Left).with_ctrl_modifier()),
+            FormEvent::FocusMoved
+        );
+        assert_eq!(form.fields[0].input().unwrap().get_cursor_position(), 6);
+        assert_eq!(
+            form.handle_key(key(BareKey::Char('u')).with_ctrl_modifier()),
+            FormEvent::FieldChanged("name".into())
+        );
+        assert_eq!(form.text("name"), "world");
+        assert_eq!(form.focused_id(), Some("name"));
+    }
+
+    #[test]
+    fn history_belongs_to_active_text_and_restores_the_draft() {
+        let mut form = a_form();
+        form.fields[0]
+            .input_mut()
+            .unwrap()
+            .set_history(vec!["old".into()]);
+        form.insert_pasted_text("draft");
+        assert_eq!(
+            form.handle_key(key(BareKey::Up)),
+            FormEvent::FieldChanged("name".into())
+        );
+        assert_eq!(form.text("name"), "old");
+        assert_eq!(
+            form.handle_key(key(BareKey::Down)),
+            FormEvent::FieldChanged("name".into())
+        );
+        assert_eq!(form.text("name"), "draft");
+        form.handle_key(key(BareKey::Enter));
+        form.handle_key(key(BareKey::Down));
+        assert_eq!(form.focused_id(), Some("path"));
+    }
+
+    #[test]
+    fn radio_focus_styles_distinguish_activation_and_small_viewports_keep_focus_visible() {
+        let mut form = a_strict_form();
+        form.focus_on("mode");
+        let inactive = form.render_buffer_in_viewport(0, 0, 40, 1);
+        assert_eq!(inactive.cursor, Some(None));
+        assert_eq!(form.fields[3].last_rendered, Some(Rect::new(0, 0, 40, 1)));
+        form.handle_key(key(BareKey::Enter));
+        let active = form.render_buffer_in_viewport(0, 0, 40, 1);
+        assert_ne!(inactive.output, active.output);
+        assert_eq!(active.cursor, Some(None));
+        form.handle_key(key(BareKey::Char(' ')));
+        assert_eq!(
+            form.render_buffer_in_viewport(0, 0, 40, 1).output,
+            inactive.output
+        );
+        form.handle_key(key(BareKey::Enter));
+        form.handle_key(key(BareKey::Right));
+        form.render_buffer_in_viewport(0, 0, 12, 1);
+        assert_eq!(form.fields[3].radio().unwrap().option_at(6, 0), Some(1));
+        form.focus_on("name");
+        form.handle_key(key(BareKey::Enter));
+        assert!(form
+            .render_buffer_in_viewport(0, 0, 8, 1)
+            .cursor
+            .flatten()
+            .is_some());
+        assert_eq!(
+            form.render_buffer_in_viewport(0, 0, 0, 0).cursor,
+            Some(None)
+        );
+    }
+
     fn a_form() -> Form {
         Form::new()
             .field("name", "Name", TextInput::empty())
@@ -1492,7 +1644,7 @@ mod tests {
         KeyWithModifier::new(bare_key)
     }
 
-    /// A form of every widget type, built with `enter_never_submits`.
+    /// A form of every widget type, with explicit activation.
     fn a_strict_form() -> Form {
         Form::new()
             .field("name", "Name", TextInput::empty())
@@ -1500,7 +1652,6 @@ mod tests {
             .checkbox("frames", "Frames", Checkbox::new(false))
             .radio("mode", "Mode", RadioGroup::new(["One", "Two"]))
             .button("save", Button::new("Save"))
-            .enter_never_submits()
     }
 
     #[test]
@@ -1602,16 +1753,18 @@ mod tests {
     }
 
     #[test]
-    fn enter_advances_a_radio_and_wraps() {
+    fn enter_activates_a_radio_without_changing_it() {
         let mut form = a_strict_form();
         form.focus_on("mode");
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::FocusMoved);
+        assert_eq!(form.text("mode"), "One");
         assert_eq!(
-            form.handle_key(key(BareKey::Enter)),
-            FormEvent::FieldChanged("mode".to_string())
+            form.handle_key(key(BareKey::Right)),
+            FormEvent::FieldChanged("mode".into())
         );
         assert_eq!(form.text("mode"), "Two");
-        form.handle_key(key(BareKey::Enter));
-        assert_eq!(form.text("mode"), "One");
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::FocusMoved);
+        assert_eq!(form.text("mode"), "Two");
     }
 
     #[test]
@@ -1712,11 +1865,13 @@ mod tests {
             .field("path", "Path", TextInput::empty());
 
         form.handle_key(key(BareKey::Tab));
+        form.handle_key(key(BareKey::Enter));
         form.render(2, 5, 40);
         let name_row = form.field_by_id("name").unwrap().last_rendered.unwrap().y;
         assert_eq!(take_last_cursor_position(), Some(Some((8, name_row))));
 
         form.handle_key(key(BareKey::Tab));
+        form.handle_key(key(BareKey::Enter));
         form.render_in_viewport(2, 5, 40, 1);
         let path_row = form.field_by_id("path").unwrap().last_rendered.unwrap().y;
         assert_eq!(take_last_cursor_position(), Some(Some((8, path_row))));
@@ -1739,17 +1894,14 @@ mod tests {
     }
 
     #[test]
-    fn a_form_with_other_traversal_keys_lets_tab_reach_the_field() {
+    fn custom_traversal_keeps_tab_traversal() {
         let mut form = Form::new()
             .field("name", "Name", TextInput::empty())
             .with_traversal_keys(
                 KeyWithModifier::new(BareKey::Down),
                 KeyWithModifier::new(BareKey::Up),
             );
-        assert_eq!(
-            form.handle_key(key(BareKey::Tab)),
-            FormEvent::Complete("name".to_string())
-        );
+        assert_eq!(form.handle_key(key(BareKey::Tab)), FormEvent::FocusMoved);
     }
 
     #[test]
@@ -1761,9 +1913,10 @@ mod tests {
     }
 
     #[test]
-    fn enter_in_a_field_submits_and_esc_cancels() {
+    fn enter_edits_and_esc_leaves_editing_before_cancelling() {
         let mut form = a_form();
-        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::Submit);
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::FocusMoved);
+        assert_eq!(form.handle_key(key(BareKey::Esc)), FormEvent::FocusMoved);
         assert_eq!(form.handle_key(key(BareKey::Esc)), FormEvent::Cancel);
     }
 
@@ -1895,7 +2048,7 @@ mod tests {
         let mut form = a_form_with_a_select();
         form.focus_on("layout");
         let event = form.handle_key(key(BareKey::Char('c')));
-        assert_eq!(event, FormEvent::FieldChanged("layout".to_string()));
+        assert_eq!(event, FormEvent::FocusMoved);
         let select = form.select_by_id("layout").unwrap();
         assert!(select.is_open());
         assert_eq!(select.filter_text(), "c");
@@ -1913,8 +2066,8 @@ mod tests {
         assert_eq!(form.text("layout"), "compact");
         assert_eq!(
             form.handle_key(key(BareKey::Enter)),
-            FormEvent::Submit,
-            "with the dropdown closed, Enter submits again"
+            FormEvent::FocusMoved,
+            "with the dropdown closed, Enter opens it again"
         );
     }
 
@@ -2065,9 +2218,10 @@ mod tests {
     }
 
     #[test]
-    fn arrows_change_a_radio_and_text_reads_its_option() {
+    fn active_arrows_change_a_radio_and_text_reads_its_option() {
         let mut form = a_form_with_choices();
         form.focus_on("mode");
+        form.handle_key(key(BareKey::Enter));
         assert_eq!(
             form.handle_key(key(BareKey::Right)),
             FormEvent::FieldChanged("mode".to_string())
@@ -2079,6 +2233,61 @@ mod tests {
             Some(1)
         );
         assert!(form.radio_by_id_mut("mode").is_some());
+    }
+
+    #[test]
+    fn active_radio_clicks_survive_a_render_between_press_and_release() {
+        for render_between in [false, true] {
+            for release_column in [14, 6, 20] {
+                let mut form = Form::new().radio(
+                    "mode",
+                    "Mode",
+                    RadioGroup::new(["One", "Two", "Three"]).with_selected(1),
+                );
+                form.handle_key(key(BareKey::Enter));
+                form.render_buffer(0, 0, 20);
+                assert_eq!(form.radio_by_id("mode").unwrap().option_at(14, 0), Some(2));
+                assert_eq!(
+                    form.handle_mouse(Mouse::LeftClick(0, 14)),
+                    FormEvent::FocusMoved
+                );
+                assert_eq!(form.text("mode"), "Two");
+                if render_between {
+                    form.render_buffer(0, 0, 20);
+                }
+                let event = form.handle_mouse(Mouse::Release(0, release_column));
+                if release_column == 14 {
+                    assert_eq!(event, FormEvent::FieldChanged("mode".into()));
+                    assert_eq!(form.text("mode"), "Three");
+                } else {
+                    assert_eq!(event, FormEvent::Ignored);
+                    assert_eq!(form.text("mode"), "Two");
+                }
+                assert!(form.is_radio_active());
+                assert!(form.focus_on("mode"));
+                assert!(!form.is_radio_active());
+            }
+        }
+    }
+
+    #[test]
+    fn clicking_an_inactive_radio_does_not_activate_it() {
+        let mut form = Form::new()
+            .radio("first", "First", RadioGroup::new(["One", "Two"]))
+            .radio("mode", "Mode", RadioGroup::new(["One", "Two", "Three"]));
+        form.handle_key(key(BareKey::Enter));
+        form.render_buffer(0, 0, 20);
+        form.handle_mouse(Mouse::LeftClick(1, 14));
+        assert_eq!(form.focused_id(), Some("mode"));
+        assert!(!form.is_radio_active());
+        assert_eq!(form.text("mode"), "One");
+        form.render_buffer(0, 0, 20);
+        assert_eq!(
+            form.handle_mouse(Mouse::Release(1, 14)),
+            FormEvent::FieldChanged("mode".into())
+        );
+        assert_eq!(form.text("mode"), "Two");
+        assert!(!form.is_radio_active());
     }
 
     #[test]
@@ -2225,11 +2434,14 @@ mod tests {
     }
 
     #[test]
-    fn enter_still_submits_from_choice_fields() {
+    fn enter_activates_choice_fields() {
         let mut form = a_form_with_choices();
-        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::Submit);
+        assert_eq!(
+            form.handle_key(key(BareKey::Enter)),
+            FormEvent::FieldChanged("frames".into())
+        );
         form.focus_on("mode");
-        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::Submit);
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::FocusMoved);
     }
 
     fn a_form_with_a_combo() -> Form {
@@ -2269,11 +2481,11 @@ mod tests {
     /// The guarantee the widget exists for: a value nobody picked off the list
     /// is still the value.
     #[test]
-    fn enter_on_a_combo_submits_what_was_typed() {
+    fn enter_on_a_combo_accepts_what_was_typed() {
         let mut form = a_form_with_a_combo();
         form.focus_on("model");
         form.handle_key(key(BareKey::Char('o')));
-        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::Submit);
+        assert_eq!(form.handle_key(key(BareKey::Enter)), FormEvent::FocusMoved);
         assert_eq!(form.text("model"), "o");
     }
 
@@ -2282,10 +2494,7 @@ mod tests {
         let mut form = a_form_with_a_combo();
         form.focus_on("model");
         form.handle_key(key(BareKey::Char('o')));
-        assert_eq!(
-            form.handle_key(key(BareKey::Down)),
-            FormEvent::FieldChanged("model".to_string())
-        );
+        assert_eq!(form.handle_key(key(BareKey::Down)), FormEvent::FocusMoved);
         assert_eq!(
             form.handle_key(key(BareKey::Enter)),
             FormEvent::FieldChanged("model".to_string())
@@ -2293,8 +2502,8 @@ mod tests {
         assert_eq!(form.text("model"), "opus");
         assert_eq!(
             form.handle_key(key(BareKey::Enter)),
-            FormEvent::Submit,
-            "with the list closed, Enter submits again"
+            FormEvent::FocusMoved,
+            "with the list closed, Enter starts editing again"
         );
     }
 
@@ -2302,9 +2511,10 @@ mod tests {
     fn esc_closes_a_combo_list_before_it_cancels_the_form() {
         let mut form = a_form_with_a_combo();
         form.focus_on("model");
-        form.handle_key(key(BareKey::Down));
+        form.handle_key(key(BareKey::Enter));
         assert_eq!(form.handle_key(key(BareKey::Esc)), FormEvent::FocusMoved);
         assert!(!form.combo_by_id("model").unwrap().is_open());
+        assert_eq!(form.handle_key(key(BareKey::Esc)), FormEvent::FocusMoved);
         assert_eq!(form.handle_key(key(BareKey::Esc)), FormEvent::Cancel);
     }
 
@@ -2312,7 +2522,7 @@ mod tests {
     fn traversing_away_closes_an_open_combo_list() {
         let mut form = a_form_with_a_combo();
         form.focus_on("model");
-        form.handle_key(key(BareKey::Down));
+        form.handle_key(key(BareKey::Enter));
         assert!(form.combo_by_id("model").unwrap().is_open());
         form.handle_key(key(BareKey::Tab));
         assert_eq!(form.focused_id(), Some("save"));
@@ -2333,7 +2543,7 @@ mod tests {
         let mut form = a_form_with_a_combo();
         let closed_height = form.height();
         form.focus_on("model");
-        form.handle_key(key(BareKey::Down));
+        form.handle_key(key(BareKey::Enter));
         assert_eq!(form.height(), closed_height);
         assert_eq!(
             form.overlay_rect(),
@@ -2348,7 +2558,7 @@ mod tests {
     fn clicking_a_suggestion_takes_it() {
         let mut form = a_form_with_a_combo();
         form.focus_on("model");
-        form.handle_key(key(BareKey::Down));
+        form.handle_key(key(BareKey::Enter));
         form.render(0, 0, 40);
         assert_eq!(
             click(&mut form, 3, 0),
@@ -2388,17 +2598,14 @@ mod tests {
     }
 
     #[test]
-    fn a_combo_under_enter_never_submits_never_submits() {
-        let mut form = a_form_with_a_combo().enter_never_submits();
+    fn a_combo_accepts_a_suggestion_and_ends_editing() {
+        let mut form = a_form_with_a_combo();
         form.focus_on("model");
         assert_eq!(
             form.handle_key(key(BareKey::Char('o'))),
             FormEvent::FieldChanged("model".to_string())
         );
-        assert_eq!(
-            form.handle_key(key(BareKey::Down)),
-            FormEvent::FieldChanged("model".to_string())
-        );
+        assert_eq!(form.handle_key(key(BareKey::Down)), FormEvent::FocusMoved);
         assert_eq!(
             form.handle_key(key(BareKey::Enter)),
             FormEvent::FieldChanged("model".to_string())
@@ -2413,7 +2620,7 @@ mod tests {
 
     #[test]
     fn enter_on_a_combo_list_with_nothing_highlighted_leaves_the_input_mode() {
-        let mut form = a_form_with_a_combo().enter_never_submits();
+        let mut form = a_form_with_a_combo();
         form.focus_on("model");
         form.handle_key(key(BareKey::Char('o')));
         assert!(form.combo_by_id("model").unwrap().is_open());

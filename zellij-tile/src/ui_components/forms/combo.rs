@@ -222,7 +222,7 @@ impl Combo {
                         },
                         // Nothing highlighted: the list was only ever a
                         // suggestion, and what was typed stands. Handing the
-                        // Enter back is what lets the form submit from it.
+                        // Enter back lets the form end editing with the typed text.
                         None => {
                             self.close();
                             ComboAction::Input(InputAction::Submit)

@@ -4,12 +4,12 @@ use zellij_tile::ui_components::forms::{Button, Form, FormEvent, TextInput};
 
 /// Rows the dialog occupies on top of the form itself: title, blank, blank, help.
 const DIALOG_CHROME_HEIGHT: usize = 4;
-const HELP_TEXT: &str = "<Enter> - Save, <Esc> - Cancel";
+const HELP_TEXT: &str = "<Tab/Arrows> Move, <Enter> Activate, <Esc> Back";
 const FIELD_ID: &str = "name";
 
 #[derive(Clone)]
 pub struct RenameLayoutScreen {
-    form: Form,
+    pub form: Form,
     pub old_file_name: String,
     pub selected_layout_index: usize,
 }
@@ -36,7 +36,6 @@ impl RenameLayoutScreen {
 
     pub fn handle_key(&mut self, key: KeyWithModifier) -> KeyResponse {
         match self.form.handle_key(key) {
-            FormEvent::Submit => self.attempt_rename(),
             FormEvent::ButtonPressed(id) if id == "save" => self.attempt_rename(),
             FormEvent::ButtonPressed(_) | FormEvent::Cancel => {
                 KeyResponse::new_screen(self.cancel_rename())
@@ -117,7 +116,7 @@ impl RenameLayoutScreen {
 
         // In a pane too short for the whole dialog the help line has nowhere to
         // go but on top of the form's button row, so it is dropped instead - it
-        // is a hint, and <Enter>/<Esc> work without it.
+        // is a hint; keyboard activation still works without it.
         if rows >= dialog_height {
             let mut help = Text::new(HELP_TEXT);
             for item in ["<Enter>", "<Esc>"] {
@@ -125,5 +124,30 @@ impl RenameLayoutScreen {
             }
             print_text_with_coordinates(help, base_x, base_y + dialog_height - 1, None, None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_save_button_attempts_a_rename() {
+        let mut screen = RenameLayoutScreen::new(String::new(), 0);
+        assert!(screen
+            .handle_key(KeyWithModifier::new(BareKey::Enter))
+            .new_screen
+            .is_none());
+        assert!(screen
+            .handle_key(KeyWithModifier::new(BareKey::Enter))
+            .new_screen
+            .is_none());
+        screen.handle_key(KeyWithModifier::new(BareKey::Down));
+        assert!(matches!(
+            screen
+                .handle_key(KeyWithModifier::new(BareKey::Enter))
+                .new_screen,
+            Some(Screen::Error(_))
+        ));
     }
 }

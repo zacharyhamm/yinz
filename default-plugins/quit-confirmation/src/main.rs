@@ -100,7 +100,9 @@ fn confirmation_dialog(notice: Option<&str>, on_last_pane: bool) -> Dialog {
             .button(QUIT, Button::new("Quit")),
     )
     .message(Text::new(message))
-    .help(Text::new("<Tab> select  <Enter> confirm  <Esc> cancel"));
+    .help(Text::new(
+        "<Tab/Arrows> select  <Enter> confirm  <Esc> cancel",
+    ));
     // Below the buttons rather than folded into the message: the message is the question, and
     // this is what the session has to say about answering it either way.
     if let Some(notice) = notice {
