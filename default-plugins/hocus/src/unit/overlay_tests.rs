@@ -3351,3 +3351,23 @@ fn clicking_a_toast_for_a_chat_that_is_gone_still_reveals_the_panel() {
     assert!(!state.hidden);
     assert_eq!(state.chat_id, Some(1), "and nothing was switched to");
 }
+
+/// A click is the user asking for the *conversation*, not for the list they got rid of. The
+/// reveal a toast click drives is the one route to `reveal_panel` that no gesture of theirs asked
+/// a panel of - `hide_panel` is what clears the closure, and a click does not go through it.
+#[test]
+fn clicking_a_toast_does_not_relaunch_a_list_the_user_closed() {
+    let mut state = agents_beside_state();
+    let launched = state.agents_launches;
+    state.on_panes(manifest(0, two_panes()));
+    assert!(state.agents_closed, "the list is gone and hocus knows it");
+    state.visibility_calls.clear();
+
+    assert!(state.on_toast_click(None));
+
+    assert!(!state.hidden, "the conversation still comes back");
+    assert_eq!(
+        state.agents_launches, launched,
+        "and takes the whole panel, as it does for every other repair"
+    );
+}

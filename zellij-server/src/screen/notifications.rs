@@ -422,14 +422,18 @@ impl Screen {
         // toast's pane is already this client's active one, which is not a reason for the plugin
         // that raised it to hear nothing.
         if let Some(on_click) = on_click {
+            // Both clients, because which of them the message has to be addressed to depends on
+            // whether the plugin is shared, and only the plugin thread knows that. See
+            // `plugins::client_for_notification_click`.
             self.bus
                 .senders
-                .send_to_plugin(PluginInstruction::PostMessageToPlugin(
-                    on_click.plugin_id,
-                    client_id,
-                    on_click.message,
-                    on_click.payload,
-                ))
+                .send_to_plugin(PluginInstruction::NotificationClicked {
+                    plugin_id: on_click.plugin_id,
+                    raiser: on_click.client_id,
+                    clicker: client_id,
+                    message: on_click.message,
+                    payload: on_click.payload,
+                })
                 .context("failed to tell a plugin its notification was clicked")
                 .non_fatal();
         }

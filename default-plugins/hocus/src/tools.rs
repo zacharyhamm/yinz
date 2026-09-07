@@ -5417,18 +5417,20 @@ pub fn raise_spotlight(_pane: PaneId, _label: String) {}
 /// is the only word we get that the user came for *that* conversation. See `wire::TOAST_CLICK`.
 #[cfg(target_arch = "wasm32")]
 pub fn toast_for_chat(text: &str, pane: PaneId, chat_id: Option<u64>) {
-    match chat_id {
-        Some(chat_id) => zellij_tile::shim::notify_with_click(
-            text,
-            pane,
-            hocus_proto::wire::TOAST_CLICK,
-            &chat_id.to_string(),
-        ),
-        // A chat with no id yet is one nothing has been logged against, which neither toast site
-        // can be reached from - but a click that named no chat would be a click hocus could not
-        // route, so the pane focus is offered on its own rather than guessed at.
-        None => zellij_tile::shim::notify_with_pane_id(text, pane),
-    }
+    // A chat with no id yet is one nothing has been logged against, which is rarer than it is
+    // impossible: a store that refuses the write leaves the id `None` and every toast after it is
+    // raised from that state. The click still goes out, with an empty payload - `on_toast_click`
+    // takes `None` for a chat it cannot name and reveals the panel, which is the half of the
+    // click that never needed one. Dropping it instead would leave the host focusing a pane hocus
+    // was never told about.
+    zellij_tile::shim::notify_with_click(
+        text,
+        pane,
+        hocus_proto::wire::TOAST_CLICK,
+        &chat_id
+            .map(|chat_id| chat_id.to_string())
+            .unwrap_or_default(),
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]

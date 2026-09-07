@@ -201,7 +201,9 @@ pub const COMPLETE: &str = "hocus_complete";
 /// somebody else's answer. A CLI caller is answered on its own pipe instead.
 pub const COMPLETE_RESULT: &str = "hocus_complete_result";
 /// host → hocus: somebody clicked a toast hocus raised, and the payload is the
-/// `chat_id` of the chat that raised it.
+/// `chat_id` of the chat that raised it - or empty, for a chat that has no id yet
+/// because nothing has been logged against it. The reveal is the half of the click
+/// that never needed one.
 ///
 /// Arrives as an `Event::CustomMessage`, not a pipe: it is the host answering a
 /// `notify_with_click`, and only ever reaches the instance that asked. The click

@@ -1217,7 +1217,7 @@ impl WasmBridge {
             started_at.elapsed()
         );
         for plugin_id in existing_plugin_ids {
-            if self.shared_plugin_ids.contains(&plugin_id) {
+            if self.plugin_is_shared(&plugin_id) {
                 // a shared plugin has one instance for the whole session - we don't load another
                 // one for this client, we just make sure it's owned by a connected client
                 self.rekey_shared_plugin_if_owner_gone(plugin_id, client_id);
@@ -1396,7 +1396,7 @@ impl WasmBridge {
                     .lock()
                     .unwrap()
                     .next_event_id(AtomicEvent::Resize);
-                let render_clients = if self.shared_plugin_ids.contains(&plugin_id) {
+                let render_clients = if self.plugin_is_shared(&plugin_id) {
                     self.connected_clients.lock().unwrap().clone()
                 } else {
                     vec![client_id]
@@ -1603,7 +1603,7 @@ impl WasmBridge {
         let plugin_executor = self.plugin_executor.clone();
         for (plugin_id, client_id, running_plugin, subscriptions) in &plugins_to_update {
             let subs = subscriptions.lock().unwrap().clone();
-            let plugin_is_shared = self.shared_plugin_ids.contains(plugin_id);
+            let plugin_is_shared = self.plugin_is_shared(plugin_id);
             let events: Vec<(ClientId, Event)> = updates
                 .iter()
                 .filter_map(|(pid, cid, event)| {
@@ -1839,7 +1839,7 @@ impl WasmBridge {
         let plugin_executor = self.plugin_executor.clone();
         for (message_pid, message_cid, pipe_message) in messages.clone().into_iter() {
             for (plugin_id, client_id, running_plugin, _subscriptions) in &plugins_to_update {
-                let plugin_is_shared = self.shared_plugin_ids.contains(plugin_id);
+                let plugin_is_shared = self.plugin_is_shared(plugin_id);
                 if Self::message_is_directed_at_plugin(
                     message_pid,
                     message_cid,
@@ -2337,7 +2337,7 @@ impl WasmBridge {
                 .collect();
             // a shared plugin only has an instance for its owner, so this loop applies the cached
             // events once - but they are then rendered for every client
-            let render_clients = if self.shared_plugin_ids.contains(&plugin_id) {
+            let render_clients = if self.plugin_is_shared(&plugin_id) {
                 all_connected_clients.clone()
             } else {
                 vec![]
@@ -2585,6 +2585,11 @@ impl WasmBridge {
     }
     pub fn all_plugin_ids(&self) -> Vec<(PluginId, ClientId)> {
         self.plugin_map.lock().unwrap().all_plugin_ids()
+    }
+    /// Whether this plugin runs as one instance for the whole session rather than one per client.
+    /// See `PluginConfig::is_shared`; it decides both who a message reaches and who it renders to.
+    pub fn plugin_is_shared(&self, plugin_id: &PluginId) -> bool {
+        self.shared_plugin_ids.contains(plugin_id)
     }
     fn size_of_plugin_id(&self, plugin_id: PluginId) -> Option<(usize, usize)> {
         // (rows/colums)
@@ -3638,6 +3643,43 @@ mod tests {
             &ClientId::new(owner_client_id),
             true,
         ));
+    }
+
+    /// The other side of the rule above: a toast outlives the turn that raised it, so the client
+    /// who clicks one is not always the client whose instance put it up. The single id an update
+    /// carries has to be the raiser to *reach* a per-client plugin, and the clicker to *act* as
+    /// the right person on a shared one - and one choice cannot be both.
+    #[test]
+    fn a_notification_click_names_the_raiser_only_when_that_is_what_reaches_it() {
+        let (raiser, clicker) = (ClientId::new(2), ClientId::new(1));
+
+        // shared: every client reaches the one instance, so the id is spent on the acting client
+        assert_eq!(
+            crate::plugins::client_for_notification_click(true, raiser, clicker),
+            clicker,
+            "the reveal belongs to whoever clicked"
+        );
+        // per-client: only the raiser's instance knows about the toast, and naming anybody else
+        // drops the click silently
+        assert_eq!(
+            crate::plugins::client_for_notification_click(false, raiser, clicker),
+            raiser,
+        );
+        assert!(WasmBridge::message_is_directed_at_plugin(
+            Some(PluginId::new(1)),
+            Some(crate::plugins::client_for_notification_click(
+                false, raiser, clicker
+            )),
+            &PluginId::new(1),
+            &raiser,
+            false,
+        ));
+
+        // and the usual case - one client - is the same id either way
+        assert_eq!(
+            crate::plugins::client_for_notification_click(true, clicker, clicker),
+            crate::plugins::client_for_notification_click(false, clicker, clicker),
+        );
     }
 }
 
