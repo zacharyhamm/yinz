@@ -54,7 +54,10 @@ local function finish_agent(owner, event, raw)
 end
 local function command(argv, cwd)
   local r = z.await(z.async.run_command {command=argv, cwd=cwd or '/', context={swamp_owner=encode(identity)}, max_bytes_returned=1048576})
-  assert(r.exit_code == 0, 'Host command failed: ' .. tostring(r.stderr))
+  if r.exit_code ~= 0 then
+    error('Host command failed: ' .. encode(argv) .. '\nDirectory: ' .. (cwd or '/') ..
+      '\nExit status: ' .. tostring(r.exit_code) .. '\nstdout:\n' .. (r.stdout or '') .. '\nstderr:\n' .. (r.stderr or ''))
+  end
   return r.stdout
 end
 local function supervisor(pane, saved)

@@ -7070,6 +7070,24 @@ local _,failed=call(launch('bad-root'))
 assert(tostring(failed):find('not a git repository',1,true) and command_panes==1)
 expected_checkout='/explicit/checkout/unchanged/ '
 assert(call(launch('explicit',expected_checkout)).pane==30 and resolved==2 and command_panes==2)
+-- Validation diagnostics may be JSON on stdout, stderr, or absent altogether.
+for i,output in ipairs{{'{"error":"extension unavailable"}',''}, {'','validation failed'}, {'',''}, {'details','warning'}} do
+  local commands=0
+  z.async.run_command=function(opts)
+    commands=commands+1
+    assert(z.json.encode(opts.command)==z.json.encode{'swamp','workflow','validate','configured','--json'})
+    assert(opts.cwd=='/control')
+    local a,r=z.async.future();r{exit_code=1,stdout=output[1],stderr=output[2]};return a
+  end
+  local request=launch('validation-failure-'..i)
+  local _,err=call(request)
+  local message=tostring(err)
+  assert(message:find('Host command failed: '..z.json.encode{'swamp','workflow','validate','configured','--json'},1,true))
+  assert(message:find('Directory: /control\nExit status: 1',1,true))
+  assert(message:find('stdout:\n'..output[1]..'\nstderr:\n'..output[2],1,true))
+  assert(command_panes==2 and resolved==2 and commands==1)
+  assert(call(request).outcome=='unknown' and commands==1) -- keep the claim; never retry dispatch
+end
 -- Recover a Swamp run launched before its attachment step was delivered.
 local launch_uid=z.json.encode({'host','session','recovery','launch'})
 rows[launch_uid]={rev=1,value=z.json.encode{work='recovery',key='launch',outcome='unknown',request=z.json.encode{method='workflow_run'},checkout='/control'}}
