@@ -552,3 +552,34 @@ fn explicit_theme_hue_round_trips_through_kdl() {
         "explicit_theme_hue survives a serialize/parse round trip"
     );
 }
+
+#[test]
+fn agent_double_escape_options_round_trip() {
+    assert_eq!(Options::default().agent_double_escape, None);
+    for value in [false, true] {
+        let document: KdlDocument = format!("agent_double_escape {value}").parse().unwrap();
+        let options = crate::kdl::options::from_kdl(&document).unwrap();
+        assert_eq!(options.agent_double_escape, Some(value));
+        let mut serialized = KdlDocument::new();
+        serialized
+            .nodes_mut()
+            .append(&mut crate::kdl::options::to_kdl(&options, true));
+        let reparsed: KdlDocument = serialized.to_string().parse().unwrap();
+        assert_eq!(crate::kdl::options::from_kdl(&reparsed).unwrap(), options);
+        assert_eq!(
+            options.merge(Options::default()).agent_double_escape,
+            Some(value)
+        );
+        assert_eq!(
+            options
+                .merge(Options {
+                    agent_double_escape: Some(!value),
+                    ..Options::default()
+                })
+                .agent_double_escape,
+            Some(!value)
+        );
+    }
+    let invalid: KdlDocument = "agent_double_escape 1".parse().unwrap();
+    assert!(crate::kdl::options::from_kdl(&invalid).is_err());
+}

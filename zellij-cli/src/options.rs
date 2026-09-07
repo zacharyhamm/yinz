@@ -68,6 +68,10 @@ pub struct CliOptions {
     /// Set the handling of mouse events (true or false)
     /// Can be temporarily bypassed by the [SHIFT] key
     pub mouse_mode: Option<bool>,
+    /// Require two plain Escape presses within one second in agent panes (default: false).
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub agent_double_escape: Option<bool>,
     /// Run each pane's process under a supervisor that outlives the session, so
     /// that panes survive the server exiting (true or false).
     ///
@@ -395,6 +399,7 @@ impl From<CliOptions> for Options {
             theme_dir: value.theme_dir,
             user_plugin_dir: value.user_plugin_dir,
             mouse_mode: value.mouse_mode,
+            agent_double_escape: value.agent_double_escape,
             detachable_panes: value.detachable_panes,
             firecracker_provider: value.firecracker_provider,
             firecracker_provider_timeout_secs: value
@@ -475,6 +480,7 @@ impl From<Options> for CliOptions {
             theme_dir: value.theme_dir,
             user_plugin_dir: value.user_plugin_dir,
             mouse_mode: value.mouse_mode,
+            agent_double_escape: value.agent_double_escape,
             detachable_panes: value.detachable_panes,
             firecracker_provider: value.firecracker_provider,
             firecracker_provider_timeout_secs: value
@@ -550,6 +556,7 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
     };
 
     let simplified_ui = merge_bool(other.simplified_ui, base.simplified_ui);
+    let agent_double_escape = merge_bool(other.agent_double_escape, base.agent_double_escape);
     let mouse_mode = merge_bool(other.mouse_mode, base.mouse_mode);
     let detachable_panes = merge_bool(other.detachable_panes, base.detachable_panes);
     let firecracker_provider = other
@@ -675,6 +682,7 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
         builtin_plugins_dir,
         theme_dir,
         user_plugin_dir,
+        agent_double_escape,
         mouse_mode,
         detachable_panes,
         firecracker_provider,
@@ -840,6 +848,20 @@ pub fn clipboard_parser() -> impl TypedValueParser<Value = Clipboard> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn agent_double_escape_cli_round_trip() {
+        for value in [None, Some(false), Some(true)] {
+            let options = Options {
+                agent_double_escape: value,
+                ..Options::default()
+            };
+            assert_eq!(Options::from(CliOptions::from(options.clone())), options);
+            assert_eq!(
+                merge_from_cli(&Options::default(), options).agent_double_escape,
+                value
+            );
+        }
+    }
     #[test]
     fn a_host_notification_protocol_unset_everywhere_stays_unset() {
         assert_eq!(

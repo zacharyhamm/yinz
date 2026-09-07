@@ -608,6 +608,7 @@ impl SessionMetaData {
             let pane_frame_style = PaneFrameStyle::from_options(&new_config.options);
             self.senders
                 .send_to_screen(ScreenInstruction::Reconfigure {
+                    agent_double_escape: new_config.options.agent_double_escape.unwrap_or(false),
                     client_id,
                     keybinds: new_config.keybinds.clone(),
                     default_mode: new_config.options.default_mode.unwrap_or_default(),

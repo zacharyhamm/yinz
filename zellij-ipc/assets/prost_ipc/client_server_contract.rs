@@ -2362,6 +2362,8 @@ pub struct Options {
     pub agent_pane_min_rows: ::core::option::Option<u32>,
     #[prost(uint64, optional, tag="75")]
     pub locked_escape_timeout_ms: ::core::option::Option<u64>,
+    #[prost(bool, optional, tag="76")]
+    pub agent_double_escape: ::core::option::Option<bool>,
 }
 /// Pane-targeting action messages
 #[allow(clippy::derive_partial_eq_without_eq)]

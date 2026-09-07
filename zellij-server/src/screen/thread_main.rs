@@ -252,6 +252,7 @@ pub(crate) fn screen_thread_main(
     let context_menu = config.context_menu.clone();
     let explicit_theme_hue = config.options.explicit_theme_hue;
     let config_options = config.options;
+    let mut agent_double_escape = config_options.agent_double_escape.unwrap_or(false);
     let arrow_fonts = !config_options.simplified_ui.unwrap_or_default();
     let pane_frame_style = PaneFrameStyle::from_options(&config_options);
     let auto_layout = config_options.auto_layout.unwrap_or(true);
@@ -417,6 +418,7 @@ pub(crate) fn screen_thread_main(
         HashMap::new();
     let mut attach_traces_waiting_for_first_render: HashMap<ClientId, Instant> = HashMap::new();
     let mut keybind_intercepts = HashMap::new();
+    let mut escape_focus = HashMap::new();
     loop {
         let (event, mut err_ctx) = screen
             .bus
@@ -426,6 +428,52 @@ pub(crate) fn screen_thread_main(
         // here we start caching resizes, so that we'll send them in bulk at the end of each event
         // when this cache is Dropped, for more information, see the comments in PtyWriter
         let _resize_cache = ResizeCache::new(thread_senders.clone());
+
+        if agent_double_escape {
+            // Observe every screen transition, including programmatic focus changes. Keeping the
+            // previous focus/mode catches leaving and returning before the next key arrives.
+            let focus: HashMap<_, _> = screen
+                .connected_clients
+                .borrow()
+                .iter()
+                .map(|client| {
+                    (
+                        *client,
+                        (
+                            screen.get_active_pane_id(client),
+                            screen.get_client_input_mode(*client),
+                        ),
+                    )
+                })
+                .collect();
+            for tab in screen.tabs.values_mut() {
+                tab.agent_double_escape = agent_double_escape;
+                tab.pending_agent_escapes.retain(|(client, _), _| {
+                    focus.contains_key(client) && focus.get(client) == escape_focus.get(client)
+                });
+            }
+            escape_focus = focus;
+            let reset_client = match &event {
+                ScreenInstruction::MouseEvent(_, client, ..)
+                | ScreenInstruction::HostTerminalFocusChanged(client, _)
+                | ScreenInstruction::RemoveClient(client)
+                | ScreenInstruction::ChangeMode(_, _, client, _) => Some(*client),
+                ScreenInstruction::WriteCharacter(key, _, _, client, _)
+                    if key.as_ref().is_none_or(|key| {
+                        key.bare_key != zellij_types::keys::BareKey::Esc || !key.has_no_modifiers()
+                    }) || keybind_intercepts.contains_key(client) =>
+                {
+                    Some(*client)
+                },
+                _ => None,
+            };
+            if let Some(client_id) = reset_client {
+                for tab in screen.tabs.values_mut() {
+                    tab.pending_agent_escapes
+                        .retain(|(client, _), _| *client != client_id);
+                }
+            }
+        }
 
         match event {
             ScreenInstruction::PtyBytes(pid, vte_bytes) => {
@@ -817,6 +865,12 @@ pub(crate) fn screen_thread_main(
                     completion.set_stdout_message(handled.to_string());
                 }
             },
+            ScreenInstruction::ResetAgentEscape(client_id) => {
+                for tab in screen.tabs.values_mut() {
+                    tab.pending_agent_escapes
+                        .retain(|(client, _), _| *client != client_id);
+                }
+            },
             ScreenInstruction::WriteCharacter(
                 key_with_modifier,
                 raw_bytes,
@@ -843,6 +897,10 @@ pub(crate) fn screen_thread_main(
                 // focus or layout change it causes then closes the menu, which is what pressing an
                 // unrelated key while a menu is up means anyway.
                 if screen.context_menu_handles_key(&key_with_modifier, client_id) {
+                    for tab in screen.tabs.values_mut() {
+                        tab.pending_agent_escapes
+                            .retain(|(client, _), _| *client != client_id);
+                    }
                     continue;
                 }
                 // A key the menu did not want is about to do something else - reach the pane, or
@@ -4237,6 +4295,7 @@ pub(crate) fn screen_thread_main(
                 }
             },
             ScreenInstruction::Reconfigure {
+                agent_double_escape: new_agent_double_escape,
                 client_id,
                 keybinds,
                 default_mode,
@@ -4272,6 +4331,11 @@ pub(crate) fn screen_thread_main(
                 host_notification_protocol,
                 agent_pane_min_size,
             } => {
+                agent_double_escape = new_agent_double_escape;
+                for tab in screen.tabs.values_mut() {
+                    tab.agent_double_escape = agent_double_escape;
+                    tab.pending_agent_escapes.clear();
+                }
                 screen.host_theme_dark_styling = host_theme_dark;
                 screen.host_theme_light_styling = host_theme_light;
                 screen

@@ -19,6 +19,7 @@ Options {
     theme_dir: None,
     user_plugin_dir: None,
     mouse_mode: None,
+    agent_double_escape: None,
     detachable_panes: None,
     firecracker_provider: None,
     firecracker_provider_timeout_secs: None,

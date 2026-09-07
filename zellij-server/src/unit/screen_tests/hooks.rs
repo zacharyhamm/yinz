@@ -1265,3 +1265,135 @@ fn report_router_acknowledges_with_screen_and_plugins_paused_and_no_active_clien
     );
     mock.teardown(vec![]);
 }
+
+#[test]
+fn agent_double_escape_screen_resets_and_menu_dismissal() {
+    for reset in [
+        "key",
+        "mouse",
+        "mode",
+        "focus",
+        "host_focus",
+        "config",
+        "menu",
+        "disconnect",
+    ] {
+        let mut mock = MockScreen::new(Size { cols: 80, rows: 20 });
+        mock.config.options.agent_double_escape = Some(true);
+        mock.config.options.context_menu_on_right_click = Some(true);
+        let handle = mock.run(None, vec![]);
+        let client = mock.main_client_id;
+        let pane = PaneId::Terminal(crate::TerminalId::new(0));
+        let esc = || {
+            ScreenInstruction::WriteCharacter(
+                Some(KeyWithModifier::new(BareKey::Esc)),
+                vec![27],
+                false,
+                client,
+                None,
+            )
+        };
+        mock.to_screen
+            .send(set_agent(0, Some(report(AgentState::Busy, Some("s1")))))
+            .unwrap();
+        mock.to_screen.send(esc()).unwrap();
+        mock.to_screen.send(esc()).unwrap();
+        mock.to_screen.send(esc()).unwrap();
+        match reset {
+            "key" => mock
+                .to_screen
+                .send(ScreenInstruction::ResetAgentEscape(client))
+                .unwrap(),
+            "mouse" => mock
+                .to_screen
+                .send(ScreenInstruction::MouseEvent(
+                    MouseEvent::new_buttonless_motion(Position::new(0, 0)),
+                    client,
+                    None,
+                ))
+                .unwrap(),
+            "mode" => {
+                for mode in [InputMode::Pane, InputMode::Normal] {
+                    mock.to_screen
+                        .send(ScreenInstruction::ChangeMode(mode, None, client, None))
+                        .unwrap();
+                }
+            },
+            "host_focus" => {
+                for focused in [false, true] {
+                    mock.to_screen
+                        .send(ScreenInstruction::HostTerminalFocusChanged(client, focused))
+                        .unwrap();
+                }
+            },
+            "focus" => {
+                mock.to_screen
+                    .send(ScreenInstruction::NewPane(
+                        PaneId::Terminal(crate::TerminalId::new(2)),
+                        None,
+                        None,
+                        None,
+                        NewPanePlacement::default(),
+                        false,
+                        ClientTabIndexOrPaneId::ClientId(client),
+                        None,
+                        false,
+                    ))
+                    .unwrap();
+                mock.to_screen
+                    .send(ScreenInstruction::FocusPaneWithId(
+                        pane, false, false, client, None,
+                    ))
+                    .unwrap();
+            },
+            "config" => mock
+                .session_metadata
+                .propagate_configuration_changes(vec![(client, mock.config.clone())], false),
+            "menu" => {
+                mock.to_screen
+                    .send(ScreenInstruction::MouseEvent(
+                        MouseEvent::new_right_press_event(Position::new(3, 6)),
+                        client,
+                        None,
+                    ))
+                    .unwrap();
+                mock.to_screen.send(esc()).unwrap();
+            },
+            "disconnect" => {
+                mock.to_screen
+                    .send(ScreenInstruction::RemoveClient(client))
+                    .unwrap();
+                mock.to_screen
+                    .send(ScreenInstruction::AddClient(
+                        client,
+                        Size { cols: 80, rows: 20 },
+                        None,
+                        None,
+                    ))
+                    .unwrap();
+            },
+            _ => unreachable!(),
+        }
+        mock.to_screen.send(esc()).unwrap();
+        mock.to_screen.send(ScreenInstruction::Exit).unwrap();
+        handle.join().unwrap();
+        let writes: Vec<_> = mock
+            .pty_writer_receiver
+            .take()
+            .unwrap()
+            .try_iter()
+            .filter_map(|(msg, _)| match msg {
+                PtyWriteInstruction::Write(bytes, _, _) => Some(bytes),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|bytes| bytes.as_slice() == b"\x1b")
+                .count(),
+            1,
+            "{reset}: {writes:?}"
+        );
+    }
+}

@@ -876,6 +876,7 @@ impl From<zellij_types::input::options::Options>
                 .map(|p| p.to_string_lossy().to_string()),
             firecracker_provider_timeout_secs: options.firecracker_provider_timeout_secs.map(zellij_types::units::ElapsedSeconds::get),
             mouse_mode: options.mouse_mode,
+            agent_double_escape: options.agent_double_escape,
             pane_frames: options.pane_frames,
             mirror_session: options.mirror_session,
             on_force_close: options.on_force_close.map(|o| match o {
@@ -991,6 +992,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             firecracker_provider: options.firecracker_provider.map(std::path::PathBuf::from),
             firecracker_provider_timeout_secs: options.firecracker_provider_timeout_secs.map(zellij_types::units::ElapsedSeconds::new),
             mouse_mode: options.mouse_mode,
+            agent_double_escape: options.agent_double_escape,
             // Not on the wire: the server reads this straight out of the config
             // file it loads itself, and it has no per-invocation CLI form.
             detachable_panes: None,

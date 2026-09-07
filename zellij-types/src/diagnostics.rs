@@ -227,6 +227,7 @@ pub enum ScreenContext {
     SetContextMenu,
     ActivateContextMenuItem,
     CloseContextMenu,
+    ResetAgentEscape,
     DumpLayoutToPlugin,
     GetFocusedPaneInfo,
     GetPaneInfo,

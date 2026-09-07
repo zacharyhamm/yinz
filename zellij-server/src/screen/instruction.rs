@@ -656,6 +656,7 @@ pub enum ScreenInstruction {
     /// painted over the state it was describing, still offering to act on the pane it was opened
     /// over.
     CloseContextMenu(ClientId),
+    ResetAgentEscape(ClientId),
     ListClientsMetadata(Option<PathBuf>, ClientId, Option<NotificationEnd>), // Option<PathBuf> - default shell
     ListPanes {
         show_all: bool,
@@ -673,6 +674,7 @@ pub enum ScreenInstruction {
         response_channel: crossbeam::channel::Sender<Option<TabInfo>>,
     },
     Reconfigure {
+        agent_double_escape: bool,
         client_id: ClientId,
         keybinds: Keybinds,
         default_mode: InputMode,

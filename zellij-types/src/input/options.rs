@@ -260,6 +260,9 @@ pub struct Options {
     /// Set the handling of mouse events (true or false)
     /// Can be temporarily bypassed by the [SHIFT] key
     pub mouse_mode: Option<bool>,
+    /// Require two plain Escape presses within one second in agent panes (default: false).
+    #[serde(default)]
+    pub agent_double_escape: Option<bool>,
     /// Run each pane's process under a supervisor that outlives the session, so
     /// that panes survive the server exiting (true or false).
     ///
@@ -540,6 +543,7 @@ impl Options {
     /// will supersede a `Some` in `self`
     // TODO: Maybe a good candidate for a macro?
     pub fn merge(&self, other: Options) -> Options {
+        let agent_double_escape = other.agent_double_escape.or(self.agent_double_escape);
         let mouse_mode = other.mouse_mode.or(self.mouse_mode);
         let detachable_panes = other.detachable_panes.or(self.detachable_panes);
         let firecracker_provider = other
@@ -665,6 +669,7 @@ impl Options {
             builtin_plugins_dir,
             theme_dir,
             user_plugin_dir,
+            agent_double_escape,
             mouse_mode,
             detachable_panes,
             firecracker_provider,
