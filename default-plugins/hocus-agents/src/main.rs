@@ -229,6 +229,10 @@ struct State {
     /// Where the last render's window into `rows` began — needed to map a mouse
     /// click's on-screen line back to an index into `rows`.
     last_window_start: usize,
+    /// Manual wheel position; None keeps the list centered on the selection.
+    list_scroll: Option<usize>,
+    /// Latest pane-relative pointer row, including the negative hover-leave sentinel.
+    mouse_line: Option<isize>,
     /// How many rows the last render gave the list. Below it are the divider and the history
     /// half, which point at nothing: a click down there has to be rejected rather than mapped
     /// through `last_window_start` onto a row that was never drawn.
@@ -510,6 +514,8 @@ impl ZellijPlugin for State {
         if self.rows.is_empty() {
             // Nothing to select and so nothing to have a history: the pane says so once
             // rather than splitting an empty list off an empty history.
+            self.list_scroll = None;
+            self.last_window_start = 0;
             self.last_list_rows = 0;
             self.last_history_rows = 0;
             self.last_history_body_rows = 0;
@@ -527,13 +533,14 @@ impl ZellijPlugin for State {
             return;
         }
         let (list_rows, history_rows) = split(rows);
-        // Window the list around the selection rather than tracking a scroll
-        // offset: keeping it near the middle means it is always visible and the
-        // list moves by one row per keypress in both directions.
+        // Keyboard navigation centers the selection; the wheel moves only the viewport.
         let start = self
-            .selected
-            .saturating_sub(list_rows / 2)
+            .list_scroll
+            .unwrap_or_else(|| self.selected.saturating_sub(list_rows / 2))
             .min(self.rows.len().saturating_sub(list_rows));
+        if self.list_scroll.is_some() {
+            self.list_scroll = Some(start);
+        }
         self.last_window_start = start;
         self.last_list_rows = list_rows;
         let live = self.live();
@@ -664,7 +671,7 @@ fn divider_line(label: &str, above: usize, below: usize, cols: usize) -> String 
 /// halves are not permanent - a list squeezed to nothing shows neither.
 ///
 /// Half each, near enough: the divider comes off the list's share, so an odd pane gives the
-/// extra row to the half that scrolls rather than to the one that windows itself.
+/// extra row to history.
 fn split(rows: usize) -> (usize, usize) {
     let history_rows = rows / 2;
     let list_rows = rows.saturating_sub(history_rows + 1);
@@ -707,6 +714,7 @@ impl State {
     /// Nothing ever tells this pane that a summary request was refused, so the only honest
     /// lifetime for that hint is one the user can end themselves by walking off the row.
     fn leave_row(&mut self) {
+        self.list_scroll = None;
         self.history_scroll = 0;
         self.history_cursor = 0;
         self.summarizing = None;
@@ -821,9 +829,8 @@ impl State {
                         Focus::History => self.step_history_cursor(-1),
                     };
                 },
-                // The page keys are the history's whichever half has the focus, for the
-                // same reason the arrows are the list's: the list has no page of its own,
-                // being windowed around the selection rather than scrolled.
+                // Page keys always scroll history; arrows always steer the list.
+                // The wheel instead scrolls whichever surface is under the pointer.
                 // Ask the daemon to describe the selected row now. Not gated on the focus:
                 // it is about the row the cursor is on, which is the same row whichever
                 // half the keys are in, and the answer arrives in the half below either
@@ -881,6 +888,14 @@ impl State {
     }
 
     fn on_mouse(&mut self, mouse_event: Mouse) -> bool {
+        match mouse_event {
+            Mouse::Hover(line, _)
+            | Mouse::LeftClick(line, _)
+            | Mouse::RightClick(line, _)
+            | Mouse::Hold(line, _)
+            | Mouse::Release(line, _) => self.mouse_line = Some(line),
+            _ => {},
+        }
         // With the reader up there is one thing on screen and the wheel is its. A click is
         // ignored rather than closing it: nothing under the pointer is a target, and a stray
         // click losing the user's place in a long event is worse than a click that does
@@ -894,13 +909,40 @@ impl State {
         }
         match mouse_event {
             Mouse::LeftClick(line, _) if line >= 0 => self.on_click(line as usize),
-            // The wheel carries no coordinates, so it cannot be routed by where the pointer
-            // is. It is the history's unconditionally rather than the focused half's: the
-            // list windows itself around the selection and has no scroll to give it.
-            Mouse::ScrollUp(lines) => self.scroll_history(lines.max(1) as isize),
-            Mouse::ScrollDown(lines) => self.scroll_history(-(lines.max(1) as isize)),
+            Mouse::ScrollUp(lines) => self.scroll_surface(-(lines.max(1) as isize)),
+            Mouse::ScrollDown(lines) => self.scroll_surface(lines.max(1) as isize),
             _ => false,
         }
+    }
+
+    /// The server sends Hover with the wheel's coordinates before each wheel event.
+    fn scroll_surface(&mut self, delta: isize) -> bool {
+        let target = match self.mouse_line {
+            Some(line) if line < 0 => return false,
+            Some(line) if (line as usize) < self.last_list_rows => Focus::List,
+            Some(line)
+                if self.last_history_rows > 0
+                    && (line as usize) <= self.last_list_rows + self.last_history_rows =>
+            {
+                Focus::History
+            },
+            Some(_) => return false,
+            None => self.focus,
+        };
+        if target == Focus::History {
+            return self.scroll_history(-delta);
+        }
+        if self.last_list_rows == 0 {
+            return false;
+        }
+        let max = self.rows.len().saturating_sub(self.last_list_rows);
+        let start = self.list_scroll.unwrap_or(self.last_window_start).min(max);
+        let next = start.saturating_add_signed(delta).min(max);
+        if next == start {
+            return false;
+        }
+        self.list_scroll = Some(next);
+        true
     }
 
     /// A click on screen line `line`.
@@ -930,8 +972,9 @@ impl State {
             return focus_moved;
         };
         let moved = index != self.selected;
+        let recentered = self.list_scroll.take().is_some();
         self.selected = index;
-        moved || focus_moved
+        moved || focus_moved || recentered
     }
 
     /// Walk the selection one row, and say whether it went anywhere.
@@ -939,7 +982,8 @@ impl State {
         let next = step(&self.rows, self.selected, motion);
         let moved = next != self.selected;
         self.selected = next;
-        moved
+        let recentered = self.list_scroll.take().is_some();
+        moved || recentered
     }
 
     /// Ask the daemon to describe the selected row now, and say whether the divider changed.
@@ -1125,6 +1169,9 @@ impl State {
         // nothing is the one that must not throw the cache away.
         if changed {
             self.generation += 1;
+        }
+        if rows.get(selected).and_then(row_key) != was {
+            self.list_scroll = None;
         }
         self.rows = rows;
         self.selected = selected;
@@ -3239,8 +3286,120 @@ mod tests {
         assert!(!state.on_key(KeyWithModifier::new(BareKey::Enter)));
     }
 
-    /// The wheel is the history's wherever the pointer is - it carries no coordinates - and
-    /// it stops at both ends. Unclamped, a wheel against the top would keep counting and
+    #[test]
+    fn the_wheel_scrolls_the_list_without_selecting_and_clicks_use_its_window() {
+        let mut state = State::default();
+        state.set_rows(unfocused((0..20).map(|id| agent(id, "claude")).collect()));
+        state.render(12, 50);
+        let selection = state.selection_key();
+        state.history_scroll = 2;
+        state.focus = Focus::History;
+        assert!(!state.on_mouse(Mouse::Hover(0, 0)));
+        assert!(state.on_mouse(Mouse::ScrollDown(3)));
+        assert!(
+            state.on_mouse(Mouse::ScrollDown(3)),
+            "wheel events can precede a render"
+        );
+        state.render(12, 50);
+        assert_eq!(state.last_window_start, 6);
+        assert_eq!(state.selection_key(), selection);
+        assert_eq!(state.focus, Focus::History);
+        // render clamps the empty history; the wheel itself must leave it alone.
+        state.history_scroll = 2;
+        assert!(state.on_mouse(Mouse::ScrollDown(100)));
+        assert_eq!(state.history_scroll, 2);
+        assert!(!state.on_mouse(Mouse::ScrollDown(1)));
+        assert!(state.on_mouse(Mouse::ScrollUp(1)));
+        state.render(12, 50);
+        assert_eq!(state.last_window_start, 14);
+        assert!(state.on_mouse(Mouse::LeftClick(1, 0)));
+        assert_eq!(state.selected, 15);
+        assert_eq!(state.list_scroll, None);
+    }
+
+    #[test]
+    fn manual_list_scroll_survives_refreshes_and_clamps_to_the_available_rows() {
+        let rows: Vec<_> = (0..20).map(|id| agent(id, "claude")).collect();
+        let mut state = State::default();
+        state.set_rows(unfocused(rows.clone()));
+        state.render(12, 50);
+        // Without a pointer position, the wheel uses keyboard focus.
+        assert!(state.on_mouse(Mouse::ScrollDown(100)));
+        assert!(!state.set_rows(unfocused(rows.clone())));
+        state.render(16, 50);
+        assert_eq!(state.last_window_start, 13);
+        state.set_rows(unfocused(rows[..10].to_vec()));
+        state.render(16, 50);
+        assert_eq!(state.last_window_start, 3);
+        assert_eq!(state.selected, 0);
+        assert!(
+            state.on_key(KeyWithModifier::new(BareKey::Up)),
+            "reveal even at the first agent"
+        );
+        state.render(16, 50);
+        assert_eq!(state.last_window_start, 0);
+        assert!(state.on_mouse(Mouse::ScrollDown(1)));
+        state.set_rows(focused_on(rows.clone(), 9));
+        state.render(16, 50);
+        assert_eq!(state.list_scroll, None);
+        assert_eq!(state.selected, 9);
+        assert_eq!(state.last_window_start, 6);
+
+        state.set_rows(unfocused(Vec::new()));
+        state.render(16, 50);
+        assert!(!state.on_mouse(Mouse::ScrollDown(1)));
+        state.set_rows(unfocused(rows));
+        state.render(1, 50);
+        assert_eq!(state.last_history_rows, 0);
+        assert!(state.on_mouse(Mouse::ScrollDown(1)));
+        state.render(0, 50);
+        assert!(!state.on_mouse(Mouse::ScrollDown(1)));
+        state.render(12, 50);
+        state.on_mouse(Mouse::Hover(-1, 0));
+        assert!(
+            !state.on_mouse(Mouse::ScrollDown(1)),
+            "pointer left the pane"
+        );
+        state.on_mouse(Mouse::Hover(12, 0));
+        assert!(
+            !state.on_mouse(Mouse::ScrollDown(1)),
+            "outside the rendered pane"
+        );
+    }
+
+    #[test]
+    fn the_wheel_scrolls_folded_and_raw_readers_without_touching_the_list() {
+        for raw in [false, true] {
+            let mut state = reading(&long_notification());
+            if raw {
+                press(&mut state, BareKey::Char('r'));
+            } else {
+                for _ in 0..5 {
+                    press(&mut state, BareKey::Char('j'));
+                }
+                press(&mut state, BareKey::Enter);
+            }
+            state.on_mouse(Mouse::ScrollUp(1000));
+            state.render(20, 50);
+            let selected = state.selected;
+            let history_scroll = state.history_scroll;
+            state.on_mouse(Mouse::Hover(0, 0));
+            assert!(state.on_mouse(Mouse::ScrollDown(1)));
+            assert_eq!(state.reading.as_ref().unwrap().scroll, 1);
+            assert!(state.on_mouse(Mouse::ScrollDown(1000)));
+            assert!(!state.on_mouse(Mouse::ScrollDown(1)));
+            assert!(state.on_mouse(Mouse::ScrollUp(1)));
+            assert_eq!(
+                state.reading.as_ref().unwrap().scroll,
+                state.last_reader_max_scroll - 1
+            );
+            assert_eq!(state.selected, selected);
+            assert_eq!(state.history_scroll, history_scroll);
+            assert_eq!(state.list_scroll, None);
+        }
+    }
+
+    /// The wheel over history stops at both ends. Unclamped, a wheel at the top would count
     /// coming back down would cost as many notches as were wasted going up.
     #[test]
     fn the_wheel_scrolls_the_history_and_stops_at_both_ends() {
@@ -3267,6 +3426,7 @@ mod tests {
         assert_eq!(state.last_history_rows, 4);
         assert_eq!(state.last_history_max_scroll, 1);
 
+        assert!(!state.on_mouse(Mouse::Hover(state.last_list_rows as isize, 0)));
         assert!(state.on_mouse(Mouse::ScrollUp(1)));
         assert_eq!(state.history_scroll, 1);
         assert!(
@@ -3277,6 +3437,23 @@ mod tests {
         assert!(state.on_mouse(Mouse::ScrollDown(1)), "one notch back down");
         assert_eq!(state.history_scroll, 0);
         assert!(!state.on_mouse(Mouse::ScrollDown(1)));
+        assert_eq!(
+            state.focus,
+            Focus::List,
+            "scrolling history does not take the keys"
+        );
+        assert_eq!(state.list_scroll, None);
+        // The last rendered row belongs to history too, as does its pinned header.
+        state.on_mouse(Mouse::Hover(7, 0));
+        assert!(state.on_mouse(Mouse::ScrollUp(1)));
+        state.on_mouse(Mouse::Hover((state.last_list_rows + 1) as isize, 0));
+        assert!(state.on_mouse(Mouse::ScrollDown(1)));
+        state.mouse_line = None;
+        state.focus = Focus::History;
+        assert!(
+            state.on_mouse(Mouse::ScrollUp(1)),
+            "focus is the fallback without coordinates"
+        );
     }
 
     /// The summary is a row of the timeline like any other, so a talkative one costs the
@@ -3317,6 +3494,7 @@ mod tests {
 
         // Wound all the way back, the oldest event is at the top of the half and the tail of
         // the summary has scrolled off the bottom.
+        state.on_mouse(Mouse::Hover(state.last_list_rows as isize, 0));
         assert!(state.on_mouse(Mouse::ScrollUp(50)));
         state.render(7, 50);
         assert_eq!(state.history_scroll, state.last_history_max_scroll);
@@ -3628,7 +3806,7 @@ mod tests {
     }
 
     /// The page keys are the history's from either half: the list has no page of its own,
-    /// being windowed around the selection rather than scrolled.
+    /// following the selection during keyboard navigation.
     #[test]
     fn the_page_keys_are_the_historys_from_either_half() {
         let mut state = State::default();

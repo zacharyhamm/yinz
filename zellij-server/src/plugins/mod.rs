@@ -2327,8 +2327,8 @@ fn same_reload(a: &PluginInstruction, b: &PluginInstruction) -> bool {
     }
 }
 
-/// A hover is a position sample, so only the newest one per (plugin, client) means anything:
-/// earlier samples in the same batch are dropped. Nothing else is touched.
+/// Keep the newest hover per (plugin, client) between other events. A wheel consumes the
+/// preceding position sample, so coalescing must not cross an input event.
 fn coalesce_hovers(mut updates: Vec<PluginUpdate>) -> Vec<PluginUpdate> {
     if updates.len() < 2 {
         return updates;
@@ -2338,6 +2338,8 @@ fn coalesce_hovers(mut updates: Vec<PluginUpdate>) -> Vec<PluginUpdate> {
     for (index, (plugin_id, client_id, event)) in updates.iter().enumerate().rev() {
         if let Event::Mouse(Mouse::Hover(..)) = event {
             keep[index] = seen.insert((*plugin_id, *client_id));
+        } else {
+            seen.clear();
         }
     }
     let mut keep = keep.into_iter();
