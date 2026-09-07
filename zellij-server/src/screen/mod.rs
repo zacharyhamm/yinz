@@ -3986,15 +3986,16 @@ impl Screen {
         &mut self,
         pane_ids_and_coordinates: Vec<(PaneId, FloatingPaneCoordinates)>,
         override_user_placement: bool,
-    ) {
+    ) -> Vec<(PaneId, FloatingPaneCoordinates)> {
+        let mut pending = vec![];
         let pane_ids: Vec<PaneId> = pane_ids_and_coordinates
             .iter()
             .map(|(pane_id, _)| *pane_id)
             .collect();
         // Each tab gets the part of the batch that is on it, as one placement: two overlays
         // linked as a panel are placed as that panel (`Tab::change_overlay_coordinates_batch`),
-        // which they cannot be one pane at a time. An id on no tab is silently skipped, as it
-        // always was - a plugin placing a pane that is not on a tab yet is the common case.
+        // which they cannot be one pane at a time. Return missing panes so the screen thread
+        // can buffer their geometry until pane creation.
         let mut per_tab: BTreeMap<TabId, Vec<(PaneId, FloatingPaneCoordinates)>> = BTreeMap::new();
         for (pane_id, coordinates) in pane_ids_and_coordinates {
             if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
@@ -4002,6 +4003,8 @@ impl Screen {
                     .entry(tab.id)
                     .or_default()
                     .push((pane_id, coordinates));
+            } else {
+                pending.push((pane_id, coordinates));
             }
         }
         for (tab_id, batch) in per_tab {
@@ -4016,6 +4019,7 @@ impl Screen {
                 }
             }
         }
+        pending
     }
     pub fn change_floating_panes_coordinates(
         &mut self,
@@ -4888,6 +4892,14 @@ fn replay_pending_plugin_events(
                         "Could not replay pending plugin cursor for missing plugin {plugin_id}"
                     );
                 }
+                screen.render(None)?;
+            },
+            ScreenInstruction::ChangeOverlayCoordinates(
+                coordinates,
+                override_user_placement,
+                _,
+            ) => {
+                screen.change_overlay_coordinates(coordinates, override_user_placement);
                 screen.render(None)?;
             },
             ScreenInstruction::UpdatePluginLoadingStage(plugin_id, loading_indication) => {

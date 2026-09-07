@@ -142,7 +142,8 @@ mod tests {
     #[test]
     fn a_notice_is_shown_and_makes_the_dialog_taller() {
         let plain = confirmation_dialog(None, false);
-        let with_notice = confirmation_dialog(Some("hocus is still working"), false);
+        let with_notice =
+            confirmation_dialog(Some("hocus is still working\nan agent is busy"), false);
         assert!(
             with_notice.height() > plain.height(),
             "a notice needs a row of its own: {} vs {}",
