@@ -690,6 +690,16 @@ impl Screen {
     pub(super) fn close_tab_by_id(&mut self, tab_id: TabId) -> Result<()> {
         let err_context = || format!("failed to close tab at index {tab_id:?}");
 
+        if self
+            .pending_arrangement
+            .as_ref()
+            .is_some_and(|pending| pending.destinations.values().any(|id| *id == tab_id))
+        {
+            self.pending_arrangement = None;
+            self.arrangement_notice(
+                "Arrange panes: destination closed; arrangement cancelled".into(),
+            );
+        }
         let mut tab_to_close = self.tabs.remove(&tab_id).with_context(err_context)?;
         let mut pane_ids = tab_to_close.get_all_pane_ids();
 

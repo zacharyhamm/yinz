@@ -64,7 +64,7 @@ Some(
                 default_bg: None,
             },
         ),
-        [],
+        None,
         TabId(
             0,
         ),

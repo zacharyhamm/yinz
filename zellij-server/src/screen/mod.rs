@@ -727,6 +727,7 @@ pub(crate) struct Screen {
     /// the suffixes depend on tab order, which changes without anyone sending us
     /// anything.
     arrangement_projects: HashMap<TabId, String>,
+    pending_arrangement: Option<arrange_projects::PendingArrangement>,
     tab_projects: HashMap<TabId, String>,
     pixel_dimensions: PixelDimensions,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
@@ -1387,6 +1388,7 @@ impl Screen {
             terminal_firecracker_worktrees: HashMap::new(),
             last_plugin_tab_names: HashMap::new(),
             arrangement_projects: HashMap::new(),
+            pending_arrangement: None,
             tab_projects: HashMap::new(),
             terminal_emulator_colors: Rc::new(RefCell::new(Palette::default())),
             terminal_emulator_color_codes: Rc::new(RefCell::new(HashMap::new())),
@@ -1988,6 +1990,8 @@ impl Screen {
             }
         }
 
+        // Populate chrome-only destinations before rendering can reap empty tabs.
+        self.resume_pending_arrangement()?;
         self.log_and_report_session_state()
             .and_then(|_| self.render(None))
             .with_context(err_context)

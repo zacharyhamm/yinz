@@ -155,11 +155,11 @@ pub enum PluginInstruction {
         Option<PathBuf>,
         Option<TerminalAction>,
         Option<TiledPaneLayout>,
-        Vec<FloatingPaneLayout>,
-        TabId,                        // tab_id
-        Option<Vec<CommandOrPlugin>>, // initial_panes
-        bool,                         // block_on_first_terminal
-        bool,                         // should change focus to new tab
+        Option<Vec<FloatingPaneLayout>>, // None inherits defaults; Some(empty) disables them
+        TabId,                           // tab_id
+        Option<Vec<CommandOrPlugin>>,    // initial_panes
+        bool,                            // block_on_first_terminal
+        bool,                            // should change focus to new tab
         ClientId,
         Option<NotificationEnd>, // completion signal
     ),
@@ -727,7 +727,7 @@ pub(crate) fn plugin_thread_main(
                 cwd,
                 terminal_action,
                 mut tab_layout,
-                mut floating_panes_layout,
+                floating_panes_layout,
                 tab_id,
                 initial_panes,
                 block_on_first_terminal,
@@ -747,6 +747,8 @@ pub(crate) fn plugin_thread_main(
 
                 let mut plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>> = HashMap::new();
                 tab_layout = tab_layout.or_else(|| Some(layout.new_tab().0));
+                let mut floating_panes_layout =
+                    floating_panes_layout.unwrap_or_else(|| layout.new_tab().1);
 
                 // Match initial_panes plugins to empty slots in the layout
                 if let Some(ref initial_panes_vec) = initial_panes {
@@ -783,11 +785,6 @@ pub(crate) fn plugin_thread_main(
                     .unwrap_or_else(|| layout.new_tab().0)
                     .extract_run_instructions();
                 let size = Size::default();
-                let floating_panes_layout = if floating_panes_layout.is_empty() {
-                    layout.new_tab().1
-                } else {
-                    floating_panes_layout
-                };
                 let mut extracted_floating_plugins: Vec<Option<Run>> = floating_panes_layout
                     .iter()
                     .filter(|f| !f.already_running)

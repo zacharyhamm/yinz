@@ -1,14 +1,25 @@
 use super::{Screen, ScreenInstruction};
-use crate::{panes::PaneId, ClientId, TerminalId};
+use crate::{panes::PaneId, plugins::PluginInstruction, ClientId, TerminalId};
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
 };
 use zellij_runtime::errors::prelude::*;
-use zellij_types::{data::ProjectPaneGroup, input::layout::TiledPaneLayout, internal_ids::TabId};
+use zellij_types::{
+    data::ProjectPaneGroup,
+    input::layout::{Run, TiledPaneLayout},
+    internal_ids::TabId,
+};
+
+// No panes move until every destination has its configured content viewport.
+pub(super) struct PendingArrangement {
+    groups: Vec<ProjectPaneGroup>,
+    client_id: ClientId,
+    pub destinations: HashMap<String, TabId>,
+}
 
 impl Screen {
-    fn arrangement_notice(&self, message: String) {
+    pub(super) fn arrangement_notice(&self, message: String) {
         self.bus
             .senders
             .send_to_screen(ScreenInstruction::Notify(message, None, None, None))
@@ -19,6 +30,37 @@ impl Screen {
         &mut self,
         groups: Vec<ProjectPaneGroup>,
         client_id: ClientId,
+    ) -> Result<()> {
+        if self.pending_arrangement.is_some() {
+            self.arrangement_notice("Arrange panes: destination tabs are still loading".into());
+            return Ok(());
+        }
+        self.arrange_project_panes_in_tabs(groups, client_id, HashMap::new())
+    }
+
+    pub(super) fn resume_pending_arrangement(&mut self) -> Result<()> {
+        let Some(pending) = &self.pending_arrangement else {
+            return Ok(());
+        };
+        if pending
+            .destinations
+            .values()
+            .any(|id| self.tabs.get(id).is_some_and(|tab| tab.is_pending()))
+        {
+            return Ok(());
+        }
+        let pending = self
+            .pending_arrangement
+            .take()
+            .context("missing pending arrangement")?;
+        self.arrange_project_panes_in_tabs(pending.groups, pending.client_id, pending.destinations)
+    }
+
+    fn arrange_project_panes_in_tabs(
+        &mut self,
+        groups: Vec<ProjectPaneGroup>,
+        client_id: ClientId,
+        destinations: HashMap<String, TabId>,
     ) -> Result<()> {
         // Validate the entire request before touching any pane. A delayed snapshot may
         // name a pane that has since closed or become suppressed.
@@ -106,13 +148,15 @@ impl Screen {
                     tab.position,
                 )
             });
-            let destination = candidates
-                .first()
-                .filter(|tab| {
-                    self.arrangement_projects.get(&tab.id) == Some(&group.identity)
-                        || panes.iter().any(|pane| eligible.get(pane) == Some(&tab.id))
-                })
-                .map(|tab| tab.id);
+            let destination = destinations.get(&group.identity).copied().or_else(|| {
+                candidates
+                    .first()
+                    .filter(|tab| {
+                        self.arrangement_projects.get(&tab.id) == Some(&group.identity)
+                            || panes.iter().any(|pane| eligible.get(pane) == Some(&tab.id))
+                    })
+                    .map(|tab| tab.id)
+            });
             if let Some(id) = destination {
                 reserved.insert(id);
             }
@@ -285,17 +329,65 @@ impl Screen {
                 .filter_map(|(index, project)| (!rejected.contains(&index)).then_some(project))
                 .collect();
         }
+        if prepared
+            .iter()
+            .any(|(_, destination, ..)| destination.is_none())
+        {
+            let mut destinations = HashMap::new();
+            let mut groups = vec![];
+            for (group, destination, ..) in &prepared {
+                let id = match destination {
+                    Some(id) => *id,
+                    None => {
+                        let id = self.get_new_tab_id();
+                        self.new_tab(
+                            id,
+                            (
+                                self.default_layout.swap_tiled_layouts.clone(),
+                                self.default_layout.swap_floating_layouts.clone(),
+                            ),
+                            Some(group.name.clone()),
+                            None,
+                        )?;
+                        let (mut layout, _) = self.default_layout.new_tab();
+                        // Keep plugin slots and their properties, but start no new processes.
+                        for run in layout.extract_run_instructions() {
+                            if !matches!(run, Some(Run::Plugin(_))) {
+                                layout.ignore_run_instruction(run);
+                            }
+                        }
+                        self.bus
+                            .senders
+                            .send_to_plugin(PluginInstruction::NewTab(
+                                None,
+                                None,
+                                Some(layout),
+                                Some(vec![]),
+                                id,
+                                None,
+                                false,
+                                false,
+                                client_id,
+                                None,
+                            ))
+                            .context("failed to load arrangement tab")?;
+                        id
+                    },
+                };
+                destinations.insert(group.identity.clone(), id);
+                groups.push(group.clone());
+            }
+            self.pending_arrangement = Some(PendingArrangement {
+                groups,
+                client_id,
+                destinations,
+            });
+            return Ok(());
+        }
         reserved.clear();
         let mut ready = vec![];
         for (group, destination, panes, layout, order, stacks) in prepared {
-            let destination = match destination {
-                Some(id) => id,
-                None => {
-                    let id = self.get_new_tab_id();
-                    self.new_tab(id, (vec![], vec![]), Some(group.name.clone()), None)?;
-                    id
-                },
-            };
+            let destination = destination.context("arrangement destination was not initialized")?;
             reserved.insert(destination);
             ready.push((group, destination, panes, layout, order, stacks));
         }

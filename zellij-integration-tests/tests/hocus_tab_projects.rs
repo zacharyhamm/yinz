@@ -226,3 +226,157 @@ fn arrangement_reports_disabled_builtin_services() {
         screen.contains("hocus-store") && screen.contains("hocus-agentd")
     });
 }
+
+#[test]
+fn arrangement_loads_chrome_for_a_new_project_tab() {
+    let first_repo = write_git_repository("chrome-a", "main");
+    let second_repo = write_git_repository("chrome-b", "main");
+    let layout = format!(
+        r#"layout {{
+            default_tab_template {{
+                pane size=1 borderless=true {{ plugin location="zellij:tab-bar"; }}
+                children
+                pane size=2 borderless=true {{ plugin location="zellij:status-bar"; }}
+            }}
+            new_tab_template {{
+                pane size=1 borderless=true {{ plugin location="zellij:tab-bar"; }}
+                pane
+                pane size=2 borderless=true {{ plugin location="zellij:status-bar"; }}
+                floating_panes {{
+                    pane x=0 y=1 width=40 height=10 command="default-floating-command"
+                    pane x=45 y=1 width=40 height=10 {{ plugin location="zellij:strider"; }}
+                }}
+            }}
+            tab {{
+                pane cwd="{}"
+                pane cwd="{}" focus=true
+            }}
+        }}"#,
+        first_repo.display(),
+        second_repo.display()
+    );
+    let zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_PROJECT_CONFIG)
+        .with_layout(LayoutInfo::Stringified(layout))
+        .start();
+    let first = zellij.expect_pty_spawn();
+    let second = zellij.expect_pty_spawn();
+    // Normal startup inherits these defaults. Close them before arranging so any
+    // floating pane in a destination must have been created by arrangement.
+    let floating = zellij.expect_pty_spawn();
+    floating.output(b"DEFAULT_FLOATING_COMMAND");
+    zellij.wait_until("the initial floating panes are loaded", |screen| {
+        screen.contains("DEFAULT_FLOATING_COMMAND")
+    });
+    let (status, listed) =
+        zellij.run_cli_action_reporting(zellij_cli::args::CliAction::ListPanes {
+            tab: false,
+            command: false,
+            state: false,
+            geometry: true,
+            all: true,
+            json: true,
+        });
+    assert_eq!(status, 0);
+    let panes: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    let floating_panes: Vec<_> = panes
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|pane| pane["is_floating"] == true)
+        .collect();
+    assert_eq!(floating_panes.len(), 2, "{listed}");
+    for pane in floating_panes {
+        let kind = if pane["is_plugin"] == true {
+            "plugin"
+        } else {
+            "terminal"
+        };
+        assert_eq!(
+            zellij.run_cli_action(zellij_cli::args::CliAction::ClosePane {
+                pane_id: Some(format!("{kind}_{}", pane["id"].as_u64().unwrap())),
+            }),
+            0
+        );
+    }
+    first.output(b"CHROME_FIRST");
+    second.output(b"CHROME_SECOND");
+    zellij.wait_until("both projects are identified", |screen| {
+        screen.contains("chrome-a") && screen.contains("chrome-b")
+    });
+    for _ in 0..2 {
+        assert_eq!(
+            zellij.run_cli_action(zellij_cli::args::CliAction::ArrangePanesByProject),
+            0
+        );
+        zellij.wait_until(
+            "the focused project has its own tab and both bars",
+            |screen| {
+                screen.contains("CHROME_SECOND")
+                    && !screen.contains("CHROME_FIRST")
+                    && screen
+                        .lines()
+                        .first()
+                        .is_some_and(|bar| bar.contains("chrome-b"))
+                    && screen
+                        .lines()
+                        .iter()
+                        .rev()
+                        .take(2)
+                        .any(|line| line.contains("<t> TAB"))
+            },
+        );
+        let (status, listed) =
+            zellij.run_cli_action_reporting(zellij_cli::args::CliAction::ListPanes {
+                tab: false,
+                command: false,
+                state: false,
+                geometry: true,
+                all: true,
+                json: true,
+            });
+        assert_eq!(status, 0);
+        let panes: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        let panes = panes.as_array().unwrap();
+        assert!(
+            panes.iter().all(|pane| pane["is_floating"] == false),
+            "{listed}"
+        );
+        let terminals: Vec<_> = panes
+            .iter()
+            .filter(|pane| pane["is_plugin"] == false)
+            .collect();
+        let mut ids: Vec<_> = terminals
+            .iter()
+            .map(|pane| pane["id"].as_u64().unwrap())
+            .collect();
+        ids.sort();
+        let mut expected = vec![
+            u64::from(first.terminal_id().get()),
+            u64::from(second.terminal_id().get()),
+        ];
+        expected.sort();
+        assert_eq!(ids, expected);
+        assert_ne!(terminals[0]["tab_id"], terminals[1]["tab_id"]);
+        for terminal in terminals {
+            assert_eq!(terminal["pane_y"], 1);
+            assert_eq!(terminal["pane_rows"], TERMINAL_SIZE.rows - 3);
+            let bars: Vec<_> = panes
+                .iter()
+                .filter(|pane| {
+                    pane["tab_id"] == terminal["tab_id"]
+                        && pane["is_plugin"] == true
+                        && matches!(
+                            pane["plugin_url"].as_str(),
+                            Some("zellij:tab-bar" | "zellij:status-bar")
+                        )
+                })
+                .collect();
+            assert_eq!(
+                bars.len(),
+                2,
+                "each project tab keeps exactly one pair of bars: {listed}"
+            );
+        }
+    }
+}

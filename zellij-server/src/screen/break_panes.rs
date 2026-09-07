@@ -93,7 +93,7 @@ impl Screen {
                 None,
                 default_shell,
                 Some(tiled_panes_layout),
-                floating_panes_layout,
+                (!floating_panes_layout.is_empty()).then_some(floating_panes_layout),
                 tab_index,
                 None,  // initial_panes
                 false, // block_on_first_terminal
@@ -198,7 +198,7 @@ impl Screen {
             None,
             default_shell,
             Some(tiled_panes_layout),
-            floating_panes_layout,
+            (!floating_panes_layout.is_empty()).then_some(floating_panes_layout),
             tab_index,
             None,  // initial_panes
             false, // block_on_first_terminal
