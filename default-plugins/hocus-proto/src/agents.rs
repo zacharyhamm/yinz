@@ -101,7 +101,11 @@ impl AgentPane {
         checkout_location(
             self.firecracker_worktree.as_deref(),
             self.host.as_deref(),
-            self.cwd.as_deref(),
+            self.agent
+                .as_ref()
+                .and_then(|agent| agent.cwd.as_deref())
+                .filter(|cwd| !cwd.is_empty())
+                .or(self.cwd.as_deref()),
         )
     }
 }

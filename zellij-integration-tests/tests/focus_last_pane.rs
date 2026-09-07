@@ -127,7 +127,12 @@ fn open_floating_pane_below(
 
 #[test]
 fn focus_last_floating_pane_returns_to_earlier_pane_after_closing_focused_pane() {
-    let mut zellij = start_with_focus_keys(TERMINAL_SIZE);
+    // Cursor coordinates identify focus here, so opening another float must not
+    // move the earlier panes through an automatic swap layout.
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config(FOCUS_KEYS_CONFIG)
+        .with_config("auto_layout false")
+        .start();
     claim_first_terminal_and_wait_for_prompt(&zellij);
 
     zellij.send_stdin(&keys::ctrl('p'));

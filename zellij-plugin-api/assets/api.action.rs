@@ -1181,6 +1181,7 @@ pub enum ActionName {
     CopyLastCommandOutput = 115,
     MoveTextSelection = 116,
     SwapTextSelectionEnds = 117,
+    ArrangePanesByProject = 118,
 }
 impl ActionName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1303,6 +1304,7 @@ impl ActionName {
             ActionName::CopyLastCommandOutput => "CopyLastCommandOutput",
             ActionName::MoveTextSelection => "MoveTextSelection",
             ActionName::SwapTextSelectionEnds => "SwapTextSelectionEnds",
+            ActionName::ArrangePanesByProject => "ArrangePanesByProject",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1422,6 +1424,7 @@ impl ActionName {
             "CopyLastCommandOutput" => Some(Self::CopyLastCommandOutput),
             "MoveTextSelection" => Some(Self::MoveTextSelection),
             "SwapTextSelectionEnds" => Some(Self::SwapTextSelectionEnds),
+            "ArrangePanesByProject" => Some(Self::ArrangePanesByProject),
             _ => None,
         }
     }

@@ -989,7 +989,9 @@ pub enum PtyInstruction {
         response_channel: crossbeam::channel::Sender<GetPaneCwdResponse>,
     },
     GetPaneGitProbe {
+        refresh_token: Option<String>,
         pane_id: PaneId,
+        cwd: String,
         response_channel: crossbeam::channel::Sender<GetPaneGitProbeResponse>,
     },
     WorkflowRemotePanes(crossbeam::channel::Sender<Vec<serde_json::Value>>),
@@ -1680,10 +1682,12 @@ pub(crate) fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 let _ = response_channel.send(response);
             },
             PtyInstruction::GetPaneGitProbe {
+                refresh_token,
                 pane_id,
+                cwd,
                 response_channel,
             } => {
-                let response = pty.get_pane_git_probe(pane_id);
+                let response = pty.get_pane_git_probe(pane_id, &cwd, refresh_token.as_deref());
                 let _ = response_channel.send(response);
             },
             PtyInstruction::WorkflowRemotePanes(reply) => {
@@ -4340,26 +4344,31 @@ impl Pty {
     /// for the same reason — there is nothing cached to give, and spawning two
     /// `git` processes to make one would block that thread. Plugins branch on
     /// `PaneInfo::host` and run Git themselves for a local pane.
-    pub fn get_pane_git_probe(&self, pane_id: PaneId) -> GetPaneGitProbeResponse {
+    pub fn get_pane_git_probe(
+        &self,
+        pane_id: PaneId,
+        cwd: &str,
+        refresh_token: Option<&str>,
+    ) -> GetPaneGitProbeResponse {
         match pane_id {
             PaneId::Terminal(terminal_id) => {
                 match self
                     .bus
                     .os_input
                     .as_ref()
-                    .and_then(|os_input| os_input.remote_pane_git_probe(terminal_id))
-                {
-                    Some(probe) => GetPaneGitProbeResponse::Ok(PaneGitProbe {
+                    .ok_or_else(|| "PTY backend unavailable".to_owned())
+                    .and_then(|os_input| {
+                        os_input.remote_pane_git_probe(terminal_id, cwd, refresh_token)
+                    }) {
+                    Ok(Some(probe)) => GetPaneGitProbeResponse::Ok(PaneGitProbe {
                         host: probe.host,
                         cwd: probe.cwd,
                         exit_code: probe.exit_code,
                         metadata: probe.metadata,
                         config: probe.config,
                     }),
-                    None => GetPaneGitProbeResponse::Err(format!(
-                        "terminal pane {terminal_id} is not remote, or its machine has not \
-                         reported a git probe yet"
-                    )),
+                    Ok(None) => GetPaneGitProbeResponse::Pending,
+                    Err(err) => GetPaneGitProbeResponse::Err(err),
                 }
             },
             PaneId::Plugin(plugin_id) => GetPaneGitProbeResponse::Err(format!(

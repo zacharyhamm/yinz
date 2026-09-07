@@ -320,8 +320,10 @@ fn the_remote_protocol_versions_independently_of_the_supervisor_protocol() {
     // stranded by a failed handoff can be found again.
     // v4: `Spawn` carries a `PaneTarget` instead of loose host/VM fields.
     // v5: `AgentReport`, a hook's event relayed on the pane's channel.
+    // v6: `GetGitProbe` selects a directory independently of the process cwd.
+    // v7: refresh tokens correlate requests with completed probes.
     assert_eq!(
-        REMOTE_PROTOCOL_VERSION, 5,
+        REMOTE_PROTOCOL_VERSION, 7,
         "bumping this is cheap; make sure it is deliberate"
     );
     assert_eq!(

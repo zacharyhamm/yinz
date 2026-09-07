@@ -3645,6 +3645,10 @@ pub(crate) fn screen_thread_main(
                     log::error!("Failed to find tab with ID: {}", tab_id);
                 }
             },
+            ScreenInstruction::ArrangeProjectPanes(groups, client_id) => {
+                screen.arrange_project_panes(groups, client_id).non_fatal();
+                screen.render(None)?;
+            },
             ScreenInstruction::SetTabProjects(tab_projects) => {
                 // Whole map each time, so a tab that lost its project loses the
                 // name with it. Tabs we have never heard of are kept: a plugin can

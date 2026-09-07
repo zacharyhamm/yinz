@@ -116,6 +116,11 @@ pub fn decode_from_kdl(
         is_fullscreen,
         is_floating,
         is_suppressed,
+        is_stack_list_member: kdl_document
+            .get("is_stack_list_member")
+            .and_then(|node| node.entries().first())
+            .and_then(|entry| entry.value().as_bool())
+            .unwrap_or(false),
         title,
         exited,
         exit_status,
@@ -169,6 +174,9 @@ pub fn encode_to_kdl(value: &PaneInfo) -> anyhow::Result<KdlDocument> {
     bool_node!("is_fullscreen", value.is_fullscreen);
     bool_node!("is_floating", value.is_floating);
     bool_node!("is_suppressed", value.is_suppressed);
+    if value.is_stack_list_member {
+        bool_node!("is_stack_list_member", true);
+    }
     string_node!("title", value.title.to_string());
     bool_node!("exited", value.exited);
     if let Some(exit_status) = value.exit_status {

@@ -300,6 +300,7 @@ message Action {
     MoveTextSelectionAction move_text_selection = 161;
     SwapTextSelectionEndsAction swap_text_selection_ends = 162;
     AgentEventAction agent_event = 163;
+    ArrangePanesByProjectAction arrange_panes_by_project = 164;
   }
 }
 
@@ -389,6 +390,7 @@ message OverrideLayoutAction {
   bool apply_only_to_active_tab = 4;
 }
 message QueryTabNamesAction {}
+message ArrangePanesByProjectAction {}
 message BreakPaneAction {}
 message BreakPaneRightAction {}
 message BreakPaneLeftAction {}

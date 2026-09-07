@@ -51,6 +51,7 @@ panes {
         is_fullscreen true
         is_floating false
         is_suppressed false
+        is_stack_list_member true
         title "pane 1"
         exited false
         is_held false

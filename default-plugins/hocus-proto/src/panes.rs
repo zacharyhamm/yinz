@@ -14,9 +14,8 @@ use zellij_tile::prelude::{PaneManifest, TabInfo};
 /// The terminal panes of a manifest, as the agent module wants them.
 ///
 /// Plugin panes are dropped here rather than checked later: an agent is a program at a
-/// prompt, and Hocus itself is a plugin pane. Suppressed panes are dropped for the same
-/// reason `list_session` drops them — the user cannot see them. Global panes are in no
-/// tab, so they are in their own field and would be missed by the tab walk alone.
+/// prompt, and Hocus itself is a plugin pane. Hidden stack-list terminals remain
+/// discoverable through their list entries. Other suppressed panes are excluded.
 pub fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::AgentPane> {
     // The manifest is keyed by tab *position*, not tab id — same join as
     // tools::list_session.
@@ -28,7 +27,7 @@ pub fn terminal_panes(manifest: &PaneManifest, tabs: &[TabInfo]) -> Vec<agents::
         .panes
         .iter()
         .flat_map(|(position, panes)| panes.iter().map(move |pane| (Some(*position), pane)))
-        .filter(|(_, pane)| !pane.is_plugin() && !pane.is_suppressed)
+        .filter(|(_, pane)| !pane.is_plugin() && (!pane.is_suppressed || pane.is_stack_list_member))
         .map(|(position, pane)| agents::AgentPane {
             pane_id: pane.id.legacy_parts().0,
             title: pane.title.clone(),
@@ -99,7 +98,11 @@ pub fn focused_pane(manifest: &PaneManifest, tabs: &[TabInfo]) -> Option<u32> {
         .filter(|(position, _)| active.map(|tab| tab.position) == Some(**position))
         .flat_map(|(_, panes)| panes.iter())
         .filter(|pane| active.map(|tab| tab.are_floating_panes_visible) == Some(pane.is_floating))
-        .find(|pane| pane.is_focused && !pane.is_plugin() && !pane.is_suppressed)
+        .find(|pane| {
+            pane.is_focused
+                && !pane.is_plugin()
+                && (!pane.is_suppressed || pane.is_stack_list_member)
+        })
         .map(|pane| pane.id.legacy_parts().0)
 }
 
@@ -107,6 +110,32 @@ pub fn focused_pane(manifest: &PaneManifest, tabs: &[TabInfo]) -> Option<u32> {
 mod tests {
     use super::*;
     use zellij_tile::prelude::{PaneInfo, PaneTarget};
+
+    #[test]
+    fn terminal_discovery_includes_hidden_list_members_only() {
+        let mut manifest = PaneManifest::default();
+        manifest.panes.insert(
+            TabPosition::new(0),
+            vec![
+                PaneInfo {
+                    id: zellij_tile::prelude::PaneId::from_legacy(1, false),
+                    is_suppressed: true,
+                    is_stack_list_member: true,
+                    ..Default::default()
+                },
+                PaneInfo {
+                    id: zellij_tile::prelude::PaneId::from_legacy(2, false),
+                    is_suppressed: true,
+                    ..Default::default()
+                },
+            ],
+        );
+        let panes = terminal_panes(&manifest, &[]);
+        assert_eq!(
+            panes.iter().map(|pane| pane.pane_id).collect::<Vec<_>>(),
+            vec![1]
+        );
+    }
 
     #[test]
     fn terminal_panes_carry_the_reported_firecracker_location() {

@@ -1288,6 +1288,7 @@ impl TryFrom<zellij_types::input::actions::Action>
             AdoptPaneAction,
             AdoptTabAction,
             AreFloatingPanesVisibleAction,
+            ArrangePanesByProjectAction,
             BreakPaneAction,
             BreakPaneLeftAction,
             BreakPaneRightAction,
@@ -2184,6 +2185,9 @@ impl TryFrom<zellij_types::input::actions::Action>
                     id: id.get() as u64,
                     name,
                 })
+            },
+            zellij_types::input::actions::Action::ArrangePanesByProject => {
+                ActionType::ArrangePanesByProject(ArrangePanesByProjectAction {})
             },
             zellij_types::input::actions::Action::BreakPane => {
                 ActionType::BreakPane(BreakPaneAction {})
@@ -3263,6 +3267,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         .context("tab_id is outside usize range")?,
                     name: rename_tab_by_id_action.name,
                 })
+            },
+            ActionType::ArrangePanesByProject(_) => {
+                Ok(zellij_types::input::actions::Action::ArrangePanesByProject)
             },
             ActionType::BreakPane(_) => Ok(zellij_types::input::actions::Action::BreakPane),
             ActionType::BreakPaneRight(_) => {

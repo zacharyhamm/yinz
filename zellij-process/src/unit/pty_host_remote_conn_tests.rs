@@ -256,3 +256,82 @@ fn a_broken_connection_refuses_termination_immediately() {
     conn.mark_transport_lost();
     assert!(conn.terminate().is_err());
 }
+
+#[test]
+fn git_probe_requests_only_the_selected_directory_and_filters_stale_results() {
+    use crate::pty_host::remote::conn::RemoteGitProbe;
+    use crate::pty_host::remote::protocol::ServerToBrokerMsg;
+    let (conn, mut peer) = conn_pair();
+    conn.set_status(RemoteStatus {
+        cwd: Some("/process".into()),
+        ..RemoteStatus::default()
+    });
+    for cwd in ["/agent", "/changed"] {
+        assert_eq!(conn.git_probe(cwd).unwrap(), None);
+        let frames = drain_all(&mut peer);
+        assert_eq!(frames.len(), 1);
+        assert!(
+            matches!(frames[0].decode_control::<ServerToBrokerMsg>().unwrap(),
+            ServerToBrokerMsg::GetGitProbe { cwd: requested, .. } if requested == cwd)
+        );
+        assert_eq!(conn.git_probe(cwd).unwrap(), None);
+        assert!(
+            drain_all(&mut peer).is_empty(),
+            "pending polls do not flood the broker"
+        );
+        let probe = RemoteGitProbe {
+            cwd: cwd.into(),
+            host: "build-box".into(),
+            exit_code: Some(128),
+            ..RemoteGitProbe::default()
+        };
+        conn.set_git_probe(probe.clone());
+        assert_eq!(conn.git_probe(cwd).unwrap(), Some(probe));
+    }
+    assert_eq!(conn.status().cwd.as_deref(), Some("/process"));
+    assert!(conn.git_probe("").is_err());
+    assert!(drain_all(&mut peer).is_empty());
+}
+
+#[test]
+fn git_probe_refresh_requires_its_own_reply_even_at_the_same_directory() {
+    use crate::pty_host::remote::conn::RemoteGitProbe;
+    use crate::pty_host::remote::protocol::ServerToBrokerMsg;
+    let (conn, mut peer) = conn_pair();
+    let cached = RemoteGitProbe {
+        cwd: "/work".into(),
+        ..Default::default()
+    };
+    conn.set_git_probe(cached.clone());
+    for token in ["first", "second"] {
+        assert_eq!(
+            conn.git_probe_with_refresh("/work", Some(token)).unwrap(),
+            None
+        );
+        let frames = drain_all(&mut peer);
+        assert_eq!(frames.len(), 1);
+        assert!(
+            matches!(frames[0].decode_control::<ServerToBrokerMsg>().unwrap(),
+            ServerToBrokerMsg::GetGitProbe { cwd, refresh_token } if cwd == "/work" && refresh_token.as_deref() == Some(token))
+        );
+        conn.set_git_probe(cached.clone());
+        assert_eq!(
+            conn.git_probe_with_refresh("/work", Some(token)).unwrap(),
+            None
+        );
+        // Background readers must not cancel the pending refresh.
+        let _ = conn.git_probe("/work").unwrap();
+        assert!(drain_all(&mut peer).is_empty());
+        let fresh = RemoteGitProbe {
+            refresh_token: Some(token.into()),
+            ..cached.clone()
+        };
+        conn.set_git_probe(fresh.clone());
+        // A late background/reconnect replay must not overwrite an acknowledged result.
+        conn.set_git_probe(cached.clone());
+        assert_eq!(
+            conn.git_probe_with_refresh("/work", Some(token)).unwrap(),
+            Some(fresh)
+        );
+    }
+}

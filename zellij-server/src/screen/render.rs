@@ -176,7 +176,7 @@ impl Screen {
             // too.
             let mut tabs_that_rendered: Vec<TabId> = vec![];
             for (tab_index, tab) in &mut self.tabs {
-                if tab.has_selectable_tiled_panes() {
+                if tab.should_retain_tab() {
                     // Pass None for normal client rendering
                     tab.render_panes(&mut output, None).context(err_context)?;
                     tabs_that_rendered.push(*tab_index);

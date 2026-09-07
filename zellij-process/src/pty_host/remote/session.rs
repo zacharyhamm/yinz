@@ -165,7 +165,8 @@ pub struct PaneSession {
     exit_reported: AtomicBool,
     /// The last git probe, kept so a reconnecting server gets the pane's project
     /// straight away rather than waiting for its cwd to happen to change.
-    git_probe: Mutex<Option<super::status::GitProbe>>,
+    git_probe: Mutex<Option<(super::status::GitProbe, Option<String>)>>,
+    git_probe_target: Mutex<Option<(String, Option<String>)>>,
     disconnected_since: Mutex<Option<Instant>>,
     terminated: AtomicBool,
 }
@@ -202,6 +203,7 @@ impl PaneSession {
             output_drained_cv: Condvar::new(),
             exit_reported: AtomicBool::new(false),
             git_probe: Mutex::new(None),
+            git_probe_target: Mutex::new(None),
             disconnected_since: Mutex::new(None),
             terminated: AtomicBool::new(false),
         }
@@ -391,13 +393,26 @@ impl PaneSession {
         !self.exit_reported.swap(true, Ordering::SeqCst)
     }
 
-    pub fn set_git_probe(&self, probe: super::status::GitProbe) {
-        if let Ok(mut slot) = self.git_probe.lock() {
-            *slot = Some(probe);
+    pub fn request_git_probe(&self, cwd: String, refresh_token: Option<String>) {
+        if let Ok(mut target) = self.git_probe_target.lock() {
+            *target = Some((cwd, refresh_token));
         }
     }
 
-    pub fn git_probe(&self) -> Option<super::status::GitProbe> {
+    pub fn git_probe_target(&self) -> Option<(String, Option<String>)> {
+        self.git_probe_target
+            .lock()
+            .ok()
+            .and_then(|target| target.clone())
+    }
+
+    pub fn set_git_probe(&self, probe: super::status::GitProbe, refresh_token: Option<String>) {
+        if let Ok(mut slot) = self.git_probe.lock() {
+            *slot = Some((probe, refresh_token));
+        }
+    }
+
+    pub fn git_probe(&self) -> Option<(super::status::GitProbe, Option<String>)> {
         self.git_probe.lock().ok().and_then(|p| p.clone())
     }
 

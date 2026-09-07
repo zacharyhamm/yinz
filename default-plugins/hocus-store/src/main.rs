@@ -28,6 +28,7 @@
 //! off the pane snapshots hocus-agentd sends — which stays here because it has
 //! to happen whether or not a hocus pane is open.
 
+mod arrangement;
 mod notes_ops;
 mod ops;
 
@@ -48,6 +49,7 @@ struct State {
     project_watch_id: Option<DataWatchId>,
     latest_snapshot: Option<PollReply>,
     retry_snapshot: bool,
+    arrangement_pending: bool,
     /// The tab names last handed to the host, so an unchanged map costs no host
     /// call. The daemon already drops a snapshot identical to the last one, but
     /// two different snapshots routinely name the tabs the same way — a pane
@@ -109,6 +111,28 @@ impl ZellijPlugin for State {
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
         let payload = pipe_message.payload.unwrap_or_default();
         match pipe_message.name.as_str() {
+            "arrange_panes_by_project" if !self.arrangement_pending => {
+                self.arrangement_pending = true;
+                pipe_message_to_plugin(MessageToPlugin::new("arrange_projects_refresh"));
+            },
+            "arrange_projects_snapshot" if std::mem::take(&mut self.arrangement_pending) => {
+                match serde_json::from_str::<PollReply>(&payload) {
+                    Ok(reply) => match Host::shared()
+                        .fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))
+                        .map(|rows| projects::from_rows(&rows))
+                    {
+                        Ok(registry) => {
+                            let (groups, skipped) = arrangement::classify(&registry, &reply);
+                            if skipped > 0 {
+                                notify(&format!("Arrange panes: {skipped} panes have no available project identity"));
+                            }
+                            arrange_project_panes(groups);
+                        },
+                        Err(error) => notify(&format!("Arrange panes: {error}")),
+                    },
+                    Err(error) => notify(&format!("Arrange panes: {error}")),
+                }
+            },
             wire::AGENT_HELLO => {
                 pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE));
             },
@@ -415,6 +439,39 @@ fn answer(source: PipeSource, _request_id: String, outcome: ops::OpResult) {
 mod tests {
     use super::*;
     use hocus_proto::store::Local;
+
+    #[test]
+    fn arrangement_waits_past_three_timers_for_a_snapshot() {
+        let mut state = State::default();
+        let request = PipeMessage::new(
+            PipeSource::Keybind,
+            "arrange_panes_by_project",
+            &None,
+            &None,
+            false,
+        );
+        state.pipe(request.clone());
+        assert!(state.arrangement_pending);
+        for _ in 0..5 {
+            state.update(Event::Timer(FractionalSeconds::new(RETRY_SECONDS)));
+            assert!(state.arrangement_pending);
+        }
+        state.pipe(request.clone());
+        assert!(state.arrangement_pending);
+
+        // A malformed snapshot still consumes the request through the existing
+        // error path, without a native test reading the host's store from stdin.
+        state.pipe(PipeMessage::new(
+            PipeSource::Plugin(PluginId::new(10)),
+            "arrange_projects_snapshot",
+            &Some("invalid snapshot".into()),
+            &None,
+            false,
+        ));
+        assert!(!state.arrangement_pending);
+        state.pipe(request);
+        assert!(state.arrangement_pending);
+    }
 
     /// A store with the shared entities declared, as a session has them.
     ///

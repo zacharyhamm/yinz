@@ -20,6 +20,7 @@ mod pane_resizer_test_mock;
 mod pane_resizer_tests;
 
 use crate::resize_pty;
+pub(crate) use tiled_pane_grid::room_in_geometries;
 use tiled_pane_grid::{split, TiledPaneGrid, RESIZE_PERCENT};
 
 use crate::{

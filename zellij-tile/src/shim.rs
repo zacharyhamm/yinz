@@ -1858,6 +1858,16 @@ where
     unsafe { host_run_plugin_command() };
 }
 
+/// Arrange existing terminals by project; requires ChangeApplicationState permission.
+pub fn arrange_project_panes(groups: Vec<ProjectPaneGroup>) {
+    let plugin_command = PluginCommand::ArrangeProjectPanes(groups);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe {
+        host_run_plugin_command();
+    }
+}
+
 /// Tells the host which project each tab is working on, keyed by tab id.
 ///
 /// Not a rename: the name is shown in place of the tab's default "Tab #N", and a
@@ -3169,19 +3179,32 @@ pub fn get_pane_cwd(pane_id: PaneId) -> Result<PathBuf, String> {
 /// Only a remote pane has an answer. A local pane returns `Err`: nothing on this
 /// machine has a cached probe to give, and the pty thread will not spawn `git`
 /// to make one. Branch on `PaneInfo::host` and run Git yourself for a local
-/// pane. The `cwd` in the answer is the folder the probe was *run* in, which for
-/// a pane that has just moved is not the folder it is in now — file the result
-/// under the probe's own folder rather than the pane's.
+/// pane. `Ok(None)` means the requested `cwd` is pending at the broker.
+/// `Ok(Some(probe))` always describes that directory; file it under its host and cwd.
 ///
 /// # Permissions Required
 /// * `ReadApplicationState`
-pub fn get_pane_git_probe(pane_id: PaneId) -> Result<PaneGitProbe, String> {
-    let plugin_command = PluginCommand::GetPaneGitProbe { pane_id };
+pub fn get_pane_git_probe(pane_id: PaneId, cwd: &str) -> Result<Option<PaneGitProbe>, String> {
+    get_pane_git_probe_with_refresh(pane_id, cwd, None)
+}
+
+/// Request fresh metadata with a unique token; poll with that token until ready.
+pub fn get_pane_git_probe_with_refresh(
+    pane_id: PaneId,
+    cwd: &str,
+    refresh_token: Option<String>,
+) -> Result<Option<PaneGitProbe>, String> {
+    let plugin_command = PluginCommand::GetPaneGitProbe {
+        refresh_token,
+        pane_id,
+        cwd: cwd.into(),
+    };
     let protobuf_response: ProtobufGetPaneGitProbeResponse =
         command_response(plugin_command, "GetPaneGitProbe")?;
 
     match protobuf_response.result {
-        Some(get_pane_git_probe_response::Result::Probe(probe)) => Ok(probe.into()),
+        Some(get_pane_git_probe_response::Result::Probe(probe)) => Ok(Some(probe.into())),
+        Some(get_pane_git_probe_response::Result::Pending(_)) => Ok(None),
         Some(get_pane_git_probe_response::Result::Error(err)) => Err(err),
         None => Err("Empty response from server".to_string()),
     }
@@ -4276,7 +4299,7 @@ mod tests {
         );
         fail_next_read();
         assert_eq!(
-            get_pane_git_probe(pane_id).unwrap_err(),
+            get_pane_git_probe(pane_id, "/work/project").unwrap_err(),
             "Failed to read the GetPaneGitProbe response: stdin closed"
         );
         fail_next_read();
@@ -4342,7 +4365,7 @@ mod tests {
         respond(ProtobufGetPaneGitProbeResponse::from(
             GetPaneGitProbeResponse::Err(expected.clone()),
         ));
-        assert_eq!(get_pane_git_probe(pane_id), Err(expected));
+        assert_eq!(get_pane_git_probe(pane_id, "/work/project"), Err(expected));
 
         let focused_permission_error = "Permission denied: ReadApplicationState".to_owned();
         respond(ProtobufGetFocusedPaneInfoResponse::from(
@@ -4395,7 +4418,14 @@ mod tests {
         respond(ProtobufGetPaneGitProbeResponse::from(
             GetPaneGitProbeResponse::Ok(probe.clone()),
         ));
-        assert_eq!(get_pane_git_probe(pane_id), Ok(probe));
+        assert_eq!(
+            get_pane_git_probe(pane_id, "/work/project"),
+            Ok(Some(probe))
+        );
+        respond(ProtobufGetPaneGitProbeResponse::from(
+            GetPaneGitProbeResponse::Pending,
+        ));
+        assert_eq!(get_pane_git_probe(pane_id, "/work/project"), Ok(None));
 
         respond(ProtobufGetFocusedPaneInfoResponse::from(
             GetFocusedPaneInfoResponse::Ok {

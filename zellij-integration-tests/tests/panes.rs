@@ -166,8 +166,10 @@ fn close_pane() {
 }
 
 #[test]
-fn closing_last_pane_exits_zellij() {
-    let zellij = start_zellij();
+fn closing_last_pane_exits_when_no_background_panes_remain() {
+    let zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .start();
     claim_first_terminal_and_wait_for_prompt(&zellij);
 
     zellij.send_stdin(&keys::ctrl('p'));

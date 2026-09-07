@@ -1358,48 +1358,22 @@ impl<'a> TiledPaneGrid<'a> {
         cursor_height_width_ratio: Option<usize>,
     ) -> Option<(PaneId, SplitDirection)> {
         let panes = self.panes.borrow();
-        let pane_sequence: Vec<(&PaneId, &&mut Box<dyn Pane>)> = panes
-            .iter()
-            .filter(|(_, p)| p.selectable() && !p.current_geom().is_stacked())
-            .collect();
-        // `panes` is a `HashMap`, so its iteration order is randomized per process. Ranking by
-        // size alone therefore left ties - two panes of equal area, the common case in any
-        // symmetric layout - to be broken by the hash seed, and the same layout could grow a new
-        // pane in two different places on two runs of the same binary. Ranking by `(size, id)`
-        // makes the choice total and reproducible; on a tie the most recently opened pane (the
-        // highest id) is split, which is the one the user was most likely just working in.
-        let pane_id_to_split = pane_sequence
-            .iter()
-            .filter(|(_, pane_to_check)| {
-                pane_to_check.cols() >= MIN_TERMINAL_WIDTH
-                    && pane_to_check.rows() >= MIN_TERMINAL_HEIGHT
-                    && ((pane_to_check.cols() > pane_to_check.min_width() * 2)
-                        || (pane_to_check.rows() > pane_to_check.min_height() * 2))
-            })
-            .max_by_key(|(id_of_pane_to_check, pane_to_check)| {
-                let pane_size = (pane_to_check.rows()
-                    * cursor_height_width_ratio.unwrap_or(DEFAULT_CURSOR_HEIGHT_WIDTH_RATIO))
-                    * pane_to_check.cols();
-                (pane_size, **id_of_pane_to_check)
-            })
-            .map(|(id_of_pane_to_check, _)| *id_of_pane_to_check);
-        pane_id_to_split.and_then(|t_id_to_split| {
-            let pane_to_split = panes.get(t_id_to_split)?;
-            let direction = if pane_to_split.rows()
-                * cursor_height_width_ratio.unwrap_or(DEFAULT_CURSOR_HEIGHT_WIDTH_RATIO)
-                > pane_to_split.cols()
-                && pane_to_split.rows() > pane_to_split.min_height() * 2
-            {
-                Some(SplitDirection::Horizontal)
-            } else if pane_to_split.cols() > pane_to_split.min_width() * 2 {
-                Some(SplitDirection::Vertical)
-            } else {
-                None
-            };
-
-            direction.map(|direction| (*t_id_to_split, direction))
-        })
+        room_in_geometries(
+            panes
+                .iter()
+                .filter(|(_, pane)| pane.selectable())
+                .map(|(id, pane)| {
+                    (
+                        *id,
+                        pane.current_geom(),
+                        pane.min_width(),
+                        pane.min_height(),
+                    )
+                }),
+            cursor_height_width_ratio,
+        )
     }
+
     pub fn split_pane(
         &self,
         active_pane_id: &PaneId,
@@ -2118,6 +2092,34 @@ pub fn split(direction: SplitDirection, rect: &PaneGeom) -> Option<(PaneGeom, Pa
     } else {
         None
     }
+}
+
+/// Shared by live insertion and arrangement preflight; ties keep the existing ID rule.
+pub(crate) fn room_in_geometries<K: Copy + Ord>(
+    panes: impl Iterator<Item = (K, PaneGeom, usize, usize)>,
+    ratio: Option<usize>,
+) -> Option<(K, SplitDirection)> {
+    let ratio = ratio.unwrap_or(DEFAULT_CURSOR_HEIGHT_WIDTH_RATIO);
+    let (id, geom, min_width, min_height) = panes
+        .filter(|(_, geom, min_width, min_height)| {
+            !geom.is_stacked()
+                && geom.cols.as_usize() >= MIN_TERMINAL_WIDTH
+                && geom.rows.as_usize() >= MIN_TERMINAL_HEIGHT
+                && (geom.cols.as_usize() > min_width * 2 || geom.rows.as_usize() > min_height * 2)
+        })
+        .max_by_key(|(id, geom, _, _)| {
+            (geom.rows.as_usize() * ratio * geom.cols.as_usize(), *id)
+        })?;
+    let direction = if geom.rows.as_usize() * ratio > geom.cols.as_usize()
+        && geom.rows.as_usize() > min_height * 2
+    {
+        SplitDirection::Horizontal
+    } else if geom.cols.as_usize() > min_width * 2 {
+        SplitDirection::Vertical
+    } else {
+        return None;
+    };
+    Some((id, direction))
 }
 
 #[cfg(test)]

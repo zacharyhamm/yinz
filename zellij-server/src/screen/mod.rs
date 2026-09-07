@@ -145,6 +145,7 @@ use {
 };
 
 mod agent_placement;
+mod arrange_projects;
 mod break_panes;
 mod capabilities;
 mod context_menu;
@@ -725,6 +726,7 @@ pub(crate) struct Screen {
     /// worked out. Held raw — without the `#1`/`#2` a collision earns — because
     /// the suffixes depend on tab order, which changes without anyone sending us
     /// anything.
+    arrangement_projects: HashMap<TabId, String>,
     tab_projects: HashMap<TabId, String>,
     pixel_dimensions: PixelDimensions,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
@@ -1384,6 +1386,7 @@ impl Screen {
             terminal_hosts: HashMap::new(),
             terminal_firecracker_worktrees: HashMap::new(),
             last_plugin_tab_names: HashMap::new(),
+            arrangement_projects: HashMap::new(),
             tab_projects: HashMap::new(),
             terminal_emulator_colors: Rc::new(RefCell::new(Palette::default())),
             terminal_emulator_color_codes: Rc::new(RefCell::new(HashMap::new())),

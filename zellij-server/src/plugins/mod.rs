@@ -241,6 +241,7 @@ pub enum PluginInstruction {
         /// The pane the pipe was run in, if the CLI client knew it.
         source_pane_id: Option<PaneId>,
     },
+    ArrangePanesByProject,
     KeybindPipe {
         name: String,
         payload: Option<String>,
@@ -1245,6 +1246,37 @@ pub(crate) fn plugin_thread_main(
                     message.pane_id = source_pane_id;
                 }
                 wasm_bridge.pipe_messages(pipe_messages, shutdown_send.clone(), None)?;
+            },
+            PluginInstruction::ArrangePanesByProject => {
+                let store = wasm_bridge.builtin_service_instance("hocus-store");
+                if store.is_none()
+                    || wasm_bridge
+                        .builtin_service_instance("hocus-agentd")
+                        .is_none()
+                {
+                    bus.senders.send_to_screen(ScreenInstruction::Notify(
+                        "Arrange panes requires the hocus-store and hocus-agentd builtins"
+                            .to_owned(),
+                        None,
+                        None,
+                    ))?;
+                } else if let Some((id, client)) = store {
+                    wasm_bridge.pipe_messages(
+                        vec![(
+                            Some(id),
+                            Some(client),
+                            PipeMessage::new(
+                                PipeSource::Keybind,
+                                "arrange_panes_by_project".to_owned(),
+                                &None,
+                                &None,
+                                true,
+                            ),
+                        )],
+                        shutdown_send.clone(),
+                        None,
+                    )?;
+                }
             },
             PluginInstruction::KeybindPipe {
                 name,

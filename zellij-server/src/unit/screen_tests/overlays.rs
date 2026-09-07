@@ -5590,11 +5590,10 @@ fn an_overlay_does_not_keep_the_session_alive_when_the_last_tab_closes() {
     );
 }
 
-/// The commonest way to hit this is not an explicit close at all: a tab with no selectable tiled
-/// panes is reaped by the render tick, so exiting the shell in a tab's last pane while hocus is
-/// open used to unload it.
+/// An overlay retains its tab after the last terminal leaves. Rendering and
+/// arrangement use the same retention rule.
 #[test]
-fn an_overlay_survives_a_tab_reaped_for_being_empty() {
+fn an_overlay_keeps_its_tab_when_the_last_terminal_leaves() {
     let size = Size { cols: 80, rows: 12 };
     let (mut screen, popup_id) = screen_with_an_overlay_on_the_second_tab(size);
     let (server_sender, _server_receiver) = channels::unbounded();
@@ -5610,24 +5609,22 @@ fn an_overlay_survives_a_tab_reaped_for_being_empty() {
     screen.render_to_clients().expect("TEST");
 
     assert!(
-        !screen.tabs.contains_key(&TabId::new(1)),
-        "an overlay must not keep an emptied tab alive"
+        screen.tabs.contains_key(&TabId::new(1)),
+        "an overlay keeps its source tab alive"
     );
     assert!(
         screen
             .tabs
-            .get(&TabId::new(0))
+            .get(&TabId::new(1))
             .expect("TEST")
             .pane_is_overlay(popup_id),
-        "the overlay moves to the surviving tab rather than being reaped with the empty one"
+        "the overlay remains in its source tab"
     );
 }
 
-/// `render_to_clients` collects every emptied tab and then closes them in a loop, so the tab an
-/// overlay is re-homed *into* can be the next one on the list. It must not survive that: the last
-/// close ends the session, and an overlay carried into it goes with everything else.
+/// A genuinely empty tab is still reaped, while a tab with an overlay is retained.
 #[test]
-fn an_overlay_is_torn_down_when_its_destination_is_reaped_too() {
+fn render_reaps_only_the_tab_without_retained_panes() {
     let size = Size { cols: 80, rows: 12 };
     let (mut screen, popup_id) = screen_with_an_overlay_on_the_second_tab(size);
     let (server_sender, _server_receiver) = channels::unbounded();
@@ -5646,11 +5643,12 @@ fn an_overlay_is_torn_down_when_its_destination_is_reaped_too() {
     }
     screen.render_to_clients().expect("TEST");
 
-    assert!(screen.tabs.is_empty(), "no tab is left");
+    assert_eq!(screen.tabs.len(), 1);
+    assert!(screen.tabs[&TabId::new(1)].pane_is_overlay(popup_id));
     let torn_down = panes_torn_down_by_pty(&pty_receiver);
     assert!(
-        torn_down.contains(&popup_id),
-        "the overlay is re-homed into the first tab and then torn down with it: {torn_down:?}"
+        !torn_down.contains(&popup_id),
+        "rendering must not tear down the retained overlay: {torn_down:?}"
     );
 }
 

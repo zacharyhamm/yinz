@@ -884,6 +884,34 @@ mod git_probe_pump {
         assert!(ran.changed, "the first answer is news");
     }
 
+    #[test]
+    fn git_probe_refresh_runs_and_acknowledges_unchanged_results() {
+        let mut pump = GitProbePump::new(INTERVAL);
+        let probe = |cwd: &str| probe_of(cwd, "main");
+        pump.tick("/work", TICK, probe).unwrap();
+        for token in ["first", "second"] {
+            let ran = pump
+                .tick_with_refresh("/work", Some(token), TICK, probe)
+                .unwrap();
+            assert!(
+                ran.changed,
+                "a fresh request is acknowledged even if Git is unchanged"
+            );
+            assert!(pump
+                .tick_with_refresh("/work", Some(token), TICK, probe)
+                .is_none());
+        }
+        let ran = pump
+            .tick_with_refresh("/work", Some("third"), TICK, |cwd| {
+                let mut changed = probe_of(cwd, "topic");
+                changed.config = b"remote.origin.url\nnew-url\0".to_vec();
+                changed
+            })
+            .unwrap();
+        assert_ne!(ran.probe, probe("/work"));
+        assert!(ran.changed);
+    }
+
     /// The property the pane's whole traffic model rests on: a pane sitting
     /// still in an unchanging checkout says nothing, however long it sits.
     #[test]

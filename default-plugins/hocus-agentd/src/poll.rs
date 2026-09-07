@@ -44,15 +44,17 @@ pub fn pane_cwd(pane_id: u32) -> Option<String> {
 
 /// What Git said about a remote pane's folder, from its own machine.
 ///
-/// `None` for a local pane — there is nothing cached for one, and the host will
-/// not run Git on the pty thread to make some — and for a remote pane whose
-/// machine has not reported yet. Callers ask again rather than recording the
-/// silence: both reasons pass on their own.
-pub fn pane_git_probe(pane_id: u32) -> Option<PaneGitProbe> {
-    get_pane_git_probe(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(
-        pane_id,
-    )))
-    .ok()
+/// `Ok(None)` means the directory is pending; an error means unavailable.
+pub fn pane_git_probe(
+    pane_id: u32,
+    cwd: &str,
+    refresh_token: Option<&str>,
+) -> Result<Option<PaneGitProbe>, String> {
+    get_pane_git_probe_with_refresh(
+        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+        cwd,
+        refresh_token.map(str::to_owned),
+    )
 }
 
 /// One poll's reading of a pane: what it shows, and what that reading is worth.

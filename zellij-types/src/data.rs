@@ -1251,6 +1251,9 @@ pub struct PaneInfo {
     /// Whether a pane is suppressed - suppressed panes are not visible to the user, but still run
     /// in the background
     pub is_suppressed: bool,
+    /// Membership reported by the owning tab, including hidden list entries.
+    #[serde(default)]
+    pub is_stack_list_member: bool,
     /// The full title of the pane as it appears in the UI (if there is room for it)
     pub title: String,
     /// Whether a pane exited or not, note that most panes close themselves before setting this
@@ -1659,6 +1662,7 @@ pub struct PaneGitProbe {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GetPaneGitProbeResponse {
     Ok(PaneGitProbe),
+    Pending,
     Err(String),
 }
 
@@ -2764,6 +2768,8 @@ pub enum PluginCommand {
     /// What Git says about a *remote* pane's folder, as its own machine sees it.
     GetPaneGitProbe {
         pane_id: PaneId,
+        cwd: String,
+        refresh_token: Option<String>,
     },
     MovePaneWithPaneId(PaneId),
     MovePaneWithPaneIdInDirection(PaneId, Direction),
@@ -2792,6 +2798,7 @@ pub enum PluginCommand {
     /// Advisory rather than a rename: the server shows these to fill in tabs the
     /// user has not named, and never writes them to the tab. Sent as the whole
     /// map, so a tab left out of it has no project.
+    ArrangeProjectPanes(Vec<ProjectPaneGroup>),
     SetTabProjects(BTreeMap<TabId, String>),
     BreakPanesToTabWithId(Vec<PaneId>, TabId, bool), // stable tab id, bool -
     // should_change_focus_to_target_tab
@@ -3331,4 +3338,13 @@ pub struct LayoutDiagnostic {
     pub offset: Option<usize>,
     pub len: Option<usize>,
     pub help_message: Option<String>,
+}
+
+/// A project identity and its terminal panes, in checkout traversal order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectPaneGroup {
+    pub identity: String,
+    pub name: String,
+    pub configuration_root: Option<String>,
+    pub pane_ids: Vec<u32>,
 }

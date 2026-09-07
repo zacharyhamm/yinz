@@ -933,19 +933,27 @@ impl UnixPtyBackend {
     }
 
     /// What git last said about a remote pane's working directory.
-    pub fn remote_git_probe(&self, terminal_id: TerminalId) -> Option<RemoteGitProbe> {
+    pub fn remote_git_probe(
+        &self,
+        terminal_id: TerminalId,
+        cwd: &str,
+        refresh_token: Option<&str>,
+    ) -> Result<Option<RemoteGitProbe>, String> {
         let conn = self
             .terminal_id_to_transport
             .lock()
-            .ok()?
-            .get(&terminal_id)?
-            .remote()
-            .cloned()?;
-        let mut probe = conn.git_probe()?;
-        if let Some(host) = conn.cmd().display_host() {
+            .map_err(|e| e.to_string())?
+            .get(&terminal_id)
+            .and_then(|transport| transport.remote())
+            .cloned()
+            .ok_or_else(|| format!("terminal pane {terminal_id} is not remote"))?;
+        let mut probe = conn
+            .git_probe_with_refresh(cwd, refresh_token)
+            .map_err(|e| e.to_string())?;
+        if let (Some(probe), Some(host)) = (&mut probe, conn.cmd().display_host()) {
             probe.host = host;
         }
-        Some(probe)
+        Ok(probe)
     }
 
     /// The machine a pane runs on, or `None` if it runs on this one.

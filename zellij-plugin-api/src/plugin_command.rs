@@ -1,4 +1,5 @@
 #![allow(clippy::unnecessary_fallible_conversions)]
+use super::generated_api::api::plugin_command as generated;
 pub use super::generated_api::api::{
     action::{Action as ProtobufAction, PaneIdAndShouldFloat, SwitchToModePayload},
     event::{
@@ -616,6 +617,9 @@ impl From<GetPaneGitProbeResponse> for ProtobufGetPaneGitProbeResponse {
         match response {
             GetPaneGitProbeResponse::Ok(probe) => ProtobufGetPaneGitProbeResponse {
                 result: Some(get_pane_git_probe_response::Result::Probe(probe.into())),
+            },
+            GetPaneGitProbeResponse::Pending => ProtobufGetPaneGitProbeResponse {
+                result: Some(get_pane_git_probe_response::Result::Pending(true)),
             },
             GetPaneGitProbeResponse::Err(err) => ProtobufGetPaneGitProbeResponse {
                 result: Some(get_pane_git_probe_response::Result::Error(err)),
@@ -2088,6 +2092,8 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::GetPaneGitProbe) => match protobuf_plugin_command.payload {
                 Some(Payload::GetPaneGitProbePayload(payload)) => {
                     Ok(PluginCommand::GetPaneGitProbe {
+                        cwd: payload.cwd,
+                        refresh_token: payload.refresh_token,
                         pane_id: payload
                             .pane_id
                             .ok_or("Malformed GetPaneGitProbe: missing pane_id")?
@@ -2341,6 +2347,23 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     ))
                 },
                 _ => Err("Mismatched payload for RenameTabWithId"),
+            },
+            Some(CommandName::ArrangeProjectPanes) => match protobuf_plugin_command.payload {
+                Some(Payload::ArrangeProjectPanesPayload(payload)) => {
+                    Ok(PluginCommand::ArrangeProjectPanes(
+                        payload
+                            .groups
+                            .into_iter()
+                            .map(|g| zellij_types::data::ProjectPaneGroup {
+                                identity: g.identity,
+                                name: g.name,
+                                configuration_root: g.configuration_root,
+                                pane_ids: g.pane_ids,
+                            })
+                            .collect(),
+                    ))
+                },
+                _ => Err("Mismatched payload for ArrangeProjectPanes"),
             },
             Some(CommandName::SetTabProjects) => match protobuf_plugin_command.payload {
                 Some(Payload::SetTabProjectsPayload(payload)) => Ok(PluginCommand::SetTabProjects(
@@ -4506,10 +4529,16 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     pane_id: Some(pane_id.try_into()?),
                 })),
             }),
-            PluginCommand::GetPaneGitProbe { pane_id } => Ok(ProtobufPluginCommand {
+            PluginCommand::GetPaneGitProbe {
+                pane_id,
+                cwd,
+                refresh_token,
+            } => Ok(ProtobufPluginCommand {
                 name: CommandName::GetPaneGitProbe as i32,
                 payload: Some(Payload::GetPaneGitProbePayload(
                     ProtobufGetPaneGitProbePayload {
+                        cwd,
+                        refresh_token,
                         pane_id: Some(pane_id.try_into()?),
                     },
                 )),
@@ -4734,6 +4763,22 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     tab_id: tab_id.get() as u64,
                     new_name,
                 })),
+            }),
+            PluginCommand::ArrangeProjectPanes(groups) => Ok(ProtobufPluginCommand {
+                name: CommandName::ArrangeProjectPanes as i32,
+                payload: Some(Payload::ArrangeProjectPanesPayload(
+                    generated::ArrangeProjectPanesPayload {
+                        groups: groups
+                            .into_iter()
+                            .map(|g| generated::ProjectPaneGroup {
+                                identity: g.identity,
+                                name: g.name,
+                                configuration_root: g.configuration_root,
+                                pane_ids: g.pane_ids,
+                            })
+                            .collect(),
+                    },
+                )),
             }),
             PluginCommand::SetTabProjects(tab_projects) => Ok(ProtobufPluginCommand {
                 name: CommandName::SetTabProjects as i32,
@@ -7836,6 +7881,7 @@ mod tests {
                 | PluginCommand::GoToTabWithId(_)
                 | PluginCommand::CloseTabWithId(_)
                 | PluginCommand::RenameTabWithId(..)
+                | PluginCommand::ArrangeProjectPanes(_)
                 | PluginCommand::SetTabProjects(_)
                 | PluginCommand::BreakPanesToTabWithId(..)
                 | PluginCommand::ReloadPlugin(_)
