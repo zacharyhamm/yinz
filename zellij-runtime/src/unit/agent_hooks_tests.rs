@@ -6,6 +6,12 @@ use zellij_types::{
 };
 
 const META: &str = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session\"}}\n";
+/// Prose that cannot fit the broadcast ceiling wherever the ceiling moves: `雪` is three bytes
+/// in UTF-8 and unescaped in JSON, so half the ceiling in characters is half again over it in
+/// bytes. Sized off the constant so raising the ceiling cannot quietly stop these tests from
+/// exercising a prune.
+const OVERSIZE_CHARS: usize = zellij_types::agent::HOOK_BROADCAST_MAX_BYTES / 2;
+
 const AUTO: &str = "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"turn\",\"approvals_reviewer\":\"auto_review\"}}\n";
 
 fn fixture(contents: &str) -> (tempfile::NamedTempFile, Value) {
@@ -254,7 +260,13 @@ fn codex_message_tail_and_payload_limits_are_marked_and_keep_newest_in_order() {
             .messages_omitted
     );
     let body: String = (0..100)
-        .map(|n| assistant(Some(&format!("m{n}")), "commentary", &"雪".repeat(4000)))
+        .map(|n| {
+            assistant(
+                Some(&format!("m{n}")),
+                "commentary",
+                &"雪".repeat(OVERSIZE_CHARS / 25),
+            )
+        })
         .collect();
     let (_file, hook) = fixture(&format!("{META}{padding}\n{AUTO}{body}"));
     let (event, raw) = parse_hook_event("codex", hook.to_string()).unwrap();
@@ -271,11 +283,7 @@ fn codex_message_tail_and_payload_limits_are_marked_and_keep_newest_in_order() {
         .all(|pair| { pair[0].source_id < pair[1].source_id }));
     let (_file, hook) = fixture(&format!(
         "{META}{AUTO}{}",
-        assistant(
-            Some("huge"),
-            "final_answer",
-            &"雪".repeat(zellij_types::agent::HOOK_BROADCAST_MAX_BYTES),
-        )
+        assistant(Some("huge"), "final_answer", &"雪".repeat(OVERSIZE_CHARS))
     ));
     let (event, raw) = parse_hook_event("codex", hook.to_string()).unwrap();
     assert!(raw.len() <= zellij_types::agent::HOOK_BROADCAST_MAX_BYTES);
@@ -314,18 +322,22 @@ fn codex_messages_require_known_records_and_explicit_turn_boundaries() {
 
 #[test]
 fn display_message_bursts_only_broadcast_events_and_preserve_pruned_batch_metadata() {
-    for index in 0..100 {
+    // Every assertion below is per-batch, so the burst is only as long as it takes to have a
+    // run of pruned batches followed by the empty final one. Each oversize delta costs a
+    // binary-search prune over a quarter-megabyte, which is not free in a debug build.
+    const BATCHES: u64 = 8;
+    for index in 0..BATCHES {
         let event = HookEvent {
             hook_event_name: "MessageDisplay".into(),
             session_id: "session".into(),
             turn_id: Some("turn".into()),
             message_id: Some("message".into()),
             index: Some(index),
-            final_batch: Some(index == 99),
-            delta: Some(if index == 99 {
+            final_batch: Some(index == BATCHES - 1),
+            delta: Some(if index == BATCHES - 1 {
                 String::new()
             } else {
-                "雪".repeat(zellij_types::agent::HOOK_BROADCAST_MAX_BYTES)
+                "雪".repeat(OVERSIZE_CHARS)
             }),
             ..Default::default()
         };
@@ -346,6 +358,6 @@ fn display_message_bursts_only_broadcast_events_and_preserve_pruned_batch_metada
         assert_eq!(received.message_id, event.message_id);
         assert_eq!(received.index, event.index);
         assert_eq!(received.final_batch, event.final_batch);
-        assert_eq!(received.message_incomplete, index != 99);
+        assert_eq!(received.message_incomplete, index != BATCHES - 1);
     }
 }
