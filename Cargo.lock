@@ -1446,8 +1446,10 @@ name = "hocus-agentd"
 version = "0.1.0"
 dependencies = [
  "hocus-proto",
+ "prost",
  "serde",
  "serde_json",
+ "zellij-ipc",
  "zellij-tile",
 ]
 

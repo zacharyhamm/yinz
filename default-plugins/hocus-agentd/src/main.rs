@@ -3555,22 +3555,77 @@ impl State {
 /// other way would hang the terminal. A keybind is neither and gets nothing — there is just
 /// nobody to tell, the same stance `on_ask` takes.
 fn answer_completion(source: &PipeSource, reply: &wire::CompletionReply) {
-    let Ok(json) = serde_json::to_string(reply) else {
-        return;
-    };
+    answer_completion_with(
+        source,
+        reply,
+        pipe_message_to_plugin,
+        cli_pipe_output,
+        unblock_cli_pipe_input,
+    );
+}
+
+fn answer_completion_with(
+    source: &PipeSource,
+    reply: &wire::CompletionReply,
+    plugin: impl FnOnce(MessageToPlugin),
+    cli: impl FnOnce(&str, &str),
+    unblock: impl FnOnce(&str),
+) {
+    let output = prepare_completion(source, reply);
     match source {
-        PipeSource::Plugin(id) => pipe_message_to_plugin(
+        PipeSource::Plugin(id) => plugin(
             MessageToPlugin::new(wire::COMPLETE_RESULT)
                 .with_destination_plugin_id(*id)
-                .with_payload(json),
+                .with_payload(output),
         ),
         PipeSource::Cli(pipe_id) => {
             // One line, so a shell can read it without counting braces.
-            cli_pipe_output(pipe_id, &format!("{json}\n"));
-            unblock_cli_pipe_input(pipe_id);
+            cli(pipe_id, &output);
+            unblock(pipe_id);
         },
         PipeSource::Keybind => {},
     }
+}
+
+fn prepare_completion(source: &PipeSource, reply: &wire::CompletionReply) -> String {
+    use prost::Message;
+    use zellij_ipc::client_server_contract::client_server_contract::{
+        server_to_client_msg, CliPipeOutputMsg, ServerToClientMsg,
+    };
+    use zellij_ipc::MAX_IPC_FRAME_LEN;
+
+    let mut output = serde_json::to_string(reply).expect("a completion reply is serializable");
+    let size = if let PipeSource::Cli(pipe_id) = source {
+        output.push('\n');
+        let frame = ServerToClientMsg {
+            message: Some(server_to_client_msg::Message::CliPipeOutput(
+                CliPipeOutputMsg {
+                    pipe_name: pipe_id.clone(),
+                    output,
+                },
+            )),
+        };
+        let size = frame.encoded_len();
+        if let Some(server_to_client_msg::Message::CliPipeOutput(message)) = frame.message {
+            output = message.output;
+        } else {
+            unreachable!("constructed a CliPipeOutput frame");
+        }
+        size
+    } else {
+        output.len()
+    };
+    if size > MAX_IPC_FRAME_LEN {
+        let error = completion::error_reply(
+            &reply.request_id,
+            &format!("completion reply exceeds the {MAX_IPC_FRAME_LEN}-byte transport limit"),
+        );
+        output = serde_json::to_string(&error).expect("a completion error is serializable");
+        if matches!(source, PipeSource::Cli(_)) {
+            output.push('\n');
+        }
+    }
+    output
 }
 
 /// Write a pane's agent record to the session. Off wasm there is no session, and the tests
@@ -9132,6 +9187,127 @@ mod tests {
             "choices": [{ "finish_reason": "stop", "message": { "content": content } }],
         }))
         .expect("encoded")
+    }
+
+    #[test]
+    fn completion_transport_accepts_exactly_fitting_replies() {
+        use prost::Message;
+        use zellij_ipc::client_server_contract::client_server_contract::ServerToClientMsg;
+        use zellij_ipc::MAX_IPC_FRAME_LEN;
+
+        for source in [
+            PipeSource::Plugin(PluginId::new(9)),
+            PipeSource::Cli("pipe-name".repeat(20)),
+        ] {
+            let size = |reply: &wire::CompletionReply| {
+                let json = serde_json::to_string(reply).unwrap();
+                match &source {
+                    PipeSource::Cli(pipe_name) => {
+                        let frame: ServerToClientMsg =
+                            zellij_ipc::ipc::ServerToClientMsg::CliPipeOutput {
+                                pipe_name: pipe_name.clone(),
+                                output: format!("{json}\n"),
+                            }
+                            .into();
+                        frame.encoded_len()
+                    },
+                    _ => json.len(),
+                }
+            };
+            let mut reply = wire::CompletionReply {
+                request_id: "boundary".to_owned(),
+                content: "x".repeat(MAX_IPC_FRAME_LEN - 1024),
+                ..Default::default()
+            };
+            reply
+                .content
+                .push_str(&"x".repeat(MAX_IPC_FRAME_LEN - size(&reply)));
+            assert_eq!(size(&reply), MAX_IPC_FRAME_LEN);
+            let output = prepare_completion(&source, &reply);
+            let back: wire::CompletionReply = serde_json::from_str(&output).unwrap();
+            assert!(back.error.is_empty());
+            assert_eq!(back.content, reply.content);
+            if matches!(source, PipeSource::Cli(_)) {
+                assert!(output.ends_with('\n'));
+                assert!(
+                    output.len() < MAX_IPC_FRAME_LEN,
+                    "the envelope consumes budget"
+                );
+            }
+            drop((output, back));
+            reply.content.push('x');
+            assert_eq!(size(&reply), MAX_IPC_FRAME_LEN + 1);
+            let back: wire::CompletionReply =
+                serde_json::from_str(&prepare_completion(&source, &reply)).unwrap();
+            assert_eq!(back.request_id, reply.request_id);
+            assert!(back.error.contains(&MAX_IPC_FRAME_LEN.to_string()));
+            assert!(back.content.is_empty());
+            assert!(back.tool_calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn oversized_completion_tool_arguments_and_http_errors_reach_both_callers() {
+        use zellij_ipc::MAX_IPC_FRAME_LEN;
+
+        // Escaping makes the reply exceed the budget even though the raw arguments fit.
+        let body = serde_json::to_vec(&serde_json::json!({
+            "choices": [{"message": {"tool_calls": [{
+                "id": "call-1", "function": {"name": "save", "arguments": "\"".repeat(MAX_IPC_FRAME_LEN / 2)}
+            }]}}]
+        })).unwrap();
+        let http_error =
+            format!("web response exceeded the {MAX_IPC_FRAME_LEN}-byte buffered-body limit");
+        for source in [
+            PipeSource::Plugin(PluginId::new(9)),
+            PipeSource::Cli("cli-pipe".to_owned()),
+        ] {
+            for (status, body, expected) in [
+                (200, body.as_slice(), "transport limit"),
+                // The host maps a bounded-reader error to WebRequestResult(400, ..., error, context).
+                (400, http_error.as_bytes(), "buffered-body limit"),
+            ] {
+                let mut state = State::default();
+                let request = complete(&mut state, &source, &asking("why?"));
+                assert!(request.sent);
+                let output = std::cell::RefCell::new(None);
+                let unblocked = std::cell::Cell::new(false);
+                state.finish_completion_with(
+                    status,
+                    body,
+                    &BTreeMap::from([(COMPLETE_ID.to_owned(), request.requests[0].id.to_string())]),
+                    |caller, reply| {
+                        answer_completion_with(
+                            caller,
+                            reply,
+                            |message| {
+                                assert_eq!(
+                                    source,
+                                    PipeSource::Plugin(message.destination_plugin_id.unwrap())
+                                );
+                                assert_eq!(message.message_name, wire::COMPLETE_RESULT);
+                                *output.borrow_mut() = message.message_payload;
+                            },
+                            |pipe, json| {
+                                assert_eq!(source, PipeSource::Cli(pipe.to_owned()));
+                                assert!(json.ends_with('\n'));
+                                assert!(!unblocked.get(), "write before releasing the CLI");
+                                *output.borrow_mut() = Some(json.to_owned());
+                            },
+                            |_| unblocked.set(true),
+                        )
+                    },
+                );
+                assert!(state.completions.is_empty());
+                assert_eq!(unblocked.get(), matches!(source, PipeSource::Cli(_)));
+                let reply: wire::CompletionReply =
+                    serde_json::from_str(&output.into_inner().unwrap()).unwrap();
+                assert_eq!(reply.request_id, "hc1");
+                assert!(reply.error.contains(expected), "{}", reply.error);
+                assert!(reply.content.is_empty());
+                assert!(reply.tool_calls.is_empty());
+            }
+        }
     }
 
     #[test]

@@ -9,6 +9,8 @@ workspace = true
 
 [dependencies]
 zellij-tile = { path = "../../zellij-tile" }
+zellij-ipc = { workspace = true }
+prost = { workspace = true }
 hocus-proto = { path = "../hocus-proto" }
 serde = { workspace = true }
 serde_json = { workspace = true }

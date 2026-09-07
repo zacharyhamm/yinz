@@ -1,4 +1,8 @@
 //! Client/server messages, wire encoding, and socket transport.
+/// Maximum protobuf frame length, excluding its four-byte length prefix.
+/// Available on wasm so plugins can check replies before handing them to the host.
+pub const MAX_IPC_FRAME_LEN: usize = 64 * 1024 * 1024;
+
 pub mod client_server_contract;
 pub mod consts;
 #[cfg(not(target_family = "wasm"))]
