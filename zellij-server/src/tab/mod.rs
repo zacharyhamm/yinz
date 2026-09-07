@@ -6141,8 +6141,6 @@ impl Tab {
     }
     pub(crate) fn should_retain_tab(&self) -> bool {
         self.has_selectable_panes()
-            || !self.suppressed_panes.is_empty()
-            || !self.overlay_plugin_ids().is_empty()
             || self
                 .get_all_pane_ids()
                 .iter()

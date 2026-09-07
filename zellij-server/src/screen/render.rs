@@ -488,6 +488,12 @@ impl Screen {
             }
         }
         for tab_index in tabs_to_close {
+            // Several tabs can empty in one frame. Let the next frame raise the last-tab
+            // confirmation after the other tabs and their plugins have been moved.
+            if self.tabs.len() == 1 && self.quit_is_guarded() {
+                self.render(None).context(err_context)?;
+                break;
+            }
             self.close_tab_by_id(tab_index)
                 .context(err_context)
                 .non_fatal();

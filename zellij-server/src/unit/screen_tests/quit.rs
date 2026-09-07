@@ -206,6 +206,31 @@ fn the_last_pane_closing_still_exits_when_nothing_guards() {
     assert!(exited, "the session ends when the last pane closes");
 }
 
+#[test]
+fn a_hidden_terminal_keeps_the_session_alive_until_it_exits() {
+    let (mut screen, _screen_receiver) = screen_with_a_single_pane();
+    let (to_server, server_receiver): ChannelWithContext<ServerInstruction> = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(to_server));
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
+    screen
+        .tabs
+        .get_mut(&TabId::new(1))
+        .expect("TEST")
+        .suppress_pane(pane_id, None);
+    assert!(!screen.tabs[&TabId::new(1)].has_selectable_panes());
+
+    screen.render_to_clients().expect("TEST");
+    assert_eq!(screen.tabs.len(), 1, "the hidden terminal retains its tab");
+    assert!(!std::iter::from_fn(|| server_receiver.try_recv().ok())
+        .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))));
+
+    close_pane(&mut screen, pane_id);
+    screen.render_to_clients().expect("TEST");
+    assert!(screen.tabs.is_empty());
+    assert!(std::iter::from_fn(|| server_receiver.try_recv().ok())
+        .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))));
+}
+
 /// With a guard up the tab is held open instead, the session survives, and the confirmation goes
 /// up saying why it is asking. Cancelling needs no signal of its own - the tab simply stays.
 #[test]
@@ -246,6 +271,34 @@ fn the_last_pane_closing_confirms_when_a_plugin_guards() {
             coordinates: None,
         })
     );
+}
+
+#[test]
+fn closing_all_tabs_in_one_frame_still_confirms_when_a_plugin_guards() {
+    let (mut screen, screen_receiver) = screen_with_a_single_pane();
+    new_tab(&mut screen, 2, TabId::new(2));
+    let (to_server, server_receiver): ChannelWithContext<ServerInstruction> = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(to_server));
+    screen.set_quit_notice(HOCUS_PLUGIN_ID, Some("hocus is still working".into()), true);
+
+    for (tab_id, terminal_id) in [(1, 1), (2, 2)] {
+        screen
+            .tabs
+            .get_mut(&TabId::new(tab_id))
+            .expect("TEST")
+            .close_pane(
+                PaneId::Terminal(crate::TerminalId::new(terminal_id)),
+                false,
+                Some(0),
+            );
+    }
+    screen.render_to_clients().expect("TEST");
+    screen.render_to_clients().expect("TEST");
+
+    assert_eq!(screen.tabs.len(), 1, "the last tab is held open");
+    assert!(launched_plugin(&screen_receiver).is_some());
+    assert!(!std::iter::from_fn(|| server_receiver.try_recv().ok())
+        .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))));
 }
 
 /// Renders are frequent and the held tab stays empty across all of them, so the raise has to be

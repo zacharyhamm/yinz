@@ -1858,6 +1858,7 @@ pub(crate) fn screen_thread_main(
                 }
                 screen.log_and_report_session_state().non_fatal();
                 screen.retain_only_existing_panes_in_pane_groups();
+                screen.render(None)?;
             },
             ScreenInstruction::HoldPane(id, exit_status, run_command) => {
                 let is_first_run = false;
