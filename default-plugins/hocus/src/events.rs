@@ -1776,9 +1776,13 @@ impl State {
                             // The sidebar is very often not what is being looked
                             // at — the same reason `pump_tools` toasts its own
                             // y/n rather than trusting the pane to be on screen.
-                            notify(
+                            // Clicking it brings hocus up on the chat that
+                            // planned, which need not be the one in front.
+                            tools::toast_for_chat(
                                 "hocus has a plan — /execute to carry it out, /execute --clear \
                                  to carry it out in a fresh chat, /plan off to drop it",
+                                PaneId::Plugin(self.own_plugin_id),
+                                self.chat_id,
                             );
                         }
                     }

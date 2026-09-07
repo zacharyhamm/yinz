@@ -1141,7 +1141,7 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
             receiver
                 .try_iter()
                 .filter_map(|(instruction, _)| match instruction {
-                    ScreenInstruction::Notify(text, pane_id, _) => Some((text, pane_id)),
+                    ScreenInstruction::Notify(text, pane_id, _, _) => Some((text, pane_id)),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -1732,20 +1732,28 @@ fn run_command_takes_named_arguments() {
 }
 
 #[test]
-fn an_optional_tuple_element_still_has_to_be_given() {
+fn a_named_call_may_leave_an_optional_tuple_element_out() {
     // `max_bytes_returned` is an `Option`, which makes it nullable rather than absent: serde
     // counts a tuple variant's elements, so a four-element list is the wrong shape however
-    // optional the fifth is. Worth pinning - "it is optional so I can leave it out" is the
-    // natural reading, and it does not hold.
-    let err = error_from_load(
+    // optional the fifth is. The named form fills the gap with `null` rather than shortening
+    // the list, so "it is optional so I can leave it out" - the natural reading - holds.
+    assert_marshals(
         r#"zellij.run_command {
              command = { "git", "status" },
              env_variables = {},
              cwd = "/tmp",
              context = {},
            }"#,
-    )
-    .expect("a four-element RunCommand is refused");
+    );
+}
+
+#[test]
+fn a_positional_call_still_has_to_give_every_tuple_element() {
+    // A table that already looks positional is passed through as written - naming the fields is
+    // what lets the prelude know which slot a missing one would have been - so the arity is the
+    // caller's to get right, and serde says so.
+    let err = error_from_load(r#"zellij.run_command { { "git", "status" }, {}, "/tmp", {} }"#)
+        .expect("a four-element RunCommand is refused");
     assert!(err.contains("invalid length 4"), "got: {err}");
 }
 

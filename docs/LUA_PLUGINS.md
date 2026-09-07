@@ -1550,6 +1550,12 @@ end)
 return M
 ```
 
+`pane_id` makes the toast clickable: a left-click on it dismisses the toast and focuses that
+pane. Add `click = { message = ..., payload = ... }` and the click also comes back to *this*
+plugin as a `custom_message` event carrying that pair — which is how a plugin does something more
+particular than "be looked at" when its toast is clicked. It needs a `"custom_message"`
+subscription, and rides on `pane_id`, so a click without a pane is dropped.
+
 One plugin may be bound to several points; `e.point` tells them apart. The plugin has no pane,
 so `render` is never asked for and a permission prompt has nowhere to appear: request what you
 need in `load`, and the first grant is remembered.

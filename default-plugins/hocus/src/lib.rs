@@ -1107,6 +1107,10 @@ impl ZellijPlugin for State {
             // Only for `capabilities.kitty_graphics`, which decides whether the empty-chat splash
             // is an image or its text stand-in.
             EventType::ModeUpdate,
+            // How a click on one of hocus's own toasts comes back - see `wire::TOAST_CLICK`. The
+            // host has already focused our pane by then; this is what says which conversation the
+            // toast was about, which the focus alone cannot.
+            EventType::CustomMessage,
         ]);
         set_selectable(true);
         set_self_mouse_selection_support(true);
@@ -1437,6 +1441,11 @@ impl State {
                 }
             },
             Event::PaneUpdate(manifest) => self.on_panes(manifest),
+            // Somebody clicked a toast hocus raised. The host has already focused our pane; this
+            // arm is what makes the click land on the conversation the toast was actually about.
+            Event::CustomMessage(name, payload) if name == wire::TOAST_CLICK => {
+                self.on_toast_click(payload.parse::<u64>().ok())
+            },
             Event::SessionUpdate(sessions, _) => self.on_sessions(sessions),
             Event::BeforeClose => {
                 // Before anything else: whatever was outstanding is about to be cancelled, and

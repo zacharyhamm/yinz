@@ -527,7 +527,9 @@ local tuple_fields = {
   set_floating_pane_pinned = { "pane_id", "should_be_pinned" },
   set_pane_borderless = { "pane_id", "borderless" },
   reveal_pane_with_id = { "pane_id", "label" },
-  notify = { "message", "pane_id" },
+  -- `click` is `{ message = ..., payload = ... }`, delivered to this plugin as a
+  -- `custom_message` event when the toast is clicked. Needs `pane_id` to ride on.
+  notify = { "message", "pane_id", "click" },
   cli_pipe_output = { "pipe_name", "output" },
   reconfigure = { "configuration", "write_to_disk" },
   -- Five arguments of five different meanings, three of them tables: positional is unreadable
@@ -547,17 +549,16 @@ local function to_positional(name, args)
     return args
   end
   local positional = {}
-  local last = 0
   for index, field in ipairs(fields) do
-    positional[index] = args[field]
-    if args[field] ~= nil then
-      last = index
+    -- Serde counts a tuple variant's elements, so every slot has to be filled: a `nil` would
+    -- shorten the list and be refused as the wrong arity, whatever the field's type. `null` is
+    -- the one value a Lua table can hold in a gap, and an `Option` field reads it as absent -
+    -- which is what a caller leaving an optional argument out means.
+    if args[field] == nil then
+      positional[index] = zellij.null
+    else
+      positional[index] = args[field]
     end
-  end
-  -- A trailing `nil` would shorten the list serde sees, so only trailing *absent* arguments are
-  -- dropped: everything up to the last one the caller named is kept.
-  for index = last + 1, #fields do
-    positional[index] = nil
   end
   return positional
 end

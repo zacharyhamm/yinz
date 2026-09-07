@@ -7,7 +7,9 @@ use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
 
-use super::{GuestModalOutcome, HoldForCommand, InitialTitle, TabOverrideResult};
+use super::{
+    GuestModalOutcome, HoldForCommand, InitialTitle, NotificationClick, TabOverrideResult,
+};
 use crate::panes::grid::PendingNotification;
 use crate::panes::PaneId;
 use crate::plugins::{DumpSessionLayoutResponse, PluginId, PluginRenderAsset};
@@ -614,8 +616,13 @@ pub enum ScreenInstruction {
     ),
     SerializeLayoutForResurrection,
     RenameSession(SessionName, ClientId, Option<NotificationEnd>), // String -> new name
-    Notify(String, Option<PaneId>, Option<NotificationEnd>), // message, click target, completion
-    DismissNotification(NotificationId),                     // u64 -> the notification's id
+    Notify(
+        String,
+        Option<PaneId>,
+        Option<NotificationClick>,
+        Option<NotificationEnd>,
+    ), // message, click target, what to tell the raising plugin on click, completion
+    DismissNotification(NotificationId),                           // u64 -> the notification's id
     AnimationTick,
     /// A context menu's hook plugin did not answer in time; show the configured items.
     ContextMenuTimedOut(ContextMenuRequestId, ClientId), // u64 -> the menu's request id

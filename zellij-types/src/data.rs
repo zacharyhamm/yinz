@@ -2521,6 +2521,20 @@ mod bytes_or_string {
     }
 }
 
+/// What a notification's own plugin is told when somebody clicks its toast.
+///
+/// A toast is drawn over whatever pane the user is actually in, so a click on one is the only
+/// gesture that says "the thing this toast was about, now". Focusing the toast's `PaneId` says
+/// *where*; this says *what*, and is delivered to the plugin that raised the notification as an
+/// `Event::CustomMessage(message, payload)`. Without it a plugin cannot tell a click on its toast
+/// from any other route into its pane - a keybinding, another plugin's focus - and the two mean
+/// different things.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotifyClick {
+    pub message: String,
+    pub payload: String,
+}
+
 #[derive(Debug, Clone, PartialEq, EnumDiscriminants, Display, Serialize, Deserialize)]
 #[strum_discriminants(derive(EnumString, EnumIter, Display, Hash, Serialize, Deserialize))]
 #[strum_discriminants(name(CommandType))]
@@ -2639,12 +2653,13 @@ pub enum PluginCommand {
         Option<String>, // proxy: Some(_) => send this request through the given
                         // proxy URL (e.g. "socks5://host:port") instead of direct
     ),
-    CancelWebRequest(String),       // String -> stream_id
-    RenameSession(SessionName),     // String -> new session name
-    Notify(String, Option<PaneId>), // String -> message, Option<PaneId> -> pane to focus on click
-    UnblockCliPipeInput(String),    // String => pipe name
-    BlockCliPipeInput(String),      // String => pipe name
-    CliPipeOutput(String, String),  // String => pipe name, String => output
+    CancelWebRequest(String),   // String -> stream_id
+    RenameSession(SessionName), // String -> new session name
+    Notify(String, Option<PaneId>, Option<NotifyClick>), // message, pane to focus on click, what
+    // to tell the raising plugin when it is clicked
+    UnblockCliPipeInput(String),   // String => pipe name
+    BlockCliPipeInput(String),     // String => pipe name
+    CliPipeOutput(String, String), // String => pipe name, String => output
     MessageToPlugin(MessageToPlugin),
     DisconnectOtherClients,
     KillSessions(Vec<SessionName>), // one or more session names

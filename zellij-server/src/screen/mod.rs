@@ -1124,11 +1124,25 @@ impl Screen {
     }
 }
 
+/// What to tell a toast's own plugin when somebody clicks it, and which plugin to tell.
+///
+/// Focusing the toast's `pane_id` says *where* the click meant; this says *what*. A plugin cannot
+/// otherwise tell a click on its toast from any other route into its pane, and the two mean
+/// different things - see `handle_pane_notification_click`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationClick {
+    pub plugin_id: PluginId,
+    pub message: String,
+    pub payload: String,
+}
+
 #[derive(Debug, Clone)]
 struct Notification {
     id: NotificationId,
     text: String,
     pane_id: Option<PaneId>,
+    /// Set only by a plugin that asked to hear about the click; see [`NotificationClick`].
+    on_click: Option<NotificationClick>,
     /// `0.0` = hidden at the anchored edge, `1.0` = fully slid into place. Re-aimed at `0.0` on
     /// dismissal, and the toast is dropped from the stack once it gets there. Drives the colour
     /// fade as well as the column reveal, so the two cannot disagree about how far in it is.
@@ -1143,11 +1157,18 @@ struct Notification {
 }
 
 impl Notification {
-    fn new(id: NotificationId, text: String, pane_id: Option<PaneId>, now: Instant) -> Self {
+    fn new(
+        id: NotificationId,
+        text: String,
+        pane_id: Option<PaneId>,
+        on_click: Option<NotificationClick>,
+        now: Instant,
+    ) -> Self {
         Notification {
             id,
             text,
             pane_id,
+            on_click,
             reveal: Tween::new(0.0, 1.0, ENTER_DURATION, ENTER_EASING, now),
             y_offset: Tween::settled(0.0),
         }

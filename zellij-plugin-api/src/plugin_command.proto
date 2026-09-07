@@ -682,6 +682,10 @@ message SpawnAgentResponse {
 message NotifyWithPanePayload {
   string text = 1;
   PaneId pane_id = 2;
+  // Both set together or not at all: what to send back to the plugin that raised the
+  // notification when its toast is clicked.
+  optional string click_message = 3;
+  optional string click_payload = 4;
 }
 
 message RevealPaneWithIdPayload {

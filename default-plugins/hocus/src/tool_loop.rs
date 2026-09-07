@@ -87,7 +87,15 @@ impl State {
                 // a scheduled run with `show: false` never opens it at all. A
                 // toast is drawn over whatever pane you are actually in, so the
                 // ask cannot stall unseen with every other job queued behind it.
-                notify(&self.confirmation_toast(&call));
+                //
+                // And clicking it comes back here: the pane brings hocus up, the
+                // chat id opens the conversation that asked - which for a parked
+                // one is behind a tab the click would otherwise leave shut.
+                tools::toast_for_chat(
+                    &self.confirmation_toast(&call),
+                    PaneId::Plugin(self.own_plugin_id),
+                    self.chat_id,
+                );
                 // And for the calls that name a pane, the pane itself: the toast
                 // says "types into pane 7", this is what puts pane 7 in front of
                 // you, wearing a label, before you agree to it.

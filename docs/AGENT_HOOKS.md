@@ -678,6 +678,26 @@ Waiting notifications follow three rules:
   plan approval, and MCP elicitation wait under every mode. Permission reminders cannot change
   this state or raise an alert.
 
+### Clicking a toast
+
+A toast is a click target when it has somewhere to send the click. The agent toasts above carry
+the waiting pane, so a left-click dismisses the toast, focuses that pane — switching tabs and
+unsuppressing it if need be — and clears its bell. A toast that carries nothing is decoration: the
+click falls through to the pane underneath rather than being swallowed.
+
+hocus's own two toasts — a tool call awaiting y/n, and a plan awaiting approval — carry hocus's
+pane *and* a message back to hocus naming the chat that raised them. So the click reveals the
+panel (both halves, through `show_panel`, which flips the hidden/pending intent at the source
+rather than letting a host-side focus be swallowed by the stale-hide guard) and opens that chat's
+tab. A toast raised by a parked chat therefore lands the user on the question that interrupted
+them, not on whatever happened to be in front.
+
+Plugins ask for this with `notify_with_click(text, pane_id, message, payload)`; the reply arrives
+as an `Event::CustomMessage(message, payload)` on the plugin that raised the toast, after the
+focus has landed, and needs an `EventType::CustomMessage` subscription. `notify_with_pane_id` is
+the focus-only form and `notify` the plain one. From Lua it is
+`zellij.notify { message = ..., pane_id = ..., click = { message = ..., payload = ... } }`.
+
 ### And the pane itself says so
 
 A toast is over whatever pane you are in, and the sidebar row is somewhere else again. The

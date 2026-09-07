@@ -813,6 +813,12 @@ pub struct NotifyWithPanePayload {
     pub text: ::prost::alloc::string::String,
     #[prost(message, optional, tag="2")]
     pub pane_id: ::core::option::Option<PaneId>,
+    /// Both set together or not at all: what to send back to the plugin that raised the
+    /// notification when its toast is clicked.
+    #[prost(string, optional, tag="3")]
+    pub click_message: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="4")]
+    pub click_payload: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

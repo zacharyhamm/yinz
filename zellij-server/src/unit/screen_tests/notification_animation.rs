@@ -19,7 +19,8 @@ const TEXT: &str = "build finished";
 fn screen_with_a_settled_toast(size: Size, now: Instant) -> Screen {
     let mut screen = create_non_mirrored_screen(size);
     new_tab(&mut screen, 1, TabId::new(0));
-    let mut notification = Notification::new(NotificationId::new(0), TEXT.to_owned(), None, now);
+    let mut notification =
+        Notification::new(NotificationId::new(0), TEXT.to_owned(), None, None, now);
     notification.reveal = Tween::settled(1.0);
     notification.y_offset = Tween::settled(0.0);
     screen.notifications.push(notification);
@@ -103,6 +104,7 @@ fn a_toast_sliding_in_never_asks_for_a_repaint() {
         NotificationId::new(0),
         TEXT.to_owned(),
         None,
+        None,
         start,
     ));
 
@@ -148,7 +150,13 @@ fn a_second_toast_arriving_mid_glide_never_jumps_the_survivors() {
     screen.with_notification_stack_change(arrival, |screen| {
         screen.notifications.insert(
             0,
-            Notification::new(NotificationId::new(1), "second".to_owned(), None, arrival),
+            Notification::new(
+                NotificationId::new(1),
+                "second".to_owned(),
+                None,
+                None,
+                arrival,
+            ),
         );
     });
 
@@ -158,7 +166,13 @@ fn a_second_toast_arriving_mid_glide_never_jumps_the_survivors() {
     screen.with_notification_stack_change(mid_glide, |screen| {
         screen.notifications.insert(
             0,
-            Notification::new(NotificationId::new(2), "third".to_owned(), None, mid_glide),
+            Notification::new(
+                NotificationId::new(2),
+                "third".to_owned(),
+                None,
+                None,
+                mid_glide,
+            ),
         );
     });
     let after_the_third = painted_row(&screen, mid_glide);
@@ -205,6 +219,7 @@ fn animations_stop_being_live_once_everything_has_settled() {
         NotificationId::new(0),
         TEXT.to_owned(),
         None,
+        None,
         start,
     ));
 
@@ -239,6 +254,7 @@ fn a_toast_dismissed_before_it_arrived_leaves_sooner_than_a_settled_one() {
     early.notifications.push(Notification::new(
         NotificationId::new(0),
         TEXT.to_owned(),
+        None,
         None,
         start,
     ));
