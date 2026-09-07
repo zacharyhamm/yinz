@@ -374,6 +374,7 @@ impl ZellijPlugin for State {
         ]);
         set_timeout(zellij_tile::prelude::FractionalSeconds::new(AGE_TICK_SECS));
         set_selectable(true);
+        set_self_mouse_selection_support(true);
         rename_plugin_pane(get_plugin_ids().plugin_id, "agents");
         // Unconditional, and before there are any rows: what this first one carries
         // is the plugin id, which is how hocus tells "the agents pane is focused"
