@@ -2221,6 +2221,14 @@ impl MouseHandler {
             // by id rather than resolving the position a second time
             let pane_id = pane.pid();
             let relative_position = pane.relative_position(point);
+            // Plugin wheel events carry only a count. Supply their actual position first,
+            // including when the terminal has not sent any preceding pointer motion.
+            if matches!(pane_id, PaneId::Plugin(_)) {
+                let _ = pane.mouse_event(
+                    &MouseEvent::new_buttonless_motion(relative_position),
+                    client_id,
+                );
+            }
             if let Some(mouse_event) = pane.mouse_scroll_up(&relative_position) {
                 Self::write_to_pane(tab, mouse_event.into_bytes(), pane_id, client_id)
                     .with_context(err_context)?;
@@ -2252,6 +2260,14 @@ impl MouseHandler {
         if let Some(pane) = Self::get_pane_at(tab, point, false).with_context(err_context)? {
             let pane_id = pane.pid();
             let relative_position = pane.relative_position(point);
+            // Plugin wheel events carry only a count. Supply their actual position first,
+            // including when the terminal has not sent any preceding pointer motion.
+            if matches!(pane_id, PaneId::Plugin(_)) {
+                let _ = pane.mouse_event(
+                    &MouseEvent::new_buttonless_motion(relative_position),
+                    client_id,
+                );
+            }
             if let Some(mouse_event) = pane.mouse_scroll_down(&relative_position) {
                 Self::write_to_pane(tab, mouse_event.into_bytes(), pane_id, client_id)
                     .with_context(err_context)?;

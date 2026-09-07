@@ -1,6 +1,88 @@
 use super::*;
 
 #[test]
+fn plugin_wheel_receives_its_relative_position_before_each_scroll() {
+    use zellij_types::data::{Event, Mouse};
+
+    for overlay in [false, true] {
+        let client_id = ClientId::new(1);
+        let plugin_id = crate::PluginId::new(2);
+        let pane_id = PaneId::Plugin(plugin_id);
+        let (mut tab, receiver) = create_new_tab_with_plugin_receiver(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            ModeInfo::default(),
+        );
+        let placement = if overlay {
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(
+                FloatingPaneCoordinates {
+                    x: Some(PercentOrFixed::Fixed(10)),
+                    y: Some(PercentOrFixed::Fixed(2)),
+                    width: Some(PercentOrFixed::Fixed(20)),
+                    height: Some(PercentOrFixed::Fixed(10)),
+                    ..Default::default()
+                },
+            )))
+        } else {
+            NewPanePlacement::Tiled {
+                direction: None,
+                borderless: None,
+            }
+        };
+        tab.new_pane(
+            pane_id,
+            None,
+            None,
+            false,
+            true,
+            placement,
+            Some(client_id),
+            None,
+        )
+        .unwrap();
+        let pane = if overlay {
+            tab.overlay_panes.get_pane(pane_id).unwrap()
+        } else {
+            tab.tiled_panes.get_pane(pane_id).unwrap()
+        };
+        let point = Position::new(
+            (pane.get_content_y() + 2) as i32,
+            (pane.get_content_x() + 3) as u16,
+        );
+        let next_point = Position::new((point.line() + 1) as i32, (point.column() + 1) as u16);
+        let focused = tab.get_active_pane_id(client_id);
+        // No preceding hover, then a second wheel at a different position without motion.
+        tab.handle_scrollwheel_up(&point, 3, client_id).unwrap();
+        tab.handle_scrollwheel_down(&next_point, 2, client_id)
+            .unwrap();
+        assert_eq!(tab.get_active_pane_id(client_id), focused);
+        let events: Vec<_> = receiver
+            .try_iter()
+            .flat_map(|(instruction, _)| match instruction {
+                PluginInstruction::Update(events) => events,
+                _ => Vec::new(),
+            })
+            .filter_map(|(pid, client, event)| match event {
+                Event::Mouse(mouse) => Some((pid, client, mouse)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                (Some(plugin_id), Some(client_id), Mouse::Hover(2, 3)),
+                (Some(plugin_id), Some(client_id), Mouse::ScrollUp(3)),
+                (Some(plugin_id), Some(client_id), Mouse::Hover(3, 4)),
+                (Some(plugin_id), Some(client_id), Mouse::ScrollDown(2)),
+            ],
+            "overlay={overlay}"
+        );
+    }
+}
+
+#[test]
 fn hidden_surface_overlay_owns_mouse_events() {
     let size = Size {
         cols: 121,

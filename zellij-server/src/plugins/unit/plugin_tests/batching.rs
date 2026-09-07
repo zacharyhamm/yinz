@@ -913,13 +913,15 @@ pub fn collapsed_reloads_of_an_unloaded_plugin_are_answered_by_the_add_plugin() 
 }
 
 #[test]
-pub fn coalescing_hovers_keeps_the_newest_per_client_and_nothing_else_moves() {
+pub fn coalescing_hovers_keeps_positions_before_wheel_events() {
     let hover =
         |client: ClientId, at: isize| (None, Some(client), Event::Mouse(Mouse::Hover(at, 0)));
     let updates = vec![
+        hover(crate::ClientId::new(1), 0),
         hover(crate::ClientId::new(1), 1),
         hover(crate::ClientId::new(2), 1),
         (None, Some(crate::ClientId::new(1)), scroll_up(3)),
+        hover(crate::ClientId::new(1), 0),
         hover(crate::ClientId::new(1), 2),
         (
             Some(zellij_types::internal_ids::PluginId::new(4)),
@@ -935,6 +937,8 @@ pub fn coalescing_hovers_keeps_the_newest_per_client_and_nothing_else_moves() {
     assert_eq!(
         coalesced,
         vec![
+            hover(crate::ClientId::new(1), 1),
+            hover(crate::ClientId::new(2), 1),
             (None, Some(ClientId::new(1)), scroll_up(3)),
             hover(crate::ClientId::new(1), 2),
             (
@@ -945,6 +949,6 @@ pub fn coalescing_hovers_keeps_the_newest_per_client_and_nothing_else_moves() {
             hover(crate::ClientId::new(2), 2),
             (None, Some(ClientId::new(1)), scroll_up(3)),
         ],
-        "each client's last hover survives, keyed by plugin too; scrolls are untouched"
+        "each client's last hover survives before each wheel, keyed by plugin too"
     );
 }
