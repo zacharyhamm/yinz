@@ -6850,6 +6850,50 @@ assert(f:value('branch') == 'main' and f:focused_id() == 'name')
 }
 
 #[test]
+fn swamp_workflow_renders_only_for_input_and_refresh_completion() {
+    let source = zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap();
+    let plugin = load(source).unwrap();
+    plugin
+        .lua
+        .globals()
+        .set("M", plugin.plugin.clone())
+        .unwrap();
+    plugin
+        .lua
+        .load(
+            r#"
+local z=require('zellij')
+z.subscribe=function() end
+z.every=function() end
+local resolve
+z.rpc.call=function()
+  local future
+  future,resolve=z.async.future()
+  return future
+end
+M.load()
+M.attach{directory='/work',run='run'}
+assert(M.busy)
+assert(not z.__update(M,{PaneUpdate={panes={}}}))
+assert(not z.__update(M,{TabUpdate={}}))
+assert(not z.__update(M,'InputReceived'))
+assert(z.__update(M,{Key={bare_key={Char='a'},key_modifiers={}}}))
+assert(M.update{name='key',key='PageDown',modifiers={}})
+assert(M.update{name='key',key='PageUp',modifiers={}})
+assert(z.__update(M,{Mouse={Hover={1,1}}}))
+assert(z.__update(M,{PastedText='answer'}))
+resolve{result={run='run',history={status='completed'}}}
+assert(z.__update(M,{Timer=0}), 'refresh completion must request a render')
+assert(not M.busy and M.status=='Run run: completed')
+assert(not z.__update(M,{Timer=0}))
+assert(not z.__update(M,{PaneUpdate={panes={}}}))
+"#,
+        )
+        .exec()
+        .unwrap();
+}
+
+#[test]
 fn swamp_exit_preserves_scrollback_and_does_not_launch_unconfigured_or_managed_work() {
     let source = zellij_config::consts::builtin_lua_plugin("agent-exit").unwrap();
     let plugin = load(source).unwrap();

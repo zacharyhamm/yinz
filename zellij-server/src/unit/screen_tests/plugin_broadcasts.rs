@@ -6,6 +6,173 @@ use zellij_test_support::Watched;
 use zellij_types::internal_ids::TabNumber;
 use zellij_types::internal_ids::TabPosition;
 
+fn assert_no_cursor_reports(instructions: impl Iterator<Item = PluginInstruction>) {
+    for instruction in instructions {
+        if let PluginInstruction::Update(updates) = instruction {
+            for (_, _, event) in updates {
+                assert!(
+                    !matches!(
+                        event,
+                        Event::PaneUpdate(..) | Event::TabUpdate(..) | Event::SessionUpdate(..)
+                    ),
+                    "cursor broadcast session state: {event:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn plugin_cursor_show_move_and_hide_render_without_session_reports() {
+    let size = Size { cols: 80, rows: 10 };
+    let mut mock = MockScreen::new(size);
+    let client_id = mock.main_client_id;
+    let plugin_rx = mock.plugin_receiver.take().unwrap();
+    let server_rx = mock.server_receiver.take().unwrap();
+    let screen_thread = mock.run(None, vec![]);
+    let to_screen = mock.to_screen.clone();
+    // The reply is a FIFO barrier for every preceding screen handler and its reports.
+    let barrier = || {
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        to_screen
+            .send(ScreenInstruction::GetPaneInfo {
+                pane_id: PaneId::Plugin(PLUGIN_2),
+                response_channel: tx,
+            })
+            .unwrap();
+        rx.recv_timeout(zellij_test_support::default_timeout())
+            .unwrap()
+    };
+    assert!(barrier().is_none());
+    plugin_rx.try_iter().for_each(drop);
+
+    // A cursor sent during load stays buffered until the screen places the plugin.
+    mock.to_screen
+        .send(ScreenInstruction::ShowPluginCursor(
+            PLUGIN_2,
+            client_id,
+            Some((2, 1)),
+        ))
+        .unwrap();
+    assert!(barrier().is_none());
+    assert_no_cursor_reports(plugin_rx.try_iter().map(|(instruction, _)| instruction));
+    mock.new_tab_with_plugins(vec![PLUGIN_2]);
+    mock.to_screen
+        .send(ScreenInstruction::PluginBytes(vec![PluginRenderAsset {
+            plugin_id: PLUGIN_2,
+            client_id,
+            bytes: b"workflow".to_vec(),
+            ..Default::default()
+        }]))
+        .unwrap();
+
+    let received = Watched::new(vec![]);
+    let server_thread = log_actions_in_thread!(received, ServerInstruction::KillSession, server_rx);
+    wait_for_render_after(
+        &received,
+        size,
+        0,
+        "buffered plugin cursor after placement",
+        |cursor, frame| cursor == Some((3, 2)) && frame.contains("workflow"),
+    );
+
+    assert!(barrier().is_some());
+    plugin_rx.try_iter().for_each(drop);
+    for position in [None, Some((4, 2)), Some((7, 3)), None] {
+        let checkpoint = received.lock().len();
+        mock.to_screen
+            .send(ScreenInstruction::ShowPluginCursor(
+                PLUGIN_2, client_id, position,
+            ))
+            .unwrap();
+        wait_for_render_after(
+            &received,
+            size,
+            checkpoint,
+            "plugin cursor output",
+            |cursor, frame| {
+                cursor == position.map(|(x, y)| (x + 1, y + 1)) && frame.contains("workflow")
+            },
+        );
+        barrier();
+        assert_no_cursor_reports(plugin_rx.try_iter().map(|(instruction, _)| instruction));
+    }
+    mock.teardown(vec![screen_thread, server_thread]);
+}
+
+#[test]
+fn replayed_plugin_cursor_renders_without_session_reports() {
+    let size = Size { cols: 80, rows: 10 };
+    let client_id = ClientId::new(1);
+    let mut screen = create_new_screen(size, true, true);
+    let (plugin_tx, plugin_rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    let run = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "file:/path/to/fake/plugin",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
+    screen
+        .new_tab(TabId::new(0), (vec![], vec![]), None, Some(client_id))
+        .unwrap();
+    screen
+        .apply_layout(
+            TiledPaneLayout {
+                children: vec![TiledPaneLayout {
+                    run: Some(Run::Plugin(run.clone())),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            vec![],
+            vec![],
+            vec![],
+            HashMap::from([(run, vec![PLUGIN_2])]),
+            TabId::new(0),
+            true,
+            client_id,
+            None,
+        )
+        .unwrap();
+    screen
+        .handle_plugin_render_assets(
+            vec![PluginRenderAsset {
+                plugin_id: PLUGIN_2,
+                client_id,
+                bytes: b"workflow".to_vec(),
+                ..Default::default()
+            }],
+            false,
+        )
+        .unwrap();
+    let server_rx = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(size);
+    // Settle the initial frame and its derived tab title before measuring cursor-only work.
+    render_frame_into(&mut screen, &server_rx, client_id, &mut grid);
+    plugin_rx.try_iter().for_each(drop);
+    let (jobs_tx, jobs_rx) = channels::unbounded();
+    screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(jobs_tx));
+    for position in [Some((2, 1)), Some((5, 3)), None] {
+        super::super::replay_pending_plugin_events(
+            &mut screen,
+            vec![ScreenInstruction::ShowPluginCursor(
+                PLUGIN_2, client_id, position,
+            )],
+        )
+        .unwrap();
+        assert!(jobs_rx
+            .try_iter()
+            .any(|(job, _)| job == BackgroundJob::RenderToClients));
+        let (cursor, frame) =
+            render_frame_and_cursor_into(&mut screen, &server_rx, client_id, &mut grid);
+        assert_no_cursor_reports(plugin_rx.try_iter().map(|(instruction, _)| instruction));
+        assert!(frame.contains("workflow"), "{frame}");
+        assert_eq!(cursor, position);
+    }
+}
+
 #[test]
 pub fn background_plugin_receives_broadcasts_regardless_of_active_tab() {
     // Tab 0: plugin pane 2 (from new_tab_with_plugins, queued before run)

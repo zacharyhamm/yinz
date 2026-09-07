@@ -4885,7 +4885,6 @@ fn replay_pending_plugin_events(
                     );
                 }
                 screen.render(None)?;
-                screen.log_and_report_session_state()?;
             },
             ScreenInstruction::UpdatePluginLoadingStage(plugin_id, loading_indication) => {
                 if !screen.update_plugin_loading_stage(plugin_id, loading_indication) {
