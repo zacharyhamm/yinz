@@ -851,8 +851,7 @@ impl State {
     /// comes back as `RunCommandResult` carrying this call's id, the way the project
     /// readers and the Slack tools answer.
     ///
-    /// `vm_close` requests closure of matching local panes before releasing the VM lease.
-    /// Closure is asynchronous: this does not guarantee that guest writes have stopped.
+    /// `vm_close` uses the CLI to confirm pane closure in the owning session before release.
     /// A failed stop may already have terminated the VM and retained its disk for recovery.
     pub(crate) fn start_vm_tool(&mut self, call: &ToolCall) -> bool {
         let args = match tools::Args::parse(&call.arguments) {
@@ -870,18 +869,17 @@ impl State {
             .as_deref()
             .map(str::trim)
             .filter(|session| !session.is_empty());
-        let current =
-            if call.name == "vm_close" || (call.name != "vm_list" && explicit_session.is_none()) {
-                match tools::current_session_info() {
-                    Ok(session) => Some(session),
-                    Err(error) => {
-                        self.finish_head(error);
-                        return true;
-                    },
-                }
-            } else {
-                None
-            };
+        let current = if call.name != "vm_list" && explicit_session.is_none() {
+            match tools::current_session_info() {
+                Ok(session) => Some(session),
+                Err(error) => {
+                    self.finish_head(error);
+                    return true;
+                },
+            }
+        } else {
+            None
+        };
         let session = explicit_session
             .or_else(|| current.as_ref().map(|session| session.name.as_str()))
             .unwrap_or_default();
@@ -896,29 +894,7 @@ impl State {
                 return true;
             },
         };
-        let mut context = BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]);
-        if call.name == "vm_close" {
-            // vm_argv has already validated this trimmed name.
-            let vm = args.vm.as_deref().unwrap_or_default().trim();
-            let closed = current
-                .as_ref()
-                .map(|current| tools::firecracker_panes(vm, session, current))
-                .unwrap_or_default();
-            for pane_id in &closed {
-                close_pane_with_id(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(
-                    *pane_id,
-                )));
-            }
-            // Record requests, not confirmed closures, including if the stop fails.
-            context.insert(
-                tools::VM_CLOSED_PANES_CONTEXT.to_owned(),
-                closed
-                    .iter()
-                    .map(u32::to_string)
-                    .collect::<Vec<_>>()
-                    .join(","),
-            );
-        }
+        let context = BTreeMap::from([("tool_call_id".to_owned(), call.id.clone())]);
         let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
         run_command_with_output_limit(
             &borrowed,
@@ -3027,8 +3003,17 @@ impl State {
         else {
             return false;
         };
+        if message.source != PipeSource::Plugin(selection.plugin_id)
+            || self
+                .plugin_instances
+                .get(&selection.plugin_id)
+                .is_some_and(|plugin| plugin.location != "zellij:hocus-agents")
+        {
+            return false;
+        }
         let announced = self.agents_plugin != Some(selection.plugin_id);
         self.agents_plugin = Some(selection.plugin_id);
+        self.send_vm_panel_visibility(!self.hidden);
         if announced {
             // There is a list again, whatever became of the last one - so the repair arm in
             // `on_panes` is free to put this one back if something suppresses it.

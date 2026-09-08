@@ -35,7 +35,7 @@ case "$2" in
   sync)
     echo 'warning: /src/api/a.rs: changed on both sides; kept the host copy, the guest copy is /src/api/a.rs.guest' >&2
     ;;
-  stop) ;;
+  close) echo "Lease released; merge and VM termination are reported separately." ;;
 esac
 "#;
 
@@ -155,19 +155,16 @@ load_plugins clear-defaults=true {{
         r#"/vm_close {"vm":"review","vm_session":"other-session"}"#,
     );
     zellij.wait_until("another session's lease was released", |grid_snapshot| {
-        grid_snapshot.contains("VM stop request completed")
-            && grid_snapshot.contains("review-pane-live")
+        grid_snapshot.contains("Lease released") && grid_snapshot.contains("review-pane-live")
     });
     assert!(panes.iter().all(|pane| !pane.is_exited()));
-    clear(&zellij, "VM stop request completed");
+    clear(&zellij, "Lease released");
 
     submit(&zellij, r#"/vm_close {"vm": "  review  "}"#);
     zellij.wait_until(
-        "the stop request completed without a daemon",
+        "the shared close command completed without a daemon",
         |grid_snapshot| {
-            grid_snapshot.contains("VM stop request completed")
-                && grid_snapshot.contains("requested closure")
-                && !grid_snapshot.contains("review-pane-live")
+            grid_snapshot.contains("Lease released") && grid_snapshot.contains("review-pane-live")
         },
     );
     for pane in &panes {
@@ -175,7 +172,7 @@ load_plugins clear-defaults=true {{
             assert!(!pane.is_exited(), "an unrelated pane was closed");
         }
     }
-    clear(&zellij, "VM stop request completed");
+    clear(&zellij, "Lease released");
 
     // A VM name Zellij would refuse never reaches a process.
     submit(&zellij, r#"/vm_changes {"vm": "a/b"}"#);
@@ -194,7 +191,7 @@ load_plugins clear-defaults=true {{
     assert_eq!(calls[0], "firecracker list --json");
     for (call, verb) in [calls[1], calls[2], calls[4]]
         .iter()
-        .zip(["changes", "sync", "stop"])
+        .zip(["changes", "sync", "close"])
     {
         let expected = format!("firecracker {verb} review --session ");
         let session = call
@@ -202,7 +199,7 @@ load_plugins clear-defaults=true {{
             .unwrap_or_else(|| panic!("{call:?} is not {expected:?} plus a session"));
         assert_eq!(session, zellij.session_name());
     }
-    assert_eq!(calls[3], "firecracker stop review --session other-session");
+    assert_eq!(calls[3], "firecracker close review --session other-session");
 
     let config_env =
         fs::read_to_string(root.join("config-env")).expect("the CLI config environment");

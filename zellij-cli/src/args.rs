@@ -434,6 +434,12 @@ pub enum Workflow {
     Cancel { run: String },
 }
 
+fn parse_vm_identity(
+    value: &str,
+) -> Result<zellij_types::firecracker::Identity, serde_json::Error> {
+    serde_json::from_str(value)
+}
+
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Firecracker {
     /// List VMs known to the configured provider.
@@ -442,6 +448,16 @@ pub enum Firecracker {
         session: Option<String>,
         #[clap(long)]
         json: bool,
+    },
+    /// Close matching panes in the owning session, then release its VM lease.
+    Close {
+        name: String,
+        #[clap(long)]
+        session: Option<String>,
+        /// JSON identity from the confirmed VM listing.
+        #[clap(long, value_parser = parse_vm_identity)]
+        #[serde(default)]
+        expected_identity: Option<zellij_types::firecracker::Identity>,
     },
     /// Stop one VM.
     Stop {
@@ -454,12 +470,20 @@ pub enum Firecracker {
         name: String,
         #[clap(long)]
         session: Option<String>,
+        /// JSON identity from the confirmed VM listing.
+        #[clap(long, value_parser = parse_vm_identity)]
+        #[serde(default)]
+        expected_identity: Option<zellij_types::firecracker::Identity>,
     },
     /// Count paths changed in a running VM since its last worktree sync.
     Changes {
         name: String,
         #[clap(long)]
         session: Option<String>,
+        /// JSON identity from the confirmed VM listing.
+        #[clap(long, value_parser = parse_vm_identity)]
+        #[serde(default)]
+        expected_identity: Option<zellij_types::firecracker::Identity>,
     },
 }
 
@@ -2179,10 +2203,59 @@ mod tests {
         assert!(matches!(
             changes.command,
             Some(Command::Firecracker(Firecracker::Changes {
+                expected_identity: None,
                 ref name,
                 session: Some(ref session),
             })) if name == "review" && session == "work"
         ));
+    }
+
+    #[test]
+    fn firecracker_guarded_commands_preserve_the_confirmed_identity() {
+        let expected = serde_json::json!({
+            "session": "work", "name": "review", "vm_id": "/vm/api.socket",
+            "generation": "42:100", "worktree": "/repo with spaces",
+        });
+        for action in ["close", "sync", "changes"] {
+            let cli = try_parse_cli([
+                "zellij",
+                "firecracker",
+                action,
+                "review",
+                "--session",
+                "work",
+                "--expected-identity",
+                &expected.to_string(),
+            ])
+            .unwrap();
+            let encoded = serde_json::to_string(&cli).unwrap();
+            let decoded: CliArgs = serde_json::from_str(&encoded).unwrap();
+            let Some(Command::Firecracker(command)) = decoded.command else {
+                panic!("firecracker command")
+            };
+            let identity = match command {
+                Firecracker::Close {
+                    expected_identity, ..
+                }
+                | Firecracker::Sync {
+                    expected_identity, ..
+                }
+                | Firecracker::Changes {
+                    expected_identity, ..
+                } => expected_identity.unwrap(),
+                _ => panic!("guarded action"),
+            };
+            assert_eq!(serde_json::to_value(identity).unwrap(), expected);
+            assert!(try_parse_cli([
+                "zellij",
+                "firecracker",
+                action,
+                "review",
+                "--expected-identity",
+                "not JSON"
+            ])
+            .is_err());
+        }
     }
 
     /// Every field of a `zellij subscribe` invocation survives the argv round-trip, with
