@@ -1002,7 +1002,7 @@ them for one reason — see the group item below.
       spend the runtime on the plugin-launch gap above; `clone_inner_returns_copy_of_internal_map`
       in particular never checks the independence its name claims — nothing mutates the clone and
       re-reads the original.
-      *Done:* the ten are deleted; `pane_groups::tests` is now the two `get_client_pane_group_*`, the two `toggle_pane_id_*`, the five `should_launch_plugin_*`, the launch test and the state machine.
+      *Done:* the ten are deleted; `pane_groups::tests` is now the two `get_client_pane_group_*`, the two `toggle_pane_id_*`, the five `should_launch_plugin_*`, the launch test and the state machine. (Pass 4 later deleted the two `toggle_pane_id_*` for the same reason.)
 
 ### Production observations
 
@@ -1037,3 +1037,350 @@ whose deletion-mutant is caught only by the integration suite). Batching disjoin
 the cost to six compiles; each narrowed run was ~0.31s of test time inside a ~10s build, and two
 mutations were additionally checked against `cargo x integration-test -E 'binary(/firecracker/)'`.
 All mutations were reverted and the tree verified clean — no `.rs` file is modified by this audit.
+
+## Pass 4 — items 143-192 (`ZELLIJ-SERVER-TESTS.md` lines 147-196)
+
+Audited 2026-09-08. 50 tests: `pane_groups::tests::toggle_pane_id_*` (2),
+`panes::frame_color_override::tests` (4),
+`panes::nested_session_modal::nested_session_modal_tests` (18),
+`panes::overlay_panes::overlay_panes_tests` (26). All 50 pass at HEAD (153 tests in 0.229s
+narrowed, `cargo x test -p zellij-server -E 'test(/^pane_groups::/) or
+test(/^panes::frame_color_override::/) or test(/^panes::nested_session_modal::/) or
+test(/^panes::overlay_panes::/)'`).
+
+**36 sound, 14 need work, plus 4 gaps that belong to no single test.**
+
+**All 14 items below are done (2026-09-08)**; each carries a *Done* note saying what landed and
+which mutation now kills it. One test was renamed
+(`a_client_keeps_its_overlay_focused_with_no_visibility_precondition` →
+`a_joining_client_does_not_steal_focus_a_client_already_has`) and two deleted (the
+`pane_groups::tests::toggle_pane_id_*` pair); `ZELLIJ-SERVER-TESTS.md` follows. Nine tests are
+new: `a_seam_drag_tells_exactly_the_two_halves_their_new_size`,
+`expanding_an_overlay_tells_its_pty_the_viewport_size`,
+`hiding_and_showing_an_overlay_repaints_the_others`,
+`a_frame_drag_repaints_the_overlays_it_did_not_move`,
+`a_client_scoped_override_is_seen_and_cleared_by_that_client_only`,
+`an_override_carries_the_text_that_replaces_the_title`,
+`chunks_are_placed_at_the_pane_s_content_offset`, `the_fallback_thresholds_are_exact`, and the
+renamed focus test above. One correction to the two provisional items: `resize_pty!` never
+touches the os api — it sends `PtyWriteInstruction::ResizePty` over `ThreadSenders` — so the
+observation point is a captured pty-writer channel, not `FakeInputOutput`. Every mutation named
+in a *Done* note was re-applied after the fix and the named test went red; all were reverted.
+
+**The batch closes three groups and cuts a fourth badly.** `pane_groups` is complete here — which
+retires pass 3's note that `toggle_pane_id_in_group` was a caller of the then-unobserved
+`launch_plugin`, and confirms pass 3's reading of the ten it deleted: the two survivors are
+subsumed by the same state machine, for the same reason, demonstrated below.
+`frame_color_override` (4/4) and `nested_session_modal` (18/18) are whole. `overlay_panes` is
+**26 of 120**, and the cut is the least meaningful in the audit so far: the checklist is
+alphabetical and the test file is thematic, so the 26 land scattered from line 414 to line 3697 of
+a 3893-line file and slice through every theme — three of about eight frame-drag tests, one of
+about fourteen expansion tests (`a_hidden_overlay_may_not_be_expanded`, whose siblings are in
+passes 5+), three of the batch/link tests, and every one of the eight `a_hidden_*` tests but none
+of the `showing_*` / `hiding_*` ones they pair with. The two `overlay_panes` cross-cutting gaps
+below are therefore marked **provisional**: they were demonstrated against the whole 120-test
+family, so the finding is firm, but which pass should own the fix is not settled until the family
+completes.
+
+Sound, no action: `frame_color_override::{an_override_that_does_not_fade_applies_at_full_strength_forever,
+a_bell_flash_is_faded_out_on_the_schedule_the_teardown_still_runs_on}`,
+`nested_session_modal_tests::{renders_resolved_keybindings_as_joined_tokens,renders_unbound_when_no_keys,
+selection_marker_moves_with_selected_index,every_rendered_row_spans_the_full_width,
+hit_test_round_trips_the_options,hit_test_matches_rendered_marker_rows,
+selected_rows_carry_the_selected_background_rectangle,unselected_rows_do_not_use_the_selected_background,
+keycode_words_join_with_plus_separators,keycode_words_render_unbound_when_empty}`, and every
+`overlay_panes_tests` member of the batch except the two named below —
+`a_batch_that_lands_two_overlays_edge_to_edge_links_them`,
+`a_batch_that_re_cuts_an_expanded_panel_moves_its_divider`,
+`a_borderless_overlay_{has_no_frame_to_be_dragged_by,stays_borderless_when_its_pane_is_replaced}`,
+`a_dragged_overlay_stays_where_it_was_dropped_when_the_surface_grows`,
+`a_dragged_panel_{is_re_placed_where_the_user_left_it,re_resolved_onto_a_smaller_surface_is_re_cut_whole}`,
+`a_frame_drag_{moves_an_overlay_by_the_pointer_delta,clamps_an_overlay_inside_the_session_surface,
+moves_both_halves_of_a_linked_panel}`, `a_fullscreen_press_on_another_overlay_expands_that_one`,
+`a_hidden_half_of_a_dragged_panel_gives_its_width_up_and_the_reveal_cuts_it_again`,
+`a_hidden_overlay_{does_not_take_the_mouse_or_the_cells_under_it,is_drawn_nowhere_but_is_still_here,
+is_still_re_resolved_against_a_new_surface,may_not_be_expanded,may_not_be_focused_until_it_is_shown,
+reports_itself_suppressed_and_unfocused}`, `a_hidden_share_inside_the_shown_half_links_as_a_panel`,
+`a_linked_panel_is_expanded_as_a_panel`,
+`a_modal_{is_the_top_of_the_stack_and_not_merely_the_thing_that_outranks_it,may_not_be_expanded,
+opened_over_a_modal_takes_focus_and_gives_it_back_when_it_closes,
+opened_while_an_overlay_is_hidden_still_outranks_it_when_it_comes_back}`.
+
+`overlay_panes` is the strongest module the audit has read. Its tests assert whole geometry tuples
+rather than one coordinate, and they carry their negative cases: `a_frame_drag_clamps_an_overlay_inside_the_session_surface`
+drives the pointer past *both* corners; `a_batch_that_lands_two_overlays_edge_to_edge_links_them`
+checks the two cells that are the seam and two that are not; `a_hidden_share_inside_the_shown_half_links_as_a_panel`
+follows its positive case with an overlapping-but-not-inside pair that must *not* link;
+`a_frame_drag_moves_both_halves_of_a_linked_panel` works out where a clamped panel's far half must
+end up and asserts that rather than that it moved. Three more deserve a note:
+`a_hidden_overlay_is_drawn_nowhere_but_is_still_here` states the line it is pinning — the queries
+that must stop seeing a hidden overlay against the ones that must keep seeing it — and then walks
+both sides of it; `hit_test_matches_rendered_marker_rows` ties `guest_modal_option_at_content_row`
+to `guest_modal_chunks` row by row, so the hit test cannot drift from the thing it hit-tests; and
+`a_modal_is_the_top_of_the_stack_and_not_merely_the_thing_that_outranks_it` asserts the whole
+five-pane stack order *and* that every pane's `get_pane_z_index` agrees with its position in it.
+
+### Cross-cutting gaps
+
+- [x] **No `overlay_panes` test can see whether a pty was told its pane's new size.** *(provisional
+      — demonstrated against all 120, and the batch owns only 26 of them.)* The fixture's
+      `FakeInputOutput::set_terminal_size_using_terminal_id` returns `Ok(())` and records nothing
+      (`unit/overlay_panes_tests.rs:22-31`), so the `resize_pty!` in `set_pane_frames`
+      (`overlay_panes/mod.rs:2651`) and in `resize_ptys_of` (`:2530`) are dropped unobserved.
+      **[mutation]** Replacing both with `let _ = pane;` — an overlay that resizes on screen and
+      never tells the program inside it — leaves all 120 green. This is not a marginal path:
+      `resize_ptys_of` exists because a seam drag must *not* go through `set_pane_frames`, and its
+      comment says so ("a drag is one event per pointer cell"), so the distinction between the two
+      call sites is deliberate and untested in either direction. *Fix:* give `FakeInputOutput` an
+      `Rc<RefCell<Vec<(TerminalId, u16, u16)>>>` of the sizes it was handed, and assert it in the
+      seam-drag and expansion tests — including that a seam drag resizes exactly the two halves
+      and not every overlay on the tab.
+      *Done:* `overlay_panes_with_pty_capture` swaps a captured channel in with
+      `replace_to_pty_writer`, and `resized_ptys` drains it as `(TerminalId, cols, rows)`.
+      `a_seam_drag_tells_exactly_the_two_halves_their_new_size` places a third, unlinked overlay
+      beside a linked pair, drags the seam, and asserts the drained list is exactly the two halves
+      at their new content sizes — killed by `let _ = pane;` in `resize_ptys_of`.
+      `expanding_an_overlay_tells_its_pty_the_viewport_size` asserts the expanded content size
+      and, on collapse, the framed size again — killed by the same mutation in `set_pane_frames`.
+      The audit's proposed home for the recording, `FakeInputOutput`, would have seen nothing:
+      the macro accepts an `$os_input` argument and never uses it.
+
+- [x] **`set_force_render` is never observed either.** *(provisional, same reason.)* Every mutator
+      in `OverlayPanes` ends with it (`:2605-2611`), and it is what marks each pane for repaint.
+      **[mutation]** Emptying its loop leaves all 120 green — a collection that moves, resizes,
+      hides, shows and expands overlays and never asks for a frame passes its own suite. The
+      consequence is not cosmetic: an overlay that stopped covering a cell and did not repaint
+      leaves the pane underneath drawn with the overlay's content. *Fix:* the mocks are real
+      `TerminalPane`s, so `should_render()` is already readable; assert it on at least the
+      hide/show and drag paths, where the damage is to a pane *other* than the one that moved.
+      *Done:* `a_frame_drag_repaints_the_overlays_it_did_not_move` clears the bystander's
+      `should_render` and asserts it is set again after a drag — killed by emptying the loop.
+      `hiding_and_showing_an_overlay_repaints_the_others` pins the same for hide and show; those
+      two paths also go through `set_pane_frames`, whose frame/offset changes mark the pane
+      themselves, so the drag test is the one that observes `set_force_render` alone.
+
+- [x] **`FrameColorOverride::text` is never asserted by any test in the workspace.**
+      `new(color, text, client_id)` (`frame_color_override.rs:45-52`) takes the string that
+      replaces a pane's title while the override is up. **[mutation]** Making `new` store `None`
+      for it leaves not only all four tests in this module green but the whole `zellij-server`
+      crate green (2426/2427 — the one failure is unrelated, see Method) — so a red exit status
+      that silently stopped saying *why* would ship. *Fix:* one test constructing an override with
+      a text and asserting it round-trips, ideally beside the pane-frame render that consumes it.
+      *Done:* `an_override_carries_the_text_that_replaces_the_title` round-trips a text through
+      `new` and asserts a flash carries none. Killed by storing `None`.
+
+- [x] **None of the 18 `nested_session_modal` tests varies `content_x` / `content_y`.** All 18
+      pass `0, 0` (`unit/nested_session_modal_tests.rs`, every `guest_modal_chunks` call).
+      `guest_modal_chunks` (`nested_session_modal.rs:216-258`) threads both into every
+      `CharacterChunk`'s absolute position, which is what puts the modal over its *pane* rather
+      than over the screen origin. **[mutation]** Passing `0` for `content_x` and `row` for
+      `content_y + row` leaves all 18 green: a modal drawn in the top-left corner of the terminal
+      regardless of which pane raised it passes the whole module. *Fix:* one test at a non-zero
+      offset asserting the first chunk's `x` and `y`, since every other assertion in the module is
+      about content rather than placement.
+      *Done:* `chunks_are_placed_at_the_pane_s_content_offset` renders at `(7, 3)` and asserts
+      every chunk's `(x, y)` is `(7, 3 + row)`. Killed by passing `0` / `row`.
+
+### `pane_groups::tests`
+
+- [x] **`toggle_pane_id_adds_new_pane` and `toggle_pane_id_removes_existing_pane` are subsumed by
+      the state machine**, exactly as the ten pass 3 deleted were. `pane_groups_stay_duplicate_free_and_track_the_model`
+      has a `#[rule] toggle_pane_id_in_group` (`pane_groups.rs:524-536`) that models the same
+      add/remove semantics, and its invariant compares the real group to the model *as slices*
+      over far more histories than two hand-written cases. Both tests assert only
+      `get_client_pane_group(..).contains(&pane_id)`, which cannot see anything else the operation
+      did. **[mutation]** Two mutations of `toggle_pane_id_in_group` (`:54-58`), one per branch:
+      replacing `client_pane_group.retain(|p| p != &pane_id)` with `client_pane_group.clear()` —
+      toggling one pane off empties the client's whole group — leaves both tests green and is
+      killed by the state machine alone; pushing the pane *twice* on the add branch does the same,
+      green in both tests, killed only by the machine's duplicate-free invariant. *Fix:* delete
+      the two and spend the runtime elsewhere. `get_client_pane_group` keeps its own coverage in
+      the two `get_client_pane_group_*` tests pass 3 kept for that reason.
+      *Done:* both deleted. `pane_groups_stay_duplicate_free_and_track_the_model` fails on the
+      `clear()` mutation alone, re-confirmed.
+
+### `panes::frame_color_override::tests`
+
+- [x] **`a_bell_flash_is_shown_to_every_client` covers only the every-client side of both
+      predicates it calls.** A flash has `client_id: None`, so `applies_to` (`:87-89`) and
+      `is_cleared_by` (`:97-102`) are each exercised on one arm of two, and the arm that is
+      skipped is the one the type exists for — the doc comment at `:31-36` says a plugin marking a
+      pane for the person it is talking to must not appear on another client's screen.
+      **[mutation]** `applies_to` returning `true` unconditionally leaves all four green, and so
+      does `is_cleared_by`'s `Some(client_id) => self.client_id == Some(client_id)` collapsed to
+      `Some(_) => true` — a clear aimed at one client silently taking down an override every
+      client is looking at. *Fix:* build a `new(COLOR, None, Some(ClientId::new(1)))` and assert
+      `applies_to(1) && !applies_to(2)`, `is_cleared_by(Some(1))`, `!is_cleared_by(Some(2))` and
+      `is_cleared_by(None)`; and assert `!flash.is_cleared_by(Some(1))` on the flash, which is the
+      case that stops one client's clear taking down a bell everybody can see.
+      *Done:* `a_client_scoped_override_is_seen_and_cleared_by_that_client_only` asserts all
+      four predicates on a `Some(1)` override, and the flash test now asserts
+      `!is_cleared_by(Some(1))`. `applies_to → true` kills the new test; `Some(_) => true` kills
+      both.
+
+- [x] **`a_bell_flash_holds_at_full_strength_then_eases_away` does not pin the easing curve.** Its
+      middle assertion is `mid > 0.0 && mid < 1.0` at 260ms, which any monotonic release satisfies.
+      **[mutation]** Changing `Easing::EaseIn` to `Easing::Linear` (`:71`) leaves all four green —
+      yet the choice is deliberate and commented ("the flash should commit to leaving rather than
+      lingering just below visible for the back half of the release"). The hold *is* pinned, and
+      well: 1.0 at 119ms and a value strictly inside (0,1) at 260ms bracket
+      `BELL_FLASH_HOLD` into [120ms, 260ms) without a sleep. *Fix:* assert the release is convex
+      by sampling it — `strength(at(now, 260)) < 0.5`, which `EaseIn` gives and `Linear` (0.5 at
+      the midpoint of a 120..400 release) does not.
+      *Done:* the midpoint sample is now asserted `> 0.5`. The audit had the direction
+      backwards: `EaseIn` is `t³`, so the release holds near full for its front half (0.875 at
+      260ms) and commits to leaving in the back half, which is what the production comment
+      says; `Linear` reads exactly 0.5 there and is killed.
+
+### `panes::nested_session_modal::nested_session_modal_tests`
+
+- [x] **`renders_all_expected_content` does not cover most of the modal's text.** It asserts the
+      title, the prompt, the two option titles and the three hint tokens, and stops there. The two
+      explanation paragraphs (`nested_session_modal.rs:401-404`) — the longest strings in the
+      modal, and the only ones routed through `guest_modal_wrap_words` — are asserted by no test
+      in the module. **[mutation]** Replacing `explanation_texts[index]` with `""` at `:472`, so
+      the modal explains neither option, leaves all 18 green. *Fix:* assert a distinctive fragment
+      of each explanation, which also gives `wrap_words` an end-to-end witness it does not have.
+      *Done:* a `rendered_words` helper collapses the rows to one whitespace-normalised
+      string, and the test asserts a sentence from each explanation. Killed by `""`; also killed
+      by the `skip(1)` mutation below, so `wrap_words` has its end-to-end witness.
+
+- [x] **`wrap_words_respects_width_and_indent` checks the shape of the wrap, never its content.**
+      It asserts `lines.len() > 1`, the indent segment and a per-line width bound (`:336-355`);
+      nothing says the words that went in come out, in order, exactly once. **[mutation]**
+      `for (word, styles) in words` → `words.iter().skip(1)` at `nested_session_modal.rs:183`,
+      which drops the first word of every wrapped paragraph, leaves all 18 green. *Fix:*
+      reassemble the wrapped lines (dropping each line's indent segment) and `assert_eq!` the
+      result against the input joined by single spaces.
+      *Done:* the lines are reassembled without their indent segments and asserted equal to
+      the input. Killed by `words.iter().skip(1)`.
+
+- [x] **`center_pad_centers_and_clamps` never tries an odd remainder, and the render tests cannot
+      tell centred from left-aligned.** The three cases are `(10, 30) == 10`, `(30, 30) == 0` and
+      `(40, 30) == 0` (`:358-362`) — all even gaps, so the `/ 2` is unpinned. **[mutation]**
+      `(columns - block_width + 1) / 2` leaves it green. Worse, the centring is not pinned by the
+      render either: **[mutation]** replacing `let left_pad = center_modal_pad(block_width, columns)`
+      at `:498` with `let left_pad = 3`, so the modal is jammed against the left edge of any
+      terminal, leaves all 18 green — `options_are_left_justified_within_the_centered_block`
+      asserts only `selected_number_column > 2` (`:119-122`) even though the column is fully
+      determined, and `selected_rows_carry_the_selected_background_rectangle` reads `layout.left_pad`
+      back out of the same layout, so it agrees with whatever the layout says. *Fix:* add an
+      odd-gap case (`center_modal_pad(9, 30) == 10`, or whichever rounding is intended, with a
+      comment saying which), and make `options_are_left_justified_within_the_centered_block`
+      assert the exact expected column computed from `columns` and the block width rather than
+      `> 2`.
+      *Done:* `center_modal_pad(9, 30) == 10` added, with a comment that the spare cell goes
+      right; killed by `+ 1`. `options_are_left_justified_within_the_centered_block` asserts the
+      number column is exactly `center_modal_pad(block_width, 80) + 2`, with `block_width` read
+      from a new `#[cfg(test)] guest_modal_block_size`; killed by `let left_pad = 3` in the full
+      layout (the same line in the fallback layout is a different site, which the test does
+      not reach and does not claim to).
+
+- [x] **`small_columns_render_the_fallback`, `small_rows_render_the_fallback` and
+      `tiny_geometry_does_not_panic` test one side of every threshold they touch.** The narrow
+      fallback fires at `columns < 20` (`:382`, `:519`) and is tried at 18 and 80; the short
+      fallback at `rows < block_height` (`:495`) is tried at 5 and 30; the empty guard
+      `rows < 1 || columns < 1` (`:226`) only from the empty side. **[mutation]** `columns < 19`
+      leaves all 18 green, and so does `rows < block_height.saturating_sub(3)` — so a modal that
+      falls back to a one-line banner on a terminal three rows taller than it needs, or renders
+      the full block one column too narrow for it, is invisible to the suite. Separately,
+      `tiny_geometry_does_not_panic` asserts `chunks.len() == 2` at 3x2 and nothing about the
+      rows' width, so `every_rendered_row_spans_the_full_width`'s invariant is checked at 80
+      columns and never in the fallback. *Fix:* pin each threshold from both sides — 19 vs 20 for
+      the narrow fallback, and `block_height` vs `block_height - 1` for the short one (a
+      `#[cfg(test)]` accessor for the layout's height keeps that honest as the modal's content
+      changes) — and run the full-width invariant over the fallback geometries too.
+      *Done:* `the_fallback_thresholds_are_exact` renders at 19 and 20 columns and at
+      `block_height - 1` and `block_height` rows (from `guest_modal_block_size`), counting rows
+      that carry text: one for the banner, more for the block. Killed by `columns < 19` and by
+      `block_height.saturating_sub(3)`. `tiny_geometry_does_not_panic` now tries `1x1`, `1x0`
+      and `0x1` and is killed by `rows < 2 || columns < 2`.
+      `every_rendered_row_spans_the_full_width` runs over `(80,30)`, `(18,30)`, `(80,5)` and
+      `(3,2)`.
+
+- [x] **`hit_test_returns_none_off_option_rows_and_in_fallback` never reaches the fallback layout.**
+      Its second case is `guest_modal_option_at_content_row(4, 10, 2, ..)` (`:212-215`) — a
+      *rows*-fallback shape, but with `columns == 10`, so it returns at the `columns < 20` guard
+      on `:519` and the fallback layout is never built. The rows-fallback case
+      (`rows` small, `columns >= 20`) is untried. **[inspection]** The guard the case appears to
+      be aimed at, `if layout.option_rows.is_empty() { return None; }` (`:524-526`), is in fact
+      dead: `option_rows.iter().position(..)` on an empty slice already answers `None`, and
+      deleting it leaves all 18 green. *Fix:* change the case to `(4, 80, 2, ..)` so it goes
+      through the fallback layout, and delete the dead guard.
+      *Done:* the case is `(4, 80, 2, ..)` and goes through the rows fallback; the dead guard
+      is deleted.
+
+### `panes::overlay_panes::overlay_panes_tests`
+
+- [x] **`a_client_keeps_its_overlay_focused_with_no_visibility_precondition`'s only non-duplicated
+      assertion is on an accessor production never calls.** Its first assertion — add a modal,
+      `focus_pane`, `active_pane_id == Some(1)` — is the opening three statements of
+      `a_modal_opened_over_a_modal_takes_focus_and_gives_it_back_when_it_closes` (`:706-716`). The
+      second, `has_active_panes()`, is the only call to `OverlayPanes::has_active_panes`
+      (`overlay_panes/mod.rs:938`) anywhere: `tab/mod.rs` calls the `floating_panes` and
+      `tiled_panes` methods of that name and never this one. **[mutation]** `has_active_panes`
+      returning `false` fails exactly this test and nothing else, in the whole crate. The name is
+      historical too — it promises the absence of `FloatingPanes`' `panes_are_visible` gate, which
+      `OverlayPanes` has no equivalent of, so no regression could introduce it and no mutation can
+      express it. *Fix:* delete it, or give it the case the name implies and the module does have
+      — `focus_pane_for_joining_client`, whose "unless it already has overlay focus" guard
+      (`:972-982`) is a different question from `focus_pane`'s.
+      *Done:* replaced by `a_joining_client_does_not_steal_focus_a_client_already_has`, which
+      drives `focus_pane_for_joining_client` through its three answers: a client that already
+      has an overlay keeps it, one with none is given the pane it joined on, and a hidden pane is
+      refused. `has_active_panes` now has no caller at all (see Production observations).
+
+- [x] **`a_batch_that_places_the_halves_apart_unlinks_them`'s doc comment states the opposite of
+      what two siblings assert.** It reads "A batch that places the halves apart — one hidden, the
+      other given the whole panel, or the two put in different corners — is the end of the panel"
+      (`:2644-2645`), but the first of those two shapes *keeps* the link:
+      `placed_together` (`overlay_panes/mod.rs:2328-2359`) treats a hidden half lying inside the
+      shown one as a panel, on purpose and with its own paragraph, and both
+      `a_hidden_half_of_a_dragged_panel_gives_its_width_up_and_the_reveal_cuts_it_again` (`:2806-2811`)
+      and `a_hidden_share_inside_the_shown_half_links_as_a_panel` assert it. The test body itself
+      is sound and covers only the second shape. **[inspection]** Same shape as pass 3's
+      `two_quick_renames_leave_the_provider_keyed_on_the_last_name` stray-paragraph item, but
+      worse: this comment does not merely belong to another test, it contradicts the code.
+      *Fix:* drop the "one hidden…" clause, and say instead that the hidden shape is
+      `a_hidden_share_inside_the_shown_half_links_as_a_panel`'s and links rather than unlinks.
+      *Done:* the comment names only the different-corners shape and says in a parenthesis
+      that the hidden-inside shape links, pointing at
+      `a_hidden_share_inside_the_shown_half_links_as_a_panel`.
+
+### Production observations
+
+Kept separate from the test findings; none is a regression, and none is fixed by this audit.
+
+- `OverlayPanes::has_active_panes` (`overlay_panes/mod.rs:938`) has no caller outside the one test
+  above. `tab/mod.rs:5334`, `:5372` and `:5825` call `floating_panes.has_active_panes()` (always
+  behind `panes_are_visible()`) and `:5749` calls the tiled one; the overlay collection is asked
+  `active_panes_contain`, `active_pane_id` and `a_modal_holds_focus` instead. Same shape as pass
+  2's `nested_guest::{is_dormant,is_known}`.
+- `guest_modal_option_at_content_row`'s `if layout.option_rows.is_empty() { return None; }`
+  (`nested_session_modal.rs:524-526`) is unreachable as a behaviour: the `position()` below it
+  returns `None` for an empty slice anyway. Harmless, but it reads as a guard and a test was
+  written for it.
+- `may_be_fullscreen`'s third clause, `!overlay.carry.awaiting_placement`
+  (`overlay_panes/mod.rs:1884-1890`), has no test in the whole 120-test family: deleting it leaves
+  every `overlay_panes` test green, while deleting either of its siblings is killed by
+  `a_modal_may_not_be_expanded` and `a_hidden_overlay_may_not_be_expanded` respectively. The
+  `an_overlay_awaiting_placement_*` tests fall to pass 5, which is where the item belongs.
+
+## Method (pass 4)
+
+Every test in the pass was read against the production code it covers. **Sixteen mutations were
+applied across four batches; thirteen survived outright**, each confirming the finding it was
+aimed at. Two more survived the tests they were aimed at while being killed by a sibling — both
+halves of the `pane_groups` subsumption argument, where the state machine is the only thing that
+notices. The remaining three were deliberate controls (`may_be_fullscreen`'s modal and hidden
+clauses, `has_active_panes`) and each went red exactly as predicted, which is what makes the
+neighbouring survivals meaningful. Batching disjoint mutations kept the cost to four compiles;
+each narrowed run was ~0.23s of test time inside a ~10s build. One mutation (`FrameColorOverride::text`)
+was additionally checked against the whole crate, `cargo x test -p zellij-server`. All mutations
+were reverted and the tree verified clean — no `.rs` file is modified by this audit.
+
+That whole-crate run surfaced one failure unrelated to this batch and present at a clean HEAD:
+`plugins::lua::unit_tests::swamp_output_preview_names_the_saved_version_and_keeps_return_actionable`
+panics on `Result::unwrap()` at `plugins/lua/unit_tests.rs:6989` with
+`RuntimeError("… Run run: suspended")`. It is outside every module in this pass and is recorded
+here only so the next whole-crate run is not read as a regression.

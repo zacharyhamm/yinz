@@ -1,6 +1,6 @@
 # Test inventory
 
-Generated 2026-09-08 from `df19411fd` by `scripts/test-inventory.sh`.
+Generated 2026-09-08 from `32fbce7c0` by `scripts/test-inventory.sh`.
 One item per automated test; the heading above each block is the gate that runs it.
 
 > Generated with `--fast`: no `--all-features`, so the **e2e** group
@@ -11,11 +11,11 @@ One item per automated test; the heading above each block is the gate that runs 
 
 | gate | tests | ignored |
 |---|---:|---:|
-| `cargo x test` | 7868 | 1 |
+| `cargo x test` | 7874 | 1 |
 | `cargo x integration-test` | 379 | 0 |
 | `cargo x remote-test --build && cargo x remote-test --test` | 41 | 41 |
 | `cargo x firecracker-test --build && cargo x firecracker-test --test` | 4 | 4 |
-| **total** | **8292** | **46** |
+| **total** | **8298** | **46** |
 
 ## configuration (bin/configuration)
 
@@ -4208,13 +4208,14 @@ Run: `cargo x test`
 - [ ] `pane_groups::tests::should_launch_plugin_returns_false_when_non_empty_to_non_empty`
 - [ ] `pane_groups::tests::should_launch_plugin_returns_true_when_empty_to_non_empty`
 - [ ] `pane_groups::tests::should_launch_plugin_returns_true_when_first_pane_added`
-- [ ] `pane_groups::tests::toggle_pane_id_adds_new_pane`
-- [ ] `pane_groups::tests::toggle_pane_id_removes_existing_pane`
 - [ ] `panes::frame_color_override::tests::a_bell_flash_holds_at_full_strength_then_eases_away`
 - [ ] `panes::frame_color_override::tests::a_bell_flash_is_faded_out_on_the_schedule_the_teardown_still_runs_on`
 - [ ] `panes::frame_color_override::tests::a_bell_flash_is_shown_to_every_client`
+- [ ] `panes::frame_color_override::tests::a_client_scoped_override_is_seen_and_cleared_by_that_client_only`
+- [ ] `panes::frame_color_override::tests::an_override_carries_the_text_that_replaces_the_title`
 - [ ] `panes::frame_color_override::tests::an_override_that_does_not_fade_applies_at_full_strength_forever`
 - [ ] `panes::nested_session_modal::nested_session_modal_tests::center_pad_centers_and_clamps`
+- [ ] `panes::nested_session_modal::nested_session_modal_tests::chunks_are_placed_at_the_pane_s_content_offset`
 - [ ] `panes::nested_session_modal::nested_session_modal_tests::every_rendered_row_spans_the_full_width`
 - [ ] `panes::nested_session_modal::nested_session_modal_tests::hit_test_matches_rendered_marker_rows`
 - [ ] `panes::nested_session_modal::nested_session_modal_tests::hit_test_returns_none_off_option_rows_and_in_fallback`
@@ -4229,6 +4230,7 @@ Run: `cargo x test`
 - [ ] `panes::nested_session_modal::nested_session_modal_tests::selection_marker_moves_with_selected_index`
 - [ ] `panes::nested_session_modal::nested_session_modal_tests::small_columns_render_the_fallback`
 - [ ] `panes::nested_session_modal::nested_session_modal_tests::small_rows_render_the_fallback`
+- [ ] `panes::nested_session_modal::nested_session_modal_tests::the_fallback_thresholds_are_exact`
 - [ ] `panes::nested_session_modal::nested_session_modal_tests::tiny_geometry_does_not_panic`
 - [ ] `panes::nested_session_modal::nested_session_modal_tests::unselected_rows_do_not_use_the_selected_background`
 - [ ] `panes::nested_session_modal::nested_session_modal_tests::wrap_words_respects_width_and_indent`
@@ -4237,13 +4239,13 @@ Run: `cargo x test`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_batch_that_re_cuts_an_expanded_panel_moves_its_divider`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_borderless_overlay_has_no_frame_to_be_dragged_by`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_borderless_overlay_stays_borderless_when_its_pane_is_replaced`
-- [ ] `panes::overlay_panes::overlay_panes_tests::a_client_keeps_its_overlay_focused_with_no_visibility_precondition`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_dragged_overlay_stays_where_it_was_dropped_when_the_surface_grows`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_dragged_panel_is_re_placed_where_the_user_left_it`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_dragged_panel_re_resolved_onto_a_smaller_surface_is_re_cut_whole`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_frame_drag_clamps_an_overlay_inside_the_session_surface`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_frame_drag_moves_an_overlay_by_the_pointer_delta`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_frame_drag_moves_both_halves_of_a_linked_panel`
+- [ ] `panes::overlay_panes::overlay_panes_tests::a_frame_drag_repaints_the_overlays_it_did_not_move`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_fullscreen_press_on_another_overlay_expands_that_one`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_hidden_half_of_a_dragged_panel_gives_its_width_up_and_the_reveal_cuts_it_again`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_hidden_overlay_does_not_take_the_mouse_or_the_cells_under_it`
@@ -4253,6 +4255,7 @@ Run: `cargo x test`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_hidden_overlay_may_not_be_focused_until_it_is_shown`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_hidden_overlay_reports_itself_suppressed_and_unfocused`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_hidden_share_inside_the_shown_half_links_as_a_panel`
+- [ ] `panes::overlay_panes::overlay_panes_tests::a_joining_client_does_not_steal_focus_a_client_already_has`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_linked_panel_is_expanded_as_a_panel`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_modal_is_the_top_of_the_stack_and_not_merely_the_thing_that_outranks_it`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_modal_may_not_be_expanded`
@@ -4284,6 +4287,7 @@ Run: `cargo x test`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_resize_writes_the_new_size_back_into_the_overlay_s_coordinates`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_rounded_corners_update_reaches_the_style_the_overlay_frames_are_drawn_with`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_seam_drag_clamps_at_the_floor`
+- [ ] `panes::overlay_panes::overlay_panes_tests::a_seam_drag_tells_exactly_the_two_halves_their_new_size`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_seam_drag_that_changes_nothing_reports_so`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_seam_dragged_past_the_floor_comes_back_under_the_pointer`
 - [ ] `panes::overlay_panes::overlay_panes_tests::a_seam_side_resize_of_the_left_half_moves_the_seam`
@@ -4326,6 +4330,7 @@ Run: `cargo x test`
 - [ ] `panes::overlay_panes::overlay_panes_tests::dragging_the_seam_moves_the_divider_and_nothing_else`
 - [ ] `panes::overlay_panes::overlay_panes_tests::expanding_a_panel_releases_a_seam_drag_and_refuses_the_next_step`
 - [ ] `panes::overlay_panes::overlay_panes_tests::expanding_an_overlay_releases_a_drag_in_flight`
+- [ ] `panes::overlay_panes::overlay_panes_tests::expanding_an_overlay_tells_its_pty_the_viewport_size`
 - [ ] `panes::overlay_panes::overlay_panes_tests::focusing_a_hidden_modal_by_id_reveals_it_and_still_reports_it_is_ours`
 - [ ] `panes::overlay_panes::overlay_panes_tests::focusing_a_hidden_overlay_by_id_reveals_it`
 - [ ] `panes::overlay_panes::overlay_panes_tests::focusing_an_overlay_under_a_live_modal_leaves_the_keyboard_where_it_is`
@@ -4336,6 +4341,7 @@ Run: `cargo x test`
 - [ ] `panes::overlay_panes::overlay_panes_tests::hiding_a_modal_over_a_modal_walks_the_keyboard_to_the_modal_below`
 - [ ] `panes::overlay_panes::overlay_panes_tests::hiding_an_overlay_mid_drag_releases_the_mouse`
 - [ ] `panes::overlay_panes::overlay_panes_tests::hiding_an_overlay_moves_its_clients_to_the_one_below_it`
+- [ ] `panes::overlay_panes::overlay_panes_tests::hiding_and_showing_an_overlay_repaints_the_others`
 - [ ] `panes::overlay_panes::overlay_panes_tests::reapplying_coordinates_re_resolves_against_the_surface_as_it_is_now`
 - [ ] `panes::overlay_panes::overlay_panes_tests::removing_a_pane_drops_it_from_the_stack_as_well_as_the_map`
 - [ ] `panes::overlay_panes::overlay_panes_tests::replacing_a_pane_keeps_its_slot_its_kind_and_its_coordinates`
@@ -8818,5 +8824,5 @@ behind a `cfg` this run did not enable, or in a suite that failed to build.
 - [ ] `a_constraint_violation_includes_the_operation_and_server_explanation` — `./zellij-storage/src/plugin_data_store/tests/postgres.rs:231`
 - [ ] `a_schema_from_a_newer_zellij_is_refused` — `./zellij-storage/src/plugin_data_store/tests/postgres.rs:319`
 
-Scanned 8089 source test functions; 10 unmatched.
+Scanned 8095 source test functions; 10 unmatched.
 
