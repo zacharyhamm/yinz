@@ -245,6 +245,44 @@ Registration retains the listener before dispatch. Successful disposal unregiste
 repeated successful disposal is harmless. Reload and disconnect remove the old runtime's watches.
 The shared store still only wakes watches for writes from the same server process.
 
+## Plugin RPC
+
+Register a method with `zellij.rpc.handle(name, handler)`. Registration replaces the handler with the same name.
+Handlers can return JSON directly or through a promise. An `undefined` result becomes `null`.
+The `hocus_tool:` prefix is reserved for `zellij.hocus.tools()`.
+
+```ts
+zellij.rpc.handle("forecast", (payload, call) => ({city: payload, source: call.source}));
+
+// Run inside a lifecycle callback, after permission is granted.
+const request = zellij.rpc.call({
+  pluginId: 7,
+  name: "forecast",
+  payload: "Oslo",
+  timeoutMs: 10_000,
+});
+const result = await request;
+```
+
+Supply exactly one destination: `pluginId` or `pluginUrl`.
+URL calls can include `pluginConfig`, a string map that defaults to `{}`.
+The payload defaults to `null`. Without `timeoutMs`, the call has no deadline.
+Both peers need `MessageAndLaunchOtherPlugins`. RPC does not request permission automatically.
+
+Calls resolve directly with JSON results. Remote errors, unknown methods, invalid arguments, and local dispatch failures reject the promise.
+`request.cancel()` rejects with `AbortError` and stops the local wait. It does not stop remote execution.
+Timeouts reject with `TimeoutError`. Calls never retry automatically.
+
+Handler metadata contains `version`, `callId`, `name`, `payload`, and the host-supplied `source: {Plugin: number}`.
+Client context survives `await`. Sender-supplied `source` and `reply_to` fields are ignored.
+ID-addressed calls accept replies only from that plugin ID. URL-addressed calls match the opaque call ID because the host does not return the destination ID.
+Each isolate uses a new UUID prefix, so replies from an old instance cannot settle replacement calls.
+
+RPC uses Lua's version-1 `zellij_rpc_call` and `zellij_rpc_reply` envelopes, with a 64,000-byte limit.
+Unsupported JSON values reject instead of losing fields. Malformed, stale, and duplicate replies are ignored.
+RPC messages stay internal. Ordinary pipe messages still reach `pipe` callbacks and `waitForPipe()`.
+Lua callers retain their existing `{result}` or `{error}` wrapper.
+
 ## Hocus extensions
 
 Put an extension directly in the user plugin directory's `hocus/` folder.

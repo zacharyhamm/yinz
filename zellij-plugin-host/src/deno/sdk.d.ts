@@ -91,6 +91,7 @@ export interface WebRequestResult {
 }
 export interface Zellij {
   readonly hocus: HocusExtensions;
+  readonly rpc: Rpc;
   readonly ui: UserInterface;
   readonly text: TerminalText;
   readonly fs: Filesystem;
@@ -537,7 +538,16 @@ export interface OutlineEntry {line: Integer; kind: 'Require' | 'Permission' | '
 export interface PluginCheckReport {diagnostics: string[]; outline: OutlineEntry[]; permissions: Permission[]; warnings: string[]}
 
 /** Tool handlers answer version-1 Hocus RPC calls. Source is supplied by the host. */
-export interface HocusToolCall { version: 1; callId: string; name: string; payload: Json; source: {Plugin: number}; }
+export interface RpcCall { version: 1; callId: string; name: string; payload: Json; source: {Plugin: number}; }
+export type HocusToolCall = RpcCall;
+export type RpcOptions = { name: string; payload?: Json; timeoutMs?: number } & (
+  { pluginId: number; pluginUrl?: never; pluginConfig?: never } |
+  { pluginUrl: string; pluginId?: never; pluginConfig?: Record<string, string> }
+);
+export interface Rpc {
+  handle(name: string, handler: (payload: Json, call: RpcCall) => Json | void | Promise<Json | void>): void;
+  call(options: RpcOptions): CancellablePromise<Json>;
+}
 export interface HocusToolDefinition {
   description?: string;
   parameters?: {type: 'object'; [key: string]: Json};

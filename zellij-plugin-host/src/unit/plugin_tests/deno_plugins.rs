@@ -2047,3 +2047,166 @@ export default {
     harness.rendered("registration denied before and after refusal");
     harness.finish();
 }
+
+#[test]
+fn deno_rpc_calls_deno_and_lua_peers_by_url_and_id() {
+    for extension in ["ts", "lua"] {
+        let harness = Harness::new(
+            "ts",
+            r#"
+let state = 'starting';
+zellij.rpc.handle('back', async (payload, call) => ({value:payload, from:call.source.Plugin}));
+export default {
+  async load(config) {try {
+    await zellij.waitForPermissions(['MessageAndLaunchOtherPlugins']);
+    const first = await zellij.rpc.call({pluginUrl:config.peer,pluginConfig:{greeting:'Oslo'},name:'echo',payload:'hello',timeoutMs:10000});
+    if (first.greeting !== 'Oslo' || first.back.value !== 'hello' || first.back.from !== first.id) throw Error('URL/config/reverse RPC mismatch');
+    const second = await zellij.rpc.call({pluginId:first.id,name:'echo',payload:'again',timeoutMs:10000});
+    if (second.back.value !== 'again') throw Error('ID RPC mismatch');
+    for (const name of ['missing', 'failure']) {
+      try {await zellij.rpc.call({pluginId:first.id,name,timeoutMs:10000}); throw Error('unexpected success');}
+      catch (error) {if (!String(error).includes(name === 'missing' ? 'no rpc handler' : 'peer failed')) throw error;}
+    }
+    state = 'RPC peer verified';
+  } catch(error) {state = 'RPC failed: ' + error.stack;}},
+  render() {return state;}
+};
+"#,
+            PermissionStatus::Granted,
+        );
+        let peer = harness.directory.path().join(format!("peer.{extension}"));
+        std::fs::write(&peer, if extension == "ts" { r#"
+let ready, greeting;
+zellij.rpc.handle('echo', async (payload, call) => {
+  await ready;
+  const back = await zellij.rpc.call({pluginId:call.source.Plugin,name:'back',payload,timeoutMs:10000});
+  return {id:zellij.getPluginIds().plugin_id,greeting,back};
+});
+zellij.rpc.handle('failure', () => {throw Error('peer failed');});
+export default {load(config) {greeting=config.greeting; ready=zellij.waitForPermissions(['MessageAndLaunchOtherPlugins']); return ready;}};
+"# } else { r#"
+local zellij = require('zellij')
+local ready, greeting
+local M = {}
+function M.load(config)
+  greeting = config.greeting
+  ready = zellij.async.permissions({'message_and_launch_other_plugins'})
+end
+zellij.rpc.handle('echo', function(payload, call)
+  zellij.await(ready)
+  local back = zellij.await(zellij.rpc.call {plugin_id=call.source.Plugin,name='back',payload=payload,timeout=10})
+  if back.error then error(back.error) end
+  return {id=zellij.get_plugin_ids().plugin_id,greeting=greeting,back=back.result}
+end)
+zellij.rpc.handle('failure', function() error('peer failed') end)
+return M
+"# }).unwrap();
+        load(
+            &harness.sender,
+            RunPluginOrAlias::RunPlugin(RunPlugin {
+                location: RunPluginLocation::File(harness.path.clone()),
+                configuration: PluginUserConfiguration::new(BTreeMap::from([(
+                    "peer".into(),
+                    format!("file:{}", peer.display()),
+                )])),
+                ..Default::default()
+            }),
+        );
+        let frame = harness.rendered("RPC ");
+        assert!(frame.contains("RPC peer verified"), "{extension}: {frame}");
+        harness.finish();
+    }
+}
+
+#[test]
+fn deno_rpc_rejects_calls_without_message_permission() {
+    let harness = Harness::new(
+        "ts",
+        r#"
+let state = 'starting';
+export default {async load() {
+  let denied = 0;
+  const attempt = async () => {
+    try {await zellij.rpc.call({pluginId:7,name:'echo',timeoutMs:100});}
+    catch (error) {if (String(error).includes('MessageAndLaunchOtherPlugins')) denied++; else throw error;}
+  };
+  await attempt();
+  try {await zellij.waitForPermissions(['MessageAndLaunchOtherPlugins']);} catch (_) {}
+  await attempt();
+  state = denied === 2 ? 'RPC permission denied twice' : 'unexpected RPC permission';
+},render() {return state;}};
+"#,
+        PermissionStatus::Denied,
+    );
+    harness.load();
+    harness.rendered("RPC permission denied twice");
+    harness.finish();
+}
+
+#[test]
+fn deno_rpc_reload_ignores_old_replies_before_settling_the_new_call() {
+    let source = r#"
+const label = 'old';
+let result = 'waiting', fences = 0;
+zellij.rpc.handle('echo', () => label);
+export default {
+  async load() {
+    zellij.subscribe(['CustomMessage']);
+    await zellij.waitForPermissions(['MessageAndLaunchOtherPlugins']);
+    result = await zellij.rpc.call({pluginId:zellij.getPluginIds().plugin_id,name:'echo'});
+  },
+  update(event) {if (event.CustomMessage) {fences++; return true;}},
+  render() {return `${label} result=${result} fences=${fences}`;}
+};
+"#;
+    let (to_proxy, outgoing): ChannelWithContext<PluginInstruction> = channels::unbounded();
+    let to_proxy = SenderWithContext::new(to_proxy);
+    let harness = Harness::with_event_sender(
+        "ts",
+        source,
+        Some(PermissionStatus::Granted),
+        Some(to_proxy.clone()),
+    );
+    let replies = Watched::new(Vec::<PluginInstruction>::new());
+    let proxy = std::thread::spawn({
+        let replies = replies.clone();
+        let sender = harness.sender.clone();
+        move || loop {
+            let (instruction, _) = outgoing.recv_timeout(FAKE_SCREEN_RECV_TIMEOUT).unwrap();
+            match instruction {
+                PluginInstruction::Exit => break,
+                PluginInstruction::MessageFromPlugin { ref message, .. }
+                    if message.message_name == "zellij_rpc_reply" =>
+                {
+                    replies.lock().push(instruction)
+                },
+                other => {
+                    let _ = sender.send(other);
+                },
+            }
+        }
+    });
+    harness.load();
+    let old = replies.wait_until("old RPC reply", Duration::from_secs(20), |events| {
+        events.first().cloned()
+    });
+    harness.rendered("old result=waiting fences=0");
+    std::fs::write(
+        &harness.path,
+        source.replace("const label = 'old'", "const label = 'new'"),
+    )
+    .unwrap();
+    harness.reload();
+    let current = replies.wait_until("replacement RPC reply", Duration::from_secs(20), |events| {
+        events.get(1).cloned()
+    });
+    harness.rendered("new result=waiting fences=0");
+    harness.sender.send(old).unwrap();
+    harness.event(release_event());
+    harness.rendered("new result=waiting fences=1");
+    harness.sender.send(current).unwrap();
+    harness.rendered("new result=new fences=1");
+    harness.finish();
+    to_proxy.send(PluginInstruction::Exit).unwrap();
+    proxy.join().unwrap();
+}
