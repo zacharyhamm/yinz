@@ -63,14 +63,14 @@ export default {{
     let leadingSeen = false, terminators = 0;
     zellij.on('WebRequestResult', () => {{ leadingSeen = true; }});
     zellij.on('WebRequestStreamChunk', (e) => {{
+      if (e.stream_id !== 'bytes') return;
       if (!leadingSeen) throw Error('stream before response');
       chunks.push(...e.chunk);
       if (e.done) terminators++;
     }});
-    const leading = zellij.waitForEvent('WebRequestResult');
-    const done = zellij.waitForEvent('WebRequestStreamChunk', e => e.done);
-    zellij.command('WebRequest', [url, 'Get', {{}}, [], {{}}, 'bytes', null]);
-    if ((await leading)[0] !== 200 || (await done).error !== null) throw Error('stream response');
+    const done = zellij.waitForEvent('WebRequestStreamChunk', e => e.stream_id === 'bytes' && e.done);
+    const leading = await zellij.webRequest({{url, streamId: 'bytes'}});
+    if (leading.status !== 200 || leading.body.length !== 0 || (await done).error !== null) throw Error('stream response');
     if (chunks.join() !== '97,0,98,128,255' || terminators !== 1) throw Error('stream bytes');
     state = 'buffered and streamed HTTP verified';
   }},
