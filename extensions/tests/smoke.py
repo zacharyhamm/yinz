@@ -37,7 +37,7 @@ binary = root / 'zellij'
 os.link(Path(args.binary).resolve(), binary)
 session = 'workflow-acceptance'
 env = os.environ.copy()
-for name in ('ZELLIJ', 'ZELLIJ_SESSION_NAME', 'ZELLIJ_PANE_ID', 'ZELLIJ_PANE_REF', 'ZELLIJ_CONFIG_FILE', 'ZELLIJ_CONFIG_DIR', 'SWAMP_REPO_DIR', 'SWAMP_SERVER_URL'):
+for name in ('ZELLIJ', 'ZELLIJ_SESSION_NAME', 'ZELLIJ_PANE_ID', 'ZELLIJ_PANE_REF', 'ZELLIJ_CONFIG_FILE', 'ZELLIJ_CONFIG_DIR', 'SWAMP_REPO_DIR', 'SWAMP_SERVER_URL', 'GIT_PAGER', 'PAGER', 'LESS'):
     env.pop(name, None)
 for name, directory in [('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data'),
                         ('XDG_CACHE_HOME', 'cache'), ('XDG_RUNTIME_DIR', 'runtime'),
@@ -300,57 +300,55 @@ try:
         def agents():
             return [p for p in json.loads(zellij('action', 'list-panes', '--json')) if p.get('agent')]
 
-        def exercise_diff(token):
+        def exercise_diff(token, view=None):
             before_diff = run('git', 'status', '--porcelain=v1', cwd=topic).stdout
             before_head = run('git', 'rev-parse', 'HEAD', cwd=topic).stdout
-            contents = 'untracked diff contents 😀é\t"\\\n'
-            for large in (False, True):
-                (topic / 'untracked').write_text(contents)
-                choose(token, 'prepare', 'show-diff')
-                diff = until('saved diff question', lambda: pending(token, 'diff'))
-                predicate = 'specName == "diff" && tags.workflowRunId == ' + json.dumps(diff['attributes']['run'])
-                saved = swamp('data', 'query', predicate, '--select', '{"model":modelName,"name":name,"version":version,"attributes":attributes}')['results'][0]
-                output = saved['attributes']['output']
-                assert output.endswith(contents)
-                snapshot = bridge(method='workflow_show', directory=str(topic), run=diff['attributes']['run'])
-                preview = next(o for o in snapshot['outputs']['results'] if (o['model'], o['name'], o['version']) == (saved['model'], saved['name'], saved['version']))
-                shown = preview['attributes']['output']
-                assert shown and output.startswith(shown) and len(shown) <= 16384
-                assert not any(0xD800 <= ord(c) <= 0xDFFF for c in shown)
-                assert preview['attributes']['previewTruncated'] == (len(output) > 16384)
-                assert any(q['attributes'].get('question') == 'diff' and q['attributes']['state'] == 'pending' for q in snapshot['questions']['results'])
-                if large:
-                    assert len(shown.encode('utf-16-le')) // 2 == 16383
-                    assert (topic / 'untracked').stat().st_size == 1_100_000
-                    assert len(json.dumps(snapshot).encode()) < 1_048_576
-                    zellij('workflow', 'show', diff['attributes']['run'])
-                    until('diff question rendered', lambda: 'return' in zellij('action', 'dump-screen'))
-                    # Submit Return through the real view's pinned form.
-                    os.write(ui_fd, b'return\r')
-                    until('Return opens preparation', lambda: pending(token, 'prepare'))
-                    os.write(ui_fd, b'\x1b')
-                    exact = 'modelName == ' + json.dumps(saved['model']) + ' && name == ' + json.dumps(saved['name']) + ' && version == ' + str(saved['version'])
-                    assert swamp('data', 'query', exact, '--select', 'attributes.output')['results'] == [output]
-                else:
-                    assert shown == output
-                    choose(token, 'diff', 'return')
-                    # Put an emoji across the next preview's UTF-16 boundary.
-                    padding = 16383 - len(output[:-len(contents)].encode('utf-16-le')) // 2
-                    remaining = 1_100_000 - padding
-                    contents = 'x' * padding + '😀é\t"\\\n' * (remaining // 10) + 'z' * (remaining % 10)
-            (topic / 'untracked').unlink()
+            contents = (topic / 'file').read_text()
+            # A long tracked diff keeps less open even with the usual -F default.
+            (topic / 'file').write_text(contents + 'foreground diff line\n' * 200)
+            run('git', 'config', 'core.pager', 'less' if view else 'cat')
+            try:
+                previous = choose(token, 'prepare', 'show-diff')
+                if view:
+                    def viewer():
+                        return next((p for p in json.loads(zellij('action', 'list-panes', '--json'))
+                                     if not p['is_plugin'] and not p['is_suppressed']
+                                     and p.get('terminal_command') == 'git diff'), None)
+                    terminal = until('foreground git diff', viewer)
+                    for field in ('pane_x', 'pane_y', 'pane_rows', 'pane_columns', 'is_floating'):
+                        assert terminal[field] == view[field], (field, terminal, view)
+                    panes = json.loads(zellij('action', 'list-panes', '--json'))
+                    assert next(p for p in panes if p['is_plugin'] and p['id'] == view['id'])['is_suppressed']
+                    until('pager renders tracked diff', lambda: 'foreground diff line' in zellij('action', 'dump-screen'))
+                    os.write(ui_fd, b'q')
+                fresh = until('pager exit returns to preparation', lambda: pending(token, 'prepare'))
+                assert fresh['attributes']['run'] != previous['attributes']['run']
+                if view:
+                    until('preparation menu renders again', lambda: 'Show diff' in zellij('action', 'dump-screen'))
+                    restored = next(p for p in json.loads(zellij('action', 'list-panes', '--json'))
+                                    if p['is_plugin'] and p['id'] == view['id'])
+                    assert not restored['is_suppressed']
+            finally:
+                (topic / 'file').write_text(contents)
+                run('git', 'config', '--unset', 'core.pager')
             assert run('git', 'rev-parse', 'HEAD', cwd=topic).stdout == before_head
             assert run('git', 'status', '--porcelain=v1', cwd=topic).stdout == before_diff
-            print('PASS: short diffs unchanged; 1.1 MB Unicode diff saved intact; bounded preview parses; Return works in the view', flush=True)
+            print('PASS: plain git diff is read-only; pager exit opens a fresh preparation menu', flush=True)
 
         if args.source_diff_only:
             launch('previews')
             choose('previews', 'exit', 'begin-review')
-            exercise_diff('previews')
+            preparation = until('manual preparation', lambda: pending('previews', 'prepare'))
+            zellij('workflow', 'show', preparation['attributes']['run'])
+            until('manual preparation menu renders', lambda: 'Show diff' in zellij('action', 'dump-screen'))
+            view = next(p for p in json.loads(zellij('action', 'list-panes', '--json'))
+                        if p.get('plugin_url') == 'zellij:swamp-workflow' and not p['is_suppressed'])
+            exercise_diff('previews', view)
             choose('previews', 'prepare', 'leave')
             original_id = int(zellij('run', '--cwd', str(topic), '--', 'claude').strip().split('_')[-1])
             original = until('tiled source is ready for input', lambda: next((p for p in json.loads(zellij('action', 'list-panes', '--json')) if not p['is_plugin'] and p['id'] == original_id and p.get('pane_cwd') == str(topic)), None))
             assert not original['is_floating'] and not original['is_suppressed']
+            until('stub has enabled raw input', lambda: 'STUB READY' in zellij('action', 'dump-screen'))
             zellij('action', 'write-chars', '--pane-id', str(original_id), 'exit\n')
             original = until('automatic exit hook suppresses source', lambda: next((p for p in agents() if p['id'] == original_id and p['exited'] and p['is_suppressed']), None))
             automatic = until('automatic exit run', lambda: swamp('workflow', 'history', 'search', '--filter', 'inputs.sourcePane == ' + str(original_id))['results'])
@@ -367,6 +365,18 @@ try:
             assert duplicated['agent']['kind'] == 'claude'
             assert duplicated['agent']['cwd'] == str(topic)
             print('PASS: automatic tiled exit suppresses source; snapshot excludes it; Fork resolves it; cancelled Fork returns; Duplicate preserves kind/cwd', flush=True)
+            until('duplicate has enabled raw input', lambda: 'STUB READY' in zellij('action', 'dump-screen'))
+            zellij('action', 'write-chars', '--pane-id', str(duplicated['id']), 'exit\n')
+            until('duplicate exit hook suppresses source', lambda: next((p for p in agents() if p['id'] == duplicated['id'] and p['exited'] and p['is_suppressed']), None))
+            automatic = until('duplicate exit run', lambda: swamp('workflow', 'history', 'search', '--filter', 'inputs.sourcePane == ' + str(duplicated['id']))['results'])
+            token = automatic[0]['inputs']['launch']
+            choose(token, 'exit', 'begin-review')
+            until('automatic preparation menu', lambda: pending(token, 'prepare'))
+            view = next(p for p in json.loads(zellij('action', 'list-panes', '--json'))
+                        if p.get('plugin_url') == 'zellij:agent-exit' and not p['is_suppressed'])
+            exercise_diff(token, view)
+            choose(token, 'prepare', 'leave')
+            print('PASS: pager replaces the automatic exit view at its original location and restores it', flush=True)
             raise SystemExit(0)
 
         if not args.test_output_only:

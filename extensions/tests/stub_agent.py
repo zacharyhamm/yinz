@@ -23,6 +23,7 @@ def report(hook, **fields):
 
 try:
     report('SessionStart')
+    print('STUB READY', flush=True)
     buffer = b''
     while True:
         chunk = os.read(sys.stdin.fileno(), 4096)

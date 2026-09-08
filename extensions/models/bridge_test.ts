@@ -287,3 +287,21 @@ print(json.dumps({'result': dict(request, outcome='pending', incarnation='test',
         await Deno.remove(dir, { recursive: true });
     }
 });
+
+Deno.test("commands default to background and accept foreground explicitly", () => {
+    const args = {
+        work: "work",
+        key: "diff",
+        argv: ["git", "diff"],
+        cwd: "/checkout",
+    };
+    assert(methods.command.arguments.parse(args).foreground === false);
+    assert(
+        methods.command.arguments.parse({ ...args, foreground: true })
+            .foreground === true,
+    );
+    assert(
+        !methods.command.arguments.safeParse({ ...args, foreground: "true" })
+            .success,
+    );
+});
