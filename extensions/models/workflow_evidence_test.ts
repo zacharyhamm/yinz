@@ -103,33 +103,4 @@ Deno.test("review and gate evidence cannot be inferred from missing findings, pr
     assert(saved.get("assessment-current")?.ready === false);
     await methods.assess.execute({ review, test, current: evidence }, c);
     assert(saved.get("assessment-current")?.ready === true);
-    for (const method of ["repair_prompt", "review_prompt"] as const) {
-        try {
-            const args = method === "repair_prompt"
-                ? {
-                    work: "work",
-                    key: "large",
-                    agent: "agent",
-                    assessment: {
-                        review,
-                        test: { ...test, log: "x".repeat(262144) },
-                        ready: false,
-                    },
-                }
-                : {
-                    work: "work",
-                    key: "large",
-                    agent: "agent",
-                    evidence: {
-                        ...evidence,
-                        gate: ["x".repeat(262144)],
-                    },
-                };
-            // Invalid session config would fail if validation reached transport.
-            await methods[method].execute(args as never, c);
-            throw new Error("oversized prompt accepted");
-        } catch (error) {
-            assert(String(error).includes("262144 UTF-8 bytes"));
-        }
-    }
 });

@@ -2625,7 +2625,14 @@ fn open_command_pane_near_plugin(
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) {
-    let pane_id = spawn_command_pane_near_plugin(env, command_to_run, context, None, false, false);
+    // The builtin picker reads the source pane's real cwd from the manifest. In
+    // particular, a real /tmp checkout must not become the plugin's virtual /tmp.
+    let host_cwd = env.plugin.is_builtin()
+        && context
+            .get("hocus_agent_host_cwd")
+            .is_some_and(|value| value == "true");
+    let pane_id =
+        spawn_command_pane_near_plugin(env, command_to_run, context, None, host_cwd, false);
     let response = ProtobufOpenCommandPaneNearPluginResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_near_plugin response".to_string())
@@ -3458,7 +3465,9 @@ fn open_command_pane_background(
     ));
 
     // Wait for completion
-    let result = wait_for_action_completion(completion_rx, "open_command_pane_background", false);
+    // The pane can start after the generic one-second UI deadline. Its caller needs
+    // the actual identity to observe that process without dispatching it twice.
+    let result = wait_for_action_completion(completion_rx, "open_command_pane_background", true);
     let pane_id: OpenCommandPaneBackgroundResponse = result.affected_pane_id.map(|p| p.into());
 
     // Write response to plugin

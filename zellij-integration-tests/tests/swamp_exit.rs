@@ -21,6 +21,8 @@ function M.load(config)
     bridge.load()
     config.agent_cwd='/host'
     token=config.agent_exit_token
+    local source=tonumber(config.agent_pane_id)
+    hosts[#hosts+1]={terminal_id=source,attached=true,session_name=z.server_session,host_id='source-'..source,child_pid=100+source}
     hook.load(config)
   end)
 end

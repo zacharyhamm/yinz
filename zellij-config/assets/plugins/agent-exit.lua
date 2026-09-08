@@ -35,7 +35,7 @@ function M.load(config)
     if not visible() then z.await(placed) end
     -- An exit reloaded in the same server attaches through the same launch claim.
     local token=assert(config.agent_exit_token, 'Missing host exit correlation token')
-    local reply=z.await(z.rpc.call {plugin_url='zellij:swamp-bridge',name='swamp',timeout=30,payload={method='workflow_run',work=token,key='launch',directory=M.directory,inputs={firecracker=config.agent_firecracker_vm or ''}}})
+    local reply=z.await(z.rpc.call {plugin_url='zellij:swamp-bridge',name='swamp',timeout=30,payload={method='workflow_run',work=token,key='launch',directory=M.directory,inputs={sourcePane=M.pane,kind=config.agent_kind or '',firecracker=config.agent_firecracker_vm or ''}}})
     if reply.error then
       view.status=reply.error
       -- The launch may have dispatched before the response failed. Keep reconciling.

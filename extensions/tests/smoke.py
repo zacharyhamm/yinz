@@ -59,6 +59,12 @@ if sys.argv[1:3] == ['workflow', 'approve'] and marker.exists():
 os.execv(os.environ['SWAMP_SMOKE_REAL'], [os.environ['SWAMP_SMOKE_REAL']] + sys.argv[1:])
 ''')
 wrapper.chmod(0o755)
+# The duplicate action intentionally drops old arguments. Keep its real agent-kind
+# command inside this fixture so it cannot contact a model provider.
+fixture_claude = fixture_bin / 'claude'
+fixture_claude.write_text('#!/usr/bin/python3\nimport os\nos.execv("/usr/bin/python3", ["/usr/bin/python3", ' + repr(str(main / 'extensions/tests/stub_agent.py')) + ', "--exit"])\n')
+fixture_claude.chmod(0o755)
+
 env.update(PATH=str(fixture_bin) + os.pathsep + env['PATH'],
            SWAMP_SMOKE_REAL=real_swamp, SWAMP_SMOKE_ROOT=str(root))
 (root / 'environment.json').write_text(json.dumps({k: env[k] for k in ('XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','XDG_RUNTIME_DIR','ZELLIJ_SOCKET_DIR','SWAMP_SMOKE_ZELLIJ')}, indent=2))
@@ -132,7 +138,7 @@ def pending(launch, question):
 
 
 def launch(token, **inputs):
-    default = dict(agentCommand='/usr/bin/python3', agentArgs=[str(main / 'extensions/tests/stub_agent.py')], gate=['/usr/bin/true'])
+    default = dict(agentCommand='/usr/bin/python3', agentArgs=[str(main / 'extensions/tests/stub_agent.py'), '--exit'], gate=['/usr/bin/true'])
     default.update(inputs)
     return zellij('workflow', 'run', '@hammz/zellij-agent-exit', '--launch', token, '--no-view', '--input', json.dumps(default))
 
@@ -172,7 +178,8 @@ run('git', 'init', '-b', 'main')
 run('git', 'config', 'user.name', 'Workflow test')
 run('git', 'config', 'user.email', 'workflow@example.invalid')
 (main / 'file').write_text('base\n')
-run('git', 'add', 'file')
+(main / 'second').write_text('base\n')
+run('git', 'add', 'file', 'second')
 run('git', 'commit', '-m', 'base')
 base = run('git', 'rev-parse', 'HEAD').stdout.strip()
 run('git', 'worktree', 'add', '-b', 'topic', topic)
@@ -200,121 +207,231 @@ try:
         assert vm['supervisor'].startswith('remote:')
         bridge(method='agent_prompt', work='vm', key='edit', agent='worker', prompt='guest edit')
         until('original guest exits', lambda: bridge(method='observe', work='vm', key='worker').get('processExited'))
+        guest_commit = bridge(method='observe', work='vm', key='edit')['message']
         assert not (topic / 'guest.txt').exists()
-        assert not bridge(method='vm_inspect', work='vm', key='inspect', agent='worker')['clean']
-        target_vm = vm['target']['Firecracker']
-        vm_name = target_vm.get('vm_name') or target_vm['vm']
-        vm_inputs = dict(agentCommand='/usr/bin/python3', agentArgs=['stub_agent.py'], firecracker=vm_name, gate=['/usr/bin/true'])
-        zellij('workflow', 'run', '@hammz/zellij-agent-work', '--launch', 'reuse-vm', '--no-view', '--input', json.dumps(vm_inputs))
-        until('original VM synchronized by workflow', lambda: histories('reuse-vm') and all(r['status'] == 'succeeded' for r in histories('reuse-vm')))
-        reused = bridge(method='observe', work='reuse-vm', key='worker')
-        reused_vm = reused['target']['Firecracker']
-        assert (reused_vm.get('vm_name') or reused_vm['vm']) == vm_name
+        vm_name = vm['target']['Firecracker']['vm']
+        (main / 'host-only').write_text('host revision\n')
+        run('git', 'add', 'host-only')
+        run('git', 'commit', '-m', 'advance host target')
+        host_target = run('git', 'rev-parse', 'HEAD').stdout.strip()
+        launch('original-vm', sourcePane=vm['pane'], firecracker=vm_name,
+               agentArgs=[str(main / 'extensions/tests/stub_agent.py'), '--exit', '--inspect-review'])
+        q = until('VM exit menu before sync or spawn', lambda: pending('original-vm', 'exit'))
+        assert not (topic / 'guest.txt').exists()
+        assert bridge(method='lookup', work='original-vm', key='worker') is None
+        answer(q, 'begin-review', 'vm-begin')
+        prepared = until('original VM synced without worker', lambda: pending('original-vm', 'prepare'))
         assert (topic / 'guest.txt').read_text() == 'guest\n'
+        assert bridge(method='lookup', work='original-vm', key='worker') is None
+        answer(prepared, 'commit-and-rebase', 'vm-rebase')
+        review_menu = until('host rebased review menu', lambda: pending('original-vm', 'review'))
+        host_commit = run('git', 'rev-parse', 'HEAD', cwd=topic).stdout.strip()
+        assert host_commit != guest_commit
+        answer(review_menu, 'start-code-review', 'vm-review')
+        confirmation = until('host reviewer confirmation', lambda: pending('original-vm', 'merge'))
+        records = swamp('data', 'query', 'modelType == "@hammz/zellij" && name == "review-current"')['results']
+        reviewed = next(r['attributes'] for r in records if r['attributes']['evidence']['source']['commit'] == host_commit)
+        inspected = json.loads(reviewed['findings'][0]['message'])
+        assert reviewed['resolved']
+        assert inspected['checkout'] == str(topic)
+        assert inspected['commit'] == reviewed['evidence']['source']['commit']
+        assert inspected['contents'] == reviewed['evidence']['source']['contents']
+        assert inspected['host_file'] == 'host revision\n'
+        helper = bridge(method='lookup', work='original-vm', key=reviewed['reviewer'])
+        assert helper['target'] == 'Local'
+        answer(confirmation, 'leave', 'vm-review-leave')
+        print('PASS: VM reviewer runs locally and inspects rebased host evidence', flush=True)
+        # A second explicitly spawned fixture creates guest/host conflicting changes.
+        conflict = bridge(method='agent_spawn', work='vm-conflict-fixture', key='worker', spec=dict(command='/usr/bin/python3', args=['stub_agent.py', '--exit'], cwd=str(topic), source_directory=str(topic), firecracker=vm_name, reuse=True))
+        bridge(method='agent_prompt', work='vm-conflict-fixture', key='edit', agent='worker', prompt='guest conflict')
+        until('conflicting guest exits', lambda: bridge(method='observe', work='vm-conflict-fixture', key='worker').get('processExited'))
         (topic / 'file').write_text('host conflict\n')
-        launch('conflict-vm', **vm_inputs, task='guest conflict')
+        launch('conflict-vm', sourcePane=conflict['pane'], firecracker=vm_name)
+        q = until('conflict VM menu', lambda: pending('conflict-vm', 'exit'))
+        answer(q, 'begin-review', 'conflict-begin')
         def conflict_failed():
             runs = swamp('workflow', 'history', 'search', '--input', 'launch=conflict-vm')['results']
-            return runs if runs and any(r['status'] == 'failed' for r in runs) and not any(r['status'] == 'running' for r in runs) else None
-        failed_runs = until('conflict blocks workflow', conflict_failed)
+            return runs if any(r['status'] == 'failed' for r in runs) and not any(r['status'] == 'running' for r in runs) else None
+        failed_runs = until('sync conflict blocks preparation', conflict_failed)
         for item in failed_runs:
             if item['status'] == 'failed':
                 swamp('report', 'get', '@swamp/workflow-summary', '--workflow', item['workflowName'])
-            assert item['workflowName'] != '@hammz/zellij-review-integration'
-        failed = bridge(method='observe', work='conflict-vm', key='worker')
-        failed_vm = failed['target']['Firecracker']
-        assert (failed_vm.get('vm_name') or failed_vm['vm']) == vm_name
+        assert bridge(method='lookup', work='conflict-vm', key='worker') is None
         assert (topic / 'file').read_text() == 'host conflict\n'
-        assert run('git', 'rev-parse', 'HEAD').stdout.strip() == base
+        assert run('git', 'rev-parse', 'HEAD').stdout.strip() == host_target
         assert topic.exists()
-        assert not bridge(method='vm_inspect', work='conflict-vm', key='inspect', agent='worker')['clean']
-        print('PASS: exited VM reused with guest-only changes; conflicting sync blocks review, integration and cleanup', flush=True)
+        print('PASS: original exited VM synced without spawning; sync conflicts preserve checkout and block integration', flush=True)
         raise SystemExit(0)
     if not args.recovery_only:
+        attach_ui()
+        until('terminal client has rendered', lambda: len(ui_output) > 1000)
+        def choose(token, question, value):
+            print('CHOICE:', token, question, value, flush=True)
+            q = until(token + ': ' + question, lambda: pending(token, question))
+            answer(q, value, 'answer-' + q['attributes']['run'])
+            return q
+
+        def prepare(token):
+            choose(token, 'exit', 'begin-review')
+            choose(token, 'prepare', 'commit-and-rebase')
+            return until(token + ': review menu', lambda: pending(token, 'review'))
+
+        def agents():
+            return [p for p in json.loads(zellij('action', 'list-panes', '--json')) if p.get('agent')]
+
         launch('success')
-        q = until('unattended merge question', lambda: pending('success', 'decision'))
+        initial = until('initial exit menu', lambda: pending('success', 'exit'))
+        assert initial['attributes']['answers'] == ['begin-review', 'leave']
+        assert initial['attributes']['prompt'] == 'Choose Begin review or Leave.'
+        assert bridge(method='lookup', work='success', key='worker') is None
+        assert not agents(), 'Exit must not start an agent'
         assert run('git', 'rev-parse', 'HEAD').stdout.strip() == base
-        print('PASS: unattended execution suspends before integration', flush=True)
         before = len(histories('success'))
         launch('success')
         assert len(histories('success')) == before, 'Duplicate launch dispatched a second run'
-        attach_ui()
-        for _ in range(2):
-            render_start = len(ui_output)
-            zellij('workflow', 'show', q['attributes']['run'])
-            panes = until('workflow view', lambda: [p for p in json.loads(zellij('action', 'list-panes', '--json')) if p.get('plugin_url') == 'zellij:swamp-workflow'])
-            pane = 'plugin_' + str(panes[0]['id'])
-            until('pending question rendered', lambda: b'Choose merge' in re.sub(rb'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]', b'', bytes(ui_output[render_start:])))
-            zellij('action', 'close-pane', '--pane-id', pane)
-            assert pending('success', 'decision')
-        zellij('workflow', 'run', '@hammz/zellij-question', '--launch', 'view-isolation', '--no-view', '--input', json.dumps(dict(kind='text', prompt='Separate view?', answers=[])))
-        second = until('second view question', lambda: pending('view-isolation', 'question'))
-        views = []
-        for question in (q, second):
-            before_ids = {p['id'] for p in json.loads(zellij('action', 'list-panes', '--json')) if p['is_plugin']}
-            # open_view parses exactly one JSON acknowledgement; duplicate replies fail this call.
-            zellij('workflow', 'show', question['attributes']['run'])
-            panes = json.loads(zellij('action', 'list-panes', '--json'))
-            new = [p for p in panes if p['is_plugin'] and p['id'] not in before_ids and p.get('plugin_url') == 'zellij:swamp-workflow']
-            assert len(new) == 1
-            views.append(('plugin_' + str(new[0]['id']), question['attributes']['run']))
-        def assert_attachment(pane, run_id):
-            start = len(ui_output)
-            zellij('action', 'focus-pane-id', pane)
-            until('view retains its own run', lambda: ('Run ' + run_id + ':').encode() in bytes(ui_output[start:]))
-        for pane, run_id in views:
-            assert_attachment(pane, run_id)
-        before = {(p['id'], p['is_plugin']) for p in json.loads(zellij('action', 'list-panes', '--json'))}
-        for destination in ('plugin_4294967295', 'plugin_bad'):
-            failed = run(binary, '--session', session, 'pipe', '--name', 'show', '--plugin', destination, '--', '{}', check=False)
-            assert failed.returncode and 'destination' in failed.stderr.lower(), failed
-        assert {(p['id'], p['is_plugin']) for p in json.loads(zellij('action', 'list-panes', '--json'))} == before
-        for pane, run_id in views:
-            assert_attachment(pane, run_id)
-            zellij('action', 'close-pane', '--pane-id', pane)
-        zellij('workflow', 'cancel', second['attributes']['run'])
-        print('PASS: two views retain distinct runs; missing and malformed destinations fail without launch or broadcast', flush=True)
-        # Detach the actual terminal client; a CLI action has its own client identity.
-        os.kill(ui_pid, signal.SIGHUP)
-        until('terminal client detached', lambda: os.waitpid(ui_pid, os.WNOHANG)[0])
-        ui_pid = None
-        print('PASS: interactive view renders its question; detach/reopen preserves the pending run and answer', flush=True)
-        # Move the target after review; approval must start another review, not integrate.
-        run('git', 'commit', '--allow-empty', '-m', 'target changed after review')
+        choose('success', 'exit', 'begin-review')
+        before_diff = run('git', 'status', '--porcelain=v1', cwd=topic).stdout
+        (topic / 'untracked').write_text('untracked diff contents\n')
+        choose('success', 'prepare', 'show-diff')
+        diff = until('saved diff question', lambda: pending('success', 'diff'))
+        outputs = swamp('data', 'query', 'has(tags.workflowRunId) && tags.workflowRunId == ' + json.dumps(diff['attributes']['run']),
+                        '--select', '{"name":name,"attributes":attributes}')['results']
+        assert any('untracked diff contents' in o['attributes'].get('output', '') for o in outputs)
+        assert run('git', 'rev-parse', 'HEAD', cwd=topic).stdout.strip() == base
+        (topic / 'untracked').unlink()
+        assert run('git', 'status', '--porcelain=v1', cwd=topic).stdout == before_diff
+        choose('success', 'diff', 'return')
+        choose('success', 'prepare', 'commit-and-rebase')
+        choose('success', 'review', 'merge')
+        q = until('informed skipped-check confirmation', lambda: pending('success', 'merge'))
+        assert 'Tests: SKIPPED' in q['attributes']['prompt'] and 'Review: SKIPPED' in q['attributes']['prompt']
+        assert not agents(), 'Preparation and merge confirmation must not start agents'
+        zellij('workflow', 'show', q['attributes']['run'])
+        until('confirmation rendered', lambda: b'Merge exact revision' in re.sub(rb'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]', b'', bytes(ui_output)))
+        # Changed target invalidates this exact approval and returns to preparation.
+        run('git', 'commit', '--allow-empty', '-m', 'target changed after inspection')
         target = run('git', 'rev-parse', 'HEAD').stdout.strip()
-        answer(q, 'merge', 'stale-merge')
-        fresh = until('fresh review after stale evidence', lambda: pending('success', 'decision'))
+        choose('success', 'merge', 'merge')
+        fresh = until('stale approval returns to preparation', lambda: pending('success', 'prepare'))
         assert fresh['attributes']['run'] != q['attributes']['run']
         assert run('git', 'rev-parse', 'HEAD').stdout.strip() == target
-        answer(fresh, 'merge', 'fresh-merge')
-        cleanup = until('separate cleanup approval', lambda: pending('success', 'cleanup'))
+        choose('success', 'prepare', 'commit-and-rebase')
+        choose('success', 'review', 'run-tests')
+        choose('success', 'review', 'start-code-review')
+        reviewed = until('unchanged reviewer confirmation', lambda: pending('success', 'merge'))
+        assert 'Tests: PASSED' in reviewed['attributes']['prompt']
+        assert 'Review: PASSED' in reviewed['attributes']['prompt']
+        choose('success', 'merge', 'merge')
+        choose('success', 'cleanup', 'keep')
+        until('successful completion', lambda: all(r['status'] == 'succeeded' for r in histories('success')))
+        assert topic.exists()
         assert run('git', 'rev-parse', 'HEAD').stdout == run('git', 'rev-parse', 'HEAD', cwd=topic).stdout
-        answer(cleanup, 'keep', 'keep-fixture')
-        until('successful review completion', lambda: all(r['status'] == 'succeeded' for r in histories('success')))
-        report = swamp('report', 'get', '@hammz/workflow', '--workflow', '@hammz/zellij-review-integration')['json']
-        assert {'review-current', 'test-current', 'integration-current'} <= {r['name'] for r in report['resources']}
-        print('PASS: stale evidence re-enters review; approved integration and keep succeed', flush=True)
+        print('PASS: no unsolicited worker; diff is read-only; stale approval re-prepares; optional passing checks and merge/keep succeed', flush=True)
 
-        launch('repairs', gate=['/usr/bin/false'], agentArgs=[str(main / 'extensions/tests/stub_agent.py'), '--malformed'])
-        instructions = until('instructions after both repairs', lambda: pending('repairs', 'repair-limit'))
-        history = swamp('workflow', 'history', 'get', instructions['attributes']['run'])
-        steps = {s['name']: s['status'] for job in history['jobs'] for s in job['steps']}
-        assert steps['round-1-repair'] == 'succeeded' and steps['round-2-repair'] == 'succeeded'
-        assert run('git', 'rev-parse', 'HEAD').stdout == run('git', 'rev-parse', 'HEAD', cwd=topic).stdout
-        print('PASS: malformed findings and failed tests exhaust exactly two repairs, then suspend', flush=True)
+        launch('failed-checks', gate=['/usr/bin/false'])
+        prepare('failed-checks')
+        choose('failed-checks', 'review', 'run-tests')
+        failed = until('failed-test choices', lambda: pending('failed-checks', 'failed-tests'))
+        assert failed['attributes']['answers'] == ['start-fix-agent', 'return-to-menu', 'leave']
+        count = len(agents())
+        choose('failed-checks', 'failed-tests', 'return-to-menu')
+        choose('failed-checks', 'review', 'merge')
+        informed = until('failed-check merge confirmation', lambda: pending('failed-checks', 'merge'))
+        assert 'Tests: FAILED' in informed['attributes']['prompt']
+        assert len(agents()) == count, 'Failed tests must not automatically start a repair agent'
+        choose('failed-checks', 'merge', 'merge')
+        choose('failed-checks', 'cleanup', 'keep')
+        print('PASS: explicit merge accepts failed tests; no automatic repair', flush=True)
+
+        launch('fix', gate=['/bin/sh', '-c', 'printf failure-evidence; exit 1'])
+        prepare('fix')
+        choose('fix', 'review', 'run-tests')
+        choose('fix', 'failed-tests', 'start-fix-agent')
+        returned = until('fix exit returns to initial menu', lambda: pending('fix', 'exit'))
+        choose('fix', 'exit', 'leave')
+        assert topic.exists()
+        assert 'failure-evidence' in (topic / 'received-failure-output').read_text()
+        (topic / 'received-failure-output').unlink()
+        print('PASS: approved fix receives failure output and exits to a fresh menu; Leave preserves checkout', flush=True)
+
+        launch('review-changes', agentArgs=[str(main / 'extensions/tests/stub_agent.py'), '--exit', '--edit-review'])
+        prepare('review-changes')
+        choose('review-changes', 'review', 'start-code-review')
+        choose('review-changes', 'exit', 'leave')
+        assert (topic / 'reviewer-change').read_text() == 'reviewer edit\n'
+        (topic / 'reviewer-change').unlink()
+        print('PASS: reviewer untracked changes return to the initial menu', flush=True)
+
+        original = next(p for p in agents() if p.get('exited') and p['agent']['kind'] == 'claude')
+        launch('fork-cancel', sourcePane=original['id'], kind='claude')
+        first_menu = choose('fork-cancel', 'exit', 'fork')
+        assert first_menu['attributes']['answers'] == ['restart', 'duplicate', 'fork', 'begin-review', 'leave']
+        assert first_menu['attributes']['prompt'] == 'Agent exited. Choose Restart, Duplicate, Fork, Begin review, or Leave.'
+        until('existing fork picker', lambda: any(p.get('plugin_url') == 'zellij:hocus-new-agent' and not p['is_suppressed'] for p in json.loads(zellij('action', 'list-panes', '--json'))))
+        zellij('action', 'start-or-reload-plugin', 'zellij:swamp-bridge')
+        until('picker dispatch becomes uncertain after reload', lambda: bridge(method='observe', work='fork-cancel', key=first_menu['attributes']['run'] + '-pane-choice')['outcome'] == 'unknown')
+        os.write(ui_fd, b'\x1b')
+        cancelled = until('cancelled fork returns to fresh exit menu', lambda: pending('fork-cancel', 'exit'))
+        assert cancelled['attributes']['run'] != first_menu['attributes']['run']
+        choose('fork-cancel', 'exit', 'leave')
+        launch('duplicate-choice', sourcePane=original['id'], kind='claude')
+        before_ids = {p['id'] for p in agents()}
+        choose('duplicate-choice', 'exit', 'duplicate')
+        duplicated = until('duplicate launches original kind', lambda: next((p for p in agents() if p['id'] not in before_ids), None))
+        assert duplicated['agent']['kind'] == 'claude'
+        assert duplicated.get('pane_cwd', duplicated['agent'].get('cwd')) == str(topic)
+        launch('restart-choice', sourcePane=original['id'], kind='claude')
+        choose('restart-choice', 'exit', 'restart')
+        until('restart uses original pane', lambda: any(p['id'] == original['id'] and not p['exited'] for p in agents()))
+        print('PASS: fork cancellation returns to a fresh menu; duplicate preserves kind/cwd; restart reuses original pane', flush=True)
+
+
+        launch('unresolved-review', agentArgs=[str(main / 'extensions/tests/stub_agent.py'), '--exit', '--findings'])
+        prepare('unresolved-review')
+        choose('unresolved-review', 'review', 'start-code-review')
+        unresolved = until('unresolved review confirmation', lambda: pending('unresolved-review', 'merge'))
+        assert 'Review: FAILED / unresolved findings' in unresolved['attributes']['prompt']
+        choose('unresolved-review', 'merge', 'merge')
+        choose('unresolved-review', 'cleanup', 'keep')
+        print('PASS: informed merge accepts unresolved review findings', flush=True)
+
+        # Build a real paused rebase and refuse a resolver before approving one.
+        (topic / 'file').write_text('source conflict\n')
+        run('git', 'commit', '-am', 'source conflict', cwd=topic)
+        (topic / 'second').write_text('source second conflict\n')
+        run('git', 'commit', '-am', 'second source conflict', cwd=topic)
+        (main / 'file').write_text('target conflict\n')
+        (main / 'second').write_text('target second conflict\n')
+        run('git', 'commit', '-am', 'target conflict')
+        launch('conflict-leave')
+        choose('conflict-leave', 'exit', 'begin-review')
+        choose('conflict-leave', 'prepare', 'commit-and-rebase')
+        count = len(agents())
+        choose('conflict-leave', 'conflict', 'leave-paused')
+        assert len(agents()) == count
+        assert run('git', 'diff', '--name-only', '--diff-filter=U', cwd=topic).stdout.strip() == 'file'
+        launch('conflict-resolve')
+        choose('conflict-resolve', 'exit', 'begin-review')
+        first_conflict = choose('conflict-resolve', 'conflict', 'resolve-with-agent')
+        next_conflict = choose('conflict-resolve', 'conflict', 'resolve-with-agent')
+        assert first_conflict['attributes']['run'] != next_conflict['attributes']['run']
+        choose('conflict-resolve', 'review', 'leave')
+        assert not run('git', 'diff', '--name-only', '--diff-filter=U', cwd=topic).stdout.strip()
+        assert run('git', 'symbolic-ref', '--short', 'HEAD', cwd=topic).stdout.strip() == 'topic'
+        print('PASS: paused rebase requires an explicit resolver; workflow alone continues the resolved index', flush=True)
 
         zellij('workflow', 'run', '@hammz/zellij-question', '--launch', 'recovery', '--no-view', '--input', json.dumps(dict(kind='text', prompt='Instructions?', answers=[])))
         question = until('text question', lambda: pending('recovery', 'question'))
         (root / 'interrupt-after-approval').touch()
         failed = run(binary, '--session', session, 'workflow', 'answer', question['attributes']['run'], question['model'], 'question', 'Recorded instructions', '--submission', 'recorded-once', check=False)
-        assert failed.returncode, 'The injected interruption did not occur'
+        assert failed.returncode
         swamp('report', 'get', '@swamp/method-summary', '--model', question['model'])
         swamp('model', 'method', 'run', question['model'], 'recover', '--input', json.dumps(dict(run=question['attributes']['run'], question='question')))
         until('recorded answer recovery', lambda: all(r['status'] == 'succeeded' for r in histories('recovery')))
         duplicate = run(binary, '--session', session, 'workflow', 'answer', question['attributes']['run'], question['model'], 'question', 'Recorded instructions', '--submission', 'recorded-once', check=False)
         assert duplicate.returncode
         swamp('report', 'get', '@swamp/method-summary', '--model', question['model'])
-        print('PASS: interruption after recording/approval recovers once; duplicate answer refused', flush=True)
+        print('PASS: interrupted approval recovers once; duplicate answer refused', flush=True)
 
     owned = bridge(method='agent_spawn', work='restart', key='worker', spec=dict(command='/usr/bin/python3', args=[str(main / 'extensions/tests/stub_agent.py'), '--wait'], cwd=str(topic), source_directory=str(topic)))
     bridge(method='agent_prompt', work='restart', key='pending', agent='worker', prompt='Wait for recovery')
@@ -324,13 +441,6 @@ try:
     assert reconciled['supervisor'] == owned['supervisor'] and reconciled['pane'] == owned['pane']
     assert observed['outcome'] == 'unknown'
     assert bridge(method='agent_spawn', work='restart', key='worker', spec=dict(command='/usr/bin/python3', args=[str(main / 'extensions/tests/stub_agent.py'), '--wait'], cwd=str(topic), source_directory=str(topic)))['pane'] == owned['pane']
-    if not args.recovery_only:
-        zellij('workflow', 'show', instructions['attributes']['run'])
-        print('PASS: dispatcher restart preserves ownership and uncertain prompt; no repeated spawn', flush=True)
-        zellij('workflow', 'cancel', instructions['attributes']['run'])
-        until('explicit cancellation', lambda: swamp('workflow', 'history', 'get', instructions['attributes']['run'])['status'] == 'cancelled')
-        assert topic.exists()
-        print('PASS: explicit cancellation preserves resources', flush=True)
     # Crash only this fixture's server. Supervisors must keep the owned processes.
     survivor = bridge(method='agent_spawn', work='server-restart', key='worker', spec=dict(command='/usr/bin/python3', args=[str(main / 'extensions/tests/stub_agent.py')], cwd=str(topic), source_directory=str(topic)))
     bridge(method='agent_prompt', work='server-restart', key='before', agent='worker', prompt='Before restart')

@@ -38,6 +38,12 @@ end
 -- Placement belongs to the authenticated hook instance, never to a caller-supplied pane.
 -- It is intentionally not recovered across server/bridge reloads.
 local placements={}
+local function close_view(work)
+  local placement=read(scope(work,'view'))
+  if not placement or placement.incarnation~=identity.incarnation then return end
+  local ok,pane=pcall(z.get_pane_info,z.plugin_pane(placement.view))
+  if ok and pane and pane.plugin_url=='zellij:agent-exit' then z.close_plugin_pane(placement.view) end
+end
 local function active(work)
   local works={[work]=true}
   local runs=read(scope(work,'runs'))
@@ -111,6 +117,12 @@ local function finish_agent(owner, event, raw)
   local operation = result(uid)
   if not operation.accepted or operation.agentSession ~= event.session_id then return end
   if operation.turn and operation.turn ~= raw.turn_id then return end
+  if decode(operation.request).waitForExit then
+    local current,row=read(uid)
+    current.message,current.hook=event.last_message or z.null,event.hook
+    put(uid,current,row)
+    return
+  end
   save_event(uid, outcome, {message=event.last_message or z.null, hook=event.hook, agentSession=event.session_id or z.null})
   agent.outstanding = nil
   put(agent_uid, agent, row)
@@ -148,7 +160,7 @@ local function owned(args, running)
   assert(current.host_id == agent.supervisor, 'Pane belongs to a different supervisor')
   assert(current.child_pid == agent.process, 'Agent process changed')
   assert(current.attached, 'Supervisor is detached; adopt and reconcile before sending input')
-  if current.owner then assert(current.owner==encode(agent.owner),'Remote ownership changed') end
+  if current.owner then assert(current.owner==(agent.transportOwner or encode(agent.owner)),'Remote ownership changed') end
   if current.terminal_id ~= agent.pane then
     local uid=scope(args.work,args.agent)
     local current_agent,row=read(uid)
@@ -274,7 +286,7 @@ handle = function(args)
       operation.outcome='unknown'
       put(uid,operation,row)
     end
-    if operation.log and operation.pane and operation.supervisor then
+    if args.includeOutput~=false and operation.log and operation.pane and operation.supervisor then
       local ok,log=pcall(function()
         local host=supervisor(operation.pane, operation.supervisor)
         assert(host.host_id==operation.supervisor,'Log belongs to a different supervisor')
@@ -361,6 +373,24 @@ handle = function(args)
     inputs.launch, inputs.session = args.work, identity.session
     inputs.binary=z.server_binary or 'zellij'
     inputs.checkout = inputs.checkout or command({'git','rev-parse','--show-toplevel'},args.directory):gsub('\n$', '')
+    if inputs.sourcePane and inputs.sourcePane>=0 then
+      local pane=z.get_pane_info(z.terminal_pane(inputs.sourcePane))
+      assert(pane.exited,'Source pane must be exited')
+      local host=supervisor(inputs.sourcePane)
+      local source_uid=scope(args.work,'source')
+      local original={pane=inputs.sourcePane,supervisor=host.host_id,process=host.child_pid,target=pane.target,transportOwner=host.owner,
+        owner={host_id=identity.host_id,session=identity.session,incarnation=identity.incarnation,work=args.work,agent='source'}}
+      put(source_uid,original)
+      inputs.kind=(pane.agent and pane.agent.kind) or inputs.kind or ''
+      local vm=pane.target and pane.target.Firecracker
+      if vm then
+        inputs.firecracker=vm.vm
+        inputs.firecrackerImage=vm.image or ''
+      else
+        assert(not inputs.firecracker or inputs.firecracker=='','Local source cannot select a different VM')
+      end
+    end
+    assert(not inputs.firecracker or inputs.firecracker=='' or (inputs.sourcePane and inputs.sourcePane>=0),'VM work requires its original pane identity')
     inputs.target = inputs.target or config.root
     inputs.gate = inputs.gate or config.config.ci or {'cargo','x','ci','check'}
     inputs.targetBranch = inputs.targetBranch or config.config.default_branch or 'main'
@@ -373,6 +403,29 @@ handle = function(args)
     value.process = launch.process
     value.checkout, value.log, value.workflow, value.launch = config.root, launch.log, name, args.work
     put(uid,value,row)
+  elseif args.method == 'pane_action' then
+    if args.action=='leave' then
+      value.outcome='completed'
+      put(uid,value,row)
+      close_view(args.work)
+      return value
+    end
+    local source=owned{work=args.work,agent='source'}
+    assert(z.get_pane_info(z.terminal_pane(source.pane)).exited,'Source pane is no longer exited')
+    if args.action=='restart' then
+      z.rerun_command_pane(source.pane)
+      value.outcome='completed'
+      put(uid,value,row)
+      close_view(args.work)
+    else
+      assert(args.action=='fork' or args.action=='duplicate','Unknown pane choice')
+      value.outcome='pending'
+      put(uid,value,row)
+      z.message_to_plugin{plugin_url='zellij:hocus-new-agent',message_name='swamp-pane-action',
+        plugin_config={caller_terminal_pane_id=tostring(source.pane),[args.action=='fork' and 'fork_focused' or 'duplicate_focused']='true',
+          swamp_reply_plugin=tostring(z.get_plugin_ids().plugin_id),swamp_work=args.work,swamp_key=args.key},
+        new_plugin_args={should_float=true,should_focus=true}}
+    end
   elseif args.method == 'agent_spawn' then
     local opts = assert(args.spec, 'Missing agent specification')
     assert(not opts.prompt, 'Spawn without prompt, then call agent_prompt to register observation first')
@@ -433,6 +486,7 @@ handle = function(args)
     for i=2,#args.argv do argv[#argv+1] = args.argv[i] end
     local pane = z.open_command_pane_background {{path=args.argv[1], args=argv, cwd=args.cwd}, {swamp_owner=encode(owner), swamp_operation=args.key}}
     value, row = read(uid)
+    assert(pane,'Command dispatch was not acknowledged; reconcile the saved operation before any further action')
     value.pane = pane.Terminal or pane
     value.checkout, value.log = args.cwd, 'terminal_' .. value.pane
     put(uid, value, row)
@@ -440,8 +494,12 @@ handle = function(args)
     value, row = read(uid)
     value.supervisor, value.process = host.host_id, host.child_pid
     put(uid, value, row)
-  elseif args.method == 'vm_inspect' or args.method == 'vm_sync' or args.method=='vm_status' then
-    local agent = owned(args)
+  elseif args.method == 'source_sync' or args.method == 'vm_inspect' or args.method == 'vm_sync' or args.method=='vm_status' then
+    local agent
+    if args.method=='source_sync' then
+      if read(scope(args.work,'source')) then agent=owned{work=args.work,agent='source'}
+      else agent={target='Local'} end
+    else agent=owned(args) end
     value.owner,value.target=agent.owner,agent.target
     local target = agent.target and agent.target.Firecracker
     if not target then
@@ -450,7 +508,7 @@ handle = function(args)
       local name = assert(target.vm_name or target.vm, 'Missing VM identity')
       -- Route through the existing provider CLI. Failure leaves this claim unknown.
       local warnings, output = '', ''
-      if args.method == 'vm_sync' then
+      if args.method == 'vm_sync' or args.method=='source_sync' then
         local r=z.await(z.async.run_command {command={z.server_binary or 'zellij','firecracker','sync',name,'--session',identity.session},cwd='/',context={swamp_owner=encode(identity)},max_bytes_returned=1048576})
         assert(r.exit_code==0,'VM sync failed; inspect provider reports before retrying: '..r.stderr)
         warnings=r.stderr
@@ -513,6 +571,26 @@ function M.load()
   end)
 end
 function M.pipe(message)
+  if message.name=='swamp-pane-result' and message.payload then
+    local from=type(message.source)=='table' and message.source.Plugin
+    if not from then return end
+    local pane=z.get_pane_info(z.plugin_pane(from))
+    assert(pane.plugin_url=='zellij:hocus-new-agent','Pane result must come from the agent picker')
+    local reply=decode(message.payload)
+    assert(reply.choice=='started' or reply.choice=='cancelled','Invalid picker result')
+    local uid=scope(reply.work,reply.key)
+    local current=read(uid)
+    assert(current and decode(current.request).method=='pane_action','No picker operation')
+    if current.outcome=='completed' then
+      assert(current.choice==reply.choice,'Picker result already differs')
+    else assert(current.outcome=='pending' or current.outcome=='unknown','Picker dispatch cannot accept a result') end
+    save_event(uid,'completed',{choice=reply.choice})
+    z.message_to_plugin{destination_plugin_id=from,message_name='swamp-pane-ack'}
+    if reply.choice=='started' then
+      close_view(reply.work)
+    end
+    return
+  end
   if message.name ~= 'swamp' or not message.payload then return end
   local pipe = type(message.source) == 'table' and message.source.Cli
   if not pipe then return end

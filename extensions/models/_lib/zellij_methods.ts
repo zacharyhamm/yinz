@@ -5,15 +5,17 @@ import {
     observe,
     Operation,
     operation,
+    preparePrompt,
     PromptText,
     Request,
 } from "./bridge.ts";
-import { Context, Key, Literal } from "./workflow.ts";
-import { Evidence, Finding } from "../git_workflow.ts";
+import { Context, digest, Key, Literal } from "./workflow.ts";
+import { Evidence, Finding, Sync } from "../git_workflow.ts";
 const Agent = Request.extend({ agent: Key });
 const Spawn = Request.extend({ spec: AgentSpec });
 const Prompt = Agent.extend({
     prompt: PromptText,
+    waitForExit: z.boolean().default(false),
 });
 const Observe = Request.extend({
     timeoutSeconds: z.number().int().positive().default(3600),
@@ -36,6 +38,7 @@ const Test = z.object({
     outcome: z.string(),
     exitCode: z.number().int().nullable(),
     log: z.string(),
+    output: z.string().default(""),
     passed: z.boolean(),
 });
 const ReviewArgs = z.object({
@@ -43,6 +46,14 @@ const ReviewArgs = z.object({
     evidence: Evidence,
     worker: Key,
 });
+const Checks = z.object({
+    evidence: Evidence,
+    review: Review.nullable(),
+    test: Test.nullable(),
+    tests: z.enum(["skipped", "passed", "failed"]),
+    codeReview: z.enum(["skipped", "passed", "failed"]),
+});
+const CheckArgs = Checks.omit({ tests: true, codeReview: true });
 const Assessment = z.object({
     review: Review,
     test: Test.nullable(),
@@ -61,6 +72,18 @@ const resource = <T extends z.ZodType>(schema: T, description: string) => ({
     garbageCollection: 50,
 });
 export const resources = {
+    prompt: resource(
+        z.object({ prompt: PromptText }),
+        "Validated helper prompt with beginning and end excerpts when oversized",
+    ),
+    checks: resource(
+        Checks,
+        "Exact revision and optional check results presented for informed merge approval",
+    ),
+    checkoutSync: resource(
+        Sync,
+        "Local checkout or verified original VM synchronization",
+    ),
     assessment: resource(Assessment, "Current review and gate disposition"),
     operation: resource(
         Operation,
@@ -104,7 +127,8 @@ function method<T extends z.ZodType>(
         },
     };
 }
-const ReviewInputs = z.object({
+const FlowInputs = z.object({
+    flowVersion: z.literal(2),
     launch: Key,
     session: Literal.min(1),
     binary: Literal.min(1),
@@ -112,48 +136,159 @@ const ReviewInputs = z.object({
     target: Literal.min(1),
     targetBranch: Literal.min(1),
     gate: z.array(Literal).min(1),
-    kind: Literal.min(1),
-    task: Literal,
+    kind: Literal,
     agentCommand: Literal,
     agentArgs: z.array(Literal),
     firecracker: Literal,
     firecrackerImage: Literal,
-    cycle: Key,
+    sourcePane: z.number().int().min(-1),
+    phase: z.enum([
+        "prepare",
+        "diff",
+        "commit",
+        "conflict",
+        "resolve",
+        "resolved",
+        "review",
+        "tests",
+        "failed-tests",
+        "fix",
+        "review-agent",
+        "confirm",
+        "cleanup",
+    ]),
+    state: z.object({
+        vmSync: Sync.nullable(),
+        evidence: Evidence.nullable(),
+        review: Review.nullable(),
+        test: Test.nullable(),
+    }),
 });
-const ContinueReview = Request.extend({ inputs: ReviewInputs });
+const ContinueFlow = Request.extend({
+    workflow: z.enum([
+        "@hammz/zellij-agent-exit",
+        "@hammz/zellij-review-integration",
+    ]),
+    inputs: FlowInputs,
+});
 export const methods = {
-    continue_review: {
+    prepare_prompt: {
         description:
-            "Start the workflow-declared fresh review cycle in an independent supervised process",
-        arguments: ContinueReview,
-        execute: async (input: z.infer<typeof ContinueReview>, c: Context) => {
-            const a = ContinueReview.parse(input);
-            c.logger.info("Launching the next declared review cycle");
+            "Prepare and validate a helper prompt before spawning its agent",
+        arguments: z.object({ prompt: z.string() }),
+        execute: (input: { prompt: string }, c: Context) =>
+            save(c, "prompt", { prompt: preparePrompt(input.prompt) }),
+    },
+    check_status: {
+        description:
+            "Save the exact optional check results shown at merge confirmation",
+        arguments: CheckArgs,
+        execute: (input: z.infer<typeof CheckArgs>, c: Context) => {
+            const a = CheckArgs.parse(input);
+            return save(c, "checks", {
+                ...a,
+                tests: a.test === null
+                    ? "skipped"
+                    : a.test.passed
+                    ? "passed"
+                    : "failed",
+                codeReview: a.review === null
+                    ? "skipped"
+                    : a.review.resolved
+                    ? "passed"
+                    : "failed",
+            });
+        },
+    },
+    continue_flow: {
+        description:
+            "Start a fresh workflow decision with a new run identity and no inherited answer",
+        arguments: ContinueFlow,
+        execute: async (input: z.infer<typeof ContinueFlow>, c: Context) => {
+            const a = ContinueFlow.parse(input);
+            const directory = await Deno.realPath(c.repoDir) +
+                "/.swamp/continuation-inputs";
+            await Deno.mkdir(directory, { recursive: true });
+            const inputFile = `${directory}/${await digest(a)}.json`;
+            await Deno.writeTextFile(inputFile, JSON.stringify(a.inputs));
+            const host = {
+                ...c,
+                globalArgs: {
+                    session: a.inputs.session,
+                    binary: a.inputs.binary,
+                },
+            };
+            const dispatched = await operation(host, {
+                method: "command",
+                work: a.work,
+                key: a.key,
+                cwd: c.repoDir,
+                argv: [
+                    "swamp",
+                    "workflow",
+                    "run",
+                    a.workflow,
+                    "--no-supersede",
+                    "--input-file",
+                    inputFile,
+                    "--json",
+                ],
+            });
+            await save(c, "operation", dispatched);
+            const result = await observe(
+                host,
+                { work: a.work, key: a.key },
+                3600,
+            );
+            // Successful runner stdout contains complete child reports. Those already
+            // live in Swamp; nesting them in every parent report grows without bound.
+            if (result.outcome === "completed" && result.exitCode === 0) {
+                delete result.output;
+                delete result.outputTruncated;
+            }
+            const saved = await save(c, "operation", result);
+            // A lost dispatch/observation reply must leave the child's inputs intact.
+            if (
+                result.outcome === "completed" ||
+                (result.outcome === "failed" && result.exitCode != null)
+            ) {
+                await Deno.remove(inputFile);
+            }
+            if (result.outcome !== "completed" || result.exitCode !== 0) {
+                throw new Error(
+                    "Continuation failed; inspect operation-current (" +
+                        result.outcome + ", exit " + result.exitCode + ")",
+                );
+            }
+            return saved;
+        },
+    },
+    pane_action: method(
+        "Act on the original exited pane; fork cancellation returns a saved result",
+        Request.extend({
+            action: z.enum(["restart", "duplicate", "fork", "leave"]),
+        }),
+        "pane_action",
+    ),
+    checkout_sync: {
+        description:
+            "Sync and verify the original VM, or record explicit local checkout evidence",
+        arguments: Request,
+        execute: async (input: z.infer<typeof Request>, c: Context) => {
+            const result = await operation(c, {
+                ...Request.parse(input),
+                method: "source_sync",
+            });
+            await save(c, "operation", result);
+            if (result.outcome !== "completed" || !result.clean) {
+                throw new Error(
+                    "Original VM has unresolved changes or sync conflicts",
+                );
+            }
             return save(
                 c,
-                "operation",
-                await operation({
-                    ...c,
-                    globalArgs: {
-                        session: a.inputs.session,
-                        binary: a.inputs.binary,
-                    },
-                }, {
-                    method: "command",
-                    work: a.work,
-                    key: a.key,
-                    cwd: c.repoDir,
-                    argv: [
-                        "swamp",
-                        "workflow",
-                        "run",
-                        "@hammz/zellij-review-integration",
-                        "--no-supersede",
-                        "--input",
-                        JSON.stringify(a.inputs),
-                        "--json",
-                    ],
-                }),
+                "checkoutSync",
+                result.vm ? Sync.parse(result) : { mode: "local" },
             );
         },
     },
@@ -228,9 +363,10 @@ export const methods = {
                     work: a.work,
                     key: a.key,
                     agent: a.agent,
-                    prompt:
+                    prompt: preparePrompt(
                         "Resolve the following review findings and test failures in your checkout. Resolve rebase conflicts if present, but do not merge, remove resources, or contact a remote. Leave changes for the workflow to commit. Report completion explicitly.\n" +
-                        JSON.stringify(a.assessment),
+                            JSON.stringify(a.assessment),
+                    ),
                 }),
             );
         },
@@ -254,9 +390,10 @@ export const methods = {
                     work: a.work,
                     key: a.key,
                     agent: a.agent,
-                    prompt:
+                    prompt: preparePrompt(
                         'Review the checkout and source commit against the target commit described below. Do not edit files, commit, merge, remove resources or contact remotes. Include unresolved rebase conflicts. Your final response must contain only JSON: {"findings":[{"severity":"error|warning|info","file":"path","message":"finding"}]}. An empty findings array means you completed a clean review.\n' +
-                        JSON.stringify(a.evidence),
+                            JSON.stringify(a.evidence),
+                    ),
                 }),
             );
         },
@@ -316,7 +453,10 @@ export const methods = {
             let findings: z.infer<typeof Finding>[] = [];
             let problem: string | null = null;
             if (
-                a.operation.outcome !== "completed" || !a.operation.owner ||
+                (a.operation.outcome !== "completed" &&
+                    !(a.operation.outcome === "process-exit" &&
+                        a.operation.hook === "Stop")) ||
+                !a.operation.owner ||
                 a.operation.owner.agent === a.worker
             ) problem = "A separate review agent must explicitly complete";
             else {
@@ -362,6 +502,8 @@ export const methods = {
                     outcome: a.operation.outcome,
                     exitCode: a.operation.exitCode ?? null,
                     log: a.operation.log,
+                    output: a.operation.output ?? a.operation.logError ??
+                        "Output unavailable",
                     passed: a.operation.outcome === "completed" &&
                         a.operation.exitCode === 0,
                 }),
