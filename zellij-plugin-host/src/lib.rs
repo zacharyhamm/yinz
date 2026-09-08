@@ -2124,3 +2124,5 @@ fn coalesce_hovers(mut updates: Vec<PluginUpdate>) -> Vec<PluginUpdate> {
 #[path = "./unit/plugin_tests/mod.rs"]
 #[cfg(test)]
 mod plugin_tests;
+
+mod ui;

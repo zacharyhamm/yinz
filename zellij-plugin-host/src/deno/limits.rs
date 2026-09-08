@@ -208,3 +208,30 @@ pub(super) fn read_source(path: &std::path::Path) -> Result<String> {
 #[cfg(test)]
 #[path = "unit/limits.rs"]
 mod tests;
+
+/// Conservative native-state reservation, released with its CppGC owner.
+/// Mutation inputs remain charged until collection, covering retained capacities and caches.
+/// ponytail: long-lived widgets retain charges; measure capacities if they exhaust the quota.
+pub(super) struct NativeCharge {
+    limits: Arc<Limits>,
+    bytes: usize,
+}
+impl NativeCharge {
+    pub(super) fn new(limits: Arc<Limits>) -> Self {
+        Self { limits, bytes: 0 }
+    }
+    pub(super) fn grow(&mut self, bytes: usize) -> Result<()> {
+        if !self.limits.reserve(bytes) {
+            self.limits.check()?;
+        }
+        self.bytes += bytes;
+        Ok(())
+    }
+}
+impl Drop for NativeCharge {
+    fn drop(&mut self) {
+        self.limits
+            .live_buffers
+            .fetch_sub(self.bytes, Ordering::AcqRel);
+    }
+}

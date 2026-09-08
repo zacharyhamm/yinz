@@ -1,4 +1,4 @@
-//! Lua plugins that add tools to Hocus.
+//! Script plugins that add tools to Hocus.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -147,7 +147,7 @@ impl Registry {
         }
         if discovered.get(&registration.namespace) != Some(&registration.path) {
             return Err(format!(
-                "extension {:?} is not a discovered hocus/*.lua file",
+                "extension {:?} is not a discovered hocus extension file",
                 registration.namespace
             ));
         }
@@ -280,21 +280,37 @@ impl ToolResult {
     }
 }
 
-pub fn extension_files(dir: &str, listing: &str) -> BTreeMap<String, String> {
-    let prefix = format!("{}/hocus/", dir.trim_end_matches('/'));
-    listing
-        .lines()
-        .filter_map(|path| {
-            let stem = path.strip_prefix(&prefix)?.strip_suffix(".lua")?;
-            (!stem.contains('/') && valid_name(stem)).then(|| (stem.to_owned(), path.to_owned()))
-        })
-        .collect()
+pub fn extension_files(dir: &str, listing: &str) -> (BTreeMap<String, String>, Vec<String>) {
+    let mut candidates: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for path in listing.lines() {
+        if let Some(namespace) = namespace_for_path(dir, path) {
+            candidates
+                .entry(namespace.to_owned())
+                .or_default()
+                .insert(path.to_owned());
+        }
+    }
+    let mut files = BTreeMap::new();
+    let mut conflicts = Vec::new();
+    for (namespace, paths) in candidates {
+        if paths.len() == 1 {
+            if let Some(path) = paths.into_iter().next() {
+                files.insert(namespace, path);
+            }
+        } else {
+            conflicts.push(format!(
+                "duplicate extension namespace {namespace:?}: {}",
+                paths.into_iter().collect::<Vec<_>>().join(", ")
+            ));
+        }
+    }
+    (files, conflicts)
 }
 
 pub fn namespace_for_path<'a>(dir: &str, path: &'a str) -> Option<&'a str> {
     let prefix = format!("{}/hocus/", dir.trim_end_matches('/'));
-    let stem = path.strip_prefix(&prefix)?.strip_suffix(".lua")?;
-    (!stem.contains('/') && valid_name(stem)).then_some(stem)
+    let (stem, suffix) = path.strip_prefix(&prefix)?.rsplit_once('.')?;
+    (matches!(suffix, "lua" | "js" | "mjs" | "ts" | "mts") && valid_name(stem)).then_some(stem)
 }
 
 #[cfg(target_arch = "wasm32")]

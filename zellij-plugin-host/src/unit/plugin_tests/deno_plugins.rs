@@ -2006,3 +2006,44 @@ export default {
     to_proxy.send(PluginInstruction::Exit).unwrap();
     proxy.join().unwrap();
 }
+
+#[test]
+fn deno_hocus_registration_requires_the_real_message_grant() {
+    let harness = Harness::new(
+        "ts",
+        r#"
+let state = 'starting';
+export default {
+  async load() {
+    let refusals = 0;
+    const attempt = () => {
+      try {zellij.hocus.tools({forecast:{handler:()=> 'unexpected'}});}
+      catch (error) {if (String(error).includes('MessageAndLaunchOtherPlugins')) refusals++; else throw error;}
+    };
+    attempt();
+    try {await zellij.waitForPermissions(['MessageAndLaunchOtherPlugins']);} catch (_) {}
+    attempt();
+    state = refusals === 2 ? 'registration denied before and after refusal' : 'unexpected registration';
+  },
+  render() {return state;}
+};
+"#,
+        PermissionStatus::Denied,
+    );
+    load(
+        &harness.sender,
+        RunPluginOrAlias::RunPlugin(RunPlugin {
+            location: RunPluginLocation::File(harness.path.clone()),
+            configuration: PluginUserConfiguration::new(BTreeMap::from([
+                ("hocus_extension_name".into(), "weather".into()),
+                (
+                    "hocus_extension_path".into(),
+                    harness.path.display().to_string(),
+                ),
+            ])),
+            ..Default::default()
+        }),
+    );
+    harness.rendered("registration denied before and after refusal");
+    harness.finish();
+}

@@ -289,6 +289,7 @@ fn a_confirmed_reload_does_not_rerun_the_head() {
 #[test]
 fn a_cleared_extension_reload_asks_the_host_once_and_stops_the_pump() {
     crate::tools::test_seams::reset();
+    crate::tools::test_seams::PLUGIN_ENTRIES.with_borrow_mut(|entries| *entries = Some(vec![]));
     crate::extensions::test_seams::EXTENSION_LOAD_CALLS.set(0);
     crate::tools::test_seams::PLUGIN_FS_EXISTS.set(Some(true));
     let mut state = plugin_state();
@@ -812,5 +813,43 @@ fn edit_diagnostics_are_byte_bounded_before_confirmation_and_during_execution() 
             }
         }
     }
+    test_seams::reset();
+}
+
+#[test]
+fn extension_reload_refuses_duplicate_namespaces_across_languages() {
+    use crate::tools::test_seams;
+    test_seams::reset();
+    crate::extensions::test_seams::EXTENSION_LOAD_CALLS.set(0);
+    test_seams::PLUGIN_FS_EXISTS.set(Some(true));
+    test_seams::PLUGIN_ENTRIES.with_borrow_mut(|entries| {
+        *entries = Some(
+            ["lua", "ts"]
+                .map(|suffix| zellij_tile::prelude::FsEntry {
+                    path: format!("/plugins/hocus/keys.{suffix}"),
+                    metadata: None,
+                })
+                .to_vec(),
+        )
+    });
+    let mut state = plugin_state();
+    state.pending.push_back(ToolCall {
+        id: "duplicate".into(),
+        name: "plugin_reload".into(),
+        arguments: r#"{"name":"hocus/keys.ts"}"#.into(),
+    });
+    state.pump_tools();
+    assert_eq!(crate::extensions::test_seams::EXTENSION_LOAD_CALLS.get(), 0);
+    let results = tool_results(&state)
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        results.contains("duplicate extension namespace"),
+        "{results}"
+    );
+    assert!(results.contains("keys.lua") && results.contains("keys.ts"));
+    assert!(state.extension_files.is_empty());
     test_seams::reset();
 }

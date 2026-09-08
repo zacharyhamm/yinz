@@ -211,8 +211,12 @@ fn shim_reply_readers_independently_require_decoder_entries() {
 
 #[test]
 fn shipped_async_example_typechecks_offline() {
-    check_plugin(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../example-plugins/hello.ts"))
+    for example in ["hello.ts", "forms.ts", "weather-extension.ts"] {
+        check_plugin(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../example-plugins/{example}")),
+        )
         .unwrap();
+    }
 }
 
 #[test]

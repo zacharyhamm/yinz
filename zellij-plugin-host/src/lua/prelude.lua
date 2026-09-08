@@ -2517,7 +2517,6 @@ end
 Table.__tostring = Table.render
 
 --- A nested list: items are strings or `Text`s, each optionally `{ text, indent = n }`.
---- (`disabled` is not honoured on list items; the host does not read it there.)
 local List = {}
 List.__index = List
 
@@ -2538,7 +2537,6 @@ function List:render(coords)
       text, indent = item[1] or item.text, item.indent or 0
     end
     text = zellij.ui.text(text)
-    text.is_disabled = nil
     lines[#lines + 1] = string.rep("|", indent) .. text:serialize()
   end
   return component("nested_list", coords, table.concat(lines, ";"))

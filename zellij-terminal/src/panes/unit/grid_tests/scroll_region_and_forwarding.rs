@@ -834,6 +834,18 @@ fn disabled_ribbon_renders_italic_non_bold_unselected() {
 }
 
 #[test]
+fn disabled_nested_list_item_renders_italic_non_bold() {
+    use crate::panes::terminal_character::AnsiCode;
+    let grid = render_ui_component("nested_list", &format!("d{}", serialize_text_bytes("RES")));
+    let letter_styles = styled_cells_of(&grid, 'R');
+    assert!(!letter_styles.is_empty());
+    for style in letter_styles {
+        assert_eq!(style.italic, Some(AnsiCode::On));
+        assert_ne!(style.bold, Some(AnsiCode::On));
+    }
+}
+
+#[test]
 fn disabled_text_with_opaque_flag_keeps_a_background() {
     use crate::panes::terminal_character::AnsiCode;
     let grid = render_ui_component("text", &format!("zd{}", serialize_text_bytes("RES")));

@@ -245,6 +245,76 @@ Registration retains the listener before dispatch. Successful disposal unregiste
 repeated successful disposal is harmless. Reload and disconnect remove the old runtime's watches.
 The shared store still only wakes watches for writes from the same server process.
 
+## Hocus extensions
+
+Put an extension directly in the user plugin directory's `hocus/` folder.
+Use a lower-snake-case file stem, such as `hocus/weather.ts`.
+Hocus accepts `.lua`, `.js`, `.mjs`, `.ts`, and `.mts`. Backups are excluded.
+Two files with the same stem conflict, even with different suffixes.
+Discovery and `plugin_reload` report both paths and register neither candidate.
+
+In `load`, await `zellij.waitForPermissions(['MessageAndLaunchOtherPlugins'])`, then call `zellij.hocus.tools(definitions)`.
+Each key names a tool. Each definition supplies a `handler(args, call)` function.
+Handlers can return JSON or a promise of JSON. Exceptions become tool errors.
+Hocus calls `forecast` from `weather.ts` as `weather_forecast`.
+
+Definitions accept `description`, JSON Schema `parameters`, `safety`, and `consequence`.
+Defaults are the tool name, `{type: 'object'}`, and `read_only`.
+Safety can also be `automatic` or `confirm`. A `confirm` tool requires a nonempty consequence.
+Handlers must validate their arguments before acting on them.
+
+Calling `tools` again replaces the complete tool set. The SDK repeats registration when Hocus requests discovery.
+`zellij.hocus.launch()` returns `{namespace, path}` when Hocus supplied that identity, or `null` otherwise.
+Without an identity, the plugin does not register tools.
+Hocus verifies ownership independently and keeps its existing 30-second call timeout.
+The SDK consumes extension protocol messages. Ordinary pipes still reach listeners and the plugin's `pipe` callback.
+Replies use the host-provided source plugin ID. Async handlers retain the client that received the call.
+
+See [weather-extension.ts](../example-plugins/weather-extension.ts), or `plugin_docs section=example_deno_extension`.
+
+## Shared UI and terminal text
+
+`zellij.ui` uses the same Rust rendering toolkit as Lua and Wasm plugins.
+Construct components during module initialization if needed. Rendering returns terminal strings.
+The plugin controls subscriptions, host commands, and submission behavior.
+
+Use `text`, `ribbon`, `table`, and `nestedList` for themed components.
+Styled text supports `selected()`, `opaque()`, `disabled()`, `emphasis(level, from, to)`, `dim()`, `unbold()`, `error()`, and `success()`.
+Style ranges use Unicode character indices, with a zero-based start and exclusive end.
+They do not use JavaScript UTF-16 offsets: `ui.text('🙂a').emphasis(1, 1, 2)` styles only `a`.
+
+Use `textInput`, `checkbox`, `radioGroup`, `select`, `combo`, and `button` for individual controls.
+`form(fields)` groups descriptors with unique, nonempty IDs.
+Each descriptor has a camelCase `kind`, an `id`, and the control's options.
+`dialog({title, message, help, fields})` adds a frame and supports `setStatus(text)`.
+Selections are zero-based. `null` means no selection. Nonempty option lists initially select index zero.
+
+Controls expose `value()`, `values()`, `setValue(value)`, and `focus()`.
+For forms and dialogs, use `value(id)`, `setValue(id, value)`, and `focus(id)`.
+Choice controls support `setOptions(options)`. Forms use `setOptions(id, options)`.
+All widgets support `focusedId()`, `moveFocus(forward)`, `handleKey(key)`, `handleMouse(mouse)`, and `insertPastedText(text)`.
+Pass the typed `Key`, `Mouse`, and `PastedText` event payloads directly.
+Interaction results contain `kind` and `shouldRender`, plus `id` when applicable.
+Kinds are `fieldChanged`, `complete`, `buttonPressed`, `focusMoved`, `cancel`, and `ignored`.
+Handle these results explicitly. A button reports intent and does not run a command.
+
+`render({x, y, width, height})` returns a terminal string. `x` and `y` default to zero.
+Widget cursors are published only with an accepted plugin render, for that render's client.
+Discarded async renders cannot move the cursor. Rendering outside the lifecycle callback does not publish a cursor.
+
+`ui.markdown(source, {compact})` retains parsed blocks and caches wrapping for the current width.
+Its `render({x, y, width, height, scroll})` returns `{text, totalRows}`. `scroll` counts rows and defaults to zero.
+A width change rebuilds wrapping. A zero-sized viewport produces no visible output.
+Native state belongs to one isolate and is released on garbage collection or runtime disposal.
+Native allocations share the isolate's backing-store budget. Mutation inputs are conservatively charged until collection, including retained capacity and caches.
+Input, coordinates, and output are bounded by transport limits. Excessive native allocations exhaust the isolate's budget.
+
+`zellij.text` provides `width`, `truncate`, `pad`, `padLeft`, `center`, `wrap`, and `sanitize`.
+Widths measure terminal columns. `truncate` defaults to `…` and accepts a replacement ellipsis as its third argument.
+Padding truncates oversized text without an ellipsis. `wrap` and `sanitize` use the shared Rust implementation.
+
+See [forms.ts](../example-plugins/forms.ts), or `plugin_docs section=example_deno_forms`.
+
 ## Modules and checking
 
 Local imports must name an explicit relative file, such as `./state.ts` or `./lib/format.js`.

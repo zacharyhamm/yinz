@@ -47,7 +47,7 @@ fn discovery_keeps_only_direct_lower_snake_case_extension_files() {
         "/plugins/clock.lua\n/plugins/hocus/weather.lua\n/plugins/hocus/bad-name.lua\n\
          /plugins/hocus/nested/mod.lua\n",
     );
-    assert_eq!(files, discovered());
+    assert_eq!(files, (discovered(), vec![]));
 }
 
 #[test]
@@ -176,4 +176,19 @@ fn reregistering_replaces_an_owners_complete_tool_set() {
         registry.owner_for_path("/plugins/hocus/weather.lua"),
         Some(zellij_tile::prelude::PluginId::new(7))
     );
+}
+
+#[test]
+fn script_suffixes_share_a_namespace_and_conflicts_register_neither() {
+    for suffix in ["lua", "js", "mjs", "ts", "mts"] {
+        let path = format!("/plugins/hocus/weather.{suffix}");
+        assert_eq!(namespace_for_path("/plugins", &path), Some("weather"));
+        assert_eq!(extension_files("/plugins", &path).0["weather"], path);
+    }
+    let (files, errors) = extension_files("/plugins", "/plugins/hocus/weather.lua\n/plugins/hocus/weather.ts\n/plugins/hocus/weather.mts\n/plugins/hocus/weather.bak.ts");
+    assert!(files.is_empty());
+    assert_eq!(errors.len(), 1);
+    for suffix in ["lua", "ts", "mts"] {
+        assert!(errors[0].contains(&format!("weather.{suffix}")));
+    }
 }
