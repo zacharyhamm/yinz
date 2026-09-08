@@ -1571,6 +1571,18 @@ impl WasmBridge {
         mut updates: Vec<(Option<PluginId>, Option<ClientId>, Event)>,
         shutdown_sender: Sender<()>,
     ) -> Result<()> {
+        // The screen owns pane state but has no plugin map. Fill the current session's
+        // plugin identities here, before forwarding or caching its manifest.
+        for (_, _, event) in &mut updates {
+            if let Event::SessionUpdate(sessions, _) = event {
+                if let Some(current) = sessions
+                    .iter_mut()
+                    .find(|session| session.is_current_session)
+                {
+                    current.populate_plugin_list(self.plugin_map.lock().unwrap().list_plugins());
+                }
+            }
+        }
         self.forward_events_to_cli_subscribers(&updates);
         for (plugin_id, client_id, event) in updates.iter() {
             if plugin_id.is_none() && client_id.is_none() {

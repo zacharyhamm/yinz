@@ -253,7 +253,7 @@ fn tab_on_a_blank_box_steps_to_the_agent_list() {
         state.ring_focus_calls,
         [(
             PaneId::Plugin(zellij_tile::prelude::PluginId::new(7)),
-            "list"
+            hocus_proto::vms::STOP_TABS
         )]
     );
 }
@@ -286,7 +286,7 @@ fn tab_from_a_released_box_steps_to_the_agent_list() {
         state.ring_focus_calls,
         [(
             PaneId::Plugin(zellij_tile::prelude::PluginId::new(7)),
-            "list"
+            hocus_proto::vms::STOP_TABS
         )]
     );
     assert_eq!(

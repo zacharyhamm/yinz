@@ -63,10 +63,10 @@ pub struct FakeServerOsApi {
     /// detection above all — cannot be tested end to end.
     cwds: Arc<Mutex<HashMap<ProcessId, PathBuf>>>,
     /// How many times the server asked for the session's Firecracker VMs to be
-    /// released on its way out. The real backend forwards this to the provider;
-    /// the fake only counts, so a test can check the server asks exactly once
-    /// per exit.
+    /// released on its way out. The fake counts completed releases and can wait
+    /// for a provider lock to model shutdown during a guarded close.
     firecracker_session_stops: Arc<AtomicUsize>,
+    firecracker_provider_lock: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl FakeServerOsApi {
@@ -76,6 +76,10 @@ impl FakeServerOsApi {
 
     pub fn firecracker_session_stops(&self) -> usize {
         self.firecracker_session_stops.load(Ordering::SeqCst)
+    }
+
+    pub fn set_firecracker_provider_lock(&self, path: PathBuf) {
+        *self.firecracker_provider_lock.lock().unwrap() = Some(path);
     }
 
     pub fn connected_client_count(&self) -> usize {
@@ -340,6 +344,10 @@ impl ServerOsApi for FakeServerOsApi {
     /// only thing the receiving session is told and the only thing it can get
     /// wrong.
     fn stop_firecracker_session(&self) -> Result<()> {
+        if let Some(path) = self.firecracker_provider_lock.lock().unwrap().as_ref() {
+            let lock = std::fs::File::open(path).context("open fake provider lock")?;
+            lock.lock().context("lock fake provider during shutdown")?;
+        }
         self.firecracker_session_stops
             .fetch_add(1, Ordering::SeqCst);
         Ok(())

@@ -5,7 +5,7 @@
 //! own. The privileged part is a one-time pool of user-owned TAP devices.
 
 use super::{
-    vm_id, worktree_vm_name, EnsureResponse, RecoveryEntry, VmEntry, PROGRESS_PREFIX,
+    vm_id, worktree_vm_name, EnsureResponse, Identity, RecoveryEntry, VmEntry, PROGRESS_PREFIX,
     PROTOCOL_VERSION,
 };
 use crate::pty_host::ensure_secure_dir;
@@ -382,6 +382,14 @@ fn handle_request(
     request: Request,
 ) -> Result<serde_json::Value> {
     recover_unusable_vms(state)?;
+    // The lock spans both this comparison and the operation. Guarded actions have their own
+    // protocol names so an older provider cannot silently discard the expected identity.
+    match &request {
+        Request::StopIfMatches { expected, .. }
+        | Request::SyncIfMatches { expected, .. }
+        | Request::ChangesIfMatches { expected, .. } => check_vm_identity(state, expected)?,
+        _ => {},
+    }
     let response = match request {
         Request::Ensure {
             session,
@@ -401,6 +409,22 @@ fn handle_request(
         Request::Stop { session, name, .. } => json!({
             "version": PROTOCOL_VERSION,
             "warnings": stop_one(state, config, copy, &session, &name)?,
+        }),
+        Request::StopIfMatches { expected, .. } => json!({
+            "version": PROTOCOL_VERSION,
+            "warnings": stop_one(state, config, copy, &expected.session, &expected.name)?,
+        }),
+        Request::CloseIfMatches { expected, .. } => json!({
+            "version": PROTOCOL_VERSION,
+            "warnings": close_if_matches(state, config, copy, &expected, zellij_session::firecracker::close_panes)?,
+        }),
+        Request::SyncIfMatches { expected, .. } => json!({
+            "version": PROTOCOL_VERSION,
+            "warnings": sync_one(state, config, copy, &expected.session, &expected.name)?,
+        }),
+        Request::ChangesIfMatches { expected, .. } => json!({
+            "version": PROTOCOL_VERSION,
+            "changes": changes_one(state, config, copy, &expected.session, &expected.name)?,
         }),
         Request::StopSession { session, .. } => json!({
             "version": PROTOCOL_VERSION,
@@ -2415,6 +2439,7 @@ fn validate_guest_path(path: &Path, what: &str) -> Result<()> {
 fn list(locked: &LockedState, session: Option<&str>) -> Result<Vec<VmEntry>> {
     let mut vms = vec![];
     for (_, state) in locked.entries()? {
+        let metrics = host_metrics(&state);
         let leases = if state.leases.is_empty() {
             vec![state.session.clone()]
         } else {
@@ -2425,6 +2450,8 @@ fn list(locked: &LockedState, session: Option<&str>) -> Result<Vec<VmEntry>> {
             .filter(|lease| session.is_none_or(|wanted| wanted == lease))
         {
             vms.push(VmEntry {
+                vm_id: Some(state.api_socket.to_string_lossy().into_owned()),
+                metrics: Some(metrics.clone()),
                 session: lease,
                 name: state.name.clone(),
                 state: if state.ready {
@@ -2439,6 +2466,74 @@ fn list(locked: &LockedState, session: Option<&str>) -> Result<Vec<VmEntry>> {
     }
     vms.sort_by(|a, b| (&a.session, &a.name).cmp(&(&b.session, &b.name)));
     Ok(vms)
+}
+
+fn host_metrics(state: &VmState) -> zellij_types::firecracker::Metrics {
+    use std::os::unix::fs::MetadataExt;
+    use zellij_types::firecracker::Metrics;
+    let disk = fs::metadata(&state.rootfs).ok();
+    let mut sample = Metrics {
+        sample_time_us: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|time| time.as_micros() as u64)
+            .unwrap_or_default(),
+        disk_allocated_bytes: disk.as_ref().map(|disk| disk.blocks().saturating_mul(512)),
+        disk_logical_bytes: disk.as_ref().map(|disk| disk.len()),
+        ..Default::default()
+    };
+    let Some((pid, start)) = state.process() else {
+        return sample;
+    };
+    sample.generation = format!("{pid}:{start}");
+    let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return sample;
+    };
+    let Some((cpu, rss)) = process_metrics(&stat, start) else {
+        return sample;
+    };
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    let pages = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    sample.source = "process".to_owned();
+    sample.cpu_usage_us = (ticks > 0).then(|| cpu.saturating_mul(1_000_000) / ticks as u64);
+    sample.memory_bytes = (pages > 0).then(|| rss.saturating_mul(pages as u64));
+    sample.memory_source = Some("process RSS".to_owned());
+    if let Some(group) = state.cgroup.as_ref().filter(|group| {
+        fs::read_to_string(group.join("cgroup.procs")).is_ok_and(|members| {
+            members
+                .lines()
+                .any(|member| member.trim().parse::<i32>() == Ok(pid))
+        })
+    }) {
+        if let Some(cpu) = fs::read_to_string(group.join("cpu.stat"))
+            .ok()
+            .and_then(|stat| {
+                stat.lines()
+                    .find_map(|line| line.strip_prefix("usage_usec ")?.trim().parse().ok())
+            })
+        {
+            sample.source = format!("cgroup:{}", group.display());
+            sample.cpu_usage_us = Some(cpu);
+        }
+        if let Some(memory) = fs::read_to_string(group.join("memory.current"))
+            .ok()
+            .and_then(|value| value.trim().parse().ok())
+        {
+            sample.memory_bytes = Some(memory);
+            sample.memory_source = Some("cgroup memory".to_owned());
+        }
+    }
+    // A disappearing/reused PID must not attribute another process's measurements.
+    if process_start_time(pid) != Some(start) {
+        sample.cpu_usage_us = None;
+        sample.memory_bytes = None;
+    }
+    sample
+}
+
+fn process_metrics(stat: &str, expected_start: u64) -> Option<(u64, u64)> {
+    let fields: Vec<_> = stat.rsplit_once(") ")?.1.split_whitespace().collect();
+    let number = |index: usize| fields.get(index)?.parse::<u64>().ok();
+    (number(19)? == expected_start).then_some((number(11)?.checked_add(number(12)?)?, number(21)?))
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2577,6 +2672,42 @@ fn recover_unusable_vms(locked: &LockedState) -> Result<()> {
         let _ = fs::remove_file(path);
     }
     Ok(())
+}
+
+fn check_vm_identity(locked: &LockedState, expected: &Identity) -> Result<()> {
+    expected.validate().map_err(|error| anyhow!(error))?;
+    // An absent lease is already released. Sync and Changes still report it as missing.
+    let Some((_, state)) = find_vm(&locked.entries()?, &expected.session, &expected.name)? else {
+        return Ok(());
+    };
+    let generation = state.process().map(|(pid, start)| format!("{pid}:{start}"));
+    if expected.vm_id.as_deref() != Some(state.api_socket.to_string_lossy().as_ref())
+        || expected.worktree != state.worktree
+        || generation.is_none()
+        || expected.generation != generation
+    {
+        return Err(anyhow!(
+            "VM lease changed; refresh and confirm before retrying"
+        ));
+    }
+    Ok(())
+}
+
+fn close_if_matches(
+    locked: &LockedState,
+    config: &Config,
+    copy: &dyn GuestCopy,
+    expected: &Identity,
+    close_panes: impl FnOnce(&str, &str, Duration) -> Result<()>,
+) -> Result<Vec<String>> {
+    check_vm_identity(locked, expected)?;
+    let (path, state) = find_vm(&locked.entries()?, &expected.session, &expected.name)?
+        .context("VM lease no longer exists; refresh the listing")?;
+    {
+        let _progress = Progress::start("waiting for VM pane closure");
+        close_panes(&expected.session, &expected.name, Duration::from_secs(15))?;
+    }
+    release(locked, config, copy, path, state, &expected.session)
 }
 
 fn stop_one(
@@ -5978,6 +6109,36 @@ mod tests {
             known_hosts: PathBuf::from("known_hosts"),
             cgroup,
         }
+    }
+
+    #[test]
+    fn host_metrics_use_cgroups_fall_back_to_verified_rss_and_measure_sparse_allocation() {
+        let root = tempfile::tempdir().unwrap();
+        let disk = root.path().join("disk");
+        fs::File::create(&disk).unwrap().set_len(1 << 30).unwrap();
+        let mut state = vm_state(disk, root.path().join("api"), Some(root.path().to_owned()));
+        state.pid = Some(std::process::id() as i32);
+        state.start_time = process_start_time(state.pid.unwrap());
+        let fallback = host_metrics(&state);
+        assert_eq!(fallback.memory_source.as_deref(), Some("process RSS"));
+        assert!(fallback.memory_bytes.unwrap() > 0);
+        assert!(fallback.disk_allocated_bytes.unwrap() < fallback.disk_logical_bytes.unwrap());
+        fs::write(
+            root.path().join("cgroup.procs"),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+        fs::write(root.path().join("cpu.stat"), "usage_usec 12345\n").unwrap();
+        fs::write(root.path().join("memory.current"), "67890\n").unwrap();
+        let cgroup = host_metrics(&state);
+        assert_eq!(cgroup.cpu_usage_us, Some(12345));
+        assert_eq!(cgroup.memory_bytes, Some(67890));
+        assert_eq!(cgroup.memory_source.as_deref(), Some("cgroup memory"));
+        state.start_time = Some(state.start_time.unwrap() + 1);
+        let reused = host_metrics(&state);
+        assert_eq!(reused.cpu_usage_us, None);
+        assert_eq!(reused.memory_bytes, None);
+        assert_eq!(reused.disk_logical_bytes, Some(1 << 30));
     }
 
     /// The `ensure` reply carries the worktree the VM mirrors, so a pane that joined a VM
@@ -9822,6 +9983,13 @@ mod tests {
         let mut vm = LeasedVm::new(&locked, &mut guests, "review", &[("shared.rs", "before")]);
         vm.state.leases = vec!["work".to_owned(), "other".to_owned()];
         vm.write_state();
+        let listing = list(&locked, None).unwrap();
+        assert_eq!(listing.len(), 2);
+        assert_eq!(listing[0].vm_id, listing[1].vm_id);
+        assert_eq!(
+            listing[0].metrics, listing[1].metrics,
+            "sample shared usage only once"
+        );
         fs::write(vm.guest.join("shared.rs"), "guest").unwrap();
 
         let warnings = release(
@@ -10386,8 +10554,18 @@ mod tests {
                 "state": "running",
                 "image": "rust-dev",
                 "worktree": running.host,
+                "vm_id": response["vms"][0]["vm_id"],
+                "metrics": response["vms"][0]["metrics"],
             }])
         );
+        assert!(response["vms"][0]["vm_id"].as_str().is_some());
+        assert_eq!(
+            response["vms"][0]["metrics"]["memory_source"],
+            "process RSS"
+        );
+        assert!(response["vms"][0]["metrics"]["memory_bytes"]
+            .as_u64()
+            .is_some());
         let recoveries = response["recoveries"].as_array().unwrap();
         assert_eq!(recoveries.len(), 1, "{recoveries:?}");
         assert_eq!(recoveries[0]["reason"], "crashed");
@@ -10422,6 +10600,256 @@ mod tests {
         let moved = read_state(&locked.path("renamed", "review")).unwrap();
         assert_eq!(moved.session, "renamed");
         assert_eq!(moved.leases, ["renamed"]);
+    }
+
+    #[test]
+    fn guarded_sync_and_changes_leave_a_replacement_vm_and_its_worktree_untouched() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let config = provider_config(root.path());
+        let mut guests = FakeGuests::default();
+        let mut vm = LeasedVm::new(&locked, &mut guests, "review", &[("file.rs", "before")]);
+        let original = LiveProcess::spawn();
+        original.attach(&mut vm);
+        let expected = list(&locked, Some("work")).unwrap().remove(0).identity();
+        let replacement = LiveProcess::spawn();
+        replacement.attach(&mut vm);
+        fs::write(vm.guest.join("file.rs"), "replacement guest").unwrap();
+        let state_before = fs::read(&vm.path).unwrap();
+        let baseline_before = fs::read(baseline_path(&vm.state).unwrap()).unwrap();
+        for request in [
+            Request::SyncIfMatches {
+                version: PROTOCOL_VERSION,
+                expected: expected.clone(),
+            },
+            Request::ChangesIfMatches {
+                version: PROTOCOL_VERSION,
+                expected,
+            },
+        ] {
+            let error =
+                handle_request(&locked, &config, &network_config(), &guests, request).unwrap_err();
+            assert!(error.to_string().contains("lease changed"));
+            assert_eq!(fs::read(&vm.path).unwrap(), state_before);
+            assert_eq!(
+                fs::read(baseline_path(&vm.state).unwrap()).unwrap(),
+                baseline_before
+            );
+            assert_eq!(
+                fs::read_to_string(vm.host.join("file.rs")).unwrap(),
+                "before"
+            );
+            assert_eq!(
+                fs::read_to_string(vm.guest.join("file.rs")).unwrap(),
+                "replacement guest"
+            );
+            assert!(vm_is_running(&vm.state));
+        }
+        let current = list(&locked, Some("work")).unwrap().remove(0).identity();
+        let changes = handle_request(
+            &locked,
+            &config,
+            &network_config(),
+            &guests,
+            Request::ChangesIfMatches {
+                version: PROTOCOL_VERSION,
+                expected: current.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(changes["changes"], 1);
+        handle_request(
+            &locked,
+            &config,
+            &network_config(),
+            &guests,
+            Request::SyncIfMatches {
+                version: PROTOCOL_VERSION,
+                expected: current,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(vm.host.join("file.rs")).unwrap(),
+            "replacement guest"
+        );
+    }
+
+    #[test]
+    fn guarded_close_rejects_a_replacement_before_requesting_pane_closure() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let mut guests = FakeGuests::default();
+        let mut vm = LeasedVm::new(&locked, &mut guests, "review", &[]);
+        let original = LiveProcess::spawn();
+        original.attach(&mut vm);
+        let expected = list(&locked, Some("work")).unwrap().remove(0).identity();
+        let replacement = LiveProcess::spawn();
+        replacement.attach(&mut vm);
+        let before = fs::read(&vm.path).unwrap();
+        let close = || {
+            close_if_matches(
+                &locked,
+                &provider_config(root.path()),
+                &guests,
+                &expected,
+                |_, _, _| panic!("must reject the identity before any pane-close request"),
+            )
+        };
+        assert!(close().unwrap_err().to_string().contains("lease changed"));
+        assert_eq!(fs::read(&vm.path).unwrap(), before);
+        assert!(vm_is_running(&vm.state));
+        fs::remove_file(&vm.path).unwrap();
+        assert!(close()
+            .unwrap_err()
+            .to_string()
+            .contains("no longer exists"));
+    }
+
+    #[test]
+    fn guarded_close_holds_the_lock_until_closure_and_lease_release_finish() {
+        use std::sync::mpsc;
+
+        for succeeds in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let locked = locked_state_in(root.path());
+            lock_exclusively(&locked._lock, || Progress::start(LOCK_WAIT_PHASE)).unwrap();
+            let mut guests = FakeGuests::default();
+            let mut vm = LeasedVm::new(&locked, &mut guests, "review", &[]);
+            vm.state.leases = vec!["work".into(), "other".into()];
+            let original = LiveProcess::spawn();
+            original.attach(&mut vm);
+            let replacement = LiveProcess::spawn();
+            let expected = list(&locked, Some("work")).unwrap().remove(0).identity();
+            let before = fs::read(&vm.path).unwrap();
+            let (closing_tx, closing_rx) = mpsc::channel();
+            let (contended_tx, contended_rx) = mpsc::channel();
+
+            thread::scope(|scope| {
+                let lock_path = root.path().join("lock");
+                let state_path = &vm.path;
+                let replacement = &replacement;
+                let replace = scope.spawn(move || {
+                    closing_rx
+                        .recv_timeout(super::super::AMPLE_TIMEOUT)
+                        .unwrap();
+                    let lock = File::open(lock_path).unwrap();
+                    assert_eq!(
+                        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+                        -1,
+                        "replacement acquired the lock during pane closure"
+                    );
+                    assert_eq!(
+                        std::io::Error::last_os_error().raw_os_error(),
+                        Some(libc::EWOULDBLOCK)
+                    );
+                    contended_tx.send(()).unwrap();
+                    lock_exclusively(&lock, || Progress::start(LOCK_WAIT_PHASE)).unwrap();
+                    let mut state = read_state(state_path).unwrap();
+                    assert_eq!(state.leases.contains(&"work".to_owned()), !succeeds);
+                    assert!(state.leases.contains(&"other".to_owned()));
+                    state.pid = Some(replacement.pid);
+                    state.start_time = Some(replacement.start_time);
+                    write_state(state_path, &state).unwrap();
+                });
+                let result = close_if_matches(
+                    &locked,
+                    &provider_config(root.path()),
+                    &guests,
+                    &expected,
+                    |session, name, timeout| {
+                        assert_eq!(
+                            (session, name, timeout),
+                            ("work", "review", Duration::from_secs(15))
+                        );
+                        closing_tx.send(()).unwrap();
+                        contended_rx
+                            .recv_timeout(super::super::AMPLE_TIMEOUT)
+                            .unwrap();
+                        assert_eq!(fs::read(&vm.path).unwrap(), before);
+                        if succeeds {
+                            Ok(())
+                        } else {
+                            bail!("pane closure failed")
+                        }
+                    },
+                );
+                if succeeds {
+                    assert!(result.unwrap().is_empty());
+                } else {
+                    assert_eq!(result.unwrap_err().to_string(), "pane closure failed");
+                    assert_eq!(fs::read(&vm.path).unwrap(), before);
+                }
+                drop(locked);
+                replace.join().unwrap();
+            });
+            assert_eq!(read_state(&vm.path).unwrap().pid, Some(replacement.pid));
+        }
+    }
+
+    #[test]
+    fn guarded_stop_revalidates_the_original_listing_before_releasing() {
+        let root = tempfile::tempdir().unwrap();
+        let locked = locked_state_in(root.path());
+        let config = provider_config(root.path());
+        let network = network_config();
+        let mut guests = FakeGuests::default();
+        let mut vm = LeasedVm::new(&locked, &mut guests, "review", &[("both.rs", "before")]);
+        let original = LiveProcess::spawn();
+        original.attach(&mut vm);
+        let expected = list(&locked, Some("work")).unwrap().remove(0).identity();
+
+        // A replacement can reuse the socket and worktree while the close waits for the lock.
+        let replacement = LiveProcess::spawn();
+        replacement.attach(&mut vm);
+        let replaced_state = fs::read(&vm.path).unwrap();
+        let stop = |expected| {
+            handle_request(
+                &locked,
+                &config,
+                &network,
+                &guests,
+                Request::StopIfMatches {
+                    version: PROTOCOL_VERSION,
+                    expected,
+                },
+            )
+        };
+        assert!(stop(expected)
+            .unwrap_err()
+            .to_string()
+            .contains("lease changed"));
+        let current = list(&locked, Some("work")).unwrap().remove(0).identity();
+        for field in [
+            "vm_id",
+            "worktree",
+            "missing_id",
+            "missing_generation",
+            "empty_generation",
+        ] {
+            let mut expected = current.clone();
+            match field {
+                "vm_id" => expected.vm_id = Some("another VM".into()),
+                "worktree" => expected.worktree = None,
+                "missing_id" => expected.vm_id = None,
+                "missing_generation" => expected.generation = None,
+                _ => expected.generation = Some(String::new()),
+            }
+            assert!(stop(expected).is_err());
+            assert_eq!(fs::read(&vm.path).unwrap(), replaced_state);
+            assert!(vm_is_running(&vm.state));
+            assert!(vm.state.rootfs.exists());
+        }
+        fs::write(vm.guest.join("both.rs"), "guest").unwrap();
+        fs::write(vm.host.join("both.rs"), "host").unwrap();
+        let response = stop(current.clone()).unwrap();
+        assert!(response["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("both.rs"));
+        assert!(!vm.path.exists());
+        assert!(!vm_is_running(&vm.state));
+        assert_eq!(stop(current).unwrap()["warnings"], json!([]));
     }
 
     #[test]
@@ -10501,5 +10929,22 @@ mod tests {
         assert!(!second.path.exists());
         assert!(!vm_is_running(&second.state));
         assert!(locked.entries().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod host_metrics_tests {
+    use super::*;
+    #[test]
+    fn proc_stat_checks_generation_and_handles_spaces_and_parentheses_in_names() {
+        let mut fields = vec!["0"; 22];
+        fields[11] = "15";
+        fields[12] = "7";
+        fields[19] = "1234";
+        fields[21] = "99";
+        let stat = format!("42 (vmm (worker)) {}", fields.join(" "));
+        assert_eq!(process_metrics(&stat, 1234), Some((22, 99)));
+        assert_eq!(process_metrics(&stat, 1235), None);
+        assert_eq!(process_metrics("gone", 1234), None);
     }
 }

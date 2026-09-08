@@ -19,6 +19,7 @@ pub mod pane_id;
 
 pub mod mouse;
 
+pub mod firecracker;
 pub mod geometry;
 pub mod pane_size;
 
