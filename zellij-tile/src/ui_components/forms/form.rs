@@ -287,6 +287,7 @@ pub struct Form {
     radio_active: bool,
     editing: bool,
     pressed: Option<PressTarget>,
+    first_button: usize,
 }
 
 /// What a left button went down on, remembered until it comes back up.
@@ -325,6 +326,7 @@ impl Form {
             radio_active: false,
             editing: false,
             pressed: None,
+            first_button: 0,
         }
     }
 
@@ -1369,7 +1371,22 @@ impl Form {
         if !self.buttons.is_empty() && buttons_are_visible {
             let button_y = y + button_row - start;
             let mut button_x = x;
-            for (_, button) in self.buttons.iter_mut() {
+            // Keep the focused button visible when the row is wider than the pane.
+            let mut first = self.first_button;
+            // Mouse-down changes focus; keep the row under the pointer until release.
+            if !matches!(self.pressed, Some(PressTarget::Button(_))) {
+                first = 0;
+                if let Some(Focus::Button(focused)) = self.focus {
+                    let mut used = self.buttons[focused].1.width();
+                    first = focused;
+                    while first > 0 && used + 1 + self.buttons[first - 1].1.width() <= width {
+                        first -= 1;
+                        used += 1 + self.buttons[first].1.width();
+                    }
+                }
+            }
+            self.first_button = first;
+            for (_, button) in self.buttons.iter_mut().skip(first) {
                 let room = (x + width).saturating_sub(button_x);
                 if room == 0 {
                     break;
@@ -1994,6 +2011,73 @@ mod tests {
         assert_eq!(form.viewport_start(2), 1, "buttons share one row");
         form.focus_on("name");
         assert_eq!(form.viewport_start(2), 0);
+    }
+
+    #[test]
+    fn a_narrow_form_keeps_each_focused_button_clickable() {
+        let mut form = a_form();
+        for id in ["save", "cancel"] {
+            form.focus_on(id);
+            form.render_in_viewport(0, 0, 5, 1);
+            form.handle_mouse(Mouse::LeftClick(0, 1));
+            form.render_in_viewport(0, 0, 5, 1);
+            assert_eq!(
+                form.handle_mouse(Mouse::Release(0, 1)),
+                FormEvent::ButtonPressed(id.into())
+            );
+        }
+    }
+
+    #[test]
+    fn a_partially_visible_button_stays_under_the_pointer_until_release() {
+        for scrolled in [false, true] {
+            for release_inside in [false, true] {
+                let mut form = Form::new();
+                if scrolled {
+                    form = form.button("earlier", Button::new("Earlier"));
+                }
+                form = form
+                    .button("restart", Button::new("Restart"))
+                    .button("duplicate", Button::new("Duplicate"))
+                    .button("fork", Button::new("Fork"));
+                form.focus_on("duplicate");
+                form.render_buffer(0, 0, 24);
+                assert_eq!(form.first_button, usize::from(scrolled));
+                let fork = form.buttons.last().unwrap().1.last_rendered().unwrap();
+                assert!(fork.columns < form.buttons.last().unwrap().1.width());
+                assert_eq!(
+                    form.handle_mouse(Mouse::LeftClick(0, fork.x)),
+                    FormEvent::FocusMoved
+                );
+                assert_eq!(form.focused_id(), Some("fork"));
+                form.render_buffer(0, 0, 24);
+                assert_eq!(form.buttons.last().unwrap().1.last_rendered(), Some(fork));
+                let release_x = if release_inside { fork.x } else { 0 };
+                assert_eq!(
+                    form.handle_mouse(Mouse::Release(0, release_x)),
+                    if release_inside {
+                        FormEvent::ButtonPressed("fork".into())
+                    } else {
+                        FormEvent::Ignored
+                    }
+                );
+                form.render_buffer(0, 0, 24);
+                assert_eq!(
+                    form.buttons
+                        .last()
+                        .unwrap()
+                        .1
+                        .last_rendered()
+                        .unwrap()
+                        .columns,
+                    form.buttons.last().unwrap().1.width()
+                );
+                form.handle_key(key(BareKey::Left));
+                form.render_buffer(0, 0, 24);
+                assert_eq!(form.focused_id(), Some("duplicate"));
+                assert_eq!(form.first_button, usize::from(scrolled));
+            }
+        }
     }
 
     #[test]

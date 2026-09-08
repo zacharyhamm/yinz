@@ -46,17 +46,26 @@ z.async.run_command=function(opts)
   local stdout=''
   if argv[1]=='git' then stdout='/host\n'
   elseif argv[2]=='pty-host' then stdout=z.json.encode(hosts)
-  elseif argv[2]=='workflow' and argv[3]=='answer' then status='completed'
+  elseif argv[2]=='workflow' and argv[3]=='answer' then
+    assert(argv[4]=='run' and argv[5]=='questions' and argv[6]=='exit' and argv[7]=='leave')
+    status='completed'
+  elseif argv[2]=='workflow' and argv[3]=='cancel' then status='cancelled'
   elseif argv[2]=='workflow' and argv[3]=='history' then
     if argv[4]=='search' then
       stdout=z.json.encode{results={{runId='run',workflowName='fixture',inputs={session=z.server_session,launch=token}}}}
+    elseif argv[4]=='logs' then
+      local lines={}
+      for i=1,100 do lines[#lines+1]=string.format('LOG %03d selectable output',i) end
+      stdout=table.concat(lines,'\n')
     elseif argv[4]=='get' then
       stdout=z.json.encode{id='run',workflowName='fixture',status=status,jobs={},inputs={session=z.server_session,launch=token}}
     end
   elseif argv[2]=='data' then
     local results={}
     if argv[4]:find('question') and status=='suspended' then
-      results={{model='questions',version=1,attributes={question='q',run='run',kind='choice',prompt='Continue work?',answers={'yes','no'},state='pending'}}}
+      assert(argv[4]=='specName == "question" && attributes.run in ["run"]',argv[4])
+      results={{model='questions',version=2,attributes={question='exit',run='run',kind='choice',prompt='Agent exited. Choose Restart, Duplicate, Fork, Begin review, or Leave.',answers={'restart','duplicate','fork','begin-review','leave'},state='pending'}},
+        {model='questions',version=1,attributes={question='exit',run='run',kind='choice',prompt='Stale question',answers={'old'},state='pending'}}}
     end
     stdout=z.json.encode{results=results}
   end

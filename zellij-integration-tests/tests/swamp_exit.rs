@@ -1,8 +1,11 @@
 #![cfg(unix)]
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use std::fs;
 use zellij_cli::args::CliAction;
 use zellij_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE};
+use zellij_types::pane_size::Size;
 
 // Run the shipped bridge, exit hook and view together. Swamp history and supervisor
 // queries are fixtures: terminal processes use this suite's fake PTYs. Pane creation,
@@ -87,7 +90,7 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     fs::write(&path, fixture()).unwrap();
     let mut zellij = TestRunner::new(TERMINAL_SIZE)
         .with_config(&format!(
-            "load_plugins clear-defaults=true {{}}\nhooks {{ agent_exit \"file:{}\"; }}",
+            "mouse_mode true\ncopy_clipboard \"system\"\nload_plugins clear-defaults=true {{}}\nhooks {{ agent_exit \"file:{}\"; }}",
             path.display()
         ))
         .with_layout(LayoutInfo::Stringified(
@@ -134,25 +137,91 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
     });
     advance(&zellij, "done");
     zellij.wait_until("verified completion restores question", |s| {
-        s.contains("Continue work?")
+        s.contains("Agent exited. Choose")
     });
     if status_bar {
         for _ in 0..2 {
             zellij.send_stdin(&keys::ctrl('g'));
             zellij.wait_until("status bar shows locked mode beside the workflow", |s| {
-                s.contains("Continue work?") && s.contains("INTERFACE LOCKED")
+                s.contains("Agent exited. Choose") && s.contains("INTERFACE LOCKED")
             });
             zellij.send_stdin(&keys::ctrl('g'));
             zellij.wait_until("status bar shows normal mode beside the workflow", |s| {
-                s.contains("Continue work?")
+                s.contains("Agent exited. Choose")
                     && s.contains("Ctrl")
                     && s.contains("LOCK")
                     && !s.contains("INTERFACE LOCKED")
             });
         }
     }
-    zellij.send_stdin(b"yes");
-    zellij.send_stdin(&keys::ENTER);
+    let question = zellij.wait_until("all five permitted choices are buttons", |s| {
+        s.lines().iter().any(|line| {
+            [
+                "Restart",
+                "Duplicate",
+                "Fork",
+                "Begin review",
+                "Leave",
+                "Cancel run",
+                "Detach",
+            ]
+            .iter()
+            .all(|label| line.contains(label))
+        })
+    });
+    let prompt_row = question
+        .lines()
+        .iter()
+        .position(|line| line.contains("Agent exited. Choose"))
+        .unwrap();
+    let button_row = question
+        .lines()
+        .iter()
+        .position(|line| line.contains("Cancel run") && line.contains("Restart"))
+        .unwrap();
+    assert!(!question.contains("Submit") && !question.contains("Next question"));
+    zellij.send_stdin(b"\x1b[6~");
+    let scrolled = zellij.wait_until("page down scrolls logs with pinned question", |s| {
+        s.contains("LOG 020") && s.lines()[prompt_row].contains("Agent exited. Choose")
+    });
+    assert_eq!(question.lines()[button_row], scrolled.lines()[button_row]);
+    zellij.send_stdin(b"\x1b[<64;5;3M");
+    zellij.wait_until("wheel scrolls log backward", |s| s.contains("LOG 008"));
+    zellij.send_stdin(b"\x1b[5~");
+    let logs = zellij.wait_until("page up restores log beginning", |s| s.contains("LOG 001"));
+    let log_row = logs
+        .lines()
+        .iter()
+        .position(|line| line.contains("LOG 001"))
+        .unwrap();
+    let log_col = logs.lines()[log_row]
+        .chars()
+        .position(|c| c == 'L')
+        .unwrap();
+    zellij.send_stdin(format!("\x1b[<0;{};{}M", log_col + 1, log_row + 1).as_bytes());
+    zellij.send_stdin(format!("\x1b[<32;{};{}M", log_col + 8, log_row + 1).as_bytes());
+    zellij.send_stdin(format!("\x1b[<0;{};{}m", log_col + 8, log_row + 1).as_bytes());
+    let copied = BASE64.encode("LOG 001");
+    zellij.wait_until_raw_output("log selection is copied", |bytes| {
+        String::from_utf8_lossy(bytes).contains(&format!(";{copied}"))
+    });
+    if status_bar {
+        let line = zellij.snapshot().lines()[button_row].clone();
+        let col = line.find("Leave").unwrap();
+        let col = line[..col].chars().count();
+        zellij.send_stdin(format!("\x1b[<0;{};{}M", col + 1, button_row + 1).as_bytes());
+        zellij.send_stdin(format!("\x1b[<0;{};{}m", col + 1, button_row + 1).as_bytes());
+    } else {
+        zellij.resize(Size { rows: 8, cols: 24 });
+        for _ in 0..4 {
+            zellij.send_stdin(&keys::TAB);
+        }
+        zellij.wait_until("last choice remains visible in a small pane", |s| {
+            s.contains("Leave")
+        });
+        zellij.send_stdin(&keys::ENTER);
+        zellij.resize(TERMINAL_SIZE);
+    }
     zellij.wait_until("final result stays visible", |s| {
         s.contains("Run run: completed")
     });
