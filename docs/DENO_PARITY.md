@@ -34,7 +34,9 @@ Test names are in the linked files. The full repository gate is recorded below.
 | Parsed permission inference | **Verified.** [Analysis tests][analysis-tests] cover literal arrays on SDK bindings, imported aliases, namespace imports and raw permission commands. Comments and shadowed names grant nothing. Computed requests warn and use normal runtime approval. Imported source cannot silently add grants. |
 | Legacy filesystem scan/watch events | **Raw commands and typed events available.** Existing host tests cover the shared implementation; dedicated Deno change-notification and disconnect coverage is not established by the new data-watch tests. |
 | Remaining host command families | **Typed raw access available.** Common dispatch covers keybindings, clipboard, pane placement, actions and other host operations. The representative session test does not exhaust these families. |
-| Streaming helpers, agent helpers and workers | **Excluded from this work.** Raw commands/events expose applicable host operations, but do not provide these SDK conveniences or CPU parallelism. |
+| Agent helpers | **Verified on Linux.** spawn details/ID, manifest cache, event subscriptions, bracketed paste, cancellable state/event/turn waits, and prompt ordering. SDK tests cover transitions, cancellation, validation, and dispatch cleanup. Real plugin tests cover agent event delivery and reload. |
+| Hocus completion client | **Verified on Linux.** exact daemon discovery, typed transcript/tool-call round trips, reply provenance, request byte limits, errors, deadlines, cancellation, and cleanup. SDK tests and Rust-backed TypeScript fixtures cover the protocol. Real dispatch tests use a deterministic local peer and check permissions and reload isolation. |
+| Streaming helpers, pane command sequencing and workers | **Excluded from this work.** Raw commands/events expose applicable host operations, but do not provide these SDK conveniences or CPU parallelism. |
 
 RPC now has shared version-1 dispatch through `zellij.rpc.call()` and `zellij.rpc.handle()`.
 SDK regressions cover results, errors, provenance, cancellation, deadlines, cleanup, message limits, and ordinary pipes.
@@ -43,6 +45,14 @@ RPC verification: focused tests passed. `ZELLIJ_TEST_WAIT_TIMEOUT_MS=20000 cargo
 The unit phase passed 7,936 tests and failed `plugins::lua::unit_tests::swamp_output_preview_names_the_saved_version_and_keeps_return_actionable`.
 That unchanged Lua test also fails alone at its submit-focus assertion. The gate remains red.
 The historical gate results below predate this addition.
+
+Agent/completion verification (2026-09-08): all new SDK, TypeScript, Rust fixture, and real-dispatch tests passed.
+`cargo x ci check` passed format, lint, and doctests. The unit phase passed 7,944 of 7,946 tests.
+The existing Lua preview test named above still fails alone at its submit-focus assertion.
+`plugins::plugin_tests::run_and_pipe_commands::unblock_input_plugin_command` had an extra filesystem event in its snapshot and passed alone.
+The integration phase passed 385 of 386 tests at the gate's 16-worker setting.
+`stacked_pane_list::floating_the_visible_member_promotes_its_neighbor` showed tab count `[1]` instead of `[2]` and passed alone at `-j 16`.
+No snapshots were accepted. The full gate remains red; the reproducible blocker is the unchanged Lua preview test.
 
 ## Public contracts
 

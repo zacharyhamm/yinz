@@ -2210,3 +2210,160 @@ export default {
     to_proxy.send(PluginInstruction::Exit).unwrap();
     proxy.join().unwrap();
 }
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_completion_real_dispatch_permissions_and_reload_isolation() {
+    // Initialize the real discovery snapshot without a background scanner racing this fixture.
+    let (tx, rx): ChannelWithContext<BackgroundJob> = channels::unbounded();
+    SenderWithContext::new(tx)
+        .send(BackgroundJob::Exit)
+        .unwrap();
+    crate::background_jobs::background_jobs_main(
+        Bus::new(vec![rx], None, None, None, None, None, None, None).should_silently_fail(),
+        None,
+        true,
+    )
+    .unwrap();
+    let scan = crate::background_jobs::session_scan_state().unwrap();
+    *scan.current_session_name.lock().unwrap() = "deno-completion-test".into();
+    scan.current_session_info.lock().unwrap().name = "deno-completion-test".into();
+    scan.current_session_plugin_list.lock().unwrap().insert(
+        PluginId::new(7),
+        RunPlugin {
+            location: RunPluginLocation::Zellij(zellij_types::data::PluginTag::new("hocus-agentd")),
+            ..Default::default()
+        },
+    );
+    let source = r#"
+const label = 'old';
+let state='starting', fences=0;
+export default {
+  async load() {
+    zellij.subscribe(['CustomMessage']);
+    try {await zellij.hocus.complete({messages:[{role:'user'}]}); throw Error('discovery was unprotected');}
+    catch(e) {if (!String(e).includes('ReadApplicationState')) throw e;}
+    await zellij.waitForPermissions(['ReadApplicationState']);
+    try {await zellij.hocus.complete({messages:[{role:'user'}]}); throw Error('message was unprotected');}
+    catch(e) {if (!String(e).includes('MessageAndLaunchOtherPlugins')) throw e;}
+    await zellij.waitForPermissions(['MessageAndLaunchOtherPlugins']);
+    state='waiting'; zellij.requestRender();
+    const result=await zellij.hocus.complete({messages:[{role:'user',content:label}]});
+    state=result.content;
+  },
+  update(e) {if(e.CustomMessage){fences++;return true;}},
+  render(){return `${label} completion=${state} fences=${fences}`;}
+};
+"#;
+    let (tx, outgoing): ChannelWithContext<PluginInstruction> = channels::unbounded();
+    let tx = SenderWithContext::new(tx);
+    let harness = Harness::with_event_sender(
+        "ts",
+        source,
+        Some(PermissionStatus::Granted),
+        Some(tx.clone()),
+    );
+    let replies = Watched::new(Vec::<PluginInstruction>::new());
+    let proxy = std::thread::spawn({
+        let replies = replies.clone();
+        let sender = harness.sender.clone();
+        move || loop {
+            match outgoing.recv_timeout(FAKE_SCREEN_RECV_TIMEOUT).unwrap().0 {
+                PluginInstruction::Exit => break,
+                PluginInstruction::MessageFromPlugin {
+                    source_plugin_id,
+                    mut message,
+                } if message.message_name == "hocus_complete" => {
+                    assert_eq!(message.destination_plugin_id, Some(PluginId::new(7)));
+                    let request: serde_json::Value =
+                        serde_json::from_str(message.message_payload.as_ref().unwrap()).unwrap();
+                    message.destination_plugin_id = Some(source_plugin_id);
+                    message.message_name = "hocus_complete_result".into();
+                    message.message_payload = Some(serde_json::json!({"request_id":request["request_id"],"content":request["messages"][0]["content"],"tool_calls":[],"finish_reason":"stop","model":"deterministic-peer","usage":null,"error":""}).to_string());
+                    replies.lock().push(PluginInstruction::MessageFromPlugin {
+                        source_plugin_id: PluginId::new(7),
+                        message,
+                    });
+                },
+                other => {
+                    let _ = sender.send(other);
+                },
+            }
+        }
+    });
+    harness.load();
+    let old = replies.wait_until("first completion request", Duration::from_secs(20), |r| {
+        r.first().cloned()
+    });
+    harness.rendered("old completion=waiting fences=0");
+    // Grants survive reload, so the replacement proceeds directly to its request.
+    let replacement = source.replace("const label = 'old'", "const label = 'new'");
+    let start = replacement
+        .find("    try {await zellij.hocus.complete")
+        .unwrap();
+    let end = replacement.find("    state='waiting'").unwrap();
+    let replacement = format!("{}    await zellij.waitForPermissions(['ReadApplicationState', 'MessageAndLaunchOtherPlugins']);\n{}", &replacement[..start], &replacement[end..]);
+    std::fs::write(&harness.path, replacement).unwrap();
+    harness.reload();
+    let current = replies.wait_until(
+        "replacement completion request",
+        Duration::from_secs(20),
+        |r| r.get(1).cloned(),
+    );
+    harness.rendered("new completion=waiting fences=0");
+    harness.sender.send(old).unwrap();
+    harness.event(release_event());
+    harness.rendered("new completion=waiting fences=1");
+    harness.sender.send(current).unwrap();
+    harness.rendered("new completion=new fences=1");
+    harness.finish();
+    tx.send(PluginInstruction::Exit).unwrap();
+    proxy.join().unwrap();
+}
+
+#[test]
+fn deno_agent_events_use_real_permissions_and_reloaded_waits() {
+    use zellij_types::agent::{AgentEvent, AgentState};
+    let source = r#"
+const label='old';
+let state='starting', heard=0;
+export default {
+  async load() {
+    await zellij.waitForPermissions(['ReadApplicationState']);
+    zellij.agent.on(()=>{heard++;});
+    state='waiting'; zellij.requestRender();
+    const turn=await zellij.agent.waitForTurn({Terminal:7});
+    state=turn.hook+':'+turn.message;
+  },render(){return `${label} agent=${state} heard=${heard}`;}
+};
+"#;
+    let harness = Harness::new("ts", source, PermissionStatus::Granted);
+    let event = |hook: &str| {
+        Event::AgentEvent(AgentEvent {
+            pane_id: crate::TerminalId::new(7),
+            kind: "codex".into(),
+            hook: hook.into(),
+            state: Some(AgentState::Idle),
+            last_message: Some("done".into()),
+            session_id: Some("session".into()),
+            detail: None,
+            prompt: None,
+            tool_name: None,
+            cwd: None,
+            raw: String::new(),
+        })
+    };
+    harness.load();
+    harness.rendered("old agent=waiting heard=0");
+    harness.event(event("SessionStart"));
+    harness.event(release_event());
+    std::fs::write(&harness.path, source.replace("label='old'", "label='new'")).unwrap();
+    harness.reload();
+    harness.rendered("new agent=waiting heard=0");
+    harness.event(event("Stop"));
+    harness.rendered("new agent=Stop:done heard=1");
+    let log = harness.finish();
+    assert!(!rendered_assets(&log)
+        .iter()
+        .any(|(_, s)| s.contains("old agent=Stop")));
+}

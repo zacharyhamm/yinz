@@ -253,10 +253,13 @@
       timerDeadline = next.deadline;
     }
   }
-  function addTimer(milliseconds, fire, rejected = fail) {
+  function validateTimerDuration(milliseconds) {
     if (!Number.isFinite(milliseconds) || milliseconds < 0 || milliseconds > 2147483647) {
       throw new TypeError("timer duration must be between 0 and 2147483647 milliseconds");
     }
+  }
+  function addTimer(milliseconds, fire, rejected = fail) {
+    validateTimerDuration(milliseconds);
     const release = retainEvent("Timer");
     const timer = { deadline: Date.now() + milliseconds, client, fire, cancel: () => {
       if (timers.delete(timer)) release();
@@ -284,6 +287,88 @@
     });
     return { cancel: timer.cancel };
   }
+  let agentPanes = new Map();
+  let watchingAgents = false;
+  function terminalId(pane) {
+    if (typeof pane !== "number") validate(pane);
+    const id = typeof pane === "number" ? pane :
+      (pane && Object.keys(pane).length === 1 ? pane.Terminal : undefined);
+    if (!Number.isSafeInteger(id) || id < 0 || id > 4294967295) throw new TypeError("agent pane must be a terminal ID fitting u32");
+    return id;
+  }
+  function stateFilter(states) {
+    const list = typeof states === "string" ? [states] : states;
+    if (!Array.isArray(list) || !list.length || list.some(s => typeof s !== "string" || !["Busy", "Waiting", "Idle", "Exited", "busy", "waiting", "idle", "exited"].includes(s))) throw new TypeError("invalid agent states");
+    return new Set(list.map(s => s.toLowerCase()));
+  }
+  function watchAgents() {
+    if (!watchingAgents) { retainEvent("PaneUpdate"); watchingAgents = true; }
+  }
+  function observeState(operation, pane, states, {after} = {}) {
+    const id = terminalId(pane), wanted = stateFilter(states);
+    const preceding = after === undefined ? null : stateFilter(after);
+    let seen = preceding === null;
+    observeEvent(operation, "PaneUpdate", () => {
+      const state = agentPanes.get(id)?.agent?.state.toLowerCase();
+      if (seen && wanted.has(state)) return true;
+      if (preceding?.has(state)) seen = true;
+      return false;
+    }, () => ({...agentPanes.get(id), agent:{...agentPanes.get(id).agent}}));
+  }
+  function observeTurn(operation, pane, {fallback} = {}) {
+    const id = terminalId(pane);
+    if (fallback !== undefined && fallback !== "idle") throw new TypeError('fallback must be "idle"');
+    observeEvent(operation, "AgentEvent", e => e.pane_id === id && ["Stop", "StopFailure", "Interrupt"].includes(e.hook),
+      e => ({message:e.last_message, hook:e.hook, state:e.state, sessionId:e.session_id}));
+    if (fallback === "idle") {
+      const cleanup = operation.cleanup;
+      const idle = {
+        get active() { return operation.active; }, cleanup: () => {}, reject: operation.reject,
+        resolve: p => operation.resolve({message:null, hook:null, state:"Idle", sessionId:p.agent.session_id ?? null}),
+      };
+      operation.cleanup = () => { cleanup(); idle.cleanup(); };
+      observeState(idle, id, "Idle", {after:["Busy", "Waiting"]});
+    }
+  }
+  function validateAgentSend(pane, text, {enter = true} = {}) {
+    const target = {Terminal:terminalId(pane)};
+    if (typeof text !== "string" || typeof enter !== "boolean") throw new TypeError("agent send requires text and a boolean enter option");
+    return {target, enter};
+  }
+  const agent = Object.freeze({
+    spawnDetails(options) {
+      validate(options); record(options, "agent spawn options");
+      const {sourceDirectory, cwd, name, context = {}, automaticFirecrackerVm = false, startSuppressed = false, ...spec} = options;
+      return command("SpawnAgent", {spec, source_directory:sourceDirectory ?? null, cwd:cwd ?? null, name:name ?? null,
+        context, automatic_firecracker_vm:automaticFirecrackerVm, start_suppressed:startSuppressed});
+    },
+    spawn(options) { return agent.spawnDetails(options).pane_id; },
+    info(pane) { const id = terminalId(pane); watchAgents(); return agentPanes.get(id)?.agent ? {...agentPanes.get(id).agent} : null; },
+    all() { watchAgents(); return Object.fromEntries([...agentPanes].filter(([,p]) => p.agent).map(([id,p]) => [id,{...p.agent}])); },
+    on(handler) {
+      if (typeof handler !== "function") throw new TypeError("agent handler must be a function");
+      const release = retainEvent("AgentEvent"), off = on("AgentEvent", handler);
+      let active = true;
+      return () => { if (active) { active = false; off(); release(); } };
+    },
+    send(pane, text, options) {
+      const {target, enter} = validateAgentSend(pane, text, options);
+      command("WriteToPaneId", [encodeUtf8("\x1b[200~" + text + "\x1b[201~"), target]);
+      if (enter) command("WriteToPaneId", [encodeUtf8("\r"), target]);
+    },
+    waitForState: (pane, states, options) => cancellable(op => observeState(op, pane, states, options)),
+    waitForEvent(pane, hooks) {
+      return cancellable(op => {
+        const id = terminalId(pane), list = typeof hooks === "string" ? [hooks] : hooks;
+        if (list !== undefined && (!Array.isArray(list) || list.some(h => typeof h !== "string"))) throw new TypeError("hooks must be a string or array of strings");
+        const wanted = list === undefined ? null : new Set(list);
+        observeEvent(op, "AgentEvent", e => e.pane_id === id && (wanted === null || wanted.has(e.hook)));
+      });
+    },
+    waitForTurn: (pane, options) => cancellable(op => observeTurn(op, pane, options)),
+    prompt: (pane, text, options) => cancellable(op => { validateAgentSend(pane, text, options); observeTurn(op, pane, options); agent.send(pane, text, options); }),
+  });
+
   const fs = Object.freeze({
     read: (path, {maxBytes = null} = {}) => command('FsRead', {path, max_bytes: maxBytes}),
     list: (path) => command('FsList', {path}),
@@ -465,7 +550,76 @@
       sendPluginMessage("hocus_extension_register", {version: 1, ...hocusIdentity, tools: definitions});
     }
   }
+  const completions = new Map();
+  let completionCount = 0n;
+  function completionCalls(calls) {
+    if (!Array.isArray(calls)) throw new TypeError("tool_calls must be an array");
+    for (const call of calls) {
+      record(call, "tool call");
+      if (typeof call.id !== "string" || typeof call.name !== "string" || (call.arguments !== undefined && typeof call.arguments !== "string")) throw new TypeError("invalid completion tool call");
+    }
+  }
+  function complete(options) {
+    return cancellable(operation => {
+      // Validate the entire guest graph before destructuring or reading any field.
+      validate(options); record(options, "completion options");
+      for (const key of Object.keys(options)) if (!["messages", "system", "model", "tools", "toolChoice", "temperature", "maxTokens", "timeoutMs"].includes(key)) throw new TypeError("unknown completion option: " + key);
+      const {messages, system = null, model = null, tools = [], toolChoice = null, temperature = null, maxTokens = null, timeoutMs = 60000} = options;
+      if (!Array.isArray(messages) || messages.length > 200 || (!messages.length && system === null)) throw new TypeError("completion requires messages (at most 200) or a system prompt");
+      if (!Array.isArray(tools) || tools.length > 64) throw new TypeError("completion allows at most 64 tools");
+      if ((system !== null && typeof system !== "string") || (model !== null && typeof model !== "string")) throw new TypeError("system and model must be strings");
+      if (temperature !== null && !Number.isFinite(temperature)) throw new TypeError("temperature must be finite");
+      if (maxTokens !== null && (!Number.isSafeInteger(maxTokens) || maxTokens < 0 || maxTokens > 4294967295)) throw new TypeError("maxTokens must fit u32");
+      validateTimerDuration(timeoutMs);
+      for (const message of messages) {
+        record(message, "completion message");
+        if (!["system", "user", "assistant", "tool"].includes(message.role) || (message.content !== undefined && typeof message.content !== "string")) throw new TypeError("invalid completion message");
+        if ((message.tool_call_id != null && typeof message.tool_call_id !== "string") || (message.role === "tool" && typeof message.tool_call_id !== "string")) throw new TypeError("tool messages require tool_call_id");
+        completionCalls(message.tool_calls === undefined ? [] : message.tool_calls);
+      }
+      if (rpcPrefix === null) throw new Error("completion isolate identity is unavailable");
+      const request_id = rpcPrefix + ":hc" + (++completionCount);
+      const payload = {request_id, messages, system, model, tools, tool_choice:toolChoice, temperature, max_tokens:maxTokens};
+      jsonMessage(payload);
+      const snapshot = command("GetSessionList");
+      const daemons = snapshot.live_sessions.filter(s => s.is_current_session).flatMap(s => Object.entries(s.plugins))
+        .filter(([,p]) => p.location === "zellij:hocus-agentd");
+      if (daemons.length !== 1) throw new Error(daemons.length ? "multiple hocus-agentd plugins in the current session" : "no hocus-agentd in the current session");
+      const pluginId = Number(daemons[0][0]);
+      if (!Number.isSafeInteger(pluginId) || pluginId < 0 || pluginId > 4294967295) throw new Error("invalid hocus-agentd plugin ID");
+      let timer;
+      operation.cleanup = () => { completions.delete(request_id); timer?.cancel(); };
+      completions.set(request_id, {operation, pluginId});
+      timer = addTimer(timeoutMs, () => {
+        const error = new Error("Hocus completion timed out"); error.name = "TimeoutError"; operation.reject(error);
+      }, operation.reject);
+      sendPluginMessage("hocus_complete", payload, pluginId);
+    });
+  }
+  function completionPipe(message) {
+    if (message.name === "hocus_complete") return true;
+    if (message.name !== "hocus_complete_result") return false;
+    if (typeof message.payload !== "string") return true;
+    let reply;
+    try { reply = JSON.parse(message.payload); validate(reply); record(reply, "completion reply"); } catch (_) { return true; }
+    const waiting = completions.get(reply.request_id);
+    if (!waiting || message.source?.Plugin !== waiting.pluginId) return true;
+    try {
+      if (typeof reply.error !== "string") throw new TypeError("invalid completion error");
+      if (reply.error) { waiting.operation.reject(new Error(reply.error)); return true; }
+      if ([reply.content, reply.finish_reason, reply.model].some(v => typeof v !== "string")) throw new TypeError("invalid completion result");
+      completionCalls(reply.tool_calls);
+      if (reply.tool_calls.some(c => typeof c.arguments !== "string")) throw new TypeError("invalid tool arguments");
+      if (reply.usage !== null) {
+        record(reply.usage, "completion usage");
+        if (["prompt_tokens", "completion_tokens", "total_tokens"].some(k => !Number.isSafeInteger(reply.usage[k]) || reply.usage[k] < 0)) throw new TypeError("invalid completion usage");
+      }
+    } catch (_) { return true; }
+    waiting.operation.resolve({content:reply.content, toolCalls:reply.tool_calls, finishReason:reply.finish_reason, usage:reply.usage, model:reply.model});
+    return true;
+  }
   const hocus = Object.freeze({
+    complete,
     launch: () => hocusIdentity && {...hocusIdentity},
     tools(definitions) {
       record(definitions, "Hocus tools");
@@ -673,6 +827,7 @@
     ui,
     text,
     hocus,
+    agent,
     rpc,
     data,
     encodeUtf8,
@@ -693,9 +848,12 @@
       const namespace = arg.hocus_extension_name, path = arg.hocus_extension_path;
       hocusIdentity = typeof namespace === "string" && namespace && typeof path === "string" && path ? {namespace, path} : null;
     }
-    if (name === "pipe" && (rpcPipe(arg) || hocusPipe(arg))) return;
+    if (name === "pipe" && (completionPipe(arg) || rpcPipe(arg) || hocusPipe(arg))) return;
     const type = name === "update" ? (typeof arg === "string" ? arg : Object.keys(arg)[0]) : undefined;
     const payload = name === "update" && typeof arg !== "string" ? arg[type] : undefined;
+    if (type === "PaneUpdate") {
+      agentPanes = new Map(Object.values(payload.panes).flat().filter(p => !p.is_plugin).map(p => [p.id, {...p, agent:p.agent && {...p.agent}}]));
+    }
     const listeners = [...(handlers.get(type) ?? [])];
     const waiters = name === "pipe" ? [...pipeWaiters] : [];
     // Starts are ordered by the executor. Promises are observed, never awaited here:

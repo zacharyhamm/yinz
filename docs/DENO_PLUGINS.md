@@ -283,6 +283,86 @@ Unsupported JSON values reject instead of losing fields. Malformed, stale, and d
 RPC messages stay internal. Ordinary pipe messages still reach `pipe` callbacks and `waitForPipe()`.
 Lua callers retain their existing `{result}` or `{error}` wrapper.
 
+## Agent helpers
+
+Use `zellij.agent` to spawn, inspect, and prompt terminal agents.
+Agent methods accept a numeric terminal ID or `{Terminal: id}`. Plugin IDs and invalid numbers are rejected.
+
+```ts
+await zellij.waitForPermissions(['RunCommands', 'ReadApplicationState', 'WriteToStdin']);
+const launched = zellij.agent.spawnDetails({
+  kind: 'codex', prompt: 'Inspect the parser', branch: 'parser-review',
+  sourceDirectory: '/host', startSuppressed: true,
+});
+const reply = await zellij.agent.prompt(launched.pane_id as {Terminal: number}, 'Explain the result');
+zellij.log(reply.message ?? 'Turn ended without a message');
+```
+
+`spawnDetails` returns `SpawnedAgent`: `{pane_id, branch, cwd}`. `spawn` returns only its `PaneId`.
+Both require `RunCommands` and preserve the host launch defaults and worktree checks.
+Options include all `AgentSpawnSpec` fields with their existing spelling, such as `permission_mode` and `allow_outside_worktree`.
+Host options are `sourceDirectory`, `cwd`, `name`, `context`, `automaticFirecrackerVm`, and `startSuppressed`.
+
+`info(pane)` returns the latest `AgentInfo` or `null`. `all()` returns a snapshot keyed by terminal pane ID.
+Both subscribe to `PaneUpdate`. The cache updates before user callbacks and removes closed panes.
+`on(handler)` subscribes to `AgentEvent` and returns an unsubscribe function.
+These observations require `ReadApplicationState`.
+
+`send(pane, text, {enter: true})` sends bracketed paste followed by Enter. Set `enter: false` to omit Enter.
+It requires `WriteToStdin`.
+
+| Wait | Result |
+| --- | --- |
+| `waitForState(pane, states, {after})` | The `PaneInfo` from a future matching update. Optional `after` requires a preceding matching update. |
+| `waitForEvent(pane, hooks)` | The next matching `AgentEvent`. Omit `hooks` for any hook, or supply a name or array. |
+| `waitForTurn(pane, {fallback})` | `{message, hook, state, sessionId}`, with nullable fields. |
+| `prompt(pane, text, options)` | The same turn result. Registers the wait before sending and disposes it if sending fails. |
+
+State filters accept canonical or lowercase names, individually or in arrays: `Busy`, `Waiting`, `Idle`, and `Exited`.
+Turns end on `Stop`, `StopFailure`, or `Interrupt`. `SessionStart` does not end a turn.
+With `fallback: 'idle'`, a turn can also finish after observing Busy or Waiting followed by Idle.
+All waits return `CancellablePromise`. Calling `cancel()` removes listeners and competing waits, then rejects with `AbortError`.
+Cancellation does not stop the agent. Waits have no implicit deadline.
+
+## Hocus completions
+
+`zellij.hocus.complete(options)` requests one model turn from the current session's `zellij:hocus-agentd`.
+It requires `ReadApplicationState` for discovery and `MessageAndLaunchOtherPlugins` for dispatch.
+Discovery must find exactly one daemon. The SDK addresses its plugin ID and checks that ID on replies.
+
+```ts
+await zellij.waitForPermissions(['ReadApplicationState', 'MessageAndLaunchOtherPlugins']);
+const pending = zellij.hocus.complete({
+  messages: [{role: 'user', content: 'Explain this error: unexpected EOF'}],
+  system: 'Answer briefly.', timeoutMs: 30_000,
+});
+const result = await pending;
+zellij.log(result.content);
+```
+
+Options are `messages`, `system`, `model`, `tools`, `toolChoice`, `temperature`, `maxTokens`, and `timeoutMs`.
+The default deadline is 60,000 milliseconds. Requests allow at most 200 messages, 64 tools, and 64,000 encoded UTF-8 bytes.
+Guest accessors, proxies, and unsupported JSON values are rejected without executing them.
+
+The result is `{content, toolCalls, finishReason, usage, model}`.
+`usage` is `null` when absent, or `{prompt_tokens, completion_tokens, total_tokens}` with nonnegative safe integers.
+Each tool call contains `{id, name, arguments}`. `arguments` remains the model's raw string, even if it is invalid JSON.
+Nested message fields retain the wire spelling so results can be supplied in subsequent requests:
+
+```ts
+const next = await zellij.hocus.complete({messages: [
+  {role: 'assistant', content: result.content, tool_calls: result.toolCalls},
+  {role: 'tool', tool_call_id: result.toolCalls[0].id, content: 'The tool result'},
+]});
+```
+
+Only append tool results when the response contains calls. The caller executes and validates tools.
+Daemon, discovery, and permission errors reject the promise. Deadlines reject with `TimeoutError`.
+`cancel()` rejects with `AbortError` and removes the local pending request and timer. The daemon may finish an already-started request.
+Malformed, forged, stale, and duplicate replies are ignored. Validated successful replies resolve once.
+Completion protocol pipes stay internal. Ordinary pipes still reach callbacks and `waitForPipe()`.
+Async continuations retain the originating client, and reload creates new request IDs.
+
 ## Hocus extensions
 
 Put an extension directly in the user plugin directory's `hocus/` folder.
@@ -392,7 +472,7 @@ Use `--overwrite` to replace a file. The previous version is preserved as `hello
 The existing directory and symlink protections also apply to these filenames.
 An extensionless authoring name still means a Lua plugin.
 
-The SDK does not include npm, JSR, general Deno I/O, Lua widgets, or agent helpers.
+The SDK does not include npm, JSR, general Deno I/O, or workers.
 Hocus supports the same names through `plugin_write`, `plugin_edit`, `plugin_list`, `plugin_read`,
 `plugin_search`, `plugin_outline`, `plugin_check`, `plugin_reload`, and `plugin_log`.
 `plugin_docs section=deno` serves the runtime and authoring guide; `section=deno_data` serves the filesystem and persistence helpers. Writes and edits check syntax before approval;

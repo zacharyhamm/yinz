@@ -1,0 +1,54 @@
+{
+  "request": {
+    "request_id": "lua:hc1",
+    "messages": [
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "name": "lookup",
+            "arguments": "{\"city\":\"Oslo\"}"
+          }
+        ],
+        "tool_call_id": null
+      },
+      {
+        "role": "tool",
+        "content": "clear",
+        "tool_calls": [],
+        "tool_call_id": "call_1"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function"
+      }
+    ],
+    "tool_choice": "auto",
+    "temperature": 0.5,
+    "max_tokens": 256,
+    "system": null,
+    "model": null
+  },
+  "reply": {
+    "request_id": "lua:hc1",
+    "content": "here",
+    "tool_calls": [
+      {
+        "id": "call_1",
+        "name": "lookup",
+        "arguments": "{}"
+      }
+    ],
+    "finish_reason": "tool_calls",
+    "usage": {
+      "prompt_tokens": 38,
+      "completion_tokens": 24,
+      "total_tokens": 62
+    },
+    "model": "gpt-5",
+    "error": ""
+  }
+}
