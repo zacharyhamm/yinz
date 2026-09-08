@@ -67,7 +67,7 @@ pub(crate) fn route(
                         ServerToClientMsg::Render { content } => {
                             format!("Render(bytes={})", content.len())
                         },
-                        ServerToClientMsg::Connected => "Connected".to_owned(),
+                        ServerToClientMsg::Connected { .. } => "Connected".to_owned(),
                         ServerToClientMsg::Exit { .. } => "Exit".to_owned(),
                         _ => "other".to_owned(),
                     };

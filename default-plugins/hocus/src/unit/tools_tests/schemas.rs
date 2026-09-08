@@ -250,8 +250,8 @@ fn the_warp_schemas_require_a_destination_and_a_pane() {
         .find(|spec| spec["function"]["name"] == "warp_pane_here")
         .unwrap();
     assert_eq!(
-        here["function"]["parameters"]["properties"]["is_plugin"],
-        Value::Null,
+        here["function"]["parameters"]["properties"]["is_plugin"]["type"],
+        json!("boolean"),
     );
 }
 

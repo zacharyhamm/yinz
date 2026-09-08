@@ -236,7 +236,9 @@ pub enum ServerToClientMsg {
     Exit {
         exit_reason: ExitReason,
     },
-    Connected,
+    Connected {
+        warp_companions: bool,
+    },
     Log {
         lines: Vec<String>,
     },

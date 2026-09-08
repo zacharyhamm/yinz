@@ -621,6 +621,9 @@ fn format_guest_modal_shortcut(keys: &[KeyWithModifier]) -> Vec<String> {
 /// screen has stopped moving.
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedTabWarp {
+    relationships: Option<zellij_types::data::WarpRelationships>,
+    slots: Vec<PaneId>,
+    pane_group: bool,
     name: Option<String>,
     tiled_layout: TiledPaneLayout,
     floating_layout: Vec<FloatingPaneLayout>,
@@ -851,6 +854,24 @@ pub(crate) struct Screen {
     /// still have the tab closed under a caller that had gone by the time the
     /// serialization finished, which is exactly what the reserve exists to rule
     /// out.
+    pending_pane_groups: HashMap<
+        TabId,
+        (
+            crossbeam::channel::Sender<Result<Box<WarpedPane>, String>>,
+            PreparedTabWarp,
+            std::time::Instant,
+        ),
+    >,
+    pending_group_placements: HashMap<
+        TabId,
+        (
+            zellij_types::data::WarpPlacement,
+            Option<TabId>,
+            ClientId,
+            Option<crossbeam::channel::Sender<Result<()>>>,
+        ),
+    >,
+    pending_warp_relationships: HashMap<TabId, zellij_types::data::WarpRelationships>,
     pending_tab_warps: HashMap<
         TabId,
         (
@@ -1425,6 +1446,9 @@ impl Screen {
             scrollback_lines_to_serialize,
             pending_warps: HashMap::new(),
             pending_tab_warps: HashMap::new(),
+            pending_warp_relationships: HashMap::new(),
+            pending_pane_groups: HashMap::new(),
+            pending_group_placements: HashMap::new(),
             styled_underlines,
             osc8_hyperlinks,
             arrow_fonts,
@@ -1903,6 +1927,38 @@ impl Screen {
                 .map(|c| (*c, self.get_active_pane_id(c)))
                 .collect();
 
+        let warp_slots = if self.pending_warp_relationships.contains_key(&tab_id) {
+            let mut plugins = new_plugin_ids.clone();
+            let mut tiled = new_terminal_ids.iter();
+            let mut floating = new_floating_terminal_ids.iter();
+            let mut slots = vec![];
+            for (runs, terminals) in [
+                (layout.extract_run_instructions(), &mut tiled),
+                (
+                    floating_panes_layout
+                        .iter()
+                        .map(|pane| pane.run.clone())
+                        .collect(),
+                    &mut floating,
+                ),
+            ] {
+                for run in runs {
+                    let id = match run {
+                        Some(Run::Plugin(plugin)) => plugins
+                            .get_mut(&plugin)
+                            .and_then(|ids| ids.pop())
+                            .map(PaneId::Plugin),
+                        _ => terminals.next().map(|(id, _)| PaneId::Terminal(*id)),
+                    }
+                    .context("missing warp layout slot")?;
+                    slots.push(id);
+                }
+            }
+            Some(slots)
+        } else {
+            None
+        };
+
         // move the relevant clients out of the current tab and place them in the new one
         let drained_clients = if should_change_client_focus {
             if self.session_is_mirrored {
@@ -1962,6 +2018,12 @@ impl Screen {
                     client_id,
                     blocking_terminal,
                 )?;
+                if let (Some(slots), Some(relationships)) = (
+                    warp_slots.as_ref(),
+                    self.pending_warp_relationships.get(&tab_id),
+                ) {
+                    tab.restore_warp_relationships(slots, relationships)?;
+                }
                 if let Some(drained_clients) = drained_clients {
                     tab.visible(true)?;
                     tab.add_multiple_clients(drained_clients)?;
@@ -1983,6 +2045,12 @@ impl Screen {
             self.add_client(client_id).with_context(err_context)?;
         }
 
+        if let (Some(slots), Some(relationships)) =
+            (warp_slots, self.pending_warp_relationships.remove(&tab_id))
+        {
+            self.finish_warp_group(tab_id, &slots, &relationships)
+                .non_fatal();
+        }
         self.recompute_tab_size(tab_id).with_context(err_context)?;
 
         for (affected_client_id, old_pane_id) in passthrough_old_focused_panes {
@@ -4161,7 +4229,7 @@ impl Screen {
         for (tab_index, tab) in tabs_to_process {
             let tab_is_focused = active_tab_index == Some(&tab_index);
             let (tiled_panes, floating_panes, hide_floating_panes) =
-                self.tab_panes_for_layout(*tab_index, tab, self.serialize_pane_viewport);
+                self.tab_panes_for_layout(*tab_index, tab, self.serialize_pane_viewport, false);
             session_layout_metadata.add_tab(
                 tab.name.clone(),
                 tab_is_focused,
@@ -4191,6 +4259,7 @@ impl Screen {
         tab_index: TabId,
         tab: &Tab,
         with_contents: bool,
+        for_warp: bool,
     ) -> (
         Vec<(PaneId, PaneLayoutMetadata)>,
         Vec<(PaneId, PaneLayoutMetadata)>,
@@ -4204,7 +4273,7 @@ impl Screen {
             let mut scrollback_editor_subjects: HashMap<PaneId, &Box<dyn Pane>> = HashMap::new();
             for (_pane_id, suppressed) in tab.get_suppressed_panes() {
                 if let Some(stand_in) = suppressed.restored_by {
-                    if stand_in.is_scrollback_editor {
+                    if stand_in.is_scrollback_editor && !for_warp {
                         scrollback_editor_subjects.insert(stand_in.pane_id, &suppressed.pane);
                     }
                 }
@@ -4226,7 +4295,11 @@ impl Screen {
                 );
             }
 
-            let stack_list_geoms = tab.stack_list_serialization_geoms();
+            let stack_list_geoms = if for_warp {
+                HashMap::new()
+            } else {
+                tab.stack_list_serialization_geoms()
+            };
             let tiled_panes: Vec<(PaneId, PaneLayoutMetadata)> = tab
                 .get_tiled_panes()
                 .map(|(pane_id, p)| {
@@ -4246,7 +4319,11 @@ impl Screen {
                         geom_override.unwrap_or_else(|| p.position_and_size()),
                     )
                 })
-                .chain(tab.hidden_stack_list_members_for_serialization())
+                .chain(if for_warp {
+                    vec![]
+                } else {
+                    tab.hidden_stack_list_members_for_serialization(false)
+                })
                 .map(|(pane_id, p, geom)| {
                     let focused_clients: Vec<ClientId> = active_pane_ids
                         .iter()
@@ -4276,48 +4353,52 @@ impl Screen {
                     )
                 })
                 .collect();
-            let floating_panes: Vec<(PaneId, PaneLayoutMetadata)> = tab
-                .get_floating_panes()
-                .map(|(pane_id, p)| {
-                    // here we look to see if this pane triggers any suppressed pane,
-                    // and if so we take that suppressed pane - we do this because this
-                    // is currently only the case the scrollback editing panes, and
-                    // when dumping the layout we want the "real" pane and not the
-                    // editor pane
-                    match scrollback_editor_subjects.remove(pane_id) {
-                        Some(subject) => (subject.pid(), subject),
-                        None => (*pane_id, p),
-                    }
-                })
-                .map(|(pane_id, p)| {
-                    let focused_clients: Vec<ClientId> = active_pane_ids
-                        .iter()
-                        .filter_map(|(c_id, p_id)| {
-                            p_id.and_then(|p_id| if p_id == pane_id { Some(*c_id) } else { None })
-                        })
-                        .collect();
-                    let (default_fg, default_bg) = p.get_pane_default_colors();
-                    (
+            let floating_panes: Vec<(PaneId, PaneLayoutMetadata)> = if for_warp {
+                vec![]
+            } else {
+                tab.hidden_stack_list_members_for_serialization(true)
+            }
+            .into_iter()
+            .chain(tab.get_floating_panes().map(|(pane_id, p)| {
+                // here we look to see if this pane triggers any suppressed pane,
+                // and if so we take that suppressed pane - we do this because this
+                // is currently only the case the scrollback editing panes, and
+                // when dumping the layout we want the "real" pane and not the
+                // editor pane
+                match scrollback_editor_subjects.remove(pane_id) {
+                    Some(subject) => (subject.pid(), subject, p.position_and_size()),
+                    None => (*pane_id, p, p.position_and_size()),
+                }
+            }))
+            .map(|(pane_id, p, geom)| {
+                let focused_clients: Vec<ClientId> = active_pane_ids
+                    .iter()
+                    .filter_map(|(c_id, p_id)| {
+                        p_id.and_then(|p_id| if p_id == pane_id { Some(*c_id) } else { None })
+                    })
+                    .collect();
+                let (default_fg, default_bg) = p.get_pane_default_colors();
+                (
+                    pane_id,
+                    PaneLayoutMetadata::new(
                         pane_id,
-                        PaneLayoutMetadata::new(
-                            pane_id,
-                            p.position_and_size(),
-                            false, // floating panes are never borderless
-                            p.invoked_with().clone(),
-                            p.custom_title(),
-                            !focused_clients.is_empty(),
-                            if with_contents {
-                                p.serialize(self.scrollback_lines_to_serialize)
-                            } else {
-                                None
-                            },
-                            focused_clients,
-                            default_fg,
-                            default_bg,
-                        ),
-                    )
-                })
-                .collect();
+                        geom,
+                        false, // floating panes are never borderless
+                        p.invoked_with().clone(),
+                        p.custom_title(),
+                        !focused_clients.is_empty(),
+                        if with_contents {
+                            p.serialize(self.scrollback_lines_to_serialize)
+                        } else {
+                            None
+                        },
+                        focused_clients,
+                        default_fg,
+                        default_bg,
+                    ),
+                )
+            })
+            .collect();
             (tiled_panes, floating_panes, hide_floating_panes)
         }
     }

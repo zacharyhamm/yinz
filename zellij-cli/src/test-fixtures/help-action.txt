@@ -31,7 +31,8 @@ Commands:
   focus-next-pane                   Change focus to the next pane
   focus-previous-pane               Change focus to the previous pane
   focus-pane-id                     Focus a specific pane by its ID
-  warp-pane                         Move a pane, with the process running in it, to another session
+  warp-pane                         Move a visible pane and its hidden contents to another session.
+                                    Plugins restart
   warp-tab                          Move a tab, with everything running in it, to another session
   focus-last-pane                   Change focus to the last focused frame
   move-focus                        Move the focused pane in the specified direction.

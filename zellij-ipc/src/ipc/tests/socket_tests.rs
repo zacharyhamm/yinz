@@ -76,12 +76,19 @@ fn send_apis_propagate_flush_failures() {
             .send_client_msg(ClientToServerMsg::ConnStatus)
             .unwrap_err(),
         flush_failing_sender::<ServerToClientMsg>()
-            .send_server_msg(ServerToClientMsg::Connected)
+            .send_server_msg(ServerToClientMsg::Connected {
+                warp_companions: true,
+            })
             .unwrap_err(),
         send_protobuf_client_to_server(&mut flush_failing_sender(), ClientToServerMsg::ConnStatus)
             .unwrap_err(),
-        send_protobuf_server_to_client(&mut flush_failing_sender(), ServerToClientMsg::Connected)
-            .unwrap_err(),
+        send_protobuf_server_to_client(
+            &mut flush_failing_sender(),
+            ServerToClientMsg::Connected {
+                warp_companions: true,
+            },
+        )
+        .unwrap_err(),
     ];
 
     for error in errors {
@@ -139,7 +146,9 @@ fn server_to_client_message_over_socket() {
         let stream = listener.incoming().next().unwrap().expect("accept failed");
         let mut sender: IpcSenderWithContext<ServerToClientMsg> = IpcSenderWithContext::new(stream);
         sender
-            .send_server_msg(ServerToClientMsg::Connected)
+            .send_server_msg(ServerToClientMsg::Connected {
+                warp_companions: true,
+            })
             .expect("send failed");
     });
 
@@ -151,7 +160,12 @@ fn server_to_client_message_over_socket() {
     assert!(msg.is_some(), "should receive a message");
     let (msg, _ctx) = msg.unwrap();
     assert!(
-        matches!(msg, ServerToClientMsg::Connected),
+        matches!(
+            msg,
+            ServerToClientMsg::Connected {
+                warp_companions: true
+            }
+        ),
         "should be Connected, got: {:?}",
         msg
     );
@@ -170,7 +184,9 @@ fn bidirectional_communication_via_fd_duplication() {
 
         let mut receiver: IpcReceiverWithContext<ClientToServerMsg> = sender.get_receiver();
         sender
-            .send_server_msg(ServerToClientMsg::Connected)
+            .send_server_msg(ServerToClientMsg::Connected {
+                warp_companions: true,
+            })
             .expect("send failed");
 
         let msg = receiver.recv_client_msg().msg();
@@ -191,7 +207,12 @@ fn bidirectional_communication_via_fd_duplication() {
     assert!(msg.is_some(), "client should receive server message");
     let (msg, _) = msg.unwrap();
     assert!(
-        matches!(msg, ServerToClientMsg::Connected),
+        matches!(
+            msg,
+            ServerToClientMsg::Connected {
+                warp_companions: true
+            }
+        ),
         "should be Connected"
     );
 
@@ -327,7 +348,9 @@ fn session_probe_accepts_responding_socket() {
         assert!(matches!(msg, Some((ClientToServerMsg::ConnStatus, _))));
 
         sender
-            .send_server_msg(ServerToClientMsg::Connected)
+            .send_server_msg(ServerToClientMsg::Connected {
+                warp_companions: true,
+            })
             .expect("send failed");
     });
 
@@ -340,7 +363,15 @@ fn session_probe_accepts_responding_socket() {
 
     let result = receiver.recv_server_msg().msg();
     assert!(
-        matches!(result, Some((ServerToClientMsg::Connected, _))),
+        matches!(
+            result,
+            Some((
+                ServerToClientMsg::Connected {
+                    warp_companions: true
+                },
+                _
+            ))
+        ),
         "probing a live session socket should return Connected"
     );
 
@@ -543,7 +574,9 @@ fn a_probe_timeout_is_an_unresponsive_server_not_an_absent_one() {
 
     assert_eq!(
         classify_probe_reply(IpcRecv::Msg(
-            ServerToClientMsg::Connected,
+            ServerToClientMsg::Connected {
+                warp_companions: true
+            },
             ErrorContext::new()
         )),
         SessionProbe::Alive

@@ -46,6 +46,8 @@ use {
 /// this module having to know about any of it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WarpedTabLayout {
+    /// All layout slots, including plugins, for transfer-local relationship references.
+    pub all_tiled_order: Vec<usize>,
     pub tiled_layout: TiledPaneLayout,
     pub floating_layout: Vec<FloatingPaneLayout>,
     /// Indices of the tiled manifests, in the order the receiving session will
@@ -96,7 +98,12 @@ pub fn layout_for_warped_tab(
     floating: &[PaneLayoutManifest],
     viewport: Size,
 ) -> Result<WarpedTabLayout, String> {
-    let tiled_order = tiled_slot_order(tiled)?;
+    let all_tiled_order = tiled_slot_order(tiled)?;
+    let tiled_order = all_tiled_order
+        .iter()
+        .copied()
+        .filter(|i| !is_plugin(&tiled[*i]))
+        .collect();
     let tiled_layout = tiled_layout_from_panegeoms_lossy(&tiled.to_vec());
 
     let mut floating_layout = get_floating_panes_layout_from_panegeoms(&floating.to_vec());
@@ -109,6 +116,7 @@ pub fn layout_for_warped_tab(
         .collect();
 
     Ok(WarpedTabLayout {
+        all_tiled_order,
         tiled_layout,
         floating_layout,
         tiled_order,
@@ -139,7 +147,7 @@ fn tiled_slot_order(tiled: &[PaneLayoutManifest]) -> Result<Vec<usize>, String> 
         .enumerate()
         .map(|(index, manifest)| {
             let mut marked = manifest.clone();
-            if !is_plugin(manifest) {
+            {
                 marked.run = Some(slot_marker(index));
                 // A cwd would be folded into the run and blur the marker.
                 marked.cwd = None;
@@ -168,7 +176,7 @@ fn tiled_slot_order(tiled: &[PaneLayoutManifest]) -> Result<Vec<usize>, String> 
     // builder has lost that property, and refusing the warp is the safe answer
     // to that. It is not a shape of tab the user can be in — nothing they could
     // rearrange makes it happen — so there is nothing to tell them to undo.
-    let expected = tiled.iter().filter(|m| !is_plugin(m)).count();
+    let expected = tiled.len();
     let mut seen: Vec<usize> = order.clone();
     seen.sort_unstable();
     seen.dedup();

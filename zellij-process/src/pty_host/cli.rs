@@ -281,6 +281,7 @@ pub fn adopt_payload(host_id: &str) -> Result<WarpedPane> {
         ));
     }
     Ok(WarpedPane {
+        group: None,
         host_id: entry.status.host_id.clone(),
         control_socket: entry.path,
         // A survivor has no screen to bring with it — the server that held its
@@ -427,6 +428,7 @@ fn warped_pane_from_entry(
         ));
     }
     Ok(WarpedPane {
+        group: None,
         // No local supervisor to name. See `WarpedPane::remote`.
         host_id: SupervisorId::default(),
         control_socket: PathBuf::new(),

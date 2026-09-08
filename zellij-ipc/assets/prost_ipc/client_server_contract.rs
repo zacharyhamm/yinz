@@ -1591,6 +1591,8 @@ pub struct WarpPaneAction {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AdoptPaneAction {
+    #[prost(message, optional, tag="9")]
+    pub group: ::core::option::Option<AdoptTabAction>,
     #[prost(string, tag="1")]
     pub host_id: ::prost::alloc::string::String,
     #[prost(string, tag="2")]
@@ -1618,6 +1620,8 @@ pub struct AdoptPaneAction {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WarpedPane {
+    #[prost(message, optional, tag="8")]
+    pub group: ::core::option::Option<AdoptTabAction>,
     #[prost(string, tag="1")]
     pub host_id: ::prost::alloc::string::String,
     #[prost(string, tag="2")]
@@ -1686,7 +1690,35 @@ pub struct WarpTabFromAction {
 /// ordered to match the layout's terminal slots.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WarpHiddenPane {
+    #[prost(uint32, tag="1")]
+    pub pane: u32,
+    #[prost(uint32, optional, tag="2")]
+    pub restored_by: ::core::option::Option<u32>,
+    #[prost(bool, tag="3")]
+    pub is_scrollback_editor: bool,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WarpStackList {
+    #[prost(uint32, repeated, tag="1")]
+    pub members: ::prost::alloc::vec::Vec<u32>,
+    #[prost(uint32, tag="2")]
+    pub selected: u32,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WarpRelationships {
+    #[prost(message, repeated, tag="1")]
+    pub hidden: ::prost::alloc::vec::Vec<WarpHiddenPane>,
+    #[prost(message, repeated, tag="2")]
+    pub stacks: ::prost::alloc::vec::Vec<WarpStackList>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AdoptTabAction {
+    #[prost(message, optional, tag="7")]
+    pub relationships: ::core::option::Option<WarpRelationships>,
     #[prost(string, optional, tag="1")]
     pub name: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag="2")]
@@ -3813,10 +3845,12 @@ pub struct ExitMsg {
     #[prost(string, optional, tag="2")]
     pub payload: ::core::option::Option<::prost::alloc::string::String>,
 }
-/// Empty message
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ConnectedMsg {
+    /// Empty message
+    #[prost(bool, tag="1")]
+    pub warp_companions: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

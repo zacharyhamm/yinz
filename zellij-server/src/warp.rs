@@ -60,13 +60,14 @@ pub const PLUGIN_WARP_TIMEOUT: Duration = WARP_TIMEOUT;
 /// `warp_tab_from_session` and `warp_pane_from_session` hand the whole warp to
 /// the session that owns the pane and then wait for its answer. That session
 /// does not produce its answer under one `WARP_TIMEOUT` clock but under up to
-/// three, run one after another, none of them sharing a deadline with ours:
+/// four, run one after another, none of them sharing a deadline with ours:
 ///
-/// 1. releasing the pane or tab, bounded by its own `recv_timeout(WARP_TIMEOUT)`;
-/// 2. handing it to *us* and waiting for our reply — our own pty thread
+/// 1. probing the destination for companion support, bounded by `WARP_TIMEOUT`;
+/// 2. releasing the pane or tab, bounded by its own `recv_timeout(WARP_TIMEOUT)`;
+/// 3. handing it to *us* and waiting for our reply — our own pty thread
 ///    adopting it under `adopt_*_here`'s `WARP_TIMEOUT`, behind a socket read
 ///    the owner bounds by another `WARP_TIMEOUT`;
-/// 3. if that failed, taking it back, under a further `WARP_TIMEOUT`.
+/// 4. if that failed, taking it back, under a further `WARP_TIMEOUT`.
 ///
 /// With the asker's budget equal to one of them it always expired first — in
 /// perfectly ordinary slow cases, not only pathological ones: a release of a
@@ -80,7 +81,7 @@ pub const PLUGIN_WARP_TIMEOUT: Duration = WARP_TIMEOUT;
 /// its usual one. It is a ceiling: a warp that succeeds returns the moment it
 /// does, and the full wait is only ever paid for a warp that failed at every
 /// step. The extra second covers the round trips between the two servers.
-pub const WARP_PULL_TIMEOUT: Duration = Duration::from_secs(3 * WARP_TIMEOUT.as_secs() + 1);
+pub const WARP_PULL_TIMEOUT: Duration = Duration::from_secs(4 * WARP_TIMEOUT.as_secs() + 1);
 
 /// A warp that takes longer than this is worth a line in the log.
 ///
@@ -104,6 +105,25 @@ fn connect_to_session(
         ipc_connect(&path).with_context(|| format!("session '{session_name}' is not running"))?;
     bound_reply_time(&stream, reply_timeout);
     Ok(IpcSenderWithContext::new(stream))
+}
+
+fn supports_warp_companions(session: &SessionName, timeout: Duration) -> Result<bool> {
+    let mut probe = connect_to_session(session, timeout)?;
+    probe.send_client_msg(ClientToServerMsg::ConnStatus)?;
+    let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = probe.get_receiver();
+    loop {
+        match receiver.recv_server_msg().msg() {
+            Some((ServerToClientMsg::Connected { warp_companions }, _)) => {
+                return Ok(warp_companions)
+            },
+            Some((ServerToClientMsg::UnblockInputThread, _)) => continue,
+            _ => {
+                return Err(anyhow!(
+                    "destination did not answer the warp capability probe"
+                ))
+            },
+        }
+    }
 }
 
 /// Put a ceiling on how long we will wait for the far session's reply.
@@ -234,6 +254,8 @@ pub fn warp_pane_to_session(
 
     // Reachability first, and the connection is kept: everything after this
     // point has released a supervisor.
+    let supports_companions =
+        supports_warp_companions(to_session, timeout).map_err(|e| format!("{e:#}"))?;
     let mut sender = connect_to_session(to_session, timeout).map_err(|e| format!("{e:#}"))?;
 
     let (response_sender, response_receiver) = crossbeam::channel::unbounded();
@@ -244,6 +266,7 @@ pub fn warp_pane_to_session(
     let deadline = Instant::now() + timeout;
     senders
         .send_to_screen(ScreenInstruction::WarpPane {
+            supports_companions,
             pane_id,
             to_session: to_session.to_owned(),
             placement,
@@ -379,6 +402,8 @@ pub fn warp_tab_to_session(
         return Err(format!("this tab is already in session '{to_session}'"));
     }
 
+    let supports_companions =
+        supports_warp_companions(to_session, timeout).map_err(|e| format!("{e:#}"))?;
     let mut sender = connect_to_session(to_session, timeout).map_err(|e| format!("{e:#}"))?;
 
     let (response_sender, response_receiver) = crossbeam::channel::unbounded();
@@ -388,6 +413,7 @@ pub fn warp_tab_to_session(
     let deadline = Instant::now() + timeout;
     senders
         .send_to_screen(ScreenInstruction::WarpTab {
+            supports_companions,
             tab_id,
             client_id,
             response_channel: response_sender,
@@ -515,6 +541,15 @@ pub fn warp_tab_from_session(
 /// has to say the same thing when a pane is stranded without ever reaching a
 /// rollback.
 pub fn recovery_command(pane: &WarpedPane) -> String {
+    if let Some(group) = &pane.group {
+        return group
+            .tiled_panes
+            .iter()
+            .chain(&group.floating_panes)
+            .map(recovery_command)
+            .collect::<Vec<_>>()
+            .join("; ");
+    }
     crate::pty_host::client::recovery_command(
         &pane.host_id,
         pane.remote

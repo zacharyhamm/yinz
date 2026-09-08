@@ -1880,7 +1880,12 @@ pub fn start_server_impl(
                 log::info!(
                     "attach trace: server main client_id={client_id} ConnStatus reply queue begin"
                 );
-                let result = os_input.send_to_client(client_id, ServerToClientMsg::Connected);
+                let result = os_input.send_to_client(
+                    client_id,
+                    ServerToClientMsg::Connected {
+                        warp_companions: true,
+                    },
+                );
                 log::info!(
                     "attach trace: server main client_id={client_id} ConnStatus reply queued after {:?} ({})",
                     started_at.elapsed(),

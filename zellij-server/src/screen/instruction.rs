@@ -544,6 +544,7 @@ pub enum ScreenInstruction {
     /// Every refusal happens here, before anything is released — a pane whose
     /// warp is going to fail should never leave its tab.
     WarpPane {
+        supports_companions: bool,
         pane_id: Option<PaneId>,
         to_session: SessionName,
         placement: WarpPlacement,
@@ -579,6 +580,7 @@ pub enum ScreenInstruction {
     /// session. The tab analogue of `WarpPane`, with the same rule: every
     /// refusal happens here, before a single supervisor is released.
     WarpTab {
+        supports_companions: bool,
         tab_id: Option<TabId>,
         client_id: ClientId,
         response_channel: crossbeam::channel::Sender<Result<Box<WarpedTab>, String>>,
@@ -600,6 +602,8 @@ pub enum ScreenInstruction {
     /// The pty thread has taken a tab's supervisors over and this session now
     /// owns their terminal ids. All that is left is to build the tab around them.
     AdoptedTabReady {
+        response_channel: Option<crossbeam::channel::Sender<Result<()>>>,
+        placement: Option<zellij_types::data::WarpPlacement>,
         payload: Box<WarpedTab>,
         adopted: Box<AdoptedTabPanes>,
         client_id: ClientId,

@@ -788,17 +788,18 @@ pub fn specs() -> Value {
         ),
         tool(
             "list_other_sessions",
-            "List other sessions and their terminal-pane IDs.",
+            "List other sessions and their visible pane IDs and kinds.",
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "warp_pane_here",
-            "Bring in a terminal pane listed by list_other_sessions.",
+            "Move a visible pane from list_other_sessions with its hidden contents or whole stack list. Terminals continue; plugins restart.",
             json!({
                 "type": "object",
                 "properties": {
                     "from_session": { "type": "string" },
                     "pane_id": { "type": "integer" },
+                    "is_plugin": { "type": "boolean", "description": "Pane kind from list_other_sessions. Defaults to false." },
                     "placement": placement.clone(),
                 },
                 "required": ["from_session", "pane_id"],
@@ -4398,9 +4399,7 @@ mod host {
     /// because the ids in here are only meaningful to the session they came
     /// from.
     ///
-    /// Plugin panes are dropped rather than listed and refused later: a plugin
-    /// pane has no process to move, so an id the model cannot use is worse than
-    /// no id at all.
+    /// A visible plugin restarts at the destination. Hidden IDs cannot initiate a warp.
     fn list_other_sessions() -> String {
         let snapshot = match get_session_list() {
             Ok(snapshot) => snapshot,
@@ -4424,10 +4423,11 @@ mod host {
                             .map(Vec::as_slice)
                             .unwrap_or_default()
                             .iter()
-                            .filter(|pane| !pane.is_suppressed && !pane.is_plugin())
+                            .filter(|pane| !pane.is_suppressed)
                             .map(|pane| {
                                 json!({
                                     "pane_id": pane.id.legacy_parts().0,
+                                    "is_plugin": pane.is_plugin(),
                                     "title": pane.title,
                                     "command": pane.terminal_command,
                                     "exit_status": pane.exit_status,
@@ -4491,7 +4491,11 @@ mod host {
             Ok(true) => {},
         }
         match warp_pane_from_session(
-            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+            if args.is_plugin.unwrap_or(false) {
+                PaneId::Plugin(zellij_tile::prelude::PluginId::new(pane_id))
+            } else {
+                PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id))
+            },
             &SessionName::new(from_session),
             placement,
         ) {

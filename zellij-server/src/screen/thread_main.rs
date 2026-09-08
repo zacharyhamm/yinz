@@ -3821,6 +3821,7 @@ pub(crate) fn screen_thread_main(
                 }
             },
             ScreenInstruction::WarpPane {
+                supports_companions,
                 pane_id,
                 to_session,
                 placement,
@@ -3831,6 +3832,42 @@ pub(crate) fn screen_thread_main(
                 // Every check that can fail happens before the pty thread is asked
                 // for anything: a warp that is going to be refused must leave the
                 // pane exactly where it was.
+                match screen.prepare_pane_group(pane_id, client_id) {
+                    Ok(Some((tab_index, terminal_ids, prepared))) => {
+                        if !supports_companions {
+                            let _ = response_channel.send(Err(
+                                "destination does not support companion pane transfers".into(),
+                            ));
+                            continue;
+                        }
+                        if screen.pending_pane_groups.contains_key(&tab_index)
+                            || screen.pending_tab_warps.contains_key(&tab_index)
+                        {
+                            let _ = response_channel
+                                .send(Err("this tab already has a warp in progress".into()));
+                            continue;
+                        }
+                        let deadline = deadline
+                            .checked_sub(TAB_WARP_SCREEN_RESERVE)
+                            .unwrap_or_else(Instant::now);
+                        screen
+                            .pending_pane_groups
+                            .insert(tab_index, (response_channel, prepared, deadline));
+                        screen.bus.senders.send_to_pty(
+                            PtyInstruction::ReleaseTerminalsForWarp {
+                                tab_index,
+                                terminal_ids,
+                                deadline,
+                            },
+                        )?;
+                        continue;
+                    },
+                    Err(e) => {
+                        let _ = response_channel.send(Err(e));
+                        continue;
+                    },
+                    Ok(None) => {},
+                }
                 match screen.check_pane_can_be_warped(pane_id, client_id) {
                     Ok(terminal_id) => {
                         // Minus what this thread needs to serialize the pane
@@ -3949,6 +3986,7 @@ pub(crate) fn screen_thread_main(
                 screen.render(None)?;
             },
             ScreenInstruction::WarpTab {
+                supports_companions,
                 tab_id,
                 client_id,
                 response_channel,
@@ -3959,6 +3997,19 @@ pub(crate) fn screen_thread_main(
                 // stays exactly where it was.
                 match screen.check_tab_can_be_warped(tab_id, client_id) {
                     Ok((tab_index, terminal_ids, prepared)) => {
+                        if prepared.relationships.is_some() && !supports_companions {
+                            let _ = response_channel.send(Err(
+                                "destination does not support companion pane transfers".into(),
+                            ));
+                            continue;
+                        }
+                        if screen.pending_pane_groups.contains_key(&tab_index)
+                            || screen.pending_tab_warps.contains_key(&tab_index)
+                        {
+                            let _ = response_channel
+                                .send(Err("this tab already has a warp in progress".into()));
+                            continue;
+                        }
                         // The caller's deadline less what this thread will
                         // need afterwards: `take_released_tab_for_warp`
                         // serializes every pane's scrollback, and a release
@@ -4002,6 +4053,45 @@ pub(crate) fn screen_thread_main(
                 // caller that has stopped waiting, so the tab stays where it
                 // is and its panes are held and told why — visible, and
                 // recoverable — below.
+                if let Some((response_channel, prepared, deadline)) =
+                    screen.pending_pane_groups.remove(&tab_index)
+                {
+                    if Instant::now() < deadline {
+                        let result = screen
+                            .take_released_tab_for_warp(tab_index, released, prepared)
+                            .map(|group| {
+                                Box::new(zellij_types::data::WarpedPane {
+                                    group: Some(group),
+                                    ..Default::default()
+                                })
+                            });
+                        if let Err(crossbeam::channel::SendError(Ok(payload))) =
+                            response_channel.send(result)
+                        {
+                            log::error!(
+                                "unclaimed pane group: {}",
+                                crate::warp::recovery_command(&payload)
+                            );
+                        }
+                    } else {
+                        for (terminal_id, released) in released {
+                            if let Ok(released) = released {
+                                screen
+                                    .bus
+                                    .senders
+                                    .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
+                                        terminal_id,
+                                        why: "pane group transfer timed out".into(),
+                                        recovery: Some(released.recovery_command()),
+                                    })
+                                    .non_fatal();
+                            }
+                        }
+                    }
+                    screen.log_and_report_session_state().non_fatal();
+                    screen.render(None)?;
+                    continue;
+                }
                 let still_waiting = match screen.pending_tab_warps.remove(&tab_index) {
                     Some((_, _, deadline)) if Instant::now() >= deadline => None,
                     other => other,
@@ -4060,11 +4150,26 @@ pub(crate) fn screen_thread_main(
                 screen.render(None)?;
             },
             ScreenInstruction::AdoptedTabReady {
+                response_channel,
+                placement,
                 payload,
                 adopted,
                 client_id,
             } => {
-                screen.place_adopted_tab(*payload, *adopted, client_id)?;
+                let result = screen.place_adopted_tab(
+                    *payload,
+                    *adopted,
+                    client_id,
+                    placement,
+                    response_channel.clone(),
+                );
+                if let Err(error) = result {
+                    if let Some(response_channel) = response_channel {
+                        let _ = response_channel.send(Err(error));
+                    } else {
+                        return Err(error);
+                    }
+                }
                 screen.log_and_report_session_state().non_fatal();
                 screen.render(None)?;
             },

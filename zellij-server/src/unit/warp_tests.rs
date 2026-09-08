@@ -202,6 +202,7 @@ fn adopting_times_out_rather_than_waiting_on_a_pty_thread_that_never_answers() {
         &harness.senders,
         crate::ClientId::new(1),
         Box::new(WarpedPane {
+            group: None,
             host_id: SupervisorId::new("abc123".to_owned()),
             control_socket: PathBuf::from("/nonexistent.sock"),
             title: Some("top".to_owned()),
@@ -246,6 +247,7 @@ fn a_pty_side_refusal_to_adopt_comes_back_verbatim() {
         &senders,
         crate::ClientId::new(1),
         Box::new(WarpedPane {
+            group: None,
             host_id: SupervisorId::new("abc123".to_owned()),
             control_socket: PathBuf::from("/nonexistent.sock"),
             title: None,
@@ -431,6 +433,7 @@ fn a_pty_side_refusal_to_adopt_a_tab_comes_back_verbatim() {
 
 fn remote_pane(host: &str, pane_token: &str) -> WarpedPane {
     WarpedPane {
+        group: None,
         host_id: SupervisorId::new(String::new()),
         control_socket: PathBuf::new(),
         title: None,
@@ -466,4 +469,9 @@ fn a_local_pane_is_recovered_by_its_supervisor_id() {
         }),
         "zellij pty-host adopt abc123",
     );
+}
+
+#[test]
+fn warp_pull_budget_covers_probe_release_adoption_and_rollback() {
+    assert_eq!(WARP_PULL_TIMEOUT, WARP_TIMEOUT * 4 + Duration::from_secs(1));
 }

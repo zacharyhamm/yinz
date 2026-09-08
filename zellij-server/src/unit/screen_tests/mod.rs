@@ -12,7 +12,6 @@ use crate::{
 use zellij_test_support::Watched;
 use zellij_types::internal_ids::NotificationId;
 use zellij_types::internal_ids::ProcessId;
-use zellij_types::internal_ids::SupervisorId;
 use zellij_types::internal_ids::TabId;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::internal_ids::TerminalId;
@@ -1941,24 +1940,6 @@ fn screen_with_a_pane_replaced_in_place() -> Screen {
     screen
 }
 
-/// Drive the second half of a warp: the supervisor has been released, the pane
-/// has to be serialized and taken out of its tab.
-fn released_pane_for_warp(
-    screen: &mut Screen,
-    terminal_id: zellij_types::internal_ids::TerminalId,
-) -> Box<WarpedPane> {
-    screen
-        .take_released_pane_for_warp(
-            terminal_id,
-            Ok(ReleasedPane::Local(ReleasedPtyHost {
-                host_id: SupervisorId::new(format!("host-{terminal_id}")),
-                host_pid: ProcessId::new(1),
-                control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
-            })),
-        )
-        .expect("the pane should have been taken out of its tab")
-}
-
 /// The same, for a pane whose process is on another machine.
 ///
 /// What a remote release hands over is a broker and a token rather than a
@@ -2035,35 +2016,6 @@ fn screen_with_a_stack_list() -> Screen {
         tab.has_stack_lists(),
         "the fixture should have formed a stack list",
     );
-    screen
-}
-
-/// The same three-member stack list, but as the whole session: nothing else is
-/// running, so the members are the only panes there are.
-fn screen_with_only_a_stack_list() -> Screen {
-    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
-    new_tab(&mut screen, 1, TabId::new(0));
-    *screen.stacked_pane_list.borrow_mut() = true;
-    let tab = screen.tabs.get_mut(&TabId::new(0)).expect("TEST");
-    for pane_id in [
-        PaneId::Terminal(crate::TerminalId::new(2)),
-        PaneId::Terminal(crate::TerminalId::new(3)),
-    ] {
-        tab.new_pane(
-            pane_id,
-            None,
-            None,
-            false,
-            true,
-            NewPanePlacement::Stacked {
-                pane_id_to_stack_under: None,
-                borderless: None,
-            },
-            Some(crate::ClientId::new(1)),
-            None,
-        )
-        .expect("TEST");
-    }
     screen
 }
 

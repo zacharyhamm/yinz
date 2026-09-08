@@ -425,7 +425,7 @@ impl ClientSender {
                         ServerToClientMsg::Render { content } => {
                             format!("first Render(bytes={})", content.len())
                         },
-                        ServerToClientMsg::Connected => "Connected".to_owned(),
+                        ServerToClientMsg::Connected { .. } => "Connected".to_owned(),
                         ServerToClientMsg::QueryTerminalSize => "QueryTerminalSize".to_owned(),
                         ServerToClientMsg::Exit { .. } => "Exit".to_owned(),
                         _ => "other".to_owned(),
