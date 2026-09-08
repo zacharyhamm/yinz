@@ -2,11 +2,14 @@
 const CLIENT_1: zellij_types::internal_ids::ClientId = zellij_types::internal_ids::ClientId::new(1);
 
 use super::*;
+use crate::plugins::PluginInstruction;
 use crate::thread_bus::ThreadSenders;
 use std::collections::HashMap;
 use std::str::FromStr;
 use zellij_config::config::Config;
 use zellij_runtime::channels;
+use zellij_types::data::Event;
+use zellij_types::diagnostics::ErrorContext;
 use zellij_types::internal_ids::{ClientId, TerminalId};
 
 /// The default window, as `SessionConfiguration` resolves it for an unconfigured session.
@@ -41,6 +44,49 @@ fn session() -> SessionMetaData {
     }
 }
 
+/// The plugin half of an unlock: the mode switch is recorded as an action the plugins can see,
+/// and every subscribed plugin is woken with `InputReceived`, in that order and nothing else.
+fn assert_unlock_reported_to_plugins(
+    plugin_rx: &channels::Receiver<(PluginInstruction, ErrorContext)>,
+) {
+    match plugin_rx
+        .try_recv()
+        .expect("the unlock was not logged as an action")
+        .0
+    {
+        PluginInstruction::UserInput {
+            client_id,
+            action: Action::SwitchToMode { input_mode },
+            terminal_id: None,
+            cli_client_id: None,
+        } => {
+            assert_eq!(client_id, CLIENT_1);
+            assert_eq!(input_mode, InputMode::Normal);
+        },
+        other => panic!("expected the unlock to be logged as UserInput, got {other:?}"),
+    }
+    match plugin_rx
+        .try_recv()
+        .expect("the plugins were not told about the input")
+        .0
+    {
+        PluginInstruction::Update(updates) => {
+            assert!(
+                matches!(
+                    updates.as_slice(),
+                    [(None, Some(CLIENT_1), Event::InputReceived)]
+                ),
+                "expected one InputReceived for client 1, got {updates:?}"
+            );
+        },
+        other => panic!("expected an InputReceived update, got {other:?}"),
+    }
+    assert!(
+        plugin_rx.try_recv().is_err(),
+        "an unlock sends the plugins exactly two instructions"
+    );
+}
+
 #[test]
 fn locked_escape_matches_only_the_standard_unlock_binding() {
     let unlock = Action::SwitchToMode {
@@ -69,6 +115,14 @@ fn locked_escape_matches_only_the_standard_unlock_binding() {
         vec![],
         vec![Action::NoOp],
         vec![unlock.clone(), Action::NoOp],
+        // the binding must lead *out* of locked mode into Normal: a user who bound Ctrl+g in
+        // locked mode to some other mode must get that mode, not a swallowed prefix
+        vec![Action::SwitchToMode {
+            input_mode: InputMode::Pane,
+        }],
+        vec![Action::SwitchToMode {
+            input_mode: InputMode::Locked,
+        }],
     ] {
         assert!(!starts_escape(&key("Ctrl g"), InputMode::Locked, &actions));
     }
@@ -202,6 +256,8 @@ fn locked_escape_resolution_is_per_client_and_stale_tokens_are_harmless() {
     let mut session = session();
     let (screen_tx, screen_rx) = channels::unbounded();
     session.senders.to_screen = Some(SenderWithContext::new(screen_tx));
+    let (plugin_tx, plugin_rx) = channels::unbounded();
+    session.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
     let old = LockedEscape::new(Instant::now(), DEFAULT_TIMEOUT);
     let new = LockedEscape::new(Instant::now(), DEFAULT_TIMEOUT);
     session.locked_escapes.insert(ClientId::new(1), new);
@@ -210,6 +266,7 @@ fn locked_escape_resolution_is_per_client_and_stale_tokens_are_harmless() {
         .resolve_locked_escape(ClientId::new(1), old.token)
         .unwrap();
     assert!(screen_rx.try_recv().is_err());
+    assert!(plugin_rx.try_recv().is_err());
     assert_eq!(
         session.current_input_modes[&ClientId::new(1)],
         InputMode::Locked
@@ -227,6 +284,7 @@ fn locked_escape_resolution_is_per_client_and_stale_tokens_are_harmless() {
         ScreenInstruction::ChangeMode(InputMode::Normal, _, CLIENT_1, _)
     ));
     assert!(screen_rx.try_recv().is_err());
+    assert_unlock_reported_to_plugins(&plugin_rx);
     assert_eq!(
         session.current_input_modes[&ClientId::new(1)],
         InputMode::Normal
@@ -247,14 +305,231 @@ fn locked_escape_resolution_is_per_client_and_stale_tokens_are_harmless() {
         .resolve_locked_escape(ClientId::new(1), new.token)
         .unwrap();
     assert!(screen_rx.try_recv().is_err());
+    assert!(plugin_rx.try_recv().is_err());
     assert_eq!(
         session.current_input_modes[&ClientId::new(1)],
         InputMode::Locked
     );
 }
 
+/// The timer is the only thing that unlocks an abandoned prefix on the clock: without it a user
+/// who presses Ctrl+g and walks away stays visibly locked until the next keystroke. It reports
+/// to the server thread with the token of the escape it was armed for, so a prefix that was
+/// resolved or replaced in the meantime is not touched.
 #[test]
-fn locked_escape_is_cancelled_by_mode_configuration_and_disconnect_changes() {
+fn locked_escape_expiry_timer_reports_to_the_server_with_its_token() {
+    let mut session = session();
+    let config = Config::from_kdl(
+        "locked_escape_timeout_ms 20",
+        Some(Config::from_default_assets().unwrap()),
+    )
+    .unwrap();
+    session
+        .session_configuration
+        .set_saved_configuration(config);
+    let session_data = Arc::new(RwLock::new(Some(session)));
+    let (tx, rx) = channels::unbounded();
+    let result = prepare_input(
+        ClientToServerMsg::Key {
+            key: key("Ctrl g"),
+            raw_bytes: vec![7],
+            is_kitty_keyboard_protocol: false,
+        },
+        &session_data,
+        &SenderWithContext::new(tx),
+        CLIENT_1,
+    )
+    .unwrap();
+    assert!(result.is_none(), "the key must be held as a prefix");
+    let armed_token = session_data
+        .read()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .locked_escapes[&CLIENT_1]
+        .token;
+
+    let (instruction, _) = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the expiry timer never reported to the server");
+    match instruction {
+        ServerInstruction::ResolveLockedEscape(client_id, token) => {
+            assert_eq!(client_id, CLIENT_1);
+            assert_eq!(
+                token, armed_token,
+                "the timer resolves the escape it was armed for"
+            );
+        },
+        other => panic!("expected ResolveLockedEscape, got {other:?}"),
+    }
+}
+
+/// A client's route thread ending - the peer closed its connection - drops that client's
+/// pending escape before the server is told to remove the client, since the id is reused by
+/// the next connection and a stale prefix would then hold *its* first Ctrl+g.
+#[test]
+fn a_client_disconnect_cancels_its_pending_escape() {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use zellij_ipc::ipc::IpcReceiverWithContext;
+
+    let mut session = session();
+    session.locked_escapes.insert(
+        CLIENT_1,
+        LockedEscape::new(Instant::now(), Duration::from_secs(60)),
+    );
+    let session_data = Arc::new(RwLock::new(Some(session)));
+    let session_state = Arc::new(RwLock::new(crate::SessionState::new()));
+    let (to_server, server_rx) = channels::unbounded();
+
+    let socket_dir = tempfile::TempDir::new().unwrap();
+    let socket_path = socket_dir.path().join("client.sock");
+    let listener = ListenerOptions::new()
+        .name(
+            socket_path
+                .as_path()
+                .to_fs_name::<GenericFilePath>()
+                .unwrap(),
+        )
+        .create_sync()
+        .unwrap();
+    let client = interprocess::local_socket::Stream::connect(
+        socket_path
+            .as_path()
+            .to_fs_name::<GenericFilePath>()
+            .unwrap(),
+    )
+    .unwrap();
+    let accepted = listener.incoming().next().unwrap().unwrap();
+    // the client says nothing and goes away, which the route thread reads as EOF
+    drop(client);
+
+    crate::route::route_thread_main(
+        session_data.clone(),
+        session_state,
+        Box::new(StubOs),
+        SenderWithContext::new(to_server),
+        IpcReceiverWithContext::new(accepted),
+        CLIENT_1,
+        Duration::from_secs(5),
+    )
+    .unwrap();
+
+    assert!(
+        session_data
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .locked_escapes
+            .is_empty(),
+        "the disconnected client's escape is still pending"
+    );
+    let (instruction, _) = server_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the route thread did not tell the server the client left");
+    assert!(
+        matches!(instruction, ServerInstruction::RemoveClient(CLIENT_1)),
+        "expected RemoveClient, got {instruction:?}"
+    );
+}
+
+/// An OS API for a route thread that only ever sees EOF: nothing here is reached, and reaching
+/// anything is the failure.
+struct StubOs;
+
+impl crate::os_input_output::ServerOsApi for StubOs {
+    fn set_terminal_size_using_terminal_id(
+        &self,
+        _: TerminalId,
+        _: u16,
+        _: u16,
+        _: Option<u16>,
+        _: Option<u16>,
+    ) -> Result<()> {
+        unimplemented!()
+    }
+    fn spawn_terminal(
+        &self,
+        _: zellij_types::input::command::TerminalAction,
+        _: Box<
+            dyn Fn(crate::panes::PaneId, Option<i32>, zellij_types::input::command::RunCommand)
+                + Send,
+        >,
+        _: Option<std::path::PathBuf>,
+    ) -> Result<(
+        TerminalId,
+        Box<dyn crate::os_input_output::AsyncReader>,
+        Option<zellij_types::internal_ids::ProcessId>,
+    )> {
+        unimplemented!()
+    }
+    fn write_to_tty_stdin(&self, _: TerminalId, _: &[u8]) -> Result<usize> {
+        unimplemented!()
+    }
+    fn tcdrain(&self, _: TerminalId) -> Result<()> {
+        unimplemented!()
+    }
+    fn kill(&self, _: zellij_types::internal_ids::ProcessId) -> Result<()> {
+        unimplemented!()
+    }
+    fn force_kill(&self, _: zellij_types::internal_ids::ProcessId) -> Result<()> {
+        unimplemented!()
+    }
+    fn send_sigint(&self, _: zellij_types::internal_ids::ProcessId) -> Result<()> {
+        unimplemented!()
+    }
+    fn send_sigcont(&self, _: zellij_types::internal_ids::ProcessId) -> Result<()> {
+        unimplemented!()
+    }
+    fn box_clone(&self) -> Box<dyn crate::os_input_output::ServerOsApi> {
+        Box::new(StubOs)
+    }
+    fn send_to_client(&self, _: ClientId, _: zellij_ipc::ipc::ServerToClientMsg) -> Result<()> {
+        unimplemented!()
+    }
+    fn new_client(
+        &mut self,
+        _: ClientId,
+        _: interprocess::local_socket::Stream,
+    ) -> Result<zellij_ipc::ipc::IpcReceiverWithContext<ClientToServerMsg>> {
+        unimplemented!()
+    }
+    fn remove_client(&mut self, _: ClientId) -> Result<()> {
+        unimplemented!()
+    }
+    fn load_palette(&self) -> zellij_types::data::Palette {
+        unimplemented!()
+    }
+    fn get_cwd(&self, _: zellij_types::internal_ids::ProcessId) -> Option<std::path::PathBuf> {
+        unimplemented!()
+    }
+    fn write_to_file(&mut self, _: String, _: Option<String>) -> Result<()> {
+        unimplemented!()
+    }
+    fn re_run_command_in_terminal(
+        &self,
+        _: TerminalId,
+        _: zellij_types::input::command::RunCommand,
+        _: Box<
+            dyn Fn(crate::panes::PaneId, Option<i32>, zellij_types::input::command::RunCommand)
+                + Send,
+        >,
+    ) -> Result<(
+        Box<dyn crate::os_input_output::AsyncReader>,
+        Option<zellij_types::internal_ids::ProcessId>,
+    )> {
+        unimplemented!()
+    }
+    fn clear_terminal_id(&self, _: TerminalId) -> Result<()> {
+        unimplemented!()
+    }
+}
+
+/// The four `SessionMetaData` helpers that cancel a pending escape. The two other cancel
+/// sites - the `KeyPassthroughChanged` server arm and a client's route thread ending - are
+/// driven elsewhere: the second by `a_client_disconnect_cancels_its_pending_escape`.
+#[test]
+fn locked_escape_is_cancelled_by_mode_configuration_and_passthrough_changes() {
     let mut session = session();
     let pending = LockedEscape::new(Instant::now(), DEFAULT_TIMEOUT);
     session.locked_escapes.insert(ClientId::new(1), pending);
@@ -318,59 +593,101 @@ fn locked_escape_completion_writes_raw_ctrl_g_for_both_encodings() {
     }
 }
 
+/// A key or an interactive action that is not the completing `g` resolves the pending prefix
+/// as an unlock (screen and plugins told, mode switched) and is then passed on *unchanged*. A
+/// cli client's action - `zellij action` from a script - is passed on without touching the
+/// prefix at all, so a script cannot cancel a user's half-typed escape.
 #[test]
 fn locked_escape_fallback_updates_mode_and_queues_unlock_before_returning_input() {
-    for instruction in [
-        ClientToServerMsg::Key {
-            key: key("Ctrl g"),
-            raw_bytes: vec![7],
+    let interactive_write = ClientToServerMsg::Action {
+        action: Action::Write {
+            bytes: b"g".to_vec(),
+            key_with_modifier: None,
             is_kitty_keyboard_protocol: false,
         },
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: false,
+    };
+    let cli_write = match interactive_write.clone() {
         ClientToServerMsg::Action {
-            action: Action::Write {
-                bytes: b"g".to_vec(),
-                key_with_modifier: None,
+            action,
+            terminal_id,
+            client_id,
+            ..
+        } => ClientToServerMsg::Action {
+            action,
+            terminal_id,
+            client_id,
+            is_cli_client: true,
+        },
+        _ => unreachable!(),
+    };
+    for (instruction, should_resolve) in [
+        (
+            ClientToServerMsg::Key {
+                key: key("Ctrl g"),
+                raw_bytes: vec![7],
                 is_kitty_keyboard_protocol: false,
             },
-            terminal_id: None,
-            client_id: None,
-            is_cli_client: false,
-        },
+            true,
+        ),
+        (interactive_write, true),
+        (cli_write, false),
     ] {
         let mut session = session();
-        session.locked_escapes.insert(
-            ClientId::new(1),
-            LockedEscape::new(Instant::now(), Duration::from_secs(60)),
-        );
+        let pending = LockedEscape::new(Instant::now(), Duration::from_secs(60));
+        session.locked_escapes.insert(ClientId::new(1), pending);
         let (screen_tx, screen_rx) = channels::unbounded();
         session.senders.to_screen = Some(SenderWithContext::new(screen_tx));
+        let (plugin_tx, plugin_rx) = channels::unbounded();
+        session.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
         let session_data = Arc::new(RwLock::new(Some(session)));
         let (tx, _rx) = channels::unbounded();
-        assert!(prepare_input(
-            instruction,
+        let returned = prepare_input(
+            instruction.clone(),
             &session_data,
             &SenderWithContext::new(tx),
-            ClientId::new(1)
+            ClientId::new(1),
         )
-        .unwrap()
-        .is_some());
+        .unwrap();
         assert_eq!(
-            session_data
-                .read()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .current_input_modes[&ClientId::new(1)],
-            InputMode::Normal
+            returned,
+            Some(instruction.clone()),
+            "the input is handed on exactly as it came in"
         );
-        assert!(matches!(
-            screen_rx.try_recv().unwrap().0,
-            ScreenInstruction::CloseContextMenu(CLIENT_1)
-        ));
-        assert!(matches!(
-            screen_rx.try_recv().unwrap().0,
-            ScreenInstruction::ChangeMode(InputMode::Normal, _, CLIENT_1, _)
-        ));
+        let guard = session_data.read().unwrap();
+        let session = guard.as_ref().unwrap();
+        if should_resolve {
+            assert_eq!(
+                session.current_input_modes[&ClientId::new(1)],
+                InputMode::Normal
+            );
+            assert!(!session.locked_escapes.contains_key(&ClientId::new(1)));
+            assert!(matches!(
+                screen_rx.try_recv().unwrap().0,
+                ScreenInstruction::CloseContextMenu(CLIENT_1)
+            ));
+            assert!(matches!(
+                screen_rx.try_recv().unwrap().0,
+                ScreenInstruction::ChangeMode(InputMode::Normal, _, CLIENT_1, _)
+            ));
+            assert!(screen_rx.try_recv().is_err());
+            assert_unlock_reported_to_plugins(&plugin_rx);
+        } else {
+            assert_eq!(
+                session.current_input_modes[&ClientId::new(1)],
+                InputMode::Locked,
+                "a cli client's action must not unlock the user"
+            );
+            assert_eq!(
+                session.locked_escapes[&ClientId::new(1)].token,
+                pending.token,
+                "a cli client's action must leave the pending prefix alone"
+            );
+            assert!(screen_rx.try_recv().is_err());
+            assert!(plugin_rx.try_recv().is_err());
+        }
     }
 }
 

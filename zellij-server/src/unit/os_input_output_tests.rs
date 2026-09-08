@@ -40,7 +40,12 @@ fn firecracker_resolution_keeps_an_unresolved_command_for_reruns() {
     assert_eq!(resolved.cwd, Some(PathBuf::from("/srv/project")));
     assert_eq!(rerun, requested);
     assert_eq!(endpoint.ssh_options, SshOptions::default());
-    assert!(server.resolve_target(rerun, None).is_ok());
+    // The whole point of keeping the rerun unresolved: resolving it again lands on the
+    // same VM, cwd and endpoint, not merely on something.
+    let (again, again_rerun, again_endpoint) = server.resolve_target(rerun.clone(), None).unwrap();
+    assert_eq!(again, resolved);
+    assert_eq!(again_rerun, rerun);
+    assert_eq!(again_endpoint, Some(endpoint));
 
     let explicit = RunCommand {
         command: PathBuf::from("claude"),
@@ -165,8 +170,6 @@ fn rename_firecracker_session_updates_the_session_key() {
     );
 }
 
-/// A provider that refuses the rename leaves the server on the old name too, so the two
-/// still agree on which session owns the VMs.
 /// Two renames in quick succession reach the provider in order, and the
 /// server ends up keyed on the last name: the rename worker applies what it
 /// was last asked for rather than whichever thread wins a lock.
@@ -216,10 +219,13 @@ fn two_quick_renames_leave_the_provider_keyed_on_the_last_name() {
 fn stopping_the_session_cancels_an_ensure_in_flight() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("provider");
+    // The marker says the ensure is genuinely in flight when the shutdown begins; without
+    // it the pre-ensure check answers with the same message and the test proves nothing.
     zellij_test_support::write_warm_script(
         &path,
-        "sleep 30\nprintf '{\"version\":2,\"ssh_host\":\"build-box\"}'\n",
+        "touch \"$(dirname \"$0\")/ensuring\"\nsleep 30\nprintf '{\"version\":2,\"ssh_host\":\"build-box\"}'\n",
     );
+    let ensuring = dir.path().join("ensuring");
     let server = make_server();
     *server.firecracker.write().unwrap() = Some((
         crate::firecracker::Provider::new(path, Duration::from_secs(60)).unwrap(),
@@ -235,25 +241,35 @@ fn stopping_the_session_cancels_an_ensure_in_flight() {
         ..Default::default()
     };
 
-    let resolver = {
+    let (resolved_tx, resolved_rx) = std::sync::mpsc::channel();
+    {
         let server = server.clone();
-        std::thread::spawn(move || server.resolve_target(requested, None))
-    };
-    std::thread::sleep(Duration::from_millis(200));
-    let start = std::time::Instant::now();
+        std::thread::spawn(move || {
+            let _ = resolved_tx.send(server.resolve_target(requested, None));
+        });
+    }
+    let started = std::time::Instant::now();
+    while !ensuring.exists() {
+        assert!(
+            started.elapsed() < AMPLE_TIMEOUT,
+            "the provider was never asked to ensure the VM"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     server.begin_firecracker_shutdown();
-    let resolved = resolver.join().unwrap();
-
-    assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "the ensure was waited out instead of cancelled"
-    );
+    // Bounded here rather than by nextest's kill: a cancel that does not reach the
+    // provider would otherwise wait out the whole `sleep 30` and read as a timeout.
+    let resolved = resolved_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the ensure was waited out instead of cancelled");
     let error = resolved
         .expect_err("a cancelled ensure is an error")
         .to_string();
     assert!(error.contains("shutting down"), "{error}");
 }
 
+/// A provider that refuses the rename leaves the server on the old name too, so the two
+/// still agree on which session owns the VMs.
 #[test]
 fn a_refused_rename_keeps_the_old_firecracker_session_key() {
     let dir = tempfile::tempdir().unwrap();
@@ -281,8 +297,13 @@ fn a_refused_rename_keeps_the_old_firecracker_session_key() {
     assert_eq!(key, "work");
 }
 
+/// `stop_firecracker_session` does not depend on the pane teardown before it having
+/// succeeded: a remote pane whose transport is already gone fails `clear_terminal_id`, and
+/// the provider is still told to stop. That the server makes the two calls in that order is
+/// the integration suite's to check (`firecracker_shutdown`), since the order lives in
+/// `lib.rs` and not in either call.
 #[test]
-fn failed_firecracker_pane_termination_does_not_skip_provider_shutdown() {
+fn stop_firecracker_session_is_independent_of_a_failed_pane_teardown() {
     use crate::pty_host::remote::RemoteConn;
     use std::os::unix::net::UnixStream;
 
@@ -350,11 +371,22 @@ fn echo_cmd(msg: &str) -> Command {
     cmd
 }
 
-#[allow(dead_code)]
-fn stdin_reader_cmd() -> Command {
-    let mut cmd = Command::new("cat");
-    cmd.stdin(std::process::Stdio::piped());
-    cmd
+/// Wait, bounded, for a signalled child to die; the signal it died of, or a panic if it
+/// is still alive at the deadline (it is killed then, so the test cannot hang on it).
+fn signal_that_killed(child: &mut std::process::Child, deadline: Duration) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().expect("try_wait failed") {
+            return status.signal();
+        }
+        if started.elapsed() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the process survived the signal for {deadline:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[test]
@@ -362,11 +394,17 @@ fn get_cwd() {
     let server = make_server();
 
     let pid = std::process::id();
-    assert!(
-        server.get_cwd(ProcessId::new(pid)).is_some(),
-        "Get current working directory from PID {}",
-        pid
+    let expected = std::env::current_dir().unwrap().canonicalize().unwrap();
+    assert_eq!(
+        server
+            .get_cwd(ProcessId::new(pid))
+            .map(|cwd| cwd.canonicalize().unwrap()),
+        Some(expected),
+        "the cwd of PID {pid} is this process's cwd"
     );
+    // Above any `pid_max` the kernel allows, so the process cannot exist; the fallthrough
+    // is what a caller reads for a pane whose process has already gone.
+    assert_eq!(server.get_cwd(ProcessId::new(i32::MAX as u32)), None);
 }
 
 // --- Signal delivery tests ---
@@ -380,16 +418,15 @@ fn kill_sends_sighup_to_process() {
 
     let server = make_server();
 
+    // `kill` discards the errno, so its `Ok` says nothing; what the child died of does.
     server
         .kill(ProcessId::new(pid))
         .expect("kill should succeed");
 
-    // Give the signal time to be delivered, then reap the child so it can't linger as a zombie.
-    // The second kill is belt and braces: if the signal under test somehow left the process
-    // running, `wait` would block this test forever.
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    let _ = child.kill();
-    let _ = child.wait();
+    assert_eq!(
+        signal_that_killed(&mut child, Duration::from_secs(5)),
+        Some(libc::SIGHUP)
+    );
 }
 
 #[test]
@@ -405,16 +442,18 @@ fn force_kill_sends_sigkill_to_process() {
         .force_kill(ProcessId::new(pid))
         .expect("force_kill should succeed");
 
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    let _ = child.kill();
-    let _ = child.wait();
+    assert_eq!(
+        signal_that_killed(&mut child, Duration::from_secs(5)),
+        Some(libc::SIGKILL)
+    );
 }
 
 #[test]
 fn send_sigint_to_process() {
-    let mut child = stdin_reader_cmd()
+    // `sleep` keeps SIGINT's default disposition, so it dies of it rather than ignoring it.
+    let mut child = long_running_cmd()
         .spawn()
-        .expect("failed to spawn stdin-reader process");
+        .expect("failed to spawn long-running process");
     let pid = child.id();
 
     let server = make_server();
@@ -423,9 +462,10 @@ fn send_sigint_to_process() {
         .send_sigint(ProcessId::new(pid))
         .expect("send_sigint should succeed");
 
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    let _ = child.kill();
-    let _ = child.wait();
+    assert_eq!(
+        signal_that_killed(&mut child, Duration::from_secs(5)),
+        Some(libc::SIGINT)
+    );
 }
 
 #[test]
@@ -590,12 +630,15 @@ fn a_local_rerun_terminates_the_previous_remote_transport() {
         frame.decode_control::<ServerToBrokerMsg>().unwrap(),
         ServerToBrokerMsg::Terminate
     );
-    if let Some(child_pid) = child_pid {
-        server.force_kill(child_pid).unwrap();
-    }
+    let child_pid = child_pid.expect("the rerun should have started a local child");
+    server.force_kill(child_pid).unwrap();
     server.clear_terminal_id(crate::TerminalId::new(7)).unwrap();
 }
 
+/// Rerunning locally tears the old remote transport down first, and that teardown can fail:
+/// a broker whose connection is already known to be lost refuses the `Terminate`. The failure
+/// must not abort the rerun, or the pane would be left dead for the sake of a transport that
+/// was gone anyway.
 #[cfg(unix)]
 #[test]
 fn a_dead_remote_transport_does_not_prevent_a_local_rerun() {
@@ -627,12 +670,20 @@ fn a_dead_remote_transport_does_not_prevent_a_local_rerun() {
         .pty_backend
         .register_remote_terminal(
             crate::TerminalId::new(7),
-            connection,
+            connection.clone(),
             read_socket,
             Box::new(|_, _, _| {}),
             remote_command,
         )
         .unwrap();
+    // A dropped peer alone is not enough: the first failed write only *marks* the connection
+    // broken and reports success. Marking it lost up front is what the reader does on a
+    // hangup, and it makes the teardown's `Terminate` genuinely fail.
+    connection.mark_transport_lost();
+    assert!(
+        connection.terminate().is_err(),
+        "precondition: tearing down the lost transport must fail"
+    );
 
     let (_reader, child_pid) = server
         .re_run_command_in_terminal(
@@ -644,9 +695,10 @@ fn a_dead_remote_transport_does_not_prevent_a_local_rerun() {
             },
             Box::new(|_, _, _| {}),
         )
-        .unwrap();
+        .expect("a failed transport teardown must not abort the local rerun");
 
-    server.force_kill(child_pid.unwrap()).unwrap();
+    let child_pid = child_pid.expect("the rerun should have started a local child");
+    server.force_kill(child_pid).unwrap();
     server.clear_terminal_id(crate::TerminalId::new(7)).unwrap();
 }
 
@@ -745,32 +797,24 @@ fn tcgetpgrp_returns_foreground_group() {
         .spawn_terminal(TerminalAction::RunCommand(cmd), quit_cb, None)
         .expect("spawn_terminal should succeed");
 
+    // Without the pid the equality below has nothing to compare against, and "some positive
+    // pgid" is not the assertion.
+    let child_pid = child_pid.expect("spawn_terminal should report the child's pid");
+
     // poll (bounded to ~2s) for the child to finish setting up its controlling terminal
     let mut fpgid = None;
     for _ in 0..100 {
         fpgid = server.pty_backend.tcgetpgrp(terminal_id);
-        let ready = match (fpgid, child_pid) {
-            (Some(p), Some(child_pid)) => p > 0 && ProcessId::try_from(p).ok() == Some(child_pid),
-            (Some(p), None) => p > 0,
-            _ => false,
-        };
-        if ready {
+        if fpgid.and_then(|p| ProcessId::try_from(p).ok()) == Some(child_pid) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    assert!(
-        matches!(fpgid, Some(p) if p > 0),
-        "tcgetpgrp should return the foreground process group, got {:?}",
-        fpgid
+    assert_eq!(
+        fpgid.and_then(|p| ProcessId::try_from(p).ok()),
+        Some(child_pid),
+        "the spawned command leads its own foreground group, tcgetpgrp gave {fpgid:?}"
     );
-    if let (Some(fpgid), Some(child_pid)) = (fpgid, child_pid) {
-        assert_eq!(
-            ProcessId::try_from(fpgid).unwrap(),
-            child_pid,
-            "the spawned command leads its own foreground group"
-        );
-    }
 
     // An unknown terminal id has no fd and must not panic.
     assert_eq!(
@@ -780,9 +824,7 @@ fn tcgetpgrp_returns_foreground_group() {
         None
     );
 
-    if let Some(child_pid) = child_pid {
-        let _ = server.force_kill(child_pid);
-    }
+    let _ = server.force_kill(child_pid);
 }
 
 mod coalescing_send_queue {
@@ -861,15 +903,33 @@ mod coalescing_send_queue {
         ));
     }
 
+    /// The shutdown shape: the writer is popping while the router closes the queue under
+    /// it. `pop` checks for queued messages before it checks `closed`, which is the only
+    /// reason a message queued before the close cannot be lost to it.
     #[test]
-    fn close_drains_before_ending() {
-        let queue = CoalescingSendQueue::new();
-        queue.push(control("queued-before-close"));
-        queue.push(render("render-before-close"));
+    fn a_close_racing_a_pop_still_drains_everything_queued() {
+        const QUEUED: usize = SEND_QUEUE_CONTROL_CAPACITY;
+        let queue = Arc::new(CoalescingSendQueue::new());
+        for i in 0..QUEUED {
+            assert!(matches!(
+                queue.push(control(&i.to_string())),
+                SendQueuePush::Queued
+            ));
+        }
+        let popper = {
+            let queue = queue.clone();
+            std::thread::spawn(move || {
+                let mut got = Vec::new();
+                while let Some(msg) = queue.pop() {
+                    got.push(msg);
+                }
+                got
+            })
+        };
         queue.close();
-        assert_eq!(queue.pop(), Some(control("queued-before-close")));
-        assert_eq!(queue.pop(), Some(render("render-before-close")));
-        assert_eq!(queue.pop(), None);
+        let expected: Vec<ServerToClientMsg> =
+            (0..QUEUED).map(|i| control(&i.to_string())).collect();
+        assert_eq!(popper.join().unwrap(), expected);
     }
 
     #[test]
@@ -885,15 +945,21 @@ mod coalescing_send_queue {
         assert_eq!(popper.join().unwrap(), Some(render("wake up")));
     }
 
+    /// A `pop` already waiting on an empty queue is ended, with `None`, by the close. That
+    /// `pop` blocks at all is `blocking_pop_wakes_on_push`'s to show; the handshake here only
+    /// orders the pop before the close, without a sleep standing in for that order.
     #[test]
-    fn pop_returns_none_when_closed_while_blocked() {
+    fn closing_an_empty_queue_ends_a_pop_that_was_already_waiting() {
         let queue = Arc::new(CoalescingSendQueue::new());
+        let (popping, is_popping) = std::sync::mpsc::channel();
         let popper = {
             let queue = queue.clone();
-            std::thread::spawn(move || queue.pop())
+            std::thread::spawn(move || {
+                popping.send(()).expect("nobody waiting for the popper");
+                queue.pop()
+            })
         };
-        // give the popper a moment to block
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        is_popping.recv().expect("the popper never started");
         queue.close();
         assert_eq!(popper.join().unwrap(), None);
     }
@@ -1030,13 +1096,24 @@ mod coalescing_send_queue {
 
     #[hegel::state_machine]
     impl QueueModel {
+        /// What the model says the control FIFO does with `msg`, and the check against the
+        /// real queue. Shared by every message that takes the FIFO path.
+        fn push_fifo(&mut self, msg: ServerToClientMsg) {
+            let outcome = self.real.push(msg.clone());
+            if self.closed {
+                assert!(matches!(outcome, SendQueuePush::Queued));
+            } else if self.control.len() >= SEND_QUEUE_CONTROL_CAPACITY {
+                assert!(matches!(outcome, SendQueuePush::ControlQueueFull));
+            } else {
+                assert!(matches!(outcome, SendQueuePush::Queued));
+                self.control.push_back(msg);
+            }
+        }
+
         #[rule]
         fn push_control(&mut self, _tc: hegel::TestCase) {
             let msg = control(&self.next_seq());
-            assert!(matches!(self.real.push(msg.clone()), SendQueuePush::Queued));
-            if !self.closed {
-                self.control.push_back(msg);
-            }
+            self.push_fifo(msg);
         }
 
         #[rule]
@@ -1080,10 +1157,22 @@ mod coalescing_send_queue {
                 scrollback: None,
                 is_initial: true,
             };
-            assert!(matches!(self.real.push(msg.clone()), SendQueuePush::Queued));
-            if !self.closed {
-                self.control.push_back(msg);
-            }
+            self.push_fifo(msg);
+        }
+
+        #[rule]
+        fn push_scrollback_pane_render(&mut self, tc: hegel::TestCase) {
+            // the other of `slot_for`'s two negative conditions: an update carrying
+            // scrollback is never coalesced away, so it takes the FIFO path too
+            let pane_id = tc.draw(any_data_pane_id());
+            let seq = self.next_seq();
+            let msg = ServerToClientMsg::PaneRenderUpdate {
+                pane_id,
+                viewport: vec![seq.clone()],
+                scrollback: Some(vec![seq]),
+                is_initial: false,
+            };
+            self.push_fifo(msg);
         }
 
         #[rule]
@@ -1195,9 +1284,14 @@ mod client_writer_flush {
             "the writer should finish draining well inside the deadline"
         );
 
-        // Only now would the process exit. The bytes must already be there.
+        // Only now would the process exit. The bytes must already be there: the read is
+        // given almost no time, so a writer that was still flushing would show up as Idle
+        // rather than being quietly waited for.
         let mut receiver: IpcReceiverWithContext<ServerToClientMsg> =
             IpcReceiverWithContext::new(client_end);
+        receiver
+            .set_recv_timeout(Some(Duration::from_millis(1)))
+            .expect("setting a receive timeout failed");
         match receiver.recv_server_msg() {
             IpcRecv::Msg(
                 ServerToClientMsg::Exit {
@@ -1217,6 +1311,95 @@ mod client_writer_flush {
         }
     }
 
+    /// The other half of the ordering: the wait does not report drained while a writer still
+    /// has bytes it could not put on the socket. The client here has stopped reading with its
+    /// receive buffer full, so the writer blocks on the `Exit`; only once the client drains
+    /// its side does the writer finish, and only then does the wait return.
+    #[test]
+    fn the_wait_does_not_return_while_a_writer_is_still_blocked_on_the_socket() {
+        use std::io::{Read, Write};
+        use std::os::fd::AsFd;
+        use std::os::unix::net::UnixStream;
+
+        let (_guard, server_end, client_end) = socket_pair();
+        let dup = |stream: &interprocess::local_socket::Stream| match stream {
+            interprocess::local_socket::Stream::UdSocket(uds) => {
+                uds.as_fd().try_clone_to_owned().expect("dup failed")
+            },
+        };
+        let server_fd = dup(&server_end);
+        let client_fd = dup(&client_end);
+
+        // Fill the socket from the server side until it will take no more. Non-blocking
+        // mode is a property of the open file, so it is put back before the writer thread
+        // shares it.
+        let mut filler = UnixStream::from(server_fd.try_clone().expect("dup failed"));
+        filler
+            .set_nonblocking(true)
+            .expect("set_nonblocking failed");
+        let junk = [0u8; 4096];
+        let mut junk_len = 0usize;
+        loop {
+            match filler.write(&junk) {
+                Ok(n) => junk_len += n,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("filling the socket failed: {e}"),
+            }
+        }
+        filler
+            .set_nonblocking(false)
+            .expect("set_nonblocking failed");
+        assert!(junk_len > 0, "precondition: the socket took some bytes");
+
+        let live_writers = Arc::new(LiveWriters::default());
+        let sender = ClientSender::new(
+            crate::ClientId::new(1),
+            IpcSenderWithContext::<ServerToClientMsg>::new(server_end),
+            live_writers.clone(),
+            server_fd,
+        );
+        sender
+            .send_or_buffer(ServerToClientMsg::Exit {
+                exit_reason: ExitReason::Normal,
+            })
+            .expect("queueing the exit failed");
+        sender.close();
+
+        assert!(
+            !live_writers.wait_until_drained(Duration::from_millis(200)),
+            "the wait returned while the writer was still blocked behind a full socket"
+        );
+
+        // The client catches up, which unblocks the writer.
+        let mut drainer = UnixStream::from(client_fd);
+        let mut sink = vec![0u8; junk_len];
+        drainer
+            .read_exact(&mut sink)
+            .expect("draining the junk failed");
+        assert!(
+            live_writers.wait_until_drained(Duration::from_secs(5)),
+            "the writer should finish once the client reads"
+        );
+
+        let mut receiver: IpcReceiverWithContext<ServerToClientMsg> =
+            IpcReceiverWithContext::new(client_end);
+        receiver
+            .set_recv_timeout(Some(Duration::from_millis(1)))
+            .expect("setting a receive timeout failed");
+        assert!(
+            matches!(
+                receiver.recv_server_msg(),
+                IpcRecv::Msg(
+                    ServerToClientMsg::Exit {
+                        exit_reason: ExitReason::Normal,
+                    },
+                    _,
+                )
+            ),
+            "the exit should be on the socket once the wait returns"
+        );
+    }
+
     #[test]
     fn waiting_gives_up_rather_than_holding_the_process_open() {
         let live_writers = LiveWriters::default();
@@ -1228,10 +1411,15 @@ mod client_writer_flush {
             !live_writers.wait_until_drained(Duration::from_millis(50)),
             "an undrained writer should be reported as such"
         );
+        let waited = started.elapsed();
         assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "the wait must be bounded, it took {:?}",
-            started.elapsed()
+            waited >= Duration::from_millis(50),
+            "the wait returned after {waited:?}, before its 50ms deadline"
+        );
+        // Generous: the assertion is "bounded at all".
+        assert!(
+            waited < Duration::from_secs(2),
+            "the wait must be bounded, it took {waited:?}"
         );
     }
 
@@ -1298,15 +1486,21 @@ mod client_writer_flush {
         // hangs up would produce the EOF on its own, which is the case that
         // already worked.
         let (blocked, is_blocked) = std::sync::mpsc::channel();
-        let router = std::thread::spawn(move || {
+        let (read_ended, read_outcome) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
             blocked.send(()).expect("nobody waiting for the router");
-            receiver.recv_client_msg()
+            let _ = read_ended.send(receiver.recv_client_msg());
         });
         is_blocked.recv().expect("the router thread never started");
 
         sender.shutdown_reads();
 
-        let outcome = router.join().expect("the router thread panicked");
+        // Bounded here rather than by nextest's kill: a router that never woke is the
+        // regression this test exists for, and it must fail by name rather than read as
+        // contention.
+        let outcome = read_outcome
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the router's read never ended after the shutdown");
         let described = match outcome {
             IpcRecv::Eof => "Eof",
             IpcRecv::Idle => "Idle",
@@ -1392,8 +1586,34 @@ mod client_writer_flush {
 
 #[test]
 fn server_termios_argument_distinguishes_defaults_and_invalid_json() {
+    use nix::sys::termios::{self, InputFlags, LocalFlags, SetArg};
+    use zellij_runtime::termios::WireTermios;
+
     assert!(get_server_os_input_from_termios_arg(None).is_ok());
-    assert!(get_server_os_input_from_termios_arg(Some("null")).is_ok());
+    assert!(get_server_os_input_from_termios_arg(Some("null"))
+        .unwrap()
+        .pty_backend
+        .configured_termios()
+        .is_none());
+
+    // A real snapshot, with flags no default pty has, and the backend must carry it: this
+    // is the client's terminal settings reaching every local pane.
+    let reference = nix::pty::openpty(None, None).unwrap();
+    let mut distinctive = termios::tcgetattr(&reference.slave).unwrap();
+    distinctive.input_flags.insert(InputFlags::ICRNL);
+    distinctive.local_flags.remove(LocalFlags::ECHO);
+    distinctive.local_flags.insert(LocalFlags::ICANON);
+    termios::tcsetattr(&reference.slave, SetArg::TCSANOW, &distinctive).unwrap();
+    let snapshot = WireTermios::from_termios(&termios::tcgetattr(&reference.slave).unwrap());
+    let json = serde_json::to_string(&Some(snapshot.clone())).unwrap();
+    assert_eq!(
+        get_server_os_input_from_termios_arg(Some(&json))
+            .unwrap()
+            .pty_backend
+            .configured_termios(),
+        Some(snapshot)
+    );
+
     for json in ["broken", "{}", "42"] {
         let error = get_server_os_input_from_termios_arg(Some(json))
             .err()

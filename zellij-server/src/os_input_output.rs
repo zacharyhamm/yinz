@@ -176,7 +176,12 @@ fn build_command(
 // meaningful, so a client that stops draining them for this long has genuinely
 // gone away; disconnecting beats buffering without bound (and possibly having
 // the whole session OOM-killed on its behalf).
+#[cfg(not(test))]
 const SEND_QUEUE_CONTROL_CAPACITY: usize = 5000;
+/// Small enough that the sequential-model property test reaches the full arm in a
+/// handful of pushes.
+#[cfg(test)]
+const SEND_QUEUE_CONTROL_CAPACITY: usize = 8;
 
 /// A per-client send queue that keeps at most one pending `Render` and at most
 /// one pending `PaneRenderUpdate` per pane.

@@ -12,6 +12,12 @@ pub struct LoggingPipe {
     buffer: VecDeque<u8>,
     plugin_name: String,
     plugin_id: zellij_types::internal_ids::PluginId,
+    /// Every line handed to the log, in order. The log itself is a global sink the tests
+    /// cannot read back, and a pipe that swallowed every plugin line would otherwise pass
+    /// its own suite on `buffer` arithmetic alone.
+    #[cfg(test)]
+    #[serde(skip)]
+    logged: std::cell::RefCell<Vec<String>>,
 }
 
 impl LoggingPipe {
@@ -20,6 +26,8 @@ impl LoggingPipe {
             buffer: VecDeque::new(),
             plugin_name: String::from(plugin_name),
             plugin_id,
+            #[cfg(test)]
+            logged: Default::default(),
         }
     }
 
@@ -31,6 +39,8 @@ impl LoggingPipe {
             format!("id: {}", self.plugin_id),
             message
         );
+        #[cfg(test)]
+        self.logged.borrow_mut().push(message.to_owned());
     }
 }
 
@@ -107,6 +117,10 @@ mod logging_pipe_test {
         pipe.flush().expect("Err flush");
 
         assert_eq!(pipe.buffer.len(), test_buffer.len());
+        assert!(
+            pipe.logged.borrow().is_empty(),
+            "an unterminated line was logged early"
+        );
     }
 
     #[test]
@@ -119,6 +133,7 @@ mod logging_pipe_test {
         pipe.flush().expect("Err flush");
 
         assert_eq!(pipe.buffer.len(), 0);
+        assert_eq!(*pipe.logged.borrow(), ["Testing write "]);
     }
 
     #[test]
@@ -142,7 +157,11 @@ mod logging_pipe_test {
         .expect("Err write");
         pipe.flush().expect("Err flush");
 
-        assert_eq!(pipe.buffer.len(), test_buffer2.len());
+        // the *tail* survives, not merely the right number of bytes: a drain from the wrong
+        // end keeps the head of a line already logged and throws the partial one away
+        pipe.buffer.make_contiguous();
+        assert_eq!(pipe.buffer.as_slices().0, test_buffer2);
+        assert_eq!(*pipe.logged.borrow(), ["Testing write "; 4]);
     }
 
     #[test]
@@ -166,6 +185,7 @@ mod logging_pipe_test {
         pipe.flush().expect("Err flush");
 
         assert_eq!(pipe.buffer.len(), 0);
+        assert_eq!(*pipe.logged.borrow(), ["Testing write "; 5]);
     }
 
     #[test]
@@ -182,8 +202,76 @@ mod logging_pipe_test {
         pipe.flush().expect("Err flush");
 
         assert_eq!(pipe.buffer.len(), test_buffer.len() - 1);
+        assert!(
+            pipe.logged.borrow().is_empty(),
+            "a split code point must wait for its last byte, not be logged as {:?}",
+            pipe.logged.borrow()
+        );
 
-        println!("len: {}, buf: {:?}", test_buffer.len(), test_buffer);
+        // the reason the bytes were kept: once the last one arrives the character is whole,
+        // and it is logged as itself when its line ends
+        pipe.write_all(&test_buffer[test_buffer.len() - 1..])
+            .expect("Err write");
+        assert_eq!(pipe.buffer.len(), test_buffer.len());
+        assert!(pipe.logged.borrow().is_empty(), "no newline yet");
+        pipe.write_all(b"\n").expect("Err write");
+        assert_eq!(pipe.buffer.len(), 0);
+        assert_eq!(*pipe.logged.borrow(), ["😱"]);
+    }
+
+    /// `flush` checks the whole buffer for UTF-8 validity, so a complete line followed by a
+    /// split code point waits with the code point rather than going out ahead of it. That is
+    /// the current behaviour, pinned here; the line is not lost, only late.
+    #[test]
+    fn a_line_ahead_of_a_split_code_point_waits_for_it() {
+        let mut pipe = LoggingPipe::new("TestPipe", crate::PluginId::new(0));
+        let scream = "😱".as_bytes();
+
+        pipe.write_all(&[b"line\n", &scream[..3]].concat())
+            .expect("Err write");
+        assert_eq!(pipe.buffer.len(), 5 + 3);
+        assert!(
+            pipe.logged.borrow().is_empty(),
+            "the line waits for the code point, got {:?}",
+            pipe.logged.borrow()
+        );
+
+        pipe.write_all(&[&scream[3..], b"\n"].concat())
+            .expect("Err write");
+        assert_eq!(pipe.buffer.len(), 0);
+        assert_eq!(*pipe.logged.borrow(), ["line", "😱"]);
+    }
+
+    /// After a drain the ring buffer's head moves, so a later line can wrap around its end.
+    /// `flush` reads only the front slice, which is the whole buffer only after
+    /// `make_contiguous`; without it a wrapped line has no newline in view and is never logged.
+    #[test]
+    fn a_line_that_wraps_the_ring_buffer_is_still_logged_whole() {
+        let mut pipe = LoggingPipe::new("TestPipe", crate::PluginId::new(0));
+        pipe.buffer = VecDeque::with_capacity(16);
+        let capacity = pipe.buffer.capacity();
+
+        // the line is logged and drained, and the partial byte after it keeps the head 11
+        // bytes in (an emptied deque resets its head, which would hide the wrap)
+        pipe.write_all(b"0123456789\nX").expect("Err write");
+        assert_eq!(*pipe.logged.borrow(), ["0123456789"]);
+        assert_eq!(pipe.buffer.len(), 1);
+
+        // appended without the flush `write` would do, so the layout is observable
+        let second = b"abcdefgh\n";
+        assert!(
+            11 + 1 + second.len() > capacity,
+            "the second line must wrap"
+        );
+        pipe.buffer.extend(second);
+        assert!(
+            !pipe.buffer.as_slices().1.is_empty(),
+            "precondition: the second line wraps around the ring buffer"
+        );
+
+        pipe.flush().expect("Err flush");
+        assert_eq!(pipe.buffer.len(), 0);
+        assert_eq!(*pipe.logged.borrow(), ["0123456789", "Xabcdefgh"]);
     }
 
     #[test]
@@ -200,6 +288,11 @@ mod logging_pipe_test {
         pipe.flush().expect("Err flush");
 
         assert_eq!(pipe.buffer.len(), 0);
+        // each bare newline is a blank line in the plugin's output, and is logged as one
+        assert_eq!(
+            *pipe.logged.borrow(),
+            ["Testing write ", "Testing write ", "", "", ""]
+        );
     }
 
     // ---- property-based tests (hegel) ----
@@ -247,8 +340,35 @@ mod logging_pipe_test {
 
         let mut pipe = LoggingPipe::new("TestPipe", crate::PluginId::new(0));
         for (index, write) in writes.iter().enumerate() {
-            // an over-cap write is reported as an error, not a panic, and clears the buffer
-            let _ = pipe.write(write);
+            // an over-cap write is reported as an error - the only signal a plugin's
+            // `write_all` gets that its line was dropped - and clears the buffer, so a stale
+            // partial line is not prepended to the next one
+            let over_cap = pipe.buffer.len() + write.len() > ZELLIJ_MAX_PIPE_BUFFER_SIZE;
+            let result = pipe.write(write);
+            assert_eq!(
+                result.is_err(),
+                over_cap,
+                "write {} of {:?} was {} but {}",
+                index,
+                writes.iter().map(|w| w.len()).collect::<Vec<_>>(),
+                if over_cap {
+                    "over the cap"
+                } else {
+                    "within the cap"
+                },
+                if result.is_err() {
+                    "reported an error"
+                } else {
+                    "succeeded"
+                }
+            );
+            if over_cap {
+                assert!(
+                    pipe.buffer.is_empty(),
+                    "an over-cap write must clear the buffer, {} bytes remain",
+                    pipe.buffer.len()
+                );
+            }
             pipe.flush().expect("flush must not fail");
             assert!(
                 pipe.buffer.len() <= ZELLIJ_MAX_PIPE_BUFFER_SIZE,
@@ -270,6 +390,10 @@ mod logging_pipe_test {
                 text,
                 writes.iter().map(|w| w.len()).collect::<Vec<_>>()
             );
+        }
+        // every logged line is one line: it was split on '\n', which never survives into it
+        for line in pipe.logged.borrow().iter() {
+            assert!(!line.contains('\n'), "logged line {line:?} holds a newline");
         }
     }
 }

@@ -8,17 +8,27 @@ pub const PING_INTERVAL_MS: u64 = 2000;
 pub const PONG_TIMEOUT_MS: u64 = 5000;
 
 pub fn ping_interval_ms() -> u64 {
-    std::env::var("ZELLIJ_NESTED_PING_INTERVAL_MS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(PING_INTERVAL_MS)
+    millis_from_env(
+        std::env::var("ZELLIJ_NESTED_PING_INTERVAL_MS").ok(),
+        PING_INTERVAL_MS,
+    )
 }
 
 pub fn pong_timeout_ms() -> u64 {
-    std::env::var("ZELLIJ_NESTED_PONG_TIMEOUT_MS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(PONG_TIMEOUT_MS)
+    millis_from_env(
+        std::env::var("ZELLIJ_NESTED_PONG_TIMEOUT_MS").ok(),
+        PONG_TIMEOUT_MS,
+    )
+}
+
+/// An override read from the environment: a value that is a whole number of milliseconds wins,
+/// and anything else - unset, empty, or not a number - falls back to `default`. Split out from
+/// the two readers so it can be tested without touching the process environment, which every
+/// other test in this module reads through `on_tick`.
+fn millis_from_env(value: Option<String>, default: u64) -> u64 {
+    value
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(default)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +112,10 @@ mod tests {
         let pane_id = PaneId::Terminal(TerminalId::new(1));
         let start = Instant::now();
         tracker.on_announce(pane_id, start);
+        // `PING_INTERVAL_MS` here is decorative: the tracker does not pace pings, the
+        // background job's ticker does (`background_jobs.rs`), and `on_tick` answers `SendPing`
+        // at any instant inside the pong timeout. It is used so the test reads as the cadence
+        // production actually ticks at.
         assert_eq!(
             tracker.on_tick(pane_id, start + millis(PING_INTERVAL_MS)),
             GuestPingTickAction::SendPing
@@ -119,6 +133,11 @@ mod tests {
         let pane_id = PaneId::Terminal(TerminalId::new(1));
         let start = Instant::now();
         tracker.on_announce(pane_id, start);
+        // the timeout is exclusive: a guest exactly at it is still pinged, one past it is not
+        assert_eq!(
+            tracker.on_tick(pane_id, start + millis(PONG_TIMEOUT_MS)),
+            GuestPingTickAction::SendPing
+        );
         assert_eq!(
             tracker.on_tick(pane_id, start + millis(PONG_TIMEOUT_MS + 1)),
             GuestPingTickAction::Suspended
@@ -203,5 +222,121 @@ mod tests {
         tracker.on_announce(pane_id, now);
         tracker.remove(pane_id);
         assert_eq!(tracker.on_tick(pane_id, now), GuestPingTickAction::Unknown);
+    }
+
+    /// Removal forgets a dormant guest too, not just a live one. A dormant entry that
+    /// survived removal would be a leak with a consequence: the pane id, once reused, would
+    /// re-announce as `Revived` and skip the fresh-guest setup.
+    #[test]
+    fn removing_a_dormant_guest_forgets_it() {
+        let mut tracker = NestedGuestTracker::default();
+        let pane_id = PaneId::Terminal(TerminalId::new(1));
+        let start = Instant::now();
+        tracker.on_announce(pane_id, start);
+        assert_eq!(
+            tracker.on_tick(pane_id, start + millis(PONG_TIMEOUT_MS + 1)),
+            GuestPingTickAction::Suspended
+        );
+        assert!(tracker.is_dormant(pane_id));
+        tracker.remove(pane_id);
+        assert!(!tracker.is_dormant(pane_id));
+        assert!(!tracker.is_known(pane_id));
+        assert_eq!(
+            tracker.on_announce(pane_id, start + millis(PONG_TIMEOUT_MS + 2)),
+            AnnounceKind::New,
+            "a reused pane id is a fresh guest, not a revived one"
+        );
+    }
+
+    /// Guests are tracked per pane: one going quiet says nothing about another.
+    #[test]
+    fn suspending_one_guest_leaves_the_other_tracked() {
+        let mut tracker = NestedGuestTracker::default();
+        let quiet = PaneId::Terminal(TerminalId::new(1));
+        let chatty = PaneId::Terminal(TerminalId::new(2));
+        let start = Instant::now();
+        tracker.on_announce(quiet, start);
+        tracker.on_announce(chatty, start);
+        tracker.on_pong(chatty, start + millis(PONG_TIMEOUT_MS - 1000));
+
+        let later = start + millis(PONG_TIMEOUT_MS + 1);
+        assert_eq!(
+            tracker.on_tick(quiet, later),
+            GuestPingTickAction::Suspended
+        );
+        assert!(tracker.is_dormant(quiet));
+        assert!(
+            tracker.is_tracked(chatty),
+            "the other guest was forgotten too"
+        );
+        assert!(!tracker.is_dormant(chatty));
+        assert_eq!(
+            tracker.on_tick(chatty, later),
+            GuestPingTickAction::SendPing
+        );
+    }
+
+    #[test]
+    fn removing_one_guest_leaves_the_other_tracked() {
+        let mut tracker = NestedGuestTracker::default();
+        let closed = PaneId::Terminal(TerminalId::new(1));
+        let open = PaneId::Terminal(TerminalId::new(2));
+        let start = Instant::now();
+        tracker.on_announce(closed, start);
+        tracker.on_announce(open, start);
+
+        tracker.remove(closed);
+        assert!(!tracker.is_known(closed));
+        assert!(tracker.is_tracked(open), "the other guest was removed too");
+        assert_eq!(
+            tracker.on_tick(open, start + millis(1000)),
+            GuestPingTickAction::SendPing
+        );
+        assert_eq!(
+            tracker.on_tick(closed, start + millis(1000)),
+            GuestPingTickAction::Unknown
+        );
+    }
+
+    /// The env override wins when it parses as milliseconds and is ignored otherwise. Tested
+    /// through the pure helper so no test has to set a process-wide variable that `on_tick`
+    /// reads in every other test here.
+    #[test]
+    fn a_millisecond_override_is_read_from_the_environment() {
+        assert_eq!(
+            millis_from_env(Some("750".to_owned()), PONG_TIMEOUT_MS),
+            750
+        );
+        assert_eq!(
+            millis_from_env(Some(" 12 ".to_owned()), PING_INTERVAL_MS),
+            12
+        );
+        for junk in ["", "soon", "1.5", "-1"] {
+            assert_eq!(
+                millis_from_env(Some(junk.to_owned()), PONG_TIMEOUT_MS),
+                PONG_TIMEOUT_MS,
+                "{junk:?} should fall back to the default"
+            );
+        }
+        assert_eq!(millis_from_env(None, PING_INTERVAL_MS), PING_INTERVAL_MS);
+        // and the two readers really consult the variables they are named for
+        for (var, read, default) in [
+            (
+                "ZELLIJ_NESTED_PING_INTERVAL_MS",
+                ping_interval_ms as fn() -> u64,
+                PING_INTERVAL_MS,
+            ),
+            (
+                "ZELLIJ_NESTED_PONG_TIMEOUT_MS",
+                pong_timeout_ms as fn() -> u64,
+                PONG_TIMEOUT_MS,
+            ),
+        ] {
+            assert!(
+                std::env::var_os(var).is_none(),
+                "{var} is set in this test's environment, so the default cannot be checked"
+            );
+            assert_eq!(read(), default, "{var}");
+        }
     }
 }
