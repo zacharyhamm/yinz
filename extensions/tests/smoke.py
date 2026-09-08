@@ -26,6 +26,7 @@ parser.add_argument('--binary', default='target/debug/zellij')
 parser.add_argument('--firecracker-only', action='store_true')
 parser.add_argument('--recovery-only', action='store_true')
 parser.add_argument('--source-diff-only', action='store_true')
+parser.add_argument('--test-output-only', action='store_true')
 args = parser.parse_args()
 source = Path(__file__).resolve().parents[2]
 root = Path(tempfile.mkdtemp(prefix='zellij-workflow-acceptance-'))
@@ -368,59 +369,90 @@ try:
             print('PASS: automatic tiled exit suppresses source; snapshot excludes it; Fork resolves it; cancelled Fork returns; Duplicate preserves kind/cwd', flush=True)
             raise SystemExit(0)
 
-        launch('success')
-        initial = until('initial exit menu', lambda: pending('success', 'exit'))
-        assert initial['attributes']['answers'] == ['begin-review', 'leave']
-        assert initial['attributes']['prompt'] == 'Choose Begin review or Leave.'
-        assert bridge(method='lookup', work='success', key='worker') is None
-        assert not agents(), 'Exit must not start an agent'
-        assert run('git', 'rev-parse', 'HEAD').stdout.strip() == base
-        before = len(histories('success'))
-        launch('success')
-        assert len(histories('success')) == before, 'Duplicate launch dispatched a second run'
-        choose('success', 'exit', 'begin-review')
-        exercise_diff('success')
-        choose('success', 'prepare', 'commit-and-rebase')
-        choose('success', 'review', 'merge')
-        q = until('informed skipped-check confirmation', lambda: pending('success', 'merge'))
-        assert 'Tests: SKIPPED' in q['attributes']['prompt'] and 'Review: SKIPPED' in q['attributes']['prompt']
-        assert not agents(), 'Preparation and merge confirmation must not start agents'
-        zellij('workflow', 'show', q['attributes']['run'])
-        until('confirmation rendered', lambda: b'Merge exact revision' in re.sub(rb'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]', b'', bytes(ui_output)))
-        # Changed target invalidates this exact approval and returns to preparation.
-        run('git', 'commit', '--allow-empty', '-m', 'target changed after inspection')
-        target = run('git', 'rev-parse', 'HEAD').stdout.strip()
-        choose('success', 'merge', 'merge')
-        fresh = until('stale approval returns to preparation', lambda: pending('success', 'prepare'))
-        assert fresh['attributes']['run'] != q['attributes']['run']
-        assert run('git', 'rev-parse', 'HEAD').stdout.strip() == target
-        choose('success', 'prepare', 'commit-and-rebase')
-        choose('success', 'review', 'run-tests')
-        choose('success', 'review', 'start-code-review')
-        reviewed = until('unchanged reviewer confirmation', lambda: pending('success', 'merge'))
-        assert 'Tests: PASSED' in reviewed['attributes']['prompt']
-        assert 'Review: PASSED' in reviewed['attributes']['prompt']
-        choose('success', 'merge', 'merge')
-        choose('success', 'cleanup', 'keep')
-        until('successful completion', lambda: all(r['status'] == 'succeeded' for r in histories('success')))
-        assert topic.exists()
-        assert run('git', 'rev-parse', 'HEAD').stdout == run('git', 'rev-parse', 'HEAD', cwd=topic).stdout
-        print('PASS: no unsolicited worker; diff is read-only; stale approval re-prepares; optional passing checks and merge/keep succeed', flush=True)
+        if not args.test_output_only:
+            launch('success')
+            initial = until('initial exit menu', lambda: pending('success', 'exit'))
+            assert initial['attributes']['answers'] == ['begin-review', 'leave']
+            assert initial['attributes']['prompt'] == 'Choose Begin review or Leave.'
+            assert bridge(method='lookup', work='success', key='worker') is None
+            assert not agents(), 'Exit must not start an agent'
+            assert run('git', 'rev-parse', 'HEAD').stdout.strip() == base
+            before = len(histories('success'))
+            launch('success')
+            assert len(histories('success')) == before, 'Duplicate launch dispatched a second run'
+            choose('success', 'exit', 'begin-review')
+            exercise_diff('success')
+            choose('success', 'prepare', 'commit-and-rebase')
+            choose('success', 'review', 'merge')
+            q = until('informed skipped-check confirmation', lambda: pending('success', 'merge'))
+            assert 'Tests: SKIPPED' in q['attributes']['prompt'] and 'Review: SKIPPED' in q['attributes']['prompt']
+            assert not agents(), 'Preparation and merge confirmation must not start agents'
+            zellij('workflow', 'show', q['attributes']['run'])
+            until('confirmation rendered', lambda: b'Merge exact revision' in re.sub(rb'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]', b'', bytes(ui_output)))
+            # Changed target invalidates this exact approval and returns to preparation.
+            run('git', 'commit', '--allow-empty', '-m', 'target changed after inspection')
+            target = run('git', 'rev-parse', 'HEAD').stdout.strip()
+            choose('success', 'merge', 'merge')
+            fresh = until('stale approval returns to preparation', lambda: pending('success', 'prepare'))
+            assert fresh['attributes']['run'] != q['attributes']['run']
+            assert run('git', 'rev-parse', 'HEAD').stdout.strip() == target
+            choose('success', 'prepare', 'commit-and-rebase')
+            choose('success', 'review', 'run-tests')
+            choose('success', 'review', 'start-code-review')
+            reviewed = until('unchanged reviewer confirmation', lambda: pending('success', 'merge'))
+            assert 'Tests: PASSED' in reviewed['attributes']['prompt']
+            assert 'Review: PASSED' in reviewed['attributes']['prompt']
+            choose('success', 'merge', 'merge')
+            choose('success', 'cleanup', 'keep')
+            until('successful completion', lambda: all(r['status'] == 'succeeded' for r in histories('success')))
+            assert topic.exists()
+            assert run('git', 'rev-parse', 'HEAD').stdout == run('git', 'rev-parse', 'HEAD', cwd=topic).stdout
+            print('PASS: no unsolicited worker; diff is read-only; stale approval re-prepares; optional passing checks and merge/keep succeed', flush=True)
 
-        launch('failed-checks', gate=['/usr/bin/false'])
+        launch('failed-checks', gate=['/usr/bin/python3', '-c',
+                                     "import sys; sys.stdout.write(('x' * 63 + '\\n') * 9600); sys.exit(1)"])
+        def check_output_previews(question, nested=False):
+            snapshot = bridge(method='workflow_show', directory=str(topic), run=question['attributes']['run'])
+            assert len(json.dumps(snapshot).encode()) < 1_048_576
+            assert any(q['attributes'].get('question') == question['attributes']['question'] and
+                       q['attributes']['state'] == 'pending' for q in snapshot['questions']['results'])
+            seen = set()
+            for entry in snapshot['outputs']['results']:
+                attrs = entry['attributes']
+                path = 'attributes.test.output' if attrs.get('test') else 'attributes.output'
+                value = attrs.get('test') or attrs
+                if not value.get('previewTruncated'):
+                    continue
+                exact = 'modelName == ' + json.dumps(entry['model']) + ' && name == ' + json.dumps(entry['name']) + ' && version == ' + str(entry['version'])
+                saved = swamp('data', 'query', exact, '--select', path)['results'][0]
+                assert len(saved) >= 600_000
+                assert saved.startswith(value['output']) and len(value['output']) <= 16384
+                assert not any(0xD800 <= ord(c) <= 0xDFFF for c in value['output'])
+                assert value['exitCode'] == 1
+                seen.add(entry['name'].split('-')[0])
+            assert {'operation', 'test'} <= seen, seen
+            if nested:
+                assert 'checks' in seen, seen
+            ids = [h['id'] for h in [snapshot['history']] + snapshot['children']]
+            requests = swamp('data', 'query', 'specName == "operation" && tags.workflowRunId in ' + json.dumps(ids), '--select', 'attributes.request')['results']
+            assert all(json.loads(r)['method'] != 'agent_spawn' for r in requests), 'Failed tests must not automatically start a repair agent'
+
+
         prepare('failed-checks')
         choose('failed-checks', 'review', 'run-tests')
         failed = until('failed-test choices', lambda: pending('failed-checks', 'failed-tests'))
         assert failed['attributes']['answers'] == ['start-fix-agent', 'return-to-menu', 'leave']
-        count = len(agents())
+        check_output_previews(failed)
         choose('failed-checks', 'failed-tests', 'return-to-menu')
         choose('failed-checks', 'review', 'merge')
         informed = until('failed-check merge confirmation', lambda: pending('failed-checks', 'merge'))
         assert 'Tests: FAILED' in informed['attributes']['prompt']
-        assert len(agents()) == count, 'Failed tests must not automatically start a repair agent'
+        check_output_previews(informed, nested=True)
         choose('failed-checks', 'merge', 'merge')
         choose('failed-checks', 'cleanup', 'keep')
-        print('PASS: explicit merge accepts failed tests; no automatic repair', flush=True)
+        print('PASS: verbose failed-test previews and merge confirmation; full logs retained; no automatic repair', flush=True)
+        if args.test_output_only:
+            raise SystemExit(0)
 
         launch('fix', gate=['/bin/sh', '-c', 'printf failure-evidence; exit 1'])
         prepare('fix')

@@ -6939,7 +6939,7 @@ assert(not z.__update(M,{PaneUpdate={panes={}}}))
 }
 
 #[test]
-fn swamp_diff_preview_names_the_saved_version_and_keeps_return_actionable() {
+fn swamp_output_preview_names_the_saved_version_and_keeps_return_actionable() {
     let plugin =
         load(zellij_config::consts::builtin_lua_plugin("swamp-workflow").unwrap()).unwrap();
     plugin
@@ -6963,11 +6963,18 @@ z.show_cursor=function() end
 M.load()
 M.attach{directory=snapshot.root,run='run'}
 local rendered=M.render(60,400)
-assert(rendered:find('Diff preview (up to 16,384 characters)',1,true))
+assert(rendered:find('Output preview (up to 16,384 characters)',1,true))
 assert(rendered:find([[swamp data query 'modelName == "git-model" && name == "diff-current" && version == 7' --select attributes.output --json --repo-dir '/work/it'"'"'s here']],1,true))
 assert(rendered:find('Return to preparation.',1,true))
 snapshot.outputs.results[1].attributes.previewTruncated=false
-assert(not M.render(60,400):find('Diff preview',1,true))
+assert(not M.render(60,400):find('Output preview',1,true))
+snapshot.outputs.results[1].attributes.test={outcome='failed',exitCode=1,log='terminal_7',output='nested failure',previewTruncated=true}
+rendered=M.render(60,400)
+assert(rendered:find('Output preview',1,true))
+assert(rendered:find('version == 7\' --select attributes.test.output',1,true))
+assert(rendered:find('nested failure',1,true))
+assert(rendered:find('Gate failed / exit 1 / log terminal_7',1,true))
+
 local submitted=false
 z.async.run_command=function(opts)
   assert(opts.cwd==snapshot.root)
@@ -7272,12 +7279,21 @@ z.instance_id='reloaded'
 assert(call{method='observe',work='lost',key='agent'}.outcome=='unknown')
 -- Launch from a source worktree subdirectory, with a separate control checkout.
 local command_panes, resolved, child_pid=0,0,321
+local function unwrap_history(opts)
+  if opts.command[1]~='bash' then return end
+  assert(opts.max_bytes_returned==1048576)
+  assert(opts.command[2]=='-o' and opts.command[3]=='pipefail' and opts.command[4]=='-c')
+  assert(opts.command[5]==[=["$@" | jq -c 'del(.inputs.state.test.output, .results[]?.inputs.state.test.output)']=])
+  assert(opts.command[6]=='workflow-history')
+  for i=1,6 do table.remove(opts.command,1) end
+end
 local source_root='/work/topic \n' -- preserve path whitespace, including a trailing newline
 z.project_config.read=function(directory)
   assert(directory==source_root..'/src')
   return {root='/control',config={workflow='configured'}}
 end
 z.async.run_command=function(opts)
+  unwrap_history(opts)
   local stdout,exit_code,stderr='',0,''
   if opts.command[1]=='git' then
     assert(z.json.encode(opts.command)==z.json.encode{'git','rev-parse','--show-toplevel'})
@@ -7325,6 +7341,7 @@ assert(call(launch('explicit',expected_checkout)).pane==30 and resolved==2 and c
 for i,output in ipairs{{'{"error":"extension unavailable"}',''}, {'','validation failed'}, {'',''}, {'details','warning'}} do
   local commands=0
   z.async.run_command=function(opts)
+  unwrap_history(opts)
     commands=commands+1
     assert(z.json.encode(opts.command)==z.json.encode{'swamp','workflow','validate','configured','--json'})
     assert(opts.cwd=='/control')
@@ -7345,6 +7362,7 @@ end
 local launch_uid=z.json.encode({'host','session','recovery','launch'})
 rows[launch_uid]={rev=1,value=z.json.encode{work='recovery',key='launch',outcome='unknown',request=z.json.encode{method='workflow_run'},checkout='/control'}}
 z.async.run_command=function(opts)
+  unwrap_history(opts)
   assert(opts.command[1]=='swamp' and opts.command[3]=='history' and opts.command[4]=='search')
   local a,r=z.async.future();r{exit_code=0,stderr='',stdout=z.json.encode{results={{runId='recovered-run',workflowName='@hammz/zellij-agent-exit',inputs={session='session',launch='recovery'}}}}};return a
 end
@@ -7371,6 +7389,7 @@ z.replace_pane_with_existing_pane=function(args)
 end
 z.project_config.read=function() return {root='/control',config={workflow='configured'}} end
 z.async.run_command=function(opts)
+  unwrap_history(opts)
   local stdout=''
   if opts.command[2]=='pty-host' then
     local hosts={}
@@ -7423,6 +7442,7 @@ assert(visible.Plugin==1 and replacements==5,'process failure restores status')
 local host_command=z.async.run_command
 local reported=false
 z.async.run_command=function(opts)
+  unwrap_history(opts)
   if opts.command[2]=='pty-host' then return host_command(opts) end
   local output={results={}}
   if opts.command[3]=='history' and opts.command[4]=='search' and reported then
