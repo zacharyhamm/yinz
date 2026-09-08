@@ -345,7 +345,7 @@ fn sdk_async_helpers_have_precise_options_results_and_cancellation_types() {
             });
             const web: CancellablePromise<WebRequestResult> = zellij.webRequest({
                 url: 'https://example.com', verb: 'Post', body: zellij.encodeUtf8('hello'),
-                headers: {'content-type': 'text/plain'}, proxy: 'http://localhost:8080', context: {},
+                headers: {'content-type': 'text/plain'}, proxy: 'http://localhost:8080', context: {}, streamId: 'stream',
             });
             const [result, response] = await Promise.all([command, web]);
             const exit: number | null = result.exitCode;
@@ -371,7 +371,9 @@ fn sdk_async_helpers_have_precise_options_results_and_cancellation_types() {
             zellij.webRequest({url: 'x', verb: 'Patch'});
             // @ts-expect-error only strings or Uint8Array bodies
             zellij.webRequest({url: 'x', body: [1]});
-            // @ts-expect-error buffered helper has no stream ID
+            // @ts-expect-error stream IDs must be strings
+            zellij.webRequest({url: 'x', streamId: 1});
+            // @ts-expect-error wrapper uses camelCase
             zellij.webRequest({url: 'x', stream_id: 'stream'});
             // @ts-expect-error exitCode can be null
             const code: number = result.exitCode;

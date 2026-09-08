@@ -128,16 +128,38 @@ The maps default to empty objects. The working directory defaults to `/host`. Th
 `maxBytesReturned` sets the limit for each output stream and must be a nonnegative safe integer.
 The result contains `exitCode`, `stdout`, `stderr`, and `context`. Output streams are `Uint8Array` values. `exitCode` can be `null`.
 
-`webRequest` accepts `url`, plus optional `verb`, `headers`, `body`, `context`, and `proxy`.
+`webRequest` accepts `url`, plus optional `verb`, `headers`, `body`, `context`, `proxy`, and `streamId`.
 The verb defaults to `Get`. The other supported verbs are `Post`, `Put`, and `Delete`.
 Headers and context default to empty string maps. The body defaults to an empty string and accepts a string or `Uint8Array`.
-This helper buffers the response. Its result contains `status`, `headers`, `body` as `Uint8Array`, and `context`.
+Without `streamId`, this helper buffers the response. Its result contains `status`, `headers`, `body` as `Uint8Array`, and `context`.
 Use `encodeUtf8(text)` and `decodeUtf8(bytes)` to convert between strings and bytes. Invalid UTF-8 decodes with replacement characters.
 
 Each operation receives its own result, even when replies arrive out of order. Nonzero command exits and HTTP error statuses resolve normally.
 Invalid options, permission failures, and dispatch errors reject the promise. Helpers do not request permissions automatically.
 Context values must be strings. The SDK copies the context and reserves `__zellij_async` for correlation. A caller-supplied reserved key rejects the operation.
 Helper results omit this key. Normal event handlers still receive the unchanged wire payload, including the correlation key and byte arrays.
+
+For streaming, supply a string `streamId`, distinct for each concurrent stream.
+The promise resolves with the leading response: empty body for 2xx, buffered body otherwise.
+Subscribe and register listeners before dispatch. Filter by `stream_id` and check terminal `done`/`error`.
+After receiving `WebAccess`:
+
+```ts
+const streamId = "download-1";
+zellij.subscribe(["WebRequestStreamChunk"]);
+const off = zellij.on("WebRequestStreamChunk", event => {
+  if (event.stream_id !== streamId) return;
+  // Process event.chunk bytes in order.
+  if (event.done) {
+    if (event.error !== null) zellij.log(event.error);
+    off();
+  }
+});
+const response = await zellij.webRequest({ url: "https://example.com", streamId });
+```
+
+The wrapper does not subscribe to or buffer chunks.
+`.cancel()` cancels only the response wait. Stop host streaming with `zellij.command("CancelWebRequest", streamId)`.
 
 ### Waits and cancellation
 

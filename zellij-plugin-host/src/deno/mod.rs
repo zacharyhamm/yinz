@@ -773,11 +773,11 @@ mod sdk_tests {
             r#"
             globalThis.results = []; globalThis.operations = []; globalThis.raw = [];
             globalThis.context = Object.freeze({tag: 'caller'});
-            bind({ load({kind}) {
+            bind({ load({kind, streamId}) {
                 zellij.on(kind === 'command' ? 'RunCommandResult' : 'WebRequestResult', payload => { raw.push(payload); });
                 const promise = kind === 'command'
                     ? zellij.runCommand({command: ['echo', 'hello'], context})
-                    : zellij.webRequest({url: 'https://example.com', body: 'hé🙂', context});
+                    : zellij.webRequest({url: 'https://example.com', body: 'hé🙂', context, streamId});
                 check(promise instanceof Promise && typeof promise.cancel === 'function');
                 operations.push(promise);
                 const chained = promise.then(result => { results.push([zellij.getPluginIds().client_id, result]); });
@@ -786,7 +786,7 @@ mod sdk_tests {
             bridge('load', {kind: 'command'}, 1);
             bridge('load', {kind: 'command'}, 2);
             bridge('load', {kind: 'web'}, 3);
-            bridge('load', {kind: 'web'}, 4);
+            bridge('load', {kind: 'web', streamId: 'errors'}, 4);
             bridge('update', {RunCommandResult: [0, [], [], {tag: 'unrelated'}]}, 9);
             bridge('update', {WebRequestResult: [200, {}, [], {}]}, 9);
             check(results.length === 0 && !Object.hasOwn(context, '__zellij_async'));
@@ -801,6 +801,7 @@ mod sdk_tests {
             check(commands.length === 2 && requests.length === 2);
             check(JSON.stringify(commands[0].slice(0, 3)) === '[[' + '"echo","hello"],{},"/host"]');
             check(commands[0][4] === null);
+            check(requests[1][5] === 'errors');
             check(requests[0][1] === 'Get' && requests[0][5] === null && requests[0][6] === null);
             check(zellij.decodeUtf8(new Uint8Array(requests[0][3])) === 'hé🙂');
             const contexts = [...commands.map(args => args[3]), ...requests.map(args => args[4])];
@@ -826,6 +827,60 @@ mod sdk_tests {
             for (const operation of operations) { operation.cancel(); operation.cancel(); }
             check(results.length === 4);
         "#,
+        );
+    }
+
+    #[test]
+    fn streaming_requests_correlate_responses_and_cancel_only_the_wait() {
+        let mut runtime = sdk();
+        run(
+            &mut runtime,
+            r#"
+            globalThis.results = []; globalThis.errors = []; globalThis.chunks = [];
+            globalThis.requests = [];
+            bind({load() {
+                zellij.subscribe(['WebRequestStreamChunk']);
+                zellij.on('WebRequestStreamChunk', event => {
+                    if (event.stream_id === 'cancelled') chunks.push(event);
+                });
+                for (const streamId of ['first', 'second', 'cancelled']) {
+                    const request = zellij.webRequest({url: 'https://example.com', streamId, context: {streamId}});
+                    request.then(result => { results.push(result); }, error => { errors.push(error.name); });
+                    requests.push(request);
+                }
+                requests[2].cancel(); requests[2].cancel();
+            }}); bridge('load', {}, 1);
+        "#,
+        );
+        capture_commands(&mut runtime);
+        run(
+            &mut runtime,
+            r#"
+            const wires = sent.filter(([cmd]) => cmd.WebRequest).map(([cmd]) => cmd.WebRequest);
+            check(wires.map(args => args[5]).join() === 'first,second,cancelled');
+            check(!sent.some(([cmd]) => cmd.CancelWebRequest));
+            bridge('update', {WebRequestResult: [200, {}, [], {}]}, 1);
+            for (const i of [2, 1, 0]) {
+                bridge('update', {WebRequestResult: [200, {}, [], wires[i][4]]}, 1);
+            }
+            bridge('update', {WebRequestStreamChunk: {stream_id: 'other', chunk: [1], done: false, error: null}}, 1);
+            bridge('update', {WebRequestStreamChunk: {stream_id: 'cancelled', chunk: [0, 255], done: false, error: null}}, 1);
+        "#,
+        );
+        run(
+            &mut runtime,
+            r#"
+            check(results.map(result => result.context.streamId).join() === 'second,first');
+            check(results.every(result => result.status === 200 && result.body instanceof Uint8Array && !result.body.length));
+            check(errors.join() === 'AbortError' && chunks.length === 1 && chunks[0].chunk.join() === '0,255');
+            for (const request of requests) request.cancel();
+            bind({load() { zellij.command('CancelWebRequest', 'cancelled'); }}); bridge('load', {}, 1);
+        "#,
+        );
+        capture_commands(&mut runtime);
+        run(
+            &mut runtime,
+            "check(sent.at(-1)[0].CancelWebRequest === 'cancelled')",
         );
     }
 
@@ -1180,6 +1235,7 @@ mod sdk_tests {
                 () => zellij.webRequest({url: ''}), () => zellij.webRequest({url: 'x', verb: 'Patch'}),
                 () => zellij.webRequest({url: 'x', body: [1]}), () => zellij.webRequest({url: 'x', headers: []}),
                 () => zellij.webRequest({url: 'x', proxy: 1}),
+                ...[null, 1, true, [], {}].map(streamId => () => zellij.webRequest({url: 'x', streamId})),
                 () => zellij.webRequest({url: 'x', context: {__zellij_async: 'collision'}}),
                 () => zellij.waitForEvent('Key', null), () => zellij.waitForPipe('pipe', null),
                 () => zellij.sleep(NaN), () => zellij.sleep(-1), () => zellij.sleep(2147483648),

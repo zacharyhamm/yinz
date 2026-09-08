@@ -195,14 +195,15 @@
   }
   function webRequest(options) {
     return cancellable((operation) => {
-      const { url, verb = "Get", headers, body = "", context, proxy } = record(options, "webRequest options");
+      const { url, verb = "Get", headers, body = "", context, proxy, streamId } = record(options, "webRequest options");
       if (typeof url !== "string" || !url) throw new TypeError("url must be a nonempty string");
       if (!["Get", "Post", "Put", "Delete"].includes(verb)) throw new TypeError("verb must be Get, Post, Put, or Delete");
       if (typeof body !== "string" && !(body instanceof Uint8Array)) throw new TypeError("body must be a string or Uint8Array");
       if (proxy !== undefined && typeof proxy !== "string") throw new TypeError("proxy must be a string");
+      if (streamId !== undefined && typeof streamId !== "string") throw new TypeError("streamId must be a string");
       requestResult(operation, "WebRequest", [
         url, verb, stringMap(headers, "headers"), Array.from(typeof body === "string" ? encodeUtf8(body) : body),
-        stringMap(context, "context"), null, proxy ?? null,
+        stringMap(context, "context"), streamId ?? null, proxy ?? null,
       ], 4, ([status, headers, body]) => ({ status, headers: { ...headers }, body: new Uint8Array(body) }));
     });
   }

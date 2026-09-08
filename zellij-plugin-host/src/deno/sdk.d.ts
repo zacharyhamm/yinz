@@ -82,6 +82,8 @@ export interface WebRequestOptions {
   body?: string | Uint8Array;
   context?: Record<string, string>;
   proxy?: string;
+  /** Receive chunks through WebRequestStreamChunk, filtered by stream_id. Register before dispatch. */
+  streamId?: string;
 }
 export interface WebRequestResult {
   status: number;
@@ -114,7 +116,8 @@ export interface Zellij {
   every(milliseconds: number, callback: TimerCallback): TimerHandle;
   /** Requires RunCommands. Defaults: empty maps, /host, host output limit. Nonzero exits resolve. */
   runCommand(options: RunCommandOptions): CancellablePromise<RunCommandResult>;
-  /** Requires WebAccess. Buffered request, default Get. HTTP error statuses resolve. */
+  /** Requires WebAccess. Default Get. With streamId, resolves the leading response (empty body for 2xx).
+   * HTTP error bodies stay buffered. cancel() stops the wait; command("CancelWebRequest", streamId) stops streaming. */
   webRequest(options: WebRequestOptions): CancellablePromise<WebRequestResult>;
   encodeUtf8(text: string): Uint8Array;
   decodeUtf8(bytes: Uint8Array): string;
