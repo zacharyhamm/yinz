@@ -137,6 +137,13 @@ mod tests {
         );
         let mid = flash.strength(at(now, 260));
         assert!(mid > 0.0 && mid < 1.0, "easing away by now, got {mid}");
+        // 260ms is the midpoint of the 120..400 release: a linear release would read exactly
+        // 0.5 here. The release eases in - it holds near full for the front half and commits
+        // to leaving in the back half - so it is still well above that
+        assert!(
+            mid > 0.5,
+            "the release eases in, so it is not yet halfway gone at the midpoint, got {mid}"
+        );
         assert_eq!(flash.strength(at(now, 400)), 0.0);
     }
 
@@ -159,5 +166,36 @@ mod tests {
             flash.is_cleared_by(None),
             "the background job's unconditional clear takes it down"
         );
+        assert!(
+            !flash.is_cleared_by(Some(ClientId::new(1))),
+            "one client's clear must not take down a bell everybody can see"
+        );
+    }
+
+    #[test]
+    fn a_client_scoped_override_is_seen_and_cleared_by_that_client_only() {
+        let override_ = FrameColorOverride::new(COLOR, None, Some(ClientId::new(1)));
+        assert!(override_.applies_to(ClientId::new(1)));
+        assert!(
+            !override_.applies_to(ClientId::new(2)),
+            "a mark for the person the plugin is talking to stays off everyone else's screen"
+        );
+        assert!(override_.is_cleared_by(Some(ClientId::new(1))));
+        assert!(
+            !override_.is_cleared_by(Some(ClientId::new(2))),
+            "another client's clear is not this client's"
+        );
+        assert!(
+            override_.is_cleared_by(None),
+            "an unconditional clear takes down every override"
+        );
+    }
+
+    #[test]
+    fn an_override_carries_the_text_that_replaces_the_title() {
+        let override_ = FrameColorOverride::new(COLOR, Some("exit 1".to_string()), None);
+        assert_eq!(override_.text.as_deref(), Some("exit 1"));
+        let flash = FrameColorOverride::flashing(COLOR, Instant::now());
+        assert!(flash.text.is_none(), "a bell flash leaves the title alone");
     }
 }

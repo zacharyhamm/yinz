@@ -26,4 +26,11 @@ fn a_session_exit_stops_its_firecracker_vms_once() {
         1,
         "the server exit should release the session's Firecracker VMs exactly once"
     );
+    // And only after every pane was closed: a VM stopped under a live pane takes the
+    // pane's process with it, which is the order `lib.rs` exists to keep.
+    assert_eq!(
+        zellij.firecracker_stops_with_live_panes(),
+        0,
+        "the session's VMs were released while a pane was still open"
+    );
 }
