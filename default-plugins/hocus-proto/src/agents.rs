@@ -2099,6 +2099,8 @@ pub struct HistoryLines {
 /// and the whole of what it said, for the reader that shows it uncapped.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HistoryEvent {
+    /// The recorded entry, or None for the appended rolling summary.
+    pub revision: Option<u64>,
     /// First row of this event in `entries`.
     pub start: usize,
     /// How many rows it took - never more than [`MAX_ENTRY_ROWS`].
@@ -2194,13 +2196,14 @@ pub fn run_history(
     // else passes the same text twice. Keeping the two apart here is what lets the timeline
     // read as prose while `HistoryEvent::text` keeps its contract — the whole of what it said,
     // which is what the reader shows and what `r` shows raw.
-    let mut push = |drawn: &str, raw: &str, kind: &str, created_at_ms, style| {
+    let mut push = |drawn: &str, raw: &str, kind: &str, created_at_ms, style, revision| {
         let gutter = age_gutter(now_ms, created_at_ms);
         let rows = cap_rows(
             labelled(drawn, kind, &gutter, inner, style).0,
             gutter.width(),
         );
         events.push(HistoryEvent {
+            revision,
             start: entries.len(),
             len: rows.len(),
             kind: kind.to_owned(),
@@ -2237,6 +2240,7 @@ pub fn run_history(
             entry.kind.label(),
             entry.created_at_ms,
             style,
+            Some(entry.revision),
         );
     }
     if let Some(summary) = run
@@ -2250,6 +2254,7 @@ pub fn run_history(
             "summary",
             summary.created_at_ms,
             SUMMARY_LABEL_STYLE,
+            None,
         );
     }
     HistoryLines {
@@ -2390,6 +2395,7 @@ pub fn summary_history(
     let events = match entries.is_empty() {
         true => Vec::new(),
         false => vec![HistoryEvent {
+            revision: None,
             start: 0,
             len: entries.len(),
             kind: "summary".to_owned(),

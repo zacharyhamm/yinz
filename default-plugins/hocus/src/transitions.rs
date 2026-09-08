@@ -813,24 +813,42 @@ impl State {
         self.archive_more = rows.truncated;
     }
 
-    pub(crate) fn send_run_detail(&self, plugin_id: zellij_tile::prelude::PluginId, run_id: &str) {
+    pub(crate) fn send_run_detail(
+        &self,
+        plugin_id: zellij_tile::prelude::PluginId,
+        run_id: &str,
+        revision: Option<u64>,
+    ) {
         let Ok(rows) = self.store().fetch(&agents::rows::run_by_id_request(run_id)) else {
             return;
         };
         let Some(mut run) = agents::rows::runs_from_rows(&rows).into_iter().next() else {
             return;
         };
-        // The timeline is rows of its own, so it is read separately - and only its newest
-        // `RUN_DETAIL_ENTRIES`, within `RUN_DETAIL_BYTES`, since what goes over the pipe is
-        // one JSON string copied into the panel's memory. A run stored before the split still
-        // carries its entries in its payload, and keeps them.
-        agents::rows::hydrate_newest_entries(&self.store(), &mut run);
+        // Search details keep the full match with context; ordinary details load the bounded
+        // newest entries. A run stored before the split still carries its entries in its
+        // payload, and keeps them when hydrating the newest entries.
+        if let Some(revision) = revision {
+            let Ok(page) = hocus_proto::run_history::search_detail(&self.store(), run_id, revision)
+            else {
+                return;
+            };
+            run.entries = page.entries;
+        } else {
+            agents::rows::hydrate_newest_entries(&self.store(), &mut run);
+        }
         let Ok(payload) = serde_json::to_string(&run) else {
             return;
         };
         pipe_message_to_plugin(
             MessageToPlugin::new(wire::AGENT_RUN_DETAIL)
                 .with_destination_plugin_id(plugin_id)
+                .with_args(
+                    revision
+                        .map(|revision| ("revision".to_owned(), revision.to_string()))
+                        .into_iter()
+                        .collect(),
+                )
                 .with_payload(payload),
         );
     }
