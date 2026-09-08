@@ -85,7 +85,13 @@ impl Screen {
             let mut panes = source.extract_warp_panes(slots).into_iter();
             let root = panes.next().context("missing adopted group root")?;
             let placement = if placement == WarpPlacement::Floating {
-                ExtractedPanePlacement::FloatingDefault
+                let min_height = relationships
+                    .stacks
+                    .iter()
+                    .find(|stack| stack.selected == 0)
+                    // Headers, padding, bottom frame, and at least one content row.
+                    .map_or(0, |stack| stack.members.len() + 3);
+                ExtractedPanePlacement::FloatingDefault { min_height }
             } else {
                 ExtractedPanePlacement::Tiled
             };
