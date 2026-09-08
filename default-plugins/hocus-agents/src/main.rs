@@ -118,6 +118,7 @@
 //! take the focus - `wire::OPENED_BY` is what tells it so - because the user
 //! asked for a list.
 
+mod vms;
 use std::collections::BTreeMap;
 
 use hocus_proto::agents::{self, now_ms, Strip, StripRow, Summaries};
@@ -130,6 +131,12 @@ use zellij_tile::prelude::*;
 
 #[derive(Default)]
 struct State {
+    own_plugin_id: PluginId,
+    vm_tab: bool,
+    tabs_focused: bool,
+    vm_tab_column: usize,
+    age_minute: i64,
+    vms: vms::View,
     /// The strip as hocus last sent it.
     rows: Vec<StripRow>,
     /// What the daemon's model last made of each idle agent, as hocus last sent it.
@@ -359,12 +366,8 @@ enum Focus {
     History,
 }
 
-/// How often the pane wakes to redraw its ages, in seconds.
-///
-/// A minute, because that is the finest bucket `agents::short_age` has: a faster tick would
-/// redraw for a number that cannot have changed, and a slower one would leave the column
-/// reading a minute behind.
-const AGE_TICK_SECS: f64 = 60.0;
+/// VM polling cadence. Agent ages redraw only when their minute changes.
+const POLL_TICK_SECS: f64 = 2.0;
 
 register_plugin!(State);
 
@@ -375,11 +378,13 @@ impl ZellijPlugin for State {
             EventType::Mouse,
             EventType::PermissionRequestResult,
             EventType::Timer,
+            EventType::SessionUpdate,
         ]);
-        set_timeout(zellij_tile::prelude::FractionalSeconds::new(AGE_TICK_SECS));
+        set_timeout(zellij_tile::prelude::FractionalSeconds::new(POLL_TICK_SECS));
         set_selectable(true);
         set_self_mouse_selection_support(true);
-        rename_plugin_pane(get_plugin_ids().plugin_id, "agents");
+        self.own_plugin_id = get_plugin_ids().plugin_id;
+        rename_plugin_pane(self.own_plugin_id, "agents");
         // Unconditional, and before there are any rows: what this first one carries
         // is the plugin id, which is how hocus tells "the agents pane is focused"
         // from "some other plugin pane is". The pane it names follows with the
@@ -391,6 +396,7 @@ impl ZellijPlugin for State {
     fn update(&mut self, event: Event) -> bool {
         let selection = self.selection_key();
         let rendered = match event {
+            Event::SessionUpdate(sessions, _) => self.vm_sessions(&sessions),
             Event::Key(key) => self.on_key(key),
             Event::Mouse(mouse_event) => self.on_mouse(mouse_event),
             // The ages in the history half are drawn from the clock, so nothing the pane
@@ -398,8 +404,12 @@ impl ZellijPlugin for State {
             // column keeps ticking; a redraw only where an age is actually on screen, so a
             // pane showing nothing time-dependent still costs nothing to leave open.
             Event::Timer(_) => {
-                set_timeout(zellij_tile::prelude::FractionalSeconds::new(AGE_TICK_SECS));
-                self.shows_an_age()
+                set_timeout(zellij_tile::prelude::FractionalSeconds::new(POLL_TICK_SECS));
+                let vm_changed = self.poll_vms();
+                let minute = now_ms() / 60_000;
+                let changed = minute != self.age_minute;
+                self.age_minute = minute;
+                vm_changed || (changed && self.shows_an_age())
             },
             _ => false,
         };
@@ -413,6 +423,9 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if let Some(changed) = self.vm_pipe(&pipe_message) {
+            return changed;
+        }
         if pipe_message.name == wire::AGENT_STRIP_OPEN {
             // hocus asking for this pane. If it is reaching us at all then we already exist and
             // the message opened nothing - but a hocus that reloaded has forgotten our id, and
@@ -504,6 +517,57 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        if rows == 0 || cols == 0 {
+            return;
+        }
+        self.vm_tab_column = if cols >= 14 {
+            9
+        } else if cols >= 3 {
+            2
+        } else {
+            1
+        };
+        let label = if cols >= 14 {
+            if self.vm_tab {
+                if self.vms.has_error() {
+                    " Agents  [VMs!]"
+                } else {
+                    " Agents  [VMs]"
+                }
+            } else {
+                "[Agents]  VMs"
+            }
+        } else if cols >= 3 {
+            "A V"
+        } else {
+            "AV"
+        };
+        let mut text = Text::new(label);
+        if cols < 14 {
+            let selected = if self.vm_tab { self.vm_tab_column } else { 0 };
+            text = text.color_range(2, selected..selected + 1);
+        }
+        print_text_with_coordinates(
+            if self.tabs_focused {
+                text.selected()
+            } else {
+                text
+            },
+            0,
+            0,
+            Some(cols),
+            None,
+        );
+        let rows = rows.saturating_sub(1);
+        if rows == 0 {
+            self.vms.last_details_rows = 0;
+            self.last_history_rows = 0;
+            return;
+        }
+        if self.vm_tab {
+            self.render_vms(rows, cols);
+            return;
+        }
         // The reader is the whole pane rather than a third region: an event long enough to
         // need it is long enough to want the room, and the list it covers is still exactly
         // where Esc puts it back.
@@ -523,13 +587,7 @@ impl ZellijPlugin for State {
             // too-short pane makes below, and what the Tab handler's ring relies on.
             self.focus = Focus::List;
             self.last_history_max_scroll = 0;
-            print_text_with_coordinates(
-                Text::new("no agents").dim_range(..),
-                0,
-                0,
-                Some(cols),
-                None,
-            );
+            paint(Text::new("no agents").dim_range(..), 0, 0, Some(cols), None);
             return;
         }
         let (list_rows, history_rows) = split(rows);
@@ -583,7 +641,7 @@ impl ZellijPlugin for State {
                     }
                 },
             };
-            print_text_with_coordinates(text, 0, index, Some(cols), None);
+            paint(text, 0, index, Some(cols), None);
         }
         self.last_history_rows = history_rows;
         if history_rows == 0 {
@@ -596,6 +654,11 @@ impl ZellijPlugin for State {
         }
         self.render_history(list_rows, history_rows, cols);
     }
+}
+
+// Every content coordinate is relative to the row below the permanent tab bar.
+fn paint(text: Text, x: usize, y: usize, width: Option<usize>, height: Option<usize>) {
+    print_text_with_coordinates(text, x, y + 1, width, height);
 }
 
 /// The rule between the two halves: a label naming what is below it, the rest of the row ruled
@@ -621,7 +684,7 @@ fn render_divider(label: &str, above: usize, below: usize, focused: bool, y: usi
         Some(at) => text.error_color_range(at..at + 1),
         None => text,
     };
-    print_text_with_coordinates(text, 0, y, Some(cols), None);
+    paint(text, 0, y, Some(cols), None);
 }
 
 /// What the divider has to say about the row under the cursor beyond naming it, and how much
@@ -724,6 +787,49 @@ impl State {
     }
 
     fn on_key(&mut self, key: KeyWithModifier) -> bool {
+        if self.tabs_focused {
+            if key.bare_key == BareKey::Tab {
+                if key.has_modifiers(&[KeyModifier::Shift]) {
+                    self.yield_to_chat(wire::STOP_INPUT);
+                } else {
+                    self.tabs_focused = false;
+                    if self.vm_tab {
+                        self.vms.details = false;
+                    } else {
+                        self.focus = Focus::List;
+                    }
+                }
+                return true;
+            }
+            if key.has_no_modifiers() {
+                match key.bare_key {
+                    BareKey::Left | BareKey::Right => {
+                        self.switch_vm_tab(!self.vm_tab);
+                        return true;
+                    },
+                    BareKey::Enter | BareKey::Down => {
+                        self.tabs_focused = false;
+                        return true;
+                    },
+                    _ => {},
+                }
+            }
+            if key.bare_key == BareKey::Esc {
+                self.hide_the_panel();
+            }
+            return false;
+        }
+        if self.vm_tab {
+            return self.vm_key(key);
+        }
+        if self.reading.is_some() && key.bare_key == BareKey::Tab {
+            if key.has_modifiers(&[KeyModifier::Shift]) {
+                self.tabs_focused = true;
+            } else {
+                self.yield_to_chat(wire::STOP_TABS);
+            }
+            return true;
+        }
         // The reader is the whole pane, so it answers every key: there is no list to steer and
         // no half to move the focus between while it is up, and a key that fell through to them
         // would act on a pane the user cannot see. That includes Esc, which closes the reader
@@ -792,8 +898,8 @@ impl State {
                     return false;
                 },
                 (Focus::List, true) => {
-                    self.yield_to_chat(wire::STOP_INPUT);
-                    return false;
+                    self.tabs_focused = true;
+                    return true;
                 },
             }
         }
@@ -895,6 +1001,21 @@ impl State {
             | Mouse::Hold(line, _)
             | Mouse::Release(line, _) => self.mouse_line = Some(line),
             _ => {},
+        }
+        let mouse_event = match mouse_event {
+            Mouse::LeftClick(0, column) => {
+                self.tabs_focused = true;
+                self.switch_vm_tab(column >= self.vm_tab_column.max(1));
+                return true;
+            },
+            Mouse::LeftClick(line, column) if line > 0 => {
+                self.tabs_focused = false;
+                Mouse::LeftClick(line - 1, column)
+            },
+            other => other,
+        };
+        if self.vm_tab {
+            return self.vm_mouse(mouse_event);
         }
         // With the reader up there is one thing on screen and the wheel is its. A click is
         // ignored rather than closing it: nothing under the pointer is a target, and a stray
@@ -1100,6 +1221,7 @@ impl State {
     /// Both keys that dismiss come through here: `Esc`, which is the whole of what it does, and
     /// `Enter`, which follows it with a focus.
     fn hide_the_panel(&mut self) {
+        self.vms.visible = false;
         #[cfg(test)]
         {
             self.panel_hides += 1;
@@ -1263,12 +1385,12 @@ impl State {
                 // is the cursor's, and nothing in the header can hold a cursor.
                 let line = line.clone().indent(1);
                 let text = markdown::style_text(&line.text, &line.styles, false);
-                print_text_with_coordinates(text, 0, body + index, Some(cols), None);
+                paint(text, 0, body + index, Some(cols), None);
             }
             // A plain rule, never coloured: `render_divider`'s colour is what says where the
             // keyboard is, and there is one focusable rule per half. This one only separates
             // what is fixed from what scrolls.
-            print_text_with_coordinates(
+            paint(
                 Text::new(divider_line("", 0, 0, cols)).dim_range(..),
                 0,
                 body + history.header.len(),
@@ -1278,7 +1400,7 @@ impl State {
             body += header_rows;
         }
         if history.entries.is_empty() {
-            print_text_with_coordinates(
+            paint(
                 Text::new(placeholder).dim_range(..),
                 0,
                 body,
@@ -1306,7 +1428,7 @@ impl State {
             // summary is told apart by its bold label rather than by the rest of the timeline
             // being pushed into the background. Whatever the markdown asked for still stands.
             let text = markdown::style_text(&line.text, &line.styles, false);
-            print_text_with_coordinates(text, 0, body + index, Some(cols), None);
+            paint(text, 0, body + index, Some(cols), None);
         }
     }
 
@@ -1393,7 +1515,7 @@ impl State {
                 false => line.clone().indent(1),
             };
             let text = markdown::style_text(&line.text, &line.styles, false);
-            print_text_with_coordinates(text, 0, 1 + index, Some(cols), None);
+            paint(text, 0, 1 + index, Some(cols), None);
         }
         // Settled last, for the same reason the history half settles its own here: only this
         // knows the width the body was wrapped to, and so only this knows how many lines it
@@ -2062,11 +2184,18 @@ impl State {
 
     /// `AGENT_STRIP_TAKE`: the ring arrived from the conversation, on `stop`.
     fn take_ring_stop(&mut self, stop: Option<&str>) -> bool {
+        let tabs_focused = stop == Some(hocus_proto::vms::STOP_TABS);
+        let tabs_changed = self.tabs_focused != tabs_focused;
+        self.tabs_focused = tabs_focused;
+        if self.vm_tab {
+            self.vms.details = stop == Some(wire::STOP_HISTORY) && self.vms.last_details_rows > 0;
+            return true;
+        }
         let focus = match stop {
             Some(wire::STOP_HISTORY) => Focus::History,
             _ => Focus::List,
         };
-        let changed = self.focus != focus;
+        let changed = tabs_changed || self.focus != focus;
         self.focus = focus;
         changed
     }
@@ -2079,7 +2208,7 @@ impl State {
     /// this pane's id, and without it hocus cannot place the list beside itself.
     fn send_selection(&self) {
         let selection = wire::Selection {
-            plugin_id: get_plugin_ids().plugin_id,
+            plugin_id: self.own_plugin_id,
             pane_id: self.selection(),
             run_id: self.selected_run_id(),
         };
@@ -2626,7 +2755,7 @@ mod tests {
         state.run = Some(run);
 
         let (_, history_rows) = split(20);
-        state.render(20, 50);
+        state.render(21, 50);
         assert_eq!(state.last_history_rows, history_rows);
         // Two header rows and the rule under them.
         let body_rows = history_rows - 3;
@@ -2642,7 +2771,7 @@ mod tests {
         // what it did.
         let mut cramped = State::default();
         std::mem::swap(&mut cramped, &mut state);
-        cramped.render(9, 50);
+        cramped.render(10, 50);
         let (_, cramped_rows) = split(9);
         assert_eq!(cramped_rows, 4, "three rows of header and one of timeline");
         assert_eq!(
@@ -2678,7 +2807,7 @@ mod tests {
         // from the shim and falls back to UTC, so it is set here the way `pipe` would.
         state.run_offset_secs = -4 * 3600;
 
-        state.render(20, 60);
+        state.render(21, 60);
         let header: Vec<String> = state
             .history()
             .header
@@ -2694,7 +2823,7 @@ mod tests {
         );
 
         assert!(state.scroll_history(5));
-        state.render(20, 60);
+        state.render(21, 60);
         let after: Vec<String> = state
             .history()
             .header
@@ -2710,7 +2839,7 @@ mod tests {
     fn a_pane_with_no_history_half_rings_straight_on_to_the_conversation() {
         let mut state = State::default();
         state.set_rows(unfocused(strip()));
-        state.render(5, 40);
+        state.render(6, 40);
         assert_eq!(state.last_history_rows, 0);
 
         assert!(!state.on_key(KeyWithModifier::new(BareKey::Tab)));
@@ -2724,13 +2853,16 @@ mod tests {
 
     /// Backward off the first stop leaves the pane the other way, landing in the box.
     #[test]
-    fn shift_tab_from_the_list_hands_the_keyboard_to_the_input_box() {
+    fn shift_tab_from_the_list_visits_tabs_before_the_input_box() {
         let mut state = State::default();
         state.set_rows(unfocused(strip()));
-        state.render(20, 40);
+        state.render(21, 40);
         assert_eq!(state.focus, Focus::List);
 
-        assert!(!state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier()));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier()));
+        assert!(state.tabs_focused);
+        assert!(state.ring_yields.is_empty());
+        state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier());
         assert_eq!(state.ring_yields, ["input"]);
     }
 
@@ -2740,7 +2872,7 @@ mod tests {
     fn an_unreported_shift_tab_reads_as_a_forward_step() {
         let mut state = State::default();
         state.set_rows(unfocused(strip()));
-        state.render(20, 40);
+        state.render(21, 40);
 
         assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
         assert_eq!(
@@ -2756,7 +2888,7 @@ mod tests {
     fn a_take_lands_the_keys_on_the_half_it_names() {
         let mut state = State::default();
         state.set_rows(unfocused(strip()));
-        state.render(20, 40);
+        state.render(21, 40);
 
         assert!(state.pipe(take(wire::STOP_HISTORY)));
         assert_eq!(state.focus, Focus::History);
@@ -2766,33 +2898,6 @@ mod tests {
             !state.pipe(take(wire::STOP_LIST)),
             "already there, so nothing to redraw"
         );
-    }
-
-    /// The reader is the whole pane while it is open, and a ring step out of something you are
-    /// reading is wrong: Esc closes it first. The same relationship the conversation's picker
-    /// has to the ring.
-    #[test]
-    fn the_reader_keeps_tab_to_itself() {
-        let mut state = State::default();
-        state.set_rows(one_run_selected());
-        let mut run = a_run();
-        run.summary = None;
-        run.entries = vec![agents::RunEntry {
-            revision: 1,
-            event_id: None,
-            kind: agents::RunEntryKind::Prompt,
-            text: "implement history".to_owned(),
-            created_at_ms: None,
-        }];
-        state.run = Some(run);
-        state.render(20, 50);
-        state.on_key(KeyWithModifier::new(BareKey::Tab));
-        assert_eq!(state.focus, Focus::History);
-        state.on_key(KeyWithModifier::new(BareKey::Enter));
-        assert!(state.reading.is_some(), "the reader is open");
-
-        state.on_key(KeyWithModifier::new(BareKey::Tab));
-        assert!(state.ring_yields.is_empty(), "the reader took the key");
     }
 
     /// The label, the rule and the scroll readout share the divider's row, and the readout is
@@ -2821,7 +2926,7 @@ mod tests {
 
         let mut state = State::default();
         state.set_rows(unfocused(strip()));
-        state.render(5, 40);
+        state.render(6, 40);
         assert_eq!(state.last_history_rows, 0);
         assert!(
             !state.on_key(KeyWithModifier::new(BareKey::Tab)),
@@ -2836,21 +2941,22 @@ mod tests {
     fn an_empty_list_puts_the_keys_back_in_the_list_half() {
         let mut state = State::default();
         state.set_rows(unfocused(strip()));
-        state.render(20, 40);
+        state.render(21, 40);
         state.on_key(KeyWithModifier::new(BareKey::Tab));
         assert_eq!(state.focus, Focus::History);
 
         // The last agent exits, and the strip arrives with nothing in it.
         state.set_rows(unfocused(vec![]));
-        state.render(20, 40);
+        state.render(21, 40);
 
         assert_eq!(state.last_history_rows, 0);
         assert_eq!(state.focus, Focus::List, "and the focus came back with it");
         assert!(
-            !state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier()),
-            "so backward leaves the pane"
+            state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier()),
+            "so backward reaches the tab bar"
         );
-        assert_eq!(state.ring_yields, ["input"]);
+        assert!(state.tabs_focused);
+        assert!(state.ring_yields.is_empty());
     }
 
     /// The history is about the row under the cursor, and the divider names it: the pane id
@@ -3422,7 +3528,7 @@ mod tests {
         });
         state.run = Some(run);
         // Four rows below the divider, against five timeline rows including the result.
-        state.render(8, 50);
+        state.render(9, 50);
         assert_eq!(state.last_history_rows, 4);
         assert_eq!(state.last_history_max_scroll, 1);
 
@@ -3479,7 +3585,7 @@ mod tests {
         state.run = Some(run);
 
         // Three rows below the divider, and every one of them a line of timeline.
-        state.render(7, 50);
+        state.render(8, 50);
         assert_eq!(state.last_history_rows, 3);
         let lines = state.cached_history_lines(50).entries.len();
         assert!(lines > 5, "a summary longer than the half: {lines} lines");
@@ -3496,7 +3602,7 @@ mod tests {
         // the summary has scrolled off the bottom.
         state.on_mouse(Mouse::Hover(state.last_list_rows as isize, 0));
         assert!(state.on_mouse(Mouse::ScrollUp(50)));
-        state.render(7, 50);
+        state.render(8, 50);
         assert_eq!(state.history_scroll, state.last_history_max_scroll);
         let history = state.cached_history_lines(50);
         assert!(history.entries[0]
@@ -3542,7 +3648,7 @@ mod tests {
         });
         state.run = Some(run);
         // two lines of timeline against three entries: exactly one line to scroll
-        state.render(7, 50);
+        state.render(8, 50);
         assert_eq!(state.selected, 1);
 
         assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
@@ -3628,7 +3734,7 @@ mod tests {
             .collect();
         state.run = Some(run);
         state.focus = Focus::History;
-        state.render(20, 50);
+        state.render(21, 50);
         // Thirty one-line events against the seven rows the pinned header leaves of the ten:
         // the half is at the newest end.
         assert_eq!(state.last_history_rows, 10);
@@ -3639,7 +3745,7 @@ mod tests {
         for _ in 0..12 {
             assert!(state.on_key(KeyWithModifier::new(BareKey::Char('k'))));
         }
-        state.render(20, 50);
+        state.render(21, 50);
         assert_eq!(state.history_cursor, 12);
         assert_eq!(
             state.history_scroll, 6,
@@ -3648,7 +3754,7 @@ mod tests {
 
         // And back down again: the half winds forward only as far as it has to.
         assert!(state.on_key(KeyWithModifier::new(BareKey::Char('j'))));
-        state.render(20, 50);
+        state.render(21, 50);
         assert_eq!(state.history_cursor, 11);
         assert_eq!(state.history_scroll, 6, "still on screen, so nothing moved");
 
@@ -3656,7 +3762,7 @@ mod tests {
         for _ in 0..50 {
             state.on_key(KeyWithModifier::new(BareKey::Char('k')));
         }
-        state.render(20, 50);
+        state.render(21, 50);
         assert_eq!(state.history_cursor, 29);
         assert_eq!(state.history_scroll, state.last_history_max_scroll);
         assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('k'))));
@@ -3679,7 +3785,7 @@ mod tests {
             created_at_ms: Some(1),
         }];
         state.run = Some(run);
-        state.render(20, 50);
+        state.render(21, 50);
 
         // Capped in the half, whole in the reader.
         assert_eq!(
@@ -3700,7 +3806,7 @@ mod tests {
         assert_eq!(reading.created_at_ms, Some(1));
         assert_eq!(reading.text, "word ".repeat(400));
 
-        state.render(20, 50);
+        state.render(21, 50);
         assert!(
             state.reader_lines().len() > agents::MAX_ENTRY_ROWS,
             "the whole of it, which is the point of opening it"
@@ -3734,7 +3840,7 @@ mod tests {
             created_at_ms: None,
         }];
         state.run = Some(run);
-        state.render(20, 50);
+        state.render(21, 50);
         state.focus = Focus::History;
         state.on_key(KeyWithModifier::new(BareKey::Enter));
         assert!(state.reading.is_some());
@@ -3751,7 +3857,7 @@ mod tests {
     fn a_strip_that_moves_the_selection_closes_the_reader() {
         let mut state = State::default();
         state.set_rows(with_summary(strip(), 3, "Ran the tests.", false));
-        state.render(20, 50);
+        state.render(21, 50);
         state.focus = Focus::History;
         assert!(state.on_key(KeyWithModifier::new(BareKey::Enter)));
         assert!(state.reading.is_some(), "the idle summary is an event too");
@@ -3782,10 +3888,10 @@ mod tests {
             created_at_ms: None,
         }];
         state.run = Some(run);
-        state.render(20, 50);
+        state.render(21, 50);
         state.focus = Focus::History;
         state.on_key(KeyWithModifier::new(BareKey::Enter));
-        state.render(20, 50);
+        state.render(21, 50);
 
         let poison = envelope::ReaderLines {
             lines: vec![markdown::MdLine::plain("poison")],
@@ -3829,7 +3935,7 @@ mod tests {
             })
             .collect();
         state.run = Some(run);
-        state.render(20, 50);
+        state.render(21, 50);
 
         assert_eq!(state.focus, Focus::List, "the page keys did not need it");
         assert!(state.on_key(KeyWithModifier::new(BareKey::PageUp)));
@@ -3848,7 +3954,7 @@ mod tests {
     fn a_click_lands_in_the_half_it_points_at() {
         let mut state = State::default();
         state.set_rows(with_summary(strip(), 3, "Ran the tests.", false));
-        state.render(20, 40);
+        state.render(21, 40);
         let (list_rows, history_rows) = split(20);
         assert_eq!(state.last_list_rows, list_rows);
         assert_eq!(state.last_history_rows, history_rows);
@@ -3881,7 +3987,7 @@ mod tests {
     fn a_click_selects_and_enter_is_what_focuses() {
         let mut state = State::default();
         state.set_rows(unfocused(strip()));
-        state.render(20, 40);
+        state.render(21, 40);
         assert_eq!(state.selected, 2, "the first agent, pane 3");
 
         // wound into the history of the row the cursor starts on, so the reset that
@@ -3935,7 +4041,7 @@ mod tests {
         // a project header: Enter is inert on it, and an inert key hides nothing
         let mut state = State::default();
         state.set_rows(with_summary(strip(), 3, "Ran the tests.", false));
-        state.render(20, 40);
+        state.render(21, 40);
         state.focus = Focus::List;
         state.selected = 0;
         assert!(
@@ -4056,7 +4162,7 @@ mod tests {
             },
         ]));
         state.run = Some(a_run());
-        state.render(20, 50);
+        state.render(21, 50);
 
         let poison = agents::HistoryLines {
             label: "poison".to_owned(),
@@ -4253,6 +4359,23 @@ mod tests {
         reading_entry(agents::RunEntryKind::Prompt, prompt)
     }
 
+    #[test]
+    fn reader_traverses_the_tab_bar_and_conversation_without_losing_its_event() {
+        let mut state = reading("An event kept open while visiting VMs");
+        state.on_key(KeyWithModifier::new(BareKey::Tab));
+        assert_eq!(state.ring_yields, [wire::STOP_TABS]);
+        state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier());
+        assert!(state.tabs_focused);
+        state.on_key(KeyWithModifier::new(BareKey::Right));
+        assert!(state.vm_tab);
+        state.render(8, 20);
+        state.on_key(KeyWithModifier::new(BareKey::Left));
+        state.on_key(KeyWithModifier::new(BareKey::Tab));
+        assert!(!state.tabs_focused);
+        assert!(state.reading.is_some());
+        assert!(rows(&state).join("\n").contains("An event kept open"));
+    }
+
     /// [`reading`], for an event of some other kind.
     fn reading_entry(kind: agents::RunEntryKind, text: &str) -> State {
         let mut state = State::default();
@@ -4270,10 +4393,10 @@ mod tests {
             created_at_ms: None,
         }];
         state.run = Some(run);
-        state.render(20, 50);
+        state.render(21, 50);
         state.focus = Focus::History;
         state.on_key(KeyWithModifier::new(BareKey::Enter));
-        state.render(20, 50);
+        state.render(21, 50);
         state
     }
 
@@ -4287,7 +4410,7 @@ mod tests {
 
     fn press(state: &mut State, key: BareKey) {
         state.on_key(KeyWithModifier::new(key));
-        state.render(20, 50);
+        state.render(21, 50);
     }
 
     /// The four-row cap on the timeline is only honest because this exists. `Enter` opens the

@@ -268,7 +268,7 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         "vm_close" => {
             let vm = args.vm.as_deref().unwrap_or("a VM");
             format!(
-                "requests closure of matching local panes and releases the session's lease on {vm}; \
+                "closes matching panes in the owning session, waits for removal, and releases its lease on {vm}; \
                  the last lease triggers merge and teardown, or disk recovery if unready"
             )
         },
@@ -3256,9 +3256,6 @@ pub const PROJECT_READ_TOOLS: [&str; 6] = [
 /// the environment so it resolves the same provider configuration on disk.
 pub const VM_TOOLS: [&str; 4] = ["vm_list", "vm_changes", "vm_sync", "vm_close"];
 
-/// Context key carrying pane closure requests through to the command result.
-pub const VM_CLOSED_PANES_CONTEXT: &str = "vm_closed_panes";
-
 /// The argv for one VM tool, or the reason it will not run.
 ///
 /// Pure, so the argv every tool sends is testable without a host. The VM name is checked
@@ -3291,9 +3288,7 @@ pub fn vm_argv(
         match name {
             "vm_changes" => "changes",
             "vm_sync" => "sync",
-            // The CLI spells it `stop`; the tool is `vm_close` because it closes the
-            // panes too, which `zellij firecracker stop` does not.
-            "vm_close" => "stop",
+            "vm_close" => "close",
             other => return Err(format!("no such tool: {other}")),
         }
         .to_owned(),
@@ -3302,23 +3297,6 @@ pub fn vm_argv(
     argv.push("--session".to_owned());
     argv.push(session.to_owned());
     Ok(argv)
-}
-
-/// Local terminal panes for this VM lease, in id order. Pane ids are session-local.
-pub fn firecracker_panes(vm: &str, session: &str, current: &SessionInfo) -> Vec<u32> {
-    if session != current.name.as_str() {
-        return vec![];
-    }
-    let mut ids: Vec<u32> = current
-        .panes
-        .panes
-        .values()
-        .flatten()
-        .filter(|pane| !pane.is_plugin() && pane.target.firecracker_vm() == Some(vm))
-        .map(|pane| pane.id.legacy_parts().0)
-        .collect();
-    ids.sort_unstable();
-    ids
 }
 
 pub const SKILL_TOOLS: [&str; 5] = [

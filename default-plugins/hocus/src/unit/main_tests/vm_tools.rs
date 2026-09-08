@@ -168,29 +168,20 @@ fn a_sync_that_kept_a_host_copy_is_a_success_with_its_warnings_attached() {
 }
 
 #[test]
-fn a_close_names_the_panes_it_requested_to_close() {
+fn a_close_reports_lease_release_separately_from_termination_and_merge() {
     let mut state = vm_ready_state();
     answer(
         &mut state,
         "vm_close",
         Some(0),
-        b"",
-        b"",
-        &[(tools::VM_CLOSED_PANES_CONTEXT, "3,7")],
+        b"Lease released: api in work.\nVM remains leased by another session.\n",
+        b"warning: file.guest retained\n",
+        &[],
     );
     let result = &tool_results(&state)[0].content;
-    assert!(result.starts_with("VM stop request completed;"), "{result}");
-    assert!(
-        result.ends_with("requested closure of panes 3, 7"),
-        "{result}"
-    );
-
-    // A VM this session had no panes on closes cleanly and claims nothing.
-    let mut state = vm_ready_state();
-    answer(&mut state, "vm_close", Some(0), b"", b"", &[]);
-    assert!(!tool_results(&state)[0]
-        .content
-        .contains("requested closure"));
+    assert!(result.contains("Lease released: api in work."));
+    assert!(result.contains("VM remains leased by another session."));
+    assert!(result.contains("file.guest retained"));
 }
 
 #[test]
@@ -227,19 +218,15 @@ fn a_missing_zellij_binary_is_named_in_the_tool_result() {
 }
 
 #[test]
-fn closing_refuses_a_missing_host_snapshot_even_with_an_explicit_session() {
+fn closing_an_explicit_session_uses_the_cli_without_a_local_snapshot() {
     let mut state = vm_ready_state();
-    state.zellij_session_name = "stale-daemon-session".to_owned().into();
     tools::test_seams::CURRENT_SESSION.with_borrow_mut(|session| *session = None);
-    assert!(run_file_tool(
+    assert!(!run_file_tool(
         &mut state,
         "vm_close",
-        r#"{"vm":"review","vm_session":"other"}"#,
+        r#"{"vm":"review","vm_session":"other"}"#
     ));
-    assert_eq!(
-        tool_results(&state)[0].content,
-        "the current session is not in the session list"
-    );
+    assert!(tool_results(&state).is_empty());
 }
 
 #[test]
@@ -281,7 +268,7 @@ fn malformed_vm_responses_are_diagnostics() {
 }
 
 #[test]
-fn failed_stops_still_report_pane_closure_requests() {
+fn failed_closes_never_claim_the_vm_is_gone() {
     for (code, stderr) in [
         (1, "merge failed"),
         (2, "No such file or directory (os error 2)"),
@@ -293,13 +280,10 @@ fn failed_stops_still_report_pane_closure_requests() {
             Some(code),
             b"",
             stderr.as_bytes(),
-            &[(tools::VM_CLOSED_PANES_CONTEXT, "3,7")],
+            &[],
         );
         let result = &tool_results(&state)[0].content;
-        assert!(
-            result.ends_with("requested closure of panes 3, 7"),
-            "{result}"
-        );
+        assert!(!result.contains("Lease released"), "{result}");
         assert!(!result.contains("VM is gone"), "{result}");
     }
 }

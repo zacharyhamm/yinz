@@ -342,6 +342,24 @@ fn background_workers_preserve_the_parent_record_and_idle_count() {
         "plugins {",
         "plugins {\n  hocus-agents location=\"zellij:hocus-agents\" { shared true; }",
     );
+    let config = format!(
+        r#"{config}
+keybinds {{
+  normal {{
+    bind "Ctrl b" {{
+      LaunchOrFocusPlugin "hocus" {{
+        floating true; overlay true; awaits_placement true; move_to_focused_tab true;
+      }}
+    }}
+    bind "Ctrl a" {{
+      LaunchOrFocusPlugin "hocus-agents" {{
+        floating true; overlay true; awaits_placement true; move_to_focused_tab true;
+      }}
+    }}
+  }}
+}}
+"#
+    );
     let mut zellij = TestRunner::new(size)
         .with_config(&config)
         .with_layout(LayoutInfo::Stringified(layout))
@@ -425,17 +443,13 @@ fn background_workers_preserve_the_parent_record_and_idle_count() {
     zellij.wait_until("the recap is recorded once", |grid| {
         grid.contains("Recap completed") && grid.to_string().matches("Recap completed").count() == 1
     });
-    let (code, output) = zellij.run_cli_action_reporting(CliAction::LaunchOrFocusPlugin {
-        floating: true,
-        in_place: false,
-        close_replaced_pane: false,
-        move_to_focused_tab: true,
-        url: "hocus-agents".into(),
-        configuration: None,
-        skip_plugin_cache: false,
-        tab_id: None,
+    // Open the paired overlays through their normal placement controls; an unplaced
+    // floating conversation can otherwise cover the agent row this test inspects.
+    zellij.send_stdin(&keys::ctrl('b'));
+    zellij.wait_until("the conversation overlay is placed", |grid| {
+        grid.contains("Ask something.")
     });
-    assert_eq!(code, 0, "{output}");
+    zellij.send_stdin(&keys::ctrl('a'));
     zellij.wait_until("the agents panel retains the idle parent", |grid| {
         grid.to_string()
             .lines()

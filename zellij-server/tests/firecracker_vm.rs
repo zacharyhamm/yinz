@@ -110,7 +110,14 @@ fn a_provider_boots_a_real_firecracker_remote_pane() {
         provider: provider.clone(),
         sessions: vec![session],
     };
-    assert_eq!(provider.list(Some(session)).unwrap().vms.len(), 1);
+    let listing = provider.list(Some(session)).unwrap();
+    assert_eq!(listing.vms.len(), 1);
+    assert!(listing.vms[0].vm_id.is_some());
+    let before = listing.vms[0].metrics.as_ref().unwrap();
+    assert!(!before.generation.is_empty());
+    assert!(before.memory_bytes.unwrap() > 0);
+    assert!(before.disk_allocated_bytes.unwrap() > 0);
+    assert!(before.disk_logical_bytes.unwrap() > 0);
 
     let text = run_in_guest(
         &ensured,
@@ -118,6 +125,12 @@ fn a_provider_boots_a_real_firecracker_remote_pane() {
         "rustc-ok cargo-x-ok dns-ok https-ok codex-ok claude-ok firecracker-pane-ok zellij",
     );
     assert!(text.contains("firecracker-pane-ok zellij"), "{text}");
+    let listing = provider.list(Some(session)).unwrap();
+    let after = listing.vms[0].metrics.as_ref().unwrap();
+    assert_eq!(before.generation, after.generation);
+    assert_eq!(before.source, after.source);
+    assert!(after.sample_time_us > before.sample_time_us);
+    assert!(after.cpu_usage_us.unwrap() > before.cpu_usage_us.unwrap());
     assert_eq!(provider.stop(session, name).unwrap(), Vec::<String>::new());
     assert!(provider.list(Some(session)).unwrap().vms.is_empty());
 }

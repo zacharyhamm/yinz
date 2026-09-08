@@ -73,6 +73,22 @@ pub(crate) enum Request<'a> {
         session: Cow<'a, str>,
         name: Cow<'a, str>,
     },
+    StopIfMatches {
+        version: u32,
+        expected: Identity,
+    },
+    CloseIfMatches {
+        version: u32,
+        expected: Identity,
+    },
+    SyncIfMatches {
+        version: u32,
+        expected: Identity,
+    },
+    ChangesIfMatches {
+        version: u32,
+        expected: Identity,
+    },
     StopSession {
         version: u32,
         session: Cow<'a, str>,
@@ -104,6 +120,10 @@ impl Request<'_> {
         match self {
             Self::Ensure { version, .. }
             | Self::Stop { version, .. }
+            | Self::StopIfMatches { version, .. }
+            | Self::CloseIfMatches { version, .. }
+            | Self::SyncIfMatches { version, .. }
+            | Self::ChangesIfMatches { version, .. }
             | Self::StopSession { version, .. }
             | Self::List { version, .. }
             | Self::Sync { version, .. }
@@ -134,44 +154,7 @@ pub struct EnsureResponse {
     pub worktree: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct VmEntry {
-    pub session: String,
-    pub name: String,
-    pub state: String,
-    /// The image the VM was booted from, and the host worktree it mirrors.
-    ///
-    /// Both are additive to protocol version 2, the way `warnings` and `recoveries` are: a
-    /// provider that does not send them is read as not knowing them rather than as having
-    /// none, which is also what an older provider's listing means. A VM with no worktree is
-    /// one an agent got to itself, and has no host directory to name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree: Option<PathBuf>,
-}
-
-/// A guest disk the provider kept instead of deleting: a VM that crashed, failed to
-/// provision, or could not be merged back into its worktree when it was released.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct RecoveryEntry {
-    pub path: PathBuf,
-    pub reason: String,
-    /// Unix seconds.
-    pub retained_at: u64,
-    #[serde(default)]
-    pub session: Option<String>,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub worktree: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-pub struct Listing {
-    pub vms: Vec<VmEntry>,
-    pub recoveries: Vec<RecoveryEntry>,
-}
+pub use zellij_types::firecracker::{Identity, Listing, RecoveryEntry, VmEntry};
 
 #[derive(Debug, Deserialize)]
 struct ListResponse {
@@ -293,6 +276,50 @@ impl Provider {
         })?;
         self.check_version(response.version)?;
         Ok(response.warnings)
+    }
+
+    /// Release the listed lease only if its VM identity still matches under the provider lock.
+    /// A distinct request makes older providers reject this rather than ignore the guard.
+    pub fn stop_if_matches(&self, expected: &Identity) -> Result<Vec<String>> {
+        expected.validate().map_err(|error| anyhow!(error))?;
+        let response: WarningsResponse = self.invoke(Request::StopIfMatches {
+            version: PROTOCOL_VERSION,
+            expected: expected.clone(),
+        })?;
+        self.check_version(response.version)?;
+        Ok(response.warnings)
+    }
+
+    /// Close the listed lease's panes, then release it, under the provider's identity guard.
+    /// Older providers must reject this request; never fall back to an unguarded close.
+    pub fn close_if_matches(&self, expected: &Identity) -> Result<Vec<String>> {
+        expected.validate().map_err(|error| anyhow!(error))?;
+        let response: WarningsResponse = self.invoke(Request::CloseIfMatches {
+            version: PROTOCOL_VERSION,
+            expected: expected.clone(),
+        })?;
+        self.check_version(response.version)?;
+        Ok(response.warnings)
+    }
+
+    pub fn sync_if_matches(&self, expected: &Identity) -> Result<Vec<String>> {
+        expected.validate().map_err(|error| anyhow!(error))?;
+        let response: WarningsResponse = self.invoke(Request::SyncIfMatches {
+            version: PROTOCOL_VERSION,
+            expected: expected.clone(),
+        })?;
+        self.check_version(response.version)?;
+        Ok(response.warnings)
+    }
+
+    pub fn changes_if_matches(&self, expected: &Identity) -> Result<usize> {
+        expected.validate().map_err(|error| anyhow!(error))?;
+        let response: ChangesResponse = self.invoke(Request::ChangesIfMatches {
+            version: PROTOCOL_VERSION,
+            expected: expected.clone(),
+        })?;
+        self.check_version(response.version)?;
+        Ok(response.changes)
     }
 
     /// Release every VM the session holds; see `stop` for the warnings.
@@ -634,6 +661,58 @@ mod tests {
     }
 
     #[test]
+    fn guarded_operations_reject_missing_identity_and_never_retry_unsupported_requests() {
+        let (dir, provider) = provider_script(
+            r#"cat >> "$(dirname "$0")/requests"
+echo 'unknown action' >&2
+exit 1"#,
+            AMPLE_TIMEOUT,
+        );
+        let mut expected: Identity = serde_json::from_value(json!({
+            "session": "work", "name": "review",
+        }))
+        .unwrap();
+        for result in [
+            provider.stop_if_matches(&expected),
+            provider.close_if_matches(&expected),
+            provider.sync_if_matches(&expected),
+            provider.changes_if_matches(&expected).map(|_| vec![]),
+        ] {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("upgrade the provider"));
+        }
+        assert!(!dir.path().join("requests").exists());
+        expected.vm_id = Some("/vm/socket".into());
+        expected.generation = Some("42:100".into());
+        for result in [
+            provider.stop_if_matches(&expected),
+            provider.close_if_matches(&expected),
+            provider.sync_if_matches(&expected),
+            provider.changes_if_matches(&expected).map(|_| vec![]),
+        ] {
+            assert!(result.unwrap_err().to_string().contains("unknown action"));
+        }
+        let requests: Vec<serde_json::Value> = serde_json::Deserializer::from_str(
+            &fs::read_to_string(dir.path().join("requests")).unwrap(),
+        )
+        .into_iter::<serde_json::Value>()
+        .map(|value| value.unwrap())
+        .collect();
+        assert_eq!(
+            requests,
+            [
+                "stop_if_matches",
+                "close_if_matches",
+                "sync_if_matches",
+                "changes_if_matches"
+            ]
+            .map(|action| { json!({"action": action, "version": 2, "expected": expected}) })
+        );
+    }
+
+    #[test]
     fn provider_default_inactivity_timeout_is_90s() {
         let provider = provider_from_options(Some(Path::new("/provider")), None).unwrap();
         assert_eq!(provider.timeout, Duration::from_secs(90));
@@ -655,6 +734,8 @@ mod tests {
             provider.list(None).unwrap(),
             Listing {
                 vms: vec![VmEntry {
+                    vm_id: None,
+                    metrics: None,
                     session: "work".to_owned(),
                     name: "review".to_owned(),
                     state: "running".to_owned(),
@@ -721,6 +802,8 @@ esac
                 // This provider names neither, which is what an older one's listing
                 // looks like: read as unknown rather than as a VM with no worktree.
                 vms: vec![VmEntry {
+                    vm_id: None,
+                    metrics: None,
                     session: "work".to_owned(),
                     name: "review".to_owned(),
                     state: "running".to_owned(),

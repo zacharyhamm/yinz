@@ -13,6 +13,7 @@ zellij-config = { workspace = true }
 zellij-ipc = { workspace = true }
 zellij-types = { workspace = true }
 zellij-runtime = { workspace = true }
+zellij-session = { workspace = true }
 sysinfo = { version = "0.39.5", default-features = false, features = ["system"] }
 anyhow = { workspace = true }
 async-trait = { version = "0.1.50", default-features = false }

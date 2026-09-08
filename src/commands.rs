@@ -71,6 +71,7 @@ pub(crate) fn firecracker(
         command,
         &provider,
         &git_branch,
+        &live_vm_session_panes,
         &mut std::io::stdout().lock(),
         &mut std::io::stderr().lock(),
     )
@@ -121,6 +122,23 @@ struct ListedVm<'a> {
     /// entry's own optional fields take, so a reader has one rule for all three.
     #[serde(skip_serializing_if = "Option::is_none")]
     branch: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    panes: Vec<zellij_types::firecracker::Pane>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    panes_error: Option<String>,
+}
+
+fn live_vm_session_panes(
+    session: &str,
+) -> std::result::Result<Vec<zellij_types::data::PaneListEntry>, String> {
+    if matches!(
+        session_status(&SessionName::from(session)),
+        Ok(SessionProbe::Absent)
+    ) {
+        return Ok(vec![]);
+    }
+    zellij_session::firecracker::list_panes(session, Duration::from_secs(3))
+        .map_err(|error| format!("Live pane list unavailable: {error:#}"))
 }
 
 /// The session a `zellij firecracker` command acts on: `--session` if given, else the
@@ -151,10 +169,12 @@ pub(crate) fn run_firecracker(
     command: zellij_cli::args::Firecracker,
     provider: &zellij_server::firecracker::Provider,
     branch_of: &dyn Fn(&Path) -> Option<String>,
+    panes_of: &dyn Fn(&str) -> std::result::Result<Vec<zellij_types::data::PaneListEntry>, String>,
     out: &mut impl std::io::Write,
     err: &mut impl std::io::Write,
 ) -> zellij_runtime::errors::prelude::Result<()> {
     use zellij_cli::args::Firecracker;
+    use zellij_runtime::errors::prelude::anyhow;
 
     fn selected_session(
         explicit: Option<String>,
@@ -192,6 +212,12 @@ pub(crate) fn run_firecracker(
                     .and_then(|worktree| branches.get(worktree).cloned().flatten())
             };
             if json {
+                let mut manifests = std::collections::BTreeMap::new();
+                for entry in &listing.vms {
+                    manifests
+                        .entry(&entry.session)
+                        .or_insert_with(|| panes_of(&entry.session));
+                }
                 writeln!(
                     out,
                     "{}",
@@ -202,6 +228,24 @@ pub(crate) fn run_firecracker(
                             .map(|entry| ListedVm {
                                 entry,
                                 branch: branch_for(entry),
+                                panes: manifests
+                                    .get(&entry.session)
+                                    .and_then(|result| result.as_ref().ok())
+                                    .into_iter()
+                                    .flatten()
+                                    .filter(|pane| !pane.pane_info.is_plugin()
+                                        && pane.pane_info.target.firecracker_vm()
+                                            == Some(entry.name.as_str()))
+                                    .map(|pane| zellij_types::firecracker::Pane {
+                                        id: pane.pane_info.id.legacy_parts().0,
+                                        title: pane.pane_info.title.clone(),
+                                        agent: pane.pane_info.agent.is_some(),
+                                    })
+                                    .collect(),
+                                panes_error: manifests
+                                    .get(&entry.session)
+                                    .and_then(|result| result.as_ref().err())
+                                    .cloned(),
                             })
                             .collect(),
                         recoveries: &listing.recoveries,
@@ -242,22 +286,116 @@ pub(crate) fn run_firecracker(
                 }
             }
         },
+        Firecracker::Close {
+            name,
+            session,
+            expected_identity,
+        } => {
+            let session = selected_session(session)?;
+            close_firecracker_lease(
+                provider,
+                &session,
+                &name,
+                expected_identity.as_ref(),
+                out,
+                err,
+            )?;
+        },
         Firecracker::Stop { name, session } => {
             let session = selected_session(session)?;
             for warning in provider.stop(&session, &name)? {
                 writeln!(err, "warning: {warning}")?;
             }
         },
-        Firecracker::Sync { name, session } => {
+        Firecracker::Sync {
+            name,
+            session,
+            expected_identity,
+        } => {
             let session = selected_session(session)?;
-            for warning in provider.sync(&session, &name)? {
+            let warnings = if let Some(expected) = expected_identity {
+                expected
+                    .validate_target(&session, &name)
+                    .map_err(|error| anyhow!(error))?;
+                provider.sync_if_matches(&expected)?
+            } else {
+                provider.sync(&session, &name)?
+            };
+            for warning in warnings {
                 writeln!(err, "warning: {warning}")?;
             }
         },
-        Firecracker::Changes { name, session } => {
+        Firecracker::Changes {
+            name,
+            session,
+            expected_identity,
+        } => {
             let session = selected_session(session)?;
-            writeln!(out, "{}", provider.changes(&session, &name)?)?;
+            let changes = if let Some(expected) = expected_identity {
+                expected
+                    .validate_target(&session, &name)
+                    .map_err(|error| anyhow!(error))?;
+                provider.changes_if_matches(&expected)?
+            } else {
+                provider.changes(&session, &name)?
+            };
+            writeln!(out, "{changes}")?;
         },
+    }
+    Ok(())
+}
+
+fn close_firecracker_lease(
+    provider: &zellij_server::firecracker::Provider,
+    session: &str,
+    name: &str,
+    expected: Option<&zellij_types::firecracker::Identity>,
+    out: &mut impl std::io::Write,
+    err: &mut impl std::io::Write,
+) -> zellij_runtime::errors::prelude::Result<()> {
+    use zellij_runtime::errors::prelude::*;
+    validate_session_name(session).map_err(|error| anyhow!(error))?;
+    zellij_types::command::validate_firecracker_vm_name(name).map_err(|error| anyhow!(error))?;
+    if let Some(expected) = expected {
+        expected
+            .validate_target(session, name)
+            .map_err(|error| anyhow!(error))?;
+    }
+    let before = provider.list(None)?;
+    let mut leases = before
+        .vms
+        .iter()
+        .filter(|vm| vm.session == session && vm.name == name);
+    let lease = leases
+        .next()
+        .context("VM lease no longer exists; refresh the listing")?;
+    if leases.next().is_some() {
+        bail!("VM lease is ambiguous; refresh the listing");
+    }
+    let listed_identity = lease.identity();
+    let expected = expected.unwrap_or(&listed_identity);
+    expected
+        .validate_target(session, name)
+        .map_err(|error| anyhow!(error))?;
+    if *expected != listed_identity {
+        bail!("VM lease changed; refresh and confirm before closing");
+    }
+    for warning in provider.close_if_matches(expected)? {
+        writeln!(err, "warning: {warning}")?;
+    }
+    writeln!(
+        out,
+        "Lease released: {name} in {session}. Pane closure confirmed (or owning server absent)."
+    )?;
+    let after = provider.list(None)?;
+    if lease
+        .vm_id
+        .as_ref()
+        .is_some_and(|id| after.vms.iter().any(|vm| vm.vm_id.as_ref() == Some(id)))
+    {
+        writeln!(out, "VM remains leased by another session.")?;
+    } else {
+        writeln!(out, "No remaining lease was reported for this VM. Check retained disks and merge warnings; release does not guarantee a successful merge.")?;
     }
     Ok(())
 }
@@ -1854,7 +1992,7 @@ mod tests {
 
 #[cfg(test)]
 mod firecracker_command_tests {
-    use super::{resolve_firecracker_session, run_firecracker};
+    use super::{close_firecracker_lease, resolve_firecracker_session, run_firecracker};
     use serde_json::json;
     use std::{
         fs,
@@ -1935,11 +2073,12 @@ mod firecracker_command_tests {
     }
 
     fn requests(dir: &TempDir) -> Vec<serde_json::Value> {
-        fs::read_to_string(dir.path().join("requests"))
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect()
+        serde_json::Deserializer::from_str(
+            &fs::read_to_string(dir.path().join("requests")).unwrap(),
+        )
+        .into_iter()
+        .collect::<Result<_, _>>()
+        .unwrap()
     }
 
     /// Every worktree is on a branch named after its last path component, except
@@ -1963,7 +2102,15 @@ mod firecracker_command_tests {
     ) -> (String, String) {
         let mut out = Vec::new();
         let mut err = Vec::new();
-        run_firecracker(command, provider, branch_of, &mut out, &mut err).unwrap();
+        run_firecracker(
+            command,
+            provider,
+            branch_of,
+            &|_| Ok(vec![]),
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
         (
             String::from_utf8(out).unwrap(),
             String::from_utf8(err).unwrap(),
@@ -2020,6 +2167,49 @@ mod firecracker_command_tests {
                 .to_string();
             assert_eq!(error, "no session selected; pass --session SESSION");
         }
+    }
+
+    #[test]
+    fn list_json_reads_each_sessions_live_panes_once_and_matches_vm_names() {
+        use zellij_types::data::{PaneInfo, PaneListEntry};
+        let (_dir, provider) = stub_provider(
+            r#"{"version":2,"vms":[{"session":"s","name":"api","state":"running"},{"session":"s","name":"other","state":"running"}]}"#,
+        );
+        let calls = std::cell::Cell::new(0);
+        let panes = |session: &str| {
+            assert_eq!(session, "s");
+            calls.set(calls.get() + 1);
+            Ok(vec![PaneListEntry {
+                pane_info: PaneInfo {
+                    title: "API shell".into(),
+                    target: zellij_types::command::PaneTarget::Firecracker {
+                        vm: "api".into(),
+                        image: None,
+                        worktree: None,
+                    },
+                    ..Default::default()
+                },
+                tab_id: Default::default(),
+                tab_position: Default::default(),
+                tab_name: "work".into(),
+                pane_command: None,
+                pane_cwd: None,
+            }])
+        };
+        let mut out = vec![];
+        run_firecracker(
+            list(None, true),
+            &provider,
+            &|_| None,
+            &panes,
+            &mut out,
+            &mut vec![],
+        )
+        .unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(calls.get(), 1);
+        assert_eq!(result["vms"][0]["panes"][0]["title"], "API shell");
+        assert!(result["vms"][1].get("panes").is_none());
     }
 
     #[test]
@@ -2159,6 +2349,165 @@ mod firecracker_command_tests {
     }
 
     #[test]
+    fn guarded_vm_dispatch_sends_the_confirmed_identity_unchanged() {
+        let expected: zellij_types::firecracker::Identity = serde_json::from_value(json!({
+            "session": "work", "name": "review", "vm_id": "/vm/socket",
+            "generation": "42:100", "worktree": "/repo with spaces",
+        }))
+        .unwrap();
+        for (command, action) in [
+            (
+                Firecracker::Sync {
+                    name: "review".into(),
+                    session: Some("work".into()),
+                    expected_identity: Some(expected.clone()),
+                },
+                "sync_if_matches",
+            ),
+            (
+                Firecracker::Changes {
+                    name: "review".into(),
+                    session: Some("work".into()),
+                    expected_identity: Some(expected.clone()),
+                },
+                "changes_if_matches",
+            ),
+        ] {
+            let (dir, provider) = stub_provider(r#"{"version":2,"changes":3}"#);
+            run(command, &provider);
+            assert_eq!(
+                requests(&dir),
+                [json!({"version": 2, "action": action, "expected": expected})]
+            );
+        }
+    }
+
+    #[test]
+    fn close_refuses_incomplete_identities_before_any_pane_close_request() {
+        let complete: zellij_types::firecracker::VmEntry = serde_json::from_value(json!({
+            "session": "work", "name": "review", "state": "running", "vm_id": "/vm/socket",
+            "metrics": {"generation": "42:100", "source": "process", "sample_time_us": 0},
+        }))
+        .unwrap();
+        for field in [
+            "missing_id",
+            "empty_id",
+            "missing_generation",
+            "empty_generation",
+        ] {
+            let mut lease = complete.clone();
+            match field {
+                "missing_id" => lease.vm_id = None,
+                "empty_id" => lease.vm_id = Some(String::new()),
+                "missing_generation" => lease.metrics = None,
+                _ => lease.metrics.as_mut().unwrap().generation.clear(),
+            }
+            for explicit in [false, true] {
+                let (dir, provider) =
+                    stub_provider(&json!({"version": 2, "vms": [lease]}).to_string());
+                let identity = explicit.then(|| lease.identity());
+                let result = close_firecracker_lease(
+                    &provider,
+                    "work",
+                    "review",
+                    identity.as_ref(),
+                    &mut vec![],
+                    &mut vec![],
+                );
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("identity and generation"),
+                    "{field}"
+                );
+                if explicit {
+                    assert!(!dir.path().join("requests").exists());
+                } else {
+                    assert_eq!(
+                        requests(&dir),
+                        [json!({"version": 2, "action": "list", "session": null})]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn close_compares_every_confirmed_identity_field_before_closing_panes() {
+        let lease: zellij_types::firecracker::VmEntry = serde_json::from_value(json!({
+            "session": "work", "name": "review", "state": "running", "vm_id": "/vm/socket",
+            "metrics": {"generation": "42:100", "source": "process", "sample_time_us": 0},
+            "worktree": "/repo",
+        }))
+        .unwrap();
+        for field in ["session", "name", "vm_id", "generation", "worktree"] {
+            let mut expected = lease.identity();
+            match field {
+                "session" => expected.session = "other".into(),
+                "name" => expected.name = "other".into(),
+                "vm_id" => expected.vm_id = Some("other".into()),
+                "generation" => expected.generation = Some("replacement".into()),
+                _ => expected.worktree = Some("/other".into()),
+            }
+            let (dir, provider) = stub_provider(&json!({"version": 2, "vms": [lease]}).to_string());
+            let result = close_firecracker_lease(
+                &provider,
+                "work",
+                "review",
+                Some(&expected),
+                &mut vec![],
+                &mut vec![],
+            );
+            assert!(result.is_err(), "{field}");
+            if dir.path().join("requests").exists() {
+                assert!(requests(&dir)
+                    .iter()
+                    .all(|request| request["action"] == "list"));
+            }
+        }
+    }
+
+    #[test]
+    fn close_passes_the_original_lease_to_guarded_close_and_prints_warnings() {
+        let session = format!("absent-close-{}", std::process::id());
+        let lease = json!({
+            "session": session, "name": "api", "state": "running",
+            "vm_id": "/vm/socket", "metrics": {
+                "generation": "42:100", "source": "process", "sample_time_us": 0,
+            },
+            "worktree": "/repo",
+        });
+        let (dir, provider) = stub_provider(
+            &json!({
+                "version": 2, "vms": [lease.clone()], "warnings": ["kept host copy"],
+            })
+            .to_string(),
+        );
+        let (out, err) = run(
+            Firecracker::Close {
+                expected_identity: None,
+                name: "api".into(),
+                session: Some(session),
+            },
+            &provider,
+        );
+        assert!(out.contains("Lease released: api"));
+        assert_eq!(err, "warning: kept host copy\n");
+        let sent = requests(&dir);
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[0]["action"], "list");
+        assert_eq!(sent[1]["action"], "close_if_matches");
+        assert_eq!(sent[1]["expected"]["vm_id"], lease["vm_id"]);
+        assert_eq!(
+            sent[1]["expected"]["generation"],
+            lease["metrics"]["generation"]
+        );
+        assert_eq!(sent[1]["expected"]["worktree"], lease["worktree"]);
+        assert_eq!(sent[2]["action"], "list");
+    }
+
+    #[test]
     fn stop_prints_each_merge_warning_to_stderr() {
         let (dir, provider) = stub_provider(
             r#"{"version":2,"warnings":["/repo/a.rs: changed on both sides; kept the host copy, the guest copy is /repo/a.rs.guest","/repo/b.rs: changed on both sides; kept the host copy, the guest copy is /repo/b.rs.guest"]}"#,
@@ -2189,6 +2538,7 @@ mod firecracker_command_tests {
         );
         let (out, err) = run(
             Firecracker::Sync {
+                expected_identity: None,
                 name: "review".to_owned(),
                 session: Some("work".to_owned()),
             },
@@ -2210,6 +2560,7 @@ mod firecracker_command_tests {
         let (dir, provider) = stub_provider(r#"{"version":2,"changes":3}"#);
         let (out, err) = run(
             Firecracker::Changes {
+                expected_identity: None,
                 name: "review".to_owned(),
                 session: Some("work".to_owned()),
             },
@@ -2232,6 +2583,7 @@ mod firecracker_command_tests {
                 session: Some("work".to_owned()),
             },
             Firecracker::Sync {
+                expected_identity: None,
                 name: "review".to_owned(),
                 session: Some("work".to_owned()),
             },

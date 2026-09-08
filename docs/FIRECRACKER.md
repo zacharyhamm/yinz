@@ -365,7 +365,16 @@ Requests:
 {"version":2,"action":"stop_session","session":"work"}
 {"version":2,"action":"list","session":null}
 {"version":2,"action":"rename_session","from":"work","to":"review"}
+{"version":2,"action":"stop_if_matches","expected":{"session":"work","name":"review","vm_id":"/vm/api.socket","generation":"42:100","worktree":"/repo"}}
+{"version":2,"action":"close_if_matches","expected":{"session":"work","name":"review","vm_id":"/vm/api.socket","generation":"42:100","worktree":"/repo"}}
+{"version":2,"action":"sync_if_matches","expected":{"session":"work","name":"review","vm_id":"/vm/api.socket","generation":"42:100","worktree":"/repo"}}
+{"version":2,"action":"changes_if_matches","expected":{"session":"work","name":"review","vm_id":"/vm/api.socket","generation":"42:100","worktree":"/repo"}}
 ```
+
+The `*_if_matches` actions compare the expected identity under the provider lock before the operation.
+`close_if_matches` holds that lock through pane closure and lease release. A closure failure preserves the lease.
+Its response has the same format as `stop`. The other guarded actions retain their corresponding unguarded response formats.
+Older providers reject these distinct actions. Zellij does not retry them without the identity guard.
 
 An `ensure` response supplies an SSH URL. It can also supply the guest working directory, SSH key,
 known-hosts file, and the host worktree the VM mirrors:
@@ -581,14 +590,51 @@ Hocus manages the VMs it has spawned through four more tools, which shell out to
   crashed server left behind, is still a VM the user has running.
 - `vm_changes` - the guest-path count, reading both sides and writing neither.
 - `vm_sync` - the merge, which stops for a confirmation because it writes the host worktree.
-- `vm_close` - the same merge, then it closes the session's panes on the VM before stopping it,
-  so nothing in the guest is being written while the merge reads it. Also confirmed.
+- `vm_close` - confirms closure of the VM's panes in the owning session, then releases that
+  session's lease. The last lease triggers merge and teardown. This operation requires confirmation.
 
 The last three take the VM as `vm` and default to this session; a VM `vm_list` showed under
 another session's name is reached by passing `vm_session`. The `zellij` they run is whatever is
 on the server's `PATH`; a development checkout whose `zellij` is not the one on `PATH` sets
 `zellij_path` in the hocus plugin block, since a mismatched build can speak a different provider
 protocol.
+
+The existing agents panel has **Agents | VMs** tabs beside the conversation. Click a tab,
+or focus the tab bar with Tab or Shift+Tab and use Left or Right. Each view keeps its selection
+and scroll position. Reopening the panel keeps the active tab.
+
+The VM view refreshes every two seconds while visible. Each row is a session lease. Shared rows
+show the same physical VM measurements. CPU uses host cores: 100% is one core. Memory labels
+identify cgroup memory or process RSS. Host disk allocation measures filesystem blocks used by
+the image, not free space inside the guest. Missing measurements show `—`. A failed refresh
+keeps the last successful listing and marks it stale.
+
+Use arrows or `j`/`k` to select a lease. Enter selects its pane list. Enter again focuses a pane,
+switches sessions if necessary, and dismisses the panel. Press `c` to inspect changes. Press `s`
+to confirm a worktree sync. Press `x` to confirm **Close in session**. The confirmation names
+its session, affected panes, and remaining leases. Use PageUp, PageDown, or the wheel to read
+all operation output and merge warnings. Retained disks have a separate group with their reason,
+time, and recovery path. The panel has no disk deletion or recovery command.
+
+The panel and `vm_close` both use `zellij firecracker close NAME --session SESSION`. This command
+selects the VM identity and sends it to the provider through `close_if_matches`.
+Under its exclusive lock, the provider validates the identity, reads the owning server's live pane manifest, and requests pane closure.
+It reports progress while it waits up to 15 seconds for pane removal, then releases the lease before unlocking.
+An absent server permits orphan cleanup. A server that cannot answer, or a closure timeout,
+prevents lease release. The existing `stop` command remains available with its original behavior.
+Lease release, VM termination, and a successful merge are separate outcomes.
+
+`close`, `sync`, and `changes` accept `--expected-identity` with a JSON object containing
+`session`, `name`, `vm_id`, `generation`, and `worktree`. The panel always supplies the original selected identity.
+The VM ID and generation must be present and nonempty. `worktree` can be `null` for a VM without a host worktree.
+Without this argument, `close` captures and validates the current listing identity before it closes panes.
+Direct `sync` and `changes` commands without this argument retain their original behavior.
+
+Provider listing JSON now accepts optional `vm_id` and `metrics` fields. Metrics include
+`generation`, `source`, `sample_time_us`, cumulative `cpu_usage_us`, `memory_bytes`, `memory_source`,
+`disk_allocated_bytes`, and `disk_logical_bytes`. A process or source change resets the CPU baseline.
+The CLI adds live `panes` or `panes_error` per lease, without failing the VM listing when a server
+cannot answer. Older provider listings remain readable.
 
 Coding-agent hooks are installed in the guest when a VM is provisioned: the provider runs
 `zellij hocus hooks install` there, which wires both Claude Code and Codex, so a `claude` or a

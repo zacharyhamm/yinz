@@ -1,8 +1,6 @@
-//! The pure half of the VM tools: the argv each one sends, and which panes
-//! `vm_close` will close before it sends it.
+//! The VM tool argv, including the shared CLI close path.
 
 use super::*;
-use zellij_tile::prelude::TabPosition;
 
 fn vm_argv_for(name: &str, arguments: &str) -> Result<Vec<String>, String> {
     vm_argv(
@@ -11,14 +9,6 @@ fn vm_argv_for(name: &str, arguments: &str) -> Result<Vec<String>, String> {
         "/usr/bin/zellij",
         "work",
     )
-}
-
-fn pane(id: u32, host: Option<&str>) -> zellij_tile::prelude::PaneInfo {
-    zellij_tile::prelude::PaneInfo {
-        id: zellij_tile::prelude::PaneId::from_legacy(id, false),
-        target: PaneTarget::parse_display(host),
-        ..Default::default()
-    }
 }
 
 #[test]
@@ -36,8 +26,8 @@ fn each_per_vm_tool_sends_its_own_cli_verb() {
     for (tool, verb) in [
         ("vm_changes", "changes"),
         ("vm_sync", "sync"),
-        // `vm_close` is `stop` plus the pane closing the CLI does not do.
-        ("vm_close", "stop"),
+        // The shared CLI path confirms pane closure before releasing the lease.
+        ("vm_close", "close"),
     ] {
         assert_eq!(
             vm_argv_for(tool, r#"{"vm":"review"}"#).unwrap(),
@@ -87,33 +77,6 @@ fn a_vm_name_zellij_would_refuse_never_reaches_the_cli() {
     let error = vm_argv_for("vm_close", r#"{"vm":"a/b"}"#).unwrap_err();
     assert!(!error.is_empty(), "{error}");
     assert!(vm_argv_for("vm_close", r#"{"vm":""}"#).is_err());
-}
-
-#[test]
-fn only_the_panes_running_in_that_vm_are_selected() {
-    let mut panes = vec![
-        pane(1, Some("firecracker:review")),
-        // Local: the manifest gives it no host at all.
-        pane(2, None),
-        // An ordinary ssh pane, which is on a machine rather than in a VM.
-        pane(3, Some("build.example.com")),
-        pane(4, Some("firecracker:other")),
-        pane(5, Some("firecracker:review")),
-    ];
-    let mut plugin = pane(6, Some("firecracker:review"));
-    plugin.id = zellij_tile::prelude::PaneId::from_legacy(plugin.id.legacy_parts().0, true);
-    panes.push(plugin);
-    let current = SessionInfo {
-        name: "work".to_owned().into(),
-        panes: zellij_tile::prelude::PaneManifest {
-            panes: std::collections::HashMap::from([(TabPosition::new(0), panes)]),
-        },
-        ..Default::default()
-    };
-    assert_eq!(firecracker_panes("review", "work", &current), vec![1, 5]);
-    assert_eq!(firecracker_panes("other", "work", &current), vec![4]);
-    assert!(firecracker_panes("absent", "work", &current).is_empty());
-    assert!(firecracker_panes("review", "other", &current).is_empty());
 }
 
 #[test]
