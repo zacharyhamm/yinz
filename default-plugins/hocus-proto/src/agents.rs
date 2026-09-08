@@ -1076,6 +1076,18 @@ pub fn short_run_id(id: &str) -> String {
     }
 }
 
+/// The agent kind a run id names, read off the front. Every shape [`run_id`] builds leads with
+/// it, which is what lets a row say something about the run an id points at without having that
+/// run in hand — the archive is paged, so an ancestor is often not loaded.
+///
+/// `None` for an id of neither shape, and for one that leads with an empty kind: better to say
+/// nothing than to name an agent called "".
+pub fn run_id_kind(id: &str) -> Option<&str> {
+    id.split_once(':')
+        .map(|(kind, _)| kind)
+        .filter(|kind| !kind.is_empty())
+}
+
 /// How much of a long session id [`short_run_id`] keeps. Eight characters of a uuid is the
 /// length git settled on for the same job, and the same reasoning applies: the ids being told
 /// apart are the handful a pane has run, not every id there could be.
@@ -7462,6 +7474,32 @@ mod tests {
             !summary_history(7, "claude", &one, HISTORY_MIN_COLS + 2, 0).is_empty(),
             "just enough"
         );
+    }
+
+    /// A row can say something about the run an ancestor id points at without holding that run:
+    /// the archive is paged, so an origin is often not loaded, and the kind is the front of every
+    /// id `run_id` mints.
+    #[test]
+    fn a_run_id_names_the_kind_that_minted_it() {
+        assert_eq!(
+            run_id_kind("claude:9f3c1a7e-4b21-4d0a-8c55-7e2f6b1d90aa"),
+            Some("claude"),
+        );
+        // The fallback shape, machine-named or not: the kind is still what leads.
+        assert_eq!(run_id_kind("codex:pane:7:1764618000000"), Some("codex"));
+        assert_eq!(
+            run_id_kind("codex:pane:7:1764618000000:9f3c1a7e-4b21-4d0a-8c55-7e2f6b1d90aa"),
+            Some("codex"),
+        );
+        // Neither shape, and a leading empty kind: nothing to name.
+        assert_eq!(run_id_kind("whatever"), None);
+        assert_eq!(run_id_kind(":session-1"), None);
+        assert_eq!(run_id_kind(""), None);
+        // Whatever `run_id` builds, it round-trips.
+        for (kind, session) in [("claude", "abc"), ("codex", "")] {
+            let id = run_id(kind, 7, session, 1764618000000, &HostId::new("host"));
+            assert_eq!(run_id_kind(&id), Some(kind), "{id}");
+        }
     }
 
     /// The divider names *which* run it is drawing, and a real id does not fit one: a hook
