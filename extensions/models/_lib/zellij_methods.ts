@@ -23,6 +23,7 @@ const Observe = Request.extend({
 const Command = Request.extend({
     argv: z.array(Literal).min(1),
     cwd: Literal.min(1),
+    foreground: z.boolean().default(false),
 });
 const Review = z.object({
     evidence: Evidence,
@@ -109,7 +110,7 @@ function method<T extends z.ZodType>(
     return {
         description,
         arguments: schema,
-        execute: async (input: z.infer<T>, c: Context) => {
+        execute: async (input: z.input<T>, c: Context) => {
             c.logger.info("Dispatching owned Zellij operation");
             const request = {
                 ...schema.parse(input) as Record<string, unknown>,

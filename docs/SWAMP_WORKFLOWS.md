@@ -58,8 +58,10 @@ without starting a worker. Local checkout evidence does not require a VM-sync re
    same checkout and VM context. Cancel the picker to return to a fresh exit menu.
    Leave restores the original scrollback and preserves all resources.
 2. After Begin review, choose **Show diff**, **Commit and rebase**, or **Leave**.
-   The saved diff includes committed branch changes relative to the local target,
-   staged changes, unstaged changes, and untracked files. It does not change files.
+   Show diff runs plain `git diff` in the source checkout after VM synchronization.
+   The command temporarily occupies the workflow pane and uses Git’s configured pager.
+   It shows unstaged changes to tracked files. Exit the pager to return to a fresh preparation menu.
+   Empty diffs or a disabled pager can return immediately. Command failures appear in the workflow view.
    Commit and rebase skips empty commits and rebases onto the configured local target.
 3. If a rebase is paused, choose **Resolve with agent** or **Leave paused**.
    Only approval starts a resolver. The agent stages resolutions. The workflow
@@ -269,6 +271,7 @@ After reviewing and acknowledging local extension changes, run:
 ```sh
 deno test --allow-all extensions
 python3 extensions/tests/smoke.py
+python3 extensions/tests/smoke.py --source-diff-only
 cargo x ci check
 cargo x firecracker-test --build
 cargo x firecracker-test --test

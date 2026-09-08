@@ -7611,12 +7611,15 @@ z.get_plugin_ids=function() return {host_id='host'} end
 z.subscribe=function() end
 z.data.define=function() end
 z.data.eq=function(_,uid) return uid end
-local scan_pages=0
+local scan_pages,next_row=0,0
 z.data.fetch=function(q)
   if q.filter then return rows[q.filter] and {rows[q.filter]} or {}, {} end
   local ids={}
   for uid in pairs(rows) do ids[#ids+1]=uid end
-  table.sort(ids)
+  table.sort(ids,function(a,b)
+    local ai,bi=rows[a].id or 0,rows[b].id or 0
+    return ai==bi and a<b or ai<bi
+  end)
   local page,first={},(q.after_id or 0)+1
   local last=math.min(first+2,#ids) -- small pages exercise the same cursor contract
   for i=first,last do
@@ -7630,7 +7633,10 @@ z.data.put=function(_,v,uid,rev) return {uid=uid,value=v.value,rev=rev} end
 z.data.apply=function(changes)
   if changes.uid then changes={changes} end
   for _,c in ipairs(changes) do assert(c.rev==(rows[c.uid] and rows[c.uid].rev or 0),'CAS conflict') end
-  for _,c in ipairs(changes) do rows[c.uid]={value=c.value,rev=c.rev+1} end
+  for _,c in ipairs(changes) do
+    next_row=next_row+1
+    rows[c.uid]={value=c.value,rev=c.rev+1,id=rows[c.uid] and rows[c.uid].id or next_row}
+  end
 end
 z.rpc.handle=function(_,h) handler=h end
 z.workflow_remote_panes=function() return {} end
@@ -7923,6 +7929,34 @@ z.agent.spawn_details=function(opts)
   next_pane=next_pane+1;panes[next_pane]=true;owners[next_pane]=opts.context.swamp_owner
   return {pane_id={Terminal=next_pane}}
 end
+-- Foreground commands share the queue and restore the view on either exit status.
+z.open_command_pane_background=function(opts)
+  next_pane=next_pane+1
+  owners[next_pane]=opts[2].swamp_owner
+  command_panes=command_panes+1;panes[next_pane]=true;return {Terminal=next_pane}
+end
+local function command_request(id,foreground)
+  return {method='command',work='attached',key=id,argv={'git','diff'},cwd='/source',foreground=foreground}
+end
+for _,code in ipairs{0,1} do
+  local request=command_request('diff-'..code,true)
+  local before=command_panes
+  local operation=assert(call(request))
+  assert(visible.Terminal==operation.pane)
+  assert(call(request).pane==operation.pane and command_panes==before+1,'duplicate dispatch never opens another pane')
+  z.__update(M,{CommandPaneExited={operation.pane,code,{swamp_owner=owners[operation.pane],swamp_operation=request.key}}})
+  assert(visible.Plugin==1,'command exit restores the workflow view')
+  assert(call(request).outcome==(code==0 and 'completed' or 'failed'))
+end
+do
+  local request=command_request('background',false)
+  local operation=assert(call(request))
+  assert(visible.Plugin==1,'ordinary commands stay suppressed')
+  z.__update(M,{CommandPaneExited={operation.pane,0,{swamp_owner=owners[operation.pane],swamp_operation=request.key}}})
+  assert(visible.Plugin==1)
+end
+replacements=0
+before_commands=command_panes
 local first=assert(call{method='agent_spawn',work='attached',key='first',spec={kind='codex'}}).pane
 local second=assert(call{method='agent_spawn',work='attached',key='second',spec={kind='codex'}}).pane
 local function turn(agent,id)
@@ -8002,6 +8036,13 @@ view_exists=false
 z.agent.send=function() end
 assert(call(turn('second','detached'),3).outcome=='pending')
 assert(replacements==7,'closing the view must not open a replacement')
+local detached_command=command_request('detached-command',true)
+local detached_operation=assert(call(detached_command,3))
+assert(call(detached_command,3).pane==detached_operation.pane)
+z.__update(M,{CommandPaneExited={detached_operation.pane,1,{swamp_owner=owners[detached_operation.pane],swamp_operation=detached_command.key}}})
+assert(replacements==7,'a detached foreground command never restores or opens a view')
+before_commands=command_panes
+
 assert(call({method='agent_spawn',work='attached',key='after-detach',spec={kind='codex'}},3))
 assert(call(launch('attached','/source'),3) and command_panes==before_commands)
 assert(replacements==7,'detached launches and new agents remain suppressed')
@@ -8015,6 +8056,103 @@ assert(select(2,call(turn('second','detached-unknown'),3)))
 assert(show().active)
 z.__update(M,{CommandPaneExited={second,1,{swamp_owner=owners[second],swamp_operation='second'}}})
 assert(not show().active,'process exit clears the detached unknown prompt')
+-- Manual views attach by resolved launch identity, including commands sent before polling.
+local manual_work='manual'
+local hook_info,hook_command=z.get_pane_info,z.async.run_command
+local manual_views={}
+z.get_pane_info=function(pane)
+  if pane.Plugin then
+    assert(manual_views[pane.Plugin],'view closed')
+    return {plugin_url='zellij:swamp-workflow',is_suppressed=visible.Plugin~=pane.Plugin}
+  end
+  assert(panes[pane.Terminal],'pane absent')
+  return {target='Local',is_suppressed=visible.Terminal~=pane.Terminal}
+end
+z.async.run_command=function(opts)
+  unwrap_history(opts)
+  if opts.command[2]=='pty-host' then return host_command(opts) end
+  local output={results={}}
+  if opts.command[3]=='history' and opts.command[4]=='search' then
+    output={results={{runId=manual_work..'-run',workflowName='configured',inputs={session='session',launch=manual_work}}}}
+  elseif opts.command[3]=='history' and opts.command[4]=='get' then
+    output={id=manual_work..'-run',workflowName='configured',status='running',inputs={session='session',launch=manual_work}}
+  end
+  local a,r=z.async.future();r{exit_code=0,stdout=z.json.encode(output),stderr=''};return a
+end
+for _,by_run in ipairs{false,true} do
+  manual_work=by_run and 'manual-run-id' or 'manual-launch'
+  local uid=z.json.encode({'host','session',manual_work,'launch'})
+  rows[uid]={rev=1,value=z.json.encode{checkout='/control'}}
+  manual_views={[1]=true,[3]=true,[4]=true};visible={Plugin=3}
+  local function manual_show(from)
+    return call({method='workflow_show',directory='/control',
+      launch=not by_run and manual_work or nil,run=by_run and manual_work..'-run' or nil},from or 3)
+  end
+  local function dispatch(id,foreground,from)
+    local request=command_request(id,foreground);request.work=manual_work
+    return assert(call(request,from or 4))
+  end
+  local function finish(operation,code)
+    z.__update(M,{CommandPaneExited={operation.pane,code,{swamp_owner=owners[operation.pane],swamp_operation=operation.key}}})
+  end
+  local background=dispatch('background',false)
+  local first=dispatch('diff-b',true)
+  local second=dispatch('diff-a',true)
+  assert(visible.Plugin==3,'CLI dispatch alone does not attach a view')
+  local cli_reply
+  z.block_cli_pipe_input=function() end
+  z.unblock_cli_pipe_input=function() end
+  z.cli_pipe_output=function(_,payload) cli_reply=z.json.decode(payload) end
+  M.pipe{name='swamp',source={Cli='test'},payload=z.json.encode{
+    method='workflow_show',directory='/control',launch=manual_work,view=3}}
+  assert(cli_reply.result and visible.Plugin==3,'CLI polling cannot register a caller-supplied view')
+  assert(manual_show())
+  assert(visible.Terminal==first.pane,'late attachment presents the first pending command')
+  local before=replacements
+  assert(manual_show() and manual_show(4))
+  assert(replacements==before,'polling and other history views cannot steal or duplicate the queue')
+  finish(first,0);assert(visible.Terminal==second.pane)
+  finish(second,1);assert(visible.Plugin==3,'failed commands restore the manual view too')
+  finish(background,0);assert(visible.Plugin==3)
+  local foreground=dispatch('diff-c',true)
+  assert(visible.Terminal==foreground.pane)
+  finish(foreground,0);assert(visible.Plugin==3)
+  local pending
+  if by_run then
+    -- Dispatch notices the missing old view and detaches before the replacement polls.
+    manual_views[3]=nil;visible={Plugin=4}
+    pending=dispatch('rebind-pending',true)
+  else
+    -- The replacement polls before anything has noticed that the old view closed.
+    pending=dispatch('rebind-pending',true)
+    manual_views[3]=nil;visible={Plugin=4}
+  end
+  before=replacements
+  assert(manual_show(4))
+  assert(visible.Terminal==pending.pane and replacements==before+1,
+    'a new view rebinds after the old view closes')
+  finish(pending,1);assert(visible.Plugin==4,'pending pager exit restores the new view')
+  local rebound=dispatch('rebind-new',true)
+  assert(visible.Terminal==rebound.pane)
+  finish(rebound,0);assert(visible.Plugin==4,'new pager exit restores the new view')
+  z.agent.spawn_details=function(opts)
+    next_pane=next_pane+1;panes[next_pane]=true;owners[next_pane]=opts.context.swamp_owner
+    return {pane_id={Terminal=next_pane}}
+  end
+  z.agent.send=function() end
+  local agent=assert(call{method='agent_spawn',work=manual_work,key='agent',spec={kind='codex'}})
+  assert(call{method='agent_prompt',work=manual_work,key='prompt',agent='agent',prompt='hello'})
+  assert(visible.Plugin==4,'manual views only present foreground commands')
+  manual_views[4]=nil;manual_views[5]=true;visible={Plugin=5}
+  local detached=dispatch('diff-d',true,5)
+  before=replacements
+  manual_views[4]=true
+  assert(manual_show(4))
+  finish(detached,1)
+  assert(replacements==before,'polling cannot revive a detached placement')
+end
+z.get_pane_info,z.async.run_command=hook_info,hook_command
+local before_reload=replacements
 -- Reload the module with retained rows and fresh event handlers/placement state.
 view_exists=true
 local handlers={}
@@ -8073,11 +8211,11 @@ for _,outcome in ipairs{'pending','unknown'} do
     command.outcome=outcome;rows[uid].value=z.json.encode(command)
     M=reload_bridge();M.load{}
     assert(show().active,'command survives a fresh bridge')
-    z.__update(M,{CommandPaneExited={30,0,{swamp_owner=owners[30],swamp_operation=command_key}}})
+    z.__update(M,{CommandPaneExited={command.pane,0,{swamp_owner=owners[command.pane],swamp_operation=command_key}}})
     assert(not show().active,'verified command completion clears activity after reload')
   end
 end
-assert(replacements==7,'reload never recovers placement')
+assert(replacements==before_reload,'reload never recovers placement')
 -- A caller cannot proxy an unprivileged plugin through the builtin bridge.
 z.get_pane_info=function() return {plugin_url='file:untrusted.lua'} end
 assert(select(2,call{method='identity'}))

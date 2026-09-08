@@ -364,18 +364,18 @@ jobs:
   - name: diff
     task:
       type: model_method
-      modelType: "@swamp/git"
+      modelType: "@hammz/zellij"
       modelName: ${{ run.id + "-diff" }}
-      methodName: show_diff
+      methodName: command
       globalArgs:
-        repoPath: "${{ inputs.checkout }}"
-      inputs:
-        source: "${{ inputs.checkout }}"
-        target: "${{ inputs.target }}"
-        targetBranch: "${{ inputs.targetBranch }}"
-        gate: "${{ inputs.gate }}"
+        session: "${{ inputs.session }}"
         binary: "${{ inputs.binary }}"
-        vmSync: '${{ (inputs.phase in ["prepare", "commit", "resolved", "diff"]) ? data.latest(run.id + "-sync", "checkoutSync-current").attributes : inputs.state.vmSync }}'
+      inputs:
+        work: "${{ inputs.launch }}"
+        key: ${{ run.id + "-diff" }}
+        argv: ["git", "diff"]
+        cwd: "${{ inputs.checkout }}"
+        foreground: true
     dependsOn:
     - step: prepare-commit
       condition:
@@ -384,26 +384,18 @@ jobs:
         - type: succeeded
         - type: skipped
     guard: ${{ !(inputs.phase in ["diff"]) }}
-  - name: diff-question
+  - name: diff-exit
     task:
       type: model_method
-      modelType: "@hammz/question"
-      modelName: ${{ run.id + "-questions" }}
-      methodName: open
+      modelType: "@hammz/zellij"
+      modelName: ${{ run.id + "-diff-exit" }}
+      methodName: observe
       globalArgs:
         session: "${{ inputs.session }}"
         binary: "${{ inputs.binary }}"
       inputs:
-        run: "${{ run.id }}"
-        workflow: "${{ run.workflowName }}"
-        question: diff
-        step: diff-approval
-        kind: choice
-        prompt: Saved diff is shown in workflow outputs. Return to preparation?
-        answers:
-        - return
-        - leave
-        resumeInput: answer
+        work: "${{ inputs.launch }}"
+        key: ${{ run.id + "-diff" }}
     dependsOn:
     - step: diff
       condition:
@@ -412,34 +404,14 @@ jobs:
         - type: succeeded
         - type: skipped
     guard: ${{ !(inputs.phase in ["diff"]) }}
-  - name: diff-approval
+  - name: diff-succeeded
     task:
-      type: manual_approval
-      prompt: Saved diff is shown in workflow outputs. Return to preparation?
+      type: assert
+      expr: data.latest(run.id + "-diff-exit", "operation-current").attributes.outcome == "completed" && data.latest(run.id + "-diff-exit", "operation-current").attributes.exitCode == 0
+      message: Git diff failed or its completion is uncertain. Inspect the command output in workflow results.
+      severity: high
     dependsOn:
-    - step: diff-question
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
-    guard: ${{ !(inputs.phase in ["diff"]) }}
-  - name: diff-answer
-    task:
-      type: model_method
-      modelType: "@hammz/question"
-      modelName: ${{ run.id + "-questions" }}
-      methodName: consume
-      globalArgs:
-        session: "${{ inputs.session }}"
-        binary: "${{ inputs.binary }}"
-      inputs:
-        run: "${{ run.id }}"
-        question: diff
-        answer: "${{ inputs.answer }}"
-        submission: "${{ inputs.submission }}"
-    dependsOn:
-    - step: diff-approval
+    - step: diff-exit
       condition:
         type: or
         conditions:
@@ -483,13 +455,13 @@ jobs:
             test: "${{ inputs.state.test }}"
           flowVersion: "${{ inputs.flowVersion }}"
     dependsOn:
-    - step: diff-answer
+    - step: diff-succeeded
       condition:
         type: or
         conditions:
         - type: succeeded
         - type: skipped
-    guard: ${{ !(inputs.phase in ["diff"] && inputs.answer == "return") }}
+    guard: ${{ !(inputs.phase in ["diff"]) }}
   - name: commit
     task:
       type: model_method
