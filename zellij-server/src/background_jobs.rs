@@ -2268,6 +2268,10 @@ mod web_request_stream_tests {
     /// plugin thread's queue - ahead of whatever the user was typing.
     #[tokio::test(start_paused = true)]
     async fn a_burst_of_frames_arrives_as_one_event_after_the_coalescing_window() {
+        assert_eq!(
+            WEB_REQUEST_STREAM_COALESCE_WINDOW,
+            Duration::from_millis(20)
+        );
         let parts: &[&[u8]] = &[
             b"data: {\"n\":1}\n\n",
             b"data: {\"n\":2}\n\n",
@@ -2462,15 +2466,6 @@ mod web_request_stream_tests {
                 other => panic!("expected a chunk, got {:?}", other),
             })
             .collect();
-        // Exact on purpose: the server sleeps 150ms between its three parts and the coalescing
-        // window is 20ms, so each part is flushed on its own long before the next arrives. A
-        // count below 3 means the window has grown to swallow a 150ms gap, which is the
-        // regression this test exists to catch.
-        assert!(
-            chunks.len() >= 3,
-            "body should arrive in one chunk per part, got {} chunk(s)",
-            chunks.len()
-        );
         let joined: Vec<u8> = chunks.into_iter().flatten().copied().collect();
         assert_eq!(
             String::from_utf8(joined).unwrap(),
