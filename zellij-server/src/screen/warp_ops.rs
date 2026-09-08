@@ -47,6 +47,18 @@ pub(super) const PANE_WARP_SCREEN_RESERVE: std::time::Duration =
     std::time::Duration::from_millis(500);
 
 impl Screen {
+    fn notify_warp_departure(&mut self, pane_id: PaneId) {
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::Update(vec![(
+                None,
+                None,
+                zellij_types::data::Event::PaneClosed(pane_id.into()),
+            )]))
+            .non_fatal();
+        self.notify_pane_closed_to_subscribers(pane_id.into());
+    }
+
     pub(super) fn finish_warp_group(
         &mut self,
         tab_id: TabId,
@@ -423,7 +435,10 @@ impl Screen {
             borderless: pane.borderless(),
             agent: pane.agent_info().cloned(),
         });
-        tab.extract_warp_panes(&[pane_id]);
+        let removed = tab.extract_warp_panes(&[pane_id]);
+        for pane in removed {
+            self.notify_warp_departure(pane.pid());
+        }
         self.clear_nested_guest(pane_id);
         Ok(payload)
     }
@@ -673,6 +688,7 @@ impl Screen {
         let removed = tab.extract_warp_panes(&prepared.slots);
         for pane in removed {
             let id = pane.pid();
+            self.notify_warp_departure(id);
             if matches!(id, PaneId::Plugin(_)) {
                 self.bus
                     .senders
