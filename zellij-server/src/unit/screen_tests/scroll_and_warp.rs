@@ -19,6 +19,213 @@ use zellij_types::internal_ids::TabPosition;
 fn warp_deadline() -> std::time::Instant {
     std::time::Instant::now() + std::time::Duration::from_secs(30)
 }
+
+#[test]
+fn warp_departures_notify_plugins_and_subscribers_without_closing_processes() {
+    for scenario in ["single", "editor", "stack", "tab"] {
+        for failed in [false, true] {
+            let mut screen = match scenario {
+                "editor" => screen_with_a_scrollback_editor_open(),
+                "stack" => screen_with_a_stack_list(),
+                _ => screen_with_an_overlay_over_a_tab(),
+            };
+            let prepared = match scenario {
+                "single" => None,
+                "tab" => Some(
+                    screen
+                        .check_tab_can_be_warped(Some(TAB_0), ClientId::new(1))
+                        .unwrap(),
+                ),
+                _ => screen
+                    .prepare_pane_group(
+                        Some(PaneId::Terminal(TerminalId::new(if scenario == "editor" {
+                            9
+                        } else {
+                            3
+                        }))),
+                        ClientId::new(1),
+                    )
+                    .unwrap(),
+            };
+            let departing = prepared
+                .as_ref()
+                .map(|(_, _, prepared)| prepared.slots.clone())
+                .unwrap_or_else(|| vec![PaneId::Terminal(TerminalId::new(1))]);
+            let remaining: Vec<_> = screen
+                .tabs
+                .values()
+                .flat_map(|tab| tab.get_all_pane_ids())
+                .filter(|id| !departing.contains(id))
+                .collect();
+            assert!(!remaining.is_empty());
+            let fake_os = FakeInputOutput::default();
+            let messages = fake_os.server_to_client_messages.clone();
+            screen.bus.os_input = Some(Box::new(fake_os));
+            for (client, panes) in [
+                (100, departing.clone()),
+                (101, departing.iter().chain(&remaining).copied().collect()),
+            ] {
+                screen.subscribe_to_pane_renders(
+                    ClientId::new(client),
+                    panes.into_iter().map(Into::into).collect(),
+                    None,
+                    false,
+                );
+            }
+            messages.lock().unwrap().clear();
+            let (to_plugin, plugins): ChannelWithContext<PluginInstruction> = channels::unbounded();
+            screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+            let (to_pty, pty): ChannelWithContext<PtyInstruction> = channels::unbounded();
+            screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+            let release = |id| {
+                if failed {
+                    Err("release failed".to_owned())
+                } else {
+                    Ok(ReleasedPane::Local(ReleasedPtyHost {
+                        host_id: SupervisorId::new(format!("host-{id}")),
+                        host_pid: ProcessId::new(1),
+                        control_socket: Some(PathBuf::from(format!("/tmp/warp-{id}.sock"))),
+                    }))
+                }
+            };
+            let result = if let Some((tab_id, terminals, prepared)) = prepared {
+                screen
+                    .take_released_tab_for_warp(
+                        tab_id,
+                        terminals.into_iter().map(|id| (id, release(id))).collect(),
+                        prepared,
+                    )
+                    .map(|_| ())
+            } else {
+                screen
+                    .take_released_pane_for_warp(TerminalId::new(1), release(TerminalId::new(1)))
+                    .map(|_| ())
+            };
+            assert_eq!(result.is_err(), failed);
+            let mut closed = vec![];
+            for (instruction, _) in plugins.try_iter() {
+                if let PluginInstruction::Update(events) = instruction {
+                    for (plugin, client, event) in events {
+                        if let Event::PaneClosed(id) = event {
+                            assert_eq!((plugin, client), (None, None));
+                            closed.push(id);
+                        }
+                    }
+                }
+            }
+            let expected: Vec<zellij_types::data::PaneId> = if failed {
+                vec![]
+            } else {
+                departing.iter().copied().map(Into::into).collect()
+            };
+            assert_eq!(closed.len(), expected.len(), "{scenario}, failed={failed}");
+            for id in &expected {
+                assert_eq!(closed.iter().filter(|closed| *closed == id).count(), 1);
+            }
+            let messages = messages.lock().unwrap();
+            for client in [100, 101] {
+                let events = messages
+                    .get(&ClientId::new(client))
+                    .cloned()
+                    .unwrap_or_default();
+                let closed: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        ServerToClientMsg::SubscribedPaneClosed { pane_id } => Some(*pane_id),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(closed.len(), expected.len());
+                for id in &expected {
+                    assert_eq!(closed.iter().filter(|closed| *closed == id).count(), 1);
+                }
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|event| matches!(event, ServerToClientMsg::Exit { .. }))
+                        .count(),
+                    usize::from(!failed && client == 100)
+                );
+                assert_eq!(
+                    screen
+                        .pane_render_subscribers
+                        .contains_key(&ClientId::new(client)),
+                    failed || client == 101
+                );
+            }
+            if !failed {
+                assert_eq!(
+                    screen.pane_render_subscribers[&ClientId::new(101)].pane_ids,
+                    remaining.into_iter().map(Into::into).collect()
+                );
+            }
+            for (instruction, _) in pty.try_iter() {
+                match instruction {
+                    PtyInstruction::ClosePane(PaneId::Terminal(id), _) => {
+                        panic!("closed transferred process {id}")
+                    },
+                    PtyInstruction::CloseTab(ids) => assert!(ids.is_empty()),
+                    _ => {},
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn destination_local_group_placement_does_not_notify_departure() {
+    for placement in [
+        zellij_types::data::WarpPlacement::FocusedTab,
+        zellij_types::data::WarpPlacement::Floating,
+    ] {
+        let (mut screen, messages) =
+            create_new_screen_with_message_capture(Size { cols: 80, rows: 24 });
+        new_tab(&mut screen, 1, TAB_0);
+        let (tab_id, reply) = queue_warp_group(&mut screen, placement);
+        let pending = screen.pending_group_placements.remove(&tab_id).unwrap();
+        let (to_plugin, plugins): ChannelWithContext<PluginInstruction> = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        apply_warp_group(&mut screen, tab_id);
+        screen.subscribe_to_pane_renders(
+            ClientId::new(100),
+            vec![zellij_types::data::PaneId::Terminal(TERMINAL_50)],
+            None,
+            false,
+        );
+        screen.pending_group_placements.insert(tab_id, pending);
+        screen
+            .finish_warp_group(
+                tab_id,
+                &[PaneId::Terminal(TERMINAL_50)],
+                &Default::default(),
+            )
+            .unwrap();
+        reply
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert!(screen.tabs[&TAB_0]
+            .get_pane_with_id(PaneId::Terminal(TERMINAL_50))
+            .is_some());
+        assert!(screen.pane_render_subscribers[&ClientId::new(100)]
+            .pane_ids
+            .contains(&zellij_types::data::PaneId::Terminal(TERMINAL_50)));
+        assert!(plugins
+            .try_iter()
+            .all(|(instruction, _)| match instruction {
+                PluginInstruction::Update(events) => events
+                    .iter()
+                    .all(|(_, _, event)| !matches!(event, Event::PaneClosed(_))),
+                _ => true,
+            }));
+        assert!(messages
+            .lock()
+            .unwrap()
+            .values()
+            .flatten()
+            .all(|event| !matches!(event, ServerToClientMsg::SubscribedPaneClosed { .. })));
+    }
+}
 #[test]
 pub fn scroll_position_is_preserved_across_move_focus() {
     let size = Size { cols: 80, rows: 10 };
