@@ -3051,6 +3051,7 @@ impl State {
             self.apply_overlay_geometry();
         }
         self.selected_agent = selection.pane_id;
+        self.selected_run_revision = selection.revision;
         self.selected_run = selection.run_id.or_else(|| {
             selection
                 .pane_id
@@ -3058,9 +3059,73 @@ impl State {
                 .map(|run| run.id.clone())
         });
         if let Some(run_id) = self.selected_run.as_deref() {
-            self.send_run_detail(selection.plugin_id, run_id);
+            self.send_run_detail(selection.plugin_id, run_id, self.selected_run_revision);
         }
         false
+    }
+
+    pub(crate) fn on_agent_search(&mut self, message: &PipeMessage) -> bool {
+        let Some(plugin_id) = (match message.source {
+            PipeSource::Plugin(id) => Some(id),
+            _ => None,
+        }) else {
+            return false;
+        };
+        if self
+            .plugin_instances
+            .get(&plugin_id)
+            .is_none_or(|plugin| plugin.location != "zellij:hocus-agents")
+        {
+            return false;
+        }
+        let Some(request) = message
+            .payload
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<wire::SearchRequest>(json).ok())
+        else {
+            return false;
+        };
+        let mut result = wire::SearchResult {
+            request_id: request.request_id,
+            ..Default::default()
+        };
+        if request.query.trim().is_empty() {
+            result.error = "search text is empty".to_owned();
+        } else if let Err(error) = self.search_agent_runs(&request.query, &mut result) {
+            result.error = error;
+        }
+        let Ok(payload) = serde_json::to_string(&result) else {
+            return false;
+        };
+        pipe_message_to_plugin(
+            MessageToPlugin::new(wire::AGENT_SEARCH_RESULT)
+                .with_destination_plugin_id(plugin_id)
+                .with_payload(payload),
+        );
+        false
+    }
+
+    fn search_agent_runs(
+        &self,
+        query: &str,
+        result: &mut wire::SearchResult,
+    ) -> Result<(), String> {
+        let found = run_history::search_runs(&self.store(), query)?;
+        result.truncated = found.truncated;
+        for hit in found.hits {
+            let Some(header) = found.runs.get(&hit.run_id) else {
+                continue;
+            };
+            result.runs.push(wire::SearchRun {
+                run_id: hit.run_id,
+                kind: header.kind.clone(),
+                title: header.title.clone(),
+                revision: hit.revision,
+                snippet: hit.snippet,
+                started_at_ms: header.started_at_ms,
+            });
+        }
+        Ok(())
     }
 
     pub(crate) fn merge_run_headers(&mut self, runs: Vec<agents::AgentRunHeader>) {
@@ -3107,7 +3172,7 @@ impl State {
         }
         if let (Some(plugin_id), Some(run_id)) = (self.agents_plugin, self.selected_run.as_deref())
         {
-            self.send_run_detail(plugin_id, run_id);
+            self.send_run_detail(plugin_id, run_id, self.selected_run_revision);
         }
     }
 

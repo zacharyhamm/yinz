@@ -362,6 +362,29 @@ fn a_selection_message_is_how_hocus_learns_the_agent_lists_id() {
 }
 
 #[test]
+fn a_search_selection_keeps_its_revision_through_refresh_and_clears_it_for_ordinary_rows() {
+    let mut state = state_with_summary(2);
+    let mut message = selection(AGENTS_PANE, None);
+    for revision in [10, 20] {
+        message.payload = Some(
+            serde_json::to_string(&wire::Selection {
+                plugin_id: AGENTS_PANE,
+                pane_id: None,
+                run_id: Some("claude:old".to_owned()),
+                revision: Some(revision),
+            })
+            .unwrap(),
+        );
+        state.pipe(message.clone());
+        state.merge_run_headers(vec![]);
+        assert_eq!(state.selected_run.as_deref(), Some("claude:old"));
+        assert_eq!(state.selected_run_revision, Some(revision));
+    }
+    state.pipe(selection(AGENTS_PANE, Some(3)));
+    assert_eq!(state.selected_run_revision, None);
+}
+
+#[test]
 fn a_selected_agent_picks_up_its_run_when_the_first_header_arrives() {
     let mut state = state_with_summary(2);
     assert!(!state.pipe(selection(AGENTS_PANE, Some(3))));
@@ -438,6 +461,7 @@ fn selection(plugin_id: zellij_tile::prelude::PluginId, pane_id: Option<u32>) ->
         name: wire::AGENT_SELECTION.to_owned(),
         payload: Some(
             serde_json::to_string(&wire::Selection {
+                revision: None,
                 plugin_id,
                 pane_id,
                 run_id: None,

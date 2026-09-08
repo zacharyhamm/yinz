@@ -136,6 +136,10 @@ pub const STOP_INPUT: &str = "input";
 pub const AGENT_RUN_DETAIL: &str = "agent_run_detail";
 /// hocus-agents → hocus: fetch the next page of completed run headers.
 pub const AGENT_ARCHIVE_MORE: &str = "agent_archive_more";
+/// hocus-agents → hocus: search recorded run entries.
+pub const AGENT_SEARCH: &str = "agent_search";
+/// hocus → hocus-agents: one search page.
+pub const AGENT_SEARCH_RESULT: &str = "agent_search_result";
 /// hocus-agents → agentd: "describe this agent now".
 ///
 /// The one summary somebody asks for. The daemon buys exactly one of its own accord, when a
@@ -303,6 +307,9 @@ pub use zellij_tile::agent::HookEvent;
 /// with no agents in it.
 #[derive(Serialize, Deserialize)]
 pub struct Selection {
+    /// A search hit to reveal; ordinary list selections load the newest history.
+    #[serde(default)]
+    pub revision: Option<u64>,
     pub plugin_id: zellij_tile::prelude::PluginId,
     #[serde(default)]
     pub pane_id: Option<u32>,
@@ -346,6 +353,34 @@ pub struct ResumeResult {
     pub run_id: String,
     #[serde(default)]
     pub detail: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SearchRequest {
+    pub request_id: String,
+    #[serde(default)]
+    pub query: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SearchRun {
+    pub run_id: String,
+    pub kind: String,
+    pub title: String,
+    pub revision: u64,
+    pub snippet: String,
+    pub started_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SearchResult {
+    pub request_id: String,
+    #[serde(default)]
+    pub runs: Vec<SearchRun>,
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default)]
+    pub error: String,
 }
 
 /// A change to the store. `args` stays loosely typed so the CLI can drive the
